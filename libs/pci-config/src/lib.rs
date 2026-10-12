@@ -599,6 +599,190 @@ pub enum CommandAccess {
     Write(u16),
 }
 
+/// One configuration-space operation in the entry-time DMA fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffAccess {
+    /// Read the complete vendor/device identity dword.
+    ReadIdentity,
+    /// Read the command register; only its low sixteen bits are consumed.
+    ReadCommand,
+    /// Write command bits with a zero status half.
+    WriteCommand(u16),
+}
+
+/// What an exhaustive entry-time DMA fence observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffFenceReport {
+    functions: u32,
+    disabled: u32,
+}
+
+impl HandoffFenceReport {
+    /// Present functions whose stable identity and BME-off state were proved.
+    pub const fn functions(self) -> u32 {
+        self.functions
+    }
+
+    /// Functions whose inherited BME bit the fence cleared.
+    pub const fn disabled(self) -> u32 {
+        self.disabled
+    }
+}
+
+/// Why the entry-time requester fence could not prove DMA quiescence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HandoffFenceError {
+    /// One required configuration-space cycle was unavailable.
+    Access {
+        /// Function whose configuration cycle failed.
+        at: Address,
+        /// Operation that could not complete.
+        operation: HandoffAccess,
+    },
+    /// BME clear did not preserve and read back the exact command word.
+    CommandRefused {
+        /// Function whose command word refused the fence.
+        at: Address,
+        /// Exact BME-off word written or required.
+        expected: u16,
+        /// Word returned by the readback.
+        found: u16,
+    },
+    /// A present function changed identity during its fence.
+    IdentityChanged {
+        /// Function whose identity changed.
+        at: Address,
+        /// Identity read before the command transaction.
+        expected: u32,
+        /// Identity read after the command transaction.
+        found: u32,
+    },
+}
+
+impl core::fmt::Display for HandoffFenceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Access { at, operation } => write!(
+                f,
+                "configuration {operation:?} failed for {:02x}:{:02x}.{}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::CommandRefused {
+                at,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{:02x}:{:02x}.{} command read back as {found:#06x}, expected {expected:#06x}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::IdentityChanged {
+                at,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{:02x}:{:02x}.{} identity changed from {expected:#010x} to {found:#010x}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+        }
+    }
+}
+
+impl core::error::Error for HandoffFenceError {}
+
+/// Clear and verify BME on every present function in the legacy PCI segment.
+///
+/// Every bus, device and function number is probed independently; no header
+/// hint or bridge route can shrink the inventory. The caller must already own
+/// the one configuration mechanism used by `access` and hold trusted platform
+/// authority that its visibility and requester identities remain static.
+///
+/// # Errors
+///
+/// Returns the exact unavailable cycle, refused command readback or changing
+/// function identity. A refusal never restores BME on a function already
+/// fenced.
+pub fn fence_dma_handoff(
+    mut access: impl FnMut(Address, HandoffAccess) -> Option<u32>,
+) -> Result<HandoffFenceReport, HandoffFenceError> {
+    let mut functions = 0u32;
+    let mut disabled = 0u32;
+    for bus in 0..=u8::MAX {
+        for device in 0..DEVICES {
+            for function in 0..FUNCTIONS {
+                let Some(at) = Address::new(bus, device, function, header::VENDOR) else {
+                    continue;
+                };
+                let identity =
+                    access(at, HandoffAccess::ReadIdentity).ok_or(HandoffFenceError::Access {
+                        at,
+                        operation: HandoffAccess::ReadIdentity,
+                    })?;
+                if is_absent(identity as u16) {
+                    continue;
+                }
+                let Some(command_at) = at.at(header::COMMAND) else {
+                    continue;
+                };
+                let before = access(command_at, HandoffAccess::ReadCommand).ok_or(
+                    HandoffFenceError::Access {
+                        at,
+                        operation: HandoffAccess::ReadCommand,
+                    },
+                )? as u16;
+                let expected = before & !command::BUS_MASTER;
+                if before != expected {
+                    access(command_at, HandoffAccess::WriteCommand(expected)).ok_or(
+                        HandoffFenceError::Access {
+                            at,
+                            operation: HandoffAccess::WriteCommand(expected),
+                        },
+                    )?;
+                    disabled += 1;
+                }
+                let found = access(command_at, HandoffAccess::ReadCommand).ok_or(
+                    HandoffFenceError::Access {
+                        at,
+                        operation: HandoffAccess::ReadCommand,
+                    },
+                )? as u16;
+                if found != expected {
+                    return Err(HandoffFenceError::CommandRefused {
+                        at,
+                        expected,
+                        found,
+                    });
+                }
+                let current =
+                    access(at, HandoffAccess::ReadIdentity).ok_or(HandoffFenceError::Access {
+                        at,
+                        operation: HandoffAccess::ReadIdentity,
+                    })?;
+                if current != identity {
+                    return Err(HandoffFenceError::IdentityChanged {
+                        at,
+                        expected: identity,
+                        found: current,
+                    });
+                }
+                functions += 1;
+            }
+        }
+    }
+    Ok(HandoffFenceReport {
+        functions,
+        disabled,
+    })
+}
+
 /// The exclusive right to finish one function's command-register transition.
 ///
 /// The function identity, original word, installed word and registry
@@ -2903,6 +3087,121 @@ mod tests {
         assert!(core::error::Error::source(&ProbeError::Access(TestAccessError)).is_some());
         assert!(core::error::Error::source(&ProbeError::Restore(TestAccessError)).is_some());
         assert!(core::error::Error::source(&ProbeError::<TestAccessError>::Malformed).is_none());
+    }
+
+    #[test]
+    fn the_handoff_fence_exhausts_the_segment_and_preserves_command_bits() {
+        let first = Address::new(0, 1, 0, 0).expect("first function");
+        let last = Address::new(u8::MAX, DEVICES - 1, FUNCTIONS - 1, 0).expect("last function");
+        let first_identity = 0x1234_5678;
+        let last_identity = 0x89ab_cdef;
+        let mut first_command =
+            command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER | (1 << 10);
+        let mut last_command = command::MEMORY_SPACE | (1 << 8);
+
+        let report = fence_dma_handoff(|at, operation| {
+            let function = at.function_base();
+            let identity = if function == first {
+                first_identity
+            } else if function == last {
+                last_identity
+            } else {
+                u32::MAX
+            };
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadCommand if function == first => Some(u32::from(first_command)),
+                HandoffAccess::ReadCommand if function == last => Some(u32::from(last_command)),
+                HandoffAccess::WriteCommand(value) if function == first => {
+                    first_command = value;
+                    Some(0)
+                }
+                HandoffAccess::WriteCommand(value) if function == last => {
+                    last_command = value;
+                    Some(0)
+                }
+                _ => None,
+            }
+        })
+        .expect("the complete static segment is fenced");
+
+        assert_eq!(report.functions(), 2);
+        assert_eq!(report.disabled(), 1);
+        assert_eq!(
+            first_command,
+            command::IO_SPACE | command::MEMORY_SPACE | (1 << 10)
+        );
+        assert_eq!(last_command, command::MEMORY_SPACE | (1 << 8));
+    }
+
+    #[test]
+    fn every_handoff_fence_uncertainty_refuses_the_boundary() {
+        let target = Address::new(0, 0, 0, 0).expect("target function");
+        let identity = 0x1234_5678;
+
+        let access = fence_dma_handoff(|at, operation| {
+            if at.function_base() != target {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            }
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadCommand => None,
+                HandoffAccess::WriteCommand(_) => Some(0),
+            }
+        });
+        assert!(matches!(
+            access,
+            Err(HandoffFenceError::Access {
+                operation: HandoffAccess::ReadCommand,
+                ..
+            })
+        ));
+
+        let refused = fence_dma_handoff(|at, operation| {
+            if at.function_base() != target {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            }
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadCommand => Some(u32::from(command::BUS_MASTER)),
+                HandoffAccess::WriteCommand(_) => Some(0),
+            }
+        });
+        assert_eq!(
+            refused,
+            Err(HandoffFenceError::CommandRefused {
+                at: target,
+                expected: 0,
+                found: command::BUS_MASTER,
+            })
+        );
+
+        let mut identity_reads = 0;
+        let changed = fence_dma_handoff(|at, operation| {
+            if at.function_base() != target {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            }
+            match operation {
+                HandoffAccess::ReadIdentity => {
+                    identity_reads += 1;
+                    Some(if identity_reads == 1 {
+                        identity
+                    } else {
+                        identity ^ 1
+                    })
+                }
+                HandoffAccess::ReadCommand => Some(0),
+                HandoffAccess::WriteCommand(_) => Some(0),
+            }
+        });
+        assert_eq!(
+            changed,
+            Err(HandoffFenceError::IdentityChanged {
+                at: target,
+                expected: identity,
+                found: identity ^ 1,
+            })
+        );
     }
 
     const TRACE_CAPACITY: usize = 96;

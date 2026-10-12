@@ -29,9 +29,9 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
 /// One pristine compilation graph may include every workspace package.
 const COMPILATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Combined stdout and stderr accepted from either repository-derived child.
-/// A complete host compiler graph emits more than 16 MiB of JSON diagnostics;
+/// A complete host compiler graph emits substantial compact structured JSON;
 /// 64 MiB admits that reviewed workload while retaining a finite allocation
-/// and on-disk capture ceiling for every round.
+/// and on-disk capture ceiling for every round (D-391).
 const MAX_AUDIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const TOOL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TOOL_IDENTITY_BYTES: usize = 64 * 1024;
@@ -8248,7 +8248,7 @@ fn cargo_arguments(plan: &CompilationPlan) -> Vec<String> {
     args.extend([
         "--offline".to_string(),
         "--locked".to_string(),
-        "--message-format=json".to_string(),
+        "--message-format=json-diagnostic-short".to_string(),
     ]);
     if let Some(target) = selected {
         args.extend(["--package".to_string(), target.package.clone()]);
@@ -9307,7 +9307,7 @@ dependencies = [
     }
 
     #[test]
-    fn compiler_graphs_are_offline_and_lockfile_frozen() {
+    fn compiler_graphs_are_offline_lockfile_frozen_and_use_compact_structured_diagnostics() {
         const PACKAGES: &[&str] = &["fixture"];
         let pass = gate::CargoPass {
             name: "fixture",
@@ -9325,7 +9325,12 @@ dependencies = [
 
         assert_eq!(
             &args[..4],
-            ["check", "--offline", "--locked", "--message-format=json"]
+            [
+                "check",
+                "--offline",
+                "--locked",
+                "--message-format=json-diagnostic-short"
+            ]
         );
         assert_eq!(args.iter().filter(|arg| *arg == "--locked").count(), 1);
         assert!(

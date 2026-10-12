@@ -61,6 +61,10 @@ use crate::arch::current::{ioapic, vector};
 ::wost::entry!(kernel_main);
 
 fn kernel_main(boot: BootInfo) -> ! {
+    #[cfg(feature = "refuse-pci")]
+    refuse_pci_for_degraded_boot();
+    let early_dma = iommu::secure_handoff(&boot);
+
     let serial = dev::init_uart();
     info!("The Wizard's Bedrock awakens.");
 
@@ -71,11 +75,16 @@ fn kernel_main(boot: BootInfo) -> ! {
 
     // Checked only once both consoles are up, so that a machine with neither a
     // serial cable nor a supported bootloader still shows why it stopped.
-    assert!(
-        boot.base_revision_supported,
-        "bootloader rejected our Limine base revision"
-    );
+    let early_dma = match early_dma {
+        Ok(boundary) => boundary,
+        Err(reason) => panic!("DMA-safe boot handoff refused: {reason}"),
+    };
     info!("limine: base revision supported");
+    info!(
+        "iommu: entry DMA fence covers {} PCI function(s), disabled {} inherited bus master(s)",
+        early_dma.functions(),
+        early_dma.disabled()
+    );
 
     // The fault path exists before anything that can fault, so a wrong
     // assumption prints a report instead of resetting (`006`).
@@ -109,7 +118,7 @@ fn kernel_main(boot: BootInfo) -> ! {
 
     // After the fault path, because this is the first write through an
     // address the bootloader chose; before everything else, which may want a frame.
-    mem::init(boot.memory_map, boot.direct_map);
+    mem::init(boot.memory_map, boot.direct_map, early_dma);
     let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
@@ -216,8 +225,6 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     dev::attach_back_buffer();
     let routing = prepare_keyboard_routing(interrupts).into_masked();
 
-    #[cfg(feature = "refuse-pci")]
-    refuse_pci_for_degraded_boot();
     survey_the_bus();
     survey_the_filesystems();
     start_interrupts(routing.as_ref());

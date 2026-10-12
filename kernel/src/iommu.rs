@@ -22,14 +22,20 @@
 //! into never returns its frame, and the candidate baseline counts frames.
 
 use acpi_tables::{
-    Bdf, BusRange, DmaCoverage, Dmar, RequesterInventory, RequesterInventoryError, Sdt,
+    Bdf, BusRange, DmaCoverage, DmaHandoff, DmaHandoffError, Dmar, RequesterInventory,
+    RequesterInventoryError, Sdt,
 };
 use core::ops::{Deref, DerefMut};
 #[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{Ordering, compiler_fence};
 use pci_config::Address;
+use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
+use wost::arch::current::pci as platform_pci;
+use wost::arch::current::pci::DmaHandoffFenceError;
 use wost::arch::current::vtd::{Establishment, Retargeting, Vtd};
+use wost::boot::BootInfo;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
 use crate::mem::{self, DeviceRetirement};
@@ -41,6 +47,100 @@ const REGISTER_WINDOW: u64 = 4096;
 
 /// The PCI segment group the legacy configuration ports reach.
 const SEGMENT: u16 = 0;
+
+/// Linear proof that the platform contract and exhaustive entry fence agree.
+#[derive(Debug)]
+pub(crate) struct EarlyDmaBoundary {
+    functions: u32,
+    disabled: u32,
+}
+
+impl EarlyDmaBoundary {
+    pub(crate) const fn functions(&self) -> u32 {
+        self.functions
+    }
+
+    pub(crate) const fn disabled(&self) -> u32 {
+        self.disabled
+    }
+}
+
+/// Why the kernel cannot trust mutable memory at this handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EarlyDmaError {
+    UnauthenticatedPlatform,
+    BaseRevision,
+    MissingEvidence(&'static str),
+    Table(acpi::EarlyTableError),
+    Contract(DmaHandoffError),
+    Segment(u16),
+    Configuration(DmaHandoffFenceError),
+}
+
+impl core::fmt::Display for EarlyDmaError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnauthenticatedPlatform => core::fmt::Write::write_str(
+                formatter,
+                "CPU state does not authenticate a qualified DMA-handoff platform",
+            ),
+            Self::BaseRevision => {
+                core::fmt::Write::write_str(formatter, "bootloader rejected Limine base revision 4")
+            }
+            Self::MissingEvidence(name) => write!(formatter, "boot handoff has no {name}"),
+            Self::Table(reason) => write!(formatter, "DMA handoff authority: {reason}"),
+            Self::Contract(reason) => write!(formatter, "DMA handoff contract: {reason}"),
+            Self::Segment(segment) => {
+                write!(
+                    formatter,
+                    "DMA handoff names unsupported PCI segment {segment}"
+                )
+            }
+            Self::Configuration(reason) => write!(formatter, "DMA handoff fence: {reason}"),
+        }
+    }
+}
+
+impl core::error::Error for EarlyDmaError {}
+
+/// Validate the platform DMA contract and fence every requester at entry.
+pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyDmaError> {
+    if !cpu::dma_handoff_platform_is_authenticated() {
+        return Err(EarlyDmaError::UnauthenticatedPlatform);
+    }
+    if !boot.base_revision_supported {
+        return Err(EarlyDmaError::BaseRevision);
+    }
+    let map = boot
+        .memory_map
+        .as_ref()
+        .map_err(|_| EarlyDmaError::MissingEvidence("complete memory map"))?;
+    let direct = *boot
+        .direct_map
+        .as_ref()
+        .map_err(|_| EarlyDmaError::MissingEvidence("direct map"))?;
+    let rsdp = *boot
+        .rsdp
+        .as_ref()
+        .map_err(|_| EarlyDmaError::MissingEvidence("ACPI root pointer"))?;
+    let table = acpi::find_unique_early::<{ DmaHandoff::LEN }>(map, direct, rsdp, Sdt::DMA_HANDOFF)
+        .map_err(EarlyDmaError::Table)?;
+    let contract = DmaHandoff::new(&table).map_err(EarlyDmaError::Contract)?;
+    if contract.segment() != SEGMENT {
+        return Err(EarlyDmaError::Segment(contract.segment()));
+    }
+    if !platform_pci::init() {
+        return Err(EarlyDmaError::Configuration(
+            DmaHandoffFenceError::Unavailable,
+        ));
+    }
+    let report = platform_pci::fence_dma_handoff().map_err(EarlyDmaError::Configuration)?;
+    compiler_fence(Ordering::SeqCst);
+    Ok(EarlyDmaBoundary {
+        functions: report.functions(),
+        disabled: report.disabled(),
+    })
+}
 
 /// Firmware's validated DMAR, read once before any candidate exists and kept
 /// for the rest of the boot.

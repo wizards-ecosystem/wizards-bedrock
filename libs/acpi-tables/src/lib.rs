@@ -342,6 +342,9 @@ impl Sdt {
     /// Signature of Wizard's explicit whole-segment DMA coverage attestation.
     pub const DMA_COVERAGE: [u8; 4] = *b"WZDM";
 
+    /// Signature of Wizard's DMA-safe firmware handoff attestation.
+    pub const DMA_HANDOFF: [u8; 4] = *b"WZDH";
+
     /// The length a header claims, without validating anything else.
     ///
     /// The one field that has to be read before a table can be validated at
@@ -524,6 +527,127 @@ impl DmaCoverage {
     pub const fn register_base(self) -> u64 {
         self.register_base
     }
+}
+
+/// A platform attestation that PCI DMA is safe at kernel handoff.
+///
+/// The table is deliberately separate from [`DmaCoverage`]. Coverage names a
+/// remapping unit; this contract says the platform kept one PCI segment
+/// quiescent before the kernel can establish any unit of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaHandoff {
+    segment: u16,
+}
+
+/// Why a Wizard DMA handoff attestation is not authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DmaHandoffError {
+    /// The enclosing ACPI table is malformed.
+    Table(AcpiError),
+    /// The table is valid ACPI but has another signature.
+    WrongTable {
+        /// Signature this view accepts.
+        expected: [u8; 4],
+        /// Signature the table carries.
+        found: [u8; 4],
+    },
+    /// The fixed-format table has another length.
+    WrongLength(u32),
+    /// The table revision has no defined handoff semantics.
+    UnsupportedRevision(u8),
+    /// Required handoff properties are missing or unknown ones are asserted.
+    UnsafeFlags(u16),
+    /// Reserved format bytes are not zero.
+    NonzeroReserved(u64),
+}
+
+impl fmt::Display for DmaHandoffError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Table(reason) => write!(f, "DMA handoff table is invalid: {reason}"),
+            Self::WrongTable { expected, found } => {
+                write!(f, "table signature {found:?} does not match {expected:?}")
+            }
+            Self::WrongLength(length) => {
+                write!(f, "DMA handoff table length {length} is not 48 bytes")
+            }
+            Self::UnsupportedRevision(revision) => {
+                write!(f, "DMA handoff revision {revision} is unsupported")
+            }
+            Self::UnsafeFlags(flags) => {
+                write!(
+                    f,
+                    "DMA handoff flags {flags:#x} are not the complete contract"
+                )
+            }
+            Self::NonzeroReserved(bits) => {
+                write!(f, "DMA handoff reserved bits are {bits:#x}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for DmaHandoffError {}
+
+impl DmaHandoff {
+    /// Bytes in the complete fixed-format table.
+    pub const LEN: usize = Sdt::LEN + 12;
+
+    /// Every platform property required for a safe early requester fence.
+    pub const REQUIRED_FLAGS: u16 = handoff::COMPLETE_LEGACY_CONFIGURATION
+        | handoff::QUIESCENT_THROUGH_FENCE
+        | handoff::STATIC_REQUESTERS;
+
+    /// Validate a complete PCI DMA handoff attestation.
+    ///
+    /// # Errors
+    ///
+    /// If the ACPI envelope, signature, fixed length, revision, flags or
+    /// reserved field is invalid.
+    pub fn new(table: &[u8]) -> Result<Self, DmaHandoffError> {
+        let header = Sdt::parse(table).map_err(DmaHandoffError::Table)?;
+        if header.signature() != Sdt::DMA_HANDOFF {
+            return Err(DmaHandoffError::WrongTable {
+                expected: Sdt::DMA_HANDOFF,
+                found: header.signature(),
+            });
+        }
+        if header.length() as usize != Self::LEN {
+            return Err(DmaHandoffError::WrongLength(header.length()));
+        }
+        if table[8] != 1 {
+            return Err(DmaHandoffError::UnsupportedRevision(table[8]));
+        }
+        let segment =
+            u16_at(table, Sdt::LEN).ok_or(DmaHandoffError::WrongLength(header.length()))?;
+        let flags =
+            u16_at(table, Sdt::LEN + 2).ok_or(DmaHandoffError::WrongLength(header.length()))?;
+        if flags != Self::REQUIRED_FLAGS {
+            return Err(DmaHandoffError::UnsafeFlags(flags));
+        }
+        let reserved =
+            u64_at(table, Sdt::LEN + 4).ok_or(DmaHandoffError::WrongLength(header.length()))?;
+        if reserved != 0 {
+            return Err(DmaHandoffError::NonzeroReserved(reserved));
+        }
+        Ok(Self { segment })
+    }
+
+    /// PCI segment protected by the complete handoff contract.
+    pub const fn segment(self) -> u16 {
+        self.segment
+    }
+}
+
+/// DMA-safe handoff properties encoded in [`DmaHandoff`].
+mod handoff {
+    /// CF8/CFC reaches every DMA-capable requester in the named segment.
+    pub(super) const COMPLETE_LEGACY_CONFIGURATION: u16 = 1 << 0;
+    /// No requester can issue DMA and no older request is in flight through the fence.
+    pub(super) const QUIESCENT_THROUGH_FENCE: u16 = 1 << 1;
+    /// Requester presence, identity and command state cannot change externally.
+    pub(super) const STATIC_REQUESTERS: u16 = 1 << 2;
 }
 
 /// The most table pointers a root table may list.
@@ -3023,6 +3147,74 @@ mod tests {
         assert!(matches!(
             DmaCoverage::new(&wrong),
             Err(DmaCoverageError::WrongTable { .. })
+        ));
+    }
+
+    #[test]
+    fn dma_handoff_requires_every_exact_platform_property() {
+        let mut body = [0u8; 12];
+        body[0..2].copy_from_slice(&7u16.to_le_bytes());
+        body[2..4].copy_from_slice(&DmaHandoff::REQUIRED_FLAGS.to_le_bytes());
+        let mut bytes = table(&Sdt::DMA_HANDOFF, &body);
+        bytes[8] = 1;
+        fix_checksum(&mut bytes, 9);
+
+        let handoff = DmaHandoff::new(&bytes).expect("complete DMA handoff attestation");
+        assert_eq!(handoff.segment(), 7);
+
+        for missing in [1u16, 2, 4] {
+            let mut incomplete = bytes.clone();
+            incomplete[Sdt::LEN + 2..Sdt::LEN + 4]
+                .copy_from_slice(&(DmaHandoff::REQUIRED_FLAGS & !missing).to_le_bytes());
+            fix_checksum(&mut incomplete, 9);
+            assert!(matches!(
+                DmaHandoff::new(&incomplete),
+                Err(DmaHandoffError::UnsafeFlags(_))
+            ));
+        }
+
+        let mut unknown = bytes.clone();
+        unknown[Sdt::LEN + 2..Sdt::LEN + 4]
+            .copy_from_slice(&(DmaHandoff::REQUIRED_FLAGS | 8).to_le_bytes());
+        fix_checksum(&mut unknown, 9);
+        assert_eq!(
+            DmaHandoff::new(&unknown),
+            Err(DmaHandoffError::UnsafeFlags(DmaHandoff::REQUIRED_FLAGS | 8))
+        );
+
+        let mut revision = bytes.clone();
+        revision[8] = 2;
+        fix_checksum(&mut revision, 9);
+        assert_eq!(
+            DmaHandoff::new(&revision),
+            Err(DmaHandoffError::UnsupportedRevision(2))
+        );
+
+        let mut reserved = bytes.clone();
+        reserved[Sdt::LEN + 4] = 1;
+        fix_checksum(&mut reserved, 9);
+        assert_eq!(
+            DmaHandoff::new(&reserved),
+            Err(DmaHandoffError::NonzeroReserved(1))
+        );
+
+        let mut bad_checksum = bytes.clone();
+        bad_checksum[9] ^= 1;
+        assert!(matches!(
+            DmaHandoff::new(&bad_checksum),
+            Err(DmaHandoffError::Table(AcpiError::BadChecksum))
+        ));
+
+        let wrong_length = table(&Sdt::DMA_HANDOFF, &[0; 13]);
+        assert_eq!(
+            DmaHandoff::new(&wrong_length),
+            Err(DmaHandoffError::WrongLength(49))
+        );
+
+        let wrong_table = table(&Sdt::DMA_COVERAGE, &body);
+        assert!(matches!(
+            DmaHandoff::new(&wrong_table),
+            Err(DmaHandoffError::WrongTable { .. })
         ));
     }
 

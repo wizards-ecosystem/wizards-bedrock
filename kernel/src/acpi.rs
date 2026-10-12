@@ -11,6 +11,8 @@
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
 use alloc::vec::Vec;
+use wost::boot::{DirectMap, MemoryMap};
+use wost::mm::EarlyFirmwareMemory;
 use wost::mm::{self, FirmwareMemory};
 
 use crate::{debug, warn};
@@ -21,6 +23,123 @@ const MAX_IO_APICS: usize = 16;
 /// A corrupt firmware length must not turn table discovery into an unbounded
 /// allocation. Real ACPI tables are far smaller than this ceiling.
 const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
+
+/// Maximum fixed root table extent: its header plus 256 XSDT pointers.
+const EARLY_ROOT_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
+
+/// Why an allocation-free unique ACPI authority lookup failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EarlyTableError {
+    RootPointer,
+    RootTable,
+    RootEntry,
+    Candidate,
+    Missing,
+    Duplicate,
+}
+
+impl core::fmt::Display for EarlyTableError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::RootPointer => {
+                core::fmt::Write::write_str(formatter, "the ACPI root pointer is unreadable")
+            }
+            Self::RootTable => {
+                core::fmt::Write::write_str(formatter, "the ACPI root table is unreadable")
+            }
+            Self::RootEntry => {
+                core::fmt::Write::write_str(formatter, "an ACPI root-table target is unreadable")
+            }
+            Self::Candidate => {
+                core::fmt::Write::write_str(formatter, "the requested ACPI table is malformed")
+            }
+            Self::Missing => {
+                core::fmt::Write::write_str(formatter, "the requested ACPI table is missing")
+            }
+            Self::Duplicate => {
+                core::fmt::Write::write_str(formatter, "the requested ACPI table is duplicated")
+            }
+        }
+    }
+}
+
+/// Read one unique fixed-size ACPI table without allocator state.
+pub(crate) fn find_unique_early<const N: usize>(
+    map: &MemoryMap,
+    direct: DirectMap,
+    rsdp: u64,
+    signature: [u8; 4],
+) -> Result<[u8; N], EarlyTableError> {
+    let firmware = EarlyFirmwareMemory::new(map, direct);
+    let physical = rsdp
+        .checked_sub(direct.offset())
+        .ok_or(EarlyTableError::RootPointer)?;
+    let mut root_pointer = [0u8; Rsdp::V2_LEN];
+    if !firmware.read(physical, &mut root_pointer[..Rsdp::V1_LEN]) {
+        return Err(EarlyTableError::RootPointer);
+    }
+    let prefix = if root_pointer[15] == 2 {
+        if !firmware.read(physical, &mut root_pointer[..24]) {
+            return Err(EarlyTableError::RootPointer);
+        }
+        &root_pointer[..24]
+    } else {
+        &root_pointer[..Rsdp::V1_LEN]
+    };
+    let length =
+        Rsdp::parse_length(prefix, Rsdp::V2_LEN).map_err(|_| EarlyTableError::RootPointer)?;
+    if length > 24 && !firmware.read(physical, &mut root_pointer[..length]) {
+        return Err(EarlyTableError::RootPointer);
+    }
+    let root = Rsdp::parse(&root_pointer[..length]).map_err(|_| EarlyTableError::RootPointer)?;
+    let (address, extended) = match (root.xsdt(), root.rsdt()) {
+        (Some(xsdt), _) => (xsdt, true),
+        (None, Some(rsdt)) => (rsdt, false),
+        (None, None) => return Err(EarlyTableError::RootPointer),
+    };
+
+    let mut root_header = [0u8; Sdt::LEN];
+    if !firmware.read(address, &mut root_header) {
+        return Err(EarlyTableError::RootTable);
+    }
+    let root_length = Sdt::parse_length(&root_header, EARLY_ROOT_BYTES)
+        .map_err(|_| EarlyTableError::RootTable)?;
+    let mut root_table = [0u8; EARLY_ROOT_BYTES];
+    if !firmware.read(address, &mut root_table[..root_length]) {
+        return Err(EarlyTableError::RootTable);
+    }
+    let mut pointers = if extended {
+        SdtPointers::xsdt(&root_table[..root_length])
+    } else {
+        SdtPointers::rsdt(&root_table[..root_length])
+    }
+    .map_err(|_| EarlyTableError::RootTable)?;
+
+    let mut found = None;
+    for address in &mut pointers {
+        let mut header = [0u8; Sdt::LEN];
+        if !firmware.read(address, &mut header) {
+            return Err(EarlyTableError::RootEntry);
+        }
+        if header[..4] != signature {
+            continue;
+        }
+        let length = Sdt::parse_length(&header, N).map_err(|_| EarlyTableError::Candidate)?;
+        if length != N {
+            return Err(EarlyTableError::Candidate);
+        }
+        let mut table = [0u8; N];
+        if !firmware.read(address, &mut table)
+            || !matches!(Sdt::parse(&table), Ok(parsed) if parsed.signature() == signature)
+        {
+            return Err(EarlyTableError::Candidate);
+        }
+        if found.replace(table).is_some() {
+            return Err(EarlyTableError::Duplicate);
+        }
+    }
+    found.ok_or(EarlyTableError::Missing)
+}
 
 /// What ACPI says about interrupt routing.
 pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;

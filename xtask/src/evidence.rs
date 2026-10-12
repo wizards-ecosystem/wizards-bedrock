@@ -2405,6 +2405,7 @@ mod tests {
                 "qualification/vmware-self-test/bedrock-flat.img",
                 "qualification/vmware-self-test/bedrock.vmdk",
                 "qualification/vmware-self-test/bedrock.vmx",
+                "qualification/vmware-self-test/dma-handoff.bin",
                 "qualification/vmware-shipped/generation.receipt",
                 "qualification/vmware-shipped/record",
                 "qualification/vmware-shipped/serial.log",
@@ -2414,6 +2415,7 @@ mod tests {
                 "qualification/vmware-shipped/bedrock-flat.img",
                 "qualification/vmware-shipped/bedrock.vmdk",
                 "qualification/vmware-shipped/bedrock.vmx",
+                "qualification/vmware-shipped/dma-handoff.bin",
             ])
         );
         let root = std::env::temp_dir().join(format!(

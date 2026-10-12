@@ -45,8 +45,10 @@ const QEMU_DMA_COVERAGE_BYTES: usize = 48;
 /// The fixed machine profile, with or without the remapping unit.
 ///
 /// Pins the CPU, TCG, and ambient configuration so protection checks cannot
-/// pass under a weaker or different execution model (D-18). The unit comes
-/// ahead of the bridge and the storage devices, which QEMU requires of it.
+/// pass under a weaker or different execution model (D-18). Its exact
+/// CPU-resident hypervisor leaf authenticates D-390's otherwise writable ACPI
+/// handoff bytes. The unit comes ahead of the bridge and the storage devices,
+/// which QEMU requires of it.
 fn machine_args(remapping: Remapping) -> Vec<&'static str> {
     let mut arguments = vec![
         "-no-user-config",
@@ -69,31 +71,32 @@ fn machine_args(remapping: Remapping) -> Vec<&'static str> {
 }
 
 fn validate_run_arguments(extra: &[OsString]) -> Result<()> {
-    for argument in extra {
-        let argument = argument.to_string_lossy();
-        let option = argument
+    let mut index = 0;
+    while index < extra.len() {
+        let argument = extra[index]
+            .to_str()
+            .context("QEMU arguments must be UTF-8")?;
+        let (option, inline) = argument
             .split_once('=')
-            .map_or(argument.as_ref(), |(name, _)| name);
-        if matches!(
-            option,
-            "-accel"
-                | "--accel"
-                | "-enable-kvm"
-                | "--enable-kvm"
-                | "-machine"
-                | "--machine"
-                | "-M"
-                | "-cpu"
-                | "--cpu"
-                | "-global"
-                | "--global"
-                | "-acpitable"
-                | "--acpitable"
-                | "-readconfig"
-                | "--readconfig"
-        ) {
+            .map_or((argument, None), |(name, value)| (name, Some(value)));
+        if !matches!(option, "-d" | "-D" | "-display" | "--display") {
             bail!("QEMU argument {argument:?} conflicts with the fixed TCG machine profile");
         }
+        if let Some(value) = inline {
+            ensure!(
+                !value.is_empty(),
+                "QEMU diagnostic argument {argument:?} has no value"
+            );
+            index += 1;
+            continue;
+        }
+        let value = extra
+            .get(index + 1)
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && !value.starts_with('-'))
+            .with_context(|| format!("QEMU diagnostic argument {argument:?} has no value"))?;
+        let _ = value;
+        index += 2;
     }
     Ok(())
 }
@@ -187,7 +190,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     validate_run_arguments(extra)?;
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let coverage = RunDmaCoverage::create(paths.target_dir())?;
+    let coverage = RunDmaCoverage::create(paths.target_dir(), Remapping::Present)?;
 
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
@@ -229,7 +232,7 @@ impl DebugMachine {
     pub(crate) fn start(paths: &Paths, image: &Path) -> Result<Self> {
         let installation = installation()?;
         let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-        let coverage = RunDmaCoverage::create(paths.target_dir())?;
+        let coverage = RunDmaCoverage::create(paths.target_dir(), Remapping::Present)?;
 
         let mut child = Command::new(&installation.emulator)
             .current_dir(vars.directory())
@@ -444,55 +447,100 @@ impl Drop for RunVars {
     }
 }
 
-/// One per-run ACPI attestation that states the fixed QEMU platform's real
-/// catch-all remapping topology without replacing its standards-defined DMAR.
+/// Per-run ACPI authorities for the fixed QEMU platform.
+///
+/// The coverage table states the real catch-all remapping topology without
+/// replacing QEMU's standards-defined DMAR. The handoff table states the
+/// entry-time DMA contract from D-390 after CPU state authenticates this exact
+/// virtual platform. Both files live in the private run directory and stay
+/// owned until the machine terminates.
 struct RunDmaCoverage {
-    path: PathBuf,
+    path: Option<PathBuf>,
+    handoff: PathBuf,
 }
 
 impl RunDmaCoverage {
-    fn create(target: &Path) -> Result<Self> {
-        let (directory, path, mut destination) = reserve_run_file(target, "dma-coverage", "bin")?;
-        let written = (|| -> Result<()> {
-            destination
-                .write_all(&qemu_dma_coverage_table())
-                .with_context(|| format!("writing {}", path.display()))?;
-            destination
-                .sync_all()
-                .with_context(|| format!("flushing {}", path.display()))?;
-            drop(destination);
-            crate::mutation_workspace::require_direct_file(
-                &directory,
-                &path,
-                "private QEMU DMA coverage attestation",
-            )?;
-            ensure!(
-                crate::mutation_workspace::canonical_existing_real_directory(
-                    &directory,
-                    "QEMU private run directory",
-                )? == directory,
-                "QEMU private run directory changed while writing DMA coverage"
-            );
-            Ok(())
-        })();
-        crate::mutation_workspace::finish_staged_operation(
-            &directory,
-            &path,
-            "private QEMU DMA coverage attestation",
-            written,
-        )?;
-        Ok(Self { path })
+    fn create(target: &Path, remapping: Remapping) -> Result<Self> {
+        let path = (remapping == Remapping::Present)
+            .then(|| {
+                write_run_acpi_table(
+                    target,
+                    "dma-coverage",
+                    &qemu_dma_coverage_table(),
+                    "DMA coverage attestation",
+                )
+            })
+            .transpose()?;
+        let handoff = match write_run_acpi_table(
+            target,
+            "dma-handoff",
+            &crate::platform_acpi::dma_handoff_table(),
+            "DMA handoff authority",
+        ) {
+            Ok(handoff) => handoff,
+            Err(error) => {
+                let cleanup = path.as_ref().map_or(Ok(()), std::fs::remove_file);
+                return match cleanup {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(anyhow!(
+                        "{error:#}; removing private DMA coverage table also failed: {cleanup}"
+                    )),
+                };
+            }
+        };
+        Ok(Self { path, handoff })
     }
 
-    fn arguments(&self) -> [OsString; 2] {
-        [OsString::from("-acpitable"), acpi_file_argument(&self.path)]
+    fn arguments(&self) -> Vec<OsString> {
+        let mut arguments = Vec::with_capacity(4);
+        if let Some(path) = &self.path {
+            arguments.extend([OsString::from("-acpitable"), acpi_file_argument(path)]);
+        }
+        arguments.extend([
+            OsString::from("-acpitable"),
+            acpi_file_argument(&self.handoff),
+        ]);
+        arguments
     }
+}
+
+fn write_run_acpi_table(target: &Path, stem: &str, bytes: &[u8], label: &str) -> Result<PathBuf> {
+    let (directory, path, mut destination) = reserve_run_file(target, stem, "bin")?;
+    let written = (|| -> Result<()> {
+        destination
+            .write_all(bytes)
+            .with_context(|| format!("writing {}", path.display()))?;
+        destination
+            .sync_all()
+            .with_context(|| format!("flushing {}", path.display()))?;
+        drop(destination);
+        crate::mutation_workspace::require_direct_file(
+            &directory,
+            &path,
+            &format!("private QEMU {label}"),
+        )?;
+        ensure!(
+            crate::mutation_workspace::canonical_existing_real_directory(
+                &directory,
+                "QEMU private run directory",
+            )? == directory,
+            "QEMU private run directory changed while writing {label}"
+        );
+        Ok(())
+    })();
+    crate::mutation_workspace::finish_staged_operation(
+        &directory,
+        &path,
+        &format!("private QEMU {label}"),
+        written,
+    )?;
+    Ok(path)
 }
 
 fn acpi_file_argument(path: &Path) -> OsString {
     let file = path
         .file_name()
-        .expect("a reserved QEMU DMA coverage path has a file name")
+        .expect("a reserved QEMU ACPI table path has a file name")
         .to_string_lossy()
         .replace(',', ",,");
     OsString::from(format!("file={file}"))
@@ -500,7 +548,10 @@ fn acpi_file_argument(path: &Path) -> OsString {
 
 impl Drop for RunDmaCoverage {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_file(&self.handoff);
     }
 }
 
@@ -1901,7 +1952,7 @@ fn observe_selftest_run(
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let coverage = RunDmaCoverage::create(paths.target_dir())?;
+    let coverage = RunDmaCoverage::create(paths.target_dir(), Remapping::Present)?;
     let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the self-test kernel");
@@ -2240,7 +2291,7 @@ fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let coverage = RunDmaCoverage::create(paths.target_dir())?;
+    let coverage = RunDmaCoverage::create(paths.target_dir(), Remapping::Present)?;
     let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the shipped kernel");
@@ -2371,8 +2422,10 @@ const DEGRADED_CPU: [&str; 2] = [
 const NO_X2APIC_DIAGNOSIS: &str = "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off";
 const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC_DIAGNOSIS);
 
-/// The forced configuration-port refusal in the degraded image.
-const NO_PCI_MARKER: &str = "pci: the configuration ports are already claimed; no bus";
+/// The entry boundary must stop before memory initialization when even one
+/// requester cannot be fenced (D-390).
+pub const NO_PCI_HANDOFF_PANIC: &str =
+    "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable";
 
 /// The hardware-free namespace witness targeted by the PW-207 mutation.
 pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
@@ -2394,7 +2447,6 @@ pub const DEGRADED_USER_MARKER: &str =
 const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
     NO_X2APIC_RECORD,
-    RequiredLogRecord::warning(NO_PCI_MARKER),
     RequiredLogRecord::info(DEGRADED_FILESYSTEM_MARKER),
     RequiredLogRecord::info(DEGRADED_STORAGE_MARKER),
     RequiredLogRecord::info(DEGRADED_CONSOLE_MARKER),
@@ -2432,6 +2484,13 @@ const NO_PCI_PROFILE: DegradedProfile = DegradedProfile {
     announcement: "booting a kernel with no PCI configuration or x2apic",
     cpu: Some(&DEGRADED_CPU),
     remapping: Remapping::Present,
+    required: &[],
+};
+
+const NO_X2APIC_PROFILE: DegradedProfile = DegradedProfile {
+    announcement: "booting the shipped kernel with no x2apic",
+    cpu: Some(&DEGRADED_CPU),
+    remapping: Remapping::Present,
     required: DEGRADED_REQUIRED_MARKERS,
 };
 
@@ -2457,6 +2516,11 @@ pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result
     observe_profile(paths, image, settle, NO_PCI_PROFILE)
 }
 
+/// Boot the shipped image without x2APIC while keeping PCI fenceable.
+pub fn observe_no_x2apic(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
+    observe_profile(paths, image, settle, NO_X2APIC_PROFILE)
+}
+
 /// Boot the shipped image on a machine with no remapping unit and require
 /// storage to refuse every candidate rather than run unisolated (D-357).
 pub fn observe_unisolated(
@@ -2475,20 +2539,14 @@ fn observe_profile(
 ) -> Result<DegradedOutcome> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let coverage = (profile.remapping == Remapping::Present)
-        .then(|| RunDmaCoverage::create(paths.target_dir()))
-        .transpose()?;
+    let coverage = RunDmaCoverage::create(paths.target_dir(), profile.remapping)?;
 
     println!("[xtask] {}", profile.announcement);
 
     let mut child = Command::new(&installation.emulator)
         .current_dir(vars.directory())
         .args(machine_args(profile.remapping))
-        .args(
-            coverage
-                .as_ref()
-                .map_or_else(Vec::new, |table| table.arguments().into()),
-        )
+        .args(coverage.arguments())
         .args(profile.cpu.map_or(&[][..], |cpu| &cpu[..]))
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(drive_file(
@@ -3251,6 +3309,18 @@ mod tests {
     }
 
     #[test]
+    fn every_qemu_run_carries_the_exact_dma_handoff_authority() {
+        let table = crate::platform_acpi::dma_handoff_table();
+        let handoff = acpi_tables::DmaHandoff::new(&table)
+            .expect("the fixed QEMU handoff authority must parse");
+        assert_eq!(handoff.segment(), 0);
+        assert_eq!(
+            table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0
+        );
+    }
+
+    #[test]
     fn every_qemu_runner_pins_the_exact_tcg_profile() {
         let machine = machine_args(Remapping::Present);
         assert_eq!(
@@ -3304,35 +3374,45 @@ mod tests {
         );
 
         let source = include_str!("qemu.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .expect("QEMU test module")
+            .0;
         let command = ["Command::new", "(&installation.emulator)"].concat();
         let profile = [".args", "(machine_args("].concat();
-        let commands = source.matches(&command).count();
+        let commands = production.matches(&command).count();
         assert_ne!(commands, 0, "no QEMU process construction was found");
         assert_eq!(
-            source.matches(&profile).count(),
+            production.matches(&profile).count(),
             commands,
             "a QEMU process bypasses the shared machine profile"
         );
         let working_directory = [".current_dir", "(vars.directory())"].concat();
         assert_eq!(
-            source.matches(&working_directory).count(),
+            production.matches(&working_directory).count(),
             commands,
             "a QEMU process can resolve the cwd-relative coverage table elsewhere"
         );
         let direct_coverage = [".args", "(coverage.arguments())"].concat();
-        let conditional_coverage = [
-            ".map_or_else",
-            "(Vec::new, |table| table.arguments().into())",
-        ]
-        .concat();
         assert_eq!(
-            source.matches(&direct_coverage).count()
-                + source.matches(&conditional_coverage).count(),
+            production.matches(&direct_coverage).count(),
             commands,
-            "a QEMU process bypasses the explicit DMA coverage attestation"
+            "a QEMU process bypasses the explicit platform ACPI authorities"
         );
-        let conditional_owner = ["profile.remapping", " == Remapping::Present"].concat();
-        assert_eq!(source.matches(&conditional_owner).count(), 1);
+        assert_eq!(
+            production.matches("RunDmaCoverage::create").count(),
+            commands,
+            "a QEMU process has no per-run handoff-table owner"
+        );
+        let owner = production
+            .split_once("impl RunDmaCoverage")
+            .expect("platform ACPI owner")
+            .1
+            .split_once("fn write_run_acpi_table")
+            .expect("platform ACPI owner end")
+            .0;
+        assert!(owner.contains("crate::platform_acpi::dma_handoff_table()"));
+        assert!(owner.contains("remapping == Remapping::Present"));
     }
 
     #[test]
@@ -3369,6 +3449,14 @@ mod tests {
             vec!["-readconfig", "hostile.cfg"],
             vec!["-readconfig=hostile.cfg"],
             vec!["--readconfig", "hostile.cfg"],
+            vec!["-device", "vfio-pci,host=01:00.0"],
+            vec!["-device=vfio-pci,host=01:00.0"],
+            vec!["-netdev", "user,id=changed"],
+            vec!["-incoming", "defer"],
+            vec!["-drive", "file=hostile.img"],
+            vec!["-bios", "hostile.bin"],
+            vec!["-set", "drive.disk.snapshot=off"],
+            vec!["--set", "device.nvme0.drive=hostile"],
         ] {
             let conflict: Vec<_> = conflict.into_iter().map(OsString::from).collect();
             let error = validate_run_arguments(&conflict).unwrap_err();
@@ -3378,12 +3466,10 @@ mod tests {
         let diagnostic: Vec<_> = [
             "-d",
             "int",
+            "-D=qemu-debug.log",
             "-display",
             "gtk",
-            "-set",
-            "drive.disk.snapshot=on",
-            "--set",
-            "chardev.serial.logfile=serial.log",
+            "--display=none",
         ]
         .into_iter()
         .map(OsString::from)
@@ -3431,9 +3517,6 @@ mod tests {
                 RequiredLogRecord::warning(
                     "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off"
                 ),
-                RequiredLogRecord::warning(
-                    "pci: the configuration ports are already claimed; no bus"
-                ),
                 RequiredLogRecord::info("tmpfs: 1 file(s) and 1 directory(ies) at the root"),
                 RequiredLogRecord::info("devfs: storage is a block device"),
                 RequiredLogRecord::info("devfs: console is a character device"),
@@ -3443,6 +3526,10 @@ mod tests {
                     "user: no program: maskable interrupts are not admitted; ring 3 is closed"
                 ),
             ]
+        );
+        assert_eq!(
+            NO_PCI_HANDOFF_PANIC,
+            "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable"
         );
     }
 

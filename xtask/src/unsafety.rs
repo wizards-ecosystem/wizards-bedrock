@@ -146,7 +146,7 @@ mod tests {
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "2bd0f8afe4ce429f77659607e83e0f2396f0916c44904dfdcab36187032d76ba",
+            "4123eb6ecca850109de086c43dfd014f4301d2ab3f2d598f4dbb6f16716e4ee5",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
@@ -236,7 +236,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             17,
             3,
-            "48bdfe869af5f379789102d5ebd3e211e1bf40f4d65764afbdb11200feec8b4d",
+            "2892232c249bcc53e7e930a06385a21fc212cce605e98a83d61fdcd54793d16a",
         ),
         (
             "wost/src/mmio.rs",

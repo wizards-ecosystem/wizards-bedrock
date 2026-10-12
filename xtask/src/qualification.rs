@@ -46,6 +46,7 @@ const VMWARE_NAMESPACE: &str = "wizard-nvm-flat.img";
 const VMWARE_VMDK: &str = "bedrock.vmdk";
 const VMWARE_NAMESPACE_VMDK: &str = "wizard-nvm.vmdk";
 const VMWARE_VMX: &str = "bedrock.vmx";
+const VMWARE_HANDOFF: &str = crate::platform_acpi::DMA_HANDOFF_FILE;
 const VMWARE_TRANSCRIPT: &str = "serial.log";
 const VMWARE_OBSERVER: &str = "vmrun-list.txt";
 pub(crate) const VMWARE_GENERATION_RECEIPT: &str = "generation.receipt";
@@ -56,7 +57,7 @@ const VMRUN_LIST_HEADER: &str = "Total running VMs: ";
 const VMRUN_LIST_ARGS: &[&str] = &["-T", "ws", "list"];
 const SERIAL_PREFIX: &str = "serial-";
 const SERIAL_SUFFIX: &str = ".log";
-const INITIAL_VMWARE_FILES: usize = 7;
+const INITIAL_VMWARE_FILES: usize = 8;
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const MAX_ADVISORY_POLICY_BYTES: u64 = 4096;
 const MAX_ADVISORY_TRANSCRIPT_BYTES: u64 = crate::bounded_process::MAX_CAPTURE_BYTES as u64 + 4096;
@@ -239,6 +240,7 @@ pub(crate) struct VmwareArtifacts<'a> {
     pub(crate) vmdk: &'a Path,
     pub(crate) namespace_vmdk: &'a Path,
     pub(crate) vmx: &'a Path,
+    pub(crate) handoff: &'a Path,
     pub(crate) transcript: &'a Path,
     pub(crate) receipt: &'a Path,
 }
@@ -310,6 +312,10 @@ impl CapturedVmwareGeneration {
             VMWARE_VMX,
             verified_generation_vmx_digest(kind, generation, &self.file(VMWARE_VMX)?.captured)?,
         );
+        digests.insert(
+            VMWARE_HANDOFF,
+            verified_dma_handoff_digest(&self.file(VMWARE_HANDOFF)?.captured)?,
+        );
         ensure!(
             receipt == generation_record_from_digests(source, kind, generation, &digests)?,
             "captured VMware receipt and machine artifacts are not one generation"
@@ -355,7 +361,7 @@ impl CapturedVmwareGeneration {
 
 fn vmware_artifact_sources<'a>(
     artifacts: &VmwareArtifacts<'a>,
-) -> [(&'static str, &'static str, &'a Path); 7] {
+) -> [(&'static str, &'static str, &'a Path); 8] {
     [
         (
             "artifact.generation",
@@ -371,6 +377,7 @@ fn vmware_artifact_sources<'a>(
             artifacts.namespace_vmdk,
         ),
         ("artifact.vmx", VMWARE_VMX, artifacts.vmx),
+        ("artifact.handoff", VMWARE_HANDOFF, artifacts.handoff),
         (
             "artifact.transcript",
             VMWARE_TRANSCRIPT,
@@ -650,6 +657,10 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
         relative: "qualification/vmware-self-test/bedrock.vmx",
     },
     BundleFile {
+        prefix: "qualification.vmware-self-test.handoff",
+        relative: "qualification/vmware-self-test/dma-handoff.bin",
+    },
+    BundleFile {
         prefix: "qualification.vmware-self-test.transcript",
         relative: "qualification/vmware-self-test/serial.log",
     },
@@ -684,6 +695,10 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     BundleFile {
         prefix: "qualification.vmware-shipped.vmx",
         relative: "qualification/vmware-shipped/bedrock.vmx",
+    },
+    BundleFile {
+        prefix: "qualification.vmware-shipped.handoff",
+        relative: "qualification/vmware-shipped/dma-handoff.bin",
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.transcript",
@@ -1534,6 +1549,7 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
             ("artifact.vmdk", VMWARE_VMDK),
             ("artifact.namespace-vmdk", VMWARE_NAMESPACE_VMDK),
             ("artifact.vmx", VMWARE_VMX),
+            ("artifact.handoff", VMWARE_HANDOFF),
             ("artifact.transcript", VMWARE_TRANSCRIPT),
         ],
     };
@@ -1674,6 +1690,7 @@ fn require_vmware_layout(
         (artifacts.vmdk, VMWARE_VMDK),
         (artifacts.namespace_vmdk, VMWARE_NAMESPACE_VMDK),
         (artifacts.vmx, VMWARE_VMX),
+        (artifacts.handoff, VMWARE_HANDOFF),
     ] {
         ensure!(
             path.parent() == Some(directory)
@@ -1774,6 +1791,7 @@ fn generation_record(
         VMWARE_VMDK,
         VMWARE_NAMESPACE_VMDK,
         VMWARE_VMX,
+        VMWARE_HANDOFF,
     ] {
         let path = directory.join(name);
         require_regular_file(&path, "VMware generation artifact")?;
@@ -1782,6 +1800,10 @@ fn generation_record(
     digests.insert(
         VMWARE_VMX,
         verified_generation_vmx_digest(kind, generation, &directory.join(VMWARE_VMX))?,
+    );
+    digests.insert(
+        VMWARE_HANDOFF,
+        verified_dma_handoff_digest(&directory.join(VMWARE_HANDOFF))?,
     );
     generation_record_from_digests(source, kind, generation, &digests)
 }
@@ -1792,6 +1814,21 @@ fn verified_generation_vmx_digest(kind: Kind, generation: &str, path: &Path) -> 
     let runtime = read_bounded_file(path, MAX_VMWARE_TEXT_BYTES, "runtime VMX")?;
     crate::vmware::verify_runtime_vmx(generated.as_bytes(), &runtime)?;
     Ok(digest_bytes(generated.as_bytes()))
+}
+
+fn verified_dma_handoff_digest(path: &Path) -> Result<Digest> {
+    let bytes = read_bounded_file(
+        path,
+        acpi_tables::DmaHandoff::LEN as u64,
+        "DMA handoff authority",
+    )?;
+    let expected = crate::platform_acpi::dma_handoff_table();
+    ensure!(
+        bytes == expected,
+        "VMware DMA handoff authority differs from the source-defined contract"
+    );
+    acpi_tables::DmaHandoff::new(&bytes).context("parsing VMware DMA handoff authority")?;
+    Ok(digest_bytes(&bytes))
 }
 
 fn generation_record_from_digests(
@@ -1813,6 +1850,7 @@ fn generation_record_from_digests(
         ("artifact.vmdk", VMWARE_VMDK),
         ("artifact.namespace-vmdk", VMWARE_NAMESPACE_VMDK),
         ("artifact.vmx", VMWARE_VMX),
+        ("artifact.handoff", VMWARE_HANDOFF),
     ] {
         let digest = digests
             .get(name)
@@ -1857,6 +1895,7 @@ fn validate_generation_record(record: &Record, kind: Kind) -> Result<()> {
         "artifact.vmdk",
         "artifact.namespace-vmdk",
         "artifact.vmx",
+        "artifact.handoff",
     ] {
         add_artifact_keys(&mut expected, prefix);
     }
@@ -1954,6 +1993,7 @@ fn require_generation_inventory(
         VMWARE_VMDK.to_string(),
         VMWARE_NAMESPACE_VMDK.to_string(),
         VMWARE_VMX.to_string(),
+        VMWARE_HANDOFF.to_string(),
         transcript.to_string(),
     ]);
     if temporary_receipt {
@@ -2522,6 +2562,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "artifact.vmdk",
                 "artifact.namespace-vmdk",
                 "artifact.vmx",
+                "artifact.handoff",
                 "artifact.transcript",
                 "artifact.observer",
             ] {
@@ -2800,6 +2841,11 @@ where
     let (maximum, exact, label) = match name {
         VMWARE_IMAGE => (image_bytes, true, "VMware boot image"),
         VMWARE_NAMESPACE => (namespace_bytes, true, "VMware storage namespace"),
+        VMWARE_HANDOFF => (
+            acpi_tables::DmaHandoff::LEN as u64,
+            true,
+            "VMware DMA handoff authority",
+        ),
         VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false, "VMware transcript"),
         VMWARE_GENERATION_RECEIPT
         | VMWARE_VMDK
@@ -2922,6 +2968,7 @@ fn artifact_size_policy(kind: Kind, name: &str) -> Result<(u64, bool)> {
         Kind::VmwareSelfTest | Kind::VmwareShipped => match name {
             VMWARE_IMAGE => (boot_image_bytes(), true),
             VMWARE_NAMESPACE => (namespace_bytes(), true),
+            VMWARE_HANDOFF => (acpi_tables::DmaHandoff::LEN as u64, true),
             VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false),
             VMWARE_GENERATION_RECEIPT
             | VMWARE_VMDK
@@ -4081,6 +4128,7 @@ mod tests {
                     ("artifact.vmdk", VMWARE_VMDK),
                     ("artifact.namespace-vmdk", VMWARE_NAMESPACE_VMDK),
                     ("artifact.vmx", VMWARE_VMX),
+                    ("artifact.handoff", VMWARE_HANDOFF),
                     ("artifact.transcript", VMWARE_TRANSCRIPT),
                     ("artifact.observer", VMWARE_OBSERVER),
                 ] {
@@ -5359,6 +5407,7 @@ mod tests {
                 ("vmdk", "bedrock.vmdk", 1_048_576, false),
                 ("namespace-vmdk", "wizard-nvm.vmdk", 1_048_576, false),
                 ("vmx", "bedrock.vmx", 1_048_576, false),
+                ("handoff", "dma-handoff.bin", 48, true),
                 ("transcript", "serial.log", 16_777_216, false),
                 ("observer", "vmrun-list.txt", 1_048_576, false),
             ] {
@@ -5825,6 +5874,11 @@ mod tests {
         ] {
             std::fs::write(directory.join(name), name).unwrap();
         }
+        std::fs::write(
+            directory.join(VMWARE_HANDOFF),
+            crate::platform_acpi::dma_handoff_table(),
+        )
+        .unwrap();
         let generation = "1".repeat(64);
         std::fs::write(
             directory.join(VMWARE_VMX),
@@ -5885,6 +5939,30 @@ mod tests {
     }
 
     #[test]
+    fn vmware_accepts_only_the_source_defined_dma_handoff_authority() {
+        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "wizard-vmware-handoff-{}-{nonce}.bin",
+            std::process::id()
+        ));
+        let mut foreign = crate::platform_acpi::dma_handoff_table();
+        foreign[10] ^= 1;
+        foreign[9] = 0;
+        foreign[9] = 0u8.wrapping_sub(
+            foreign
+                .iter()
+                .fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+        );
+        std::fs::write(&path, foreign).unwrap();
+        assert!(
+            acpi_tables::DmaHandoff::new(&foreign).is_ok(),
+            "the near miss must remain structurally valid ACPI"
+        );
+        assert!(verified_dma_handoff_digest(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn one_immutable_vmware_generation_is_captured_before_publication() {
         fn write_generation(
             directory: &Path,
@@ -5902,6 +5980,11 @@ mod tests {
             ] {
                 std::fs::write(directory.join(name), format!("{tag}:{name}")).unwrap();
             }
+            std::fs::write(
+                directory.join(VMWARE_HANDOFF),
+                crate::platform_acpi::dma_handoff_table(),
+            )
+            .unwrap();
             std::fs::write(
                 directory.join(VMWARE_VMX),
                 crate::vmware::generation_vmx(
@@ -5934,6 +6017,7 @@ mod tests {
                     vmdk: &directory.join(VMWARE_VMDK),
                     namespace_vmdk: &directory.join(VMWARE_NAMESPACE_VMDK),
                     vmx: &directory.join(VMWARE_VMX),
+                    handoff: &directory.join(VMWARE_HANDOFF),
                     transcript,
                     receipt: &directory.join(VMWARE_GENERATION_RECEIPT),
                 },

@@ -148,6 +148,9 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     )?;
     write_new(&vm_dir.join(NVME_VMDK_NAME), nvme_vmdk.as_bytes())?;
 
+    let handoff = vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE);
+    write_new(&handoff, &crate::platform_acpi::dma_handoff_table())?;
+
     let serial_name = qualification::fresh_vmware_transcript_name()?;
     let vmx = generation_vmx(kernel, &serial_name)?;
     let vmx_path = vm_dir.join(VMX_NAME);
@@ -163,6 +166,7 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
             vmdk: &vm_dir.join(VMDK_NAME),
             namespace_vmdk: &vm_dir.join(NVME_VMDK_NAME),
             vmx: &vmx_path,
+            handoff: &handoff,
             transcript: &serial_log,
             receipt: &receipt,
         },
@@ -228,6 +232,10 @@ pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
             ("DISPLAY_NAME", display_name(kernel)),
             ("VMDK_NAME", VMDK_NAME.to_string()),
             ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
+            (
+                "DMA_HANDOFF_FILE",
+                crate::platform_acpi::DMA_HANDOFF_FILE.to_string(),
+            ),
             ("SERIAL_LOG", serial.to_string()),
         ],
     )
@@ -252,6 +260,7 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
         vmdk: &vm_dir.join(VMDK_NAME),
         namespace_vmdk: &vm_dir.join(NVME_VMDK_NAME),
         vmx: &vm_dir.join(VMX_NAME),
+        handoff: &vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE),
         transcript: &transcript,
         receipt: &receipt,
     })?;
@@ -1519,6 +1528,10 @@ mod tests {
                 ("DISPLAY_NAME", DISPLAY_NAME.to_string()),
                 ("VMDK_NAME", VMDK_NAME.to_string()),
                 ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
+                (
+                    "DMA_HANDOFF_FILE",
+                    crate::platform_acpi::DMA_HANDOFF_FILE.to_string(),
+                ),
                 ("SERIAL_LOG", serial.clone()),
             ],
         )
@@ -1527,6 +1540,7 @@ mod tests {
         assert!(vmx.contains(r#"firmware = "efi""#));
         // Storage fails closed on a machine with no remapping unit (D-357).
         assert!(vmx.contains(r#"vvtd.enable = "TRUE""#));
+        assert!(vmx.contains(r#"acpi.addtable.filename = "dma-handoff.bin""#));
         assert!(vmx.contains(&format!(r#"serial0.fileName = "{serial}""#)));
         assert!(vmx.contains(r#"sata0:0.fileName = "bedrock.vmdk""#));
         // A namespace-less candidate before the usable controller makes the

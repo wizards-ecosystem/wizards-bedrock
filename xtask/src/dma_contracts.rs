@@ -279,6 +279,106 @@ fn authority_alias_count(syntax: &syn::File, names: &[&str]) -> usize {
     aliases.count
 }
 
+#[test]
+fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
+    let main = source("kernel/src/main.rs");
+    let boot = main
+        .split_once("fn kernel_main(boot: BootInfo) -> ! {")
+        .expect("kernel entry")
+        .1
+        .split_once("struct Handoff")
+        .expect("kernel entry end")
+        .0;
+    let proof = boot
+        .find("let early_dma = iommu::secure_handoff(&boot);")
+        .expect("entry DMA proof");
+    let console = boot
+        .find("let serial = dev::init_uart();")
+        .expect("UART setup");
+    let memory = boot
+        .find("mem::init(boot.memory_map, boot.direct_map, early_dma);")
+        .expect("proof-consuming memory initialization");
+    assert!(proof < console && console < memory);
+
+    let iommu = source("kernel/src/iommu.rs");
+    let boundary = iommu
+        .split_once("pub(crate) fn secure_handoff")
+        .expect("secure handoff")
+        .1
+        .split_once("static DMAR")
+        .expect("secure handoff end")
+        .0;
+    let platform = boundary
+        .find("cpu::dma_handoff_platform_is_authenticated()")
+        .expect("requester-inaccessible platform evidence");
+    assert!(boundary.contains(
+        "if !cpu::dma_handoff_platform_is_authenticated() {\n        return Err(EarlyDmaError::UnauthenticatedPlatform);"
+    ));
+    let table = boundary
+        .find("acpi::find_unique_early")
+        .expect("unique early handoff table");
+    let ports = boundary.find("platform_pci::init()").expect("port claim");
+    let fence = boundary
+        .find("platform_pci::fence_dma_handoff()")
+        .expect("exhaustive requester fence");
+    let ordering = boundary
+        .find("compiler_fence(Ordering::SeqCst)")
+        .expect("compiler ordering after requester fence");
+    assert!(platform < table && table < ports && ports < fence && fence < ordering);
+    let iommu_syntax = parse("kernel/src/iommu.rs");
+    let token = iommu_syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "EarlyDmaBoundary" => Some(item),
+            _ => None,
+        })
+        .expect("entry DMA proof token");
+    assert!(matches!(token.vis, Visibility::Restricted(_)));
+    assert!(exact_derives(&token.attrs, &["Debug"]));
+    assert!(!iommu.contains("impl Clone for EarlyDmaBoundary"));
+    assert!(!iommu.contains("impl Copy for EarlyDmaBoundary"));
+
+    let acpi = source("kernel/src/acpi.rs");
+    let unique = acpi
+        .split_once("pub(crate) fn find_unique_early")
+        .expect("allocation-free unique table lookup")
+        .1
+        .split_once("pub(crate) type Interrupts")
+        .expect("allocation-free unique table lookup end")
+        .0;
+    assert!(unique.contains("let mut root_table = [0u8; EARLY_ROOT_BYTES];"));
+    assert!(unique.contains("return Err(EarlyTableError::RootEntry);"));
+    assert!(unique.contains("if found.replace(table).is_some()"));
+    assert!(unique.contains("return Err(EarlyTableError::Duplicate);"));
+
+    let memory = source("kernel/src/mem.rs");
+    let init = memory
+        .split_once("pub(crate) fn init(")
+        .expect("memory initialization")
+        .1
+        .split_once(") {")
+        .expect("memory initialization signature")
+        .0;
+    assert!(init.contains("_dma: EarlyDmaBoundary"));
+
+    let pci = source("libs/pci-config/src/lib.rs");
+    let fence = pci
+        .split_once("pub fn fence_dma_handoff(")
+        .expect("pure entry fence")
+        .1
+        .split_once("pub struct CommandState")
+        .expect("pure entry fence end")
+        .0;
+    assert!(fence.contains("for bus in 0..=u8::MAX"));
+    assert!(fence.contains("for device in 0..DEVICES"));
+    assert!(fence.contains("for function in 0..FUNCTIONS"));
+    assert_eq!(fence.matches("HandoffAccess::ReadIdentity").count(), 4);
+    assert!(fence.contains("let expected = before & !command::BUS_MASTER;"));
+    assert!(fence.contains("if found != expected"));
+    assert!(fence.contains("if current != identity"));
+}
+
 #[derive(Default)]
 struct StopUses {
     constructors: usize,

@@ -137,13 +137,28 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
 /// refuse rather than run unisolated (D-357).
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     match observe_degraded_boot(paths, profile)? {
-        qemu::DegradedOutcome::Settled => {
+        qemu::DegradedOutcome::Panicked {
+            transcript,
+            no_x2apic_diagnosed,
+        } if transcript.contains(qemu::NO_PCI_HANDOFF_PANIC) && !no_x2apic_diagnosed => {
             println!(
-                "[xtask] degraded kernel keeps optional protection fallback diagnostic-only and settles"
+                "[xtask] degraded kernel refuses an unprovable DMA handoff before memory initialization"
             );
         }
+        qemu::DegradedOutcome::Panicked { transcript, .. } => anyhow::bail!(
+            "the degraded kernel reported the wrong terminal handoff refusal: {transcript}"
+        ),
+        qemu::DegradedOutcome::Settled => anyhow::bail!(
+            "the degraded kernel settled without reporting {:?}",
+            qemu::NO_PCI_HANDOFF_PANIC
+        ),
+    }
+    match observe_no_x2apic_boot(paths, profile)? {
+        qemu::DegradedOutcome::Settled => {
+            println!("[xtask] optional CPU protection fallback remains diagnostic-only");
+        }
         qemu::DegradedOutcome::Panicked { transcript, .. } => {
-            anyhow::bail!("the degraded kernel panicked during the settle window: {transcript}")
+            anyhow::bail!("the no-x2APIC kernel panicked during the settle window: {transcript}")
         }
     }
     match observe_unisolated_boot(paths, profile)? {
@@ -173,6 +188,15 @@ pub(crate) fn observe_unisolated_boot(
 ) -> Result<qemu::DegradedOutcome> {
     let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
     qemu::observe_unisolated(paths, image.path(), BOOT_SETTLE)
+}
+
+/// Boot the shipped kernel without x2APIC but with the DMA handoff intact.
+pub(crate) fn observe_no_x2apic_boot(
+    paths: &Paths,
+    profile: Profile,
+) -> Result<qemu::DegradedOutcome> {
+    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
+    qemu::observe_no_x2apic(paths, image.path(), BOOT_SETTLE)
 }
 
 /// Seconds of running after the kernel says it has settled, so one that dies

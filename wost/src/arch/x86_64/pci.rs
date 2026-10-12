@@ -9,8 +9,8 @@ use pci_config::{
     Address, Bar, BarAuthority, BarAuthorityError, BarAuthorityFailure, BarEnableAccess,
     BarEnableError as ConfigBarEnableError, CommandAccess, CommandState, EnableError,
     EnableFailure, FunctionAuthority, FunctionClaimError, FunctionClaims, FunctionReleaseError,
-    HeaderType, ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure,
-    StagedProbe, Window, header,
+    HandoffAccess, HandoffFenceError, HandoffFenceReport, HeaderType, ProbeAccess, ProbeError,
+    ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe, Window, header,
 };
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
@@ -71,6 +71,66 @@ pub fn init() -> bool {
 /// Whether configuration space can be reached at all.
 pub fn is_available() -> bool {
     CONFIGURATION.lock_leaf().ports.is_some()
+}
+
+/// Why the entry-time exhaustive requester fence could not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DmaHandoffFenceError {
+    /// CF8/CFC could not be reserved.
+    Unavailable,
+    /// A function authority already exists, so a raw segment transition is unsafe.
+    Busy,
+    /// One exhaustive configuration transaction was uncertain.
+    Fence(HandoffFenceError),
+}
+
+impl core::fmt::Display for DmaHandoffFenceError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unavailable => {
+                core::fmt::Write::write_str(formatter, "PCI configuration is unavailable")
+            }
+            Self::Busy => core::fmt::Write::write_str(
+                formatter,
+                "PCI function authority exists before the handoff fence",
+            ),
+            Self::Fence(reason) => core::fmt::Display::fmt(reason, formatter),
+        }
+    }
+}
+
+impl core::error::Error for DmaHandoffFenceError {}
+
+/// Permanently clear and verify BME on every present segment-zero function.
+///
+/// This one-time transition is valid only before any function authority has
+/// been minted. Pure enumeration, ordering and readback policy live in
+/// `pci-config`; this adapter owns only the serialized port instructions.
+///
+/// # Errors
+///
+/// If CF8/CFC is unavailable, a function is already owned, or any exhaustive
+/// configuration transaction is uncertain.
+pub fn fence_dma_handoff() -> Result<HandoffFenceReport, DmaHandoffFenceError> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    if configuration.functions.len() != 0 {
+        return Err(DmaHandoffFenceError::Busy);
+    }
+    let Some((address, data)) = configuration.ports.as_mut() else {
+        return Err(DmaHandoffFenceError::Unavailable);
+    };
+    pci_config::fence_dma_handoff(|at, operation| {
+        Port::write(address, at.bits());
+        match operation {
+            HandoffAccess::ReadIdentity | HandoffAccess::ReadCommand => Some(Port::read(data)),
+            HandoffAccess::WriteCommand(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
+    .map_err(DmaHandoffFenceError::Fence)
 }
 
 /// Read the dword at `at`.

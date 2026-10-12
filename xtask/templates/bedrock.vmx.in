@@ -7,6 +7,9 @@ firmware = "efi"
 # Storage fails closed without a DMA-remapping unit (D-357): this is VMware's
 # virtual VT-d unit, as `-device intel-iommu` is QEMU's (D-358).
 vvtd.enable = "TRUE"
+# D-390: VMware's CPU-resident hypervisor identity authenticates this structured
+# contract that every requester stayed quiescent until the entry-time fence.
+acpi.addtable.filename = "{{DMA_HANDOFF_FILE}}"
 memsize = "512"
 numvcpus = "2"
 sata0.present = "TRUE"

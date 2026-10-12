@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1822;
+pub const NEXT_MUTATION_ID: u16 = 1840;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -6435,9 +6435,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {\n    assert!(\n        wost::arch::current::port::pci_configuration().is_some(),\n        \"the degraded boot could not reserve the PCI configuration ports\"\n    );\n}",
         replace: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {}",
         breaks: "the degraded image silently retains live PCI configuration ports",
-        reddens: Caught::BootMarker(
-            "pci: the configuration ports are already claimed; no bus",
-        ),
+        reddens: Caught::BootMarker(qemu::NO_PCI_HANDOFF_PANIC),
     },
     Mutation {
         id: 566,
@@ -6947,7 +6945,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a near-miss hypervisor identity is accepted as QEMU TCG",
         reddens: Caught::HostTest {
             package: "x86-cpuid",
-            name: "tests::only_the_exact_qemu_tcg_base_leaf_is_accepted",
+            name: "tests::only_exact_qualified_hypervisor_leaves_authenticate_dma_handoff",
         },
     },
     Mutation {
@@ -7030,8 +7028,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 622,
         file: "xtask/src/qemu.rs",
-        find: "                | \"-cpu\"",
-        replace: "",
+        find: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\") {",
+        replace: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\" | \"-cpu\") {",
         breaks: "interactive arguments can replace the qualified CPU",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7041,8 +7039,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 623,
         file: "xtask/src/qemu.rs",
-        find: "                | \"-global\"",
-        replace: "",
+        find: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\") {",
+        replace: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\" | \"-global\") {",
         breaks: "interactive arguments can override a qualified QOM property",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7052,8 +7050,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 624,
         file: "xtask/src/qemu.rs",
-        find: "                | \"-readconfig\"",
-        replace: "",
+        find: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\") {",
+        replace: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\" | \"-readconfig\") {",
         breaks: "interactive arguments can import an unqualified QEMU configuration",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -11794,7 +11792,7 @@ fn mint_stopped<'controller>(
         breaks: "the copied API-audit lock graph may be rewritten during compilation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "api::tests::compiler_graphs_are_offline_and_lockfile_frozen",
+            name: "api::tests::compiler_graphs_are_offline_lockfile_frozen_and_use_compact_structured_diagnostics",
         },
     },
     Mutation {
@@ -11805,7 +11803,7 @@ fn mint_stopped<'controller>(
         breaks: "a host compiler graph relies on Cargo's ambient target instead of its pinned explicit target",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "api::tests::compiler_graphs_are_offline_and_lockfile_frozen",
+            name: "api::tests::compiler_graphs_are_offline_lockfile_frozen_and_use_compact_structured_diagnostics",
         },
     },
     Mutation {
@@ -14047,9 +14045,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1196,
         file: "xtask/src/qemu.rs",
-        find: "    RequiredLogRecord::warning(NO_PCI_MARKER),",
-        replace: "    RequiredLogRecord::info(NO_PCI_MARKER),",
-        breaks: "the degraded no-PCI diagnosis is enrolled at the wrong severity",
+        find: "    \"DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable\";",
+        replace: "    \"DMA-safe boot handoff refused: PCI configuration is unavailable\";",
+        breaks: "the terminal no-PCI boundary loses the exact handoff-fence diagnosis",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qemu::tests::automated_boots_require_the_exact_producer_records",
@@ -20267,8 +20265,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1810,
         file: "xtask/src/qemu.rs",
-        find: "                | \"-acpitable\"\n                | \"--acpitable\"\n",
-        replace: "",
+        find: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\") {",
+        replace: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\" | \"-acpitable\") {",
         breaks: "interactive arguments can append a competing DMA coverage attestation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20289,7 +20287,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1812,
         file: "xtask/src/qemu.rs",
-        find: "    let file = path\n        .file_name()\n        .expect(\"a reserved QEMU DMA coverage path has a file name\")\n        .to_string_lossy()",
+        find: "    let file = path\n        .file_name()\n        .expect(\"a reserved QEMU ACPI table path has a file name\")\n        .to_string_lossy()",
         replace: "    let file = path.to_string_lossy()",
         breaks: "the Windows QEMU ACPI parser receives an absolute drive path as a colon-separated file list",
         reddens: Caught::HostTest {
@@ -20392,6 +20390,204 @@ fn mint_stopped<'controller>(
         replace: "    /// The selected function is governed only by catch-all coverage.\n    SelectedUsesCatchAll,\n    /// The unit can govern functions not named by an endpoint scope.\n    IncludesAllPci,",
         breaks: "the retired catch-all selection refusal returns as dead public API",
         reddens: Caught::ApiAudit("variant RequesterInventoryError::SelectedUsesCatchAll"),
+    },
+    Mutation {
+        id: 1822,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if flags != Self::REQUIRED_FLAGS {",
+        replace: "        if flags & Self::REQUIRED_FLAGS == 0 {",
+        breaks: "an incomplete DMA handoff contract is accepted when any one platform flag remains",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::dma_handoff_requires_every_exact_platform_property",
+        },
+    },
+    Mutation {
+        id: 1823,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    for bus in 0..=u8::MAX {",
+        replace: "    for bus in 0..u8::MAX {",
+        breaks: "the entry fence omits every requester on the final PCI bus",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::the_handoff_fence_exhausts_the_segment_and_preserves_command_bits",
+        },
+    },
+    Mutation {
+        id: 1824,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                let expected = before & !command::BUS_MASTER;",
+        replace: "                let expected = before;",
+        breaks: "the entry fence inventories inherited bus masters without disabling them",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::the_handoff_fence_exhausts_the_segment_and_preserves_command_bits",
+        },
+    },
+    Mutation {
+        id: 1825,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                if found != expected {",
+        replace: "                if false && found != expected {",
+        breaks: "an ignored bus-master clear is treated as a completed entry fence",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_handoff_fence_uncertainty_refuses_the_boundary",
+        },
+    },
+    Mutation {
+        id: 1826,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                if current != identity {",
+        replace: "                if false && current != identity {",
+        breaks: "a requester identity change during the entry fence is accepted as static topology",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_handoff_fence_uncertainty_refuses_the_boundary",
+        },
+    },
+    Mutation {
+        id: 1827,
+        file: "kernel/src/mem.rs",
+        find: "    _dma: EarlyDmaBoundary,",
+        replace: "    _dma: (),",
+        breaks: "memory initialization no longer consumes the entry DMA proof",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1828,
+        file: "kernel/src/iommu.rs",
+        find: "#[derive(Debug)]\npub(crate) struct EarlyDmaBoundary {",
+        replace: "#[derive(Debug, Clone)]\npub(crate) struct EarlyDmaBoundary {",
+        breaks: "the one-shot entry DMA proof can be duplicated",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1829,
+        file: "kernel/src/acpi.rs",
+        find: "        if found.replace(table).is_some() {",
+        replace: "        if false && found.replace(table).is_some() {",
+        breaks: "the entry boundary accepts the first of multiple DMA handoff authorities",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1830,
+        file: "xtask/src/qemu.rs",
+        find: "        .current_dir(vars.directory())\n        .args(machine_args(Remapping::Present))\n        .args(coverage.arguments())\n        .args([\"-serial\", \"stdio\"])",
+        replace: "        .current_dir(vars.directory())\n        .args(machine_args(Remapping::Present))\n        .args([\"-serial\", \"stdio\"])",
+        breaks: "the interactive QEMU runner boots without the DMA handoff authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::every_qemu_runner_pins_the_exact_tcg_profile",
+        },
+    },
+    Mutation {
+        id: 1831,
+        file: "xtask/templates/bedrock.vmx.in",
+        find: "acpi.addtable.filename = \"{{DMA_HANDOFF_FILE}}\"",
+        replace: "acpi.addtable.filename = \"missing.bin\"",
+        breaks: "the VMware machine does not load its generated DMA handoff authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmx_boots_efi_and_logs_serial_to_a_file",
+        },
+    },
+    Mutation {
+        id: 1832,
+        file: "xtask/src/qualification.rs",
+        find: "        bytes == expected,\n        \"VMware DMA handoff authority differs from the source-defined contract\"",
+        replace: "        bytes.len() == expected.len(),\n        \"VMware DMA handoff authority differs from the source-defined contract\"",
+        breaks: "VMware qualification accepts a foreign same-length DMA handoff authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::vmware_accepts_only_the_source_defined_dma_handoff_authority",
+        },
+    },
+    Mutation {
+        id: 1833,
+        file: "xtask/src/platform_acpi.rs",
+        find: "    table[0..4].copy_from_slice(&Sdt::DMA_HANDOFF);",
+        replace: "    table[0..4].copy_from_slice(&Sdt::DMA_COVERAGE);",
+        breaks: "the shared platform table is generated under another ACPI signature",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "platform_acpi::tests::the_shared_dma_handoff_table_carries_the_complete_contract",
+        },
+    },
+    Mutation {
+        id: 1834,
+        file: "kernel/src/iommu.rs",
+        find: "    if !cpu::dma_handoff_platform_is_authenticated() {",
+        replace: "    if false && !cpu::dma_handoff_platform_is_authenticated() {",
+        breaks: "writable ACPI bytes authenticate their own DMA handoff without CPU-resident platform evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1835,
+        file: "kernel/src/acpi.rs",
+        find: "            return Err(EarlyTableError::RootEntry);",
+        replace: "            continue;",
+        breaks: "an unreadable ACPI root target can hide a competing DMA handoff authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1836,
+        file: "kernel/src/iommu.rs",
+        find: "    compiler_fence(Ordering::SeqCst);",
+        replace: "    let _ = Ordering::SeqCst;",
+        breaks: "LTO may move privileged memory mutation above nomem entry-fence port instructions",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1837,
+        file: "xtask/src/qemu.rs",
+        find: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\") {",
+        replace: "        if !matches!(option, \"-d\" | \"-D\" | \"-display\" | \"--display\" | \"-device\") {",
+        breaks: "a caller can add a DMA-capable QEMU device under the fixed handoff attestation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::interactive_arguments_cannot_replace_the_tcg_profile",
+        },
+    },
+    Mutation {
+        id: 1838,
+        file: "libs/x86-cpuid/src/lib.rs",
+        find: "            ExecutionEnvironmentKind::QemuTcg | ExecutionEnvironmentKind::Vmware",
+        replace: "            ExecutionEnvironmentKind::QemuTcg",
+        breaks: "the qualified VMware CPU root can no longer authenticate its DMA handoff",
+        reddens: Caught::HostTest {
+            package: "x86-cpuid",
+            name: "tests::only_exact_qualified_hypervisor_leaves_authenticate_dma_handoff",
+        },
+    },
+    Mutation {
+        id: 1839,
+        file: "xtask/src/api.rs",
+        find: "        \"--message-format=json-diagnostic-short\".to_string(),",
+        replace: "        \"--message-format=json\".to_string(),",
+        breaks: "the API audit expands every compiler diagnostic with unused full rendered source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::compiler_graphs_are_offline_lockfile_frozen_and_use_compact_structured_diagnostics",
+        },
     },
 ];
 
@@ -20675,7 +20871,7 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
     }
     if matches!(wanted, Caught::DegradedPanic { .. }) {
         return qualify_degraded_mutation(wanted, || {
-            tasks::observe_degraded_boot(paths, crate::cargo::Profile::Release)
+            tasks::observe_no_x2apic_boot(paths, crate::cargo::Profile::Release)
         });
     }
     if let Caught::ApiAudit(item) = wanted {

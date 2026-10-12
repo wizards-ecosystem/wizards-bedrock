@@ -94,7 +94,7 @@ impl CpuidLeaf {
     }
 }
 
-/// The execution environment relevant to shared kernel mappings.
+/// CPU-resident evidence about the execution environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionEnvironment {
     kind: ExecutionEnvironmentKind,
@@ -103,6 +103,7 @@ pub struct ExecutionEnvironment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionEnvironmentKind {
     QemuTcg,
+    Vmware,
     Other,
 }
 
@@ -127,11 +128,35 @@ impl ExecutionEnvironment {
             Self {
                 kind: ExecutionEnvironmentKind::QemuTcg,
             }
+        } else if leaf
+            == CpuidLeaf::new(
+                0x4000_0010,
+                u32::from_le_bytes(*b"VMwa"),
+                u32::from_le_bytes(*b"reVM"),
+                u32::from_le_bytes(*b"ware"),
+            )
+        {
+            Self {
+                kind: ExecutionEnvironmentKind::Vmware,
+            }
         } else {
             Self {
                 kind: ExecutionEnvironmentKind::Other,
             }
         }
+    }
+
+    /// Whether CPU state binds the boot to a qualified virtual platform.
+    ///
+    /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
+    /// rewritten by a PCI requester. The exact QEMU TCG and VMware profiles
+    /// are the only release platforms permitted to assert the DMA-safe
+    /// handoff contract.
+    pub const fn authenticates_dma_handoff(self) -> bool {
+        matches!(
+            self.kind,
+            ExecutionEnvironmentKind::QemuTcg | ExecutionEnvironmentKind::Vmware
+        )
     }
 }
 
@@ -318,7 +343,7 @@ pub const fn shared_kernel_mapping_reason(
         ExecutionEnvironmentKind::QemuTcg => Some(SharedKernelMappingReason {
             kind: SharedKernelMappingReasonKind::QemuTcg,
         }),
-        ExecutionEnvironmentKind::Other => None,
+        ExecutionEnvironmentKind::Vmware | ExecutionEnvironmentKind::Other => None,
     }
 }
 
@@ -349,6 +374,9 @@ mod tests {
     const QEMU_TCG: ExecutionEnvironment = ExecutionEnvironment {
         kind: ExecutionEnvironmentKind::QemuTcg,
     };
+    const VMWARE: ExecutionEnvironment = ExecutionEnvironment {
+        kind: ExecutionEnvironmentKind::Vmware,
+    };
     const OTHER: ExecutionEnvironment = ExecutionEnvironment {
         kind: ExecutionEnvironmentKind::Other,
     };
@@ -361,6 +389,10 @@ mod tests {
 
     const fn qemu_tcg_leaf() -> CpuidLeaf {
         CpuidLeaf::new(0x4000_0001, 0x5447_4354, 0x4354_4743, 0x4743_5447)
+    }
+
+    const fn vmware_leaf() -> CpuidLeaf {
+        CpuidLeaf::new(0x4000_0010, 0x6177_4d56, 0x4d56_6572, 0x6572_6177)
     }
 
     #[test]
@@ -486,35 +518,26 @@ mod tests {
     }
 
     #[test]
-    fn only_the_exact_qemu_tcg_base_leaf_is_accepted() {
-        for leaf_1_ecx in [HYPERVISOR_BIT, u32::MAX] {
-            assert_eq!(
-                ExecutionEnvironment::read(leaf_1_ecx, qemu_tcg_leaf),
-                QEMU_TCG
-            );
-        }
+    fn only_exact_qualified_hypervisor_leaves_authenticate_dma_handoff() {
+        for (exact, expected) in [(qemu_tcg_leaf(), QEMU_TCG), (vmware_leaf(), VMWARE)] {
+            for leaf_1_ecx in [HYPERVISOR_BIT, u32::MAX] {
+                let observed = ExecutionEnvironment::read(leaf_1_ecx, || exact);
+                assert_eq!(observed, expected);
+                assert!(observed.authenticates_dma_handoff());
+            }
 
-        let exact = qemu_tcg_leaf();
-        for register in 0..4 {
-            for bit in 0..32 {
-                let mut words = [exact.eax, exact.ebx, exact.ecx, exact.edx];
-                words[register] ^= 1 << bit;
-                let near_miss = CpuidLeaf::new(words[0], words[1], words[2], words[3]);
-                assert_eq!(
-                    ExecutionEnvironment::read(HYPERVISOR_BIT, || near_miss),
-                    OTHER,
-                    "register {register} bit {bit} was ignored"
-                );
+            for register in 0..4 {
+                for bit in 0..32 {
+                    let mut words = [exact.eax, exact.ebx, exact.ecx, exact.edx];
+                    words[register] ^= 1 << bit;
+                    let near_miss = CpuidLeaf::new(words[0], words[1], words[2], words[3]);
+                    let observed = ExecutionEnvironment::read(HYPERVISOR_BIT, || near_miss);
+                    assert_eq!(observed, OTHER, "register {register} bit {bit} was ignored");
+                    assert!(!observed.authenticates_dma_handoff());
+                }
             }
         }
-
-        let vmware = CpuidLeaf::new(
-            0x4000_0010,
-            u32::from_le_bytes(*b"VMwa"),
-            u32::from_le_bytes(*b"reVM"),
-            u32::from_le_bytes(*b"ware"),
-        );
-        assert_eq!(ExecutionEnvironment::read(HYPERVISOR_BIT, || vmware), OTHER);
+        assert!(!OTHER.authenticates_dma_handoff());
     }
 
     #[test]

@@ -25,6 +25,7 @@ use x86_paging::{Flags, MappingRangeError};
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
+use crate::iommu::EarlyDmaBoundary;
 use crate::thread::ThreadContext;
 use crate::{debug, info, thread, warn};
 
@@ -37,7 +38,11 @@ const FRAME_SIZE: u64 = 4096;
 /// Declines rather than panics when either half of the handoff is missing: a
 /// kernel that cannot allocate is still worth booting far enough to say why,
 /// and the checks that follow report the absence rather than faulting on it.
-pub(crate) fn init(map: Result<MemoryMap, HandoffError>, direct: Result<DirectMap, HandoffError>) {
+pub(crate) fn init(
+    map: Result<MemoryMap, HandoffError>,
+    direct: Result<DirectMap, HandoffError>,
+    _dma: EarlyDmaBoundary,
+) {
     let map = match map {
         Ok(map) => map,
         Err(reason) => {
