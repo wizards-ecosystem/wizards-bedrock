@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1840;
+pub const NEXT_MUTATION_ID: u16 = 1866;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -3833,8 +3833,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 324,
         file: "kernel/src/main.rs",
-        find: "    survey_the_bus();\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
-        replace: "    survey_the_bus();\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts(routing.as_ref());",
+        find: "    survey_the_bus(dma_non_requester);\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
+        replace: "    survey_the_bus(dma_non_requester);\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts(routing.as_ref());",
         breaks: "hardware-free namespaces do not depend on PCI availability",
         reddens: Caught::BootMarker(qemu::DEGRADED_FILESYSTEM_MARKER),
     },
@@ -4684,8 +4684,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 403,
         file: "xtask/src/qemu.rs",
-        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
-        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::warning(\"no x2apic mode\"),",
+        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
+        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::warning(\"no x2apic mode\"),",
         breaks: "the settled degraded boot requires only a no-x2APIC phrase instead of the canonical warning record",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7061,8 +7061,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 625,
         file: "xtask/src/qemu.rs",
-        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
-        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
+        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
+        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
         breaks: "a shipped boot can pass without consuming the TCG isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7138,8 +7138,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 632,
         file: "xtask/src/vmware.rs",
-        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Nvme,",
-        replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Nvme,",
+        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Nvme,",
+        replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Nvme,",
         breaks: "the shipped VMware selector omits the consumed native isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14034,8 +14034,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1195,
         file: "xtask/src/qemu.rs",
-        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
-        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    NO_X2APIC_RECORD,",
+        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
+        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    NO_X2APIC_RECORD,",
         breaks: "the degraded boot can settle without proving its QEMU TCG policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19088,8 +19088,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1701,
         file: "kernel/src/pci.rs",
-        find: "pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {\n    TOPOLOGY.lock_leaf().reset();",
-        replace: "pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {\n    let stack_topology = PciTopology::new();\n    core::hint::black_box(&stack_topology);\n    TOPOLOGY.lock_leaf().reset();",
+        find: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n) -> Result<(), TopologyError> {\n    TOPOLOGY.lock_leaf().reset();",
+        replace: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n) -> Result<(), TopologyError> {\n    let stack_topology = PciTopology::new();\n    core::hint::black_box(&stack_topology);\n    TOPOLOGY.lock_leaf().reset();",
         breaks: "the complete PCI topology consumes a large fixed boot-stack frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20199,8 +20199,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1804,
         file: "kernel/src/main.rs",
-        find: "    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology() {",
-        replace: "    match pci::snapshot_topology() {\n        Ok(()) => info!(\"pci: complete segment-zero topology sealed\"),\n        Err(reason) => warn!(\"pci: DMA topology refused: {reason}\"),\n    }\n\n    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology() {",
+        find: "    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester) {",
+        replace: "    match pci::snapshot_topology(dma_non_requester) {\n        Ok(()) => info!(\"pci: complete segment-zero topology sealed\"),\n        Err(reason) => warn!(\"pci: DMA topology refused: {reason}\"),\n    }\n\n    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester) {",
         breaks: "PCI topology is observed before the default-deny DMA owner exists",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20427,8 +20427,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1825,
         file: "libs/pci-config/src/lib.rs",
-        find: "                if found != expected {",
-        replace: "                if false && found != expected {",
+        find: "                let retained_class = if found != expected {",
+        replace: "                let retained_class = if false && found != expected {",
         breaks: "an ignored bus-master clear is treated as a completed entry fence",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -20526,8 +20526,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1834,
         file: "kernel/src/iommu.rs",
-        find: "    if !cpu::dma_handoff_platform_is_authenticated() {",
-        replace: "    if false && !cpu::dma_handoff_platform_is_authenticated() {",
+        find: "    let platform = cpu::dma_handoff_platform().ok_or(EarlyDmaError::UnauthenticatedPlatform)?;",
+        replace: "    let platform = cpu::DmaHandoffPlatform::Vmware;",
         breaks: "writable ACPI bytes authenticate their own DMA handoff without CPU-resident platform evidence",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20570,8 +20570,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1838,
         file: "libs/x86-cpuid/src/lib.rs",
-        find: "            ExecutionEnvironmentKind::QemuTcg | ExecutionEnvironmentKind::Vmware",
-        replace: "            ExecutionEnvironmentKind::QemuTcg",
+        find: "            ExecutionEnvironmentKind::Vmware => Some(DmaHandoffPlatform::Vmware),",
+        replace: "            ExecutionEnvironmentKind::Vmware => None,",
         breaks: "the qualified VMware CPU root can no longer authenticate its DMA handoff",
         reddens: Caught::HostTest {
             package: "x86-cpuid",
@@ -20587,6 +20587,292 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::compiler_graphs_are_offline_lockfile_frozen_and_use_compact_structured_diagnostics",
+        },
+    },
+    Mutation {
+        id: 1840,
+        file: "kernel/src/iommu.rs",
+        find: "        cpu::DmaHandoffPlatform::Vmware => HandoffFencePolicy::vmware_440bx(),",
+        replace: "        cpu::DmaHandoffPlatform::Vmware => HandoffFencePolicy::strict(),",
+        breaks: "the authenticated VMware platform no longer selects its exact qualified non-requester profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1841,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && at.bus() == 0\n            && at.device() == 0\n            && at.function() == 0",
+        replace: "            && at.bus() == 0",
+        breaks: "another VMware BDF can impersonate the one qualified non-requester host bridge",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1842,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && identity == VMWARE_440BX_IDENTITY",
+        replace: "            && identity != 0",
+        breaks: "a foreign VMware function identity can retain inherited bus-master-looking state",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1843,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && class & CLASS_WITHOUT_REVISION == HOST_BRIDGE_CLASS",
+        replace: "            && class & CLASS_WITHOUT_REVISION != 0",
+        breaks: "a non-host-bridge VMware class can enter the non-requester exception",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1844,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && before == VMWARE_HOST_COMMAND",
+        replace: "            && before & command::BUS_MASTER != 0",
+        breaks: "an unexpected VMware host command is accepted before the BME-clear attempt",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1845,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && found == VMWARE_HOST_COMMAND)",
+        replace: "            && found & command::BUS_MASTER != 0)",
+        breaks: "an unexpected VMware host command readback is accepted as the exact exception",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1846,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                    if current_class != class {",
+        replace: "                    if false && current_class != class {",
+        breaks: "the qualified host-bridge class can change after its refused command write",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1847,
+        file: "kernel/src/pci.rs",
+        find: "                    topology.observe_non_requester(\n                        authority,\n                        FunctionObservation::new(\n                            entry.at,\n                            entry.identity,\n                            entry.class_bits,\n                            entry.command,\n                            entry.class,\n                            entry.header,\n                            bus_numbers,\n                        ),\n                    )?;",
+        replace: "                    let _ = authority;\n                    topology.observe(entry.at, entry.class, entry.header, bus_numbers)?;",
+        breaks: "the exact VMware host bridge re-enters the later VT-d requester inventory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1848,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                    retained_non_requesters += 1;\n                    retained_non_requester = Some(authority);",
+        replace: "                    disabled += 1;\n                    retained_non_requesters += 1;\n                    retained_non_requester = Some(authority);",
+        breaks: "an attempted but refused VMware host-bridge clear is counted as a disabled requester",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1849,
+        file: "xtask/src/vmware.rs",
+        find: "const SELFTEST_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),",
+        replace: "const SELFTEST_MARKERS: &[TranscriptMarker] = &[",
+        breaks: "VMware self-test qualification omits the exact platform-bound DMA handoff witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_dma_handoff_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 1850,
+        file: "xtask/src/vmware.rs",
+        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),",
+        replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[",
+        breaks: "VMware shipped qualification omits the exact platform-bound DMA handoff witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_dma_handoff_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 1851,
+        file: "xtask/src/qemu.rs",
+        find: "    if verdict.status == VerdictStatus::Pass && !observation.strict_dma_handoff {",
+        replace: "    if false && verdict.status == VerdictStatus::Pass && !observation.strict_dma_handoff {",
+        breaks: "a passing QEMU self-test need not prove that its entry fence used the strict requester policy",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_passing_selftest_requires_the_exact_consumed_tcg_policy",
+        },
+    },
+    Mutation {
+        id: 1852,
+        file: "kernel/src/iommu.rs",
+        find: "        .is_some_and(pci::topology_contains_requester)",
+        replace: "        .is_some_and(pci::topology_contains_function)",
+        breaks: "VT-d inventory repopulates a platform-qualified non-requester from mere PCI presence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1853,
+        file: "kernel/src/iommu.rs",
+        find: "                if !pci::topology_contains_requester(at) {",
+        replace: "                if !pci::topology_contains_function(at) {",
+        breaks: "whole-unit coverage treats the qualified VMware host bridge as a DMA requester again",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1854,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    fn classify_non_requester(",
+        replace: "    pub fn classify_non_requester(",
+        breaks: "callers outside the exhaustive entry fence can mint non-requester authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1855,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if at != authority.at",
+        replace: "        if false && at != authority.at",
+        breaks: "the later topology can spend entry authority on another PCI function",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1856,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            || identity != authority.identity",
+        replace: "            || false && identity != authority.identity",
+        breaks: "the later topology accepts a changed non-requester identity",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1857,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            || class_bits != authority.class",
+        replace: "            || false && class_bits != authority.class",
+        breaks: "the later topology accepts a changed non-requester class",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1858,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            || command != authority.command",
+        replace: "            || false && command != authority.command",
+        breaks: "the later topology accepts changed command state for the non-requester",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
+        },
+    },
+    Mutation {
+        id: 1859,
+        file: "kernel/src/main.rs",
+        find: "    let dma_non_requester = early_dma.take_non_requester();",
+        replace: "    let dma_non_requester = None;",
+        breaks: "the exact entry-fence authority is discarded before the later topology snapshot",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1860,
+        file: "kernel/src/pci.rs",
+        find: "    if let Some(authority) = non_requester {",
+        replace: "    if let Some(authority) = Option::<QualifiedNonRequester>::None {",
+        breaks: "an entry-qualified non-requester may disappear before the sealed snapshot",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1861,
+        file: "libs/pci-config/src/lib.rs",
+        find: "#[derive(Debug)]\n#[must_use = \"qualified non-requester evidence must constrain requester inventory\"]",
+        replace: "#[derive(Debug, Clone, Copy)]\n#[must_use = \"qualified non-requester evidence must constrain requester inventory\"]",
+        breaks: "the exact non-requester authority can be duplicated and spent twice",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 1862,
+        file: "xtask/src/qemu.rs",
+        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),",
+        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[",
+        breaks: "the shipped QEMU selector can pass without its strict DMA-fence witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_boots_require_the_exact_producer_records",
+        },
+    },
+    Mutation {
+        id: 1863,
+        file: "xtask/src/qemu.rs",
+        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),",
+        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[",
+        breaks: "the no-x2APIC QEMU selector can pass without its strict DMA-fence witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_boots_require_the_exact_producer_records",
+        },
+    },
+    Mutation {
+        id: 1864,
+        file: "xtask/src/qemu.rs",
+        find: "const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),",
+        replace: "const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[",
+        breaks: "the no-IOMMU QEMU selector can pass without its strict DMA-fence witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_boots_require_the_exact_producer_records",
+        },
+    },
+    Mutation {
+        id: 1865,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    pub const fn retained_non_requesters(&self) -> u32 {\n        self.retained_non_requesters\n    }",
+        replace: "    pub const fn retained_non_requesters(&self) -> u32 {\n        self.retained_non_requester.is_some() as u32\n    }",
+        breaks: "taking the qualified non-requester token erases the fence report's historical retained count",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
         },
     },
 ];

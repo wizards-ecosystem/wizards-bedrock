@@ -604,28 +604,165 @@ pub enum CommandAccess {
 pub enum HandoffAccess {
     /// Read the complete vendor/device identity dword.
     ReadIdentity,
+    /// Read the complete revision/programming-interface/subclass/class dword.
+    ReadClass,
     /// Read the command register; only its low sixteen bits are consumed.
     ReadCommand,
     /// Write command bits with a zero status half.
     WriteCommand(u16),
 }
 
-/// What an exhaustive entry-time DMA fence observed.
+/// Platform-bound policy for the entry-time DMA fence.
+///
+/// The VMware profile recognizes one exact emulated 440BX host bridge whose
+/// command bit 2 is a read-only chipset control rather than a PCI requester
+/// bus-master enable. The caller must select that profile only from
+/// requester-inaccessible VMware CPU evidence; every other function and every
+/// near miss remains under the strict BME-off rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffFencePolicy {
+    kind: HandoffFencePolicyKind,
+}
+
+/// Exact platform evidence that one present function is not a DMA requester.
+///
+/// Construction is private to [`HandoffFencePolicy`], so topology code cannot
+/// remove an arbitrary function from the requester inventory.
+#[derive(Debug)]
+#[must_use = "qualified non-requester evidence must constrain requester inventory"]
+pub struct QualifiedNonRequester {
+    at: Address,
+    identity: u32,
+    class: u32,
+    command: u16,
+}
+
+/// One untrusted later observation checked against non-requester authority.
+///
+/// Construction proves nothing by itself. [`PciTopology::observe_non_requester`]
+/// consumes the earlier entry-fence authority and compares every security-
+/// relevant field before excluding the function from requester inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FunctionObservation {
+    at: Address,
+    identity: u32,
+    class_bits: u32,
+    command: u16,
+    class: Class,
+    header: HeaderType,
+    bus_numbers: Option<u32>,
+}
+
+impl FunctionObservation {
+    /// Gather the independently read fields of one present function.
+    pub const fn new(
+        at: Address,
+        identity: u32,
+        class_bits: u32,
+        command: u16,
+        class: Class,
+        header: HeaderType,
+        bus_numbers: Option<u32>,
+    ) -> Self {
+        Self {
+            at,
+            identity,
+            class_bits,
+            command,
+            class,
+            header,
+            bus_numbers,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoffFencePolicyKind {
+    Strict,
+    Vmware440Bx,
+}
+
+impl HandoffFencePolicy {
+    /// Require every present PCI function to read back with BME clear.
+    pub const fn strict() -> Self {
+        Self {
+            kind: HandoffFencePolicyKind::Strict,
+        }
+    }
+
+    /// Admit only VMware's exact non-requesting 440BX host-bridge command.
+    pub const fn vmware_440bx() -> Self {
+        Self {
+            kind: HandoffFencePolicyKind::Vmware440Bx,
+        }
+    }
+
+    /// Classify the one exact platform function allowed to retain command bit 2.
+    fn classify_non_requester(
+        self,
+        at: Address,
+        identity: u32,
+        class: u32,
+        before: u16,
+        found: u16,
+    ) -> Option<QualifiedNonRequester> {
+        const VMWARE_440BX_IDENTITY: u32 = 0x7190_8086;
+        const HOST_BRIDGE_CLASS: u32 = 0x06_00_00_00;
+        const CLASS_WITHOUT_REVISION: u32 = 0xffff_ff00;
+        const VMWARE_HOST_COMMAND: u16 = command::MEMORY_SPACE | command::BUS_MASTER;
+
+        (matches!(self.kind, HandoffFencePolicyKind::Vmware440Bx)
+            && at.bus() == 0
+            && at.device() == 0
+            && at.function() == 0
+            && identity == VMWARE_440BX_IDENTITY
+            && class & CLASS_WITHOUT_REVISION == HOST_BRIDGE_CLASS
+            && before == VMWARE_HOST_COMMAND
+            && found == VMWARE_HOST_COMMAND)
+            .then_some(QualifiedNonRequester {
+                at: at.function_base(),
+                identity,
+                class,
+                command: found,
+            })
+    }
+}
+
+impl QualifiedNonRequester {
+    /// Exact function whose entry-time fence minted this authority.
+    pub const fn address(&self) -> Address {
+        self.at
+    }
+}
+
+/// What an exhaustive entry-time DMA fence observed.
+#[derive(Debug)]
 pub struct HandoffFenceReport {
     functions: u32,
     disabled: u32,
+    retained_non_requesters: u32,
+    retained_non_requester: Option<QualifiedNonRequester>,
 }
 
 impl HandoffFenceReport {
-    /// Present functions whose stable identity and BME-off state were proved.
-    pub const fn functions(self) -> u32 {
+    /// Present functions safely classified by the platform-bound fence.
+    pub const fn functions(&self) -> u32 {
         self.functions
     }
 
     /// Functions whose inherited BME bit the fence cleared.
-    pub const fn disabled(self) -> u32 {
+    pub const fn disabled(&self) -> u32 {
         self.disabled
+    }
+
+    /// Qualified non-requester host bridges whose read-only bit 2 remained set.
+    pub const fn retained_non_requesters(&self) -> u32 {
+        self.retained_non_requesters
+    }
+
+    /// Remove the exact entry-fence authority for the later topology snapshot.
+    pub fn take_non_requester(&mut self) -> Option<QualifiedNonRequester> {
+        self.retained_non_requester.take()
     }
 }
 
@@ -644,6 +781,10 @@ pub enum HandoffFenceError {
     CommandRefused {
         /// Function whose command word refused the fence.
         at: Address,
+        /// Stable vendor/device identity observed around the transaction.
+        identity: u32,
+        /// Stable class dword observed around the transaction.
+        class: u32,
         /// Exact BME-off word written or required.
         expected: u16,
         /// Word returned by the readback.
@@ -656,6 +797,15 @@ pub enum HandoffFenceError {
         /// Identity read before the command transaction.
         expected: u32,
         /// Identity read after the command transaction.
+        found: u32,
+    },
+    /// A present function changed class during its fence.
+    ClassChanged {
+        /// Function whose class changed.
+        at: Address,
+        /// Class dword read before the command transaction.
+        expected: u32,
+        /// Class dword read after the command transaction.
         found: u32,
     },
 }
@@ -672,11 +822,13 @@ impl core::fmt::Display for HandoffFenceError {
             ),
             Self::CommandRefused {
                 at,
+                identity,
+                class,
                 expected,
                 found,
             } => write!(
                 f,
-                "{:02x}:{:02x}.{} command read back as {found:#06x}, expected {expected:#06x}",
+                "{:02x}:{:02x}.{} identity {identity:#010x} class {class:#010x} command read back as {found:#06x}, expected {expected:#06x}",
                 at.bus(),
                 at.device(),
                 at.function()
@@ -688,6 +840,17 @@ impl core::fmt::Display for HandoffFenceError {
             } => write!(
                 f,
                 "{:02x}:{:02x}.{} identity changed from {expected:#010x} to {found:#010x}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::ClassChanged {
+                at,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{:02x}:{:02x}.{} class changed from {expected:#010x} to {found:#010x}",
                 at.bus(),
                 at.device(),
                 at.function()
@@ -711,10 +874,13 @@ impl core::error::Error for HandoffFenceError {}
 /// function identity. A refusal never restores BME on a function already
 /// fenced.
 pub fn fence_dma_handoff(
+    policy: HandoffFencePolicy,
     mut access: impl FnMut(Address, HandoffAccess) -> Option<u32>,
 ) -> Result<HandoffFenceReport, HandoffFenceError> {
     let mut functions = 0u32;
     let mut disabled = 0u32;
+    let mut retained_non_requesters = 0u32;
+    let mut retained_non_requester = None;
     for bus in 0..=u8::MAX {
         for device in 0..DEVICES {
             for function in 0..FUNCTIONS {
@@ -746,7 +912,6 @@ pub fn fence_dma_handoff(
                             operation: HandoffAccess::WriteCommand(expected),
                         },
                     )?;
-                    disabled += 1;
                 }
                 let found = access(command_at, HandoffAccess::ReadCommand).ok_or(
                     HandoffFenceError::Access {
@@ -754,13 +919,35 @@ pub fn fence_dma_handoff(
                         operation: HandoffAccess::ReadCommand,
                     },
                 )? as u16;
-                if found != expected {
-                    return Err(HandoffFenceError::CommandRefused {
-                        at,
-                        expected,
-                        found,
-                    });
-                }
+                let retained_class = if found != expected {
+                    let Some(class_at) = at.at(header::CLASS) else {
+                        continue;
+                    };
+                    let class = access(class_at, HandoffAccess::ReadClass).ok_or(
+                        HandoffFenceError::Access {
+                            at,
+                            operation: HandoffAccess::ReadClass,
+                        },
+                    )?;
+                    if let Some(authority) =
+                        policy.classify_non_requester(at, identity, class, before, found)
+                    {
+                        Some((class_at, class, authority))
+                    } else {
+                        return Err(HandoffFenceError::CommandRefused {
+                            at,
+                            identity,
+                            class,
+                            expected,
+                            found,
+                        });
+                    }
+                } else if before != expected {
+                    disabled += 1;
+                    None
+                } else {
+                    None
+                };
                 let current =
                     access(at, HandoffAccess::ReadIdentity).ok_or(HandoffFenceError::Access {
                         at,
@@ -773,6 +960,23 @@ pub fn fence_dma_handoff(
                         found: current,
                     });
                 }
+                if let Some((class_at, class, authority)) = retained_class {
+                    let current_class = access(class_at, HandoffAccess::ReadClass).ok_or(
+                        HandoffFenceError::Access {
+                            at,
+                            operation: HandoffAccess::ReadClass,
+                        },
+                    )?;
+                    if current_class != class {
+                        return Err(HandoffFenceError::ClassChanged {
+                            at,
+                            expected: class,
+                            found: current_class,
+                        });
+                    }
+                    retained_non_requesters += 1;
+                    retained_non_requester = Some(authority);
+                }
                 functions += 1;
             }
         }
@@ -780,6 +984,8 @@ pub fn fence_dma_handoff(
     Ok(HandoffFenceReport {
         functions,
         disabled,
+        retained_non_requesters,
+        retained_non_requester,
     })
 }
 
@@ -2617,6 +2823,16 @@ pub struct BridgeRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TopologyError {
+    /// The function named by entry-fence authority was absent from the later snapshot.
+    QualifiedNonRequesterMissing {
+        /// Exact function which had been classified at entry.
+        at: Address,
+    },
+    /// The function named by entry-fence authority changed before the snapshot.
+    QualifiedNonRequesterChanged {
+        /// Exact function whose identity, class or command changed.
+        at: Address,
+    },
     /// The class and header layout disagree about whether a function is a bridge.
     BridgeIdentity {
         /// Function with contradictory bridge identity.
@@ -2671,6 +2887,20 @@ pub enum TopologyError {
 impl core::fmt::Display for TopologyError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
+            Self::QualifiedNonRequesterMissing { at } => write!(
+                f,
+                "entry-qualified PCI non-requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::QualifiedNonRequesterChanged { at } => write!(
+                f,
+                "entry-qualified PCI non-requester {:02x}:{:02x}.{} changed before the sealed snapshot",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
             Self::BridgeIdentity { at } => write!(
                 f,
                 "PCI function {:02x}:{:02x}.{} has contradictory bridge class and header",
@@ -2751,6 +2981,7 @@ pub struct PciTopology {
     parent: [u32; BUSES],
     subordinate: [u8; BUSES],
     present: [u64; PRESENCE_WORDS],
+    requesters: [u64; PRESENCE_WORDS],
     sealed: bool,
 }
 
@@ -2761,6 +2992,7 @@ impl PciTopology {
             parent: [0; BUSES],
             subordinate: [0; BUSES],
             present: [0; PRESENCE_WORDS],
+            requesters: [0; PRESENCE_WORDS],
             sealed: false,
         }
     }
@@ -2770,6 +3002,7 @@ impl PciTopology {
         self.parent.fill(0);
         self.subordinate.fill(0);
         self.present.fill(0);
+        self.requesters.fill(0);
         self.sealed = false;
     }
 
@@ -2790,6 +3023,7 @@ impl PciTopology {
         let at = at.function_base();
         let index = function_index(at);
         self.present[index / u64::BITS as usize] |= 1 << (index % u64::BITS as usize);
+        self.requesters[index / u64::BITS as usize] |= 1 << (index % u64::BITS as usize);
 
         if class.is_bridge() != header.is_bridge() {
             return Err(TopologyError::BridgeIdentity { at });
@@ -2821,6 +3055,41 @@ impl PciTopology {
         }
         *slot = at.bits();
         self.subordinate[usize::from(secondary)] = subordinate;
+        Ok(())
+    }
+
+    /// Record an exact platform-qualified function that is present but is not
+    /// a PCI DMA requester.
+    ///
+    /// # Errors
+    ///
+    /// The same topology errors as [`Self::observe`]. The consumed authority
+    /// can name only the exact platform tuple recognized by the handoff policy.
+    pub fn observe_non_requester(
+        &mut self,
+        authority: QualifiedNonRequester,
+        observation: FunctionObservation,
+    ) -> Result<(), TopologyError> {
+        let FunctionObservation {
+            at,
+            identity,
+            class_bits,
+            command,
+            class,
+            header,
+            bus_numbers,
+        } = observation;
+        let at = at.function_base();
+        if at != authority.at
+            || identity != authority.identity
+            || class_bits != authority.class
+            || command != authority.command
+        {
+            return Err(TopologyError::QualifiedNonRequesterChanged { at });
+        }
+        self.observe(at, class, header, bus_numbers)?;
+        let index = function_index(at);
+        self.requesters[index / u64::BITS as usize] &= !(1 << (index % u64::BITS as usize));
         Ok(())
     }
 
@@ -2898,6 +3167,15 @@ impl PciTopology {
         }
         let index = function_index(at.function_base());
         self.present[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) != 0
+    }
+
+    /// Whether one exact function is a DMA requester in the sealed snapshot.
+    pub fn contains_requester(&self, at: Address) -> bool {
+        if !self.sealed {
+            return false;
+        }
+        let index = function_index(at.function_base());
+        self.requesters[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) != 0
     }
 
     /// The sealed routing range of one exact bridge function.
@@ -3099,7 +3377,7 @@ mod tests {
             command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER | (1 << 10);
         let mut last_command = command::MEMORY_SPACE | (1 << 8);
 
-        let report = fence_dma_handoff(|at, operation| {
+        let report = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
             let function = at.function_base();
             let identity = if function == first {
                 first_identity
@@ -3110,6 +3388,7 @@ mod tests {
             };
             match operation {
                 HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand if function == first => Some(u32::from(first_command)),
                 HandoffAccess::ReadCommand if function == last => Some(u32::from(last_command)),
                 HandoffAccess::WriteCommand(value) if function == first => {
@@ -3127,6 +3406,7 @@ mod tests {
 
         assert_eq!(report.functions(), 2);
         assert_eq!(report.disabled(), 1);
+        assert_eq!(report.retained_non_requesters(), 0);
         assert_eq!(
             first_command,
             command::IO_SPACE | command::MEMORY_SPACE | (1 << 10)
@@ -3139,12 +3419,13 @@ mod tests {
         let target = Address::new(0, 0, 0, 0).expect("target function");
         let identity = 0x1234_5678;
 
-        let access = fence_dma_handoff(|at, operation| {
+        let access = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
             if at.function_base() != target {
                 return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
             }
             match operation {
                 HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => None,
                 HandoffAccess::WriteCommand(_) => Some(0),
             }
@@ -3157,27 +3438,30 @@ mod tests {
             })
         ));
 
-        let refused = fence_dma_handoff(|at, operation| {
+        let refused = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
             if at.function_base() != target {
                 return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
             }
             match operation {
                 HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => Some(u32::from(command::BUS_MASTER)),
                 HandoffAccess::WriteCommand(_) => Some(0),
             }
         });
-        assert_eq!(
+        assert!(matches!(
             refused,
             Err(HandoffFenceError::CommandRefused {
-                at: target,
+                at,
+                identity: found_identity,
+                class: 0,
                 expected: 0,
                 found: command::BUS_MASTER,
-            })
-        );
+            }) if at == target && found_identity == identity
+        ));
 
         let mut identity_reads = 0;
-        let changed = fence_dma_handoff(|at, operation| {
+        let changed = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
             if at.function_base() != target {
                 return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
             }
@@ -3190,18 +3474,252 @@ mod tests {
                         identity ^ 1
                     })
                 }
+                HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => Some(0),
                 HandoffAccess::WriteCommand(_) => Some(0),
             }
         });
-        assert_eq!(
+        assert!(matches!(
             changed,
             Err(HandoffFenceError::IdentityChanged {
-                at: target,
-                expected: identity,
-                found: identity ^ 1,
-            })
-        );
+                at,
+                expected,
+                found,
+            }) if at == target && expected == identity && found == identity ^ 1
+        ));
+    }
+
+    #[test]
+    fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command() {
+        let host = Address::new(0, 0, 0, 0).expect("VMware host bridge");
+        let identity = 0x7190_8086;
+        let class = 0x06_00_00_00;
+        let command = command::MEMORY_SPACE | command::BUS_MASTER;
+        let mut written = None;
+
+        let mut report = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+            if at.function_base() != host {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            }
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(class),
+                HandoffAccess::ReadCommand => Some(u32::from(command)),
+                HandoffAccess::WriteCommand(value) => {
+                    written = Some(value);
+                    Some(0)
+                }
+            }
+        })
+        .expect("the qualified host bridge is not a PCI DMA requester");
+
+        assert_eq!(report.functions(), 1);
+        assert_eq!(report.disabled(), 0);
+        assert_eq!(report.retained_non_requesters(), 1);
+        assert_eq!(written, Some(command::MEMORY_SPACE));
+
+        for revision in [0u32, 1, u32::from(u8::MAX)] {
+            assert!(
+                HandoffFencePolicy::vmware_440bx()
+                    .classify_non_requester(host, identity, class | revision, command, command,)
+                    .is_some()
+            );
+        }
+
+        let authority = report
+            .take_non_requester()
+            .expect("entry fence retained its exact classification authority");
+        assert_eq!(report.retained_non_requesters(), 1);
+        let mut topology = PciTopology::new();
+        topology
+            .observe_non_requester(
+                authority,
+                FunctionObservation::new(
+                    host,
+                    identity,
+                    class,
+                    command,
+                    Class::from_bits(class),
+                    HeaderType::from_bits(0),
+                    None,
+                ),
+            )
+            .expect("non-requester topology observation");
+        topology.seal().expect("root-bus topology");
+        assert!(topology.contains_function(host));
+        assert!(!topology.contains_requester(host));
+
+        for (at, later_identity, later_class, later_command) in [
+            (
+                Address::new(0, 1, 0, 0).expect("different BDF"),
+                identity,
+                class,
+                command,
+            ),
+            (host, identity ^ 1, class, command),
+            (host, identity, class ^ 1, command),
+            (host, identity, class, command | command::IO_SPACE),
+        ] {
+            let changed_authority = HandoffFencePolicy::vmware_440bx()
+                .classify_non_requester(host, identity, class, command, command)
+                .expect("exact host bridge classification");
+            let mut changed_topology = PciTopology::new();
+            assert_eq!(
+                changed_topology.observe_non_requester(
+                    changed_authority,
+                    FunctionObservation::new(
+                        at,
+                        later_identity,
+                        later_class,
+                        later_command,
+                        Class::from_bits(later_class),
+                        HeaderType::from_bits(0),
+                        None,
+                    ),
+                ),
+                Err(TopologyError::QualifiedNonRequesterChanged {
+                    at: at.function_base(),
+                })
+            );
+        }
+
+        for (at, identity, class, command) in [
+            (host, identity ^ 1, class, command),
+            (host, identity ^ (1 << 16), class, command),
+            (host, identity, class ^ (1 << 24), command),
+            (host, identity, class ^ (1 << 16), command),
+            (host, identity, class ^ (1 << 8), command),
+            (host, identity, class, command | command::IO_SPACE),
+            (
+                Address::new(1, 0, 0, 0).expect("nearby bus"),
+                identity,
+                class,
+                command,
+            ),
+            (
+                Address::new(0, 1, 0, 0).expect("nearby function"),
+                identity,
+                class,
+                command,
+            ),
+            (
+                Address::new(0, 0, 1, 0).expect("nearby function"),
+                identity,
+                class,
+                command,
+            ),
+        ] {
+            let refused = fence_dma_handoff(
+                HandoffFencePolicy::vmware_440bx(),
+                |candidate, operation| {
+                    if candidate.function_base() != at {
+                        return matches!(operation, HandoffAccess::ReadIdentity)
+                            .then_some(u32::MAX);
+                    }
+                    match operation {
+                        HandoffAccess::ReadIdentity => Some(identity),
+                        HandoffAccess::ReadClass => Some(class),
+                        HandoffAccess::ReadCommand => Some(u32::from(command)),
+                        HandoffAccess::WriteCommand(_) => Some(0),
+                    }
+                },
+            );
+            assert!(matches!(
+                refused,
+                Err(HandoffFenceError::CommandRefused { .. })
+            ));
+        }
+
+        let strict = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
+            if at.function_base() != host {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            }
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(class),
+                HandoffAccess::ReadCommand => Some(u32::from(command)),
+                HandoffAccess::WriteCommand(_) => Some(0),
+            }
+        });
+        assert!(matches!(
+            strict,
+            Err(HandoffFenceError::CommandRefused { .. })
+        ));
+
+        let mut unexpected_before_reads = 0;
+        let unexpected_before =
+            fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+                if at.function_base() != host {
+                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                }
+                match operation {
+                    HandoffAccess::ReadIdentity => Some(identity),
+                    HandoffAccess::ReadClass => Some(class),
+                    HandoffAccess::ReadCommand => {
+                        unexpected_before_reads += 1;
+                        Some(u32::from(if unexpected_before_reads == 1 {
+                            command | command::IO_SPACE
+                        } else {
+                            command
+                        }))
+                    }
+                    HandoffAccess::WriteCommand(_) => Some(0),
+                }
+            });
+        assert!(matches!(
+            unexpected_before,
+            Err(HandoffFenceError::CommandRefused { .. })
+        ));
+
+        let mut command_reads = 0;
+        let changed_command =
+            fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+                if at.function_base() != host {
+                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                }
+                match operation {
+                    HandoffAccess::ReadIdentity => Some(identity),
+                    HandoffAccess::ReadClass => Some(class),
+                    HandoffAccess::ReadCommand => {
+                        command_reads += 1;
+                        Some(u32::from(if command_reads == 1 {
+                            command
+                        } else {
+                            command | command::IO_SPACE
+                        }))
+                    }
+                    HandoffAccess::WriteCommand(_) => Some(0),
+                }
+            });
+        assert!(matches!(
+            changed_command,
+            Err(HandoffFenceError::CommandRefused { .. })
+        ));
+
+        let mut class_reads = 0;
+        let changed_class =
+            fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+                if at.function_base() != host {
+                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                }
+                match operation {
+                    HandoffAccess::ReadIdentity => Some(identity),
+                    HandoffAccess::ReadClass => {
+                        class_reads += 1;
+                        Some(if class_reads == 1 { class } else { class ^ 1 })
+                    }
+                    HandoffAccess::ReadCommand => Some(u32::from(command)),
+                    HandoffAccess::WriteCommand(_) => Some(0),
+                }
+            });
+        assert!(matches!(
+            changed_class,
+            Err(HandoffFenceError::ClassChanged {
+                at,
+                expected,
+                found,
+            }) if at == host && expected == class && found == class ^ 1
+        ));
     }
 
     const TRACE_CAPACITY: usize = 96;

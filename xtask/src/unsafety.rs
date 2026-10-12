@@ -146,7 +146,7 @@ mod tests {
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "4123eb6ecca850109de086c43dfd014f4301d2ab3f2d598f4dbb6f16716e4ee5",
+            "08bcc3361cd6f5c48f7aff563440d768d1d52519d2d02da819d9c71db5ae0852",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",

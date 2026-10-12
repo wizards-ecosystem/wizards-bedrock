@@ -309,17 +309,18 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .expect("secure handoff end")
         .0;
     let platform = boundary
-        .find("cpu::dma_handoff_platform_is_authenticated()")
+        .find("cpu::dma_handoff_platform().ok_or(EarlyDmaError::UnauthenticatedPlatform)?")
         .expect("requester-inaccessible platform evidence");
-    assert!(boundary.contains(
-        "if !cpu::dma_handoff_platform_is_authenticated() {\n        return Err(EarlyDmaError::UnauthenticatedPlatform);"
-    ));
+    assert!(boundary.contains("cpu::DmaHandoffPlatform::QemuTcg => HandoffFencePolicy::strict()"));
+    assert!(
+        boundary.contains("cpu::DmaHandoffPlatform::Vmware => HandoffFencePolicy::vmware_440bx()")
+    );
     let table = boundary
         .find("acpi::find_unique_early")
         .expect("unique early handoff table");
     let ports = boundary.find("platform_pci::init()").expect("port claim");
     let fence = boundary
-        .find("platform_pci::fence_dma_handoff()")
+        .find("platform_pci::fence_dma_handoff(policy)")
         .expect("exhaustive requester fence");
     let ordering = boundary
         .find("compiler_fence(Ordering::SeqCst)")
@@ -374,9 +375,113 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(fence.contains("for device in 0..DEVICES"));
     assert!(fence.contains("for function in 0..FUNCTIONS"));
     assert_eq!(fence.matches("HandoffAccess::ReadIdentity").count(), 4);
+    assert_eq!(fence.matches("HandoffAccess::ReadClass").count(), 4);
     assert!(fence.contains("let expected = before & !command::BUS_MASTER;"));
     assert!(fence.contains("if found != expected"));
+    assert!(fence.contains(".classify_non_requester(at, identity, class, before, found)"));
     assert!(fence.contains("if current != identity"));
+    assert!(fence.contains("if current_class != class"));
+
+    let profile = pci
+        .split_once("fn classify_non_requester(")
+        .expect("qualified non-requester profile")
+        .1
+        .split_once("/// What an exhaustive entry-time DMA fence observed")
+        .expect("qualified non-requester profile end")
+        .0;
+    for exact in [
+        "at.bus() == 0",
+        "at.device() == 0",
+        "at.function() == 0",
+        "identity == VMWARE_440BX_IDENTITY",
+        "class & CLASS_WITHOUT_REVISION == HOST_BRIDGE_CLASS",
+        "before == VMWARE_HOST_COMMAND",
+        "found == VMWARE_HOST_COMMAND",
+    ] {
+        assert!(profile.contains(exact), "missing `{exact}`");
+    }
+    assert!(
+        !pci.contains("pub fn classify_non_requester("),
+        "only the exhaustive entry fence may mint non-requester authority"
+    );
+    assert!(pci.contains("pub fn take_non_requester(&mut self)"));
+    let pci_syntax = parse("libs/pci-config/src/lib.rs");
+    let non_requester = pci_syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "QualifiedNonRequester" => Some(item),
+            _ => None,
+        })
+        .expect("qualified non-requester authority");
+    assert!(matches!(non_requester.vis, Visibility::Public(_)));
+    assert!(exact_derives(&non_requester.attrs, &["Debug"]));
+    assert!(
+        non_requester
+            .fields
+            .iter()
+            .all(|field| matches!(field.vis, Visibility::Inherited))
+    );
+    assert!(!pci.contains("impl Clone for QualifiedNonRequester"));
+    assert!(!pci.contains("impl Copy for QualifiedNonRequester"));
+
+    let kernel_pci = source("kernel/src/pci.rs");
+    let snapshot = kernel_pci
+        .split_once(
+            "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n)",
+        )
+        .expect("entry-proof-bound topology snapshot")
+        .1
+        .split_once("/// Whether the complete segment-zero topology passed its rooted-tree proof")
+        .expect("policy-bound topology snapshot end")
+        .0;
+    assert!(!snapshot.contains("classify_non_requester("));
+    assert!(snapshot.contains("authority.address() == entry.at"));
+    assert!(snapshot.contains("topology.observe_non_requester("));
+    assert!(snapshot.contains("if let Some(authority) = non_requester {"));
+    assert!(snapshot.contains("TopologyError::QualifiedNonRequesterMissing"));
+    assert!(
+        kernel_pci.contains(
+            "topology_contains_function(at) && TOPOLOGY.lock_leaf().contains_requester(at)"
+        )
+    );
+
+    let inventory = function(&iommu_syntax, "requester_is_present");
+    let mut inventory_paths = ReferencedPaths::default();
+    inventory_paths.visit_item_fn(inventory);
+    assert!(
+        inventory_paths
+            .names
+            .iter()
+            .any(|name| name == "topology_contains_requester")
+    );
+    assert!(
+        inventory_paths
+            .names
+            .iter()
+            .all(|name| name != "topology_contains_function")
+    );
+
+    let coverage = function(&iommu_syntax, "covers_every_present_requester");
+    let mut coverage_paths = ReferencedPaths::default();
+    coverage_paths.visit_item_fn(coverage);
+    assert!(
+        coverage_paths
+            .names
+            .iter()
+            .any(|name| name == "topology_contains_requester")
+    );
+    assert!(
+        coverage_paths
+            .names
+            .iter()
+            .all(|name| name != "topology_contains_function")
+    );
+
+    let main = source("kernel/src/main.rs");
+    assert!(main.contains("let dma_non_requester = early_dma.take_non_requester();"));
+    assert!(main.contains("survey_the_bus(dma_non_requester);"));
+    assert!(main.contains("pci::snapshot_topology(dma_non_requester)"));
 }
 
 #[derive(Default)]
@@ -1660,7 +1765,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(main.contains("pci::TopologyPresence::Empty"));
     assert!(main.contains("if let Err(reason) = apic::enable_after_pending_audit() {"));
     let survey = main
-        .split_once("fn survey_the_bus()")
+        .split_once(
+            "fn survey_the_bus(dma_non_requester: Option<pci_config::QualifiedNonRequester>)",
+        )
         .expect("PCI survey")
         .1
         .split_once("enum StorageSelection")
@@ -1670,7 +1777,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("iommu::establish_fabric_boundary(&mut context)")
         .expect("early VT-d owner");
     let snapshot = survey
-        .find("pci::snapshot_topology()")
+        .find("pci::snapshot_topology(dma_non_requester)")
         .expect("PCI topology snapshot");
     let enumeration = survey.find("pci::enumerate(").expect("PCI enumeration");
     assert!(early < snapshot && snapshot < enumeration);
@@ -3955,7 +4062,7 @@ fn dmar_authority_uses_one_complete_sealed_pci_topology() {
     for (boundary, query) in [
         ("bridge_buses", "topology_bridge_range"),
         ("hierarchy_contains", "topology_hierarchy_contains"),
-        ("requester_is_present", "topology_contains_function"),
+        ("requester_is_present", "topology_contains_requester"),
     ] {
         let mut paths = ReferencedPaths::default();
         paths.visit_item_fn(function(&iommu, boundary));

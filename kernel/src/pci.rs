@@ -24,8 +24,9 @@
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
 use pci_config::{
-    Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, PciTopology,
-    ProbeError, ProbeRetry, ProbedBars, TopologyError, Window, header,
+    Address, Bar, BarEnableError, Class, CommandState, EnableError, FunctionObservation,
+    HeaderType, PciTopology, ProbeError, ProbeRetry, ProbedBars, QualifiedNonRequester,
+    TopologyError, Window, header,
 };
 use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
@@ -64,8 +65,14 @@ pub(crate) struct Function {
     pub(crate) vendor: u16,
     /// Which of theirs it is.
     pub(crate) device: u16,
+    /// Complete vendor/device dword used by the handoff policy.
+    identity: u32,
     /// What it says it is.
     pub(crate) class: Class,
+    /// Complete class dword, including silicon revision.
+    class_bits: u32,
+    /// Command word observed after the entry-time fence.
+    command: u16,
     /// Whether the rest of its header is a bridge's, and whether it has
     /// siblings.
     pub(crate) header: HeaderType,
@@ -168,14 +175,19 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
         return None;
     }
 
-    let class = Class::from_bits(pci::read(at.at(header::CLASS)?)?);
+    let class_bits = pci::read(at.at(header::CLASS)?)?;
+    let class = Class::from_bits(class_bits);
+    let command = pci::read(at.at(header::COMMAND)?)? as u16;
     let header = HeaderType::from_bits((pci::read(at.at(header::HEADER_TYPE)?)? >> 16) as u8);
 
     Some(Function {
         at,
         vendor,
         device: (identity >> 16) as u16,
+        identity,
         class,
+        class_bits,
+        command,
         header,
     })
 }
@@ -189,7 +201,9 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 ///
 /// Returns [`TopologyError`] when bridge identity or routing cannot form one
 /// unambiguous tree rooted at bus zero.
-pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {
+pub(crate) fn snapshot_topology(
+    mut non_requester: Option<QualifiedNonRequester>,
+) -> Result<(), TopologyError> {
     TOPOLOGY.lock_leaf().reset();
     for bus in 0..=u8::MAX {
         for device in 0..pci_config::DEVICES {
@@ -202,11 +216,32 @@ pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {
                 } else {
                     None
                 };
-                TOPOLOGY
-                    .lock_leaf()
-                    .observe(entry.at, entry.class, entry.header, bus_numbers)?;
+                let mut topology = TOPOLOGY.lock_leaf();
+                if let Some(authority) =
+                    non_requester.take_if(|authority| authority.address() == entry.at)
+                {
+                    topology.observe_non_requester(
+                        authority,
+                        FunctionObservation::new(
+                            entry.at,
+                            entry.identity,
+                            entry.class_bits,
+                            entry.command,
+                            entry.class,
+                            entry.header,
+                            bus_numbers,
+                        ),
+                    )?;
+                } else {
+                    topology.observe(entry.at, entry.class, entry.header, bus_numbers)?;
+                }
             }
         }
+    }
+    if let Some(authority) = non_requester {
+        return Err(TopologyError::QualifiedNonRequesterMissing {
+            at: authority.address(),
+        });
     }
     TOPOLOGY.lock_leaf().seal()
 }
@@ -237,6 +272,11 @@ pub(crate) fn topology_contains_function(at: Address) -> bool {
     TOPOLOGY.lock_leaf().contains_function(at)
 }
 
+/// Whether one exact function is a DMA requester in the sealed snapshot.
+pub(crate) fn topology_contains_requester(at: Address) -> bool {
+    topology_contains_function(at) && TOPOLOGY.lock_leaf().contains_requester(at)
+}
+
 /// The first requester in the sealed snapshot, for an interrupt-only boundary.
 pub(crate) fn first_topology_function() -> Option<Address> {
     if !topology_is_sealed() {
@@ -246,7 +286,7 @@ pub(crate) fn first_topology_function() -> Option<Address> {
         for device in 0..pci_config::DEVICES {
             for function in 0..pci_config::FUNCTIONS {
                 let at = Address::new(bus, device, function, 0)?;
-                if topology_contains_function(at) {
+                if topology_contains_requester(at) {
                     return Some(at);
                 }
             }

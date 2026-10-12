@@ -10,6 +10,7 @@ use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+pub use x86_cpuid::DmaHandoffPlatform;
 use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
 use x86_cpuid::{
     CpuidLeaf, Cr4Additions, ExecutionEnvironment, FrequencyHints, SPEC_CTRL_MSR,
@@ -565,13 +566,13 @@ pub fn shared_kernel_mapping_reason(
     x86_cpuid::shared_kernel_mapping_reason(speculation, execution_environment())
 }
 
-/// Whether CPU state binds this boot to a qualified DMA-handoff platform.
+/// CPU-resident identity for the qualified DMA-handoff platform, if any.
 ///
 /// PCI requesters can rewrite guest RAM but cannot forge the architectural
 /// hypervisor leaf. ACPI handoff bytes therefore have authority only on the
 /// exact QEMU TCG and VMware release environments recognized by `x86-cpuid`.
-pub fn dma_handoff_platform_is_authenticated() -> bool {
-    execution_environment().authenticates_dma_handoff()
+pub fn dma_handoff_platform() -> Option<DmaHandoffPlatform> {
+    execution_environment().dma_handoff_platform()
 }
 
 fn execution_environment() -> ExecutionEnvironment {

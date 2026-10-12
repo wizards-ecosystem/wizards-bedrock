@@ -100,6 +100,15 @@ pub struct ExecutionEnvironment {
     kind: ExecutionEnvironmentKind,
 }
 
+/// Requester-inaccessible CPU identity for a qualified DMA-handoff platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmaHandoffPlatform {
+    /// The exact pinned QEMU TCG hypervisor leaf.
+    QemuTcg,
+    /// The exact VMware Workstation hypervisor leaf.
+    Vmware,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionEnvironmentKind {
     QemuTcg,
@@ -146,17 +155,18 @@ impl ExecutionEnvironment {
         }
     }
 
-    /// Whether CPU state binds the boot to a qualified virtual platform.
+    /// Bind a qualified DMA-handoff profile to CPU-resident platform evidence.
     ///
     /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
     /// rewritten by a PCI requester. The exact QEMU TCG and VMware profiles
     /// are the only release platforms permitted to assert the DMA-safe
     /// handoff contract.
-    pub const fn authenticates_dma_handoff(self) -> bool {
-        matches!(
-            self.kind,
-            ExecutionEnvironmentKind::QemuTcg | ExecutionEnvironmentKind::Vmware
-        )
+    pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {
+        match self.kind {
+            ExecutionEnvironmentKind::QemuTcg => Some(DmaHandoffPlatform::QemuTcg),
+            ExecutionEnvironmentKind::Vmware => Some(DmaHandoffPlatform::Vmware),
+            ExecutionEnvironmentKind::Other => None,
+        }
     }
 }
 
@@ -519,11 +529,14 @@ mod tests {
 
     #[test]
     fn only_exact_qualified_hypervisor_leaves_authenticate_dma_handoff() {
-        for (exact, expected) in [(qemu_tcg_leaf(), QEMU_TCG), (vmware_leaf(), VMWARE)] {
+        for (exact, expected, platform) in [
+            (qemu_tcg_leaf(), QEMU_TCG, DmaHandoffPlatform::QemuTcg),
+            (vmware_leaf(), VMWARE, DmaHandoffPlatform::Vmware),
+        ] {
             for leaf_1_ecx in [HYPERVISOR_BIT, u32::MAX] {
                 let observed = ExecutionEnvironment::read(leaf_1_ecx, || exact);
                 assert_eq!(observed, expected);
-                assert!(observed.authenticates_dma_handoff());
+                assert_eq!(observed.dma_handoff_platform(), Some(platform));
             }
 
             for register in 0..4 {
@@ -533,11 +546,11 @@ mod tests {
                     let near_miss = CpuidLeaf::new(words[0], words[1], words[2], words[3]);
                     let observed = ExecutionEnvironment::read(HYPERVISOR_BIT, || near_miss);
                     assert_eq!(observed, OTHER, "register {register} bit {bit} was ignored");
-                    assert!(!observed.authenticates_dma_handoff());
+                    assert_eq!(observed.dma_handoff_platform(), None);
                 }
             }
         }
-        assert!(!OTHER.authenticates_dma_handoff());
+        assert_eq!(OTHER.dma_handoff_platform(), None);
     }
 
     #[test]

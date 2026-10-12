@@ -75,16 +75,24 @@ fn kernel_main(boot: BootInfo) -> ! {
 
     // Checked only once both consoles are up, so that a machine with neither a
     // serial cable nor a supported bootloader still shows why it stopped.
-    let early_dma = match early_dma {
+    let mut early_dma = match early_dma {
         Ok(boundary) => boundary,
         Err(reason) => panic!("DMA-safe boot handoff refused: {reason}"),
     };
     info!("limine: base revision supported");
     info!(
-        "iommu: entry DMA fence covers {} PCI function(s), disabled {} inherited bus master(s)",
+        "iommu: entry DMA fence covers {} PCI function(s), disabled {} inherited bus master(s), retained {} qualified non-requester(s)",
         early_dma.functions(),
-        early_dma.disabled()
+        early_dma.disabled(),
+        early_dma.retained_non_requesters()
     );
+    match early_dma.retained_non_requesters() {
+        0 => info!("iommu: entry DMA fence policy strict"),
+        1 => info!(
+            "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester"
+        ),
+        count => panic!("DMA-safe boot handoff classified {count} non-requesters"),
+    }
 
     // The fault path exists before anything that can fault, so a wrong
     // assumption prints a report instead of resetting (`006`).
@@ -116,6 +124,8 @@ fn kernel_main(boot: BootInfo) -> ! {
         interrupt::arm_access_clear();
     }
 
+    let dma_non_requester = early_dma.take_non_requester();
+
     // After the fault path, because this is the first write through an
     // address the bootloader chose; before everything else, which may want a frame.
     mem::init(boot.memory_map, boot.direct_map, early_dma);
@@ -130,6 +140,7 @@ fn kernel_main(boot: BootInfo) -> ! {
         serial,
         interrupts,
         module: boot.module,
+        dma_non_requester,
     });
     match mem::map_boot_stack() {
         Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
@@ -152,6 +163,7 @@ struct Handoff {
     /// The initrd, which the boot thread reads before it changes stacks and
     /// the loader reads long after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
+    dma_non_requester: Option<pci_config::QualifiedNonRequester>,
 }
 
 static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
@@ -215,6 +227,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
         serial,
         interrupts,
         module,
+        dma_non_requester,
     }) = HANDOFF.lock_leaf().take()
     else {
         panic!("the boot handoff is gone; boot_continue ran twice");
@@ -225,7 +238,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     dev::attach_back_buffer();
     let routing = prepare_keyboard_routing(interrupts).into_masked();
 
-    survey_the_bus();
+    survey_the_bus(dma_non_requester);
     survey_the_filesystems();
     start_interrupts(routing.as_ref());
     input::init();
@@ -439,7 +452,7 @@ fn refuse_pci_for_degraded_boot() {
 /// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
 /// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
 /// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
-fn survey_the_bus() {
+fn survey_the_bus(dma_non_requester: Option<pci_config::QualifiedNonRequester>) {
     if !wost::arch::current::pci::init() {
         warn!("pci: the configuration ports are already claimed; no bus");
         return;
@@ -451,7 +464,7 @@ fn survey_the_bus() {
         warn!("iommu: no early default-deny PCI boundary; storage and interrupts stay closed");
     }
 
-    match pci::snapshot_topology() {
+    match pci::snapshot_topology(dma_non_requester) {
         Ok(()) => info!("pci: complete segment-zero topology sealed"),
         Err(reason) => warn!("pci: DMA topology refused: {reason}"),
     }

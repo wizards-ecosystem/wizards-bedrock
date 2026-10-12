@@ -9,8 +9,9 @@ use pci_config::{
     Address, Bar, BarAuthority, BarAuthorityError, BarAuthorityFailure, BarEnableAccess,
     BarEnableError as ConfigBarEnableError, CommandAccess, CommandState, EnableError,
     EnableFailure, FunctionAuthority, FunctionClaimError, FunctionClaims, FunctionReleaseError,
-    HandoffAccess, HandoffFenceError, HandoffFenceReport, HeaderType, ProbeAccess, ProbeError,
-    ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe, Window, header,
+    HandoffAccess, HandoffFenceError, HandoffFencePolicy, HandoffFenceReport, HeaderType,
+    ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe,
+    Window, header,
 };
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
@@ -112,7 +113,9 @@ impl core::error::Error for DmaHandoffFenceError {}
 ///
 /// If CF8/CFC is unavailable, a function is already owned, or any exhaustive
 /// configuration transaction is uncertain.
-pub fn fence_dma_handoff() -> Result<HandoffFenceReport, DmaHandoffFenceError> {
+pub fn fence_dma_handoff(
+    policy: HandoffFencePolicy,
+) -> Result<HandoffFenceReport, DmaHandoffFenceError> {
     let mut configuration = CONFIGURATION.lock_leaf();
     if configuration.functions.len() != 0 {
         return Err(DmaHandoffFenceError::Busy);
@@ -120,10 +123,12 @@ pub fn fence_dma_handoff() -> Result<HandoffFenceReport, DmaHandoffFenceError> {
     let Some((address, data)) = configuration.ports.as_mut() else {
         return Err(DmaHandoffFenceError::Unavailable);
     };
-    pci_config::fence_dma_handoff(|at, operation| {
+    pci_config::fence_dma_handoff(policy, |at, operation| {
         Port::write(address, at.bits());
         match operation {
-            HandoffAccess::ReadIdentity | HandoffAccess::ReadCommand => Some(Port::read(data)),
+            HandoffAccess::ReadIdentity | HandoffAccess::ReadClass | HandoffAccess::ReadCommand => {
+                Some(Port::read(data))
+            }
             HandoffAccess::WriteCommand(value) => {
                 Port::write(data, u32::from(value));
                 Some(0)

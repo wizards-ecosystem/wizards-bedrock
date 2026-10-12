@@ -29,7 +29,7 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{Ordering, compiler_fence};
-use pci_config::Address;
+use pci_config::{Address, HandoffFencePolicy, QualifiedNonRequester};
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::pci as platform_pci;
@@ -53,6 +53,7 @@ const SEGMENT: u16 = 0;
 pub(crate) struct EarlyDmaBoundary {
     functions: u32,
     disabled: u32,
+    non_requester: Option<QualifiedNonRequester>,
 }
 
 impl EarlyDmaBoundary {
@@ -62,6 +63,14 @@ impl EarlyDmaBoundary {
 
     pub(crate) const fn disabled(&self) -> u32 {
         self.disabled
+    }
+
+    pub(crate) const fn retained_non_requesters(&self) -> u32 {
+        if self.non_requester.is_some() { 1 } else { 0 }
+    }
+
+    pub(crate) fn take_non_requester(&mut self) -> Option<QualifiedNonRequester> {
+        self.non_requester.take()
     }
 }
 
@@ -105,9 +114,11 @@ impl core::error::Error for EarlyDmaError {}
 
 /// Validate the platform DMA contract and fence every requester at entry.
 pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyDmaError> {
-    if !cpu::dma_handoff_platform_is_authenticated() {
-        return Err(EarlyDmaError::UnauthenticatedPlatform);
-    }
+    let platform = cpu::dma_handoff_platform().ok_or(EarlyDmaError::UnauthenticatedPlatform)?;
+    let policy = match platform {
+        cpu::DmaHandoffPlatform::QemuTcg => HandoffFencePolicy::strict(),
+        cpu::DmaHandoffPlatform::Vmware => HandoffFencePolicy::vmware_440bx(),
+    };
     if !boot.base_revision_supported {
         return Err(EarlyDmaError::BaseRevision);
     }
@@ -134,11 +145,13 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
             DmaHandoffFenceError::Unavailable,
         ));
     }
-    let report = platform_pci::fence_dma_handoff().map_err(EarlyDmaError::Configuration)?;
+    let mut report =
+        platform_pci::fence_dma_handoff(policy).map_err(EarlyDmaError::Configuration)?;
     compiler_fence(Ordering::SeqCst);
     Ok(EarlyDmaBoundary {
         functions: report.functions(),
         disabled: report.disabled(),
+        non_requester: report.take_non_requester(),
     })
 }
 
@@ -498,7 +511,7 @@ fn covers_every_present_requester(
                 let Some(at) = Address::new(bus, device, function, 0) else {
                     return false;
                 };
-                if !pci::topology_contains_function(at) {
+                if !pci::topology_contains_requester(at) {
                     continue;
                 }
                 let requester = Bdf::new(SEGMENT, bus, device, function);
@@ -541,7 +554,7 @@ fn hierarchy_contains(root: Bdf, target: Bdf) -> bool {
     pci::topology_hierarchy_contains(root, target)
 }
 
-/// Whether one exact requester ID currently answers configuration reads.
+/// Whether one exact requester ID is present in the sealed DMA inventory.
 ///
 /// Presence comes from the same sealed, all-function snapshot as ancestry.
 fn requester_is_present(at: Bdf) -> bool {
@@ -549,7 +562,7 @@ fn requester_is_present(at: Bdf) -> bool {
         return false;
     }
     Address::new(at.bus(), at.device(), at.function(), 0)
-        .is_some_and(pci::topology_contains_function)
+        .is_some_and(pci::topology_contains_requester)
 }
 
 fn unit_for(at: Address) -> Option<Unit> {

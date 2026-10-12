@@ -30,6 +30,8 @@ const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
 const VMX_NAME: &str = "bedrock.vmx";
 const DISPLAY_NAME: &str = "The Wizard's Bedrock";
 const VMWARE_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: rdcl_no";
+const VMWARE_DMA_HANDOFF_MARKER: &str =
+    "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Heads per cylinder in the geometry VMware expects.
@@ -360,6 +362,7 @@ impl TranscriptMarker {
 }
 
 const SELFTEST_MARKERS: &[TranscriptMarker] = &[
+    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
     TranscriptMarker::Exact("cpu: protections wp smep smap umip nx"),
     TranscriptMarker::ExtendedState,
     TranscriptMarker::LocalApic,
@@ -378,6 +381,7 @@ const SELFTEST_MARKERS: &[TranscriptMarker] = &[
 ];
 
 const SHIPPED_MARKERS: &[TranscriptMarker] = &[
+    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
     TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),
     TranscriptMarker::Nvme,
     TranscriptMarker::Fat32,
@@ -932,6 +936,46 @@ mod tests {
                 _ => format!("[info ] {}\n", marker.example()),
             })
             .collect()
+    }
+
+    #[test]
+    fn the_vmware_dma_handoff_marker_is_required_by_both_selectors() {
+        for markers in [SELFTEST_MARKERS, SHIPPED_MARKERS] {
+            assert_eq!(
+                markers
+                    .iter()
+                    .filter(|marker| matches!(
+                        marker,
+                        TranscriptMarker::Exact(message)
+                            if *message == VMWARE_DMA_HANDOFF_MARKER
+                    ))
+                    .count(),
+                1,
+                "each VMware selector must require exactly one consumed DMA policy witness"
+            );
+        }
+
+        let kernel = std::fs::read_to_string(repository_root().join("kernel/src/main.rs"))
+            .expect("reading kernel entry source");
+        assert!(
+            kernel.contains(VMWARE_DMA_HANDOFF_MARKER),
+            "the verifier marker must remain the kernel's exact emitted record"
+        );
+
+        let root = repository_root();
+        let record = format!("[info ] {VMWARE_DMA_HANDOFF_MARKER}\n");
+        for (selector, transcript) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            verify_transcript(&root, selector, transcript.as_bytes())
+                .expect("canonical VMware DMA witness");
+            let omitted = transcript.replacen(&record, "", 1);
+            assert!(
+                verify_transcript(&root, selector, omitted.as_bytes()).is_err(),
+                "selector accepted a transcript without its VMware DMA witness"
+            );
+        }
     }
 
     /// The transcript with two markers' records exchanged.

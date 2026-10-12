@@ -952,6 +952,7 @@ const SELFTEST_CHECK_FAILED: &str = " FAILED";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
 
 const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: qemu_tcg";
+const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
@@ -986,6 +987,7 @@ const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
     RequiredLogRecord::info(NVME_FALLBACK_MARKER),
     RequiredLogRecord::info(
@@ -1085,6 +1087,7 @@ struct SerialObservation {
     baseline: Option<PerformanceSample>,
     nvme_stack: Option<StackSample>,
     qemu_tcg_isolation: bool,
+    strict_dma_handoff: bool,
     /// Ordered failures, so mutation grading cannot accept an unrelated red
     /// (D-134).
     failed: Vec<String>,
@@ -1486,6 +1489,13 @@ fn observe_selftest_line(
         observation.failed.push(name.to_string());
         return Ok(PanicTransition::Unchanged);
     }
+    if is_exact_log_message(line, LogSeverity::Info, STRICT_DMA_HANDOFF_MARKER) {
+        if observation.strict_dma_handoff {
+            bail!("the self-test kernel printed the strict DMA handoff more than once");
+        }
+        observation.strict_dma_handoff = true;
+        return Ok(PanicTransition::Unchanged);
+    }
     if is_exact_log_message(line, LogSeverity::Info, QEMU_TCG_ISOLATION_MARKER) {
         if observation.qemu_tcg_isolation {
             bail!("the self-test kernel printed the TCG isolation decision more than once");
@@ -1560,6 +1570,9 @@ fn correlate_selftest(
     }
     if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {
         bail!("self-test passed without consuming the exact QEMU TCG isolation policy");
+    }
+    if verdict.status == VerdictStatus::Pass && !observation.strict_dma_handoff {
+        bail!("self-test passed without the strict QEMU DMA-handoff policy");
     }
     if verdict.status == VerdictStatus::Pass {
         let sample = observation
@@ -2445,6 +2458,7 @@ pub const DEGRADED_USER_MARKER: &str =
     "user: no program: maskable interrupts are not admitted; ring 3 is closed";
 
 const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
     NO_X2APIC_RECORD,
     RequiredLogRecord::info(DEGRADED_FILESYSTEM_MARKER),
@@ -2465,6 +2479,7 @@ pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 /// first candidate's clean retirement proves the refusal path returns the
 /// lease exactly.
 const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
     RequiredLogRecord::warning(NO_ISOLATION_MARKER),
     RequiredLogRecord::info(NVME_FALLBACK_MARKER),
@@ -3502,6 +3517,7 @@ mod tests {
         assert_eq!(
             SHIPPED_REQUIRED_MARKERS,
             &[
+                RequiredLogRecord::info("iommu: entry DMA fence policy strict"),
                 RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
                 RequiredLogRecord::info("nvme: candidate 1 retired cleanly; trying next"),
                 RequiredLogRecord::info(
@@ -3513,6 +3529,7 @@ mod tests {
         assert_eq!(
             DEGRADED_REQUIRED_MARKERS,
             &[
+                RequiredLogRecord::info("iommu: entry DMA fence policy strict"),
                 RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
                 RequiredLogRecord::warning(
                     "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off"
@@ -3525,6 +3542,16 @@ mod tests {
                 RequiredLogRecord::warning(
                     "user: no program: maskable interrupts are not admitted; ring 3 is closed"
                 ),
+            ]
+        );
+        assert_eq!(
+            UNISOLATED_REQUIRED_MARKERS,
+            &[
+                RequiredLogRecord::info("iommu: entry DMA fence policy strict"),
+                RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
+                RequiredLogRecord::warning("storage: no DMA isolation"),
+                RequiredLogRecord::info("nvme: candidate 1 retired cleanly; trying next"),
+                RequiredLogRecord::info("nvme: no usable controller"),
             ]
         );
         assert_eq!(
@@ -4338,6 +4365,7 @@ mod tests {
             baseline: None,
             nvme_stack: None,
             qemu_tcg_isolation: true,
+            strict_dma_handoff: true,
             failed: Vec::new(),
             panic: None,
             panic_complete: false,
@@ -4394,6 +4422,7 @@ mod tests {
             baseline: None,
             nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
+            strict_dma_handoff: true,
             panic: None,
             panic_complete: false,
         };
@@ -4405,6 +4434,7 @@ mod tests {
             baseline: None,
             nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
+            strict_dma_handoff: true,
             panic: None,
             panic_complete: false,
         };
@@ -4452,6 +4482,7 @@ mod tests {
                 baseline: None,
                 nvme_stack: sample,
                 qemu_tcg_isolation: true,
+                strict_dma_handoff: true,
                 panic: None,
                 panic_complete: false,
             };
@@ -4468,11 +4499,25 @@ mod tests {
             baseline: None,
             nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: false,
+            strict_dma_handoff: true,
             panic: None,
             panic_complete: false,
         };
         let error = correlate_selftest(Some(SELFTEST_PASSED), without_policy).unwrap_err();
         assert!(error.to_string().contains("without consuming"));
+
+        let without_dma_policy = SerialObservation {
+            failed: Vec::new(),
+            verdict: Some(passing_verdict()),
+            baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
+            qemu_tcg_isolation: true,
+            strict_dma_handoff: false,
+            panic: None,
+            panic_complete: false,
+        };
+        let error = correlate_selftest(Some(SELFTEST_PASSED), without_dma_policy).unwrap_err();
+        assert!(error.to_string().contains("strict QEMU DMA-handoff"));
 
         for near_miss in [
             QEMU_TCG_ISOLATION_MARKER.to_string(),
@@ -4487,8 +4532,22 @@ mod tests {
             ));
         }
 
+        for near_miss in [
+            STRICT_DMA_HANDOFF_MARKER.to_string(),
+            format!("[warn ] {STRICT_DMA_HANDOFF_MARKER}"),
+            format!("[info ] {STRICT_DMA_HANDOFF_MARKER} trailing"),
+        ] {
+            assert!(!is_exact_log_message(
+                &near_miss,
+                LogSeverity::Info,
+                STRICT_DMA_HANDOFF_MARKER
+            ));
+        }
+
         let exact = format!("[info ] {QEMU_TCG_ISOLATION_MARKER}\r\n");
+        let strict = format!("[info ] {STRICT_DMA_HANDOFF_MARKER}\r\n");
         let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, &strict).unwrap();
         observe_selftest_line(&mut observation, &exact).unwrap();
         observe_selftest_line(&mut observation, stack_line()).unwrap();
         observation.verdict = Some(passing_verdict());
@@ -4516,6 +4575,7 @@ mod tests {
                 baseline: None,
                 nvme_stack: Some(passing_stack_sample()),
                 qemu_tcg_isolation: true,
+                strict_dma_handoff: true,
                 panic: None,
                 panic_complete: false,
             };
@@ -4536,6 +4596,7 @@ mod tests {
             baseline: None,
             nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
+            strict_dma_handoff: true,
             panic: None,
             panic_complete: false,
         };
@@ -4554,6 +4615,7 @@ mod tests {
             baseline: None,
             nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
+            strict_dma_handoff: true,
             panic: None,
             panic_complete: false,
         };
@@ -5024,8 +5086,8 @@ mod tests {
         );
         assert_eq!(
             UNISOLATED_REQUIRED_MARKERS.len(),
-            4,
-            "the unisolated boot requires the TCG policy, the refusal, the clean retirement and the empty selection"
+            5,
+            "the unisolated boot requires the strict fence, TCG policy, refusal, clean retirement and empty selection"
         );
         let qemu = include_str!("qemu.rs");
         let storage = qemu
