@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1803;
+pub const NEXT_MUTATION_ID: u16 = 1822;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -13215,8 +13215,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1547,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.set_interrupt_table()?;\n        self.invalidate_interrupt_cache()?;\n        self.switch_interrupt_remapping(true)?;\n        self.switch_translation(true)\n    }",
-        replace: "        self.set_interrupt_table()?;\n        self.invalidate_interrupt_cache()?;\n        self.switch_interrupt_remapping(true)\n    }",
+        find: "        self.switch_interrupt_remapping(true)?;\n        self.switch_translation(true)?;\n        self.drain_dma()?;",
+        replace: "        self.switch_interrupt_remapping(true)?;\n        self.drain_dma()?;",
         breaks: "the unit is programmed but translation is never switched on",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13226,8 +13226,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1548,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        (self.function.device() << 3) | self.function.function()\n",
-        replace: "        (self.function.device() << 3) | (self.function.function() ^ 1)\n",
+        find: "        (function.device() << 3) | function.function()\n",
+        replace: "        (function.device() << 3) | (function.function() ^ 1)\n",
         breaks: "the context entry is written for a sibling function, so the storage function has no translation",
         reddens: Caught::Check("translation is active for the storage function"),
     },
@@ -13264,23 +13264,23 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1552,
         file: "libs/vtd/src/lib.rs",
-        find: "pub const fn takeover_command(_status: u32) -> u32 {\n    0\n}",
-        replace: "pub const fn takeover_command(_status: u32) -> u32 {\n    gcmd::IRE | gcmd::CFI\n}",
+        find: "status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0",
+        replace: "status & (gsts::TES | gsts::QIES) == 0",
         breaks: "taking the unit over inherits firmware interrupt and compatibility-bypass state",
         reddens: Caught::HostTest {
             package: "vtd",
-            name: "tests::the_takeover_command_clears_every_firmware_state",
+            name: "tests::takeover_requires_every_firmware_facility_to_be_inactive",
         },
     },
     Mutation {
         id: 1553,
         file: "libs/vtd/src/lib.rs",
-        find: "    (status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS)) == 0",
-        replace: "    (status & (gsts::TES | gsts::IRES | gsts::CFIS)) == 0",
-        breaks: "a unit with queued invalidation still enabled counts as quiesced",
+        find: "status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0",
+        replace: "status & (gsts::TES | gsts::IRES | gsts::CFIS) == 0",
+        breaks: "takeover accepts a unit whose firmware invalidation queue is still live",
         reddens: Caught::HostTest {
             package: "vtd",
-            name: "tests::quiescence_requires_every_translation_and_bypass_off",
+            name: "tests::takeover_requires_every_firmware_facility_to_be_inactive",
         },
     },
     Mutation {
@@ -18724,18 +18724,18 @@ fn mint_stopped<'controller>(
         breaks: "a sub-hierarchy requester scan visits none of the buses behind its bridge",
         reddens: Caught::HostTest {
             package: "acpi-tables",
-            name: "tests::requester_inventory_expands_hierarchies_and_refuses_catch_all_and_overflow",
+            name: "tests::requester_inventory_expands_hierarchies_catch_all_and_refuses_overflow",
         },
     },
     Mutation {
         id: 1668,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "        if unit.coverage == Coverage::CatchAll {\n            return Err(RequesterInventoryError::SelectedUsesCatchAll);\n        }",
-        replace: "        let _selected_coverage = unit.coverage;",
-        breaks: "catch-all governance is allowed to masquerade as a fixed requester inventory",
+        find: "        if self.sole_complete_unit_register_base(selected.segment()) == Some(unit.register_base) {",
+        replace: "        if unit.coverage == Coverage::CatchAll {",
+        breaks: "a sole catch-all unit with a more-specific scope does not inventory the complete segment",
         reddens: Caught::HostTest {
             package: "acpi-tables",
-            name: "tests::requester_inventory_refuses_unresolved_foreign_and_catch_all_selection",
+            name: "tests::requester_inventory_expands_hierarchies_catch_all_and_refuses_overflow",
         },
     },
     Mutation {
@@ -18807,9 +18807,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1675,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.drain_dma()?;",
-        replace: "        let _requests_issued_before_the_fences_may_remain_live = ();",
-        breaks: "an already-disabled unit publishes a new root without an architected DMA drain boundary",
+        find: "        self.switch_translation(true)?;\n        self.drain_dma()?;\n        self.boundary_active()",
+        replace: "        self.switch_translation(true)?;\n        self.boundary_active()",
+        breaks: "pre-boundary DMA is not drained after the empty root becomes active",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
@@ -18851,8 +18851,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1679,
         file: "kernel/src/main.rs",
-        find: "fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {\n    let outcome = match stage {",
-        replace: "fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {\n    let stack_regression = [0u8; 4096];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
+        find: "fn isolate_candidate(stage: &mut CandidateStage) {\n    let outcome = match stage {",
+        replace: "fn isolate_candidate(stage: &mut CandidateStage) {\n    let stack_regression = [0u8; 4096];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
         breaks: "unit isolation again consumes a large candidate-stack frame instead of borrowing its owners in a thin sibling stage",
         reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
     },
@@ -19244,8 +19244,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1715,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
-        replace: "        if false && !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
+        find: "            || !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
+        replace: "            || false && !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
         breaks: "an interrupt-isolation proof is minted while interrupt remapping is off",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19277,8 +19277,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1718,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "            if self.interrupts.read_u64(index)? != 0 {",
-        replace: "            if self.interrupts.read_u64(index)? == u64::MAX {",
+        find: "            if self.interrupts.read_u64(index) != Some(0) {",
+        replace: "            if self.interrupts.read_u64(index) == Some(u64::MAX) {",
         breaks: "an interrupt-isolation proof accepts present or otherwise nonzero remapping entries",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19288,8 +19288,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1719,
         file: "kernel/src/iommu.rs",
-        find: "    if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
-        replace: "    if false && (!dmar.interrupt_remapping() || dmar.x2apic_opt_out()) {",
+        find: "    let Ok(dmar) = Dmar::new(table) else {\n        return false;\n    };\n    if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
+        replace: "    let Ok(dmar) = Dmar::new(table) else {\n        return false;\n    };\n    if false && (!dmar.interrupt_remapping() || dmar.x2apic_opt_out()) {",
         breaks: "kernel VT-d lookup ignores firmware's missing IR support or x2APIC opt-out",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19398,7 +19398,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1729,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        for index in 0..4 {\n            if self.interrupts.read_u64(index)? != 0 {\n                return None;\n            }\n        }",
+        find: "        for index in 0..4 {\n            if self.interrupts.read_u64(index) != Some(0) {\n                return false;\n            }\n        }",
         replace: "        let _unchecked_interrupt_entries = &self.interrupts;",
         breaks: "interrupt isolation is minted without reading back the deny-all table entries",
         reddens: Caught::HostTest {
@@ -19505,8 +19505,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1739,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.mask_fault_interrupt()?;\n        self.quiesce()?;",
-        replace: "        self.quiesce()?;",
+        find: "        self.mask_fault_interrupt()?;\n        self.set_root_table()?;",
+        replace: "        self.set_root_table()?;",
         breaks: "VT-d takeover leaves its non-remapped fault-event MSI armed",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19538,9 +19538,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1742,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.switch_translation(false)?;\n        self.interrupt_isolation()",
-        replace: "        self.switch_translation(false)?;\n        self.switch_interrupt_remapping(false)?;\n        self.interrupt_isolation()",
-        breaks: "candidate retirement reopens compatibility-format vector delivery before fallback",
+        find: "        let function = self.function.ok_or(VtdError::NoActiveDomain)?;\n        write_entry(&mut self.root, function.bus(), 0, 0)?;",
+        replace: "        let function = self.function.ok_or(VtdError::NoActiveDomain)?;\n        self.switch_translation(false)?;\n        write_entry(&mut self.root, function.bus(), 0, 0)?;",
+        breaks: "candidate retirement opens an unrestricted-DMA interval before fallback",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
@@ -20186,6 +20186,212 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
+    },
+    Mutation {
+        id: 1803,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        (units.next().is_none() && unit_segment == segment).then_some(register_base)",
+        replace: "        units.next().is_none().then_some(register_base)",
+        breaks: "the early owner accepts the sole remapping unit from another PCI segment",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_single_catch_all_drhd_without_rmrr_exposes_its_register_base",
+        },
+    },
+    Mutation {
+        id: 1804,
+        file: "kernel/src/main.rs",
+        find: "    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology() {",
+        replace: "    match pci::snapshot_topology() {\n        Ok(()) => info!(\"pci: complete segment-zero topology sealed\"),\n        Err(reason) => warn!(\"pci: DMA topology refused: {reason}\"),\n    }\n\n    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology() {",
+        breaks: "PCI topology is observed before the default-deny DMA owner exists",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1805,
+        file: "kernel/src/iommu.rs",
+        find: "        pci::TopologyPresence::Empty | pci::TopologyPresence::Present => {}",
+        replace: "        pci::TopologyPresence::Empty => return true,\n        pci::TopologyPresence::Present => {}",
+        breaks: "an empty PCI snapshot substitutes for a real installed VT-d owner",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1806,
+        file: "libs/vtd/src/lib.rs",
+        find: "status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0",
+        replace: "status & (gsts::QIES | gsts::IRES | gsts::CFIS) == 0",
+        breaks: "takeover attempts a live non-identical root replacement while translation is active",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::takeover_requires_every_firmware_facility_to_be_inactive",
+        },
+    },
+    Mutation {
+        id: 1807,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    DmarStructure::Drhd {\n                        include_pci_all: true,\n                        register_base: candidate,\n                        ..\n                    } if candidate == register_base",
+        replace: "                    DmarStructure::Drhd {\n                        include_pci_all: _,\n                        register_base: candidate,\n                        ..\n                    } if candidate == register_base",
+        breaks: "a scoped unit is mistaken for a whole-segment DMA boundary",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_single_catch_all_drhd_without_rmrr_exposes_its_register_base",
+        },
+    },
+    Mutation {
+        id: 1808,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if self.entries().any(\n            |structure| matches!(structure, DmarStructure::Rmrr { segment: reserved, .. } if reserved == segment),\n        ) {\n            return None;\n        }",
+        replace: "        let _reserved_regions_are_ignored = segment;",
+        breaks: "early takeover revokes a firmware-reserved DMA mapping before refusing the machine",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_single_catch_all_drhd_without_rmrr_exposes_its_register_base",
+        },
+    },
+    Mutation {
+        id: 1809,
+        file: "xtask/src/qemu.rs",
+        find: "    table[0..4].copy_from_slice(b\"WZDM\");",
+        replace: "    table[0..4].copy_from_slice(b\"XZDM\");",
+        breaks: "the qualified QEMU coverage attestation has another ACPI signature",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_fixed_qemu_dma_coverage_names_the_real_unit",
+        },
+    },
+    Mutation {
+        id: 1810,
+        file: "xtask/src/qemu.rs",
+        find: "                | \"-acpitable\"\n                | \"--acpitable\"\n",
+        replace: "",
+        breaks: "interactive arguments can append a competing DMA coverage attestation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::interactive_arguments_cannot_replace_the_tcg_profile",
+        },
+    },
+    Mutation {
+        id: 1811,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !takeover_ready(status) {\n            return Establishment::Refused {\n                reason: VtdError::FirmwareFacilitiesActive { status },\n                registers,\n            };\n        }",
+        replace: "        if status == u32::MAX {\n            return Establishment::Refused {\n                reason: VtdError::FirmwareFacilitiesActive { status },\n                registers,\n            };\n        }",
+        breaks: "the post-allocation firmware-state preflight is removed before the first unit write",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1812,
+        file: "xtask/src/qemu.rs",
+        find: "    let file = path\n        .file_name()\n        .expect(\"a reserved QEMU DMA coverage path has a file name\")\n        .to_string_lossy()",
+        replace: "    let file = path.to_string_lossy()",
+        breaks: "the Windows QEMU ACPI parser receives an absolute drive path as a colon-separated file list",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_fixed_qemu_dma_coverage_names_the_real_unit",
+        },
+    },
+    Mutation {
+        id: 1813,
+        file: "xtask/src/qemu.rs",
+        find: "        let mut child = Command::new(&installation.emulator)\n            .current_dir(vars.directory())\n            .args(machine_args(Remapping::Present))\n            .args(coverage.arguments())\n            .args([\"-S\", \"-display\", \"none\", \"-serial\", \"null\", \"-no-reboot\"])",
+        replace: "        let mut child = Command::new(&installation.emulator)\n            .current_dir(vars.directory())\n            .args(machine_args(Remapping::Present))\n            .args([\"-S\", \"-display\", \"none\", \"-serial\", \"null\", \"-no-reboot\"])",
+        breaks: "the debugger runner bypasses the qualified DMA coverage attestation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::every_qemu_runner_pins_the_exact_tcg_profile",
+        },
+    },
+    Mutation {
+        id: 1814,
+        file: "kernel/src/iommu.rs",
+        find: "        Establishment::Retained { reason, isolation } => {\n            warn!(\"iommu: the early default-deny takeover is uncertain: {reason}\");\n            install(InstalledUnit {\n                register_base,\n                isolation,\n                fences: UnitFences::empty(),\n                state: InstalledState::Quarantined,\n            });",
+        replace: "        Establishment::Retained { reason, isolation } => {\n            warn!(\"iommu: the early default-deny takeover is uncertain: {reason}\");\n            install(InstalledUnit {\n                register_base,\n                isolation,\n                fences: UnitFences::empty(),\n                state: InstalledState::Ready,\n            });",
+        breaks: "a failed post-enable takeover drain is recorded as a reusable early owner",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
+    },
+    Mutation {
+        id: 1815,
+        file: "kernel/src/iommu.rs",
+        find: "    if owner.state != InstalledState::Ready {\n        warn!(\"iommu: the early owner is quarantined and cannot be retargeted\");",
+        replace: "    if false && owner.state != InstalledState::Ready {\n        warn!(\"iommu: the early owner is quarantined and cannot be retargeted\");",
+        breaks: "a quarantined early owner can be revived by a later candidate retarget",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
+    },
+    Mutation {
+        id: 1816,
+        file: "kernel/src/iommu.rs",
+        find: "    (coverage.segment() == SEGMENT && coverage.register_base() == register_base)\n        .then_some(register_base)",
+        replace: "    (coverage.segment() == SEGMENT).then_some(register_base)",
+        breaks: "a platform coverage attestation can name a different physical remapping unit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1817,
+        file: "kernel/src/iommu.rs",
+        find: "acpi::find_unique_table(firmware, root, Sdt::DMA_COVERAGE)",
+        replace: "acpi::find_table(firmware, root, Sdt::DMA_COVERAGE)",
+        breaks: "the first of multiple platform coverage attestations can authorize takeover",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1818,
+        file: "kernel/src/iommu.rs",
+        find: "acpi::find_unique_table(firmware, root, Sdt::DMAR)",
+        replace: "acpi::find_table(firmware, root, Sdt::DMAR)",
+        breaks: "the first of multiple DMAR tables can corroborate early takeover authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1819,
+        file: "kernel/src/acpi.rs",
+        find: "                if require_unique {\n                    warn!(\"acpi: duplicate {signature:?} tables refuse unique authority\");\n                    return None;\n                }",
+        replace: "                if false && require_unique {\n                    warn!(\"acpi: duplicate {signature:?} tables refuse unique authority\");\n                    return None;\n                }",
+        breaks: "unique ACPI authority lookup silently returns the first duplicate table",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1820,
+        file: "xtask/src/api.rs",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu.rs\",\n        owner: \"qemu::RunDmaCoverage\",\n        member: \"create\",\n        implemented_trait: None,\n        produced: \"qemu::RunDmaCoverage\",\n    },",
+        replace: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu.rs\",\n        owner: \"qemu::RunDmaCoverage\",\n        member: \"arguments\",\n        implemented_trait: None,\n        produced: \"qemu::RunDmaCoverage\",\n    },",
+        breaks: "the API audit activates DMA-attestation cleanup at a non-producing method",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::every_reviewed_drop_producer_resolves_in_the_current_source",
+        },
+    },
+    Mutation {
+        id: 1821,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "    /// The unit can govern functions not named by an endpoint scope.\n    IncludesAllPci,",
+        replace: "    /// The selected function is governed only by catch-all coverage.\n    SelectedUsesCatchAll,\n    /// The unit can govern functions not named by an endpoint scope.\n    IncludesAllPci,",
+        breaks: "the retired catch-all selection refusal returns as dead public API",
+        reddens: Caught::ApiAudit("variant RequesterInventoryError::SelectedUsesCatchAll"),
     },
 ];
 

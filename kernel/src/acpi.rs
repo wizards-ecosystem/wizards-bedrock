@@ -95,6 +95,24 @@ pub(crate) fn find_table(
     root: Rsdp,
     signature: [u8; 4],
 ) -> Option<Vec<u8>> {
+    find_table_with_multiplicity(firmware, root, signature, false)
+}
+
+/// The only table with `signature`, refusing duplicate authority.
+pub(crate) fn find_unique_table(
+    firmware: FirmwareMemory,
+    root: Rsdp,
+    signature: [u8; 4],
+) -> Option<Vec<u8>> {
+    find_table_with_multiplicity(firmware, root, signature, true)
+}
+
+fn find_table_with_multiplicity(
+    firmware: FirmwareMemory,
+    root: Rsdp,
+    signature: [u8; 4],
+    require_unique: bool,
+) -> Option<Vec<u8>> {
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         // The XSDT wherever it exists: the RSDT's entries are 32-bit and
         // cannot name a table above 4 GiB.
@@ -123,6 +141,7 @@ pub(crate) fn find_table(
         }
     };
 
+    let mut found = None;
     let mut pointers = pointers;
     let mut next_pointer = core::iter::Iterator::next(&mut pointers);
     while let Some(entry) = next_pointer {
@@ -133,10 +152,20 @@ pub(crate) fn find_table(
         if let Ok(header) = Sdt::parse(&table)
             && header.signature() == signature
         {
-            return Some(table);
+            if found.is_some() {
+                if require_unique {
+                    warn!("acpi: duplicate {signature:?} tables refuse unique authority");
+                    return None;
+                }
+                return found;
+            }
+            if !require_unique {
+                return Some(table);
+            }
+            found = Some(table);
         }
     }
-    None
+    found
 }
 
 /// A whole table at a physical address, read in two steps.

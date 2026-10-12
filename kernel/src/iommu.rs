@@ -1,13 +1,15 @@
 //! The storage controller's DMA-remapping domain (D-357).
 //!
 //! Firmware's DMAR names the VT-d unit that governs a PCI function; this
-//! module reads that table once at boot, then for each storage candidate proves
-//! a complete bounded inventory of the live PCI requesters governed by the
-//! exact unit. The candidate is already BME-off; every sibling requester is
-//! exclusively claimed and fenced BME-off before `wost` takes over the
-//! unit-wide registers. The installed owner keeps those fences together with
-//! every table and register mapping until observed release, and uncertain
-//! transition or owner return retains the whole boundary. Firmware-reserved
+//! module reads that table once at boot, installs an empty unit root before
+//! topology discovery, then for each storage candidate proves a complete
+//! bounded inventory of the live PCI requesters governed by that exact unit.
+//! The candidate is already BME-off; every observed sibling requester is
+//! exclusively claimed and fenced BME-off as defence in depth. The installed
+//! owner keeps translation default-deny across discovery and fallback, keeps
+//! those fences together with every table and register mapping until observed
+//! release, and retains the whole boundary after an uncertain transition or
+//! owner return. Firmware-reserved
 //! DMA regions are unsupported until a trusted physical ledger can distinguish
 //! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master
 //! admission all go through the installed domain, while candidate retirement
@@ -19,7 +21,9 @@
 //! Nothing here allocates on the heap inside a candidate: a slab the heap grows
 //! into never returns its frame, and the candidate baseline counts frames.
 
-use acpi_tables::{Bdf, BusRange, Dmar, RequesterInventory, RequesterInventoryError, Sdt};
+use acpi_tables::{
+    Bdf, BusRange, DmaCoverage, Dmar, RequesterInventory, RequesterInventoryError, Sdt,
+};
 use core::ops::{Deref, DerefMut};
 #[cfg(feature = "selftest")]
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +45,10 @@ const SEGMENT: u16 = 0;
 /// Firmware's validated DMAR, read once before any candidate exists and kept
 /// for the rest of the boot.
 static DMAR: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
+
+/// Optional unique platform attestation for a sole scoped DMAR whose physical
+/// unit nevertheless intercepts the complete segment.
+static DMA_COVERAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
 /// The established unit: the candidate's while it runs and the kept
 /// controller's once one is selected. A thread lock rather than a leaf
@@ -70,13 +78,13 @@ static RETAINED_FENCES: SpinLock<Option<UnitFences>> = SpinLock::new(None);
 static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; pci::FUNCTION_AUTHORITY_LIMIT]);
 
-/// Last complete live requester inventory installed by a successful takeover.
+/// Last complete live requester inventory installed by a successful retarget.
 #[cfg(feature = "selftest")]
 static INSTALLED_REQUESTERS: AtomicUsize = AtomicUsize::new(0);
 
-/// Successful unit takeovers, including the candidate replaced by fallback.
+/// Successful candidate retargets, including the candidate replaced by fallback.
 #[cfg(feature = "selftest")]
-static SUCCESSFUL_TAKEOVERS: AtomicUsize = AtomicUsize::new(0);
+static SUCCESSFUL_RETARGETS: AtomicUsize = AtomicUsize::new(0);
 
 /// Read and validate firmware's DMAR while the heap is still free to grow.
 ///
@@ -86,7 +94,20 @@ pub(crate) fn discover(rsdp: u64) {
     let Some((firmware, root)) = acpi::parse_root(rsdp) else {
         return;
     };
-    let Some(table) = acpi::find_table(firmware, root, Sdt::DMAR) else {
+    if let Some(table) = acpi::find_unique_table(firmware, root, Sdt::DMA_COVERAGE) {
+        match DmaCoverage::new(&table) {
+            Ok(coverage) => {
+                info!(
+                    "iommu: platform attests complete segment {} coverage at {:#x}",
+                    coverage.segment(),
+                    coverage.register_base()
+                );
+                *DMA_COVERAGE.lock_leaf() = Some(table.leak());
+            }
+            Err(reason) => warn!("iommu: DMA coverage attestation refused: {reason}"),
+        }
+    }
+    let Some(table) = acpi::find_unique_table(firmware, root, Sdt::DMAR) else {
         warn!("iommu: firmware lists no dmar table");
         return;
     };
@@ -99,6 +120,107 @@ pub(crate) fn discover(rsdp: u64) {
     };
     info!("iommu: dmar lists {units} remapping unit(s)");
     *DMAR.lock_leaf() = Some(table.leak());
+}
+
+/// Install the sole segment-zero unit's empty root before PCI discovery.
+pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
+    if INSTALLED.lock().is_some() {
+        return false;
+    }
+    let Some(table) = *DMAR.lock_leaf() else {
+        warn!("iommu: no validated dmar for the early DMA boundary");
+        return false;
+    };
+    let Ok(dmar) = Dmar::new(table) else {
+        return false;
+    };
+    if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {
+        warn!("iommu: platform interrupt remapping is unavailable or opts out of x2apic");
+        return false;
+    }
+    let Some(register_base) = early_register_base(&dmar) else {
+        warn!(
+            "iommu: early ownership requires one RMRR-free segment-zero unit with complete static coverage"
+        );
+        return false;
+    };
+    let mapping = match mem::map_device(context, register_base, REGISTER_WINDOW) {
+        Some(Ok(mapping)) => mapping,
+        Some(Err(reason)) => {
+            warn!("iommu: registers at {register_base:#x} not mapped: {reason}");
+            return false;
+        }
+        None => {
+            warn!("iommu: no active address space for the early DMA boundary");
+            return false;
+        }
+    };
+    let registers = match mapping.claim_releasable() {
+        Ok(registers) => registers,
+        Err(mapping) => {
+            warn!("iommu: the early unit mapping is absent from the active root");
+            retain_mapping(mapping);
+            return false;
+        }
+    };
+    let isolation = match Vtd::establish_deny_all(registers, true) {
+        Establishment::Established(isolation) => isolation,
+        Establishment::Refused { reason, registers } => {
+            warn!("iommu: the early default-deny takeover refused: {reason}");
+            if let DeviceRetirement::Retained(registers) =
+                mem::unmap_device_exact(context, registers)
+            {
+                retain_registers(registers);
+            }
+            return false;
+        }
+        Establishment::Retained { reason, isolation } => {
+            warn!("iommu: the early default-deny takeover is uncertain: {reason}");
+            install(InstalledUnit {
+                register_base,
+                isolation,
+                fences: UnitFences::empty(),
+                state: InstalledState::Quarantined,
+            });
+            return false;
+        }
+    };
+    if !isolation.boundary_active() {
+        warn!("iommu: the early default-deny boundary did not read back intact");
+        install(InstalledUnit {
+            register_base,
+            isolation,
+            fences: UnitFences::empty(),
+            state: InstalledState::Quarantined,
+        });
+        return false;
+    }
+    let facts = isolation.facts();
+    info!(
+        "iommu: early default-deny DMA and interrupt boundary active at {register_base:#x}: {}-level walks, cap {:#x}, ecap {:#x}",
+        facts.levels, facts.capability, facts.extended
+    );
+    install(InstalledUnit {
+        register_base,
+        isolation,
+        fences: UnitFences::empty(),
+        state: InstalledState::Ready,
+    });
+    true
+}
+
+/// The sole unit statically covers segment zero, either through standard DMAR
+/// authority or a unique checksummed platform attestation naming that exact
+/// RMRR-free DMAR unit.
+fn early_register_base(dmar: &Dmar<'_>) -> Option<u64> {
+    if let Some(register_base) = dmar.sole_complete_unit_register_base(SEGMENT) {
+        return Some(register_base);
+    }
+    let table = *DMA_COVERAGE.lock_leaf();
+    let coverage = DmaCoverage::new(table?).ok()?;
+    let register_base = dmar.sole_rmrr_free_unit_register_base(SEGMENT)?;
+    (coverage.segment() == SEGMENT && coverage.register_base() == register_base)
+        .then_some(register_base)
 }
 
 /// The remapping unit firmware says governs one function.
@@ -175,11 +297,18 @@ impl UnitFences {
 
 /// The unit-wide owner: hardware tables and every sibling command fence stay
 /// inseparable through takeover, steady state and release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstalledState {
+    Ready,
+    Quarantined,
+}
+
 #[derive(Debug)]
 pub(crate) struct InstalledUnit {
     register_base: u64,
     isolation: Vtd,
     fences: UnitFences,
+    state: InstalledState,
 }
 
 impl Deref for InstalledUnit {
@@ -453,8 +582,8 @@ pub(crate) fn installed() -> ThreadLockGuard<'static, Option<InstalledUnit>> {
     INSTALLED.lock()
 }
 
-/// Establish and install a unit-wide DMA-remapping owner for `device`.
-pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> EstablishOutcome {
+/// Retarget the early unit-wide DMA-remapping owner to `device`.
+pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
     let at = device.at();
     let Some(unit) = unit_for(at) else {
         return EstablishOutcome::Unavailable;
@@ -471,281 +600,121 @@ pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> Es
             return EstablishOutcome::Quarantined;
         }
     };
-    {
-        let mut installed = INSTALLED.lock();
-        if let Some(owner) = installed.as_mut() {
-            if owner.register_base != register_base {
-                warn!(
-                    "iommu: a parked interrupt owner names {:#x}, not candidate unit {register_base:#x}",
-                    owner.register_base
-                );
-                owner.fences = fences;
-                return EstablishOutcome::Quarantined;
+    let mut installed = INSTALLED.lock();
+    let Some(owner) = installed.as_mut() else {
+        drop(installed);
+        return release_unavailable_fences(fences);
+    };
+    if owner.register_base != register_base {
+        warn!(
+            "iommu: the early owner names {:#x}, not candidate unit {register_base:#x}",
+            owner.register_base
+        );
+        owner.fences = fences;
+        owner.state = InstalledState::Quarantined;
+        return EstablishOutcome::Quarantined;
+    }
+    if owner.state != InstalledState::Ready {
+        warn!("iommu: the early owner is quarantined and cannot be retargeted");
+        drop(installed);
+        let _ = release_fences(fences);
+        return EstablishOutcome::Quarantined;
+    }
+    match owner.isolation.retarget(at) {
+        Retargeting::Retargeted => {
+            owner.fences = fences;
+            let stray = owner.isolation.drain_faults();
+            if stray != 0 {
+                warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
             }
-            match owner.isolation.retarget(at, &[]) {
-                Retargeting::Retargeted => {
-                    owner.fences = fences;
-                    let stray = owner.isolation.drain_faults();
-                    if stray != 0 {
-                        warn!(
-                            "iommu: {stray} fault(s) were recorded before any segment was mapped"
-                        );
-                    }
-                    let facts = owner.isolation.facts();
-                    info!(
-                        "iommu: translation retargeted to {:02x}:{:02x}.{} without dropping interrupt remapping at {register_base:#x}: {}-level walks, cap {:#x}, ecap {:#x}",
-                        at.bus(),
-                        at.device(),
-                        at.function(),
-                        facts.levels,
-                        facts.capability,
-                        facts.extended
-                    );
-                    #[cfg(feature = "selftest")]
-                    {
-                        INSTALLED_REQUESTERS.store(requesters.len(), Ordering::Release);
-                        SUCCESSFUL_TAKEOVERS.fetch_add(1, Ordering::AcqRel);
-                    }
-                    return EstablishOutcome::Established;
-                }
-                Retargeting::Refused(reason) => {
-                    warn!("iommu: parked unit refused DMA retargeting: {reason}");
-                    drop(installed);
-                    return release_unavailable_fences(fences);
-                }
-                Retargeting::Retained(reason) => {
-                    warn!("iommu: DMA retargeting state is uncertain: {reason}");
-                    owner.fences = fences;
-                    return EstablishOutcome::Quarantined;
-                }
+            let facts = owner.isolation.facts();
+            info!(
+                "iommu: translation on for {:02x}:{:02x}.{} through the unit at {register_base:#x}: {}-level walks, retargeted without dropping the default-deny boundary, cap {:#x}, ecap {:#x}",
+                at.bus(),
+                at.device(),
+                at.function(),
+                facts.levels,
+                facts.capability,
+                facts.extended
+            );
+            #[cfg(feature = "selftest")]
+            {
+                INSTALLED_REQUESTERS.store(requesters.len(), Ordering::Release);
+                SUCCESSFUL_RETARGETS.fetch_add(1, Ordering::AcqRel);
             }
+            EstablishOutcome::Established
+        }
+        Retargeting::Refused(reason) => {
+            warn!("iommu: parked unit refused DMA retargeting: {reason}");
+            drop(installed);
+            release_unavailable_fences(fences)
+        }
+        Retargeting::Retained(reason) => {
+            warn!("iommu: DMA retargeting state is uncertain: {reason}");
+            owner.fences = fences;
+            owner.state = InstalledState::Quarantined;
+            EstablishOutcome::Quarantined
         }
     }
-    let mapping = match mem::map_device(context, register_base, REGISTER_WINDOW) {
-        Some(Ok(mapping)) => mapping,
-        Some(Err(reason)) => {
-            warn!("iommu: registers at {register_base:#x} not mapped: {reason}");
-            return release_unavailable_fences(fences);
-        }
-        None => {
-            warn!("iommu: no active address space for the unit's registers");
-            return release_unavailable_fences(fences);
-        }
-    };
-    let registers = match mapping.claim_releasable() {
-        Ok(registers) => registers,
-        Err(mapping) => {
-            warn!("iommu: the mapped registers are absent from the active root");
-            retain_mapping(mapping);
-            retain_fences_after_failure(fences);
-            return EstablishOutcome::Quarantined;
-        }
-    };
-    let mut isolation = match Vtd::establish(registers, at, &[], true) {
-        Establishment::Established(isolation) => isolation,
-        Establishment::Refused { reason, registers } => {
-            warn!("iommu: the unit at {register_base:#x} refused takeover: {reason}");
-            let registers_returned = match mem::unmap_device_exact(context, registers) {
-                DeviceRetirement::Retired => true,
-                DeviceRetirement::Retained(registers) => {
-                    retain_registers(registers);
-                    false
-                }
-            };
-            let fences_returned = release_fences(fences);
-            return if registers_returned && fences_returned {
-                EstablishOutcome::Unavailable
-            } else {
-                EstablishOutcome::Quarantined
-            };
-        }
-        Establishment::Retained { reason, isolation } => {
-            warn!("iommu: the unit at {register_base:#x} has uncertain takeover state: {reason}");
-            install(InstalledUnit {
-                register_base,
-                isolation,
-                fences,
-            });
-            return EstablishOutcome::Quarantined;
-        }
-    };
-    let stray = isolation.drain_faults();
-    if stray != 0 {
-        warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
-    }
-    let facts = isolation.facts();
-    info!(
-        "iommu: translation on for {:02x}:{:02x}.{} through the unit at {:#x}: {}-level walks{}{}{}, cap {:#x}, ecap {:#x}",
-        at.bus(),
-        at.device(),
-        at.function(),
-        register_base,
-        facts.levels,
-        if facts.coherent {
-            ""
-        } else {
-            ", flushed tables"
-        },
-        if facts.caching_mode {
-            ", caching mode"
-        } else {
-            ""
-        },
-        if facts.write_buffer_flush {
-            ", write-buffer flush"
-        } else {
-            ""
-        },
-        facts.capability,
-        facts.extended
-    );
-    #[cfg(feature = "selftest")]
-    {
-        INSTALLED_REQUESTERS.store(requesters.len(), Ordering::Release);
-        SUCCESSFUL_TAKEOVERS.fetch_add(1, Ordering::AcqRel);
-    }
-    install(InstalledUnit {
-        register_base,
-        isolation,
-        fences,
-    });
-    EstablishOutcome::Established
 }
 
-/// Ensure every live PCI requester remains behind one default-deny IR owner.
+/// Verify every live PCI requester remains behind the early default-deny owner.
 ///
-/// A selected storage controller already leaves that owner installed. A boot
-/// with no usable storage still establishes the same unit-wide interrupt
-/// boundary before `sti`, fencing every requester and retaining the complete
-/// owner for the rest of the boot (D-372).
-pub(crate) fn ensure_interrupt_boundary(context: &mut ThreadContext) -> bool {
+/// A selected storage controller has already proved complete requester
+/// coverage. With no selected controller, one anchor drives that same complete
+/// inventory proof; an empty snapshot still needs the real installed owner.
+pub(crate) fn ensure_interrupt_boundary() -> bool {
     match pci::topology_presence() {
         pci::TopologyPresence::Unsealed => return false,
-        pci::TopologyPresence::Empty => return true,
-        pci::TopologyPresence::Present => {}
+        pci::TopologyPresence::Empty | pci::TopologyPresence::Present => {}
     }
-    {
-        let installed = INSTALLED.lock();
-        if let Some(unit) = installed.as_ref() {
-            return unit.interrupt_isolation().is_some();
-        }
+    let installed = INSTALLED.lock();
+    let Some(owner) = installed
+        .as_ref()
+        .filter(|owner| owner.state == InstalledState::Ready && owner.boundary_active())
+    else {
+        return false;
+    };
+    if matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {
+        return true;
+    }
+    if owner.interrupt_isolation().is_some() {
+        return true;
     }
     let Some(anchor) = pci::first_topology_function() else {
         return false;
     };
-    let Some(unit) = unit_for(anchor) else {
-        return false;
-    };
-    let Unit {
-        register_base,
-        requesters,
-    } = unit;
-    let requester_count = requesters.len();
-    let fences = match acquire_fences(&requesters, None) {
-        FenceAcquisition::Ready(fences) => fences,
-        FenceAcquisition::Refused => return false,
-        FenceAcquisition::Retained(fences) => {
-            retain_fences(fences);
-            return false;
-        }
-    };
-    let mapping = match mem::map_device(context, register_base, REGISTER_WINDOW) {
-        Some(Ok(mapping)) => mapping,
-        Some(Err(reason)) => {
-            warn!("iommu: registers at {register_base:#x} not mapped: {reason}");
-            let _ = release_unavailable_fences(fences);
-            return false;
-        }
-        None => {
-            warn!("iommu: no active address space for the interrupt boundary");
-            let _ = release_unavailable_fences(fences);
-            return false;
-        }
-    };
-    let registers = match mapping.claim_releasable() {
-        Ok(registers) => registers,
-        Err(mapping) => {
-            retain_mapping(mapping);
-            retain_fences_after_failure(fences);
-            return false;
-        }
-    };
-    let isolation = match Vtd::establish(registers, anchor, &[], true) {
-        Establishment::Established(isolation) => isolation,
-        Establishment::Refused { reason, registers } => {
-            warn!("iommu: interrupt-only takeover refused: {reason}");
-            let registers_returned = match mem::unmap_device_exact(context, registers) {
-                DeviceRetirement::Retired => true,
-                DeviceRetirement::Retained(registers) => {
-                    retain_registers(registers);
-                    false
-                }
-            };
-            let fences_returned = release_fences(fences);
-            let _settled = registers_returned && fences_returned;
-            return false;
-        }
-        Establishment::Retained { reason, isolation } => {
-            warn!("iommu: interrupt-only takeover is uncertain: {reason}");
-            install(InstalledUnit {
-                register_base,
-                isolation,
-                fences,
-            });
-            return false;
-        }
-    };
-    if isolation.interrupt_isolation().is_none() {
-        warn!("iommu: interrupt-remapping readback did not mint its proof");
-        install(InstalledUnit {
-            register_base,
-            isolation,
-            fences,
-        });
-        return false;
-    }
-    info!(
-        "iommu: default-deny interrupt remapping covers {requester_count} live PCI requester(s) through the unit at {register_base:#x}"
-    );
-    install(InstalledUnit {
-        register_base,
-        isolation,
-        fences,
-    });
-    true
+    unit_for(anchor).is_some_and(|unit| unit.register_base == owner.register_base)
 }
 
 /// Whether the current installed owner still proves default-deny remapping.
 pub(crate) fn interrupt_boundary_active() -> bool {
-    match pci::topology_presence() {
-        pci::TopologyPresence::Unsealed => return false,
-        pci::TopologyPresence::Empty => return true,
-        pci::TopologyPresence::Present => {}
+    if matches!(pci::topology_presence(), pci::TopologyPresence::Unsealed) {
+        return false;
     }
     INSTALLED
         .lock()
         .as_ref()
-        .is_some_and(|unit| unit.interrupt_isolation().is_some())
+        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())
 }
 
 /// Whether the live PCI interrupt boundary retains every deny-all property.
 #[cfg(feature = "selftest")]
 pub(crate) fn interrupt_boundary_is_deny_all_for_test() -> bool {
-    match pci::topology_presence() {
-        pci::TopologyPresence::Unsealed => return false,
-        pci::TopologyPresence::Empty => return true,
-        pci::TopologyPresence::Present => {}
+    if matches!(pci::topology_presence(), pci::TopologyPresence::Unsealed) {
+        return false;
     }
     INSTALLED.lock().as_ref().is_some_and(|unit| {
         let facts = unit.facts();
-        facts.interrupt_remapping
+        unit.state == InstalledState::Ready
+            && facts.interrupt_remapping
             && facts.queued_invalidation
-            && unit.interrupt_isolation().is_some()
+            && unit.boundary_active()
     })
 }
 
-/// Whether the default machine established two successive owners while the
-/// installed owner still holds one fence for every non-selected requester.
+/// Whether the default machine retargeted one continuous owner twice while it
+/// still holds one fence for every non-selected requester.
 #[cfg(feature = "selftest")]
 pub(crate) fn requester_fences_cover_shared_unit_for_test() -> bool {
     if DMAR.lock_leaf().is_none() {
@@ -754,10 +723,12 @@ pub(crate) fn requester_fences_cover_shared_unit_for_test() -> bool {
     let requesters = INSTALLED_REQUESTERS.load(Ordering::Acquire);
     let installed = INSTALLED.lock();
     requesters > 1
-        && SUCCESSFUL_TAKEOVERS.load(Ordering::Acquire) >= 2
-        && installed
-            .as_ref()
-            .is_some_and(|unit| unit.fences.count + 1 == requesters)
+        && SUCCESSFUL_RETARGETS.load(Ordering::Acquire) >= 2
+        && installed.as_ref().is_some_and(|unit| {
+            unit.state == InstalledState::Ready
+                && unit.fences.count + 1 == requesters
+                && unit.boundary_active()
+        })
         && pci::claims() == requesters
 }
 
@@ -786,28 +757,24 @@ fn release_fences(fences: UnitFences) -> bool {
     released
 }
 
-fn retain_fences_after_failure(fences: UnitFences) {
-    let (released, fences) = fences.release();
-    if !released {
-        retain_fences(fences);
-    }
-}
-
 /// Park the candidate's DMA domain after it has stopped bus-mastering.
 ///
 /// The unit's register mapping, empty interrupt table, masked fault-event MSI
-/// and IRE state remain installed forever. Only sibling requester fences are
-/// returned so selection can lease the next candidate; its DMA tables are
-/// retargeted through the same live interrupt owner. This makes it impossible
-/// for fallback to reopen compatibility-format vector delivery (D-372).
+/// and TE/IRE state remain installed forever. Only sibling requester fences
+/// are returned so selection can lease the next candidate; its DMA tables are
+/// retargeted through the same live default-deny owner (D-372, D-389).
 pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
     let fences = {
         let mut installed = INSTALLED.lock();
         let Some(unit) = installed.as_mut() else {
             return true;
         };
+        if unit.state != InstalledState::Ready {
+            return false;
+        }
         if let Err(reason) = unit.isolation.park() {
             warn!("iommu: translation state is uncertain; unit retained: {reason}");
+            unit.state = InstalledState::Quarantined;
             return false;
         }
         core::mem::replace(&mut unit.fences, UnitFences::empty())

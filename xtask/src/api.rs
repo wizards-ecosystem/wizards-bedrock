@@ -137,6 +137,7 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
         "mutation_workspace::tests::TempTree",
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
+    ("xtask/src/qemu.rs", "qemu::RunDmaCoverage"),
     ("xtask/src/qemu.rs", "qemu::RunVars"),
     ("xtask/src/qemu.rs", "qemu::SerialChannel"),
     ("xtask/src/qemu.rs", "qemu::tests::QemuFixture"),
@@ -283,6 +284,13 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "start",
         implemented_trait: None,
         produced: "qemu::DebugMachine",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/qemu.rs",
+        owner: "qemu::RunDmaCoverage",
+        member: "create",
+        implemented_trait: None,
+        produced: "qemu::RunDmaCoverage",
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",

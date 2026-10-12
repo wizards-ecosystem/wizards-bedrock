@@ -36,6 +36,12 @@ enum Remapping {
 /// not-present DMA entries, so every mapping change must be invalidated.
 const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"];
 
+/// QEMU 9.2 deliberately emits a scoped DRHD even though its one emulated
+/// unit intercepts every PCI DMA request. The release boundary does not infer
+/// catch-all authority from that implementation detail, so the fixed test
+/// platform supplies a separate checksummed attestation naming the real unit.
+const QEMU_DMA_COVERAGE_BYTES: usize = 48;
+
 /// The fixed machine profile, with or without the remapping unit.
 ///
 /// Pins the CPU, TCG, and ambient configuration so protection checks cannot
@@ -81,6 +87,8 @@ fn validate_run_arguments(extra: &[OsString]) -> Result<()> {
                 | "--cpu"
                 | "-global"
                 | "--global"
+                | "-acpitable"
+                | "--acpitable"
                 | "-readconfig"
                 | "--readconfig"
         ) {
@@ -179,11 +187,14 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     validate_run_arguments(extra)?;
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let coverage = RunDmaCoverage::create(paths.target_dir())?;
 
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
     let status = Command::new(&installation.emulator)
+        .current_dir(vars.directory())
         .args(machine_args(Remapping::Present))
+        .args(coverage.arguments())
         .args(["-serial", "stdio"])
         .args(drive_file(
             "if=pflash,format=raw,readonly=on",
@@ -210,6 +221,7 @@ pub(crate) struct DebugMachine {
     endpoint: String,
     _qmp: Qmp,
     _vars: RunVars,
+    _coverage: RunDmaCoverage,
 }
 
 impl DebugMachine {
@@ -217,9 +229,12 @@ impl DebugMachine {
     pub(crate) fn start(paths: &Paths, image: &Path) -> Result<Self> {
         let installation = installation()?;
         let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+        let coverage = RunDmaCoverage::create(paths.target_dir())?;
 
         let mut child = Command::new(&installation.emulator)
+            .current_dir(vars.directory())
             .args(machine_args(Remapping::Present))
+            .args(coverage.arguments())
             .args(["-S", "-display", "none", "-serial", "null", "-no-reboot"])
             .args(QMP_ON_STDIO)
             .args(drive_file(
@@ -252,6 +267,7 @@ impl DebugMachine {
                 endpoint,
                 _qmp: qmp,
                 _vars: vars,
+                _coverage: coverage,
             }),
             Err(error) => {
                 let cleanup = stop_qemu(&mut child);
@@ -414,12 +430,95 @@ impl RunVars {
     fn path(&self) -> &Path {
         &self.path
     }
+
+    fn directory(&self) -> &Path {
+        self.path
+            .parent()
+            .expect("a reserved QEMU variable-store path has a parent")
+    }
 }
 
 impl Drop for RunVars {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// One per-run ACPI attestation that states the fixed QEMU platform's real
+/// catch-all remapping topology without replacing its standards-defined DMAR.
+struct RunDmaCoverage {
+    path: PathBuf,
+}
+
+impl RunDmaCoverage {
+    fn create(target: &Path) -> Result<Self> {
+        let (directory, path, mut destination) = reserve_run_file(target, "dma-coverage", "bin")?;
+        let written = (|| -> Result<()> {
+            destination
+                .write_all(&qemu_dma_coverage_table())
+                .with_context(|| format!("writing {}", path.display()))?;
+            destination
+                .sync_all()
+                .with_context(|| format!("flushing {}", path.display()))?;
+            drop(destination);
+            crate::mutation_workspace::require_direct_file(
+                &directory,
+                &path,
+                "private QEMU DMA coverage attestation",
+            )?;
+            ensure!(
+                crate::mutation_workspace::canonical_existing_real_directory(
+                    &directory,
+                    "QEMU private run directory",
+                )? == directory,
+                "QEMU private run directory changed while writing DMA coverage"
+            );
+            Ok(())
+        })();
+        crate::mutation_workspace::finish_staged_operation(
+            &directory,
+            &path,
+            "private QEMU DMA coverage attestation",
+            written,
+        )?;
+        Ok(Self { path })
+    }
+
+    fn arguments(&self) -> [OsString; 2] {
+        [OsString::from("-acpitable"), acpi_file_argument(&self.path)]
+    }
+}
+
+fn acpi_file_argument(path: &Path) -> OsString {
+    let file = path
+        .file_name()
+        .expect("a reserved QEMU DMA coverage path has a file name")
+        .to_string_lossy()
+        .replace(',', ",,");
+    OsString::from(format!("file={file}"))
+}
+
+impl Drop for RunDmaCoverage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn qemu_dma_coverage_table() -> [u8; QEMU_DMA_COVERAGE_BYTES] {
+    let mut table = [0u8; QEMU_DMA_COVERAGE_BYTES];
+    table[0..4].copy_from_slice(b"WZDM");
+    table[4..8].copy_from_slice(&(QEMU_DMA_COVERAGE_BYTES as u32).to_le_bytes());
+    table[8] = 1;
+    table[10..16].copy_from_slice(b"WIZARD");
+    table[16..24].copy_from_slice(b"BEDROCK ");
+    table[24..28].copy_from_slice(&1u32.to_le_bytes());
+    table[28..32].copy_from_slice(b"WZRD");
+    table[32..36].copy_from_slice(&1u32.to_le_bytes());
+    table[36..38].copy_from_slice(&0u16.to_le_bytes()); // Segment zero.
+    table[38..40].copy_from_slice(&0u16.to_le_bytes()); // Reserved.
+    table[40..48].copy_from_slice(&0xfed9_0000u64.to_le_bytes());
+    table[9] = 0u8.wrapping_sub(table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
+    table
 }
 
 /// Bytes of one logical block on the NVMe namespace.
@@ -1802,12 +1901,15 @@ fn observe_selftest_run(
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let coverage = RunDmaCoverage::create(paths.target_dir())?;
     let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the self-test kernel");
 
     let mut child = Command::new(&installation.emulator)
+        .current_dir(vars.directory())
         .args(machine_args(Remapping::Present))
+        .args(coverage.arguments())
         .args(["-display", "none", "-no-reboot"])
         .args(serial.arguments())
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
@@ -2138,12 +2240,15 @@ fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let coverage = RunDmaCoverage::create(paths.target_dir())?;
     let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the shipped kernel");
 
     let mut child = Command::new(&installation.emulator)
+        .current_dir(vars.directory())
         .args(machine_args(Remapping::Present))
+        .args(coverage.arguments())
         .args(["-display", "none", "-no-reboot"])
         .args(serial.arguments())
         .args(QMP_ON_STDIO)
@@ -2370,11 +2475,20 @@ fn observe_profile(
 ) -> Result<DegradedOutcome> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let coverage = (profile.remapping == Remapping::Present)
+        .then(|| RunDmaCoverage::create(paths.target_dir()))
+        .transpose()?;
 
     println!("[xtask] {}", profile.announcement);
 
     let mut child = Command::new(&installation.emulator)
+        .current_dir(vars.directory())
         .args(machine_args(profile.remapping))
+        .args(
+            coverage
+                .as_ref()
+                .map_or_else(Vec::new, |table| table.arguments().into()),
+        )
         .args(profile.cpu.map_or(&[][..], |cpu| &cpu[..]))
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(drive_file(
@@ -3117,6 +3231,26 @@ mod tests {
     }
 
     #[test]
+    fn the_fixed_qemu_dma_coverage_names_the_real_unit() {
+        let table = qemu_dma_coverage_table();
+        assert_eq!(
+            table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0,
+            "the complete ACPI table must carry a valid checksum"
+        );
+        let coverage = acpi_tables::DmaCoverage::new(&table)
+            .expect("the fixed QEMU coverage attestation must parse");
+        assert_eq!(coverage.segment(), 0);
+        assert_eq!(coverage.register_base(), 0xfed9_0000);
+
+        assert_eq!(
+            acpi_file_argument(Path::new("ignored-parent/private,coverage.bin")),
+            OsString::from("file=private,,coverage.bin"),
+            "QEMU must receive a cwd-relative file name, not a Windows drive path"
+        );
+    }
+
+    #[test]
     fn every_qemu_runner_pins_the_exact_tcg_profile() {
         let machine = machine_args(Remapping::Present);
         assert_eq!(
@@ -3179,6 +3313,26 @@ mod tests {
             commands,
             "a QEMU process bypasses the shared machine profile"
         );
+        let working_directory = [".current_dir", "(vars.directory())"].concat();
+        assert_eq!(
+            source.matches(&working_directory).count(),
+            commands,
+            "a QEMU process can resolve the cwd-relative coverage table elsewhere"
+        );
+        let direct_coverage = [".args", "(coverage.arguments())"].concat();
+        let conditional_coverage = [
+            ".map_or_else",
+            "(Vec::new, |table| table.arguments().into())",
+        ]
+        .concat();
+        assert_eq!(
+            source.matches(&direct_coverage).count()
+                + source.matches(&conditional_coverage).count(),
+            commands,
+            "a QEMU process bypasses the explicit DMA coverage attestation"
+        );
+        let conditional_owner = ["profile.remapping", " == Remapping::Present"].concat();
+        assert_eq!(source.matches(&conditional_owner).count(), 1);
     }
 
     #[test]
@@ -3208,6 +3362,10 @@ mod tests {
                 "--global",
                 "driver=max-x86_64-cpu,property=hypervisor,value=off",
             ],
+            vec!["-acpitable", "file=hostile.bin"],
+            vec!["-acpitable=file=hostile.bin"],
+            vec!["--acpitable", "file=hostile.bin"],
+            vec!["--acpitable=file=hostile.bin"],
             vec!["-readconfig", "hostile.cfg"],
             vec!["-readconfig=hostile.cfg"],
             vec!["--readconfig", "hostile.cfg"],

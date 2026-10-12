@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 281 |
-| Mutations | 1795 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1814 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-388 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-389 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1208,23 +1208,27 @@ live set, which is the reach guarantee. It is a trigger row (PW-712) rather than
 a shortcut taken here.
 
 The unit is driven through its register-based invalidation interface, with
-queued invalidation left off, and a unit whose page walks bypass the processor
-caches (QEMU's reports exactly that) has every table line flushed before the
-unit may depend on it. The unit is taken over after the controller is prepared
-and verified disabled, with the regions firmware reserves for the function
-mapped before translation goes on, so translation is on before the function can
-bus-master; it lives in one kernel-owned slot that every DMA seam locks and
-refuses without, and it is released only after a retired candidate's lease has
-restored bus mastering off (D-358).
+queued invalidation left off outside the private interrupt-cache transaction,
+and a unit whose page walks bypass the processor caches (QEMU's reports exactly
+that) has every table line flushed before the unit may depend on it. Before PCI
+topology discovery, the kernel accepts only one RMRR-free segment-zero unit
+whose static whole-segment authority is either `INCLUDE_PCI_ALL` or an exact
+unique `WZDM` corroboration, and only with firmware TE, QIE, IRE and CFI already
+inactive. It installs an
+empty root, enables TE and completes a read-and-write drain before publishing
+the boundary. A selected controller later gains only its exact context after it
+is prepared and verified disabled; the unit lives in one kernel-owned slot that
+every DMA seam locks and refuses without (D-358, D-389).
 
 D-369 makes rejection teardown independent of the endpoint's claimed stop
 state. The function-bound command owner first proves BME clear and excludes it
 from the rejected lease's restoration word. Every installed admin and I/O queue
 segment then leaves the domain with a drained invalidation before its frame can return
 to the allocator; uncertainty retains the segment, controller, device and live
-domain together. Only after safe command restoration does the unit switch
-translation off. Fault diagnostics on this path drain one inventory-bounded
-batch after retirement, so a device cannot keep boot inside live MMIO logging.
+domain together. Only after safe command restoration does the unit revoke the
+selected root entry, invalidate and drain it; TE and the empty default-deny root
+remain live. Fault diagnostics on this path drain one inventory-bounded batch
+after retirement, so a device cannot keep boot inside live MMIO logging.
 
 ### Fail closed
 
@@ -1246,22 +1250,25 @@ function: `admit_bus_master` consumes a `DmaDomain` and an
 fences in place. A degraded boot without the IOMMU device exists precisely to
 prove the refusal fires.
 
-D-372 closes the interrupt side of the same admission. The DMAR must advertise
-interrupt remapping without x2APIC opt-out, every present requester in the
-sealed topology must resolve to the one supported live DRHD, and the unit must
-advertise IR, queued invalidation and extended interrupt mode. Takeover clears
-firmware TE, QIE, IRE and compatibility-format state, installs a kernel-owned
-two-entry IR table whose entries remain not present, sets EIME, globally
-invalidates the interrupt-entry cache through a private queued-invalidation
-ring and completion write, then enables IRE with CFI clear. Before that
+D-372 closes the interrupt side of the same admission. The unique DMAR must
+advertise interrupt remapping without x2APIC opt-out, the one supported live
+DRHD must be segment zero with no RMRR and static whole-segment authority from
+either `INCLUDE_PCI_ALL` or a unique matching `WZDM`, every present requester in the sealed
+topology must still resolve to it, and the unit must advertise IR, queued
+invalidation and extended interrupt mode. Takeover refuses firmware TE, QIE,
+IRE or compatibility-format state, installs a kernel-owned two-entry IR table
+whose entries remain not present, sets EIME, globally invalidates the
+interrupt-entry cache through a private queued-invalidation ring and completion
+write, then enables IRE with CFI clear. Before that
 transition it masks and reads back FECTL while preserving its reserved bits,
 because VT-d's own fault-event MSI never traverses the remapping table. The
 exact IRTA, status, FECTL mask and zero entries are read back before the linear
 proof can exist.
 
 The installed unit and every requester fence remain owned while maskable
-interrupts are on. Candidate retirement parks DMA translation but never clears
-IRE or drops the register mapping and empty IR table; a fallback candidate
+interrupts are on. The empty unit root is installed before PCI topology
+discovery, and candidate retirement revokes its context without clearing TE or
+IRE or dropping the register mapping and empty IR table; a fallback candidate
 retargets only the DMA tables through the same owner. `sti` refuses an unsealed
 topology, multiple or foreign-segment remapping units, a PCI machine without
 that owner, or a pending vector in any of the local APIC's eight IRR banks.
@@ -1277,10 +1284,12 @@ kernel IRE establishment. After that boundary devices are hostile and fallback
 never disables IRE. Firmware/SMM is separately trusted not to reprogram VT-d or
 APIC state after the kernel's readbacks.
 
-If firmware handed the machine over with translation already enabled, which a
-VMware EFI can do, the kernel takes the unit over explicitly, quiescing it and
-installing its own root before re-enabling translation, rather than riding tables
-it did not write.
+If firmware handed the machine over with translation, queued invalidation,
+interrupt remapping or compatibility delivery already enabled, the kernel
+refuses takeover before its first unit write. A live SRTP to a non-identical
+root is not a safe way to inherit that state; VMware qualification therefore
+requires an inactive firmware handoff or a future authenticated pre-kernel
+owner-transfer protocol.
 
 The tables the IOMMU walks (the root table, the per-function context table, and
 the second-level page tables) are ordinary kernel-owned frames written through
@@ -1314,8 +1323,8 @@ its limit, and a duplicate unit, and resolves scopes only through proved bridge
 ancestry; `libs/pci-config` seals complete fake topologies and refuses duplicate
 parents, unrooted functions, escaping children and unrelated overlaps;
 `libs/vtd` encodes the root, context, second-level and interrupt-remapping
-entries, the register and queued-invalidation commands, and a takeover word
-that inherits no firmware translation or interrupt state; its capability,
+entries, the register and queued-invalidation commands, and a takeover predicate
+that refuses every active firmware remapping facility; its capability,
 coverage and width arithmetic is walked exhaustively. The programming and the fault behaviour need a real unit and are
 checked by booting: translation is active for the controller's function and the
 unit walks the kernel's root table, storage and the filesystem read through it,
@@ -1325,7 +1334,8 @@ domain does not map faults, changes nothing and shows that the unmap before it
 completed a read-and-write drain as well as invalidating the unit's cache. The live checks also require deny-all interrupt
 remapping for every PCI requester, exact masked I/O APIC rollback, zero legacy
 keyboard interrupts and progress through the poller. The QEMU fixed profile
-presents `-device intel-iommu,intremap=on,eim=on,caching-mode=on`, the degraded gate boots the shipped image without it and
+presents `-device intel-iommu,intremap=on,eim=on,caching-mode=on` and injects
+the checksummed `WZDM` authority that exactly names that unit; the degraded gate boots the shipped image without it and
 requires the named refusal, and the VMware template enables its virtual unit.
 Each check is broken once and its mutation kept: a skipped invalidation, a live
 unmap or partial-map rollback downgraded to non-draining invalidation, a skipped
@@ -1335,7 +1345,7 @@ global-granularity readback, an extra mapped page,
 a proof minted with translation off, translation never
 switched on, a context programmed for a sibling function, the refusal text lost,
 a foreign domain admitted, a width that covers one bit too many, inherited
-firmware interrupt state, incomplete quiescence, a missing IR/QI/EIM capability,
+firmware remapping state, a missing IR/QI/EIM capability,
 an incomplete requester census, a second unit, a non-global IEC invalidation, a
 missing wait status, an unverified or nonempty interrupt table, an unmasked
 fault-event source, interrupt-owner teardown during fallback, a foreign

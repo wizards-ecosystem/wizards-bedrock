@@ -438,6 +438,12 @@ fn survey_the_bus() {
         return;
     }
 
+    let early_boundary = thread::ThreadContext::claim()
+        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));
+    if !early_boundary {
+        warn!("iommu: no early default-deny PCI boundary; storage and interrupts stay closed");
+    }
+
     match pci::snapshot_topology() {
         Ok(()) => info!("pci: complete segment-zero topology sealed"),
         Err(reason) => warn!("pci: DMA topology refused: {reason}"),
@@ -471,8 +477,7 @@ fn survey_the_bus() {
         }
     }
 
-    let interrupt_boundary = thread::ThreadContext::claim()
-        .is_some_and(|mut context| iommu::ensure_interrupt_boundary(&mut context));
+    let interrupt_boundary = iommu::ensure_interrupt_boundary();
     if !interrupt_boundary {
         warn!("iommu: PCI interrupt isolation is incomplete; maskable interrupts stay off");
     }
@@ -564,7 +569,7 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     let mut stage = claim_candidate(at, ordinal, &mut context);
     let device = loop {
         if matches!(&stage, CandidateStage::Prepared(_, _, false)) {
-            isolate_candidate(&mut stage, &mut context);
+            isolate_candidate(&mut stage);
             continue;
         }
         stage = match stage {
@@ -636,9 +641,9 @@ fn claim_candidate(
 
 /// Establish unit-wide isolation without moving the prepared controller into
 /// the same debug frame as VT-d's bounded inventory and table construction.
-fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {
+fn isolate_candidate(stage: &mut CandidateStage) {
     let outcome = match stage {
-        CandidateStage::Prepared(device, _, false) => iommu::establish(context, device),
+        CandidateStage::Prepared(device, _, false) => iommu::establish(device),
         _ => return,
     };
     match outcome {

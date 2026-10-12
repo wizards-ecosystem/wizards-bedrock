@@ -873,6 +873,7 @@ version = "0.1.0"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "acpi-tables",
  "anyhow",
  "command-group",
  "elf64",

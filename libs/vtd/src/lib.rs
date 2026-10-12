@@ -371,15 +371,6 @@ pub mod gsts {
     pub const CFIS: u32 = 1 << 23;
 }
 
-/// The command shadow with every firmware-owned translation facility disabled.
-///
-/// The kernel publishes both DMA and interrupt-remapping tables, so it inherits
-/// none of firmware's TE, QIE, IRE or CFI state. One-shot command bits are also
-/// clear. A later owner adds only the exact operation it is performing.
-pub const fn takeover_command(_status: u32) -> u32 {
-    0
-}
-
 /// OR the Set-Root-Table-Pointer bit into a preserved command word.
 pub const fn set_root_table_pointer(cmd: u32) -> u32 {
     cmd | gcmd::SRTP
@@ -425,9 +416,14 @@ pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
     (status & gsts::CFIS) != 0
 }
 
-/// Whether every firmware-owned translation facility and compatibility bypass is off.
-pub const fn quiesced(status: u32) -> bool {
-    (status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS)) == 0
+/// Whether every firmware-owned remapping facility is already inactive.
+///
+/// An early kernel owner may program a non-identical root only from this
+/// state. It refuses active translation instead of attempting a live SRTP,
+/// and refuses active queued or interrupt remapping instead of guessing that
+/// firmware completed their architectural quiescence protocols.
+pub const fn takeover_ready(status: u32) -> bool {
+    status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,13 +1171,6 @@ mod tests {
         assert_eq!(enable_translation(gcmd::IRE) & gcmd::IRE, gcmd::IRE);
     }
 
-    /// The takeover word inherits no firmware translation or bypass state.
-    #[test]
-    fn the_takeover_command_clears_every_firmware_state() {
-        assert_eq!(takeover_command(0), 0);
-        assert_eq!(takeover_command(u32::MAX), 0);
-    }
-
     #[test]
     fn status_predicates_read_their_own_bit() {
         assert!(root_table_pointer_set(gsts::RTPS));
@@ -1196,16 +1185,15 @@ mod tests {
         assert!(!compatibility_interrupts_enabled(gsts::IRES));
     }
 
-    /// Quiescence needs DMA, QI, IR and the compatibility bypass all off.
     #[test]
-    fn quiescence_requires_every_translation_and_bypass_off() {
-        assert!(quiesced(0));
-        assert!(quiesced(gsts::RTPS | gsts::WBFS | gsts::IRTPS));
-        assert!(!quiesced(gsts::TES));
-        assert!(!quiesced(gsts::QIES));
-        assert!(!quiesced(gsts::IRES));
-        assert!(!quiesced(gsts::CFIS));
-        assert!(!quiesced(gsts::TES | gsts::QIES));
+    fn takeover_requires_every_firmware_facility_to_be_inactive() {
+        assert!(takeover_ready(0));
+        assert!(takeover_ready(gsts::RTPS | gsts::IRTPS));
+        assert!(!takeover_ready(gsts::TES));
+        assert!(!takeover_ready(gsts::QIES));
+        assert!(!takeover_ready(gsts::IRES));
+        assert!(!takeover_ready(gsts::CFIS));
+        assert!(!takeover_ready(u32::MAX));
     }
 
     #[test]

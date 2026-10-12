@@ -49,11 +49,6 @@ fn bool_literal_is(expression: &Expr, value: bool) -> bool {
         if matches!(&literal.lit, syn::Lit::Bool(boolean) if boolean.value == value))
 }
 
-fn empty_slice_expression_is(expression: &Expr) -> bool {
-    matches!(expression, Expr::Reference(reference)
-        if matches!(&*reference.expr, Expr::Array(array) if array.elems.is_empty()))
-}
-
 fn member_is(member: &syn::Member, name: &str) -> bool {
     matches!(member, syn::Member::Named(identifier) if identifier == name)
 }
@@ -1397,13 +1392,16 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "if !platform_interrupt_remapping {",
         "if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
         "if !extended.extended_interrupt_mode() {",
-        "if !interrupt_remapping_enabled(status)",
+        "VtdError::FirmwareFacilitiesActive { status }",
+        "if !translation_enabled(status)",
+        "|| !interrupt_remapping_enabled(status)",
         "|| compatibility_interrupts_enabled(status)",
         "|| status & gsts::QIES != 0",
         "|| !fault_event_control::masked(fault_control)",
+        "|| root_table_address(pointer) != self.root.address()",
         "observed != expected",
         "|| !interrupt_table_has_two_entries(observed)",
-        "if self.interrupts.read_u64(index)? != 0 {",
+        "if self.interrupts.read_u64(index) != Some(0) {",
         "if observed == pointer",
     ] {
         assert!(
@@ -1415,20 +1413,43 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     let mut transition = CallNames::default();
     transition.visit_impl_item_fn(method(&vtd, "Vtd", "transition").expect("VT-d transition"));
     let fault_mask = call_position(&transition, "mask_fault_interrupt");
-    let quiesce = call_position(&transition, "quiesce");
     let root = call_position(&transition, "set_root_table");
     let interrupt_table = call_position(&transition, "set_interrupt_table");
     let interrupt_cache = call_position(&transition, "invalidate_interrupt_cache");
     let interrupt_enable = call_position(&transition, "switch_interrupt_remapping");
     let translation_enable = call_position(&transition, "switch_translation");
+    let drain = call_position(&transition, "drain_dma");
     assert!(
-        fault_mask < quiesce
-            && quiesce < root
+        fault_mask < root
             && root < interrupt_table
             && interrupt_table < interrupt_cache
             && interrupt_cache < interrupt_enable
             && interrupt_enable < translation_enable
+            && translation_enable < drain
     );
+    assert_eq!(
+        vtd_source.matches("if !takeover_ready(status) {").count(),
+        2,
+        "read-only takeover preflight must be repeated after table allocation and before the first unit write"
+    );
+    let establishment = vtd_source
+        .split_once("    pub fn establish_deny_all(")
+        .expect("deny-all establishment")
+        .1
+        .split_once("    /// Build one selected context")
+        .expect("deny-all establishment end")
+        .0;
+    let allocation = establishment
+        .find("IommuTable::new(TABLE_LIMIT, walks)")
+        .expect("final deny-all table allocation");
+    let repeated_preflight = establishment
+        .find("if !takeover_ready(status) {")
+        .expect("post-allocation takeover preflight");
+    let construction = establishment
+        .find("let mut unit = Self {")
+        .expect("first hardware-owning value construction");
+    assert!(allocation < repeated_preflight && repeated_preflight < construction);
+    assert!(!vtd_source.contains("fn quiesce("));
     let invalidation = vtd_source
         .split_once("fn invalidate_interrupt_cache(")
         .expect("interrupt-cache invalidation")
@@ -1467,26 +1488,59 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "if !covers_every_present_requester(&requesters) {",
         "for bus in 0..=u8::MAX {",
         "if !requesters.iter().any(|covered| covered == requester) {",
-        "pub(crate) fn ensure_interrupt_boundary(context: &mut ThreadContext) -> bool {",
-        "if isolation.interrupt_isolation().is_none() {",
+        "pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {",
+        "acpi::find_unique_table(firmware, root, Sdt::DMA_COVERAGE)",
+        "acpi::find_unique_table(firmware, root, Sdt::DMAR)",
+        "DmaCoverage::new(&table)",
+        "dmar.sole_complete_unit_register_base(SEGMENT)",
+        "dmar.sole_rmrr_free_unit_register_base(SEGMENT)",
+        "Vtd::establish_deny_all(registers, true)",
+        "pub(crate) fn ensure_interrupt_boundary() -> bool {",
+        "pci::TopologyPresence::Empty | pci::TopologyPresence::Present => {}",
+        ".filter(|owner| owner.state == InstalledState::Ready && owner.boundary_active())",
     ] {
         assert!(
             iommu.contains(requirement),
             "kernel interrupt boundary lost `{requirement}`"
         );
     }
-    assert_eq!(
-        iommu.matches("Vtd::establish(registers,").count(),
-        2,
-        "both DMA and interrupt-only ownership must use the same VT-d takeover"
-    );
+    assert_eq!(iommu.matches("Vtd::establish_deny_all(").count(), 1);
+    let early_register = iommu
+        .split_once("fn early_register_base(")
+        .expect("static early VT-d authority")
+        .1
+        .split_once("/// The remapping unit firmware says")
+        .expect("static early VT-d authority end")
+        .0;
     assert!(
-        iommu
-            .matches("pci::TopologyPresence::Unsealed => return false,")
-            .count()
-            >= 2,
-        "an unsealed PCI inventory must refuse both boundary establishment and observation"
+        early_register
+            .contains("coverage.segment() == SEGMENT && coverage.register_base() == register_base")
     );
+    assert!(iommu.contains("pci::TopologyPresence::Unsealed => return false,"));
+    assert!(iommu.contains(
+        "INSTALLED\n        .lock()\n        .as_ref()\n        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())"
+    ));
+    let acpi = source("libs/acpi-tables/src/lib.rs");
+    let early_unit = acpi
+        .split_once("pub fn sole_rmrr_free_unit_register_base(")
+        .expect("static whole-fabric unit query")
+        .1
+        .split_once("/// The DRHD unit that governs `bdf`")
+        .expect("static whole-fabric unit query end")
+        .0;
+    assert!(early_unit.contains("DmarStructure::Rmrr { segment: reserved, .. }"));
+    assert!(early_unit.contains("include_pci_all: true"));
+
+    let acpi = source("kernel/src/acpi.rs");
+    let unique = acpi
+        .split_once("pub(crate) fn find_unique_table(")
+        .expect("unique ACPI authority lookup")
+        .1
+        .split_once("/// A whole table at a physical address")
+        .expect("unique ACPI authority lookup end")
+        .0;
+    assert!(unique.contains("if require_unique {"));
+    assert!(unique.contains("return None;"));
 
     let pci = source("wost/src/arch/x86_64/pci.rs");
     assert!(pci.contains("if interrupts.function() != domain.function() {"));
@@ -1505,6 +1559,21 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(main.contains("if !iommu::interrupt_boundary_active() {"));
     assert!(main.contains("pci::TopologyPresence::Empty"));
     assert!(main.contains("if let Err(reason) = apic::enable_after_pending_audit() {"));
+    let survey = main
+        .split_once("fn survey_the_bus()")
+        .expect("PCI survey")
+        .1
+        .split_once("enum StorageSelection")
+        .expect("PCI survey end")
+        .0;
+    let early = survey
+        .find("iommu::establish_fabric_boundary(&mut context)")
+        .expect("early VT-d owner");
+    let snapshot = survey
+        .find("pci::snapshot_topology()")
+        .expect("PCI topology snapshot");
+    let enumeration = survey.find("pci::enumerate(").expect("PCI enumeration");
+    assert!(early < snapshot && snapshot < enumeration);
     let start = main
         .split_once("fn start_interrupts(")
         .expect("initial interrupt admission")
@@ -3466,14 +3535,58 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
         .iter()
         .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
         .collect::<Vec<_>>();
-    assert_eq!(names, ["register_base", "isolation", "fences"]);
+    assert_eq!(names, ["register_base", "isolation", "fences", "state"]);
 
+    let iommu_source = source("kernel/src/iommu.rs");
+    let early = iommu_source
+        .split_once("pub(crate) fn establish_fabric_boundary(")
+        .expect("early VT-d establishment")
+        .1
+        .split_once("/// The remapping unit firmware says")
+        .expect("early VT-d establishment end")
+        .0;
+    let retained_takeover = early
+        .split_once("Establishment::Retained { reason, isolation } => {")
+        .expect("retained early takeover")
+        .1
+        .split_once("            return false;")
+        .expect("retained early takeover end")
+        .0;
+    assert!(retained_takeover.contains("state: InstalledState::Quarantined"));
+    assert!(!retained_takeover.contains("state: InstalledState::Ready"));
+
+    let candidate = iommu_source
+        .split_once("pub(crate) fn establish(device: &pci::Device)")
+        .expect("candidate VT-d establishment")
+        .1
+        .split_once("/// Verify every live PCI requester")
+        .expect("candidate VT-d establishment end")
+        .0;
+    let quarantine_guard = candidate
+        .find("if owner.state != InstalledState::Ready {")
+        .expect("permanent early-owner quarantine");
+    let retarget = candidate
+        .find("owner.isolation.retarget(at)")
+        .expect("candidate retarget");
+    assert!(quarantine_guard < retarget);
+    let retained_retarget = candidate
+        .split_once("Retargeting::Retained(reason) => {")
+        .expect("uncertain retarget")
+        .1;
+    assert!(retained_retarget.contains("owner.state = InstalledState::Quarantined;"));
+
+    let mut early_calls = CallNames::default();
+    early_calls.visit_item_fn(function(&iommu, "establish_fabric_boundary"));
+    assert!(
+        call_position(&early_calls, "map_device")
+            < call_position(&early_calls, "establish_deny_all")
+    );
     let mut establish_calls = CallNames::default();
     establish_calls.visit_item_fn(function(&iommu, "establish"));
-    let fences = call_position(&establish_calls, "acquire_fences");
-    let mapping = call_position(&establish_calls, "map_device");
-    let transition = call_position(&establish_calls, "establish");
-    assert!(fences < mapping && mapping < transition);
+    assert!(
+        call_position(&establish_calls, "acquire_fences")
+            < call_position(&establish_calls, "retarget")
+    );
 
     let kernel = parse("kernel/src/main.rs");
     let mut retirement_calls = CallNames::default();
@@ -3489,12 +3602,18 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
 
     let mut park_calls = CallNames::default();
     park_calls.visit_impl_item_fn(method(&vtd, "Vtd", "park").expect("VT-d parking"));
-    assert!(park_calls.0.iter().any(|call| call == "switch_translation"));
+    assert!(!park_calls.0.iter().any(|call| call == "switch_translation"));
     assert!(
         !park_calls
             .0
             .iter()
             .any(|call| call == "switch_interrupt_remapping")
+    );
+    assert!(
+        call_position(&park_calls, "write_entry") < call_position(&park_calls, "invalidate")
+            && call_position(&park_calls, "invalidate") < call_position(&park_calls, "drain_dma")
+            && call_position(&park_calls, "drain_dma")
+                < call_position(&park_calls, "clear_dma_tables")
     );
     let mut retarget_calls = CallNames::default();
     retarget_calls.visit_impl_item_fn(method(&vtd, "Vtd", "retarget").expect("VT-d retargeting"));
@@ -3504,8 +3623,13 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
             .iter()
             .any(|call| call == "switch_interrupt_remapping")
     );
+    assert!(
+        !retarget_calls
+            .0
+            .iter()
+            .any(|call| call == "switch_translation")
+    );
 
-    let iommu_source = source("kernel/src/iommu.rs");
     let release = iommu_source
         .split_once("pub(crate) fn release_candidate(")
         .expect("candidate release")
@@ -3532,19 +3656,16 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     transition_calls
         .visit_impl_item_fn(method(&vtd, "Vtd", "transition").expect("VT-d transition"));
     assert!(
-        call_position(&transition_calls, "quiesce") < call_position(&transition_calls, "drain_dma")
-    );
-    assert!(
-        call_position(&transition_calls, "drain_dma")
-            < call_position(&transition_calls, "set_root_table")
-    );
-    assert!(
         call_position(&transition_calls, "set_root_table")
             < call_position(&transition_calls, "invalidate")
     );
     assert!(
         call_position(&transition_calls, "invalidate")
             < call_position(&transition_calls, "switch_translation")
+    );
+    assert!(
+        call_position(&transition_calls, "switch_translation")
+            < call_position(&transition_calls, "drain_dma")
     );
 
     let establishment = vtd
@@ -3787,8 +3908,8 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
         "any firmware-reserved region must be refused"
     );
 
-    let source = source("kernel/src/iommu.rs");
-    let lookup = source
+    let iommu_source = source("kernel/src/iommu.rs");
+    let lookup = iommu_source
         .split_once("fn look_up(")
         .expect("DMAR lookup")
         .1
@@ -3807,26 +3928,23 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
     assert!(coverage < refusal && refusal < construction);
     assert!(lookup.contains("return Err(LookupError::UnsupportedReservedRegion);"));
 
-    struct EmptyReservedMappings<'name> {
-        target: &'name str,
-        vtd_calls: usize,
-        exact_vtd_calls: usize,
+    struct EmptyReservedMappings {
+        boundary_calls: usize,
+        exact_boundary_calls: usize,
         retarget_calls: usize,
         exact_retarget_calls: usize,
     }
 
-    impl<'ast> Visit<'ast> for EmptyReservedMappings<'_> {
+    impl<'ast> Visit<'ast> for EmptyReservedMappings {
         fn visit_expr_call(&mut self, call: &'ast ExprCall) {
             if matches!(&*call.func, Expr::Path(path)
-                if path_ends(&path.path, &["Vtd", "establish"]))
+                if path_ends(&path.path, &["Vtd", "establish_deny_all"]))
             {
-                self.vtd_calls += 1;
-                self.exact_vtd_calls += usize::from(matches!(
+                self.boundary_calls += 1;
+                self.exact_boundary_calls += usize::from(matches!(
                     call.args.iter().collect::<Vec<_>>().as_slice(),
-                    [registers, target, reserved, interrupts]
+                    [registers, interrupts]
                         if path_expression_is(registers, &["registers"])
-                            && path_expression_is(target, &[self.target])
-                            && empty_slice_expression_is(reserved)
                             && bool_literal_is(interrupts, true)
                 ));
             }
@@ -3839,9 +3957,7 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
                 self.exact_retarget_calls += usize::from(
                     field_chain_is(&call.receiver, "owner", &["isolation"])
                         && matches!(call.args.iter().collect::<Vec<_>>().as_slice(),
-                            [target, reserved]
-                                if path_expression_is(target, &[self.target])
-                                    && empty_slice_expression_is(reserved)),
+                            [target] if path_expression_is(target, &["at"])),
                 );
             }
             syn::visit::visit_expr_method_call(self, call);
@@ -3849,40 +3965,42 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
     }
 
     let mut storage = EmptyReservedMappings {
-        target: "at",
-        vtd_calls: 0,
-        exact_vtd_calls: 0,
+        boundary_calls: 0,
+        exact_boundary_calls: 0,
         retarget_calls: 0,
         exact_retarget_calls: 0,
     };
     storage.visit_item_fn(function(&iommu, "establish"));
     assert_eq!(
         (
-            storage.vtd_calls,
-            storage.exact_vtd_calls,
+            storage.boundary_calls,
+            storage.exact_boundary_calls,
             storage.retarget_calls,
             storage.exact_retarget_calls,
         ),
-        (1, 1, 1, 1),
-        "fresh and parked storage owners must receive no firmware mappings"
+        (0, 0, 1, 1),
+        "storage retargeting must expose no firmware mapping argument"
     );
 
-    let mut interrupt_only = EmptyReservedMappings {
-        target: "anchor",
-        vtd_calls: 0,
-        exact_vtd_calls: 0,
+    let mut boundary = EmptyReservedMappings {
+        boundary_calls: 0,
+        exact_boundary_calls: 0,
         retarget_calls: 0,
         exact_retarget_calls: 0,
     };
-    interrupt_only.visit_item_fn(function(&iommu, "ensure_interrupt_boundary"));
+    boundary.visit_item_fn(function(&iommu, "establish_fabric_boundary"));
     assert_eq!(
         (
-            interrupt_only.vtd_calls,
-            interrupt_only.exact_vtd_calls,
-            interrupt_only.retarget_calls,
-            interrupt_only.exact_retarget_calls,
+            boundary.boundary_calls,
+            boundary.exact_boundary_calls,
+            boundary.retarget_calls,
+            boundary.exact_retarget_calls,
         ),
         (1, 1, 0, 0),
-        "the interrupt-only owner must receive no firmware mappings"
+        "the early empty owner must expose no firmware mapping argument"
     );
+
+    let vtd = source("wost/src/arch/x86_64/vtd.rs");
+    assert!(!vtd.contains("reserved: &[(u64, u64)]"));
+    assert!(!vtd.contains("VtdError::ReservedRegion"));
 }

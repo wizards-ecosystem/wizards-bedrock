@@ -339,6 +339,9 @@ impl Sdt {
     /// Signature of the DMA Remapping Reporting table.
     pub const DMAR: [u8; 4] = *b"DMAR";
 
+    /// Signature of Wizard's explicit whole-segment DMA coverage attestation.
+    pub const DMA_COVERAGE: [u8; 4] = *b"WZDM";
+
     /// The length a header claims, without validating anything else.
     ///
     /// The one field that has to be read before a table can be validated at
@@ -415,6 +418,111 @@ impl Sdt {
     /// Bytes in the whole table, header included.
     pub const fn length(self) -> u32 {
         self.length
+    }
+}
+
+/// A platform attestation that one exact VT-d unit covers a complete segment.
+///
+/// This vendor table is useful when a hypervisor's standards-defined DMAR
+/// describes only its boot-time device scopes even though its one emulated
+/// unit intercepts the whole segment. It does not replace the DMAR: consumers
+/// must corroborate this segment and register base against one RMRR-free DRHD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaCoverage {
+    segment: u16,
+    register_base: u64,
+}
+
+/// Why a Wizard DMA coverage attestation is not authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DmaCoverageError {
+    /// The enclosing ACPI table is malformed.
+    Table(AcpiError),
+    /// The table is valid ACPI but has another signature.
+    WrongTable {
+        /// Signature this view accepts.
+        expected: [u8; 4],
+        /// Signature the table carries.
+        found: [u8; 4],
+    },
+    /// The fixed-format table has another length.
+    WrongLength(u32),
+    /// The table revision has no defined coverage semantics.
+    UnsupportedRevision(u8),
+    /// Reserved format bits are not zero.
+    NonzeroReserved(u16),
+}
+
+impl fmt::Display for DmaCoverageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Table(reason) => write!(f, "DMA coverage table is invalid: {reason}"),
+            Self::WrongTable { expected, found } => {
+                write!(f, "table signature {found:?} does not match {expected:?}")
+            }
+            Self::WrongLength(length) => {
+                write!(f, "DMA coverage table length {length} is not 48 bytes")
+            }
+            Self::UnsupportedRevision(revision) => {
+                write!(f, "DMA coverage revision {revision} is unsupported")
+            }
+            Self::NonzeroReserved(bits) => {
+                write!(f, "DMA coverage reserved bits are {bits:#x}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for DmaCoverageError {}
+
+impl DmaCoverage {
+    /// Bytes in the complete fixed-format table.
+    pub const LEN: usize = Sdt::LEN + 12;
+
+    /// Validate a whole-segment coverage attestation.
+    ///
+    /// # Errors
+    ///
+    /// If the ACPI envelope, signature, fixed length, revision, or reserved
+    /// field is invalid.
+    pub fn new(table: &[u8]) -> Result<Self, DmaCoverageError> {
+        let header = Sdt::parse(table).map_err(DmaCoverageError::Table)?;
+        if header.signature() != Sdt::DMA_COVERAGE {
+            return Err(DmaCoverageError::WrongTable {
+                expected: Sdt::DMA_COVERAGE,
+                found: header.signature(),
+            });
+        }
+        if header.length() as usize != Self::LEN {
+            return Err(DmaCoverageError::WrongLength(header.length()));
+        }
+        if table[8] != 1 {
+            return Err(DmaCoverageError::UnsupportedRevision(table[8]));
+        }
+        let reserved =
+            u16_at(table, Sdt::LEN + 2).ok_or(DmaCoverageError::WrongLength(header.length()))?;
+        if reserved != 0 {
+            return Err(DmaCoverageError::NonzeroReserved(reserved));
+        }
+        let segment =
+            u16_at(table, Sdt::LEN).ok_or(DmaCoverageError::WrongLength(header.length()))?;
+        let register_base =
+            u64_at(table, Sdt::LEN + 4).ok_or(DmaCoverageError::WrongLength(header.length()))?;
+        Ok(Self {
+            segment,
+            register_base,
+        })
+    }
+
+    /// PCI segment whose complete requester-ID space the unit intercepts.
+    pub const fn segment(self) -> u16 {
+        self.segment
+    }
+
+    /// Physical register base of the corroborating sole DMAR unit.
+    pub const fn register_base(self) -> u64 {
+        self.register_base
     }
 }
 
@@ -1372,8 +1480,6 @@ impl<const N: usize> RequesterInventory<N> {
 pub enum RequesterInventoryError {
     /// No unambiguous unit governs the selected function.
     Ungoverned,
-    /// The selected function is governed only by catch-all coverage.
-    SelectedUsesCatchAll,
     /// The unit can govern functions not named by an endpoint scope.
     IncludesAllPci,
     /// A PCI scope could not be resolved through the supplied topology.
@@ -1404,10 +1510,6 @@ impl fmt::Display for RequesterInventoryError {
             Self::Ungoverned => core::fmt::Write::write_str(
                 f,
                 "no unambiguous remapping unit governs the selected function",
-            ),
-            Self::SelectedUsesCatchAll => core::fmt::Write::write_str(
-                f,
-                "the selected function is governed only by catch-all coverage",
             ),
             Self::IncludesAllPci => core::fmt::Write::write_str(
                 f,
@@ -1640,6 +1742,51 @@ impl<'a> Dmar<'a> {
         units.next().is_none().then_some(segment)
     }
 
+    /// Register base of the sole DRHD for an RMRR-free `segment`.
+    ///
+    /// This proves that a coverage attestation names the same one unit as the
+    /// standards-defined DMAR; it does not itself prove catch-all coverage.
+    pub fn sole_rmrr_free_unit_register_base(&self, segment: u16) -> Option<u64> {
+        if self.entries().any(
+            |structure| matches!(structure, DmarStructure::Rmrr { segment: reserved, .. } if reserved == segment),
+        ) {
+            return None;
+        }
+        let mut units = self.entries().filter_map(|structure| match structure {
+            DmarStructure::Drhd {
+                include_pci_all,
+                segment: unit_segment,
+                register_base,
+                ..
+            } => Some((include_pci_all, unit_segment, register_base)),
+            _ => None,
+        });
+        let (_, unit_segment, register_base) = units.next()?;
+        (units.next().is_none() && unit_segment == segment).then_some(register_base)
+    }
+
+    /// Register base of the sole catch-all DRHD for an RMRR-free `segment`.
+    ///
+    /// This is the static proof needed to establish a deny-all owner before
+    /// requester discovery: one unit must govern every possible requester in
+    /// the segment, not just every function a mutable presence scan observed.
+    /// Any RMRR for the segment refuses early ownership before a unit write.
+    pub fn sole_complete_unit_register_base(&self, segment: u16) -> Option<u64> {
+        let register_base = self.sole_rmrr_free_unit_register_base(segment)?;
+        self.entries()
+            .any(|structure| {
+                matches!(
+                    structure,
+                    DmarStructure::Drhd {
+                        include_pci_all: true,
+                        register_base: candidate,
+                        ..
+                    } if candidate == register_base
+                )
+            })
+            .then_some(register_base)
+    }
+
     /// The DRHD unit that governs `bdf`, and the scope that decided it.
     ///
     /// Scopes resolve through one sealed topology: `bridge` reports the buses
@@ -1743,8 +1890,10 @@ impl<'a> Dmar<'a> {
     /// Each result is checked through [`Self::unit_for`] again so a scope
     /// shadowed by a provably more-specific unit cannot enter the inventory.
     /// Overlapping sibling hierarchies are ambiguous, and a fixed scope budget
-    /// bounds hostile duplicate scans. Catch-all coverage remains unsupported
-    /// because it has no fixed scope boundary.
+    /// bounds hostile duplicate scans. A sole RMRR-free catch-all unit instead
+    /// scans the complete, fixed segment requester-ID space through `present`,
+    /// even when a more-specific scope names `selected`; the caller's fixed
+    /// inventory capacity remains the admission bound.
     pub fn requester_inventory<const N: usize>(
         &self,
         selected: Bdf,
@@ -1755,8 +1904,34 @@ impl<'a> Dmar<'a> {
         let unit = self
             .unit_for(selected, &bridge, &hierarchy)
             .ok_or(RequesterInventoryError::Ungoverned)?;
-        if unit.coverage == Coverage::CatchAll {
-            return Err(RequesterInventoryError::SelectedUsesCatchAll);
+        if self.sole_complete_unit_register_base(selected.segment()) == Some(unit.register_base) {
+            let mut requesters = [None; N];
+            let mut count = 0usize;
+            for bus in 0..=u8::MAX {
+                for device in 0..32 {
+                    for function in 0..8 {
+                        let requester = Bdf::new(selected.segment(), bus, device, function);
+                        if !present(requester) {
+                            continue;
+                        }
+                        match self.unit_for(requester, &bridge, &hierarchy) {
+                            Some(governing) if governing.register_base == unit.register_base => {
+                                push_requester(&mut requesters, &mut count, requester)?;
+                            }
+                            Some(_) => {}
+                            None => return Err(RequesterInventoryError::AmbiguousRequester),
+                        }
+                    }
+                }
+            }
+            if !requesters[..count].contains(&Some(selected)) {
+                return Err(RequesterInventoryError::MissingSelected);
+            }
+            return Ok(RequesterInventory {
+                unit,
+                requesters,
+                count,
+            });
         }
 
         let mut requesters = [None; N];
@@ -2816,33 +2991,96 @@ mod tests {
     }
 
     #[test]
-    fn a_single_drhd_exposes_its_segment_and_every_other_count_refuses() {
-        let empty = table(&Sdt::DMAR, &dmar_body(&[]));
+    fn dma_coverage_attestation_is_exact_checksummed_and_typed() {
+        let mut body = [0u8; 12];
+        body[0..2].copy_from_slice(&7u16.to_le_bytes());
+        body[4..12].copy_from_slice(&0xfed9_0000u64.to_le_bytes());
+        let mut bytes = table(&Sdt::DMA_COVERAGE, &body);
+        bytes[8] = 1;
+        fix_checksum(&mut bytes, 9);
+
+        let coverage = DmaCoverage::new(&bytes).expect("valid DMA coverage attestation");
+        assert_eq!(coverage.segment(), 7);
+        assert_eq!(coverage.register_base(), 0xfed9_0000);
+
+        let mut wrong_revision = bytes.clone();
+        wrong_revision[8] = 2;
+        fix_checksum(&mut wrong_revision, 9);
         assert_eq!(
-            Dmar::new(&empty).expect("empty DMAR").sole_unit_segment(),
-            None
+            DmaCoverage::new(&wrong_revision),
+            Err(DmaCoverageError::UnsupportedRevision(2))
         );
+
+        let mut reserved = bytes.clone();
+        reserved[Sdt::LEN + 2] = 1;
+        fix_checksum(&mut reserved, 9);
+        assert_eq!(
+            DmaCoverage::new(&reserved),
+            Err(DmaCoverageError::NonzeroReserved(1))
+        );
+
+        let wrong = table(&Sdt::DMAR, &[0; 12]);
+        assert!(matches!(
+            DmaCoverage::new(&wrong),
+            Err(DmaCoverageError::WrongTable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_single_catch_all_drhd_without_rmrr_exposes_its_register_base() {
+        let empty = table(&Sdt::DMAR, &dmar_body(&[]));
+        let empty = Dmar::new(&empty).expect("empty DMAR");
+        assert_eq!(empty.sole_unit_segment(), None);
+        assert_eq!(empty.sole_complete_unit_register_base(0), None);
 
         for segment in [0, 7, u16::MAX] {
             let bytes = table(
                 &Sdt::DMAR,
                 &dmar_body(&drhd_bytes(true, segment, 0xfed9_0000, &[])),
             );
+            let dmar = Dmar::new(&bytes).expect("one DRHD");
+            assert_eq!(dmar.sole_unit_segment(), Some(segment));
             assert_eq!(
-                Dmar::new(&bytes).expect("one DRHD").sole_unit_segment(),
-                Some(segment)
+                dmar.sole_rmrr_free_unit_register_base(segment),
+                Some(0xfed9_0000)
+            );
+            assert_eq!(
+                dmar.sole_complete_unit_register_base(segment),
+                Some(0xfed9_0000)
+            );
+            assert_eq!(
+                dmar.sole_complete_unit_register_base(segment.wrapping_add(1)),
+                None
             );
         }
+
+        let scoped = table(
+            &Sdt::DMAR,
+            &dmar_body(&drhd_bytes(false, 0, 0xfed9_0000, &[])),
+        );
+        let scoped = Dmar::new(&scoped).expect("one scoped DRHD");
+        assert_eq!(
+            scoped.sole_rmrr_free_unit_register_base(0),
+            Some(0xfed9_0000)
+        );
+        assert_eq!(scoped.sole_complete_unit_register_base(0), None);
+
+        let mut reserved = drhd_bytes(true, 0, 0xfed9_0000, &[]);
+        reserved.extend_from_slice(&rmrr_bytes(0, 0x1000, 0x1fff, &[]));
+        let reserved = table(&Sdt::DMAR, &dmar_body(&reserved));
+        let reserved = Dmar::new(&reserved).expect("one catch-all DRHD and one RMRR");
+        assert_eq!(reserved.sole_rmrr_free_unit_register_base(0), None);
+        assert_eq!(reserved.sole_complete_unit_register_base(0), None);
 
         let mut multiple = drhd_bytes(true, 0, 0xfed9_0000, &[]);
         multiple.extend_from_slice(&drhd_bytes(true, 9, 0xfed9_1000, &[]));
         let bytes = table(&Sdt::DMAR, &dmar_body(&multiple));
-        assert_eq!(
-            Dmar::new(&bytes)
-                .expect("distinct DRHDs")
-                .sole_unit_segment(),
-            None
-        );
+        let multiple = Dmar::new(&bytes).expect("distinct DRHDs");
+        assert_eq!(multiple.sole_unit_segment(), None);
+        assert_eq!(multiple.sole_rmrr_free_unit_register_base(0), None);
+        assert_eq!(multiple.sole_rmrr_free_unit_register_base(9), None);
+        assert_eq!(multiple.sole_complete_unit_register_base(0), None);
+        assert_eq!(multiple.sole_complete_unit_register_base(9), None);
     }
 
     #[test]
@@ -3249,17 +3487,16 @@ mod tests {
     }
 
     #[test]
-    fn requester_inventory_expands_hierarchies_and_refuses_catch_all_and_overflow() {
+    fn requester_inventory_expands_hierarchies_catch_all_and_refuses_overflow() {
         let selected = Bdf::new(0, 0, 4, 0);
         let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
 
         let include_all = dmar_of(&[drhd_bytes(true, 0, SCOPED, &endpoint)]);
-        assert_eq!(
-            Dmar::new(&include_all)
-                .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
-            Err(RequesterInventoryError::IncludesAllPci)
-        );
+        let inventory = Dmar::new(&include_all)
+            .expect("valid dmar")
+            .requester_inventory::<2>(selected, no_bridges, no_hierarchies, present(&[selected]))
+            .expect("a sole complete unit has a bounded segment inventory");
+        assert_eq!(inventory.iter().collect::<Vec<_>>(), [selected]);
 
         let bridge = Bdf::new(0, 0, 0x1c, 0);
         let bridges = [(bridge, buses(0x20, 0x20))];
@@ -3342,12 +3579,6 @@ mod tests {
         assert_eq!(
             Dmar::new(&catch_all)
                 .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
-            Err(RequesterInventoryError::SelectedUsesCatchAll)
-        );
-        assert_eq!(
-            Dmar::new(&catch_all)
-                .expect("valid dmar")
                 .requester_inventory::<2>(
                     Bdf::new(1, 0, 4, 0),
                     no_bridges,
@@ -3355,6 +3586,34 @@ mod tests {
                     no_requesters,
                 ),
             Err(RequesterInventoryError::Ungoverned)
+        );
+    }
+
+    #[test]
+    fn catch_all_inventory_enumerates_every_present_requester_with_a_fixed_budget() {
+        let selected = Bdf::new(0, 0, 4, 0);
+        let sibling = Bdf::new(0, 0x20, 3, 1);
+        let catch_all_bytes = dmar_of(&[drhd_bytes(true, 0, CATCH_ALL, &[])]);
+        let dmar = Dmar::new(&catch_all_bytes).expect("valid catch-all dmar");
+
+        let inventory = dmar
+            .requester_inventory::<2>(
+                selected,
+                no_bridges,
+                no_hierarchies,
+                present(&[selected, sibling]),
+            )
+            .expect("bounded catch-all inventory");
+        assert_eq!(inventory.unit(), catch_all());
+        assert_eq!(inventory.iter().collect::<Vec<_>>(), [selected, sibling]);
+        assert_eq!(
+            dmar.requester_inventory::<1>(
+                selected,
+                no_bridges,
+                no_hierarchies,
+                present(&[selected, sibling]),
+            ),
+            Err(RequesterInventoryError::TooManyRequesters { maximum: 1 })
         );
     }
 

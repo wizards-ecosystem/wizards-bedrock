@@ -2364,7 +2364,7 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
         let isolation = installed.as_mut()?;
         let drained = isolation.completed_dma_drains_for_test() > drains_before;
         isolation.drain_faults();
-        let function = isolation.function();
+        let function = isolation.function()?;
         (
             (u16::from(function.bus()) << 8)
                 | (u16::from(function.device()) << 3)
