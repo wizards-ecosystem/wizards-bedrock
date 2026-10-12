@@ -11,8 +11,10 @@ use std::io::{Read, SeekFrom};
 use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::Child;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -83,6 +85,152 @@ pub(crate) fn output_with_limit(
     collect_output(&capture, status, capture_limit)
 }
 
+#[derive(Debug)]
+pub(crate) struct StreamedOutput<T> {
+    pub(crate) status: ExitStatus,
+    pub(crate) value: T,
+    pub(crate) stderr: Vec<u8>,
+}
+
+/// Run one child while reducing stdout on a dedicated reader thread.
+///
+/// The consumer must bound each record before allocating it. Stderr remains a
+/// separately bounded diagnostic stream. Reader errors are observed while the
+/// child is live so the complete process tree is stopped before returning.
+pub(crate) fn output_streamed<T, F>(
+    mut command: Command,
+    timeout: Duration,
+    label: &str,
+    stderr_limit: usize,
+    consume_stdout: F,
+) -> Result<StreamedOutput<T>>
+where
+    T: Send + 'static,
+    F: FnOnce(ChildStdout) -> Result<T> + Send + 'static,
+{
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut tree = Tree::spawn(command).with_context(|| format!("launching {label}"))?;
+    let stdout = tree
+        .take_stdout()
+        .with_context(|| format!("{label} has no piped stdout"))?;
+    let stderr = tree
+        .take_stderr()
+        .with_context(|| format!("{label} has no piped stderr"))?;
+
+    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+    let stdout_thread = std::thread::Builder::new()
+        .name("wizard-bounded-stdout".to_string())
+        .spawn(move || {
+            let _ = stdout_sender.send(consume_stdout(stdout));
+        })
+        .with_context(|| format!("starting {label} stdout reducer"))?;
+    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
+    let stderr_label = label.to_string();
+    let stderr_thread = std::thread::Builder::new()
+        .name("wizard-bounded-stderr".to_string())
+        .spawn(move || {
+            let result = read_pipe_with_limit(stderr, stderr_limit, &stderr_label);
+            let _ = stderr_sender.send(result);
+        })
+        .with_context(|| format!("starting {label} stderr reader"))?;
+
+    let mut stdout_value = None;
+    let mut stderr_value = None;
+    let status = poll_child_with(
+        tree,
+        Tree::try_wait,
+        Tree::terminate,
+        timeout,
+        label,
+        || {
+            receive_ready(
+                &stdout_receiver,
+                &mut stdout_value,
+                &format!("{label} stdout reducer"),
+            )?;
+            receive_ready(
+                &stderr_receiver,
+                &mut stderr_value,
+                &format!("{label} stderr reader"),
+            )
+        },
+    )?;
+
+    let value = receive_after_exit(
+        &stdout_receiver,
+        stdout_value,
+        &format!("{label} stdout reducer"),
+    )?;
+    let stderr = receive_after_exit(
+        &stderr_receiver,
+        stderr_value,
+        &format!("{label} stderr reader"),
+    )?;
+    join_reader(stdout_thread, &format!("{label} stdout reducer"))?;
+    join_reader(stderr_thread, &format!("{label} stderr reader"))?;
+    Ok(StreamedOutput {
+        status,
+        value,
+        stderr,
+    })
+}
+
+fn receive_ready<T>(
+    receiver: &Receiver<Result<T>>,
+    value: &mut Option<T>,
+    label: &str,
+) -> Result<()> {
+    if value.is_some() {
+        return Ok(());
+    }
+    match receiver.try_recv() {
+        Ok(Ok(received)) => *value = Some(received),
+        Ok(Err(error)) => return Err(error).with_context(|| format!("reading {label}")),
+        Err(TryRecvError::Empty) => {}
+        Err(TryRecvError::Disconnected) => bail!("{label} ended without a result"),
+    }
+    Ok(())
+}
+
+fn receive_after_exit<T>(
+    receiver: &Receiver<Result<T>>,
+    value: Option<T>,
+    label: &str,
+) -> Result<T> {
+    if let Some(value) = value {
+        return Ok(value);
+    }
+    match receiver.recv_timeout(POST_KILL_TIMEOUT) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error).with_context(|| format!("reading {label}")),
+        Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+            "{label} did not close within {} ms after the child tree ended",
+            POST_KILL_TIMEOUT.as_millis()
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => bail!("{label} ended without a result"),
+    }
+}
+
+fn read_pipe_with_limit(mut pipe: ChildStderr, limit: usize, label: &str) -> Result<Vec<u8>> {
+    let maximum = u64::try_from(limit)
+        .context("bounded stream limit does not fit u64")?
+        .checked_add(1)
+        .context("bounded stream limit overflowed")?;
+    let mut bytes = Vec::new();
+    pipe.by_ref()
+        .take(maximum)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {label}"))?;
+    ensure!(bytes.len() <= limit, "{label} exceeded {limit} bytes");
+    Ok(bytes)
+}
+
+fn join_reader(thread: JoinHandle<()>, label: &str) -> Result<()> {
+    thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("{label} panicked"))
+}
+
 /// One bounded command and every process it starts. On Windows they share a
 /// job object that is terminated as a whole; dropping the tree does that, so
 /// no descendant outlives the command however it ends.
@@ -118,6 +266,28 @@ impl Tree {
     /// Terminate every process in the job; elsewhere only the direct child.
     fn terminate(&mut self) -> std::io::Result<()> {
         self.child.kill()
+    }
+
+    fn take_stdout(&mut self) -> Option<ChildStdout> {
+        #[cfg(windows)]
+        {
+            self.child.inner().stdout.take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.stdout.take()
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<ChildStderr> {
+        #[cfg(windows)]
+        {
+            self.child.inner().stderr.take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.stderr.take()
+        }
     }
 }
 
@@ -748,6 +918,14 @@ mod tests {
         eprintln!("captured stderr");
     }
 
+    #[test]
+    #[ignore]
+    fn noisy_stderr_fixture_child() {
+        std::io::stderr().write_all(&[b'x'; 4096]).unwrap();
+        std::io::stderr().flush().unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+    }
+
     const PARKED_LOCK: &str = "WIZARD_PARKED_GRANDCHILD_LOCK";
     const PARENT_LINGERS: &str = "WIZARD_PARKED_PARENT_LINGERS";
 
@@ -900,6 +1078,84 @@ mod tests {
                 .unwrap()
                 .contains("captured stderr")
         );
+    }
+
+    #[test]
+    fn a_completed_process_can_reduce_stdout_while_stderr_stays_bounded() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "bounded_process::tests::capture_fixture_child",
+            "--ignored",
+            "--nocapture",
+        ]);
+
+        let streamed = output_streamed(
+            command,
+            Duration::from_secs(2),
+            "streaming fixture",
+            64,
+            |mut stdout| {
+                let mut value = String::new();
+                stdout.read_to_string(&mut value)?;
+                Ok(value)
+            },
+        )
+        .unwrap();
+
+        assert!(streamed.status.success());
+        assert!(streamed.value.contains("captured stdout"));
+        assert!(
+            String::from_utf8(streamed.stderr)
+                .unwrap()
+                .contains("captured stderr")
+        );
+    }
+
+    #[test]
+    fn a_stream_reducer_failure_is_returned() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "bounded_process::tests::noisy_capture_fixture_child",
+            "--ignored",
+            "--nocapture",
+        ]);
+
+        let error = output_streamed(
+            command,
+            Duration::from_secs(2),
+            "failing reducer fixture",
+            64,
+            |_stdout| -> Result<()> { bail!("injected reducer failure") },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("injected reducer failure"));
+    }
+
+    #[test]
+    fn streamed_stderr_is_refused_while_the_child_is_live() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "bounded_process::tests::noisy_stderr_fixture_child",
+            "--ignored",
+            "--nocapture",
+        ]);
+
+        let error = output_streamed(
+            command,
+            Duration::from_secs(2),
+            "noisy stderr fixture",
+            32,
+            |mut stdout| {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("exceeded 32 bytes"));
     }
 
     #[test]

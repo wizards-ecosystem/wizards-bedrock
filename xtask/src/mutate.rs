@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1866;
+pub const NEXT_MUTATION_ID: u16 = 1868;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -11721,8 +11721,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1032,
         file: "xtask/src/api.rs",
-        find: "        ensure!(\n            test_artifact,\n            \"Cargo target `{}:{}` uses a custom test harness, which the API audit cannot classify\",\n            selected.package,\n            selected.name\n        );",
-        replace: "        let _unchecked_test_artifact = test_artifact;",
+        find: "            ensure!(\n                self.test_artifact,\n                \"Cargo target `{}:{}` uses a custom test harness, which the API audit cannot classify\",\n                selected.package,\n                selected.name\n            );",
+        replace: "            let _unchecked_test_artifact = self.test_artifact;",
         breaks: "a custom test harness is accepted as standard-harness compiler evidence",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20875,6 +20875,28 @@ fn mint_stopped<'controller>(
             name: "tests::only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command",
         },
     },
+    Mutation {
+        id: 1866,
+        file: "xtask/src/api.rs",
+        find: "        ensure!(\n            length <= maximum,\n            \"Cargo compiler JSON record exceeded {maximum} bytes\"\n        );",
+        replace: "        let _ = (length, maximum);",
+        breaks: "one streamed Cargo JSON record can grow memory without a fixed bound",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_cargo_records_are_bounded_individually",
+        },
+    },
+    Mutation {
+        id: 1867,
+        file: "xtask/src/api.rs",
+        find: "        ensure!(\n            retained <= maximum_bytes,\n            \"retained API marker evidence exceeded {maximum_bytes} bytes\"\n        );",
+        replace: "        let _ = maximum_bytes;",
+        breaks: "typed API marker evidence can exceed its aggregate retained-memory bound",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::retained_marker_evidence_has_aggregate_count_and_byte_bounds",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -21547,7 +21569,7 @@ mod tests {
             ("compiler graph", compilation, "if !result.status.success()"),
         ] {
             let output = command
-                .find("bounded_process::output_with_limit")
+                .find("bounded_process::output_")
                 .expect("command completion");
             let copied = command
                 .find("workspace.require_copy_unchanged(expected)?;")

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -28,11 +29,17 @@ const RESERVED_LANGUAGE_ROOTS: [&str; 3] = ["std", "core", "alloc"];
 const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
 /// One pristine compilation graph may include every workspace package.
 const COMPILATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// Combined stdout and stderr accepted from either repository-derived child.
-/// A complete host compiler graph emits substantial compact structured JSON;
-/// 64 MiB admits that reviewed workload while retaining a finite allocation
-/// and on-disk capture ceiling for every round (D-391).
+/// Captured output, streamed stderr and retained typed compiler evidence each
+/// keep a fixed 64 MiB ceiling (D-391 and D-393).
 const MAX_AUDIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+/// One Cargo JSON record is parsed before its typed evidence is retained.
+const MAX_AUDIT_JSON_LINE_BYTES: usize = 8 * 1024 * 1024;
+/// Count separately bounds spare vector capacity; retained bytes also charge
+/// one complete fixed record before charging every owned field.
+const MAX_AUDIT_RETAINED_MARKERS: usize =
+    MAX_AUDIT_OUTPUT_BYTES / std::mem::size_of::<MarkerDiagnostic>();
+/// Preserve enough compact compiler errors to diagnose a refused graph.
+const MAX_AUDIT_FAILURE_BYTES: usize = 1024 * 1024;
 const TOOL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TOOL_IDENTITY_BYTES: usize = 64 * 1024;
 const REGISTRY_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -8197,11 +8204,22 @@ fn compile_graph(
         .arg("--manifest-path")
         .arg(workspace.root.join("Cargo.toml"))
         .arg("--color=never");
-    let result = crate::bounded_process::output_with_limit(
+    let selected_test = match &plan.mode {
+        CompilationMode::TestHarness(target) => Some(target.clone()),
+        CompilationMode::RegisteredPass | CompilationMode::Example(_) => None,
+    };
+    let result = crate::bounded_process::output_streamed(
         command,
         COMPILATION_TIMEOUT,
         "API audit compilation",
         MAX_AUDIT_OUTPUT_BYTES,
+        move |stdout| {
+            cargo_compilation_stream(
+                BufReader::new(stdout),
+                selected_test,
+                MAX_AUDIT_JSON_LINE_BYTES,
+            )
+        },
     )
     .with_context(|| {
         format!(
@@ -8217,17 +8235,11 @@ fn compile_graph(
             "API audit round {round} failed to compile {} ({})\n{}{}",
             compilation_label(plan),
             result.status,
-            String::from_utf8_lossy(&result.stdout),
+            result.value.failure_report(),
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    let diagnostics = cargo_compilation_output(
-        &result.stdout,
-        match &plan.mode {
-            CompilationMode::TestHarness(target) => Some(target),
-            CompilationMode::RegisteredPass | CompilationMode::Example(_) => None,
-        },
-    )?;
+    let diagnostics = result.value.finish()?;
     Ok(Compilation {
         graph,
         kind: plan.kind,
@@ -8289,16 +8301,34 @@ fn compilation_label(plan: &CompilationPlan) -> String {
     }
 }
 
-fn cargo_compilation_output(
-    bytes: &[u8],
-    selected_test: Option<&CargoTarget>,
-) -> Result<Vec<MarkerDiagnostic>> {
-    let text = std::str::from_utf8(bytes).context("Cargo compiler JSON is not UTF-8")?;
-    let mut diagnostics = Vec::new();
-    let mut selected_artifact = false;
-    let mut test_artifact = false;
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let value = crate::json::parse_json(line.as_bytes(), "Cargo compiler JSON message")?;
+struct CargoCompilationEvidence {
+    diagnostics: Vec<MarkerDiagnostic>,
+    retained_bytes: usize,
+    selected_test: Option<CargoTarget>,
+    selected_artifact: bool,
+    test_artifact: bool,
+    failures: Vec<String>,
+    failure_bytes: usize,
+}
+
+impl CargoCompilationEvidence {
+    fn new(selected_test: Option<CargoTarget>) -> Self {
+        Self {
+            diagnostics: Vec::new(),
+            retained_bytes: 0,
+            selected_test,
+            selected_artifact: false,
+            test_artifact: false,
+            failures: Vec::new(),
+            failure_bytes: 0,
+        }
+    }
+
+    fn observe(&mut self, line: &[u8]) -> Result<()> {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return Ok(());
+        }
+        let value = crate::json::parse_json(line, "Cargo compiler JSON message")?;
         let message = crate::json::json_object(&value, "Cargo compiler JSON message")?;
         let reason = crate::json::json_string(
             crate::json::json_field(message, "reason", "Cargo compiler JSON message")?,
@@ -8321,13 +8351,16 @@ fn cargo_compilation_output(
                 crate::json::json_field(compiler_message, "message", "Cargo compiler message")?,
                 "Cargo compiler diagnostic `message`",
             )?;
-            let Some(id) = diagnostic_marker_id(diagnostic_message)? else {
-                continue;
-            };
             let level = crate::json::json_string(
                 crate::json::json_field(compiler_message, "level", "Cargo compiler message")?,
                 "Cargo compiler diagnostic `level`",
             )?;
+            let Some(id) = diagnostic_marker_id(diagnostic_message)? else {
+                if level == "error" {
+                    self.retain_failure(diagnostic_message)?;
+                }
+                return Ok(());
+            };
             ensure!(
                 level == "warning",
                 "API marker diagnostic has compiler level `{level}` instead of `warning`"
@@ -8437,7 +8470,7 @@ fn cargo_compilation_output(
                 target_source.is_absolute(),
                 "Cargo compiler message target source is not absolute"
             );
-            diagnostics.push(MarkerDiagnostic {
+            let diagnostic = MarkerDiagnostic {
                 id,
                 origin: CargoDiagnosticOrigin {
                     package_id: package_id.to_string(),
@@ -8449,14 +8482,19 @@ fn cargo_compilation_output(
                 line: primary_location.line,
                 column: primary_location.column,
                 immediate_expansion,
-            });
-            continue;
+            };
+            self.retain_marker_with_limits(
+                diagnostic,
+                MAX_AUDIT_RETAINED_MARKERS,
+                MAX_AUDIT_OUTPUT_BYTES,
+            )?;
+            return Ok(());
         }
         if reason != "compiler-artifact" {
-            continue;
+            return Ok(());
         }
-        let Some(selected) = selected_test else {
-            continue;
+        let Some(selected) = self.selected_test.as_ref() else {
+            return Ok(());
         };
         let package_id = crate::json::json_string(
             crate::json::json_field(message, "package_id", "Cargo compiler artifact")?,
@@ -8478,9 +8516,9 @@ fn cargo_compilation_output(
             || target_name != selected.name
             || CargoTargetKind::parse(&kinds)? != selected.kind
         {
-            continue;
+            return Ok(());
         }
-        selected_artifact = true;
+        self.selected_artifact = true;
         let profile = crate::json::json_object(
             crate::json::json_field(message, "profile", "Cargo compiler artifact")?,
             "Cargo compiler artifact profile",
@@ -8490,23 +8528,174 @@ fn cargo_compilation_output(
                 crate::json::JsonValue::Bool(test) => *test,
                 _ => bail!("Cargo compiler artifact profile `test` is not a Boolean"),
             };
-        test_artifact |= test;
+        self.test_artifact |= test;
+        Ok(())
     }
-    if let Some(selected) = selected_test {
+
+    fn retain_marker_with_limits(
+        &mut self,
+        diagnostic: MarkerDiagnostic,
+        maximum_markers: usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        let count = self
+            .diagnostics
+            .len()
+            .checked_add(1)
+            .context("retained API marker count overflowed")?;
         ensure!(
-            selected_artifact,
-            "Cargo emitted no artifact for selected target `{}:{}`",
-            selected.package,
-            selected.name
+            count <= maximum_markers,
+            "retained API marker count exceeded {maximum_markers} records"
         );
+        let retained = self
+            .retained_bytes
+            .checked_add(marker_retained_bytes(&diagnostic)?)
+            .context("retained API marker evidence length overflowed")?;
         ensure!(
-            test_artifact,
-            "Cargo target `{}:{}` uses a custom test harness, which the API audit cannot classify",
-            selected.package,
-            selected.name
+            retained <= maximum_bytes,
+            "retained API marker evidence exceeded {maximum_bytes} bytes"
         );
+        self.retained_bytes = retained;
+        self.diagnostics.push(diagnostic);
+        Ok(())
     }
-    Ok(diagnostics)
+
+    fn retain_failure(&mut self, message: &str) -> Result<()> {
+        let bytes = message
+            .len()
+            .checked_add(1)
+            .and_then(|bytes| self.failure_bytes.checked_add(bytes))
+            .context("API compiler failure diagnostics overflowed")?;
+        ensure!(
+            bytes <= MAX_AUDIT_FAILURE_BYTES,
+            "API compiler failure diagnostics exceeded {MAX_AUDIT_FAILURE_BYTES} bytes"
+        );
+        self.failure_bytes = bytes;
+        self.failures.push(message.to_string());
+        Ok(())
+    }
+
+    fn failure_report(&self) -> String {
+        if self.failures.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", self.failures.join("\n"))
+        }
+    }
+
+    fn finish(self) -> Result<Vec<MarkerDiagnostic>> {
+        if let Some(selected) = &self.selected_test {
+            ensure!(
+                self.selected_artifact,
+                "Cargo emitted no artifact for selected target `{}:{}`",
+                selected.package,
+                selected.name
+            );
+            ensure!(
+                self.test_artifact,
+                "Cargo target `{}:{}` uses a custom test harness, which the API audit cannot classify",
+                selected.package,
+                selected.name
+            );
+        }
+        Ok(self.diagnostics)
+    }
+}
+
+fn marker_retained_bytes(diagnostic: &MarkerDiagnostic) -> Result<usize> {
+    let mut bytes = std::mem::size_of::<MarkerDiagnostic>();
+    for field in [
+        diagnostic.origin.package_id.len(),
+        diagnostic.origin.target_name.len(),
+        diagnostic
+            .origin
+            .target_source
+            .as_os_str()
+            .as_encoded_bytes()
+            .len(),
+        diagnostic.reported.len(),
+    ] {
+        bytes = bytes
+            .checked_add(field)
+            .context("retained API marker evidence length overflowed")?;
+    }
+    if let Some(expansion) = &diagnostic.immediate_expansion {
+        for field in [
+            expansion.location.reported.len(),
+            expansion.macro_decl_name.len(),
+        ] {
+            bytes = bytes
+                .checked_add(field)
+                .context("retained API marker evidence length overflowed")?;
+        }
+    }
+    Ok(bytes)
+}
+
+fn cargo_compilation_stream<R: BufRead>(
+    mut reader: R,
+    selected_test: Option<CargoTarget>,
+    maximum_line: usize,
+) -> Result<CargoCompilationEvidence> {
+    let mut evidence = CargoCompilationEvidence::new(selected_test);
+    let mut line = Vec::new();
+    loop {
+        let read = read_bounded_json_line(&mut reader, &mut line, maximum_line)?;
+        if read == 0 {
+            return Ok(evidence);
+        }
+        evidence.observe(&line)?;
+    }
+}
+
+fn read_bounded_json_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    maximum: usize,
+) -> Result<usize> {
+    line.clear();
+    loop {
+        let available = reader
+            .fill_buf()
+            .context("reading streamed Cargo compiler JSON")?;
+        if available.is_empty() {
+            ensure!(
+                line.is_empty(),
+                "Cargo compiler JSON ended without a record terminator"
+            );
+            return Ok(0);
+        }
+        let end = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |position| position + 1);
+        let length = line
+            .len()
+            .checked_add(end)
+            .context("Cargo compiler JSON record length overflowed")?;
+        ensure!(
+            length <= maximum,
+            "Cargo compiler JSON record exceeded {maximum} bytes"
+        );
+        let terminated = available[end - 1] == b'\n';
+        line.extend_from_slice(&available[..end]);
+        reader.consume(end);
+        if terminated {
+            return Ok(line.len());
+        }
+    }
+}
+
+#[cfg(test)]
+fn cargo_compilation_output(
+    bytes: &[u8],
+    selected_test: Option<&CargoTarget>,
+) -> Result<Vec<MarkerDiagnostic>> {
+    let mut evidence = CargoCompilationEvidence::new(selected_test.cloned());
+    for line in bytes.split(|byte| *byte == b'\n') {
+        evidence.observe(line)?;
+    }
+    evidence.finish()
 }
 
 fn cargo_diagnostic_location(
@@ -9337,6 +9526,74 @@ dependencies = [
             args.windows(2)
                 .any(|args| args == ["--target", "fixture-host"])
         );
+    }
+
+    #[test]
+    fn streamed_cargo_records_are_bounded_individually() {
+        let record = b"{\"reason\":\"build-finished\",\"success\":true}\n";
+        let input = record.repeat(32);
+        cargo_compilation_stream(
+            std::io::BufReader::new(std::io::Cursor::new(input)),
+            None,
+            record.len(),
+        )
+        .expect("aggregate non-authoritative records need no whole-output capture")
+        .finish()
+        .expect("record-only stream");
+
+        let oversized = format!("{{\"reason\":\"{}\"}}\n", "x".repeat(64));
+        let error = cargo_compilation_stream(
+            std::io::BufReader::new(std::io::Cursor::new(oversized)),
+            None,
+            32,
+        )
+        .err()
+        .expect("one oversized record must be refused");
+        assert!(format!("{error:#}").contains("record exceeded 32 bytes"));
+
+        let error = cargo_compilation_stream(
+            std::io::BufReader::new(std::io::Cursor::new(
+                b"{\"reason\":\"build-finished\",\"success\":true}".as_slice(),
+            )),
+            None,
+            128,
+        )
+        .err()
+        .expect("unterminated Cargo JSON must be refused");
+        assert!(format!("{error:#}").contains("without a record terminator"));
+    }
+
+    #[test]
+    fn retained_marker_evidence_has_aggregate_count_and_byte_bounds() {
+        let marker = MarkerDiagnostic {
+            id: 7,
+            origin: CargoDiagnosticOrigin {
+                package_id: "fixture 0.1.0 (path+file:///fixture)".to_string(),
+                target_name: "fixture".to_string(),
+                target_kind: CargoTargetKind::Library,
+                target_source: PathBuf::from("/fixture/src/lib.rs"),
+            },
+            reported: "/wizard/source/libs/fixture/src/lib.rs".to_string(),
+            line: 1,
+            column: 1,
+            immediate_expansion: None,
+        };
+        let marker_bytes = marker_retained_bytes(&marker).expect("bounded marker size");
+
+        let mut count_bounded = CargoCompilationEvidence::new(None);
+        count_bounded
+            .retain_marker_with_limits(marker.clone(), 1, usize::MAX)
+            .expect("first marker within count bound");
+        let error = count_bounded
+            .retain_marker_with_limits(marker.clone(), 1, usize::MAX)
+            .expect_err("second marker must cross the count bound");
+        assert!(format!("{error:#}").contains("exceeded 1 records"));
+
+        let mut byte_bounded = CargoCompilationEvidence::new(None);
+        let error = byte_bounded
+            .retain_marker_with_limits(marker, usize::MAX, marker_bytes - 1)
+            .expect_err("one marker must cross the aggregate byte bound");
+        assert!(format!("{error:#}").contains(&format!("exceeded {} bytes", marker_bytes - 1)));
     }
 
     #[test]
@@ -14407,7 +14664,7 @@ fn main() {}
             .map(|(source, _)| source)
             .expect("compile_graph body");
         let output = compile_graph
-            .find("bounded_process::output_with_limit")
+            .find("bounded_process::output_streamed")
             .expect("compiler completion");
         let copy_guard = compile_graph
             .find("workspace.require_copy_unchanged(expected)?;")
@@ -14416,6 +14673,25 @@ fn main() {}
             .find("if !result.status.success()")
             .expect("compiler verdict");
         assert!(output < copy_guard && copy_guard < verdict);
+    }
+
+    #[test]
+    fn compiler_graphs_stream_structured_output_instead_of_capturing_it_whole() {
+        let source = include_str!("api.rs");
+        let compile_graph = source
+            .split_once("fn compile_graph(")
+            .and_then(|(_, source)| source.split_once("fn cargo_arguments"))
+            .map(|(source, _)| source)
+            .expect("compile_graph body");
+
+        assert!(
+            compile_graph.contains("bounded_process::output_streamed("),
+            "API compiler stdout is not reduced while it streams"
+        );
+        assert!(
+            !compile_graph.contains("bounded_process::output_with_limit("),
+            "API compiler still stages its complete structured output"
+        );
     }
 
     #[test]
