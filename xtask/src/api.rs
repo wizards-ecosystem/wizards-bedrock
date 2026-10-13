@@ -7686,6 +7686,14 @@ struct CompilerInputAuthority {
     target_library_snapshot: BTreeMap<PathBuf, [u8; 32]>,
 }
 
+fn digest_compiler_executable(path: &Path, label: &str) -> Result<[u8; 32]> {
+    let file =
+        std::fs::File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let (_, digest) = crate::sha256::digest_reader(file)
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    Ok(digest)
+}
+
 fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
     let cargo = std::fs::canonicalize(env!("CARGO"))
         .with_context(|| format!("resolving API audit Cargo executable {}", env!("CARGO")))?;
@@ -7787,14 +7795,8 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
         .parent()
         .context("the API audit compiler has no binary directory")?])
     .context("constructing the API audit tool PATH")?;
-    let compiler_digest = crate::sha256::digest(
-        &std::fs::read(&compiler)
-            .with_context(|| format!("reading compiler {}", compiler.display()))?,
-    );
-    let linker_digest = crate::sha256::digest(
-        &std::fs::read(&host_linker)
-            .with_context(|| format!("reading linker {}", host_linker.display()))?,
-    );
+    let compiler_digest = digest_compiler_executable(&compiler, "compiler")?;
+    let linker_digest = digest_compiler_executable(&host_linker, "linker")?;
     let input_authority = CompilerInputAuthority::capture(&sysroot, &cargo, &compiler, target)?;
     Ok(CompilerIdentity {
         path: compiler,
@@ -8059,17 +8061,11 @@ fn compiler_target_library_snapshot(
 impl CompilerIdentity {
     fn require_unchanged(&self) -> Result<()> {
         ensure!(
-            crate::sha256::digest(
-                &std::fs::read(&self.path)
-                    .with_context(|| format!("reading compiler {}", self.path.display()))?
-            ) == self.compiler_digest,
+            digest_compiler_executable(&self.path, "compiler")? == self.compiler_digest,
             "the API audit compiler changed while the audit was running"
         );
         ensure!(
-            crate::sha256::digest(
-                &std::fs::read(&self.host_linker)
-                    .with_context(|| format!("reading linker {}", self.host_linker.display()))?
-            ) == self.linker_digest,
+            digest_compiler_executable(&self.host_linker, "linker")? == self.linker_digest,
             "the API audit host linker changed while the audit was running"
         );
         Ok(())
@@ -14691,6 +14687,36 @@ fn main() {}
         assert!(
             !compile_graph.contains("bounded_process::output_with_limit("),
             "API compiler still stages its complete structured output"
+        );
+    }
+
+    #[test]
+    fn compiler_executable_identity_is_streamed_instead_of_allocated_whole() {
+        let source = include_str!("api.rs");
+        let capture = source
+            .split_once("fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {")
+            .and_then(|(_, source)| source.split_once("impl CompilerInputAuthority"))
+            .map(|(source, _)| source)
+            .expect("compiler identity capture body");
+        let revalidation = source
+            .split_once("impl CompilerIdentity {")
+            .and_then(|(_, source)| source.split_once("fn cargo_encoded_rustflags("))
+            .map(|(source, _)| source)
+            .expect("compiler identity revalidation body");
+
+        assert_eq!(
+            capture.matches("digest_compiler_executable(").count(),
+            2,
+            "compiler identity capture must stream both compiler executables"
+        );
+        assert_eq!(
+            revalidation.matches("digest_compiler_executable(").count(),
+            2,
+            "compiler identity revalidation must stream both compiler executables"
+        );
+        assert!(
+            !capture.contains("std::fs::read(") && !revalidation.contains("std::fs::read("),
+            "compiler identity still allocates an entire executable"
         );
     }
 

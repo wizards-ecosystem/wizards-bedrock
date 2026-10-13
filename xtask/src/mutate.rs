@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1868;
+pub const NEXT_MUTATION_ID: u16 = 1869;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -20902,6 +20902,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::retained_marker_evidence_has_aggregate_count_and_byte_bounds",
+        },
+    },
+    Mutation {
+        id: 1868,
+        file: "xtask/src/api.rs",
+        find: "            digest_compiler_executable(&self.path, \"compiler\")? == self.compiler_digest,",
+        replace: "            crate::sha256::digest(\n                &std::fs::read(&self.path)\n                    .with_context(|| format!(\"reading compiler {}\", self.path.display()))?\n            ) == self.compiler_digest,",
+        breaks: "repeated compiler identity checks allocate the entire executable before hashing it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::compiler_executable_identity_is_streamed_instead_of_allocated_whole",
         },
     },
 ];
