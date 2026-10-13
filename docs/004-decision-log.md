@@ -23132,3 +23132,293 @@ verdicts and D-322's exact-outcome rule. Naming only the translated-key check is
 less direct because that symptom can arise from decoding or event-delivery
 defects. Accepting either arbitrary failed check would turn an unrelated red
 boot into false mutation coverage.
+
+## D-395 Mutation completion witnesses exercise reachable behavior and the earliest causal verdict - Status: Accepted (2026-10-13), amends D-322 and D-394; advances PW-001
+
+**Context.** The restarted complete sweep on `ed2641f` exposed five distinct
+registry problems rather than five equivalent escapes. Mutation 202 corrupts
+the shared submission layout and now reaches the queue's terminal reserved-slot
+invariant instead of its old timeout. Mutation 324 conditions the hardware-free
+filesystem survey on PCI availability, but D-390 now refuses a machine without
+PCI configuration before memory initialization, so every admitted execution
+makes that condition true and the mutation is equivalent. Mutation 605 removes
+the keyboard's interrupt-handoff latch, while the qualified QEMU topology
+deliberately leaves that controller in polling mode and never exercises the
+transition. Mutation 610 corrupts the QEMU TCG identity and is refused by CPU
+authentication before the aggregate degraded-boot marker it used to name.
+Mutation 660 removes the captured VMware receipt comparison, but its shared
+test mixed a generated VMX first and therefore failed an earlier VMX-source
+check without reaching receipt integrity. A survivor is a missing independent
+witness only for 605 and 660; the other results are stale or unreachable
+classifications which must not be hidden by broad acceptance.
+
+**Decision.** The keyboard latch claim is factored into one private production
+helper parameterized by `Once`. The routed path calls that helper with the
+singleton latch; self-test calls the same helper with a fresh local latch and
+requires the exact check `the keyboard interrupt handoff records its
+ownership`. It does not forge a routed machine or change the singleton on a
+polling boot. Mutation 605 removes the helper's claim and names that check.
+
+Mutation 202 names the exact existing panic `a reserved completion slot was
+not there`. Mutation 610 names the exact earlier panic `CPU state does not
+authenticate a qualified DMA-handoff platform`. Mutation 324 is retained under
+its permanent identity but removes the unconditional filesystem survey rather
+than adding a condition that every admitted machine satisfies; the exact
+degraded filesystem record remains its witness. The VMware generation test
+also mixes an opaque machine image whose size and all independent structure
+remain valid, so only the receipt-to-captured-digests equality can reject it;
+mutation 660 keeps that exact test as its witness.
+
+**Proof required.** The machine inventory contains 282 checks. Applying 202,
+324, 605, 610 and 660 one at a time must produce respectively the named queue
+panic, degraded filesystem-marker loss, keyboard handoff check failure, CPU
+authentication panic and immutable-generation host-test failure, then restore
+each isolated source byte for byte. The ordinary gate must pass after the
+repairs. Because the running `ed2641f` sweep uses an immutable pre-repair
+snapshot, a new complete sweep with the repaired registry fingerprint must
+finish with no survivor or inconclusive result before release publication.
+
+**Alternatives.** Inspecting production source text from a test was rejected
+because spelling is not behavior. Marking the global keyboard latch during a
+polling self-test was rejected because it would falsify the machine's routing
+state. Forcing the qualified QEMU machine to route the keyboard was rejected
+because it changes the interrupt-isolation profile merely to serve a test.
+Accepting any panic or any failed check was rejected because an unrelated
+failure is not mutation coverage. Keeping mutation 324's unreachable predicate
+was rejected because no test can distinguish equivalent behavior on an
+admitted machine. Mixing VMX bytes alone was rejected because it proves the
+earlier source-equivalence guard, not the receipt boundary mutation 660 removes.
+
+## D-396 Corrupt-state witnesses isolate one queue invariant at a time - Status: Accepted (2026-10-13), amends D-395; advances PW-001
+
+**Context.** Permanent mutation 686 changes the file-work queue's exclusive
+head bound from `head >= WORK_DEPTH` to `head > WORK_DEPTH`. The existing
+self-test did assign `WORK_DEPTH` to the head, but it retained the tail left by
+an earlier wrapped round trip. That tail was inconsistent with the forged head
+even under the mutation, so the independent tail/length relation still refused
+the state and the named check passed. The sweep therefore correctly reported a
+survivor: the test constructed two simultaneous faults and could not show which
+guard rejected them.
+
+**Decision.** Before forging the exclusive head value, the test sets the empty
+queue's tail to the modulo-equivalent zero value which is consistent with that
+head under every other relation. Production must then reject the state solely
+because `head == WORK_DEPTH` is outside the slot domain. The following tail,
+length and occupancy corruptions remain separate observations, and mutation
+686 keeps the existing exact machine check as its witness.
+
+**Proof required.** The unmutated round-trip check passes. Applying mutation
+686 alone makes `a cancelled operation and its cancellation complete
+separately` fail, and restoring it returns the check to green. The repaired
+registry and source must be included in the next complete clean sweep.
+
+**Alternatives.** Merely changing the expected mutation result was rejected
+because the mutation genuinely removes an index bound. Adding another broad
+queue check was rejected because the existing check already owns the complete
+fixed-work and cancellation accounting model. Accepting rejection by any
+second corrupt field was rejected because it leaves the mutated head predicate
+unobserved.
+
+## D-397 A forgotten EOI token names the exclusion it strands - Status: Accepted (2026-10-13), amends D-322 and D-395; advances PW-001
+
+**Context.** Permanent mutation 773 forgets the first ping delivery's
+`EoiToken` instead of dropping it before reclaim. The token owns both the
+single live EOI claim and the nested interrupt-exclusion state. Returning from
+the trap re-enables the saved interrupt flag without unwinding that forgotten
+exclusion. On the next ping, `claim_eoi` disables interrupts again and the
+exclusion ledger observes that interrupts had become enabled at nonzero depth.
+Both bounded observations therefore reached the exact panic `interrupts became
+enabled inside an exclusion` before the registry's later abandoned-completion
+count check. The mutation fails closed; its old check witness was causally too
+late.
+
+**Decision.** Mutation 773 uses `Caught::Panic` with that exact interrupt-ledger
+marker. The reason records the complete causal chain: forgetting the EOI token
+strands its exclusion, trap return restores IF, and the next claim detects the
+impossible enabled-inside-exclusion state. No arbitrary panic or earlier
+unrelated failed check is accepted.
+
+**Proof required.** Applying mutation 773 must repeat the exact terminal panic
+through the ordinary release self-test observer, restore the isolated source
+byte for byte and record `caught`. The repaired registry must then participate
+in the complete clean sweep required by PW-001.
+
+**Alternatives.** Keeping the later check witness contradicts two repeatable
+terminal observations. Treating the panic as an inconclusive harness failure
+would discard a stronger production invariant. Weakening the exclusion ledger
+or forcibly repairing a deliberately forgotten token in self-test was rejected
+because either would hide the ownership defect the mutation creates.
+
+## D-398 A redirect mutation removes the complete pre-read refusal - Status: Accepted (2026-10-13), amends D-302, D-322 and D-344; advances PW-001
+
+**Context.** Permanent mutation 905 removed the supply-chain reader's
+pre-open `require_direct_file` check and survived its static redirected-file
+fixture. D-344 subsequently routed the same reader through `open_real_file`,
+which independently refuses a final-component link before any caller-visible
+read. The original D-302 mutation therefore became redundant: removing only
+one of two pre-open defenses cannot make the redirected input observable, and
+the survivor does not show that production accepts redirected supply-chain
+text.
+
+**Decision.** Keep both production defenses. Mutation 905 now removes the
+complete pre-read redirect refusal for this reader: it removes the direct-file
+check and replaces `open_real_file` with an ordinary `File::open`. The existing
+layer-specific fixture must then observe that its post-measurement hook ran,
+proving the redirected target was opened before the final post-read path check
+refused it. Mutation 906 continues to remove only that final revalidation and
+keeps the substitution-after-open fixture as its independent witness.
+
+**Proof required.** The unmodified reader must refuse the static redirect
+before its hook runs. Applying mutation 905 alone must make
+`supply_chain_text_rejects_a_redirect_before_opening` fail because the hook ran,
+then restoring the source must return the exact test to green. The registry
+application check and the next complete clean sweep must retain that result.
+
+**Alternatives.** Deleting either production defense was rejected because the
+path check gives an early diagnostic while the opened-file primitive binds and
+validates the actual handle across its check-to-open race. Adding a third
+parser-level rejection was rejected because
+the security property is filesystem authority, not text syntax. Crediting the
+survivor as a product vulnerability was rejected because the opened-file
+primitive still refused the exact redirect before its bytes reached a parser.
+
+## D-399 A quarantined VT-d root names the scheduling failure it causes - Status: Accepted (2026-10-13), amends D-358 and D-395; advances PW-001
+
+**Context.** Permanent mutation 1,555 programs VT-d `RTADDR` with the
+context-table address and accepts that same wrong value on readback. Its
+historical witness was the later check `the unit walks the kernel's root
+table`. The early fabric boundary added after that evidence independently
+rechecks `RTADDR` through `boundary_active`, classifies the already-programmed
+unit as quarantined, retains every hardware owner and table frame, refuses DMA
+retargeting and bus-master authority, and returns no interrupt-isolation proof.
+`start_interrupts` consequently leaves maskable interrupts disabled. Self-test
+still starts, but its bound-space witness waits for a newly runnable task by
+spinning rather than yielding; without timer preemption that task cannot retire.
+Two bounded observations therefore reached the exact panic `the bound-space
+witness did not retire` before the historical root-table check.
+
+**Decision.** Keep every production refusal and grade mutation 1,555 by that
+earliest causal panic. Its reason binds the complete chain from wrong live
+`RTADDR`, through quarantined VT-d ownership and refused interrupt admission,
+to the non-retiring scheduled task. The successful-boot root-table readback
+check remains unchanged as a positive runtime diagnostic; its later position
+does not override a stronger earlier fail-closed verdict.
+
+**Proof required.** Applying mutation 1,555 alone must repeat the exact
+bound-space panic through the ordinary release self-test observer, then restore
+the source byte for byte. The panic registry contract, exact mutation
+application, named-check inventory and ordinary gate must pass. The repaired
+registry must participate in the next complete clean sweep.
+
+**Alternatives.** Weakening `boundary_active`, admitting interrupts for a
+quarantined unit, yielding inside the bound-space witness or reordering checks
+solely to recover the historical marker was rejected because each would make a
+security refusal less direct or would hide its real runtime consequence.
+Calling the result unrelated flakiness was rejected because the same exact
+panic repeated twice and follows deterministically from the missing timer
+preemption. Rewriting the dated D-358 evidence was rejected; it remains true of
+the earlier source, while this decision records the later causal ordering.
+
+## D-400 Stack-margin mutations are calibrated against each qualified profile - Status: Accepted (2026-10-13), amends D-359, D-361 and D-395; advances PW-001
+
+**Context.** Permanent mutation 1,679 adds a 4 KiB frame to the borrowing
+`isolate_candidate` stage to prove that unit-wide VT-d establishment remains a
+thin sibling of the other storage-candidate stages. The complete release sweep
+reported a survivor. Its passing record still left more than the required two
+pages because the release candidate's existing deepest path, not the mutated
+isolation stage, remained the high-water mark. The original 4 KiB pressure was
+calibrated for the larger debug call chain; it did not create the claimed
+release-margin violation. Production continues to borrow the prepared device
+through a separate stage and the painted-stack observer covered the mutation,
+so this is a stale mutation calibration rather than an unmeasured production
+frame or a DMA-isolation escape.
+
+**Decision.** Keep production and the two-page boot-stack requirement
+unchanged. Mutation 1,679 uses profile-specific pressure, as the older
+non-leaf stack mutation already does: 4 KiB in debug and 16 KiB in release.
+Both values remain inside the guarded 32 KiB boot stack on the calibrated path
+while making the intended regression exceed the retained two-page headroom
+boundary. The array remains live across `iommu::establish`, so the check proves
+the linked isolation path rather than a disconnected allocation.
+
+**Proof required.** The unmodified release self-test must pass
+`nvme candidates preserve two pages of boot-stack headroom`. Applying mutation
+1,679 alone must make that exact check fail without a guard fault or unrelated
+terminal verdict, and restoring the source must return it to green. The
+registry application and named-check contracts, the ordinary gate and the
+next complete clean sweep must all include the repaired mutation.
+
+**Alternatives.** Lowering the production headroom requirement was rejected
+because the survivor showed no product regression. Crediting any machine
+failure was rejected because a stack guard fault would not prove the measured
+margin. Moving the pressure into `iommu::establish` was rejected because the
+mutation specifically guards the candidate-stage separation. Keeping one
+pressure size for both profiles was rejected because their optimized call
+chains have materially different high-water marks.
+
+## D-401 Interrupt-boundary source contracts prove duplicate guards and live predicates - Status: Accepted (2026-10-13), amends D-372 and D-395; advances PW-001
+
+**Context.** Permanent mutations 1,719 and 1,724 survived the host contract
+`pci_interrupts_are_default_deny_before_bus_mastering_or_sti`. Mutation 1,719
+disabled the DMAR interrupt-remapping and x2APIC-opt-out refusal in the sealed
+topology lookup, but the contract found the identical earlier refusal in
+`establish_fabric_boundary` and credited it to both locations. Mutation 1,724
+made the PCI-topology keyboard rollback condition permanently false, but the
+contract still found the topology call and the later rollback and return tokens
+in source order. The production source retains both firmware refusals and the
+live PCI routing veto; the survivors expose token-presence proof gaps rather
+than an interrupt or DMA escape.
+
+**Decision.** The source contract requires exactly two copies of the canonical
+DMAR interrupt-remapping refusal: one before early fabric ownership and one at
+sealed-topology unit lookup. It also requires the exact live
+`!matches!(topology_presence(), Empty)` branch inside `route_keyboard`, in
+addition to the existing order proof that rollback and return precede the only
+commit. A duplicate guard can no longer lend credit to a removed sibling, and
+a dead Boolean prefix can no longer satisfy the routing boundary.
+
+**Proof required.** The restored host contract passes. Applying mutation 1,719
+alone must fail because only one firmware refusal remains, and mutation 1,724
+alone must fail because the exact live topology predicate is absent. Each
+source must restore byte for byte; the registry application checks, ordinary
+gate and next complete clean sweep must retain both results.
+
+**Alternatives.** Removing the later firmware check as redundant was rejected
+because unit lookup is a separately audited authority boundary and the source
+contract intentionally keeps its local preconditions explicit. Adding another
+runtime boot was rejected because the qualified QEMU firmware advertises both
+features and cannot exercise their absence without changing the platform
+contract. Searching only for the condition's inner tokens was rejected because
+the survived `false &&` form preserves every such token while deleting the
+decision.
+
+## D-402 Dead-API mutations must reach the API auditor - Status: Accepted (2026-10-13), amends D-213 and D-395; advances PW-001
+
+**Context.** Permanent mutation 1,821 restored the retired
+`SelectedUsesCatchAll` requester-inventory error variant and expected the API
+audit to name that exact variant as having no caller. Adding the variant made
+the crate's exhaustive `Display` match fail to compile, so the audit never
+constructed its public-item inventory and the mutation was inconclusive. The
+compiler refusal is safe, but it does not exercise the claimed API-audit
+witness. Production contains neither the retired variant nor another public
+way to select the obsolete catch-all refusal.
+
+**Decision.** Keep production unchanged and recalibrate mutation 1,821 to add
+a compilable public `selected_uses_catch_all` helper that returns the current
+`IncludesAllPci` refusal. The helper restores the same obsolete public policy
+choice without changing enum exhaustiveness. Its only acceptable witness is
+the API audit's structured verdict naming exactly that one dead function.
+
+**Proof required.** The restored source must pass the complete API audit.
+Applying mutation 1,821 alone must compile every audited graph and fail with
+exactly one dead item, `fn selected_uses_catch_all`; restoring the source must
+return the audit to green. Registry application checks, the ordinary gate and
+the next complete clean sweep must retain that result.
+
+**Alternatives.** Treating any compile error as an API-audit catch was rejected
+because it would let an unrelated syntax or type failure satisfy a caller
+proof. Adding a wildcard arm to production `Display` was rejected because it
+would weaken exhaustive handling of security refusal reasons. Adding both the
+variant and a formatting arm was rejected because the formatting arm itself
+would be a caller and could hide the dead public surface the mutation is meant
+to expose.

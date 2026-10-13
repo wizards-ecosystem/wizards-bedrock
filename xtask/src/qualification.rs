@@ -6045,6 +6045,8 @@ mod tests {
         let transcript_b = write_generation(&directory_b, &source, &generation_b, "generation-b");
 
         let generated_vmx = std::fs::read(directory_a.join(VMWARE_VMX)).unwrap();
+        let image_a = std::fs::read(directory_a.join(VMWARE_IMAGE)).unwrap();
+        let image_b = std::fs::read(directory_b.join(VMWARE_IMAGE)).unwrap();
         let mut runtime_vmx = generated_vmx.clone();
         runtime_vmx.extend_from_slice(b"cleanShutdown = \"FALSE\"\n");
         std::fs::write(directory_a.join(VMWARE_VMX), &runtime_vmx).unwrap();
@@ -6088,6 +6090,20 @@ mod tests {
                 .is_err(),
             "a valid transcript path from another generation was accepted"
         );
+
+        std::fs::write(directory_a.join(VMWARE_IMAGE), &image_b).unwrap();
+        let mixed_receipt = capture(
+            &directory_a,
+            &transcript_a,
+            &root.join("captured-mixed-receipt"),
+        );
+        assert!(
+            mixed_receipt
+                .validate_generation(&source, Kind::VmwareSelfTest)
+                .is_err(),
+            "machine bytes from two valid generations shared one receipt"
+        );
+        std::fs::write(directory_a.join(VMWARE_IMAGE), image_a).unwrap();
 
         let published = root.join("published");
         let captured = capture(&directory_a, &transcript_a, &published);

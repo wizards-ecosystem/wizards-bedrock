@@ -1709,6 +1709,13 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
             "kernel interrupt boundary lost `{requirement}`"
         );
     }
+    assert_eq!(
+        iommu
+            .matches("if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {")
+            .count(),
+        2,
+        "both early fabric establishment and sealed-topology lookup must refuse missing interrupt-remapping authority or x2APIC opt-out"
+    );
     assert_eq!(iommu.matches("Vtd::establish_deny_all(").count(), 1);
     let early_register = iommu
         .split_once("fn early_register_base(")
@@ -1828,6 +1835,10 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .split_once("enum KeyboardRouteError")
         .expect("keyboard routing boundary end")
         .0;
+    assert!(
+        route.contains("if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {"),
+        "PCI presence must take the live keyboard-routing rollback branch"
+    );
     let boundary = route
         .find("pci::topology_presence()")
         .expect("PCI topology-state routing branch");

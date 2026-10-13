@@ -1836,8 +1836,11 @@ fn work_state_round_trip_is_exact_for_test() -> bool {
         .all(|id| state.pop().is_some_and(|work| work.expected.id == id));
 
     let empty = state.pop().is_none() && state.is_consistent();
+    // Keep the empty ring's modulo relation valid so only the exclusive head
+    // bound rejects this forged state (D-396).
     state.head = WORK_DEPTH;
-    let bad_bounds = !state.is_consistent();
+    state.tail = 0;
+    let bad_head = !state.is_consistent();
     state.head = 0;
     state.tail = WORK_DEPTH;
     let bad_tail = !state.is_consistent();
@@ -1869,7 +1872,7 @@ fn work_state_round_trip_is_exact_for_test() -> bool {
         && removal_ready
         && middle_removed
         && removal_exact
-        && bad_bounds
+        && bad_head
         && bad_tail
         && bad_length
         && bad_window

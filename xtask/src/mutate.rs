@@ -2339,10 +2339,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    pub(super) const ARGUMENT: usize = 24;",
         replace: "    pub(super) const ARGUMENT: usize = 8;",
         breaks: "the emitted program and kernel use one submission layout",
-        reddens: Caught::Timeout {
-            seconds: 60,
-            why: "the mismatched submission layout leaves the target program waiting on an echo \
-                  argument the kernel never received",
+        reddens: Caught::Panic {
+            marker: "a reserved completion slot was not there",
+            why: "the mismatched submission layout consumes a completion reservation without its \
+                  matching operation",
         },
     },
     // Skipping release leaks one promised handle slot after every refusal.
@@ -3826,12 +3826,14 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "deliberately forgotten ownership is distinct from ordinary contention",
         reddens: Caught::Check("forgotten lock ownership is distinct from contention"),
     },
+    // D-390 makes PCI configuration mandatory before memory initialization,
+    // so removing the unconditional survey is the reachable behavior change.
     Mutation {
         id: 324,
         file: "kernel/src/main.rs",
         find: "    survey_the_bus(dma_non_requester);\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
-        replace: "    survey_the_bus(dma_non_requester);\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts(routing.as_ref());",
-        breaks: "hardware-free namespaces do not depend on PCI availability",
+        replace: "    survey_the_bus(dma_non_requester);\n    start_interrupts(routing.as_ref());",
+        breaks: "every admitted boot publishes its hardware-free namespaces",
         reddens: Caught::BootMarker(qemu::DEGRADED_FILESYSTEM_MARKER),
     },
     // Leave the failed controller's ownership record behind; the sibling
@@ -6838,14 +6840,10 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 605,
         file: "kernel/src/input.rs",
-        find: "pub(crate) fn take_interrupts() {\n    assert!(\n        INTERRUPT_DRIVEN.claim(),\n        \"the keyboard interrupt handoff happened more than once\"\n    );\n}",
-        replace: "pub(crate) fn take_interrupts() {}",
+        find: "fn record_interrupt_handoff(latch: &Once) {\n    assert!(\n        latch.claim(),\n        \"the keyboard interrupt handoff happened more than once\"\n    );\n}",
+        replace: "fn record_interrupt_handoff(latch: &Once) {\n    let _ = latch;\n}",
         breaks: "the routed keyboard never records its interrupt-driven handoff",
-        reddens: Caught::Timeout {
-            seconds: 60,
-            why: "the unrecorded handoff leaves the routed controller and polling fallback in \
-                  incompatible ownership modes, so input never completes",
-        },
+        reddens: Caught::Check("the keyboard interrupt handoff records its ownership"),
     },
     Mutation {
         id: 606,
@@ -6896,9 +6894,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let leaf = cpuid(0x4000_0000, 0);",
         replace: "        let leaf = cpuid(0x4000_0001, 0);",
         breaks: "the running CPU's exact QEMU TCG identity is not consumed",
-        reddens: Caught::BootMarker(
-            "cpu: user isolation shared kernel mappings: qemu_tcg",
-        ),
+        reddens: Caught::Panic {
+            marker: "CPU state does not authenticate a qualified DMA-handoff platform",
+            why: "the corrupted hypervisor leaf invalidates the authenticated DMA handoff before \
+                  the self-test kernel can start",
+        },
     },
     Mutation {
         id: 611,
@@ -7736,6 +7736,7 @@ pub const MUTATIONS: &[Mutation] = &[
             why: "the request path destructures a running read's state, so a read that begins while its entry stays queued reaches the unreachable arm the ring model proves cannot occur",
         },
     },
+    // The forged head keeps every other empty-ring relation valid (D-396).
     Mutation {
         id: 686,
         file: "kernel/src/queue.rs",
@@ -8666,7 +8667,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    drop(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
         replace: "    core::mem::forget(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
         breaks: "abandoning an EOI token can permanently strand its live-claim latch",
-        reddens: Caught::Check("an abandoned completion can be reclaimed for the same delivery"),
+        reddens: Caught::Panic {
+            marker: "interrupts became enabled inside an exclusion",
+            why: "forgetting the EOI token strands its interrupt exclusion, so trap return \
+                  re-enables interrupts inside that exclusion before the next claim",
+        },
     },
     Mutation {
         id: 774,
@@ -10256,8 +10261,10 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     Mutation {
         id: 905,
         file: "xtask/src/supply_chain.rs",
-        find: "    crate::mutation_workspace::require_direct_file(parent, &path, label)?;\n    let mut file =",
-        replace: "    let mut file =",
+        // D-344's opened-file primitive made deleting only the earlier path
+        // check equivalent. Remove the complete pre-read refusal (D-398).
+        find: "    crate::mutation_workspace::require_direct_file(parent, &path, label)?;\n    let mut file = crate::mutation_workspace::open_real_file(&path, label)?;",
+        replace: "    let mut file = std::fs::File::open(&path)\n        .with_context(|| format!(\"opening {}\", path.display()))?;",
         breaks: "supply-chain text follows a redirected file before opening it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13294,7 +13301,11 @@ fn mint_stopped<'controller>(
         find: "            self.root.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.root.address() {\n",
         replace: "            self.context.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.context.address() {\n",
         breaks: "the root pointer is programmed with the context table's address and read back as expected, so the unit walks a table the kernel never meant as its root",
-        reddens: Caught::Check("the unit walks the kernel's root table"),
+        reddens: Caught::Panic {
+            marker: "the bound-space witness did not retire",
+            why: "the wrong root pointer quarantines the early VT-d owner, so interrupt admission \
+                  keeps timer preemption disabled and the published bound-space task cannot retire",
+        },
     },
     Mutation {
         id: 1556,
@@ -18846,7 +18857,7 @@ fn mint_stopped<'controller>(
         id: 1679,
         file: "kernel/src/main.rs",
         find: "fn isolate_candidate(stage: &mut CandidateStage) {\n    let outcome = match stage {",
-        replace: "fn isolate_candidate(stage: &mut CandidateStage) {\n    let stack_regression = [0u8; 4096];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
+        replace: "fn isolate_candidate(stage: &mut CandidateStage) {\n    #[cfg(debug_assertions)]\n    let stack_regression = [0u8; 4096];\n    #[cfg(not(debug_assertions))]\n    let stack_regression = [0u8; 16 * 1024];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
         breaks: "unit isolation again consumes a large candidate-stack frame instead of borrowing its owners in a thin sibling stage",
         reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
     },
@@ -20382,10 +20393,10 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1821,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "    /// The unit can govern functions not named by an endpoint scope.\n    IncludesAllPci,",
-        replace: "    /// The selected function is governed only by catch-all coverage.\n    SelectedUsesCatchAll,\n    /// The unit can govern functions not named by an endpoint scope.\n    IncludesAllPci,",
+        find: "/// Why one DRHD cannot become a complete fixed requester inventory.",
+        replace: "/// The retired policy that refused a catch-all-selected requester.\npub const fn selected_uses_catch_all() -> RequesterInventoryError {\n    RequesterInventoryError::IncludesAllPci\n}\n\n/// Why one DRHD cannot become a complete fixed requester inventory.",
         breaks: "the retired catch-all selection refusal returns as dead public API",
-        reddens: Caught::ApiAudit("variant RequesterInventoryError::SelectedUsesCatchAll"),
+        reddens: Caught::ApiAudit("fn selected_uses_catch_all"),
     },
     Mutation {
         id: 1822,

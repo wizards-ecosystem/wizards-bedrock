@@ -744,12 +744,25 @@ pub(crate) fn is_interrupt_driven() -> bool {
     INTERRUPT_DRIVEN.is_claimed()
 }
 
-/// Record that the controller's line is live, so the idle loop stops polling.
-pub(crate) fn take_interrupts() {
+fn record_interrupt_handoff(latch: &Once) {
     assert!(
-        INTERRUPT_DRIVEN.claim(),
+        latch.claim(),
         "the keyboard interrupt handoff happened more than once"
     );
+}
+
+/// Record that the controller's line is live, so the idle loop stops polling.
+pub(crate) fn take_interrupts() {
+    record_interrupt_handoff(&INTERRUPT_DRIVEN);
+}
+
+/// Exercise the exact routed-path state transition without claiming that this
+/// polling machine has a routed keyboard.
+#[cfg(feature = "selftest")]
+pub(crate) fn interrupt_handoff_is_recorded() -> bool {
+    let handoff = Once::new();
+    record_interrupt_handoff(&handoff);
+    handoff.is_claimed()
 }
 
 /// Drain the controller from its interrupt handler.

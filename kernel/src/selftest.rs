@@ -8129,7 +8129,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 281;
+const EXPECTED_CHECKS: usize = 282;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -9110,6 +9110,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         keyboard_config_matches_its_routing()
             && input::watch_order_is_causal()
             && input::queue_admission_is_exact(),
+    );
+    report.check(
+        "the keyboard interrupt handoff records its ownership",
+        input::interrupt_handoff_is_recorded(),
     );
     report.check(
         "an echo to the keyboard comes back",
