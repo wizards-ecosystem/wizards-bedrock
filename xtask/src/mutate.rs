@@ -3506,11 +3506,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        if translated != self.decoder.reads_translated() {",
         replace: "        if false && translated != self.decoder.reads_translated() {",
         breaks: "the numbering the stream proved is the one the decoder adopts",
-        reddens: Caught::Timeout {
-            seconds: 60,
-            why: "the unadopted stream numbering prevents the translated key from completing its \
-                  bounded interactive sequence",
-        },
+        reddens: Caught::Check("the keyboard's numbering and the decoder's are the same"),
     },
     Mutation {
         id: 291,
