@@ -32,6 +32,7 @@ wizzy-handoff.workspace = true
 [target.'cfg(windows)'.dependencies]
 command-group.workspace = true
 getrandom.workspace = true
+winapi-util.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

@@ -5,13 +5,15 @@
 //! job object that holds each process it starts, and the whole job is
 //! terminated when the command ends, times out or fails (D-347). The byte cap
 //! bounds memory rather than disk retained through an unlinked capture file.
+//! Line-framed dialogues also poll caller-owned live state under the same
+//! deadline, so an external scratch-budget failure ends the job (D-406).
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, SeekFrom};
+use std::io::{BufRead, BufReader, Read, SeekFrom, Write};
 use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::Child;
-use std::process::{ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::JoinHandle;
@@ -22,37 +24,31 @@ use anyhow::{Context, Result, bail, ensure};
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const POST_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
-const GIT_REDIRECT_ENVIRONMENT: &[&str] = &[
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_CONFIG",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_DIR",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_GLOB_PATHSPECS",
-    "GIT_ICASE_PATHSPECS",
-    "GIT_INDEX_FILE",
-    "GIT_LITERAL_PATHSPECS",
-    "GIT_NAMESPACE",
-    "GIT_NOGLOB_PATHSPECS",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_PREFIX",
-    "GIT_SHALLOW_FILE",
-    "GIT_WORK_TREE",
+#[cfg(windows)]
+const EMPTY_GIT_CONFIG: &str = "NUL";
+#[cfg(not(windows))]
+const EMPTY_GIT_CONFIG: &str = "/dev/null";
+const FIXED_GIT_ENVIRONMENT: &[(&str, &str)] = &[
+    ("GIT_ATTR_NOSYSTEM", "1"),
+    ("GIT_CONFIG_COUNT", "0"),
+    ("GIT_CONFIG_GLOBAL", EMPTY_GIT_CONFIG),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_CONFIG_SYSTEM", EMPTY_GIT_CONFIG),
+    ("GIT_LITERAL_PATHSPECS", "1"),
+    ("GIT_NO_LAZY_FETCH", "1"),
+    ("GIT_NO_REPLACE_OBJECTS", "1"),
+    ("GIT_OPTIONAL_LOCKS", "0"),
+    ("GIT_PAGER", ""),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("LANG", "C"),
+    ("LC_ALL", "C"),
 ];
 static NEXT_CAPTURE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolate_git_environment(command: &mut Command) {
-    for name in GIT_REDIRECT_ENVIRONMENT {
-        command.env_remove(name);
-    }
     command
-        .env("GIT_CONFIG_COUNT", "0")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env_clear()
+        .envs(FIXED_GIT_ENVIRONMENT.iter().copied());
 }
 
 /// Run one non-interactive child through its deadline and capture both streams.
@@ -90,6 +86,239 @@ pub(crate) struct StreamedOutput<T> {
     pub(crate) status: ExitStatus,
     pub(crate) value: T,
     pub(crate) stderr: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DialogueLimits {
+    pub(crate) line_bytes: usize,
+    pub(crate) stdout_bytes: usize,
+    pub(crate) stderr_bytes: usize,
+}
+
+pub(crate) struct LineDialogue {
+    input: Option<ChildStdin>,
+    output: BufReader<ChildStdout>,
+    limits: DialogueLimits,
+    stdout_bytes: usize,
+    label: String,
+}
+
+impl LineDialogue {
+    pub(crate) fn send_line(&mut self, bytes: &[u8]) -> Result<()> {
+        let input = self
+            .input
+            .as_mut()
+            .with_context(|| format!("{} input is closed", self.label))?;
+        write_bounded_line(input, bytes, self.limits.line_bytes, &self.label)
+    }
+
+    pub(crate) fn close_input(&mut self) {
+        drop(self.input.take());
+    }
+
+    pub(crate) fn receive_line(&mut self) -> Result<Option<Vec<u8>>> {
+        read_bounded_line(
+            &mut self.output,
+            self.limits.line_bytes,
+            self.limits.stdout_bytes,
+            &mut self.stdout_bytes,
+            &self.label,
+        )
+    }
+}
+
+/// Run one line-framed dialogue through one deadline and capture diagnostics.
+///
+/// The dialogue runs off the polling thread so a blocked pipe cannot prevent
+/// the complete child tree from being stopped at the original deadline.
+/// The owner observer runs on that polling thread under the same deadline.
+/// Failure cleanup may consume the additional bounded post-kill interval.
+pub(crate) fn output_dialogue<T, O, F>(
+    mut command: Command,
+    timeout: Duration,
+    label: &str,
+    limits: DialogueLimits,
+    mut observe_owner: O,
+    interact: F,
+) -> Result<StreamedOutput<T>>
+where
+    T: Send + 'static,
+    O: FnMut() -> Result<()>,
+    F: FnOnce(&mut LineDialogue) -> Result<T> + Send + 'static,
+{
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .context("bounded child deadline overflowed")?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = Tree::spawn(command).with_context(|| format!("launching {label}"))?;
+    let Some(input) = tree.take_stdin() else {
+        return stop_tree_after_setup_failure(
+            tree,
+            anyhow::anyhow!("{label} has no piped stdin"),
+            label,
+        );
+    };
+    let Some(output) = tree.take_stdout() else {
+        return stop_tree_after_setup_failure(
+            tree,
+            anyhow::anyhow!("{label} has no piped stdout"),
+            label,
+        );
+    };
+    let Some(stderr) = tree.take_stderr() else {
+        return stop_tree_after_setup_failure(
+            tree,
+            anyhow::anyhow!("{label} has no piped stderr"),
+            label,
+        );
+    };
+
+    let (dialogue_sender, dialogue_receiver) = mpsc::sync_channel(1);
+    let dialogue_label = label.to_string();
+    let dialogue_thread = match std::thread::Builder::new()
+        .name("wizard-bounded-dialogue".to_string())
+        .spawn(move || {
+            let mut dialogue = LineDialogue {
+                input: Some(input),
+                output: BufReader::new(output),
+                limits,
+                stdout_bytes: 0,
+                label: dialogue_label,
+            };
+            let result = interact(&mut dialogue);
+            drop(dialogue);
+            let _ = dialogue_sender.send(result);
+        }) {
+        Ok(thread) => thread,
+        Err(error) => {
+            return stop_tree_after_setup_failure(
+                tree,
+                anyhow::Error::new(error).context(format!("starting {label} dialogue")),
+                label,
+            );
+        }
+    };
+    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
+    let stderr_label = label.to_string();
+    let stderr_thread = match std::thread::Builder::new()
+        .name("wizard-bounded-stderr".to_string())
+        .spawn(move || {
+            let result = read_pipe_with_limit(stderr, limits.stderr_bytes, &stderr_label);
+            let _ = stderr_sender.send(result);
+        }) {
+        Ok(thread) => thread,
+        Err(error) => {
+            return stop_tree_after_setup_failure(
+                tree,
+                anyhow::Error::new(error).context(format!("starting {label} stderr reader")),
+                label,
+            );
+        }
+    };
+
+    let mut dialogue_value = None;
+    let mut stderr_value = None;
+    let status = poll_child_until(
+        tree,
+        Tree::try_wait,
+        Tree::terminate,
+        deadline,
+        timeout,
+        label,
+        || {
+            observe_owner().with_context(|| format!("observing {label} owner state"))?;
+            receive_ready(
+                &dialogue_receiver,
+                &mut dialogue_value,
+                &format!("{label} dialogue"),
+            )?;
+            receive_ready(
+                &stderr_receiver,
+                &mut stderr_value,
+                &format!("{label} stderr reader"),
+            )
+        },
+    )?;
+
+    let value = receive_after_exit(
+        &dialogue_receiver,
+        dialogue_value,
+        &format!("{label} dialogue"),
+    )?;
+    let stderr = receive_after_exit(
+        &stderr_receiver,
+        stderr_value,
+        &format!("{label} stderr reader"),
+    )?;
+    join_reader(dialogue_thread, &format!("{label} dialogue"))?;
+    join_reader(stderr_thread, &format!("{label} stderr reader"))?;
+    Ok(StreamedOutput {
+        status,
+        value,
+        stderr,
+    })
+}
+
+fn write_bounded_line(
+    writer: &mut impl Write,
+    bytes: &[u8],
+    line_limit: usize,
+    label: &str,
+) -> Result<()> {
+    ensure!(
+        !bytes.contains(&b'\n') && !bytes.contains(&b'\r'),
+        "{label} request contains a raw line ending"
+    );
+    let framed = bytes
+        .len()
+        .checked_add(1)
+        .context("bounded dialogue request length overflowed")?;
+    ensure!(
+        framed <= line_limit,
+        "{label} request exceeds the {line_limit}-byte line limit"
+    );
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.write_all(b"\n"))
+        .and_then(|()| writer.flush())
+        .with_context(|| format!("writing {label} request"))
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line_limit: usize,
+    total_limit: usize,
+    total: &mut usize,
+    label: &str,
+) -> Result<Option<Vec<u8>>> {
+    let maximum = u64::try_from(line_limit)
+        .context("bounded dialogue line limit does not fit u64")?
+        .checked_add(1)
+        .context("bounded dialogue line limit overflowed")?;
+    let mut line = Vec::new();
+    let read = reader
+        .take(maximum)
+        .read_until(b'\n', &mut line)
+        .with_context(|| format!("reading {label} response"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    ensure!(
+        line.len() <= line_limit,
+        "{label} sent a line longer than {line_limit} bytes"
+    );
+    let observed = total
+        .checked_add(line.len())
+        .context("bounded dialogue stdout length overflowed")?;
+    ensure!(
+        observed <= total_limit,
+        "{label} stdout exceeded {total_limit} bytes"
+    );
+    *total = observed;
+    Ok(Some(line))
 }
 
 /// Run one child while reducing stdout on a dedicated reader thread.
@@ -268,6 +497,17 @@ impl Tree {
         self.child.kill()
     }
 
+    fn take_stdin(&mut self) -> Option<ChildStdin> {
+        #[cfg(windows)]
+        {
+            self.child.inner().stdin.take()
+        }
+        #[cfg(not(windows))]
+        {
+            self.child.stdin.take()
+        }
+    }
+
     fn take_stdout(&mut self) -> Option<ChildStdout> {
         #[cfg(windows)]
         {
@@ -302,12 +542,12 @@ fn collect_output(capture: &Capture, status: ExitStatus, capture_limit: usize) -
 }
 
 fn poll_child_with<C, F>(
-    mut child: C,
+    child: C,
     try_wait: fn(&mut C) -> std::io::Result<Option<ExitStatus>>,
     kill: fn(&mut C) -> std::io::Result<()>,
     timeout: Duration,
     label: &str,
-    mut observe: F,
+    observe: F,
 ) -> Result<ExitStatus>
 where
     F: FnMut() -> Result<()>,
@@ -315,6 +555,21 @@ where
     let deadline = Instant::now()
         .checked_add(timeout)
         .context("bounded child deadline overflowed")?;
+    poll_child_until(child, try_wait, kill, deadline, timeout, label, observe)
+}
+
+fn poll_child_until<C, F>(
+    mut child: C,
+    try_wait: fn(&mut C) -> std::io::Result<Option<ExitStatus>>,
+    kill: fn(&mut C) -> std::io::Result<()>,
+    deadline: Instant,
+    timeout: Duration,
+    label: &str,
+    mut observe: F,
+) -> Result<ExitStatus>
+where
+    F: FnMut() -> Result<()>,
+{
     loop {
         if let Err(error) = observe() {
             return stop_after_observation_failure(child, try_wait, kill, error, label);
@@ -335,6 +590,20 @@ where
             return stop_after_failure(child, try_wait, kill, error, label, "timed-out");
         }
         std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+fn stop_tree_after_setup_failure<T>(tree: Tree, error: anyhow::Error, label: &str) -> Result<T> {
+    match stop_after_failure(
+        tree,
+        Tree::try_wait,
+        Tree::terminate,
+        error,
+        label,
+        "setup-failed",
+    ) {
+        Err(error) => Err(error),
+        Ok(status) => bail!("setup-failed {label} unexpectedly returned {status}"),
     }
 }
 
@@ -573,7 +842,7 @@ fn read_limited(
     std::io::Seek::seek(&mut file, SeekFrom::Start(0))
         .with_context(|| format!("rewinding captured {label} {}", path.display()))?;
     let mut bytes = Vec::new();
-    file.by_ref()
+    Read::by_ref(&mut file)
         .take((limit as u64) + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("reading captured {label} {}", path.display()))?;
@@ -595,10 +864,32 @@ impl Drop for Capture {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::ffi::OsString;
     use std::io::{self, Write};
     use std::rc::Rc;
 
     use super::*;
+
+    fn expected_fixed_git_environment() -> std::collections::BTreeMap<OsString, OsString> {
+        [
+            ("LC_ALL", "C"),
+            ("GIT_CONFIG_SYSTEM", EMPTY_GIT_CONFIG),
+            ("GIT_PAGER", ""),
+            ("GIT_CONFIG_GLOBAL", EMPTY_GIT_CONFIG),
+            ("LANG", "C"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+            ("GIT_ATTR_NOSYSTEM", "1"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_CONFIG_COUNT", "0"),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_LITERAL_PATHSPECS", "1"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect()
+    }
 
     enum State {
         Parked,
@@ -686,6 +977,93 @@ mod tests {
         use std::os::windows::process::ExitStatusExt;
 
         ExitStatus::from_raw(0)
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _bytes: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected dialogue read failure"))
+        }
+    }
+
+    impl BufRead for FailingReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::other("injected dialogue read failure"))
+        }
+
+        fn consume(&mut self, _amount: usize) {}
+    }
+
+    #[test]
+    fn dialogue_lines_are_framed_and_counted_as_wire_bytes() {
+        let mut framed = Vec::new();
+        write_bounded_line(&mut framed, b"abc", 4, "fixture").unwrap();
+        assert_eq!(framed, b"abc\n");
+
+        let mut reader = BufReader::new(io::Cursor::new(b"abc\nxy"));
+        let mut total = 0;
+        assert_eq!(
+            read_bounded_line(&mut reader, 4, 6, &mut total, "fixture").unwrap(),
+            Some(b"abc\n".to_vec())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 4, 6, &mut total, "fixture").unwrap(),
+            Some(b"xy".to_vec())
+        );
+        assert_eq!(total, 6);
+        assert_eq!(
+            read_bounded_line(&mut reader, 4, 6, &mut total, "fixture").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn dialogue_request_framing_refuses_injection_and_oversize() {
+        for request in [b"one\ntwo".as_slice(), b"one\rtwo".as_slice()] {
+            let error = write_bounded_line(&mut Vec::new(), request, 32, "fixture").unwrap_err();
+            assert!(format!("{error:#}").contains("raw line ending"));
+        }
+
+        let error = write_bounded_line(&mut Vec::new(), b"four", 4, "fixture").unwrap_err();
+        assert!(format!("{error:#}").contains("4-byte line limit"));
+    }
+
+    #[test]
+    fn dialogue_line_and_cumulative_limits_fail_independently() {
+        let mut overlong = BufReader::new(io::Cursor::new(b"abcd\n"));
+        let error = read_bounded_line(&mut overlong, 4, 64, &mut 0, "fixture").unwrap_err();
+        assert!(format!("{error:#}").contains("line longer than 4 bytes"));
+
+        let mut cumulative = BufReader::new(io::Cursor::new(b"a\nb\n"));
+        let mut total = 0;
+        assert!(
+            read_bounded_line(&mut cumulative, 2, 3, &mut total, "fixture")
+                .unwrap()
+                .is_some()
+        );
+        let error = read_bounded_line(&mut cumulative, 2, 3, &mut total, "fixture").unwrap_err();
+        assert!(format!("{error:#}").contains("stdout exceeded 3 bytes"));
+    }
+
+    #[test]
+    fn dialogue_line_reader_propagates_io_and_length_overflow() {
+        let error = read_bounded_line(&mut FailingReader, 32, 64, &mut 0, "fixture").unwrap_err();
+        assert!(format!("{error:#}").contains("injected dialogue read failure"));
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            let mut reader = BufReader::new(io::Cursor::new(b"x"));
+            let error = read_bounded_line(&mut reader, usize::MAX, usize::MAX, &mut 0, "fixture")
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("line limit overflowed"));
+        }
+
+        let mut reader = BufReader::new(io::Cursor::new(b"x"));
+        let mut total = usize::MAX;
+        let error =
+            read_bounded_line(&mut reader, 1, usize::MAX, &mut total, "fixture").unwrap_err();
+        assert!(format!("{error:#}").contains("stdout length overflowed"));
     }
 
     #[test]
@@ -911,6 +1289,223 @@ mod tests {
         std::fs::remove_file(substituted).unwrap();
     }
 
+    const DIALOGUE_MODE: &str = "WIZARD_BOUNDED_DIALOGUE_MODE";
+
+    #[test]
+    #[ignore]
+    fn dialogue_fixture_child() {
+        let Some(mode) = std::env::var_os(DIALOGUE_MODE) else {
+            return;
+        };
+        match mode.to_string_lossy().as_ref() {
+            "exchange" => {
+                let input = std::io::stdin();
+                let mut lines = input.lock().lines();
+                for index in 1..=2 {
+                    let request = lines.next().unwrap().unwrap();
+                    println!("wizard-dialogue-reply-{index}:{request}");
+                    std::io::stdout().flush().unwrap();
+                }
+                eprintln!("wizard dialogue diagnostic");
+            }
+            "chatty" => {
+                for _ in 0..1_000 {
+                    println!("tick");
+                    std::io::stdout().flush().unwrap();
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            "cumulative" => {
+                for _ in 0..1_000 {
+                    println!("tick");
+                    std::io::stdout().flush().unwrap();
+                }
+                std::thread::sleep(Duration::from_secs(10));
+            }
+            "close-trailing" | "delayed-close-trailing" => {
+                let delayed = mode == "delayed-close-trailing";
+                if delayed {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                let input = std::io::stdin();
+                let mut lines = input.lock().lines();
+                let request = lines.next().unwrap().unwrap();
+                println!("wizard-dialogue-before-close:{request}");
+                std::io::stdout().flush().unwrap();
+                assert!(lines.next().is_none(), "dialogue input remained open");
+                if delayed {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                println!("wizard-dialogue-after-close");
+                std::io::stdout().flush().unwrap();
+            }
+            "early-exit" => {}
+            other => panic!("unknown bounded dialogue fixture mode {other}"),
+        }
+    }
+
+    fn dialogue_fixture(mode: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "bounded_process::tests::dialogue_fixture_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(DIALOGUE_MODE, mode);
+        command
+    }
+
+    fn dialogue_limits() -> DialogueLimits {
+        DialogueLimits {
+            line_bytes: 1024,
+            stdout_bytes: 1024 * 1024,
+            stderr_bytes: 1024 * 1024,
+        }
+    }
+
+    fn receive_fixture_reply(dialogue: &mut LineDialogue, marker: &str) -> Result<String> {
+        loop {
+            let line = dialogue
+                .receive_line()?
+                .context("dialogue fixture exited before its reply")?;
+            let line = String::from_utf8(line).context("dialogue fixture emitted non-UTF-8")?;
+            if line.starts_with(marker) {
+                return Ok(line);
+            }
+        }
+    }
+
+    #[test]
+    fn a_completed_dialogue_exchanges_lines_and_captures_stderr() {
+        let captured = output_dialogue(
+            dialogue_fixture("exchange"),
+            Duration::from_secs(5),
+            "dialogue exchange fixture",
+            dialogue_limits(),
+            || Ok(()),
+            |dialogue| {
+                dialogue.send_line(b"first")?;
+                let first = receive_fixture_reply(dialogue, "wizard-dialogue-reply-1:")?;
+                dialogue.send_line(b"second")?;
+                let second = receive_fixture_reply(dialogue, "wizard-dialogue-reply-2:")?;
+                while dialogue.receive_line()?.is_some() {}
+                Ok((first, second))
+            },
+        )
+        .unwrap();
+
+        assert!(captured.status.success(), "{captured:?}");
+        assert!(captured.value.0.contains("first"));
+        assert!(captured.value.1.contains("second"));
+        assert!(
+            String::from_utf8(captured.stderr)
+                .unwrap()
+                .contains("wizard dialogue diagnostic")
+        );
+    }
+
+    #[test]
+    fn dialogue_activity_does_not_reset_the_original_deadline() {
+        let activity = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = std::sync::Arc::clone(&activity);
+        let error = output_dialogue(
+            dialogue_fixture("chatty"),
+            Duration::from_secs(1),
+            "chatty dialogue fixture",
+            dialogue_limits(),
+            || Ok(()),
+            move |dialogue| {
+                while dialogue.receive_line()?.is_some() {
+                    observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("timed out after 1000 ms"));
+        assert!(
+            activity.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+            "the fixture timed out before proving repeated dialogue activity"
+        );
+    }
+
+    #[test]
+    fn closing_dialogue_input_retains_stdout_through_trailing_eof() {
+        let captured = output_dialogue(
+            dialogue_fixture("close-trailing"),
+            Duration::from_secs(5),
+            "half-closed dialogue fixture",
+            dialogue_limits(),
+            || Ok(()),
+            |dialogue| {
+                dialogue.send_line(b"request")?;
+                let before = receive_fixture_reply(dialogue, "wizard-dialogue-before-close:")?;
+                dialogue.close_input();
+                let error = dialogue.send_line(b"late request").unwrap_err();
+                ensure!(
+                    format!("{error:#}").contains("input is closed"),
+                    "send-after-close returned the wrong error: {error:#}"
+                );
+                let after = receive_fixture_reply(dialogue, "wizard-dialogue-after-close")?;
+                while dialogue.receive_line()?.is_some() {}
+                Ok((before, after))
+            },
+        )
+        .unwrap();
+
+        assert!(captured.status.success(), "{captured:?}");
+        assert!(captured.value.0.contains("request"));
+        assert!(captured.value.1.contains("after-close"));
+    }
+
+    #[test]
+    fn closing_dialogue_input_does_not_reset_the_original_deadline() {
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = std::sync::Arc::clone(&closed);
+        let error = output_dialogue(
+            dialogue_fixture("delayed-close-trailing"),
+            Duration::from_millis(1_500),
+            "delayed half-closed dialogue fixture",
+            dialogue_limits(),
+            || Ok(()),
+            move |dialogue| {
+                dialogue.send_line(b"request")?;
+                receive_fixture_reply(dialogue, "wizard-dialogue-before-close:")?;
+                dialogue.close_input();
+                observed.store(true, std::sync::atomic::Ordering::Relaxed);
+                receive_fixture_reply(dialogue, "wizard-dialogue-after-close")
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("timed out after 1500 ms"));
+        assert!(
+            closed.load(std::sync::atomic::Ordering::Relaxed),
+            "the fixture timed out before dialogue input was half-closed"
+        );
+    }
+
+    #[test]
+    fn an_early_dialogue_exit_returns_the_reader_failure() {
+        let error = output_dialogue(
+            dialogue_fixture("early-exit"),
+            Duration::from_secs(5),
+            "early dialogue fixture",
+            dialogue_limits(),
+            || Ok(()),
+            |dialogue| -> Result<()> {
+                while dialogue.receive_line()?.is_some() {}
+                bail!("injected premature dialogue EOF")
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected premature dialogue EOF"));
+    }
+
     #[test]
     #[ignore]
     fn capture_fixture_child() {
@@ -1048,6 +1643,47 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_dialogue_observer_takes_its_parked_descendant_with_it() {
+        let (root, lock, command) = parked_family("dialogue-observer-failed", true);
+        let observed_lock = lock.clone();
+        let error = output_dialogue(
+            command,
+            Duration::from_secs(30),
+            "observed grandparent dialogue fixture",
+            dialogue_limits(),
+            move || {
+                if !observed_lock.exists() {
+                    return Ok(());
+                }
+                bail!("injected dialogue owner observation failure")
+            },
+            |dialogue| {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                loop {
+                    if dialogue.receive_line()?.is_none() {
+                        return Ok(());
+                    }
+                    ensure!(
+                        Instant::now() < deadline,
+                        "the observed dialogue did not fail before its local deadline"
+                    );
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected dialogue owner observation failure"),
+            "{error:#}"
+        );
+        assert!(
+            released(&lock),
+            "a parked grandchild outlived its failed bounded dialogue"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     #[ignore]
     fn noisy_capture_fixture_child() {
@@ -1134,6 +1770,89 @@ mod tests {
     }
 
     #[test]
+    fn an_overlong_dialogue_line_is_refused_while_the_child_is_live() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "bounded_process::tests::noisy_capture_fixture_child",
+            "--ignored",
+            "--nocapture",
+        ]);
+        let limits = DialogueLimits {
+            line_bytes: 64,
+            stdout_bytes: 1024,
+            stderr_bytes: 1024,
+        };
+
+        let error = output_dialogue(
+            command,
+            Duration::from_secs(2),
+            "overlong dialogue fixture",
+            limits,
+            || Ok(()),
+            |dialogue| {
+                while dialogue.receive_line()?.is_some() {}
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("line longer than 64 bytes"));
+    }
+
+    #[test]
+    fn dialogue_cumulative_stdout_is_refused_while_child_is_live() {
+        let limits = DialogueLimits {
+            line_bytes: 1024,
+            stdout_bytes: 128,
+            stderr_bytes: 1024,
+        };
+
+        let error = output_dialogue(
+            dialogue_fixture("cumulative"),
+            Duration::from_secs(2),
+            "cumulative dialogue fixture",
+            limits,
+            || Ok(()),
+            |dialogue| {
+                while dialogue.receive_line()?.is_some() {}
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("exceeded 128 bytes"));
+    }
+
+    #[test]
+    fn dialogue_stderr_is_refused_while_the_child_is_live() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "bounded_process::tests::noisy_stderr_fixture_child",
+            "--ignored",
+            "--nocapture",
+        ]);
+        let limits = DialogueLimits {
+            line_bytes: 1024,
+            stdout_bytes: 1024,
+            stderr_bytes: 32,
+        };
+
+        let error = output_dialogue(
+            command,
+            Duration::from_secs(2),
+            "noisy dialogue stderr fixture",
+            limits,
+            || Ok(()),
+            |dialogue| {
+                while dialogue.receive_line()?.is_some() {}
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("exceeded 32 bytes"));
+    }
+
+    #[test]
     fn streamed_stderr_is_refused_while_the_child_is_live() {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args([
@@ -1174,27 +1893,77 @@ mod tests {
     }
 
     #[test]
-    fn git_children_cannot_inherit_repository_or_pathspec_redirection() {
-        let mut command = Command::new("git");
-        for name in GIT_REDIRECT_ENVIRONMENT {
-            command.env(name, "attacker-controlled");
+    #[ignore]
+    fn isolated_git_environment_fixture_child() {
+        for (name, expected) in expected_fixed_git_environment() {
+            assert_eq!(std::env::var_os(&name), Some(expected), "{name:?} differs");
         }
-        isolate_git_environment(&mut command);
-        let environment: std::collections::BTreeMap<_, _> = command.get_envs().collect();
-
-        for name in GIT_REDIRECT_ENVIRONMENT {
-            assert_eq!(
-                environment.get(std::ffi::OsStr::new(name)).copied(),
-                Some(None),
-                "{name} was still inherited"
+        for name in [
+            "BASH_ENV",
+            "COMSPEC",
+            "DYLD_INSERT_LIBRARIES",
+            "ENV",
+            "GIT_DIR",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_FUTURE_INJECTION",
+            "GIT_TRACE2_EVENT",
+            "LD_PRELOAD",
+            "PATH",
+            "PROMPT_COMMAND",
+            "SHELL",
+            "WIZARD_GIT_FIXTURE",
+        ] {
+            assert!(
+                std::env::var_os(name).is_none(),
+                "isolated child inherited {name}"
             );
         }
-        assert_eq!(
-            environment
-                .get(std::ffi::OsStr::new("GIT_CONFIG_COUNT"))
-                .copied()
-                .flatten(),
-            Some(std::ffi::OsStr::new("0"))
-        );
+    }
+
+    #[test]
+    fn git_children_receive_only_the_fixed_environment() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "bounded_process::tests::isolated_git_environment_fixture_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("BASH_ENV", "attacker-controlled")
+            .env("COMSPEC", "attacker-controlled")
+            .env("DYLD_INSERT_LIBRARIES", "attacker-controlled")
+            .env("ENV", "attacker-controlled")
+            .env("GIT_DIR", "attacker-controlled")
+            .env("GIT_EXTERNAL_DIFF", "attacker-controlled")
+            .env("GIT_TRACE2_EVENT", "attacker-controlled")
+            .env("GIT_FUTURE_INJECTION", "attacker-controlled")
+            .env("LD_PRELOAD", "attacker-controlled")
+            .env("PATH", "attacker-controlled")
+            .env("PROMPT_COMMAND", "attacker-controlled")
+            .env("SHELL", "attacker-controlled")
+            .env("WIZARD_GIT_FIXTURE", "attacker-controlled");
+        isolate_git_environment(&mut command);
+        let environment: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_owned(),
+                    value
+                        .expect("fixed Git environment removed a variable")
+                        .to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(environment, expected_fixed_git_environment());
+
+        let output = output_with_limit(
+            command,
+            Duration::from_secs(10),
+            "isolated Git environment fixture",
+            64 * 1024,
+        )
+        .unwrap();
+        assert!(output.status.success(), "{output:?}");
     }
 }

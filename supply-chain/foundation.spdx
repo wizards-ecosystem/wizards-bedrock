@@ -2,7 +2,7 @@ SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
 SPDXID: SPDXRef-DOCUMENT
 DocumentName: wizards-bedrock-foundation
-DocumentNamespace: https://github.com/wizards-ecosystem/wizards-bedrock/sbom/782777a9bcb68d539262cdf449b41a45468d7ba7411c49cdbf6965000a4b540e
+DocumentNamespace: https://github.com/wizards-ecosystem/wizards-bedrock/sbom/b334c56242bee8d4d49fb915ef788973c38f5be49056b708170e897ef4de737b
 Creator: Organization: The Wizard's Bedrock
 Created: 2026-08-29T00:00:00Z
 
@@ -820,6 +820,18 @@ PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-winapi-i686-pc-windows-gnu-0.4.0
+
+PackageName: winapi-util
+SPDXID: SPDXRef-Crate-winapi-util-0.1.11
+PackageVersion: 0.1.11
+PackageDownloadLocation: https://crates.io/api/v1/crates/winapi-util/0.1.11/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Unlicense OR MIT
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-winapi-util-0.1.11
 
 PackageName: winapi-x86_64-pc-windows-gnu
 SPDXID: SPDXRef-Crate-winapi-x86-64-pc-windows-gnu-0.4.0

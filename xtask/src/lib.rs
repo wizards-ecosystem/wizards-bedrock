@@ -62,6 +62,17 @@ use anyhow::Result;
 use crate::cli::Task;
 use crate::paths::Paths;
 
+/// Dispatch a private Codex/Python wrapper mode before ordinary CLI parsing.
+pub fn dispatch_private_codex_wrapper() -> Option<i32> {
+    security_deep::dispatch_private_wrapper().map(|result| match result {
+        Ok(code) => code,
+        Err(_) => {
+            eprintln!("error: private Codex child invocation was rejected");
+            2
+        }
+    })
+}
+
 /// Carry out `task`.
 pub fn run(task: Task) -> Result<()> {
     let paths = Paths::discover()?;

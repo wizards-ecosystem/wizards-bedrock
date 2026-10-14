@@ -41,7 +41,7 @@ QUALIFICATION TASKS:
     verify-evidence   verify the evidence bundle without network access
     qualify-advisory  fetch RustSec data and qualify the exact Cargo.lock
     qualify-mutants-grade  run the independent xtask cargo-mutants grade
-    qualify-security-deep  begin or verify the managed Codex Security deep scan
+    qualify-security-deep  run, begin or verify the managed Codex Security deep scan
     qualify-vmware    validate and preserve a fresh VMware serial transcript
     baseline          repeat debug/release foundation measurements in QEMU
     debug             open the debug kernel at kmain in native GDB
@@ -59,7 +59,7 @@ NOT IN CI (exceptional dependency, interaction, or runtime):
                       require a check to go red (one QEMU boot each)
     qualify-advisory  as above (needs cargo-audit and fresh RustSec data)
     qualify-mutants-grade  as above (a complete run can take several days)
-    qualify-security-deep  as above (verification is diagnostic, not a release pass)
+    qualify-security-deep  as above (owned run can qualify; imported verification is diagnostic)
 
 HOUSEKEEPING:
     update-sbom       regenerate the SPDX SBOM from the reviewed inventory
@@ -71,7 +71,7 @@ OPTIONS:
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
     --shipped         vmware tasks: select the image users boot, not self-test
-    --run             cargo-mutants qualification: run the complete owned campaign
+    --run             cargo-mutants or Codex Security: run the owned campaign
     --begin           Codex Security: write a source-bound scan request
     --verify=<DIR>    Codex Security: verify unsigned artifacts without qualifying them
     --message-format=<FMT>
@@ -157,7 +157,7 @@ pub enum Task {
     QualifyAdvisory,
     /// Run the independent cargo-mutants grade under owned execution.
     QualifyMutantsGrade(MutantsGradeAction),
-    /// Begin or diagnostically verify the managed Codex Security deep scan.
+    /// Run, begin or diagnostically verify the managed Codex Security deep scan.
     QualifySecurityDeep(SecurityDeepAction),
     /// Validate and preserve one executed VMware machine.
     QualifyVmware {
@@ -178,6 +178,8 @@ pub enum MutantsGradeAction {
 /// Which part of the external Codex Security qualification to perform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecurityDeepAction {
+    /// Run and record the complete scan under `xtask` process ownership.
+    Run,
     /// Invalidate an older pass and write a source-bound scan request.
     Begin,
     /// Validate unsigned canonical artifacts without creating a pass record.
@@ -336,12 +338,16 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             _ => bail!("qualify-mutants-grade requires exactly `--run`"),
         },
         "qualify-security-deep" => match (run, begin, verify) {
+            (true, false, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Run)),
             (false, true, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),
             (false, false, Some(directory)) => Ok(Task::QualifySecurityDeep(
                 SecurityDeepAction::Verify(directory),
             )),
             _ => {
-                bail!("qualify-security-deep requires exactly one of `--begin` or `--verify=<DIR>`")
+                bail!(
+                    "qualify-security-deep requires exactly one of `--run`, `--begin` or \
+                     `--verify=<DIR>`"
+                )
             }
         },
         "qualify-vmware" => Ok(Task::QualifyVmware {
@@ -551,6 +557,10 @@ mod tests {
             parse_args(&["qualify-security-deep", "--verify=scan"]).unwrap(),
             Task::QualifySecurityDeep(SecurityDeepAction::Verify(PathBuf::from("scan")))
         );
+        assert_eq!(
+            parse_args(&["qualify-security-deep", "--run"]).unwrap(),
+            Task::QualifySecurityDeep(SecurityDeepAction::Run)
+        );
         for task in ["qualify-mutants-grade", "qualify-security-deep"] {
             assert!(parse_args(&[task]).is_err(), "{task} ran with no action");
         }
@@ -558,8 +568,10 @@ mod tests {
         assert!(parse_args(&["qualify-mutants-grade", "--verify=scan"]).is_err());
         assert!(parse_args(&["qualify-mutants-grade", "--run", "--begin"]).is_err());
         assert!(parse_args(&["qualify-mutants-grade", "--run", "--verify=scan"]).is_err());
-        assert!(parse_args(&["qualify-security-deep", "--run"]).is_err());
+        assert!(parse_args(&["qualify-security-deep", "--run", "--begin"]).is_err());
+        assert!(parse_args(&["qualify-security-deep", "--run", "--verify=scan"]).is_err());
         assert!(parse_args(&["qualify-security-deep", "--begin", "--verify=scan"]).is_err());
+        assert!(parse_args(&["qualify-security-deep", "--run", "--run"]).is_err());
         assert!(parse_args(&["qualify-security-deep", "--verify=one", "--verify=two"]).is_err());
         assert!(parse_args(&["build", "--begin"]).is_err());
         assert!(parse_args(&["build", "--verify=scan"]).is_err());

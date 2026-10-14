@@ -145,10 +145,9 @@ fresh transcript after that human boot, `mutate` needs one QEMU boot per known
 defect, `baseline` needs six QEMU boots for descriptive measurements, and
 `qualify-advisory` needs `cargo-audit` plus fresh RustSec data.
 `qualify-mutants-grade --run` owns and contains the complete current-source
-campaign. `qualify-security-deep` uses `--begin` to publish its request and
-`--verify=RESULT_DIR` only to diagnose unsigned provider artifacts; it cannot
-create release qualification until the provider supplies an authenticated
-receipt (D-373).
+campaign. `qualify-security-deep --run` owns the pinned Codex Security MCP
+server, its complete Windows process tree, exact tool dialogue and private
+scratch; `--begin` and `--verify=RESULT_DIR` remain diagnostic-only (D-406).
 A gate step that
 fails for want of an exceptional tool or a long qualification teaches people
 to skip the gate.
@@ -190,7 +189,7 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v9 requires
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v10 requires
 source-bound records for the current mutation sweep, the independent
 `cargo-mutants` grade, the canonical Codex Security Deep artifacts, the fresh
 RustSec review, all model runs and both generated-and-booted VMware selectors,
@@ -199,8 +198,9 @@ source commit or a direct child which modifies only the five closure documents
 named by D-330 while retaining the locked newest passing parent mutation
 report. Verification therefore rejects an
 unavailable, stale, omitted or changed phase-close qualification rather than
-changing schema (D-218, D-244, D-330, D-373). Qualification schema v5 also
-rejects every record from the retired unauthenticated external-seal format.
+changing schema (D-218, D-244, D-330, D-373). D-406 advances qualification
+to v6: only an owned, pinned live Deep MCP session can create the Deep PASS,
+and every earlier record or bundle is invalid.
 
 `qualify-mutants-grade --run` resolves the pinned grader and nextest, publishes
 the exact source/tool/environment request, and starts the full campaign in an
@@ -208,12 +208,25 @@ exclusive `xtask`-owned directory through the bounded process owner. It accepts
 only a successful run with unchanged source and tools, an identical independent
 inventory, and exact non-caught dispositions from the tracked
 `xtask/mutants-adjudications.json`; caller-supplied adjudications have no PASS
-authority. `qualify-security-deep --begin` publishes the source-bound request,
-and `--verify=RESULT_DIR` can validate the provider's manifest, findings,
-coverage and report for diagnosis. Those unsigned files never create PASS,
-and both evidence creation and offline verification remain fail-closed until
-an authenticated provider receipt or invocation/fetch channel binds the scan
-to that request (D-373).
+authority. `qualify-security-deep --run` resolves and hash-pins the selected
+plugin, Node, Python executable and Codex, records and stability-binds the
+complete isolated Python-owned runtime tree, the four-file adjacent Codex
+runtime and Git, reserves one
+budget-observed OS-temporary run, and owns exactly one Deep start
+plus one completion on the same MCP session. It clears inherited routing inputs,
+proves the effective official ChatGPT configuration, proves that the exact
+managed worker sandbox cannot read the projected login credential, and injects
+the same fail-closed policy through
+private CLI and Python wrappers for every worker, including exact allowed exec
+arguments, a shell environment derived only from qualified paths, and mirrored
+scripts. It requires the pinned completion reply and remeasures the source and
+tools after their
+last use, replays the five canonical artifacts, cleans its private scratch, and
+only then commits PASS. Its Git queries run with a fixed-only environment,
+absolute repository bindings and every effective repository content-filter
+driver disabled. `--begin` still publishes the source-bound
+request and `--verify=RESULT_DIR` still validates imported artifacts for
+diagnosis, but neither diagnostic action can obtain release authority (D-406).
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the

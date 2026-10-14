@@ -861,11 +861,11 @@ impl Baseline {
 
         let index_name = git_text(
             root,
-            ["rev-parse", "--git-path", "index"],
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
             MAX_GIT_IDENTITY_BYTES,
             "mutation Git index path",
         )?;
-        let index_path = require_confined_file(root, &index_name, "mutation Git index")?;
+        let index_path = require_confined_absolute_file(root, &index_name, "mutation Git index")?;
         let index_digest = digest_file(&index_path, MAX_GIT_INDEX_BYTES, "Git index")?;
         let source_digest = digest_tracked(root, &tracked)?;
         let settled_status = git(
@@ -1471,6 +1471,31 @@ fn require_confined_file(root: &Path, relative: &str, label: &str) -> Result<Pat
         }
     }
     unreachable!("validate_relative accepted an empty path")
+}
+
+fn require_confined_absolute_file(root: &Path, absolute: &str, label: &str) -> Result<PathBuf> {
+    let root = canonical_existing_real_directory(root, label)?;
+    let path = Path::new(absolute);
+    ensure!(
+        path.is_absolute(),
+        "{label} is not an absolute path: {}",
+        path.display()
+    );
+    let name = path
+        .file_name()
+        .context("absolute confined file has no final component")?;
+    let parent = path
+        .parent()
+        .context("absolute confined file has no parent")?;
+    let parent = canonical_existing_real_directory(parent, label)?;
+    let relative_parent = parent
+        .strip_prefix(&root)
+        .with_context(|| format!("{label} is outside {}", root.display()))?;
+    let relative = relative_parent.join(name);
+    let relative = relative
+        .to_str()
+        .context("absolute confined file path is not UTF-8")?;
+    require_confined_file(&root, relative, label)
 }
 
 pub(crate) fn require_direct_file(parent: &Path, path: &Path, label: &str) -> Result<()> {
@@ -2442,6 +2467,32 @@ mod tests {
     fn tracked_path_order_refuses_duplicates_and_reversals() {
         assert!(parse_tracked_paths(b"alpha\0alpha\0").is_err());
         assert!(parse_tracked_paths(b"bravo\0alpha\0").is_err());
+    }
+
+    #[test]
+    fn an_absolute_git_path_must_resolve_to_one_confined_direct_file() {
+        let temp = TempTree::new("absolute-git-path");
+        let root = temp.0.join("repository");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let index = root.join(".git").join("index");
+        std::fs::write(&index, b"index").unwrap();
+        let admitted =
+            require_confined_absolute_file(&root, index.to_str().unwrap(), "fixture Git index")
+                .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(admitted).unwrap(),
+            std::fs::canonicalize(&index).unwrap()
+        );
+
+        assert!(require_confined_absolute_file(&root, ".git/index", "relative Git index").is_err());
+        let same_name_inside = root.join("outside");
+        std::fs::write(&same_name_inside, b"inside").unwrap();
+        let outside = temp.0.join("outside");
+        std::fs::write(&outside, b"outside").unwrap();
+        assert!(
+            require_confined_absolute_file(&root, outside.to_str().unwrap(), "outside Git index")
+                .is_err()
+        );
     }
 
     #[test]

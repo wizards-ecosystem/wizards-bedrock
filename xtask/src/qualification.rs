@@ -21,11 +21,10 @@ use crate::mutation_workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
 use crate::sha256;
 
-const FORMAT: &str = "wizard-qualification-v5";
+const FORMAT: &str = "wizard-qualification-v6";
 const RECORD: &str = "record";
 const RECORD_TEMP: &str = "record.incomplete";
 const PASS: &str = "pass";
-const DEEP_AUTHORITY_ERROR: &str = "Codex Security Deep has no authenticated provider receipt; unsigned scan artifacts cannot satisfy release qualification";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const ADVISORY_TIMEOUT: Duration = Duration::from_secs(300);
 const WINDOWS_VMWARE: &str = r"C:\Program Files (x86)\VMware\VMware Workstation";
@@ -403,7 +402,23 @@ pub(crate) struct ObservedMutantsArtifacts {
 }
 
 #[derive(Debug)]
+pub(crate) struct ObservedDeepArtifacts {
+    pub(crate) request: Vec<u8>,
+    pub(crate) manifest: Vec<u8>,
+    pub(crate) findings: Vec<u8>,
+    pub(crate) coverage: Vec<u8>,
+    pub(crate) report: Vec<u8>,
+}
+
+#[derive(Debug)]
 pub(crate) struct DeepAttempt {
+    paths: Paths,
+    source: SourceIdentity,
+    directory: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct OwnedDeepAttempt {
     paths: Paths,
     source: SourceIdentity,
     directory: PathBuf,
@@ -436,6 +451,73 @@ impl DeepAttempt {
             "qualification directory changed during request publication"
         );
         write_new_file(&directory.join("request"), bytes)
+    }
+}
+
+impl OwnedDeepAttempt {
+    pub(crate) fn source(&self) -> &SourceIdentity {
+        &self.source
+    }
+
+    pub(crate) fn pass_observed_deep(
+        self,
+        _authority: crate::security_deep::DeepAuthority,
+        fields: &[(String, String)],
+        artifacts: ObservedDeepArtifacts,
+    ) -> Result<()> {
+        invalidate(&self.paths, Kind::CodexSecurityDeep)?;
+        let directory = kind_directory(&self.paths, Kind::CodexSecurityDeep)?;
+        ensure!(
+            directory == self.directory,
+            "qualification directory changed during owned Deep execution"
+        );
+        let mut record = base_record_for_source(Kind::CodexSecurityDeep, &self.source)?;
+        for (key, value) in fields {
+            record.insert(key, value)?;
+        }
+        for (prefix, name, bytes) in [
+            ("artifact.request", "request", artifacts.request.as_slice()),
+            (
+                "artifact.manifest",
+                "scan-manifest.json",
+                artifacts.manifest.as_slice(),
+            ),
+            (
+                "artifact.findings",
+                "findings.json",
+                artifacts.findings.as_slice(),
+            ),
+            (
+                "artifact.coverage",
+                "coverage.json",
+                artifacts.coverage.as_slice(),
+            ),
+            ("artifact.report", "report.md", artifacts.report.as_slice()),
+        ] {
+            let (maximum, exact) = artifact_size_policy(Kind::CodexSecurityDeep, name)?;
+            ensure!(
+                (!exact && bytes.len() as u64 <= maximum)
+                    || (exact && bytes.len() as u64 == maximum),
+                "observed Codex Security artifact `{name}` violates its size policy"
+            );
+            let path = directory.join(name);
+            ensure!(
+                path.parent() == Some(directory.as_path()),
+                "observed Codex Security artifact escaped its qualification directory"
+            );
+            write_new_file(&path, bytes)?;
+            add_artifact(&mut record, prefix, name, &path)?;
+        }
+        record.insert("result", PASS)?;
+        verify_support(
+            &self.paths,
+            &record,
+            Kind::CodexSecurityDeep,
+            &qualification_root(&self.paths),
+        )?;
+        let derived = crate::security_deep::verify_sealed(&self.paths, &directory, &self.source)?;
+        require_external_fields(&record, &derived)?;
+        commit_record(&self.paths, Kind::CodexSecurityDeep, &record)
     }
 }
 
@@ -812,6 +894,18 @@ fn begin_external(
 pub(crate) fn begin_security_deep(paths: &Paths, preserve_artifacts: bool) -> Result<DeepAttempt> {
     let (source, directory) = begin_external(paths, Kind::CodexSecurityDeep, preserve_artifacts)?;
     Ok(DeepAttempt {
+        paths: paths.clone(),
+        source,
+        directory,
+    })
+}
+
+pub(crate) fn begin_owned_security_deep(
+    paths: &Paths,
+    _authority: &crate::security_deep::DeepAuthority,
+) -> Result<OwnedDeepAttempt> {
+    let (source, directory) = begin_external(paths, Kind::CodexSecurityDeep, false)?;
+    Ok(OwnedDeepAttempt {
         paths: paths.clone(),
         source,
         directory,
@@ -1270,7 +1364,18 @@ pub(crate) fn invalidate_vmware(paths: &Paths, kernel: Kernel) -> Result<()> {
 }
 
 pub(crate) fn recorded_source(paths: &Paths) -> Result<SourceIdentity> {
-    with_authenticated_release_bundle(|| recorded_source_after_authority(paths))
+    let root = qualification_root(paths);
+    require_real_root(&root, "qualification root")?;
+    let deep = read_record(
+        &checked_kind_directory(&root, Kind::CodexSecurityDeep)?.join(RECORD),
+        Kind::CodexSecurityDeep,
+    )?;
+    let source = SourceIdentity {
+        commit: deep.get("source.commit")?.to_string(),
+        tree: deep.get("source.tree")?.to_string(),
+    };
+    require_authenticated_deep_qualification(paths, &root, &source)?;
+    recorded_source_after_authority(paths)
 }
 
 fn recorded_source_after_authority(paths: &Paths) -> Result<SourceIdentity> {
@@ -1375,9 +1480,8 @@ fn verify_records(
     mutation_count: usize,
     mutation: Option<&PassEvidence>,
 ) -> Result<()> {
-    with_authenticated_release_bundle(|| {
-        verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)
-    })
+    require_authenticated_deep_qualification(paths, root, source)?;
+    verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)
 }
 
 fn verify_records_after_authority(
@@ -1455,13 +1559,18 @@ fn verify_records_after_authority(
     Ok(())
 }
 
-fn require_authenticated_deep_qualification() -> Result<()> {
-    bail!("{DEEP_AUTHORITY_ERROR}")
-}
-
-fn with_authenticated_release_bundle<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
-    require_authenticated_deep_qualification()?;
-    operation()
+fn require_authenticated_deep_qualification(
+    paths: &Paths,
+    root: &Path,
+    source: &SourceIdentity,
+) -> Result<()> {
+    let directory = checked_kind_directory(root, Kind::CodexSecurityDeep)?;
+    require_contained_real_directory(root, &directory, "qualification kind directory")?;
+    let record = read_record(&directory.join(RECORD), Kind::CodexSecurityDeep)?;
+    require_source(&record, source)?;
+    verify_support(paths, &record, Kind::CodexSecurityDeep, root)?;
+    let derived = crate::security_deep::verify_sealed(paths, &directory, source)?;
+    require_external_fields(&record, &derived)
 }
 
 fn verify_advisory_qualification(
@@ -2515,6 +2624,20 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
         }
         Kind::CodexSecurityDeep => {
             expected.extend([
+                "authentication.channel".to_string(),
+                "environment.policy".to_string(),
+                "execution.authority".to_string(),
+                "execution.complete-tool".to_string(),
+                "execution.model".to_string(),
+                "execution.protocol".to_string(),
+                "execution.reasoning".to_string(),
+                "execution.server-name".to_string(),
+                "execution.server-version".to_string(),
+                "execution.start-tool".to_string(),
+                "execution.tools.bytes".to_string(),
+                "execution.tools.count".to_string(),
+                "execution.tools.sha256".to_string(),
+                "execution.worker-permission".to_string(),
                 "findings.critical".to_string(),
                 "findings.high".to_string(),
                 "findings.informational".to_string(),
@@ -2525,7 +2648,22 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "scan.producer.name".to_string(),
                 "scan.producer.version".to_string(),
                 "scan.surfaces".to_string(),
+                "tool.codex-security.integrity.bytes".to_string(),
+                "tool.codex-security.integrity.sha256".to_string(),
+                "tool.codex-security.tree.files".to_string(),
+                "tool.codex-security.version".to_string(),
+                "tool.codex.runtime.bytes".to_string(),
+                "tool.codex.runtime.files".to_string(),
+                "tool.codex.runtime.root".to_string(),
+                "tool.codex.runtime.sha256".to_string(),
+                "tool.python.runtime.bytes".to_string(),
+                "tool.python.runtime.files".to_string(),
+                "tool.python.runtime.root".to_string(),
+                "tool.python.runtime.sha256".to_string(),
             ]);
+            for prefix in ["tool.node", "tool.python", "tool.codex"] {
+                add_tool_keys(&mut expected, prefix);
+            }
             for prefix in [
                 "artifact.request",
                 "artifact.manifest",
@@ -4077,6 +4215,29 @@ mod tests {
             }
             Kind::CodexSecurityDeep => {
                 for (key, value) in [
+                    ("authentication.channel", "codex-home-chatgpt"),
+                    (
+                        "environment.policy",
+                        "xtask-owned-codex-security-hermetic-v4",
+                    ),
+                    ("execution.authority", "xtask-mcp-wrapper-windows-job-v3"),
+                    ("execution.complete-tool", "complete_codex_security_scan"),
+                    ("execution.model", "gpt-6.1-sol"),
+                    ("execution.protocol", "2025-06-18"),
+                    ("execution.reasoning", "xhigh"),
+                    ("execution.server-name", "codex-security"),
+                    ("execution.server-version", "0.1.160"),
+                    ("execution.start-tool", "start_codex_security_deep_scan"),
+                    ("execution.tools.bytes", "79316"),
+                    ("execution.tools.count", "47"),
+                    (
+                        "execution.tools.sha256",
+                        "514a38fefaaa3f89b1b897755721eca31b0fef5589c506102a696163e4add29a",
+                    ),
+                    (
+                        "execution.worker-permission",
+                        "extends=:read-only;root=read;network=false",
+                    ),
                     ("findings.critical", "0"),
                     ("findings.high", "0"),
                     ("findings.informational", "0"),
@@ -4086,9 +4247,33 @@ mod tests {
                     ("scan.id", "scan-fixture"),
                     ("scan.producer.name", "codex-security-plugin"),
                     ("scan.producer.version", "0.1.32"),
-                    ("scan.surfaces", "1"),
+                    ("scan.surfaces", "0"),
+                    ("tool.codex-security.integrity.bytes", "17465"),
+                    (
+                        "tool.codex-security.integrity.sha256",
+                        "6b342df66fb9b5ce7fc8c9de0e974b59d21340cdc06167df46d1a19bd4ea9441",
+                    ),
+                    ("tool.codex-security.tree.files", "142"),
+                    ("tool.codex-security.version", "0.1.32"),
+                    ("tool.codex.runtime.bytes", "434764480"),
+                    ("tool.codex.runtime.files", "4"),
+                    ("tool.codex.runtime.root", "parent-of-tool.codex"),
+                    (
+                        "tool.codex.runtime.sha256",
+                        "8dbddb6107989fe3465a01302bb9ebbadf764c48d2997172d829ac05ec3b8880",
+                    ),
+                    ("tool.python.runtime.bytes", "1"),
+                    ("tool.python.runtime.files", "1"),
+                    ("tool.python.runtime.root", "parent-of-tool.python"),
+                    (
+                        "tool.python.runtime.sha256",
+                        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    ),
                 ] {
                     record.insert(key, value).unwrap();
+                }
+                for prefix in ["tool.node", "tool.python", "tool.codex"] {
+                    fixture_tool(&mut record, prefix);
                 }
                 for (prefix, name) in [
                     ("artifact.request", "request"),
@@ -4380,48 +4565,144 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_deep_records_are_rejected_online_and_offline() {
-        let reached_acceptance = std::cell::Cell::new(false);
-        let boundary = with_authenticated_release_bundle(|| {
-            reached_acceptance.set(true);
-            Ok(())
-        })
-        .unwrap_err()
-        .to_string();
-        assert_eq!(boundary, DEEP_AUTHORITY_ERROR);
-        assert!(!reached_acceptance.get());
-
-        let paths = Paths::new(PathBuf::from("unsigned-deep-fixture"), None);
-        let source = SourceIdentity {
-            commit: "a".repeat(40),
-            tree: "b".repeat(40),
-        };
-        let online = recorded_source(&paths).unwrap_err().to_string();
-        assert_eq!(online, DEEP_AUTHORITY_ERROR);
-        let offline = verify_records(
-            &paths,
-            Path::new("unsigned-deep-bundle"),
-            &source,
-            &"c".repeat(64),
-            1,
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        assert_eq!(offline, DEEP_AUTHORITY_ERROR);
+    fn online_and_offline_release_paths_share_the_owned_deep_verifier() {
+        let implementation = include_str!("qualification.rs");
+        let tests = implementation.find("\n#[cfg(test)]\nmod tests {").unwrap();
+        let production = &implementation[..tests];
+        let online = implementation
+            .find("pub(crate) fn recorded_source(paths: &Paths)")
+            .unwrap();
+        let offline = implementation.find("fn verify_records(").unwrap();
+        let implementation_end = implementation
+            .find("fn verify_advisory_qualification(")
+            .unwrap();
+        assert!(
+            implementation[online..offline]
+                .contains("require_authenticated_deep_qualification(paths, &root, &source)?;")
+        );
+        assert!(
+            implementation[offline..implementation_end]
+                .contains("require_authenticated_deep_qualification(paths, root, source)?;")
+        );
+        assert_eq!(
+            production
+                .matches("fn require_authenticated_deep_qualification(")
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn deep_and_mutants_attempts_are_separate_capability_types() {
         let implementation = include_str!("qualification.rs");
         let deep = implementation.find("impl DeepAttempt {").unwrap();
+        let owned = implementation.find("impl OwnedDeepAttempt {").unwrap();
         let mutants = implementation.find("impl MutantsAttempt {").unwrap();
         let constants = implementation[mutants..]
             .find("pub(crate) const BUNDLE_FILES")
             .unwrap()
             + mutants;
+        assert!(!implementation[deep..owned].contains("pass_observed_deep"));
+        assert!(implementation[owned..mutants].contains("pass_observed_deep"));
+        assert!(
+            implementation[owned..mutants]
+                .contains("_authority: crate::security_deep::DeepAuthority")
+        );
         assert!(!implementation[deep..mutants].contains("pass_observed_mutants"));
         assert!(implementation[mutants..constants].contains("pass_observed_mutants"));
+        let begin_owned = implementation
+            .find("pub(crate) fn begin_owned_security_deep(")
+            .unwrap();
+        let begin_mutants = implementation[begin_owned..]
+            .find("pub(crate) fn begin_mutants_grade(")
+            .unwrap()
+            + begin_owned;
+        assert!(
+            implementation[begin_owned..begin_mutants]
+                .contains("_authority: &crate::security_deep::DeepAuthority")
+        );
+
+        let security = include_str!("security_deep.rs");
+        let security_tests = security.find("#[cfg(test)]").unwrap();
+        assert_eq!(
+            security[..security_tests]
+                .matches("DeepAuthority::new()")
+                .count(),
+            1
+        );
+        let token = security.find("pub(crate) struct DeepAuthority {").unwrap();
+        let token_end = security[token..]
+            .find("\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
+            .unwrap()
+            + token;
+        let token_definition = &security[token..token_end];
+        assert!(token_definition.contains("\n    _private: (),"));
+        assert!(token_definition.contains("\n    fn new() -> Self"));
+        assert!(!token_definition.contains("Clone"));
+
+        let run = security.find("fn run_owned(paths: &Paths)").unwrap();
+        let after_run = security[run..].find("\nfn begin(").unwrap() + run;
+        let run_body = &security[run..after_run];
+        assert_eq!(run_body.matches("DeepAuthority::new()").count(), 1);
+        assert_eq!(
+            run_body
+                .matches("qualification::begin_owned_security_deep(paths, &authority)")
+                .count(),
+            1
+        );
+        assert_eq!(
+            run_body
+                .matches(".pass_observed_deep(authority, &fields, artifacts)")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn owned_deep_replays_copied_artifacts_before_committing_pass() {
+        let implementation = include_str!("qualification.rs");
+        let owned = implementation.find("impl OwnedDeepAttempt {").unwrap();
+        let end = implementation[owned..]
+            .find("impl MutantsAttempt {")
+            .unwrap()
+            + owned;
+        let body = &implementation[owned..end];
+
+        let copy = body.find("write_new_file(&path, bytes)?;").unwrap();
+        let replay = body.find("crate::security_deep::verify_sealed(").unwrap();
+        let compare = body
+            .find("require_external_fields(&record, &derived)?;")
+            .unwrap();
+        let commit = body
+            .find("commit_record(&self.paths, Kind::CodexSecurityDeep, &record)")
+            .unwrap();
+        assert!(copy < replay && replay < compare && compare < commit);
+        assert_eq!(
+            body.matches("crate::security_deep::verify_sealed(").count(),
+            1
+        );
+        assert_eq!(
+            body.matches("commit_record(&self.paths, Kind::CodexSecurityDeep, &record)")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn owned_deep_cleans_scratch_before_minting_pass() {
+        let security = include_str!("security_deep.rs");
+        let run = security.find("fn run_owned(paths: &Paths)").unwrap();
+        let end = security[run..].find("\nfn reserve_scratch(").unwrap() + run;
+        let body = &security[run..end];
+        let transaction = body.find("finalize_owned_transaction(").unwrap();
+        let cleanup = body.find("|| remove_scratch(&scratch)").unwrap();
+        let pass = body
+            .find("|| attempt.pass_observed_deep(authority, &fields, artifacts)")
+            .unwrap();
+        assert!(
+            transaction < cleanup && cleanup < pass,
+            "PASS preceded the fallible scratch-cleanup transaction"
+        );
     }
 
     #[test]
@@ -4437,6 +4718,81 @@ mod tests {
         let mut record = complete_record(Kind::Model);
         record.insert("result.claimed-by-prose", PASS).unwrap();
         assert!(validate_record(&record, Kind::Model).is_err());
+
+        let mut record = complete_record(Kind::CodexSecurityDeep);
+        record.fields.remove("tool.python.runtime.sha256");
+        assert!(validate_record(&record, Kind::CodexSecurityDeep).is_err());
+
+        for field in [
+            "tool.codex.runtime.bytes",
+            "tool.codex.runtime.files",
+            "tool.codex.runtime.root",
+            "tool.codex.runtime.sha256",
+        ] {
+            let mut record = complete_record(Kind::CodexSecurityDeep);
+            record.fields.remove(field);
+            assert!(
+                validate_record(&record, Kind::CodexSecurityDeep).is_err(),
+                "missing Codex runtime field {field} was accepted"
+            );
+        }
+
+        let mut record = complete_record(Kind::CodexSecurityDeep);
+        record
+            .insert("execution.claimed-by-provider", PASS)
+            .unwrap();
+        assert!(validate_record(&record, Kind::CodexSecurityDeep).is_err());
+    }
+
+    #[test]
+    fn every_forged_owned_deep_authority_field_is_rejected() {
+        let record = complete_record(Kind::CodexSecurityDeep);
+        let expected: Vec<(String, String)> = record
+            .fields
+            .iter()
+            .filter(|(key, _)| {
+                matches!(
+                    key.as_str(),
+                    "authentication.channel" | "environment.policy"
+                ) || key.starts_with("execution.")
+                    || key.starts_with("findings.")
+                    || key.starts_with("scan.")
+                    || key.starts_with("tool.codex-security.")
+                    || key.starts_with("tool.node.")
+                    || key.starts_with("tool.python.")
+                    || key.starts_with("tool.codex.")
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        assert_eq!(expected.len(), 45);
+        require_external_fields(&record, &expected).unwrap();
+
+        for (key, _) in &expected {
+            let mut forged = record.clone();
+            forged.fields.insert(key.clone(), "forged".to_string());
+            assert!(
+                require_external_fields(&forged, &expected).is_err(),
+                "forged owned Deep field `{key}` was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn qualification_v5_is_rejected_even_with_its_own_valid_checksum() {
+        let rendered = complete_record(Kind::Mutation).render();
+        let fields_start = rendered.find('\n').unwrap() + 1;
+        let checksum_start = rendered.rfind("checksum.sha256=").unwrap();
+        let body = format!(
+            "wizard-qualification-v5\n{}",
+            &rendered[fields_start..checksum_start]
+        );
+        let old = format!(
+            "{body}checksum.sha256={}\n",
+            sha256::hex(&sha256::digest(body.as_bytes()))
+        );
+
+        let error = parse_record(&old).unwrap_err().to_string();
+        assert!(error.contains("no supported header"), "{error}");
     }
 
     #[test]

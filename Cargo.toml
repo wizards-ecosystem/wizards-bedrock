@@ -130,6 +130,9 @@ syn = { version = "2", features = ["full", "visit"] }
 # `winapi` backend uses no procedural macros, which the API audit forbids in the
 # active graph (D-275); the modern `windows` crate would pull them in.
 command-group = "=5.0.1"
+# Safe GetFileInformationByHandle access keeps credential identity checks out of
+# xtask's unsafe-forbidden source; its only dependency is already locked.
+winapi-util = "=0.1.11"
 
 # Host-only verification. D-242 admits `proptest` in the five pure libraries
 # that state measured generated-input reach; `shuttle` remains confined to

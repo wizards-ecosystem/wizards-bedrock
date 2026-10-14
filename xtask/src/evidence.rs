@@ -13,7 +13,7 @@ use crate::cargo::Profile;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v9";
+const FORMAT: &str = "wizard-evidence-v10";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -2189,6 +2189,17 @@ mod tests {
         assert_eq!(parse_manifest(&rendered).unwrap(), record);
         assert!(parse_manifest(rendered.trim_end()).is_err());
         assert!(parse_manifest(&format!("{FORMAT}\nz.last=two\na.first=one\n")).is_err());
+    }
+
+    #[test]
+    fn evidence_v9_is_rejected_even_when_its_fields_are_canonical() {
+        let mut record = Record::default();
+        record.insert("a.first", "one").unwrap();
+        record.insert("z.last", "two").unwrap();
+        let old = record.render().replacen(FORMAT, "wizard-evidence-v9", 1);
+
+        let error = parse_manifest(&old).unwrap_err().to_string();
+        assert!(error.contains("no supported format header"), "{error}");
     }
 
     #[test]

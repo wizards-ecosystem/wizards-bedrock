@@ -152,6 +152,22 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("xtask/src/qemu.rs", "qemu::RunVars"),
     ("xtask/src/qemu.rs", "qemu::SerialChannel"),
     ("xtask/src/qemu.rs", "qemu::tests::QemuFixture"),
+    (
+        "xtask/src/security_deep.rs",
+        "security_deep::PrivateCodexCredential",
+    ),
+    (
+        "xtask/src/security_deep/config_tests.rs",
+        "security_deep::config_tests::Fixture",
+    ),
+    (
+        "xtask/src/security_deep/config_tests.rs",
+        "security_deep::config_tests::ReservedRoot",
+    ),
+    (
+        "xtask/src/security_deep/protocol_tests.rs",
+        "security_deep::protocol_tests::Fixture",
+    ),
 ];
 
 struct ReviewedDropProducer {
@@ -323,6 +339,34 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "create",
         implemented_trait: None,
         produced: "qemu::tests::QemuFixture",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/security_deep.rs",
+        owner: "security_deep::PrivateCodexCredential",
+        member: "new",
+        implemented_trait: None,
+        produced: "security_deep::PrivateCodexCredential",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/security_deep/config_tests.rs",
+        owner: "security_deep::config_tests::Fixture",
+        member: "new",
+        implemented_trait: None,
+        produced: "security_deep::config_tests::Fixture",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/security_deep/config_tests.rs",
+        owner: "security_deep::config_tests::ReservedRoot",
+        member: "new",
+        implemented_trait: None,
+        produced: "security_deep::config_tests::ReservedRoot",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/security_deep/protocol_tests.rs",
+        owner: "security_deep::protocol_tests::Fixture",
+        member: "new",
+        implemented_trait: None,
+        produced: "security_deep::protocol_tests::Fixture",
     },
 ];
 

@@ -14,6 +14,73 @@ pub(crate) fn parse_json(bytes: &[u8], label: &str) -> Result<JsonValue> {
     Ok(value)
 }
 
+/// Render one deterministic, compact JSON value.
+pub(crate) fn render_json(value: &JsonValue) -> Result<String> {
+    let mut rendered = String::new();
+    render_value(value, &mut rendered, 0)?;
+    Ok(rendered)
+}
+
+fn render_value(value: &JsonValue, rendered: &mut String, depth: usize) -> Result<()> {
+    ensure!(depth <= 128, "rendered JSON nesting is excessive");
+    match value {
+        JsonValue::Null => rendered.push_str("null"),
+        JsonValue::Bool(value) => rendered.push_str(if *value { "true" } else { "false" }),
+        JsonValue::Number(number) => {
+            let parsed = parse_json(number.as_bytes(), "rendered JSON number")?;
+            ensure!(
+                matches!(&parsed, JsonValue::Number(parsed) if parsed == number),
+                "rendered JSON number is not an isolated number"
+            );
+            rendered.push_str(number);
+        }
+        JsonValue::String(string) => render_string(string, rendered),
+        JsonValue::Array(array) => {
+            rendered.push('[');
+            for (index, value) in array.iter().enumerate() {
+                if index != 0 {
+                    rendered.push(',');
+                }
+                render_value(value, rendered, depth + 1)?;
+            }
+            rendered.push(']');
+        }
+        JsonValue::Object(object) => {
+            rendered.push('{');
+            for (index, (name, value)) in object.iter().enumerate() {
+                if index != 0 {
+                    rendered.push(',');
+                }
+                render_string(name, rendered);
+                rendered.push(':');
+                render_value(value, rendered, depth + 1)?;
+            }
+            rendered.push('}');
+        }
+    }
+    Ok(())
+}
+
+fn render_string(value: &str, rendered: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    rendered.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => rendered.push_str("\\\""),
+            '\\' => rendered.push_str("\\\\"),
+            character if character <= '\u{001f}' => {
+                let scalar = u32::from(character) as usize;
+                rendered.push_str("\\u00");
+                rendered.push(char::from(HEX[scalar >> 4]));
+                rendered.push(char::from(HEX[scalar & 0xf]));
+            }
+            character => rendered.push(character),
+        }
+    }
+    rendered.push('"');
+}
+
 pub(crate) fn json_object<'a>(
     value: &'a JsonValue,
     label: &str,
@@ -115,7 +182,10 @@ impl<'a> JsonParser<'a> {
     }
 
     fn whitespace(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
+        while self
+            .peek()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             self.offset += 1;
         }
     }
@@ -350,5 +420,86 @@ impl<'a> JsonParser<'a> {
         Ok(std::str::from_utf8(&self.bytes[start..self.offset])
             .with_context(|| format!("{} number is not UTF-8", self.label))?
             .to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rendered_json_is_compact_sorted_and_round_trips() {
+        let value = JsonValue::Object(BTreeMap::from([
+            (
+                "z".to_string(),
+                JsonValue::Array(vec![
+                    JsonValue::Null,
+                    JsonValue::Bool(true),
+                    JsonValue::Number("-12.5e+2".to_string()),
+                    JsonValue::Bool(false),
+                ]),
+            ),
+            ("a".to_string(), JsonValue::String("value".to_string())),
+        ]));
+
+        let rendered = render_json(&value).unwrap();
+        assert_eq!(rendered, r#"{"a":"value","z":[null,true,-12.5e+2,false]}"#);
+        assert_eq!(
+            parse_json(rendered.as_bytes(), "rendered JSON").unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn rendered_strings_escape_delimiters_controls_and_preserve_unicode() {
+        let controls: String = (0..=0x1f).map(char::from).collect();
+        let value = format!("C:\\scan\\\"quoted\"{controls}雪");
+        let rendered = render_json(&JsonValue::String(value.clone())).unwrap();
+
+        assert!(rendered.contains(r#"C:\\scan\\\"quoted\""#));
+        for scalar in 0..=0x1f {
+            assert!(
+                rendered.contains(&format!("\\u{scalar:04x}")),
+                "control U+{scalar:04X} was not escaped"
+            );
+        }
+        assert_eq!(
+            parse_json(rendered.as_bytes(), "rendered string").unwrap(),
+            JsonValue::String(value)
+        );
+    }
+
+    #[test]
+    fn invalid_number_lexemes_cannot_escape_the_renderer() {
+        for number in ["", " 1", "01", "1 ", "1}", "NaN", "+1"] {
+            assert!(
+                render_json(&JsonValue::Number(number.to_string())).is_err(),
+                "rendered invalid number `{number}`"
+            );
+        }
+    }
+
+    #[test]
+    fn manually_constructed_json_obeys_the_nesting_limit() {
+        let mut value = JsonValue::Null;
+        for _ in 0..130 {
+            value = JsonValue::Array(vec![value]);
+        }
+        assert!(render_json(&value).is_err());
+    }
+
+    #[test]
+    fn parser_accepts_only_the_four_json_whitespace_bytes() {
+        for bytes in [
+            b" null".as_slice(),
+            b"\tnull".as_slice(),
+            b"\rnull".as_slice(),
+            b"\nnull".as_slice(),
+        ] {
+            assert_eq!(parse_json(bytes, "whitespace").unwrap(), JsonValue::Null);
+        }
+        for bytes in [b"\x0bnull".as_slice(), b"\x0cnull".as_slice()] {
+            assert!(parse_json(bytes, "non-JSON whitespace").is_err());
+        }
     }
 }
