@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -42,6 +42,10 @@ const MAX_AUDIT_RETAINED_MARKERS: usize =
 const MAX_AUDIT_FAILURE_BYTES: usize = 1024 * 1024;
 const TOOL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TOOL_IDENTITY_BYTES: usize = 64 * 1024;
+/// Compiler binaries are streamed; valid text is retained only for the
+/// decoded-literal marker scan (D-405).
+const COMPILER_AUTHORITY_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_COMPILER_AUTHORITY_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const REGISTRY_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
@@ -1046,8 +1050,7 @@ fn reject_custom_harness_manifests(root: &Path) -> Result<()> {
         }
     }
     for manifest in manifests {
-        let text = std::fs::read_to_string(&manifest)
-            .with_context(|| format!("reading {}", manifest.display()))?;
+        let text = read_bounded_authority_text(&manifest, "API audit manifest")?;
         ensure!(
             !text.contains("harness") && !text.contains("\\u") && !text.contains("\\U"),
             "{} contains a custom-harness or encoded TOML key outside the API audit's target model",
@@ -1371,12 +1374,7 @@ fn validate_workspace_build_script(root: &Path, package: &str, target: &CargoTar
         target.relative.display()
     );
     let path = root.join(&target.relative);
-    let source = std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "reading API audit build script {}",
-            target.relative.display()
-        )
-    })?;
+    let source = read_bounded_authority_text(&path, "API audit build script")?;
     let syntax = syn::parse_file(&source).with_context(|| {
         format!(
             "parsing API audit build script {}",
@@ -1609,8 +1607,7 @@ impl Inventory {
                 .strip_prefix(root)
                 .with_context(|| format!("{} is outside the audit root", path.display()))?
                 .to_path_buf();
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let text = read_bounded_authority_text(&path, "API audit workspace source")?;
             ensure!(
                 !contains_diagnostic_marker(&text).with_context(|| {
                     format!(
@@ -2058,8 +2055,8 @@ fn entry_contract_use(
 
 fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
     let relative = Path::new("wost/src/boot/mod.rs");
-    let source = std::fs::read_to_string(root.join(relative))
-        .with_context(|| format!("reading {}", relative.display()))?;
+    let source =
+        read_bounded_authority_text(&root.join(relative), "API audit wost entry-contract source")?;
     let syntax =
         syn::parse_file(&source).with_context(|| format!("parsing {}", relative.display()))?;
     let candidates = syntax
@@ -2920,8 +2917,10 @@ fn discover_module_contexts(
     }
 
     while let Some(route) = routes.pop_front() {
-        let source = std::fs::read_to_string(root.join(&route.relative))
-            .with_context(|| format!("reading {}", route.relative.display()))?;
+        let source = read_bounded_authority_text(
+            &root.join(&route.relative),
+            "API audit routed module source",
+        )?;
         let syntax = syn::parse_file(&source)
             .with_context(|| format!("parsing {}", route.relative.display()))?;
         route_modules(
@@ -3888,8 +3887,7 @@ fn discover_macro_policies(
         let Some(context) = contexts.get(relative) else {
             continue;
         };
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {} for macro resolution", relative.display()))?;
+        let source = read_bounded_authority_text(path, "API audit macro-resolution source")?;
         let syntax = syn::parse_file(&source)
             .with_context(|| format!("parsing {} for macro resolution", relative.display()))?;
         let mut policy = MacroShadowPolicy {
@@ -5405,8 +5403,7 @@ fn reject_deprecation_suppression(root: &Path) -> Result<()> {
         collect_optional_rust_files(&directory, &mut paths)?;
     }
     for path in paths {
-        let source = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let source = read_bounded_authority_text(&path, "API audit lint-policy source")?;
         let syntax = syn::parse_file(&source)
             .with_context(|| format!("parsing {} for lint suppression", path.display()))?;
         let mut visitor = Suppression::default();
@@ -6830,8 +6827,7 @@ struct LockedRegistryPackage {
 }
 
 fn locked_registry_packages(lock: &Path) -> Result<Vec<LockedRegistryPackage>> {
-    let text =
-        std::fs::read_to_string(lock).with_context(|| format!("reading {}", lock.display()))?;
+    let text = read_bounded_authority_text(lock, "API audit Cargo.lock")?;
     ensure!(
         text.lines().any(|line| line == "version = 4"),
         "API audit requires Cargo.lock format 4"
@@ -6930,10 +6926,9 @@ fn materialize_locked_registry_source(
                 matches.len()
             );
         };
-        let bytes = std::fs::read(archive)
-            .with_context(|| format!("reading registry archive {}", archive.display()))?;
+        let digest = stream_file_digest(archive, "API audit registry archive")?;
         ensure!(
-            crate::sha256::hex(&crate::sha256::digest(&bytes)) == package.checksum,
+            crate::sha256::hex(&digest) == package.checksum,
             "cached registry archive {} does not match Cargo.lock",
             archive.display()
         );
@@ -7113,8 +7108,10 @@ fn validate_materialized_registry_package(
     package: &LockedRegistryPackage,
 ) -> Result<()> {
     let checksum_path = directory.join(".cargo-checksum.json");
-    let checksum_bytes = std::fs::read(&checksum_path)
-        .with_context(|| format!("reading {}", checksum_path.display()))?;
+    let checksum_bytes = read_bounded_authority_file(
+        &checksum_path,
+        "materialized registry package checksum metadata",
+    )?;
     let checksum_json = crate::json::parse_json(
         &checksum_bytes,
         "materialized registry package checksum metadata",
@@ -7177,17 +7174,12 @@ fn validate_materialized_registry_package(
             "materialized registry package has unsafe checksum path `{relative}`"
         );
         let digest = crate::json::json_string(digest, "materialized registry file checksum")?;
-        let bytes = std::fs::read(directory.join(relative))
-            .with_context(|| format!("reading materialized registry file `{relative}`"))?;
+        let path = directory.join(relative);
+        let actual = stream_marker_free_digest(&path, "authenticated registry compiler input")?;
         ensure!(
-            crate::sha256::hex(&crate::sha256::digest(&bytes)) == digest,
+            crate::sha256::hex(&actual) == digest,
             "materialized registry file `{relative}` differs from its authenticated archive"
         );
-        reject_authority_diagnostic_marker(
-            &directory.join(relative),
-            &bytes,
-            "authenticated registry compiler input",
-        )?;
     }
     Ok(())
 }
@@ -7338,11 +7330,9 @@ fn snapshot_file(
         .strip_prefix(root)
         .with_context(|| format!("{} is outside the source snapshot", path.display()))?
         .to_path_buf();
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let digest = stream_file_digest(path, "API audit snapshot file")?;
     ensure!(
-        snapshot
-            .insert(relative.clone(), crate::sha256::digest(&bytes))
-            .is_none(),
+        snapshot.insert(relative.clone(), digest).is_none(),
         "{} occurs twice in the source snapshot",
         relative.display()
     );
@@ -7361,16 +7351,108 @@ fn snapshot_marker_free_file(
         .strip_prefix(root)
         .with_context(|| format!("{} is outside the {label} snapshot", path.display()))?
         .to_path_buf();
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    reject_authority_diagnostic_marker(path, &bytes, label)?;
+    let digest = stream_marker_free_digest(path, label)?;
     ensure!(
-        snapshot
-            .insert(relative.clone(), crate::sha256::digest(&bytes))
-            .is_none(),
+        snapshot.insert(relative.clone(), digest).is_none(),
         "{} occurs twice in the {label} snapshot",
         relative.display()
     );
     Ok(())
+}
+
+fn stream_marker_free_digest(path: &Path, label: &str) -> Result<[u8; 32]> {
+    stream_marker_free_digest_with_limit(path, label, MAX_COMPILER_AUTHORITY_TEXT_BYTES)
+}
+
+fn stream_marker_free_digest_with_limit(
+    path: &Path,
+    label: &str,
+    maximum_text_bytes: usize,
+) -> Result<[u8; 32]> {
+    let mut file = crate::mutation_workspace::open_real_file(path, label)?;
+    let mut hasher = crate::sha256::Hasher::new();
+    let mut buffer = [0u8; COMPILER_AUTHORITY_BUFFER_BYTES];
+    let mut marker_window = Vec::with_capacity(COMPILER_AUTHORITY_BUFFER_BYTES + MARKER.len());
+    let mut utf8_window = Vec::with_capacity(COMPILER_AUTHORITY_BUFFER_BYTES + 3);
+    let mut text = Vec::new();
+    let mut valid_utf8 = true;
+    let mut text_oversized = false;
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        let bytes = &buffer[..read];
+        hasher
+            .update(bytes)
+            .with_context(|| format!("hashing {}", path.display()))?;
+
+        marker_window.extend_from_slice(bytes);
+        ensure!(
+            !bytes_contain_diagnostic_marker(&marker_window),
+            "{label} {} contains the API audit's reserved diagnostic marker",
+            path.display()
+        );
+        let retained = MARKER.len().min(marker_window.len());
+        let retained_start = marker_window.len() - retained;
+        marker_window.copy_within(retained_start.., 0);
+        marker_window.truncate(retained);
+
+        if valid_utf8 {
+            utf8_window.extend_from_slice(bytes);
+            match std::str::from_utf8(&utf8_window) {
+                Ok(_) => utf8_window.clear(),
+                Err(error) if error.error_len().is_none() => {
+                    let valid = error.valid_up_to();
+                    utf8_window.drain(..valid);
+                    ensure!(
+                        utf8_window.len() <= 3,
+                        "UTF-8 validation retained more than one incomplete scalar"
+                    );
+                }
+                Err(_) => {
+                    valid_utf8 = false;
+                    utf8_window.clear();
+                    text.clear();
+                }
+            }
+            if valid_utf8 && !text_oversized {
+                let next = text
+                    .len()
+                    .checked_add(bytes.len())
+                    .context("compiler authority text length overflowed")?;
+                if next <= maximum_text_bytes {
+                    text.extend_from_slice(bytes);
+                } else {
+                    text_oversized = true;
+                    text.clear();
+                }
+            }
+        }
+    }
+
+    if valid_utf8 && !utf8_window.is_empty() {
+        valid_utf8 = false;
+        text.clear();
+    }
+    if valid_utf8 {
+        ensure!(
+            !text_oversized,
+            "{label} {} is valid UTF-8 beyond its {maximum_text_bytes}-byte semantic scan ceiling",
+            path.display()
+        );
+        reject_authority_diagnostic_marker(path, &text, label)?;
+    } else {
+        ensure!(
+            path.extension().is_none_or(|extension| extension != "rs"),
+            "Rust compiler input {} is not UTF-8",
+            path.display()
+        );
+    }
+    Ok(hasher.finish())
 }
 
 fn snapshot_marker_free_tree(
@@ -7687,11 +7769,23 @@ struct CompilerInputAuthority {
 }
 
 fn digest_compiler_executable(path: &Path, label: &str) -> Result<[u8; 32]> {
-    let file =
-        std::fs::File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    stream_file_digest(path, label)
+}
+
+fn stream_file_digest(path: &Path, label: &str) -> Result<[u8; 32]> {
+    let file = crate::mutation_workspace::open_real_file(path, label)?;
     let (_, digest) = crate::sha256::digest_reader(file)
         .with_context(|| format!("reading {label} {}", path.display()))?;
     Ok(digest)
+}
+
+fn read_bounded_authority_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    crate::qualification::read_bounded_file(path, MAX_COMPILER_AUTHORITY_TEXT_BYTES as u64, label)
+}
+
+fn read_bounded_authority_text(path: &Path, label: &str) -> Result<String> {
+    String::from_utf8(read_bounded_authority_file(path, label)?)
+        .with_context(|| format!("{label} {} is not UTF-8", path.display()))
 }
 
 fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
@@ -8254,6 +8348,7 @@ fn cargo_arguments(plan: &CompilationPlan) -> Vec<String> {
         args.push("--no-run".to_string());
     }
     args.extend([
+        "--jobs=1".to_string(),
         "--offline".to_string(),
         "--locked".to_string(),
         "--message-format=json-diagnostic-short".to_string(),
@@ -9454,7 +9549,9 @@ dependencies = [
                 b"fixed codegen backend".as_slice(),
             ),
         ] {
-            std::fs::write(path, format!("hostile {MARKER}0")).expect("inject compiler marker");
+            let mut hostile = format!("hostile {MARKER}0").into_bytes();
+            hostile.push(0xff);
+            std::fs::write(path, hostile).expect("inject compiler marker");
             let error =
                 compiler_input_snapshot(&root, &cargo, &compiler, &targets).expect_err(label);
             assert!(
@@ -9509,9 +9606,10 @@ dependencies = [
         let args = cargo_arguments(&plan);
 
         assert_eq!(
-            &args[..4],
+            &args[..5],
             [
                 "check",
+                "--jobs=1",
                 "--offline",
                 "--locked",
                 "--message-format=json-diagnostic-short"
@@ -9521,6 +9619,32 @@ dependencies = [
         assert!(
             args.windows(2)
                 .any(|args| args == ["--target", "fixture-host"])
+        );
+    }
+
+    #[test]
+    fn compiler_graphs_are_serialized_at_the_owned_cargo_boundary() {
+        const PACKAGES: &[&str] = &["fixture"];
+        let pass = gate::CargoPass {
+            name: "fixture",
+            packages: PACKAGES,
+            target: None,
+            features: None,
+        };
+        let plan = CompilationPlan {
+            pass,
+            target: "fixture-host".to_string(),
+            kind: RootKind::Production,
+            mode: CompilationMode::RegisteredPass,
+        };
+
+        assert_eq!(
+            cargo_arguments(&plan)
+                .iter()
+                .filter(|argument| argument.as_str() == "--jobs=1")
+                .count(),
+            1,
+            "each API-audit Cargo graph must own one single-job scheduling bound"
         );
     }
 
@@ -14718,6 +14842,203 @@ fn main() {}
             !capture.contains("std::fs::read(") && !revalidation.contains("std::fs::read("),
             "compiler identity still allocates an entire executable"
         );
+    }
+
+    #[test]
+    fn compiler_input_authority_files_are_streamed_instead_of_allocated_whole() {
+        let source = include_str!("api.rs");
+        let boundary = source
+            .split_once("fn snapshot_marker_free_file(")
+            .and_then(|(_, source)| source.split_once("fn snapshot_marker_free_tree("))
+            .map(|(source, _)| source)
+            .expect("compiler authority file snapshot boundary");
+
+        assert!(
+            boundary.contains("stream_marker_free_digest(path, label)?"),
+            "compiler authority snapshot does not use its streaming authenticator"
+        );
+        assert!(
+            !boundary.contains("std::fs::read("),
+            "compiler authority snapshot still allocates a whole input file"
+        );
+    }
+
+    #[test]
+    fn api_authority_has_no_unbounded_production_file_reads() {
+        let production = include_str!("api.rs")
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("API audit production boundary");
+
+        assert!(
+            !production.contains("std::fs::read("),
+            "API audit production still contains an unbounded byte read"
+        );
+        assert!(
+            !production.contains("std::fs::read_to_string("),
+            "API audit production still contains an unbounded text read"
+        );
+    }
+
+    #[test]
+    fn source_and_cargo_snapshots_stream_plain_digests() {
+        let source = include_str!("api.rs");
+        let boundary = source
+            .split_once("fn snapshot_file(")
+            .and_then(|(_, source)| source.split_once("fn snapshot_marker_free_file("))
+            .map(|(source, _)| source)
+            .expect("plain snapshot file boundary");
+
+        assert!(
+            boundary.contains("stream_file_digest(path, \"API audit snapshot file\")?"),
+            "plain source and Cargo snapshots do not stream their digest"
+        );
+    }
+
+    #[test]
+    fn registry_archives_are_hashed_as_streams() {
+        let source = include_str!("api.rs");
+        let boundary = source
+            .split_once("fn materialize_locked_registry_source(")
+            .and_then(|(_, source)| source.split_once("fn registry_roots("))
+            .map(|(source, _)| source)
+            .expect("registry archive materialization boundary");
+
+        assert!(
+            boundary.contains("stream_file_digest(archive, \"API audit registry archive\")?"),
+            "registry archives do not stream their authenticated digest"
+        );
+    }
+
+    #[test]
+    fn registry_checksum_metadata_has_a_fixed_allocation_ceiling() {
+        let source = include_str!("api.rs");
+        let boundary = source
+            .split_once("fn validate_materialized_registry_package(")
+            .and_then(|(_, source)| source.split_once("fn collect_materialized_files("))
+            .map(|(source, _)| source)
+            .expect("materialized registry validation boundary");
+
+        assert!(
+            boundary.contains("read_bounded_authority_file("),
+            "registry checksum metadata has no fixed allocation ceiling"
+        );
+    }
+
+    #[test]
+    fn authenticated_registry_files_stream_digest_and_marker_checks() {
+        let source = include_str!("api.rs");
+        let boundary = source
+            .split_once("fn validate_materialized_registry_package(")
+            .and_then(|(_, source)| source.split_once("fn collect_materialized_files("))
+            .map(|(source, _)| source)
+            .expect("materialized registry validation boundary");
+
+        assert!(
+            boundary.contains(
+                "stream_marker_free_digest(&path, \"authenticated registry compiler input\")?"
+            ),
+            "authenticated registry inputs do not combine streamed digest and marker checks"
+        );
+    }
+
+    #[test]
+    fn authority_semantic_reads_enforce_a_fixed_allocation_ceiling() {
+        let root = fixture("");
+        let path = root.join("oversized-authority.txt");
+        let file = std::fs::File::create(&path).expect("create oversized authority fixture");
+        file.set_len(MAX_COMPILER_AUTHORITY_TEXT_BYTES as u64 + 1)
+            .expect("size oversized authority fixture");
+
+        let result = read_bounded_authority_text(&path, "test compiler authority");
+        assert!(
+            result.is_err(),
+            "oversized semantic authority must fail before allocation"
+        );
+        let error = result.expect_err("the oversized authority result was checked above");
+        assert!(format!("{error:#}").contains("allocation limit"));
+
+        std::fs::remove_dir_all(root).expect("remove authority allocation fixture");
+    }
+
+    #[test]
+    fn streamed_compiler_authority_preserves_digest_identity() {
+        let root = fixture("");
+        let authority = root.join("compiler-runtime.txt");
+        let bytes = b"marker-free compiler authority";
+        std::fs::write(&authority, bytes).expect("write compiler authority");
+        assert_eq!(
+            stream_marker_free_digest(&authority, "test compiler authority")
+                .expect("stream compiler authority"),
+            crate::sha256::digest(bytes)
+        );
+
+        std::fs::remove_dir_all(root).expect("remove compiler authority digest fixture");
+    }
+
+    #[test]
+    fn streamed_compiler_authority_admits_marker_free_non_rust_binary() {
+        let root = fixture("");
+        let binary = root.join("compiler-runtime.dll");
+        let bytes = [0xff, 1, 2, 3, 4, 5];
+        std::fs::write(&binary, bytes).expect("write binary compiler authority");
+
+        assert!(
+            stream_marker_free_digest_with_limit(&binary, "test compiler authority", 2).is_ok(),
+            "marker-free non-Rust binary compiler authority must remain admissible"
+        );
+
+        std::fs::remove_dir_all(root).expect("remove binary compiler authority fixture");
+    }
+
+    #[test]
+    fn streamed_compiler_authority_accepts_utf8_split_across_chunks() {
+        let root = fixture("");
+        let source = root.join("split-utf8.rs");
+        let mut bytes = b"//".to_vec();
+        bytes.resize(COMPILER_AUTHORITY_BUFFER_BYTES - 1, b'x');
+        bytes.extend_from_slice("é\n".as_bytes());
+        std::fs::write(&source, &bytes).expect("write split UTF-8 compiler authority");
+
+        assert_eq!(
+            stream_marker_free_digest(&source, "test compiler authority")
+                .expect("stream valid UTF-8 split across chunks"),
+            crate::sha256::digest(&bytes)
+        );
+
+        std::fs::remove_dir_all(root).expect("remove split UTF-8 compiler authority fixture");
+    }
+
+    #[test]
+    fn streamed_compiler_authority_rejects_oversized_valid_utf8() {
+        let root = fixture("");
+        let text = root.join("compiler-runtime.txt");
+        std::fs::write(&text, b"valid text").expect("write text compiler authority");
+        let oversized =
+            stream_marker_free_digest_with_limit(&text, "test compiler authority", b"valid".len())
+                .expect_err("oversized valid text must fail closed");
+        assert!(format!("{oversized:#}").contains("semantic scan ceiling"));
+
+        std::fs::remove_dir_all(root).expect("remove text compiler authority fixture");
+    }
+
+    #[test]
+    fn streamed_compiler_authority_rejects_cross_chunk_raw_markers() {
+        let root = fixture("");
+        let marked = root.join("marked-runtime.dll");
+        let mut marked_bytes = vec![b'x'; COMPILER_AUTHORITY_BUFFER_BYTES - 2];
+        marked_bytes.extend_from_slice(MARKER.as_bytes());
+        marked_bytes.extend_from_slice(b"7\xff");
+        std::fs::write(&marked, marked_bytes).expect("write marked compiler authority");
+        let marked = stream_marker_free_digest_with_limit(
+            &marked,
+            "test compiler authority",
+            MAX_COMPILER_AUTHORITY_TEXT_BYTES,
+        )
+        .expect_err("a cross-chunk raw marker must be refused");
+        assert!(format!("{marked:#}").contains("reserved diagnostic marker"));
+
+        std::fs::remove_dir_all(root).expect("remove marked compiler authority fixture");
     }
 
     #[test]

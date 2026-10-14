@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1869;
+pub const NEXT_MUTATION_ID: u16 = 1882;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -12362,8 +12362,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1090,
         file: "xtask/src/api.rs",
-        find: "        reject_authority_diagnostic_marker(\n            &directory.join(relative),\n            &bytes,\n            \"authenticated registry compiler input\",\n        )?;",
-        replace: "        let _unchecked_registry_marker = (&bytes, relative);",
+        find: "        let actual = stream_marker_free_digest(&path, \"authenticated registry compiler input\")?;",
+        replace: "        let actual = stream_file_digest(&path, \"authenticated registry compiler input\")?;",
         breaks: "checksum-authenticated registry source can mint a reserved compiler diagnostic marker",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -12406,8 +12406,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1094,
         file: "xtask/src/api.rs",
-        find: "    reject_authority_diagnostic_marker(path, &bytes, label)?;",
-        replace: "    if label != \"compiler target library authority\" {\n        reject_authority_diagnostic_marker(path, &bytes, label)?;\n    }",
+        find: "        ensure!(\n            !bytes_contain_diagnostic_marker(&marker_window),\n            \"{label} {} contains the API audit's reserved diagnostic marker\",\n            path.display()\n        );",
+        replace: "        ensure!(\n            label == \"compiler target library authority\"\n                || !bytes_contain_diagnostic_marker(&marker_window),\n            \"{label} {} contains the API audit's reserved diagnostic marker\",\n            path.display()\n        );",
         breaks: "precompiled target-library metadata is digested without rejecting a reserved diagnostic marker",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13033,7 +13033,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1151,
         file: "xtask/src/api.rs",
-        find: "            crate::sha256::hex(&crate::sha256::digest(&bytes)) == digest,\n            \"materialized registry file `{relative}` differs from its authenticated archive\"",
+        find: "            crate::sha256::hex(&actual) == digest,\n            \"materialized registry file `{relative}` differs from its authenticated archive\"",
         replace: "            true,\n            \"materialized registry file `{relative}` differs from its authenticated archive\"",
         breaks: "tampered materialized registry bytes retain checksum-authenticated Cargo authority",
         reddens: Caught::HostTest {
@@ -20913,6 +20913,149 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::compiler_executable_identity_is_streamed_instead_of_allocated_whole",
+        },
+    },
+    Mutation {
+        id: 1869,
+        file: "xtask/src/api.rs",
+        find: "        \"--jobs=1\".to_string(),",
+        replace: "        \"--jobs=2\".to_string(),",
+        breaks: "API-audit Cargo graphs can run more than one compiler job concurrently",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::compiler_graphs_are_serialized_at_the_owned_cargo_boundary",
+        },
+    },
+    Mutation {
+        id: 1870,
+        file: "xtask/src/api.rs",
+        find: "    let digest = stream_marker_free_digest(path, label)?;",
+        replace: "    let bytes = std::fs::read(path).with_context(|| format!(\"reading {}\", path.display()))?;\n    reject_authority_diagnostic_marker(path, &bytes, label)?;\n    let digest = crate::sha256::digest(&bytes);",
+        breaks: "compiler runtime and target authority files are allocated whole before authentication",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::compiler_input_authority_files_are_streamed_instead_of_allocated_whole",
+        },
+    },
+    Mutation {
+        id: 1871,
+        file: "xtask/src/api.rs",
+        find: "fn stream_file_digest(path: &Path, label: &str) -> Result<[u8; 32]> {\n    let file = crate::mutation_workspace::open_real_file(path, label)?;\n    let (_, digest) = crate::sha256::digest_reader(file)\n        .with_context(|| format!(\"reading {label} {}\", path.display()))?;\n    Ok(digest)\n}",
+        replace: "fn stream_file_digest(path: &Path, label: &str) -> Result<[u8; 32]> {\n    let bytes = std::fs::read(path).with_context(|| format!(\"reading {label} {}\", path.display()))?;\n    Ok(crate::sha256::digest(&bytes))\n}",
+        breaks: "the shared compiler-authority digest primitive allocates every input file whole",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::api_authority_has_no_unbounded_production_file_reads",
+        },
+    },
+    Mutation {
+        id: 1872,
+        file: "xtask/src/api.rs",
+        find: "    let digest = stream_file_digest(path, \"API audit snapshot file\")?;",
+        replace: "    let bytes = std::fs::read(path).with_context(|| format!(\"reading {}\", path.display()))?;\n    let digest = crate::sha256::digest(&bytes);",
+        breaks: "source, copied-source, private-Cargo and registry snapshots allocate an input file whole",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::source_and_cargo_snapshots_stream_plain_digests",
+        },
+    },
+    Mutation {
+        id: 1873,
+        file: "xtask/src/api.rs",
+        find: "        let digest = stream_file_digest(archive, \"API audit registry archive\")?;",
+        replace: "        let bytes = std::fs::read(archive)\n            .with_context(|| format!(\"reading registry archive {}\", archive.display()))?;\n        let digest = crate::sha256::digest(&bytes);",
+        breaks: "a checksum-bound registry archive is allocated whole before authentication",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::registry_archives_are_hashed_as_streams",
+        },
+    },
+    Mutation {
+        id: 1874,
+        file: "xtask/src/api.rs",
+        find: "    let checksum_bytes = read_bounded_authority_file(\n        &checksum_path,\n        \"materialized registry package checksum metadata\",\n    )?;",
+        replace: "    let checksum_bytes = std::fs::read(&checksum_path)\n        .with_context(|| format!(\"reading {}\", checksum_path.display()))?;",
+        breaks: "registry checksum metadata has no fixed resident allocation ceiling",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::registry_checksum_metadata_has_a_fixed_allocation_ceiling",
+        },
+    },
+    Mutation {
+        id: 1875,
+        file: "xtask/src/api.rs",
+        find: "    crate::qualification::read_bounded_file(path, MAX_COMPILER_AUTHORITY_TEXT_BYTES as u64, label)",
+        replace: "    crate::qualification::read_bounded_file(\n        path,\n        (MAX_COMPILER_AUTHORITY_TEXT_BYTES as u64) * 2,\n        label,\n    )",
+        breaks: "semantic compiler-authority reads can exceed their source-controlled 8 MiB ceiling",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::authority_semantic_reads_enforce_a_fixed_allocation_ceiling",
+        },
+    },
+    Mutation {
+        id: 1876,
+        file: "xtask/src/api.rs",
+        find: "        let retained = MARKER.len().min(marker_window.len());",
+        replace: "        let retained = 0;",
+        breaks: "raw diagnostic markers split across compiler-authority chunks escape detection",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_compiler_authority_rejects_cross_chunk_raw_markers",
+        },
+    },
+    Mutation {
+        id: 1877,
+        file: "xtask/src/api.rs",
+        find: "        ensure!(\n            !text_oversized,\n            \"{label} {} is valid UTF-8 beyond its {maximum_text_bytes}-byte semantic scan ceiling\",\n            path.display()\n        );",
+        replace: "        let _unchecked_text_oversized = text_oversized;",
+        breaks: "oversized valid UTF-8 compiler authority bypasses decoded-literal marker inspection",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_compiler_authority_rejects_oversized_valid_utf8",
+        },
+    },
+    Mutation {
+        id: 1878,
+        file: "xtask/src/api.rs",
+        find: "        let actual = stream_marker_free_digest(&path, \"authenticated registry compiler input\")?;",
+        replace: "        let bytes = std::fs::read(&path)\n            .with_context(|| format!(\"reading materialized registry file `{relative}`\"))?;\n        reject_authority_diagnostic_marker(\n            &path,\n            &bytes,\n            \"authenticated registry compiler input\",\n        )?;\n        let actual = crate::sha256::digest(&bytes);",
+        breaks: "authenticated registry compiler input is allocated whole before digest and marker checks",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::authenticated_registry_files_stream_digest_and_marker_checks",
+        },
+    },
+    Mutation {
+        id: 1879,
+        file: "xtask/src/api.rs",
+        find: "    Ok(hasher.finish())",
+        replace: "    Ok(crate::sha256::digest(&[]))",
+        breaks: "streamed compiler-authority authentication returns a digest for different bytes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_compiler_authority_preserves_digest_identity",
+        },
+    },
+    Mutation {
+        id: 1880,
+        file: "xtask/src/api.rs",
+        find: "    } else {\n        ensure!(\n            path.extension().is_none_or(|extension| extension != \"rs\"),\n            \"Rust compiler input {} is not UTF-8\",\n            path.display()\n        );\n    }\n    Ok(hasher.finish())",
+        replace: "    } else {\n        ensure!(\n            false,\n            \"Rust compiler input {} is not UTF-8\",\n            path.display()\n        );\n    }\n    Ok(hasher.finish())",
+        breaks: "marker-free non-Rust binary compiler authority is rejected",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_compiler_authority_admits_marker_free_non_rust_binary",
+        },
+    },
+    Mutation {
+        id: 1881,
+        file: "xtask/src/api.rs",
+        find: "                Err(error) if error.error_len().is_none() => {",
+        replace: "                Err(error) if false && error.error_len().is_none() => {",
+        breaks: "a valid UTF-8 scalar split across compiler-authority chunks is classified as binary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::streamed_compiler_authority_accepts_utf8_split_across_chunks",
         },
     },
 ];
