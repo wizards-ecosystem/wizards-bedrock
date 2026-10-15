@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2068;
+pub const NEXT_MUTATION_ID: u16 = 2069;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -2157,8 +2157,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 187,
         file: "kernel/src/selftest.rs",
-        find: "    let Ok(mut victim) = AddressSpace::for_user() else {\n        if let Err(reason) = observer.reclaim(None) {\n            warn!(\"selftest: observer cleanup after victim-space setup refusal: {reason}\");\n        }\n        return false;\n    };",
-        replace: "    let Ok(mut victim) = AddressSpace::for_user() else {\n        let _ = observer.reclaim(None);\n        return false;\n    };",
+        find: "        let Ok(mut victim) = AddressSpace::for_user() else {\n            if let Err(reason) = observer.reclaim(None) {\n                warn!(\"selftest: observer cleanup after victim-space setup refusal: {reason}\");\n            }\n            return false;\n        };",
+        replace: "        let Ok(mut victim) = AddressSpace::for_user() else {\n            let _ = observer.reclaim(None);\n            return false;\n        };",
         breaks: "a setup refusal discards address-space cleanup",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -22030,8 +22030,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1970,
         file: "xtask/src/security_deep.rs",
-        find: "            folded.update(&length.to_be_bytes())?;\n            folded.update(&digest)?;",
-        replace: "            folded.update(&length.to_be_bytes())?;\n            let _unhashed_python_runtime_bytes = &digest;",
+        find: "            ensure!(\n                bytes <= MAX_PYTHON_RUNTIME_BYTES,\n                \"Python runtime exceeds its byte limit\"\n            );\n            folded.update(&length.to_be_bytes())?;\n            folded.update(&digest)?;",
+        replace: "            ensure!(\n                bytes <= MAX_PYTHON_RUNTIME_BYTES,\n                \"Python runtime exceeds its byte limit\"\n            );\n            folded.update(&length.to_be_bytes())?;\n            let _unhashed_python_runtime_bytes = &digest;",
         breaks: "equal-length Python runtime dependency changes do not alter the tree identity",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23079,6 +23079,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::config_tests::effective_config_schemas_and_safety_fields_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2068,
+        file: "xtask/src/security_deep.rs",
+        find: "    if identity.entries == CODEX_SYSTEM_SKILLS_ENTRIES\n        && identity.bytes == CODEX_SYSTEM_SKILLS_BYTES\n        && identity.sha256 == CODEX_SYSTEM_SKILLS_SHA256\n    {",
+        replace: "    if true {",
+        breaks: "the owned Deep qualifier accepts added user skills or changed executable system-skill bytes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::runtime_generated_system_skills_are_exact_and_user_skills_stay_closed",
         },
     },
 ];

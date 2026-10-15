@@ -1288,93 +1288,117 @@ fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool {
     const OBSERVER: u8 = 0x3c;
     const VICTIM: u8 = 0xc3;
 
-    let allocator_before = AllocatorSnapshot::capture();
-    let Ok(mut observer) = AddressSpace::for_user() else {
-        return false;
-    };
-    let Ok(mut victim) = AddressSpace::for_user() else {
-        if let Err(reason) = observer.reclaim(None) {
-            warn!("selftest: observer cleanup after victim-space setup refusal: {reason}");
-        }
-        return false;
-    };
-
-    let checked = (|| {
-        if observer.root() == victim.root() {
-            return false;
-        }
-        let (Some(mut observer_page), Some(mut victim_page)) =
-            (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
-        else {
+    // The ownership snapshots describe only this fixture. Do not let a timer
+    // hand the CPU to the cleanup worker so it can retire older zombies between
+    // those snapshots and make correct local reclamation look imbalanced.
+    let disabled = interrupt::disable();
+    let result = (|| {
+        let allocator_before = AllocatorSnapshot::capture();
+        let Ok(mut observer) = AddressSpace::for_user() else {
             return false;
         };
-        if !observer_page.zero()
-            || !observer_page.write_at(0, &[OBSERVER])
-            || !victim_page.zero()
-            || !victim_page.write_at(0, &[VICTIM])
-        {
+        let Ok(mut victim) = AddressSpace::for_user() else {
+            if let Err(reason) = observer.reclaim(None) {
+                warn!("selftest: observer cleanup after victim-space setup refusal: {reason}");
+            }
             return false;
-        }
-        let observer_physical = observer_page.address();
-        let victim_physical = victim_page.address();
-        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-        if observer.map_user(AT, observer_page.into(), flags).is_err()
-            || victim.map_user(AT, victim_page.into(), flags).is_err()
-        {
-            return false;
-        }
-        let leaves_are_distinct = observer_physical != victim_physical
-            && observer
-                .lookup(AT)
-                .is_some_and(|(physical, _)| physical == observer_physical)
-            && victim
-                .lookup(AT)
-                .is_some_and(|(physical, _)| physical == victim_physical);
-        if !leaves_are_distinct {
-            return false;
-        }
+        };
 
-        observer
-            .with_root_for_test(|| {
+        let checked = (|| {
+            if observer.root() == victim.root() {
+                return false;
+            }
+            let (Some(mut observer_page), Some(mut victim_page)) =
+                (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
+            else {
+                return false;
+            };
+            if !observer_page.zero()
+                || !observer_page.write_at(0, &[OBSERVER])
+                || !victim_page.zero()
+                || !victim_page.write_at(0, &[VICTIM])
+            {
+                return false;
+            }
+            let observer_physical = observer_page.address();
+            let victim_physical = victim_page.address();
+            let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+            if observer.map_user(AT, observer_page.into(), flags).is_err()
+                || victim.map_user(AT, victim_page.into(), flags).is_err()
+            {
+                return false;
+            }
+            let leaves_are_distinct = observer_physical != victim_physical
+                && observer
+                    .lookup(AT)
+                    .is_some_and(|(physical, _)| physical == observer_physical)
+                && victim
+                    .lookup(AT)
+                    .is_some_and(|(physical, _)| physical == victim_physical);
+            if !leaves_are_distinct {
+                return false;
+            }
+
+            observer.with_root_for_test(|| {
                 let mut byte = [0];
                 let warmed = usercopy::copy_from_user(AT, &mut byte).is_ok() && byte == [OBSERVER];
                 let warmed_translation = paging::translate(AT);
                 let warmed_leaf = observer.lookup(AT);
                 let invalidations_before = cpu::page_invalidations_for_test();
                 let removed = victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
-                let no_eviction = cpu::page_invalidations_for_test() == invalidations_before;
+                let invalidations_after = cpu::page_invalidations_for_test();
+                let no_eviction = invalidations_after == invalidations_before;
                 byte = [0];
                 let observer_unchanged = paging::translate(AT) == warmed_translation
                     && observer.lookup(AT) == warmed_leaf
                     && usercopy::copy_from_user(AT, &mut byte).is_ok()
                     && byte == [OBSERVER];
-                warmed
+                let victim_cleared = victim.lookup(AT).is_none();
+                let result = warmed
                     && warmed_translation.is_some()
                     && warmed_translation == warmed_leaf
                     && removed
-                    && victim.lookup(AT).is_none()
+                    && victim_cleared
                     && no_eviction
-                    && observer_unchanged
+                    && observer_unchanged;
+                if !result {
+                    warn!(
+                        "selftest: inactive-unmap evidence warmed={warmed} translation={} leaf-match={} removed={removed} victim-cleared={victim_cleared} invalidations={invalidations_before}->{invalidations_after} observer-unchanged={observer_unchanged}",
+                        warmed_translation.is_some(),
+                        warmed_translation == warmed_leaf,
+                    );
+                }
+                result
             })
             .unwrap_or(false)
+        })();
+
+        let observer_cleaned =
+            observer.lookup(AT).is_none() || observer.unmap(AT, PAGE_SIZE).map(drop).is_ok();
+        let victim_cleaned =
+            victim.lookup(AT).is_none() || victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
+        let observer_reclaimed = observer.reclaim(None).is_ok();
+        let victim_reclaimed = victim.reclaim(None).is_ok();
+        drop(observer);
+        drop(victim);
+        let allocator_after = AllocatorSnapshot::capture();
+        let ownership_preserved = allocator_after.has_same_ownership(&allocator_before);
+
+        let result = checked
+            && observer_cleaned
+            && victim_cleaned
+            && observer_reclaimed
+            && victim_reclaimed
+            && ownership_preserved;
+        if !result {
+            warn!(
+                "selftest: inactive-unmap cleanup checked={checked} observer-cleaned={observer_cleaned} victim-cleaned={victim_cleaned} observer-reclaimed={observer_reclaimed} victim-reclaimed={victim_reclaimed} ownership-preserved={ownership_preserved} before={allocator_before:?} after={allocator_after:?}"
+            );
+        }
+        result
     })();
-
-    let observer_cleaned =
-        observer.lookup(AT).is_none() || observer.unmap(AT, PAGE_SIZE).map(drop).is_ok();
-    let victim_cleaned =
-        victim.lookup(AT).is_none() || victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
-    let observer_reclaimed = observer.reclaim(None).is_ok();
-    let victim_reclaimed = victim.reclaim(None).is_ok();
-    drop(observer);
-    drop(victim);
-    let allocator_after = AllocatorSnapshot::capture();
-
-    checked
-        && observer_cleaned
-        && victim_cleaned
-        && observer_reclaimed
-        && victim_reclaimed
-        && allocator_after.has_same_ownership(&allocator_before)
+    disabled.restore();
+    result
 }
 
 fn bytes_cross_the_boundary_only_where_they_may() -> bool {

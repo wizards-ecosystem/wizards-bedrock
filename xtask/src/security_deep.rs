@@ -96,6 +96,11 @@ const CODEX_SHA256: &str = "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242
 const CODEX_BYTES: u64 = 334_121_776;
 const CODEX_DEFAULT_CONFIG_SHA256: &str =
     "f3172941fcf2fa607b4f079c84e3d2a3a898d98b61885e65a1e3d9f8b3453d20";
+const CODEX_SYSTEM_SKILLS_ENTRIES: u64 = 71;
+const CODEX_SYSTEM_SKILLS_BYTES: u64 = 314_050;
+const CODEX_SYSTEM_SKILLS_SHA256: &str =
+    "db27dc3f9f4018c64cd90dd7ce4b3bd51ff361aa29f8814f102418c8933f56ff";
+const MAX_CODEX_SYSTEM_SKILLS_DEPTH: usize = 16;
 const CODEX_RUNTIME_FILES: [(&str, u64, &str); 4] = [
     (
         "codex-code-mode-host.exe",
@@ -416,6 +421,13 @@ struct EffectiveConfig {
     plugins: BTreeMap<String, bool>,
     model_providers: BTreeSet<String>,
     origins: BTreeSet<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TreeIdentity {
+    entries: u64,
+    bytes: u64,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2862,13 +2874,162 @@ fn require_no_ambient_codex_inputs(private: &Path) -> Result<()> {
         read(&private.join("config.toml"), 1, "private Codex config",)?.is_empty(),
         "private Codex config changed"
     );
-    for name in ["skills", "rules", "plugins", "memories"] {
+    require_qualified_system_skills(&private.join("skills"))?;
+    for name in ["rules", "plugins", "memories"] {
         require_absent(
             &private.join(name),
             &format!("private Codex ambient {name}"),
         )?;
     }
     Ok(())
+}
+
+fn require_qualified_system_skills(root: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("inspecting private Codex system skills"),
+        Ok(metadata) => ensure!(
+            crate::mutation_workspace::metadata_is_real_directory(&metadata)
+                && !metadata_is_reparse_point(&metadata)
+                && canonical_directory(root, "private Codex system skills")? == root,
+            "private Codex system skills root is redirected"
+        ),
+    }
+    let identity = measure_qualified_system_skills(root)?;
+    ensure!(
+        codex_system_skills_identity_is_allowed(&identity),
+        "private Codex system skills differ from the qualified runtime"
+    );
+    Ok(())
+}
+
+fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentity> {
+    let mut entries = Vec::new();
+    for child in bounded_sorted_directory_entries(
+        root,
+        usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
+            .context("Codex system-skills entry limit does not fit usize")?,
+    )? {
+        collect_qualified_system_skill_entries(root, &child.path(), 0, &mut entries)?;
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    ensure!(
+        entries.len() as u64 <= CODEX_SYSTEM_SKILLS_ENTRIES,
+        "private Codex system skills exceed their entry limit"
+    );
+    let shapes: Vec<_> = entries
+        .iter()
+        .map(|(relative, _, directory)| (relative.clone(), *directory))
+        .collect();
+    let mut folded = sha256::Hasher::new();
+    let mut bytes = 0u64;
+    for (relative, path, directory) in &entries {
+        folded.update(&[u8::from(*directory)])?;
+        folded.update(&(relative.len() as u64).to_be_bytes())?;
+        folded.update(relative.as_bytes())?;
+        if !directory {
+            let remaining = CODEX_SYSTEM_SKILLS_BYTES.saturating_sub(bytes);
+            let (length, digest) = measure_file(path, remaining, "private Codex system skill")?;
+            bytes = bytes
+                .checked_add(length)
+                .context("Codex system-skills byte count overflowed")?;
+            ensure!(
+                bytes <= CODEX_SYSTEM_SKILLS_BYTES,
+                "private Codex system skills exceed their byte limit"
+            );
+            folded.update(&length.to_be_bytes())?;
+            folded.update(&digest)?;
+        }
+    }
+    let mut after = Vec::new();
+    for child in bounded_sorted_directory_entries(
+        root,
+        usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
+            .context("Codex system-skills entry limit does not fit usize")?,
+    )? {
+        collect_qualified_system_skill_entries(root, &child.path(), 0, &mut after)?;
+    }
+    after.sort_by(|left, right| left.0.cmp(&right.0));
+    ensure!(
+        after
+            .iter()
+            .map(|(relative, _, directory)| (relative.clone(), *directory))
+            .eq(shapes),
+        "private Codex system skills changed while they were measured"
+    );
+    Ok(TreeIdentity {
+        entries: entries.len() as u64,
+        bytes,
+        sha256: sha256::hex(&folded.finish()),
+    })
+}
+
+fn collect_qualified_system_skill_entries(
+    root: &Path,
+    path: &Path,
+    depth: usize,
+    entries: &mut Vec<(String, PathBuf, bool)>,
+) -> Result<()> {
+    ensure!(
+        depth <= MAX_CODEX_SYSTEM_SKILLS_DEPTH,
+        "private Codex system-skills nesting is excessive"
+    );
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting Codex system skill {}", path.display()))?;
+    ensure!(
+        !metadata.file_type().is_symlink() && !metadata_is_reparse_point(&metadata),
+        "private Codex system skills contain a redirected entry"
+    );
+    let relative = path
+        .strip_prefix(root)
+        .context("private Codex system-skills entry escaped its root")?
+        .components()
+        .map(|component| component.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .context("private Codex system-skills entry is not UTF-8")?
+        .join("/");
+    ensure!(
+        !relative.is_empty(),
+        "private Codex system-skills entry has no name"
+    );
+    let directory = crate::mutation_workspace::metadata_is_real_directory(&metadata);
+    ensure!(
+        directory || metadata.file_type().is_file(),
+        "private Codex system skills contain a special entry"
+    );
+    entries.push((relative, path.to_path_buf(), directory));
+    ensure!(
+        entries.len() as u64 <= CODEX_SYSTEM_SKILLS_ENTRIES,
+        "private Codex system skills exceed their entry limit"
+    );
+    if directory {
+        let remaining = usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
+            .context("Codex system-skills entry limit does not fit usize")?
+            .saturating_sub(entries.len());
+        for child in bounded_sorted_directory_entries(path, remaining)? {
+            collect_qualified_system_skill_entries(root, &child.path(), depth + 1, entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn codex_system_skills_identity_is_allowed(identity: &TreeIdentity) -> bool {
+    if identity.entries == CODEX_SYSTEM_SKILLS_ENTRIES
+        && identity.bytes == CODEX_SYSTEM_SKILLS_BYTES
+        && identity.sha256 == CODEX_SYSTEM_SKILLS_SHA256
+    {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        identity.entries == 3
+            && identity.bytes == 10
+            && identity.sha256 == "25c6e9a0acf5e3017e5f3b94cdfda7604cd57d14196c5a4456182275e77eb69d"
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 fn require_private_credential_projection(private: &Path) -> Result<()> {
@@ -7821,6 +7982,29 @@ mod tests {
         credential.scrub().unwrap();
         assert!(!scratch.codex_home().join("auth.json").exists());
         remove_scratch(&scratch).unwrap();
+    }
+
+    #[test]
+    fn runtime_generated_system_skills_are_exact_and_user_skills_stay_closed() {
+        let (outer, root) = private_test_root();
+        let home = root.join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("config.toml"), b"").unwrap();
+        require_no_ambient_codex_inputs(&home).unwrap();
+
+        let skill = home.join("skills").join(".system").join("test");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"qualified\n").unwrap();
+        require_no_ambient_codex_inputs(&home).unwrap();
+
+        std::fs::write(home.join("skills").join("user-skill"), b"hostile").unwrap();
+        let error = require_no_ambient_codex_inputs(&home).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("differ from the qualified runtime"),
+            "wrong system-skills drift error: {error:#}"
+        );
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
     }
 
     #[test]
