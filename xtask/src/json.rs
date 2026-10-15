@@ -146,7 +146,7 @@ pub(crate) fn require_json_fields(
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum JsonValue {
     Null,
     Bool(bool),

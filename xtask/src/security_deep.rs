@@ -94,6 +94,8 @@ const PYTHON_BYTES: u64 = 104_952;
 const CODEX_VERSION: &str = "codex-cli 0.162.0-alpha.17.2";
 const CODEX_SHA256: &str = "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e";
 const CODEX_BYTES: u64 = 334_121_776;
+const CODEX_DEFAULT_CONFIG_SHA256: &str =
+    "f3172941fcf2fa607b4f079c84e3d2a3a898d98b61885e65a1e3d9f8b3453d20";
 const CODEX_RUNTIME_FILES: [(&str, u64, &str); 4] = [
     (
         "codex-code-mode-host.exe",
@@ -2589,6 +2591,10 @@ fn run_owned(paths: &Paths) -> Result<()> {
         require_chatgpt_login(&tools.codex, &scratch, paths.root())?;
         let ambient = read_codex_config(&tools.codex, paths.root(), &scratch, &[])?;
         ensure!(
+            ambient.origins.is_empty(),
+            "private empty Codex config has an ambient origin"
+        );
+        ensure!(
             ambient.model_providers.is_empty(),
             "owned Codex Security refuses ambient custom model-provider definitions"
         );
@@ -4090,26 +4096,7 @@ fn parse_effective_config(result: &JsonValue) -> Result<EffectiveConfig> {
         json_field(result, "config", "Codex config/read result")?,
         "Codex effective config",
     )?;
-    const CONFIG_FIELDS: &[&str] = &[
-        "model",
-        "model_provider",
-        "openai_base_url",
-        "chatgpt_base_url",
-        "model_reasoning_effort",
-        "service_tier",
-        "notify",
-        "memories",
-        "features",
-        "mcp_servers",
-        "plugins",
-        "model_providers",
-    ];
-    ensure!(
-        config
-            .keys()
-            .all(|field| CONFIG_FIELDS.contains(&field.as_str())),
-        "Codex effective config schema differs"
-    );
+    require_codex_default_config(config)?;
     let origins = json_object(
         json_field(result, "origins", "Codex config/read result")?,
         "Codex config origins",
@@ -4156,6 +4143,75 @@ fn parse_effective_config(result: &JsonValue) -> Result<EffectiveConfig> {
         model_providers,
         origins,
     })
+}
+
+fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<()> {
+    let mut defaults = config.clone();
+    for field in [
+        "model",
+        "model_provider",
+        "openai_base_url",
+        "chatgpt_base_url",
+        "model_reasoning_effort",
+        "service_tier",
+        "notify",
+        "mcp_servers",
+        "plugins",
+        "model_providers",
+    ] {
+        defaults.remove(field);
+    }
+    remove_owned_config_fields(
+        &mut defaults,
+        "memories",
+        &["generate_memories", "use_memories"],
+    )?;
+    remove_owned_config_fields(&mut defaults, "features", &["memories"])?;
+    let digest = sha256::hex(&sha256::digest(
+        render_json(&JsonValue::Object(defaults))?.as_bytes(),
+    ));
+    ensure!(
+        codex_default_config_digest_is_allowed(&digest),
+        "Codex originless default config differs"
+    );
+    Ok(())
+}
+
+fn remove_owned_config_fields(
+    config: &mut BTreeMap<String, JsonValue>,
+    root: &str,
+    fields: &[&str],
+) -> Result<()> {
+    match config.get_mut(root) {
+        None | Some(JsonValue::Null) => {
+            config.remove(root);
+        }
+        Some(JsonValue::Object(object)) => {
+            for field in fields {
+                object.remove(*field);
+            }
+            if object.is_empty() {
+                config.remove(root);
+            }
+        }
+        Some(_) => bail!("Codex {root} config is not an object"),
+    }
+    Ok(())
+}
+
+fn codex_default_config_digest_is_allowed(digest: &str) -> bool {
+    if digest == CODEX_DEFAULT_CONFIG_SHA256 {
+        return true;
+    }
+    #[cfg(test)]
+    {
+        // Fake app-server fixtures intentionally project only policy-owned fields.
+        digest == "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 fn named_mcp_routes(config: &BTreeMap<String, JsonValue>) -> Result<BTreeMap<String, McpRoute>> {
@@ -4388,6 +4444,44 @@ fn require_safe_effective_config(
     ambient: &EffectiveConfig,
     inert_mcp: &Path,
 ) -> Result<()> {
+    let mut authorized_origins: BTreeSet<String> = [
+        "model_provider",
+        "openai_base_url",
+        "chatgpt_base_url",
+        "model",
+        "model_reasoning_effort",
+        "service_tier",
+        "notify",
+        "memories.generate_memories",
+        "memories.use_memories",
+        "features.memories",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    for (name, route) in &ambient.mcp_servers {
+        for field in [
+            "args",
+            "command",
+            "enabled",
+            "env_vars",
+            "environment_id",
+            "startup_timeout_sec",
+            "tool_timeout_sec",
+        ] {
+            authorized_origins.insert(format!("mcp_servers.{name}.{field}"));
+        }
+        for variable in &route.env_keys {
+            authorized_origins.insert(format!("mcp_servers.{name}.env.{variable}"));
+        }
+    }
+    for name in ambient.plugins.keys() {
+        authorized_origins.insert(format!("plugins.{name}.enabled"));
+    }
+    ensure!(
+        effective.origins.is_subset(&authorized_origins),
+        "effective Codex config has an origin not authorized by the safety overrides"
+    );
     ensure!(
         effective.model.as_deref() == Some(MODEL)
             && effective.model_provider.as_deref() == Some("openai")
@@ -4453,6 +4547,7 @@ fn require_safe_effective_config(
         "model",
         "model_reasoning_effort",
         "service_tier",
+        "notify",
         "memories.generate_memories",
         "memories.use_memories",
         "features.memories",

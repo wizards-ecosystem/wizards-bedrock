@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2066;
+pub const NEXT_MUTATION_ID: u16 = 2068;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23057,6 +23057,28 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::config_tests::config_reader_emits_exact_requests_and_accepts_only_the_supported_notification",
+        },
+    },
+    Mutation {
+        id: 2066,
+        file: "xtask/src/security_deep.rs",
+        find: "    if digest == CODEX_DEFAULT_CONFIG_SHA256 {",
+        replace: "    if true {",
+        breaks: "the owned Deep qualifier accepts changed or newly invented originless Codex defaults outside its controlled security projection",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::config_tests::effective_config_schemas_and_safety_fields_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2067,
+        file: "xtask/src/security_deep.rs",
+        find: "        effective.origins.is_subset(&authorized_origins),",
+        replace: "        effective.origins.is_subset(&effective.origins),",
+        breaks: "the owned Deep qualifier accepts configuration origins that its safety overrides did not create",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::config_tests::effective_config_schemas_and_safety_fields_fail_closed",
         },
     },
 ];

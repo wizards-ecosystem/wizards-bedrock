@@ -480,6 +480,9 @@ fn safe_config(inert_mcp: &Path, mode: &str) -> JsonValue {
     if mode == "config-extra" {
         config.insert("unexpected".to_string(), JsonValue::Null);
     }
+    if mode == "default-drift" {
+        config.insert("approval_policy".to_string(), text_value("never"));
+    }
     JsonValue::Object(config)
 }
 
@@ -498,12 +501,16 @@ fn origins(mode: &str) -> JsonValue {
         "model",
         "model_provider",
         "model_reasoning_effort",
+        "notify",
         "openai_base_url",
         "plugins.browser@openai-bundled.enabled",
         "service_tier",
     ];
     if mode == "drift-origin" {
         names.retain(|name| *name != "model");
+    }
+    if mode == "foreign-origin" {
+        names.push("approval_policy");
     }
     JsonValue::Object(
         names
@@ -690,10 +697,12 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
                 mode,
                 "result-extra"
                     | "config-extra"
+                    | "default-drift"
                     | "drift-model"
                     | "drift-plugin-enabled"
                     | "drift-mcp"
                     | "drift-origin"
+                    | "foreign-origin"
             ) {
                 issue_fault(repository, mode)?;
             }
@@ -814,7 +823,8 @@ fn config_response_correlation_and_transport_fail_closed() {
 fn effective_config_schemas_and_safety_fields_fail_closed() {
     assert_rejected(&[
         ("result-extra", "Codex config/read result"),
-        ("config-extra", "Codex effective config schema differs"),
+        ("config-extra", "Codex originless default config differs"),
+        ("default-drift", "Codex originless default config differs"),
     ]);
     for (mode, expected) in [
         ("drift-model", "model route differs"),
@@ -824,6 +834,10 @@ fn effective_config_schemas_and_safety_fields_fail_closed() {
         ),
         ("drift-mcp", "not the exact inert disabled transport"),
         ("drift-origin", "has no origin for safety field model"),
+        (
+            "foreign-origin",
+            "origin not authorized by the safety overrides",
+        ),
     ] {
         let (effective, fixture) = run_fake(mode).unwrap();
         let (ambient, _) = run_fake("ambient").unwrap();
