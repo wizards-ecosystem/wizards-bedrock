@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2062;
+pub const NEXT_MUTATION_ID: u16 = 2063;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23013,6 +23013,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "elf::tests::kpti_exit_loads_stripped_root_after_scrub_and_last_secret_access",
+        },
+    },
+    Mutation {
+        id: 2062,
+        file: "xtask/src/security_deep.rs",
+        find: "fn canonical_spelling_matches(canonical: &Path, supplied: &Path) -> bool {\n    crate::cargo::child_process_path(canonical) == crate::cargo::child_process_path(supplied)\n}",
+        replace: "fn canonical_spelling_matches(canonical: &Path, supplied: &Path) -> bool {\n    canonical == supplied\n}",
+        breaks: "the owned Deep qualifier rejects an ordinary Windows Codex home after canonicalization adds its verbatim prefix",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::an_ordinary_windows_codex_home_matches_its_canonical_verbatim_spelling",
         },
     },
 ];

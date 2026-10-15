@@ -2772,8 +2772,15 @@ fn prepare_private_codex_home(scratch: &OwnedScratch) -> Result<PrivateCodexCred
     let profile = std::env::var_os("USERPROFILE").context("USERPROFILE is not set")?;
     let supplied = PathBuf::from(profile).join(".codex");
     let live = canonical_directory(&supplied, "ChatGPT Codex home")?;
-    ensure!(live == supplied, "ChatGPT Codex home is redirected");
+    ensure!(
+        canonical_spelling_matches(&live, &supplied),
+        "ChatGPT Codex home is redirected"
+    );
     prepare_private_codex_home_from(&live, scratch)
+}
+
+fn canonical_spelling_matches(canonical: &Path, supplied: &Path) -> bool {
+    crate::cargo::child_process_path(canonical) == crate::cargo::child_process_path(supplied)
 }
 
 fn prepare_private_codex_home_from(
@@ -2864,7 +2871,10 @@ fn require_private_credential_projection(private: &Path) -> Result<()> {
     let profile = std::env::var_os("USERPROFILE").context("USERPROFILE is not set")?;
     let supplied_live = PathBuf::from(profile).join(".codex");
     let live = canonical_directory(&supplied_live, "ChatGPT Codex home")?;
-    ensure!(live == supplied_live, "ChatGPT Codex home is redirected");
+    ensure!(
+        canonical_spelling_matches(&live, &supplied_live),
+        "ChatGPT Codex home is redirected"
+    );
     let source = file_identity(&live.join("auth.json"))?;
     let projection = file_identity(&private.join("auth.json"))?;
     ensure!(
@@ -7600,6 +7610,19 @@ mod tests {
         ] {
             assert!(crate::mutants_grade::parse_utc_timestamp(rejected, "test timestamp").is_err());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_ordinary_windows_codex_home_matches_its_canonical_verbatim_spelling() {
+        let ordinary = Path::new(r"C:\Users\wizard\.codex");
+        let canonical = Path::new(r"\\?\C:\Users\wizard\.codex");
+        assert!(canonical_spelling_matches(canonical, ordinary));
+        assert!(canonical_spelling_matches(canonical, canonical));
+        assert!(!canonical_spelling_matches(
+            canonical,
+            Path::new(r"C:\Users\other\.codex")
+        ));
     }
 
     #[test]
