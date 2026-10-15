@@ -416,7 +416,17 @@ fn safe_config(inert_mcp: &Path, mode: &str) -> JsonValue {
         ),
         (
             "features".to_string(),
-            object([("memories", JsonValue::Bool(false))]),
+            object([
+                ("memories", JsonValue::Bool(false)),
+                (
+                    "network_proxy",
+                    if mode == "dependent-default-drift" {
+                        JsonValue::Bool(true)
+                    } else {
+                        JsonValue::Null
+                    },
+                ),
+            ]),
         ),
         (
             "mcp_servers".to_string(),
@@ -449,8 +459,20 @@ fn safe_config(inert_mcp: &Path, mode: &str) -> JsonValue {
         (
             "memories".to_string(),
             object([
+                ("consolidation_model", JsonValue::Null),
+                ("dedicated_tools", JsonValue::Null),
+                ("disable_on_external_context", JsonValue::Null),
+                ("dual_write", JsonValue::Null),
+                ("extract_model", JsonValue::Null),
                 ("generate_memories", JsonValue::Bool(false)),
+                ("max_raw_memories_for_consolidation", JsonValue::Null),
+                ("max_rollout_age_days", JsonValue::Null),
+                ("max_rollouts_per_startup", JsonValue::Null),
+                ("max_unused_days", JsonValue::Null),
+                ("min_rate_limit_remaining_percent", JsonValue::Null),
+                ("min_rollout_idle_hours", JsonValue::Null),
                 ("use_memories", JsonValue::Bool(false)),
+                ("version", JsonValue::Null),
             ]),
         ),
         (
@@ -698,6 +720,7 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
                 "result-extra"
                     | "config-extra"
                     | "default-drift"
+                    | "dependent-default-drift"
                     | "drift-model"
                     | "drift-plugin-enabled"
                     | "drift-mcp"
@@ -825,6 +848,10 @@ fn effective_config_schemas_and_safety_fields_fail_closed() {
         ("result-extra", "Codex config/read result"),
         ("config-extra", "Codex originless default config differs"),
         ("default-drift", "Codex originless default config differs"),
+        (
+            "dependent-default-drift",
+            "Codex features network_proxy dependent default is not null",
+        ),
     ]);
     for (mode, expected) in [
         ("drift-model", "model route differs"),

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2069;
+pub const NEXT_MUTATION_ID: u16 = 2070;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23090,6 +23090,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::runtime_generated_system_skills_are_exact_and_user_skills_stay_closed",
+        },
+    },
+    Mutation {
+        id: 2069,
+        file: "xtask/src/security_deep.rs",
+        find: "                    None | Some(JsonValue::Null) => {}\n                    Some(_) => bail!(\"Codex {root} {field} dependent default is not null\"),",
+        replace: "                    None | Some(_) => {}\n                    Some(_) => bail!(\"Codex {root} {field} dependent default is not null\"),",
+        breaks: "the owned Deep qualifier treats an active value as an inert null created by its memories-disable override",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::config_tests::effective_config_schemas_and_safety_fields_fail_closed",
         },
     },
 ];

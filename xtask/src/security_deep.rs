@@ -4328,6 +4328,29 @@ fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<
         &["generate_memories", "use_memories"],
     )?;
     remove_owned_config_fields(&mut defaults, "features", &["memories"])?;
+    // Disabling memories makes this Codex runtime project the rest of the
+    // memories schema, and its associated network feature, as explicit nulls.
+    // Normalize only those exact inert values; any active or newly introduced
+    // default remains part of the pinned full-schema digest.
+    remove_null_config_fields(
+        &mut defaults,
+        "memories",
+        &[
+            "consolidation_model",
+            "dedicated_tools",
+            "disable_on_external_context",
+            "dual_write",
+            "extract_model",
+            "max_raw_memories_for_consolidation",
+            "max_rollout_age_days",
+            "max_rollouts_per_startup",
+            "max_unused_days",
+            "min_rate_limit_remaining_percent",
+            "min_rollout_idle_hours",
+            "version",
+        ],
+    )?;
+    remove_null_config_fields(&mut defaults, "features", &["network_proxy"])?;
     let digest = sha256::hex(&sha256::digest(
         render_json(&JsonValue::Object(defaults))?.as_bytes(),
     ));
@@ -4350,6 +4373,31 @@ fn remove_owned_config_fields(
         Some(JsonValue::Object(object)) => {
             for field in fields {
                 object.remove(*field);
+            }
+            if object.is_empty() {
+                config.remove(root);
+            }
+        }
+        Some(_) => bail!("Codex {root} config is not an object"),
+    }
+    Ok(())
+}
+
+fn remove_null_config_fields(
+    config: &mut BTreeMap<String, JsonValue>,
+    root: &str,
+    fields: &[&str],
+) -> Result<()> {
+    match config.get_mut(root) {
+        None | Some(JsonValue::Null) => {
+            config.remove(root);
+        }
+        Some(JsonValue::Object(object)) => {
+            for field in fields {
+                match object.remove(*field) {
+                    None | Some(JsonValue::Null) => {}
+                    Some(_) => bail!("Codex {root} {field} dependent default is not null"),
+                }
             }
             if object.is_empty() {
                 config.remove(root);
