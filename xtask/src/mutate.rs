@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2063;
+pub const NEXT_MUTATION_ID: u16 = 2064;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23024,6 +23024,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::an_ordinary_windows_codex_home_matches_its_canonical_verbatim_spelling",
+        },
+    },
+    Mutation {
+        id: 2063,
+        file: "xtask/src/security_deep.rs",
+        find: ".lines()\n        .chain(stderr.lines())\n        .map(str::trim)",
+        replace: ".lines()\n        .map(str::trim)",
+        breaks: "the owned Deep qualifier ignores the current Codex runtime's stderr login status",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::chatgpt_login_probe_accepts_stderr_status_but_rejects_other_or_ambiguous_statuses",
         },
     },
 ];

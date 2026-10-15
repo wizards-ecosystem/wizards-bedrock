@@ -3625,12 +3625,21 @@ fn require_chatgpt_login(codex: &ToolIdentity, scratch: &OwnedScratch, root: &Pa
         "Codex ChatGPT login probe failed ({})",
         output.status
     );
-    let status = std::str::from_utf8(&output.stdout)
-        .context("Codex login status is not UTF-8")?
-        .trim();
+    require_chatgpt_login_output(&output.stdout, &output.stderr)
+}
+
+fn require_chatgpt_login_output(stdout: &[u8], stderr: &[u8]) -> Result<()> {
+    let stdout = std::str::from_utf8(stdout).context("Codex login stdout is not UTF-8")?;
+    let stderr = std::str::from_utf8(stderr).context("Codex login stderr is not UTF-8")?;
+    let statuses: Vec<_> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .filter(|line| line.starts_with("Logged in using "))
+        .collect();
     ensure!(
-        status == "Logged in using ChatGPT",
-        "owned Codex Security qualification requires ChatGPT authentication"
+        statuses.as_slice() == ["Logged in using ChatGPT"],
+        "owned Codex Security qualification requires unambiguous ChatGPT authentication"
     );
     Ok(())
 }
@@ -7623,6 +7632,19 @@ mod tests {
             canonical,
             Path::new(r"C:\Users\other\.codex")
         ));
+    }
+
+    #[test]
+    fn chatgpt_login_probe_accepts_stderr_status_but_rejects_other_or_ambiguous_statuses() {
+        require_chatgpt_login_output(b"", b"warning\nLogged in using ChatGPT\n").unwrap();
+        assert!(require_chatgpt_login_output(b"", b"Logged in using an API key\n").is_err());
+        assert!(
+            require_chatgpt_login_output(
+                b"Logged in using ChatGPT\n",
+                b"Logged in using an API key\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
