@@ -229,6 +229,13 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "arch::x86_64::paging::AddressSpace",
     },
     ReviewedDropProducer {
+        relative: "wost/src/arch/x86_64/paging.rs",
+        owner: "arch::x86_64::paging::AddressSpace",
+        member: "for_user_roots",
+        implemented_trait: None,
+        produced: "arch::x86_64::paging::AddressSpace",
+    },
+    ReviewedDropProducer {
         relative: "wost/src/arch/x86_64/usercopy.rs",
         owner: "arch::x86_64::usercopy::Window",
         member: "open",

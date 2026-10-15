@@ -13,8 +13,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::cpu;
 use super::interrupt::{self, TrapFrame};
+use super::kpti;
 use super::msr;
-use super::paging::{self, Binding, KernelStackTop, MappedStack, StackArena, TaskStackPin};
+use super::paging::{
+    self, AddressSpaceRoots, Binding, KernelStackTop, MappedStack, StackArena, TaskStackPin,
+};
 use super::xstate;
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
@@ -120,7 +123,7 @@ struct Slot {
     /// The tables to install when this thread runs, or `None` to keep the
     /// kernel's. Written only through [`bind_address_space`], which takes the
     /// evidence that the space agrees with the kernel about the higher half.
-    page_table: Option<u64>,
+    page_table: Option<AddressSpaceRoots>,
     /// Where this thread's thread-local storage begins.
     ///
     /// Saved and restored with the privilege stack, page table, and extended
@@ -531,29 +534,62 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         State::Dead => return Err(TaskError::Dead(slot)),
     }
 
+    // Revoke the old route before changing the logical current task. This
+    // also makes an NMI during the bookkeeping window fail closed rather than
+    // dispatch through the previous task's otherwise-valid route.
+    kpti::begin_route_update();
     table.slots[current].state = leaving;
     CURRENT.store(slot, Ordering::Release);
 
-    // Every switch must move `RSP0` with its thread or the next ring-3 trap can
-    // land on another thread's stack. The ring-0-only boot slot has none (D-99).
-    if table.slots[slot].stack_index.is_some() {
-        let Some(landing) = table.kernel_stack_top(slot) else {
-            panic!("a live task lost its pinned stack identity");
-        };
-        super::segment::write_kernel_stack(landing);
-    }
-
     // Every switch moves page-table and privilege-stack state together; slots
-    // without a private space use the kernel root (D-106).
-    let wanted = table.slots[slot]
-        .page_table
+    // without a private space use the kernel root (D-106). A paired slot
+    // publishes its complete route and transition RSP0 as the same
+    // interrupt-excluded transaction; every other slot clears that route and
+    // restores its ordinary RSP0 before it can run (D-407).
+    let roots = table.slots[slot].page_table;
+    let wanted = roots
+        .map(AddressSpaceRoots::full_root)
         .unwrap_or_else(paging::active_root);
+    let paired = roots.is_some_and(AddressSpaceRoots::is_paired);
+    if paired {
+        let Some(landing) = table.kernel_stack_top(slot) else {
+            panic!("a paired task lost its pinned stack identity");
+        };
+        let Some(roots) = roots else {
+            panic!("a paired task lost its root identity");
+        };
+        if let Err(reason) = kpti::publish_route(&roots, landing) {
+            panic!("a bound root pair could not publish its entry route: {reason:?}");
+        }
+        assert!(
+            kpti::install_transition_rsp0(),
+            "a published root pair could not install its entry stacks"
+        );
+    } else {
+        if table.slots[slot].stack_index.is_some() {
+            let Some(landing) = table.kernel_stack_top(slot) else {
+                panic!("a live task lost its pinned stack identity");
+            };
+            super::segment::write_kernel_stack(landing);
+        }
+        super::segment::restore_ordinary_fault_stack();
+        kpti::clear_route();
+    }
     if wanted != cpu::page_table_base() {
         // SAFETY: `bind_address_space` proved every higher-half top-level entry
         // matches the kernel root. Paging activation freezes new top-level
         // entries, so later device mappings remain below shared entries. IF is
         // clear and the table lock prevents an interleaving CR3 change.
         unsafe { cpu::set_page_table_base(wanted) };
+    }
+    if paired {
+        let Some(roots) = roots else {
+            panic!("a paired task lost its root identity after activation");
+        };
+        assert!(
+            kpti::finish_route_update(roots),
+            "an active root pair could not publish its complete entry route"
+        );
     }
 
     // Eager save/restore is outside the naked switch because `+soft-float`
@@ -602,7 +638,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
 /// the tables under a thread that is already on them is a job for the switch,
 /// not for this. A refusal returns the unconsumed binding with the error.
 pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
-    let root = binding.root();
+    let roots = binding.roots();
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
     let result = if slot >= table.count {
@@ -612,13 +648,13 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskE
     } else if slot == CURRENT.load(Ordering::Acquire) {
         Err(TaskError::Current(slot))
     } else {
-        table.slots[slot].page_table = Some(root);
+        table.slots[slot].page_table = Some(roots);
         Ok(())
     };
     drop(table);
     saved.restore();
     result
-        .map(|()| Bound { root })
+        .map(|()| Bound { roots })
         .map_err(|error| (error, binding))
 }
 
@@ -690,13 +726,13 @@ pub fn slot_is_live_for_test(slot: usize) -> bool {
 /// about a root that still has an uninstalled binding elsewhere.
 #[derive(Debug)]
 pub struct Bound {
-    root: u64,
+    roots: AddressSpaceRoots,
 }
 
 impl Bound {
-    /// The root installed in the task table.
-    pub const fn root(&self) -> u64 {
-        self.root
+    /// The inseparable roots installed in the task table.
+    pub const fn roots(&self) -> AddressSpaceRoots {
+        self.roots
     }
 }
 
@@ -707,13 +743,13 @@ impl Bound {
 /// answer instead of guessing from the current `CR3` (D-123).
 #[derive(Debug)]
 pub struct Released {
-    root: u64,
+    roots: AddressSpaceRoots,
 }
 
 impl Released {
-    /// The root nothing names.
-    pub const fn root(&self) -> u64 {
-        self.root
+    /// The inseparable roots nothing can install.
+    pub const fn roots(&self) -> AddressSpaceRoots {
+        self.roots
     }
 }
 
@@ -724,7 +760,7 @@ impl Released {
 /// [`bind_address_space`].
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
-        root: binding.root(),
+        roots: binding.roots(),
     }
 }
 
@@ -739,16 +775,16 @@ pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     if REFUSE_RELEASES.load(Ordering::Acquire) != 0 {
         return Err(bound);
     }
-    let root = bound.root();
+    let roots = bound.roots();
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
     let live = table
         .slots
         .iter()
-        .any(|slot| slot.state == State::Alive && slot.page_table == Some(root));
+        .any(|slot| slot.state == State::Alive && slot.page_table == Some(roots));
     if !live {
         for slot in &mut table.slots {
-            if slot.page_table == Some(root) {
+            if slot.page_table == Some(roots) {
                 slot.page_table = None;
             }
         }
@@ -758,7 +794,7 @@ pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     if live {
         Err(bound)
     } else {
-        Ok(Released { root })
+        Ok(Released { roots })
     }
 }
 
@@ -860,6 +896,8 @@ pub enum UserError {
     NoExtendedState,
     /// Actual CPU evidence does not permit shared higher-half mappings.
     NoSharedKernelIsolation,
+    /// The current paired address space lacks its exact live entry route.
+    NoPairedKernelIsolation,
 }
 
 impl fmt::Display for UserError {
@@ -892,6 +930,10 @@ impl fmt::Display for UserError {
                 f,
                 "shared kernel mappings have no hardware isolation proof",
             ),
+            Self::NoPairedKernelIsolation => core::fmt::Write::write_str(
+                f,
+                "the paired user roots have no complete live entry route",
+            ),
         }
     }
 }
@@ -922,7 +964,7 @@ pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
 
     // SAFETY: the preflight ran with interrupts excluded through this jump,
     // so none of its live page-table or task-stack facts can change first.
-    unsafe { leave_for_user(entry, stack_top) }
+    unsafe { interrupt::leave_for_user(entry, stack_top) }
 }
 
 /// Exercise the final door while its interrupt admission is absent.
@@ -953,9 +995,38 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !final_extended_state_is_isolated() {
         return Err(UserError::NoExtendedState);
     }
-    if !final_shared_mappings_are_safe() {
-        return Err(UserError::NoSharedKernelIsolation);
-    }
+    let table = TABLE.lock_leaf();
+    let current = current();
+    let roots = table.slots[current].page_table;
+    let mine = table.kernel_stack_top(current);
+    let isolation = match roots {
+        Some(roots) if roots.is_paired() => {
+            mine.map_or(Err(UserError::NoPairedKernelIsolation), |stack| {
+                if cpu::page_table_base() == roots.full_root()
+                    && final_paired_mappings_are_safe(roots, stack)
+                {
+                    Ok(())
+                } else {
+                    Err(UserError::NoPairedKernelIsolation)
+                }
+            })
+        }
+        _ => {
+            if !final_shared_mappings_are_safe() {
+                Err(UserError::NoSharedKernelIsolation)
+            } else {
+                mine.map_or(Err(UserError::NoKernelStack), |stack| {
+                    if super::segment::kernel_stack() == stack.address() {
+                        Ok(())
+                    } else {
+                        Err(UserError::NoKernelStack)
+                    }
+                })
+            }
+        }
+    };
+    drop(table);
+    isolation?;
     match paging::translate(entry) {
         Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {}
         _ => return Err(UserError::EntryNotExecutable(entry)),
@@ -971,16 +1042,6 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
                 && flags.contains(Flags::WRITABLE)
                 && flags.contains(Flags::NO_EXECUTE) => {}
         _ => return Err(UserError::StackNotWritable(first_push)),
-    }
-    // Require this slot's stack: the boot slot has none and can otherwise
-    // inherit another thread's stale `RSP0` (D-99, D-101).
-    let table = TABLE.lock_leaf();
-    let mine = table
-        .kernel_stack_top(current())
-        .map(KernelStackTop::address);
-    drop(table);
-    if mine.is_none() || super::segment::kernel_stack() != mine.unwrap_or(0) {
-        return Err(UserError::NoKernelStack);
     }
     // As `prepare` and `continue_on_stack`: this call never returns, so a
     // guard live in the caller's frame is a lock nothing can ever release.
@@ -1021,6 +1082,13 @@ fn final_shared_mappings_are_safe() -> bool {
     safe
 }
 
+fn final_paired_mappings_are_safe(roots: AddressSpaceRoots, stack: KernelStackTop<'_>) -> bool {
+    let safe = kpti::entry_is_ready_for(roots, stack);
+    #[cfg(feature = "selftest")]
+    let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
+    safe
+}
+
 /// Exercise the exact final-door NX refusal.
 #[cfg(feature = "selftest")]
 pub fn final_no_execute_refusal_for_test() -> bool {
@@ -1039,63 +1107,6 @@ pub fn final_extended_state_refusal_for_test() -> bool {
 #[cfg(feature = "selftest")]
 pub fn final_shared_mapping_refusal_for_test() -> bool {
     forced_boundary_refuses(2, UserError::NoSharedKernelIsolation)
-}
-
-/// Push a ring-3 frame and `iretq` into it.
-///
-/// # Safety
-///
-/// `entry` must be user-executable and `stack_top` user-writable in the live
-/// tables, and `RSP0` must name a mapped ring-0 stack.
-#[unsafe(naked)]
-unsafe extern "C" fn leave_for_user(entry: u64, stack_top: u64) -> ! {
-    ::core::arch::naked_asm!(
-        // The frame `iretq` pops, top down: SS, RSP, RFLAGS, CS, RIP.
-        "push {user_data}",
-        "push rsi",
-        // Bit 1 is reserved and must be set; bit 9 is the interrupt flag, so
-        // ring 3 is preemptible from its first instruction.
-        "push 0x202",
-        "push {user_code}",
-        "push rdi",
-        // Nothing of the kernel's goes with it: a register left set is a
-        // pointer handed to ring 3.
-        "xor rax, rax",
-        "xor rbx, rbx",
-        "xor rcx, rcx",
-        "xor rdx, rdx",
-        "xor rsi, rsi",
-        "xor rdi, rdi",
-        "xor rbp, rbp",
-        "xor r8, r8",
-        "xor r9, r9",
-        "xor r10, r10",
-        "xor r11, r11",
-        "xor r12, r12",
-        "xor r13, r13",
-        "xor r14, r14",
-        "xor r15, r15",
-        // First entry must flush too; this path need not have a prior trap
-        // return on which the ordinary exit stub could do it (D-101).
-        "cmp byte ptr [rip + {clear}], 0",
-        "je 2f",
-        "sub rsp, 8",
-        "mov word ptr [rsp], {kernel_data}",
-        "verw word ptr [rsp]",
-        ".if {record_clears}",
-        "jnz 3f",
-        "inc qword ptr [rip + BUFFER_CLEARS]",
-        "3:",
-        ".endif",
-        "add rsp, 8",
-        "2:",
-        "iretq",
-        user_data = const (super::segment::USER_DATA_BITS as u64),
-        user_code = const (super::segment::USER_CODE_BITS as u64),
-        kernel_data = const (super::segment::KERNEL_DATA_BITS as u32),
-        clear = sym super::interrupt::MDS_CLEAR,
-        record_clears = const super::interrupt::RECORD_BUFFER_CLEARS,
-    )
 }
 
 /// Abandon the current stack and continue on `stack`, never returning.

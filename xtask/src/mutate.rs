@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2048;
+pub const NEXT_MUTATION_ID: u16 = 2062;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -1908,8 +1908,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 162,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {",
-        replace: "        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len).filter(|_| false) {",
+        find: "        if let Some(stack) = protected_stack_overlap(self.roots(), virtual_base, len) {",
+        replace: "        if let Some(stack) = protected_stack_overlap(self.roots(), virtual_base, len).filter(|_| false) {",
         breaks: "the safe map path can admit a mapping over a retained stack or guard",
         reddens: Caught::Check("protected stacks refuse overlapping maps"),
     },
@@ -1935,8 +1935,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 165,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        space.reach = Reach::UserHalfOnly;",
-        replace: "        space.reach = Reach::Everywhere;",
+        find: "            reach: Reach::UserHalfOnly,",
+        replace: "            reach: Reach::Everywhere,",
         breaks: "a user space cannot write the kernel's half",
         reddens: Caught::Check("a user space cannot reach the kernel half"),
     },
@@ -1991,8 +1991,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 172,
         file: "wost/src/arch/x86_64/task.rs",
-        find: "    if live {\n        Err(bound)\n    } else {\n        Ok(Released { root })\n    }",
-        replace: "    if false {\n        Err(bound)\n    } else {\n        Ok(Released { root })\n    }",
+        find: "    if live {\n        Err(bound)\n    } else {\n        Ok(Released { roots })\n    }",
+        replace: "    if false {\n        Err(bound)\n    } else {\n        Ok(Released { roots })\n    }",
         breaks: "a live task retains its address-space release authority",
         reddens: Caught::Check("a bound space is not reclaimed"),
     },
@@ -2240,10 +2240,13 @@ pub const MUTATIONS: &[Mutation] = &[
         id: 193,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    pub const fn is_reclaimed(&self) -> bool {
-        self.root.is_none()
+        self.roots.is_none()
     }",
         replace: "    pub const fn is_reclaimed(&self) -> bool {
-        matches!(self.root, None | Some(0))
+        match self.roots {
+            None => true,
+            Some(roots) => roots.full_root() == 0,
+        }
     }",
         breaks: "a reclaimed space is not walked as physical frame zero",
         reddens: Caught::Check("a reclaimed space answers nothing"),
@@ -2270,8 +2273,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 196,
         file: "wost/src/arch/x86_64/interrupt.rs",
-        find: "    \"verw word ptr [rsp]\",",
-        replace: "",
+        find: "    \"mov word ptr [rsp], {kernel_data}\",\n    \"verw word ptr [rsp]\",\n    \".if {record_clears}\",",
+        replace: "    \"mov word ptr [rsp], {kernel_data}\",\n    \".if {record_clears}\",",
         breaks: "the buffer flush is the instruction, not its neighbour",
         reddens: Caught::Check("the return to ring three clears buffers"),
     },
@@ -3745,8 +3748,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 315,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if let Err(cause) = self.verify_guard(slot) {\n            return match self.rollback_stack(slot, 1, 0) {\n                Ok(_) => Err(StackMapError::Mapping(cause)),\n                Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),\n            };\n        }",
-        replace: "        if let Err(cause) = self.verify_guard(slot) {\n            let _ = self.rollback_stack(slot, 1, 0);\n            return Err(StackMapError::Mapping(cause));\n        }",
+        find: "        if let Err(cause) = self.verify_guard(slot) {\n            return match self.rollback_stack(slot, 0) {\n                Ok(_) => Err(StackMapError::Mapping(cause)),\n                Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),\n            };\n        }",
+        replace: "        if let Err(cause) = self.verify_guard(slot) {\n            let _ = self.rollback_stack(slot, 0);\n            return Err(StackMapError::Mapping(cause));\n        }",
         breaks: "guard rollback refusal retains typed ownership and progress",
         reddens: Caught::Check("guard rollback refusal retains the stack"),
     },
@@ -3861,8 +3864,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 327,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && self.root() == active_root()\n        {",
-        replace: "        if false\n            && level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && self.root() == active_root()\n        {",
+        find: "        if level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && root == TableRoot::Full\n            && self.root() == active_root()\n        {",
+        replace: "        if false\n            && level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && root == TableRoot::Full\n            && self.root() == active_root()\n        {",
         breaks: "the active kernel cannot add an unshared higher-half root entry",
         reddens: Caught::Check("active kernel topology refuses a new shared root"),
     },
@@ -4682,8 +4685,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 403,
         file: "xtask/src/qemu.rs",
-        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
-        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::warning(\"no x2apic mode\"),",
+        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
+        replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::warning(\"no x2apic mode\"),",
         breaks: "the settled degraded boot requires only a no-x2APIC phrase instead of the canonical warning record",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -5210,8 +5213,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 451,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if current_mapping_root(root).is_none() {",
-        replace: "        if false && current_mapping_root(root).is_none() {",
+        find: "        if current_mapping_root(roots).is_none() {",
+        replace: "        if false && current_mapping_root(roots).is_none() {",
         breaks: "a recycled inactive root can mint hardware stack authority",
         reddens: Caught::Check("the double-fault stack cannot be unmapped"),
     },
@@ -6498,8 +6501,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 572,
         file: "wost/src/arch/x86_64/segment.rs",
-        find: "pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {\n    let top = top.address();\n    let at = TaskState::privilege_stack_offset(0);\n    assert!(",
-        replace: "pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {\n    let top = top.address();\n    let at = TaskState::privilege_stack_offset(0);\n    debug_assert!(",
+        find: "fn write_stack(at: usize, top: u64) {\n    assert!(",
+        replace: "fn write_stack(at: usize, top: u64) {\n    debug_assert!(",
         breaks: "release TSS stack writes lose their alignment precondition",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6881,9 +6884,9 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 609,
         file: "kernel/src/user.rs",
-        find: "    if !crate::shared_kernel_mappings_are_safe() {",
-        replace: "    if false && !crate::shared_kernel_mappings_are_safe() {",
-        breaks: "ring three opens without a consumed shared-mapping isolation proof",
+        find: "        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),",
+        replace: "        crate::UserIsolation::Closed => AddressSpace::for_user(),",
+        breaks: "ring three opens without an admitted shared or paired isolation mode",
         reddens: Caught::Check(
             "shared kernel mappings without an isolation proof are refused",
         ),
@@ -7057,7 +7060,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 625,
         file: "xtask/src/qemu.rs",
-        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
+        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
         replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
         breaks: "a shipped boot can pass without consuming the TCG isolation policy",
         reddens: Caught::HostTest {
@@ -7797,8 +7800,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 692,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = protected_stack_overlap(self.root(), virtual_base, len) {",
-        replace: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = permanent_stack_overlap(self.root(), virtual_base, len) {",
+        find: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = protected_stack_overlap(self.roots(), virtual_base, len) {",
+        replace: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = permanent_stack_overlap(self.roots(), virtual_base, len) {",
         breaks: "unmap can clear a live task stack or its guard",
         reddens: Caught::Check("unmapping refuses what it does not own"),
     },
@@ -9264,16 +9267,16 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 817,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        let Some(current) = current_mapping_root(self.root) else {\n            return false;\n        };",
-        replace: "        if !is_active() || active_root() != self.root {\n            return false;\n        }\n        let current = self.root;",
+        find: "        let Some(current) = current_mapping_root(self.roots) else {\n            return false;\n        };",
+        replace: "        if !is_active() || active_root() != self.roots.full_root() {\n            return false;\n        }\n        let current = self.roots.full_root();",
         breaks: "a device token authenticates its recorded root instead of the root actually loaded",
         reddens: Caught::Check("a stale shared root cannot authenticate a device mapping"),
     },
     Mutation {
         id: 818,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        current_mapping_root(self.identity.root)\n            .is_some_and(|current| self.identity.invalid_page_in(current).is_none())",
-        replace: "        is_active()\n            && active_root() == self.identity.root\n            && self.identity.invalid_page_in(self.identity.root).is_none()",
+        find: "        current_mapping_root(self.identity.roots)\n            .is_some_and(|current| self.identity.invalid_page_in(current).is_none())",
+        replace: "        is_active()\n            && active_root() == self.identity.roots.full_root()\n            && self\n                .identity\n                .invalid_page_in(self.identity.roots.full_root())\n                .is_none()",
         breaks: "a stack token authenticates its recorded root instead of the root actually loaded",
         reddens: Caught::Check("a stale shared root cannot authenticate a stack"),
     },
@@ -14041,7 +14044,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1195,
         file: "xtask/src/qemu.rs",
-        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
+        find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
         replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    NO_X2APIC_RECORD,",
         breaks: "the degraded boot can settle without proving its QEMU TCG policy",
         reddens: Caught::HostTest {
@@ -15792,9 +15795,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1340,
-        file: "wost/src/arch/x86_64/task.rs",
-        find: "        \".if {record_clears}\",\n        \"jnz 3f\",\n        \"inc qword ptr [rip + BUFFER_CLEARS]\",",
-        replace: "        \".if 1\",\n        \"jnz 3f\",\n        \"inc qword ptr [rip + BUFFER_CLEARS]\",",
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    \".if {record_clears}\",\n    \"jnz 9f\",\n    \"inc qword ptr [rip + BUFFER_CLEARS]\",",
+        replace: "    \".if 1\",\n    \"jnz 9f\",\n    \"inc qword ptr [rip + BUFFER_CLEARS]\",",
         breaks: "the first-user-entry buffer-clear tally ignores its self-test selector",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -22880,6 +22883,136 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "mutation_workspace::tests::an_absolute_git_path_must_resolve_to_one_confined_direct_file",
+        },
+    },
+    Mutation {
+        id: 2048,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if self.roots().is_paired() && is_user_address(virtual_base) && !flags.contains(Flags::USER)\n        {\n            return Err(MapError::NotYours(virtual_base));",
+        replace: "        if self.roots().is_paired() && is_user_address(virtual_base) && flags.contains(Flags::USER)\n        {\n            return Err(MapError::NotYours(virtual_base));",
+        breaks: "a paired stripped root can inherit supervisor-only lower-half leaves",
+        reddens: Caught::Check("a paired root admits only user leaves below the split"),
+    },
+    Mutation {
+        id: 2049,
+        file: "libs/x86-paging/src/kpti.rs",
+        find: "    if expected.is_empty() || expected.len() != observed.len() {\n        return false;\n    }",
+        replace: "    if expected.is_empty() || expected.len() == observed.len() {\n        return false;\n    }",
+        breaks: "the exact stripped-root enclave refuses its complete expected page set",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "kpti::tests::a_kpti_user_root_contains_only_the_entry_enclave",
+        },
+    },
+    Mutation {
+        id: 2050,
+        file: "libs/x86-paging/src/kpti.rs",
+        find: "    full.table_identity_matches(stripped)\n        && full.flags().difference(permitted).bits() == 0",
+        replace: "    !full.table_identity_matches(stripped)\n        && full.flags().difference(permitted).bits() == 0",
+        breaks: "a paired root rejects its one identical shared lower-half subtree",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "kpti::tests::a_kpti_pair_shares_one_identical_user_subtree",
+        },
+    },
+    Mutation {
+        id: 2051,
+        file: "libs/x86-paging/src/kpti.rs",
+        find: "        if self.root_frames != 2 {\n            return None;\n        }",
+        replace: "        if self.root_frames == 2 {\n            return None;\n        }",
+        breaks: "incomplete root construction can publish while a complete pair cannot",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "kpti::tests::a_kpti_pair_refusal_returns_every_frame",
+        },
+    },
+    Mutation {
+        id: 2052,
+        file: "libs/x86-paging/src/kpti.rs",
+        find: "        if returned_frames == 0 {\n            return Ok(PairCleanupState::Retained(self));\n        }",
+        replace: "        if returned_frames == 1 {\n            return Ok(PairCleanupState::Retained(self));\n        }",
+        breaks: "a zero-return cleanup refusal no longer retains complete pair authority",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "kpti::tests::a_kpti_pair_cleanup_retains_complete_authority",
+        },
+    },
+    Mutation {
+        id: 2053,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        paired_flush_premise(self.roots())?;\n        Ok(())",
+        replace: "        let text = crate::boot::sections().text.start;\n        let (physical, _, _) = walk(self.root(), text)\n            .ok_or(MapError::InvalidEntryEnclave(text))?;\n        self.set_in(\n            TableRoot::Stripped,\n            text,\n            physical,\n            Flags::PRESENT,\n            Level::Pt,\n        )?;\n        paired_flush_premise(self.roots())?;\n        Ok(())",
+        breaks: "an ordinary kernel text leaf enters the stripped root outside the exact enclave",
+        reddens: Caught::Check("the user root contains only the entry enclave"),
+    },
+    Mutation {
+        id: 2054,
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    super::kpti::record_rust_entry(saved.code_selector);",
+        replace: "    super::kpti::record_rust_entry(0);",
+        breaks: "a user-origin entry reaches Rust without recording its full-root observation",
+        reddens: Caught::Check("every user entry reaches Rust on the full root"),
+    },
+    Mutation {
+        id: 2055,
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    \"lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_prepared_returns}]\",",
+        replace: "    \"cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_prepared_returns}], 0\",",
+        breaks: "a prepared user return loses its stripped-root transition evidence",
+        reddens: Caught::Check("every user return installs the stripped root"),
+    },
+    Mutation {
+        id: 2056,
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    \"mov rcx, {raw_frame_words}\",\n    \"rep movsq\",\n    \"xor eax, eax\",",
+        replace: "    \"mov rcx, {raw_frame_words}\",\n    \"rep movsq\",\n    \"mov eax, 1\",",
+        breaks: "user entry leaves secret-capable transition and IST stack bytes unsanitized",
+        reddens: Caught::Check("the entry stack is guarded and scrubbed"),
+    },
+    Mutation {
+        id: 2057,
+        file: "wost/src/arch/x86_64/kpti.rs",
+        find: "    #[cfg(feature = \"selftest\")]\n    record_complete_pair_switch(roots);\n    true",
+        replace: "    #[cfg(feature = \"selftest\")]\n    let _unrecorded_pair = roots;\n    true",
+        breaks: "a complete paired-root context switch loses its atomic pair observation",
+        reddens: Caught::Check("a context switch moves one complete root pair"),
+    },
+    Mutation {
+        id: 2058,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if let Some(stripped) = roots.stripped_root() {\n            // SAFETY: paired construction allocated and forgot this distinct\n            // root exactly once, and the active-root refusal covers it too.\n            drop(unsafe { mm::Frame::from_raw(stripped) });\n        }",
+        replace: "        if let Some(stripped) = roots.stripped_root() {\n            let _leaked_stripped_root = stripped;\n        }",
+        breaks: "paired retirement strands the stripped root instead of returning every frame",
+        reddens: Caught::Check("paired-space refusal and retirement conserve every frame"),
+    },
+    Mutation {
+        id: 2059,
+        file: "wost/src/boot/mod.rs",
+        find: "        core::hint::black_box(symbol).addr() as u64",
+        replace: "        symbol.addr() as u64",
+        breaks: "release optimization can reject linker-aliased enclave boundaries as unequal",
+        reddens: Caught::Check("the kernel image obeys write-xor-execute"),
+    },
+    Mutation {
+        id: 2060,
+        file: "xtask/src/image/mod.rs",
+        find: "        let signature = crate::qemu::SELFTEST_IMAGE_MARKER.as_bytes();",
+        replace: "        let signature = crate::qemu::SELFTEST_VERDICT_PREFIX.as_bytes();",
+        breaks: "an optimizer-split verdict fragment can pose as self-test image identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::tests::a_formatted_verdict_fragment_cannot_pose_as_a_selftest_image",
+        },
+    },
+    Mutation {
+        id: 2061,
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    \"verw word ptr [rip + {verw_selector}]\",",
+        replace: "    \"sub rsp, 8\",\n    \"mov word ptr [rsp], {kernel_data}\",\n    \"verw word ptr [rsp]\",\n    \"add rsp, 8\",",
+        breaks: "post-CR3 VERW re-dirties the already-scrubbed transition stack",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::kpti_exit_loads_stripped_root_after_scrub_and_last_secret_access",
         },
     },
 ];

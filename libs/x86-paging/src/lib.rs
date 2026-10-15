@@ -34,6 +34,7 @@ use core::fmt;
 
 pub mod activation;
 pub mod device;
+pub mod kpti;
 
 /// Bytes in the smallest page.
 pub const PAGE_SIZE: u64 = 4096;

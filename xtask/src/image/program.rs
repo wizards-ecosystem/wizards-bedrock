@@ -161,7 +161,8 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&DUPLICATE_RIGHTS.to_le_bytes());
     let duplicate_ready = branch(&mut code, 0xEB);
 
-    // A short timer forces the distinct RingWait wake path.
+    // Leave enough time for two deliberately unoptimised KPTI crossings under
+    // debug TCG while still forcing the distinct RingWait wake path.
     let timer = code.len();
     patch(&mut code, timer_submission, timer)?;
     code.extend_from_slice(&[0xC7, 0x83]);
@@ -169,7 +170,7 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&TIMER.to_le_bytes());
     code.extend_from_slice(&[0x48, 0xC7, 0x83]);
     code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
-    code.extend_from_slice(&2_000_000u32.to_le_bytes());
+    code.extend_from_slice(&250_000_000u32.to_le_bytes());
 
     let publish = code.len();
     patch(&mut code, echo_ready, publish)?;

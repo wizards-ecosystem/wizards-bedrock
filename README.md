@@ -36,6 +36,16 @@ and remain gated. The echo prompt is a kernel diagnostic.
 | Phase 6, VFS and storage | Slices landed 2026-08-25. **Not closed**: qualification evidence is still open |
 | Realm userland | Owned by Realm; **gated** on compiler readiness (D-183), currently CLOSED |
 
+The supported VMware target currently reads no `RDCL_NO` bit, so D-250
+correctly keeps its shared-root user path closed. D-407 accepts the replacement
+path: a user address space on that target owns paired full/stripped roots and
+crosses through an exact non-secret entry enclave on a guarded, scrubbed stack,
+with PCID still off. The implementation, host contracts, retained mutations and
+forced-paired debug/release QEMU checks are present. PW-580 and PW-706 remain
+open for the complete release sweep and fresh self-test plus shipped VMware
+qualifications; no Workstation log, CPU signature or inferred capability
+substitutes for the guest's architectural read.
+
 [docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
 the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
 the only current backlog. `wizards-ink`, which owns the Wizzy compiler, is a

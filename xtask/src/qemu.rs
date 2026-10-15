@@ -943,6 +943,13 @@ fn storage(root: &Path) -> Result<Vec<OsString>> {
 const SELFTEST_PASSED: i32 = 33;
 const SELFTEST_FAILED: i32 = 35;
 
+/// An optimization-stable payload marker shared with `kernel/src/selftest.rs`.
+///
+/// The formatted verdict is not a sound build-identity marker: optimized Rust
+/// may split its literal around formatting placeholders. This fixed record is
+/// emitted only by a self-test kernel and remains one contiguous byte string.
+pub(crate) const SELFTEST_IMAGE_MARKER: &str = "selftest: image marker v1";
+
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 pub(crate) const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 /// What the kernel prints around a failing check's name, from
@@ -951,12 +958,15 @@ const SELFTEST_CHECK_PREFIX: &str = "selftest: ";
 const SELFTEST_CHECK_FAILED: &str = " FAILED";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
 
-const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: qemu_tcg";
+const SELFTEST_QEMU_TCG_ISOLATION_MARKER: &str =
+    "cpu: user isolation paired roots: forced for self-test; shared proof retained: qemu_tcg";
+const SHIPPED_QEMU_TCG_ISOLATION_MARKER: &str =
+    "cpu: user isolation shared kernel mappings: qemu_tcg";
 const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 282;
+const EXPECTED_SELFTEST_CHECKS: usize = 290;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -988,7 +998,7 @@ pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; tryin
 
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
-    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),
     RequiredLogRecord::info(NVME_FALLBACK_MARKER),
     RequiredLogRecord::info(
         "keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
@@ -1496,7 +1506,7 @@ fn observe_selftest_line(
         observation.strict_dma_handoff = true;
         return Ok(PanicTransition::Unchanged);
     }
-    if is_exact_log_message(line, LogSeverity::Info, QEMU_TCG_ISOLATION_MARKER) {
+    if is_exact_log_message(line, LogSeverity::Info, SELFTEST_QEMU_TCG_ISOLATION_MARKER) {
         if observation.qemu_tcg_isolation {
             bail!("the self-test kernel printed the TCG isolation decision more than once");
         }
@@ -2459,7 +2469,7 @@ pub const DEGRADED_USER_MARKER: &str =
 
 const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
-    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),
     NO_X2APIC_RECORD,
     RequiredLogRecord::info(DEGRADED_FILESYSTEM_MARKER),
     RequiredLogRecord::info(DEGRADED_STORAGE_MARKER),
@@ -2480,7 +2490,7 @@ pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 /// lease exactly.
 const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
-    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),
     RequiredLogRecord::warning(NO_ISOLATION_MARKER),
     RequiredLogRecord::info(NVME_FALLBACK_MARKER),
     RequiredLogRecord::info(NO_USABLE_CONTROLLER_MARKER),
@@ -4520,15 +4530,16 @@ mod tests {
         assert!(error.to_string().contains("strict QEMU DMA-handoff"));
 
         for near_miss in [
-            QEMU_TCG_ISOLATION_MARKER.to_string(),
-            format!("[warn ] {QEMU_TCG_ISOLATION_MARKER}"),
-            format!("[info ] {QEMU_TCG_ISOLATION_MARKER} trailing"),
-            "[info ] cpu: user isolation shared kernel mappings: qemu-tcg".to_string(),
+            SELFTEST_QEMU_TCG_ISOLATION_MARKER.to_string(),
+            format!("[warn ] {SELFTEST_QEMU_TCG_ISOLATION_MARKER}"),
+            format!("[info ] {SELFTEST_QEMU_TCG_ISOLATION_MARKER} trailing"),
+            "[info ] cpu: user isolation paired roots: forced for self-test; shared proof retained: qemu-tcg"
+                .to_string(),
         ] {
             assert!(!is_exact_log_message(
                 &near_miss,
                 LogSeverity::Info,
-                QEMU_TCG_ISOLATION_MARKER
+                SELFTEST_QEMU_TCG_ISOLATION_MARKER
             ));
         }
 
@@ -4544,7 +4555,7 @@ mod tests {
             ));
         }
 
-        let exact = format!("[info ] {QEMU_TCG_ISOLATION_MARKER}\r\n");
+        let exact = format!("[info ] {SELFTEST_QEMU_TCG_ISOLATION_MARKER}\r\n");
         let strict = format!("[info ] {STRICT_DMA_HANDOFF_MARKER}\r\n");
         let mut observation = SerialObservation::default();
         observe_selftest_line(&mut observation, &strict).unwrap();
@@ -5027,6 +5038,10 @@ mod tests {
             "the verdict version drifted"
         );
         assert!(
+            selftest.contains(&format!("info!(\"{SELFTEST_IMAGE_MARKER}\");")),
+            "the optimization-stable self-test image marker drifted"
+        );
+        assert!(
             selftest.contains("info!(\"selftest: {name}\");")
                 && selftest.contains("error!(\"selftest: {name} FAILED\");"),
             "the exact self-test check records drifted from their producer"
@@ -5065,9 +5080,14 @@ mod tests {
             "the exact steady-state record drifted from its producer"
         );
         assert!(
-            main.contains("info!(\"cpu: user isolation shared kernel mappings: {reason}\")")
+            main.contains(
+                "\"cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}\""
+            )
+                && main.contains("info!(\"cpu: user isolation shared kernel mappings: {reason}\")")
                 && cpuid.contains("SharedKernelMappingReasonKind::QemuTcg => \"qemu_tcg\"")
-                && QEMU_TCG_ISOLATION_MARKER
+                && SELFTEST_QEMU_TCG_ISOLATION_MARKER
+                    == "cpu: user isolation paired roots: forced for self-test; shared proof retained: qemu_tcg"
+                && SHIPPED_QEMU_TCG_ISOLATION_MARKER
                     == "cpu: user isolation shared kernel mappings: qemu_tcg",
             "the exact QEMU TCG evidence drifted from its producers"
         );
@@ -8457,7 +8477,10 @@ const LIVE: u32 = 7;
                     entries_at + submission_layout["ARGUMENT"] as u32,
                     duplicate_rights,
                 ),
-                (entries_at + submission_layout["ARGUMENT"] as u32, 2_000_000,),
+                (
+                    entries_at + submission_layout["ARGUMENT"] as u32,
+                    250_000_000,
+                ),
             ],
             "the emitted program's submission imm64 write differs from the kernel layout"
         );

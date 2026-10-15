@@ -380,6 +380,35 @@ pub struct Sections {
     /// script keeps contiguous in one segment. Mapped writable and never
     /// executable.
     pub data: Section,
+    /// The page-exact D-407 entry ranges, outside the ordinary image classes.
+    pub entry_enclave: EntryEnclaveSections,
+}
+
+/// Linker-owned ranges from which the x86 entry enclave is validated.
+///
+/// The two guard ranges are deliberately not part of any mapping list. Their
+/// named addresses let the page-table owner prove absence instead of deriving
+/// a hole from adjacent stack arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryEnclaveSections {
+    /// Interrupt stubs and common entry/exit assembly.
+    pub text: Section,
+    /// Immutable public entry geometry.
+    pub rodata: Section,
+    /// The IDT, GDT and TSS bytes hardware may read during entry.
+    pub tables: Section,
+    /// CPU-local root routing and public entry state.
+    pub route: Section,
+    /// The complete `.kpti.data` output extent, including its named guards.
+    pub data: Section,
+    /// The CPU-local privilege-transition stack.
+    pub transition_stack: Section,
+    /// The transition stack's lower guard, absent from constructed roots.
+    pub transition_guard: Section,
+    /// The entry-reachable interrupt-stack-table stack.
+    pub ist_stack: Section,
+    /// The interrupt stack's lower guard, absent from constructed roots.
+    pub ist_guard: Section,
 }
 
 /// Where the linker put each protection class of this kernel.
@@ -399,20 +428,83 @@ pub fn sections() -> Sections {
         static __rodata_end: u8;
         static __data_start: u8;
         static __data_end: u8;
+        static __kpti_text_start: u8;
+        static __kpti_text_end: u8;
+        static __kpti_rodata_start: u8;
+        static __kpti_rodata_end: u8;
+        static __kpti_tables_start: u8;
+        static __kpti_tables_end: u8;
+        static __kpti_route_start: u8;
+        static __kpti_route_end: u8;
+        static __kpti_data_end: u8;
+        static __kpti_transition_guard_start: u8;
+        static __kpti_transition_guard_end: u8;
+        static __kpti_transition_stack_start: u8;
+        static __kpti_transition_stack_end: u8;
+        static __kpti_ist_guard_start: u8;
+        static __kpti_ist_guard_end: u8;
+        static __kpti_ist_stack_start: u8;
+        static __kpti_ist_stack_end: u8;
+    }
+
+    // Distinct linker symbols may deliberately resolve to the same boundary.
+    // Keep their numeric addresses opaque until runtime: otherwise an
+    // optimizer may fold equality between two distinct extern statics to
+    // false even though the linker aliases their final addresses.
+    fn linker_address(symbol: *const u8) -> u64 {
+        core::hint::black_box(symbol).addr() as u64
     }
 
     Sections {
         text: Section {
-            start: &raw const __text_start as u64,
-            end: &raw const __text_end as u64,
+            start: linker_address(&raw const __text_start),
+            end: linker_address(&raw const __text_end),
         },
         rodata: Section {
-            start: &raw const __rodata_start as u64,
-            end: &raw const __rodata_end as u64,
+            start: linker_address(&raw const __rodata_start),
+            end: linker_address(&raw const __rodata_end),
         },
         data: Section {
-            start: &raw const __data_start as u64,
-            end: &raw const __data_end as u64,
+            start: linker_address(&raw const __data_start),
+            end: linker_address(&raw const __data_end),
+        },
+        entry_enclave: EntryEnclaveSections {
+            text: Section {
+                start: linker_address(&raw const __kpti_text_start),
+                end: linker_address(&raw const __kpti_text_end),
+            },
+            rodata: Section {
+                start: linker_address(&raw const __kpti_rodata_start),
+                end: linker_address(&raw const __kpti_rodata_end),
+            },
+            tables: Section {
+                start: linker_address(&raw const __kpti_tables_start),
+                end: linker_address(&raw const __kpti_tables_end),
+            },
+            route: Section {
+                start: linker_address(&raw const __kpti_route_start),
+                end: linker_address(&raw const __kpti_route_end),
+            },
+            data: Section {
+                start: linker_address(&raw const __kpti_route_start),
+                end: linker_address(&raw const __kpti_data_end),
+            },
+            transition_stack: Section {
+                start: linker_address(&raw const __kpti_transition_stack_start),
+                end: linker_address(&raw const __kpti_transition_stack_end),
+            },
+            transition_guard: Section {
+                start: linker_address(&raw const __kpti_transition_guard_start),
+                end: linker_address(&raw const __kpti_transition_guard_end),
+            },
+            ist_stack: Section {
+                start: linker_address(&raw const __kpti_ist_stack_start),
+                end: linker_address(&raw const __kpti_ist_stack_end),
+            },
+            ist_guard: Section {
+                start: linker_address(&raw const __kpti_ist_guard_start),
+                end: linker_address(&raw const __kpti_ist_guard_end),
+            },
         },
     }
 }

@@ -42,7 +42,7 @@ impl Kernel {
     }
 
     fn identify(bytes: &[u8]) -> Self {
-        let signature = crate::qemu::SELFTEST_VERDICT_PREFIX.as_bytes();
+        let signature = crate::qemu::SELFTEST_IMAGE_MARKER.as_bytes();
         if bytes
             .windows(signature.len())
             .any(|window| window == signature)
@@ -565,7 +565,7 @@ mod tests {
     fn both_kernel_kinds_are_read_back_and_identified() {
         let selftest = [
             b"\x7fELF self-test kernel ".as_slice(),
-            crate::qemu::SELFTEST_VERDICT_PREFIX.as_bytes(),
+            crate::qemu::SELFTEST_IMAGE_MARKER.as_bytes(),
         ]
         .concat();
         for (wanted, expected) in [
@@ -577,5 +577,17 @@ mod tests {
             assert_eq!(carried, expected);
             assert_eq!(Kernel::identify(&carried), wanted);
         }
+    }
+
+    #[test]
+    fn a_formatted_verdict_fragment_cannot_pose_as_a_selftest_image() {
+        assert_eq!(
+            Kernel::identify(b"\x7fELF selftest: verdict v1 PASS"),
+            Kernel::Shipped
+        );
+        assert_eq!(
+            Kernel::identify(b"\x7fELF selftest: image marker v2"),
+            Kernel::Shipped
+        );
     }
 }

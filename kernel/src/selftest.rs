@@ -197,6 +197,7 @@ fn an_admitted_canonical_page_can_be_invalidated() -> bool {
 
 fn the_image_obeys_write_xor_execute() -> bool {
     let sections = boot::sections();
+    let enclave = sections.entry_enclave;
     let Some(direct) = mm::direct_map() else {
         return false;
     };
@@ -205,6 +206,12 @@ fn the_image_obeys_write_xor_execute() -> bool {
         (sections.text, false, true),
         (sections.rodata, false, false),
         (sections.data, true, false),
+        (enclave.text, false, true),
+        (enclave.rodata, false, false),
+        (enclave.tables, true, false),
+        (enclave.route, true, false),
+        (enclave.transition_stack, true, false),
+        (enclave.ist_stack, true, false),
     ]
     .into_iter()
     .all(|(section, writable, executable)| {
@@ -231,6 +238,25 @@ fn the_image_obeys_write_xor_execute() -> bool {
                 }) && alias_physical == physical
             })
     })
+}
+
+fn the_entry_enclave_guards_are_absent() -> bool {
+    let enclave = boot::sections().entry_enclave;
+    [enclave.transition_guard, enclave.ist_guard]
+        .into_iter()
+        .all(|guard| {
+            let mut address = guard.start;
+            while address < guard.end {
+                if paging::translate(address).is_some() {
+                    return false;
+                }
+                let Some(next) = address.checked_add(PAGE_SIZE) else {
+                    return false;
+                };
+                address = next;
+            }
+            address == guard.end
+        })
 }
 
 fn supervisor_writes_obey_read_only_pages() -> bool {
@@ -4189,7 +4215,7 @@ fn one_space_has_one_binding() -> bool {
         Err(_) => (false, None),
         Ok(binding) => (false, Some(binding)),
     };
-    let unchanged = first.root() == root
+    let unchanged = first.roots().full_root() == root
         && space.root() == root
         && paging::active_root() == active_before
         && thread::free_slots() == slots_before;
@@ -4559,7 +4585,7 @@ fn partial_stack_rollback_is_retryable() -> bool {
         _ => return false,
     };
     let typed = cleanup.reason == MapError::Pinned(first.stack_base())
-        && cleanup.mapped_stacks == 2
+        && cleanup.mapped_stacks() == 2
         && cleanup.returned_pages == 2
         && cleanup.remaining_stacks() == 1;
     let retained = space.lookup(first.stack_base()).is_some()
@@ -4628,7 +4654,7 @@ fn guard_rollback_refusal_retains_the_stack() -> bool {
         _ => return false,
     };
     let typed = cleanup.reason == MapError::Pinned(slot.stack_base())
-        && cleanup.mapped_stacks == 1
+        && cleanup.mapped_stacks() == 1
         && cleanup.returned_pages == 0
         && cleanup.remaining_stacks() == 1;
     let retained = space.lookup(slot.stack_base()).is_some()
@@ -4749,14 +4775,16 @@ fn unadmitted_interrupts_close_the_user_boundary() -> bool {
 
 fn shared_kernel_mappings_without_proof_close_the_user_boundary() -> bool {
     while user::collect().is_some() {}
-    if !crate::shared_kernel_mappings_are_safe() {
+    let shared_before = crate::shared_kernel_mappings_are_safe();
+    let isolation_before = crate::user_isolation();
+    if isolation_before == crate::UserIsolation::Closed {
         return false;
     }
 
     let resources_before = spawn_resources();
     let crossings_before = trap::last_syscall().count;
     let attempt = crate::without_shared_kernel_mapping_proof_for_test(user::run);
-    let denied = matches!(&attempt, Err(user::SpawnError::NoSharedKernelIsolation));
+    let denied = matches!(&attempt, Err(user::SpawnError::NoUserIsolation));
     let cleaned = match attempt {
         Ok(spawned) => cleanup_unexpected_spawn(spawned),
         Err(_) => true,
@@ -4764,7 +4792,8 @@ fn shared_kernel_mappings_without_proof_close_the_user_boundary() -> bool {
 
     denied
         && cleaned
-        && crate::shared_kernel_mappings_are_safe()
+        && crate::shared_kernel_mappings_are_safe() == shared_before
+        && crate::user_isolation() == isolation_before
         && task::final_shared_mapping_refusal_for_test()
         && trap::last_syscall().count == crossings_before
         && spawn_resources() == resources_before
@@ -6656,6 +6685,102 @@ fn a_boot_mapping_cannot_publish_kernel_memory() -> bool {
     })
 }
 
+fn a_paired_root_admits_only_user_leaves_below_the_split() -> bool {
+    const BOOT: u64 = 0x0000_0060_0000_0000;
+    const OWNED: u64 = 0x0000_0070_0000_0000;
+
+    in_reclaimed_space(AddressSpace::for_user_isolated, |space| {
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        let boot_refused =
+            space.map_boot(BOOT, region, Flags::NO_EXECUTE) == Err(MapError::NotYours(BOOT));
+
+        let Some(run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        let owned_refused =
+            space.map_owned(OWNED, run, Flags::NO_EXECUTE) == Err(MapError::NotYours(OWNED));
+
+        boot_refused
+            && owned_refused
+            && space.lookup(BOOT).is_none()
+            && space.lookup(OWNED).is_none()
+    })
+}
+
+fn the_user_root_contains_only_the_entry_enclave() -> bool {
+    in_reclaimed_space(AddressSpace::for_user_isolated, |space| {
+        space.user_root_contains_only_entry_enclave_for_test()
+    })
+}
+
+fn paired_space_refusal_and_retirement_conserve_every_frame() -> bool {
+    const PROBE: u64 = 0x0000_0050_0000_0000;
+
+    let allocator_before = AllocatorSnapshot::capture();
+    let checked = in_reclaimed_space(AddressSpace::for_user_isolated, |space| {
+        let pair_before = AllocatorSnapshot::capture();
+        let Some(mut refused_run) = mm::allocate_contiguous(2, 1) else {
+            return false;
+        };
+        if !refused_run.zero() {
+            return false;
+        }
+        paging::refuse_mapping_after_for_test(1);
+        let refusal = space.map_user(
+            PROBE,
+            refused_run.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        );
+        paging::restore_mapping_refusals_for_test();
+        let refused = match refusal {
+            Err(error) => {
+                let exact = error.reason() == MapError::OutOfMemory;
+                drop(error.into_run());
+                exact
+            }
+            Ok(()) => {
+                let cleaned = space.unmap(PROBE, 2 * PAGE_SIZE).map(drop).is_ok();
+                assert!(cleaned, "unexpected paired mapping did not clean up");
+                false
+            }
+        };
+        let refusal_was_atomic = refused
+            && space.lookup(PROBE).is_none()
+            && space.lookup(PROBE + PAGE_SIZE).is_none()
+            && AllocatorSnapshot::capture().has_same_ownership(&pair_before);
+        if !refusal_was_atomic {
+            return false;
+        }
+
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !run.zero() {
+            return false;
+        }
+        if let Err(error) =
+            space.map_user(PROBE, run.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
+        {
+            drop(error.into_run());
+            return false;
+        }
+
+        let retained = matches!(
+            space.reclaim(None),
+            Err(paging::ReclaimFailure {
+                reason: ReclaimError::Mapped(1),
+                ..
+            })
+        ) && !space.is_reclaimed();
+        let mapping_returned = space.unmap(PROBE, PAGE_SIZE).map(drop).is_ok();
+        retained && mapping_returned
+    });
+
+    checked && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
 fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     // The direct map ensures the hostile walk reaches real entries to blank.
     const KERNEL: u64 = 0xffff_8000_0010_0000;
@@ -8129,7 +8254,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 282;
+const EXPECTED_CHECKS: usize = 290;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8169,6 +8294,7 @@ impl Report {
 
 /// Run every check and hand the verdict to the harness.
 pub(crate) fn run(serial: Result<(), UartError>) {
+    info!("selftest: image marker v1");
     SELFTEST_STARTED_NS.store(time::now_ns(), Ordering::Relaxed);
     let mut report = Report::new();
     let geometry = dev::console_geometry();
@@ -8258,6 +8384,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the kernel image obeys write-xor-execute",
         the_image_obeys_write_xor_execute(),
+    );
+    report.check(
+        "the entry enclave guards are absent from the full root",
+        the_entry_enclave_guards_are_absent(),
     );
     report.check(
         "supervisor writes obey read-only pages",
@@ -8845,6 +8975,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_boot_mapping_cannot_publish_kernel_memory(),
     );
     report.check(
+        "a paired root admits only user leaves below the split",
+        a_paired_root_admits_only_user_leaves_below_the_split(),
+    );
+    report.check(
         "a user space cannot reach the kernel half",
         a_user_space_cannot_reach_the_kernel_half(),
     );
@@ -9072,6 +9206,30 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a busy machine reaps a program without another spawn",
         a_busy_machine_reaps_a_program_without_another_spawn(),
+    );
+    report.check(
+        "the user root contains only the entry enclave",
+        the_user_root_contains_only_the_entry_enclave(),
+    );
+    report.check(
+        "every user entry reaches Rust on the full root",
+        wost::arch::current::kpti_every_user_entry_reached_rust_on_full_root_for_test(),
+    );
+    report.check(
+        "every user return installs the stripped root",
+        wost::arch::current::kpti_every_user_return_installed_stripped_root_for_test(),
+    );
+    report.check(
+        "the entry stack is guarded and scrubbed",
+        wost::arch::current::kpti_entry_stacks_are_guarded_and_scrubbed_for_test(),
+    );
+    report.check(
+        "a context switch moves one complete root pair",
+        wost::arch::current::kpti_context_switch_moved_complete_root_pairs_for_test(),
+    );
+    report.check(
+        "paired-space refusal and retirement conserve every frame",
+        paired_space_refusal_and_retirement_conserve_every_frame(),
     );
     report.check(
         "the polled keyboard fallback is bounded before it stays live",

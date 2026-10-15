@@ -49,7 +49,7 @@ mod wait;
 use core::fmt::Write;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::arch::current::uart::UartError;
 use wost::arch::current::{apic, cpu, interrupt, pci as platform_pci, pic, segment, task, xstate};
@@ -178,7 +178,39 @@ pub(crate) fn user_launch_is_safe() -> bool {
 
 static SHARED_KERNEL_MAPPINGS_SAFE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UserIsolation {
+    Closed,
+    Shared,
+    Paired,
+}
+
+impl UserIsolation {
+    const fn bits(self) -> u8 {
+        match self {
+            Self::Closed => 0,
+            Self::Shared => 1,
+            Self::Paired => 2,
+        }
+    }
+
+    const fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Shared,
+            2 => Self::Paired,
+            _ => Self::Closed,
+        }
+    }
+}
+
+static USER_ISOLATION: AtomicU8 = AtomicU8::new(UserIsolation::Closed.bits());
+
+pub(crate) fn user_isolation() -> UserIsolation {
+    UserIsolation::from_bits(USER_ISOLATION.load(Ordering::Acquire))
+}
+
 /// Whether process construction may install the kernel half in user tables.
+#[cfg(feature = "selftest")]
 pub(crate) fn shared_kernel_mappings_are_safe() -> bool {
     SHARED_KERNEL_MAPPINGS_SAFE.load(Ordering::Acquire)
 }
@@ -202,7 +234,9 @@ pub(crate) fn with_unguarded_boot_stack_for_test<T>(check: impl FnOnce() -> T) -
 #[cfg(feature = "selftest")]
 pub(crate) fn without_shared_kernel_mapping_proof_for_test<T>(check: impl FnOnce() -> T) -> T {
     let safe = SHARED_KERNEL_MAPPINGS_SAFE.swap(false, Ordering::AcqRel);
+    let isolation = USER_ISOLATION.swap(UserIsolation::Closed.bits(), Ordering::AcqRel);
     let result = check();
+    USER_ISOLATION.store(isolation, Ordering::Release);
     SHARED_KERNEL_MAPPINGS_SAFE.store(safe, Ordering::Release);
     result
 }
@@ -327,11 +361,35 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     match cpu::shared_kernel_mapping_reason(&speculation) {
         Some(reason) => {
             SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
-            info!("cpu: user isolation shared kernel mappings: {reason}");
+            let isolation = if cfg!(feature = "selftest")
+                && wost::arch::current::kpti_entry_path_is_implemented()
+            {
+                // Qualification must execute the paired path even on QEMU,
+                // whose exact TCG tuple independently admits shared roots.
+                UserIsolation::Paired
+            } else {
+                UserIsolation::Shared
+            };
+            USER_ISOLATION.store(isolation.bits(), Ordering::Release);
+            if isolation == UserIsolation::Paired {
+                info!(
+                    "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
+                );
+            } else {
+                info!("cpu: user isolation shared kernel mappings: {reason}");
+            }
         }
         None => {
             SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
-            warn!("cpu: user isolation shared kernel mappings: refused; ring 3 stays closed");
+            if wost::arch::current::kpti_entry_path_is_implemented() {
+                USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
+                info!("cpu: user isolation paired roots: selected; shared mappings refused");
+            } else {
+                USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
+                warn!(
+                    "cpu: user isolation: no complete shared or paired entry path; ring 3 closed"
+                );
+            }
         }
     }
 

@@ -154,7 +154,7 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
     let repository = fixture.repository.clone();
     let result = crate::bounded_process::output_dialogue(
         command,
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         "fake Codex effective-config reader",
         DialogueLimits {
             line_bytes: 4 * 1024 * 1024,

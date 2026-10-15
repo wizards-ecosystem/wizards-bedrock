@@ -78,12 +78,12 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 ///
 /// The measurement and per-file audit records below are executable evidence;
 /// change history belongs in the decision log (D-124).
-pub const BUDGET: usize = 382;
+pub const BUDGET: usize = 388;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
 /// Kept separately because a ceiling cannot reveal drift below it.
-pub const MEASURED: usize = 382;
+pub const MEASURED: usize = 388;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -146,13 +146,19 @@ mod tests {
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "08bcc3361cd6f5c48f7aff563440d768d1d52519d2d02da819d9c71db5ae0852",
+            "ff949f1cead5bf7ebf06c387cdfd673a4aeabc9699c4fa6c2a318c8334ccf0e3",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
-            22,
-            1,
-            "96cb1cbb5db4e76eaacb0135dbb7bcf96649625966f1e35c5e8087fbc5ced8f8",
+            23,
+            2,
+            "d20e4cca573d84e3dcc456c65de7ab0de2dce33b33cfd827fa02c0467cf6259a",
+        ),
+        (
+            "wost/src/arch/x86_64/kpti.rs",
+            2,
+            0,
+            "1f86a1c6569b16f1c934f69134f9eab72109102971c374799d5ab6d6cb5be15e",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
@@ -162,9 +168,9 @@ mod tests {
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
-            13,
+            14,
             0,
-            "840004fa16fdc0ed533542777399df4961fcdc6a0f001f9ea34c40dc4a0e43cb",
+            "ffcd1a49b6854135bb875a9da60e514b17ec02016ab2be2822c855fa991cf370",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -180,9 +186,9 @@ mod tests {
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
-            12,
+            14,
             0,
-            "e8cbf708c1591491c2c3ac638be2a4809b7a084c76d077d4538f0c917193779e",
+            "71e5cfef2416ec47e01dd6504544710c7e7138943d6b95ce1a5ebd492c310196",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
@@ -193,8 +199,8 @@ mod tests {
         (
             "wost/src/arch/x86_64/task.rs",
             14,
-            3,
-            "0cd06d6dacd2e70f5abda111bcce6a3721e1bd8349ca15371a4dfaa5ef6f83f6",
+            2,
+            "e5e26213bedfd484ea89f1de2f4b3aca57099512f24646b508251c926b54ba7a",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
@@ -218,7 +224,7 @@ mod tests {
             "wost/src/boot/mod.rs",
             0,
             1,
-            "0287d36428d671cd920730c7306035d316e668d4a144db17e3d3d7026d6b931b",
+            "ef4fd0dcbf2c1d6ca31501b4d60ed3d7386fbce18bea96b3c672d47ecd7556c1",
         ),
         (
             "wost/src/cell.rs",

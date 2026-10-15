@@ -921,8 +921,8 @@ impl SpawnFault {
 pub(crate) enum SpawnError {
     /// Boot did not admit maskable interrupts.
     NoInterruptAdmission,
-    /// Shared kernel mappings have no accepted RDCL isolation evidence.
-    NoSharedKernelIsolation,
+    /// Neither shared-root nor paired-root isolation is admitted.
+    NoUserIsolation,
     /// The CPU is not enforcing non-executable mappings.
     NoExecuteProtection,
     /// Thread switches cannot isolate architectural extended state.
@@ -965,10 +965,9 @@ impl fmt::Display for SpawnError {
                 f,
                 "maskable interrupts are not admitted; ring 3 is closed",
             ),
-            Self::NoSharedKernelIsolation => core::fmt::Write::write_str(
-                f,
-                "shared kernel mappings have no isolation proof; ring 3 is closed",
-            ),
+            Self::NoUserIsolation => {
+                core::fmt::Write::write_str(f, "no admitted user isolation mode; ring 3 is closed")
+            }
             Self::NoExecuteProtection => {
                 core::fmt::Write::write_str(f, "no execute protection; ring 3 is closed")
             }
@@ -1049,9 +1048,7 @@ fn spawn_transaction(
     if !crate::user_launch_is_safe() {
         return Err(SpawnError::UnguardedBootStack);
     }
-    if !crate::shared_kernel_mappings_are_safe() {
-        return Err(SpawnError::NoSharedKernelIsolation);
-    }
+    let isolation = crate::user_isolation();
     if !no_execute_is_enabled() {
         return Err(SpawnError::NoExecuteProtection);
     }
@@ -1064,7 +1061,12 @@ fn spawn_transaction(
     if !crate::queue::worker_is_ready() {
         return Err(SpawnError::NoServiceWorker);
     }
-    let space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
+    let space = match isolation {
+        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
+        crate::UserIsolation::Shared => AddressSpace::for_user(),
+        crate::UserIsolation::Paired => AddressSpace::for_user_isolated(),
+    }
+    .map_err(SpawnError::NoSpace)?;
     let mut construction = ProcessConstruction::new(space);
     #[cfg(feature = "selftest")]
     stop_after(fault, SpawnEdge::Space)?;

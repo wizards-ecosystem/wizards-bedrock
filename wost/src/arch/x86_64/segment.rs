@@ -7,6 +7,7 @@
 //! gate finds the stack for a fault that cannot trust the current one.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use x86_tables::Selector;
 use x86_tables::gdt::{Descriptor, SystemDescriptor};
@@ -65,6 +66,7 @@ const FAULT_STACK_BYTES: usize = 16 * 1024;
 #[repr(C, align(16))]
 struct FaultStack([u8; FAULT_STACK_BYTES]);
 
+#[unsafe(link_section = ".kpti.tables.gdt")]
 static GDT: HardwareCell<[u64; ENTRIES]> = HardwareCell::new([0; ENTRIES]);
 /// The task-state segment, placed so its interrupt-stack entries are
 /// eight-byte aligned.
@@ -86,6 +88,7 @@ struct AlignedTaskState {
     state: TaskState,
 }
 
+#[unsafe(link_section = ".kpti.tables.tss")]
 static TASK_STATE_SEGMENT: HardwareCell<AlignedTaskState> = HardwareCell::new(AlignedTaskState {
     _leading: 0,
     state: TaskState::new(),
@@ -97,8 +100,15 @@ fn task_state_pointer() -> *mut TaskState {
     // the live static rather than deriving a pointer from an integer.
     unsafe { &raw mut (*TASK_STATE_SEGMENT.as_mut_ptr()).state }
 }
+#[unsafe(link_section = ".kpti.state.ist_stack")]
 static FAULT_STACK: HardwareCell<FaultStack> =
     HardwareCell::new(FaultStack([0; FAULT_STACK_BYTES]));
+/// Guarded ordinary IST1 installed after paging comes alive.
+///
+/// Paired tasks temporarily replace the hardware entry with the enclave IST.
+/// Keeping the pinned stack's address here lets the same interrupt-excluded
+/// task switch restore the ordinary fault path before a non-paired task runs.
+static ORDINARY_FAULT_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 static INIT: Once = Once::new();
 
 /// Install and load the kernel's descriptor table and task-state segment.
@@ -246,8 +256,43 @@ fn reload_selectors() {
 
 /// Point ring-3 traps at a stack retained by the pinned task arena.
 pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {
-    let top = top.address();
-    let at = TaskState::privilege_stack_offset(0);
+    write_stack(TaskState::privilege_stack_offset(0), top.address());
+}
+
+/// Install both stacks hardware can reach before the full-root transition.
+pub(super) fn install_entry_stacks(
+    transition: super::kpti::TransitionStackTop,
+    interrupt: IstStackTop,
+) {
+    assert!(
+        !super::interrupt::are_enabled(),
+        "entry stacks change only with interrupts excluded"
+    );
+    write_stack(TaskState::privilege_stack_offset(0), transition.address());
+    write_stack(
+        TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize),
+        interrupt.address(),
+    );
+}
+
+/// Restore the guarded fault stack after leaving a paired address space.
+pub(super) fn restore_ordinary_fault_stack() {
+    assert!(
+        !super::interrupt::are_enabled(),
+        "the interrupt stack changes only with interrupts excluded"
+    );
+    let top = ORDINARY_FAULT_STACK_TOP.load(Ordering::Acquire);
+    assert!(
+        top != 0,
+        "the guarded ordinary fault stack is not installed"
+    );
+    write_stack(
+        TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize),
+        top,
+    );
+}
+
+fn write_stack(at: usize, top: u64) {
     assert!(
         task_state_pointer()
             .addr()
@@ -284,10 +329,11 @@ pub(super) fn kernel_stack() -> u64 {
 /// one complete mapped, writable value or the other.
 ///
 /// `false` if the stack does not belong to the address space this CPU is
-/// walking, which would point the handler at memory it cannot reach.
+/// walking, or after paired entry owns the TSS stacks. Either case leaves the
+/// current interrupt-stack entry unchanged.
 #[must_use = "a refused double-fault stack install changed no TSS entry"]
 pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
-    if !stack.is_installed() {
+    if !stack.is_installed() || super::kpti::entry_is_ready() {
         return false;
     }
     let at = TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize);
@@ -304,16 +350,22 @@ pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
         .cast::<u8>()
         .wrapping_add(at)
         .cast::<u64>();
+    let top = stack.top();
     // SAFETY: the layout-owned offset is inside the live segment, and the
     // assertion proves its eight-byte alignment. The naturally aligned store
     // lets the CPU observe one complete value or the other.
-    unsafe { entry.write_volatile(stack.top()) };
+    unsafe { entry.write_volatile(top) };
+    ORDINARY_FAULT_STACK_TOP.store(top, Ordering::Release);
     true
 }
 
 /// Where the double-fault handler's stack currently starts.
 #[cfg(feature = "selftest")]
 pub fn double_fault_stack() -> u64 {
+    double_fault_stack_address()
+}
+
+pub(super) fn double_fault_stack_address() -> u64 {
     read_stack(TaskState::interrupt_stack_offset(
         DOUBLE_FAULT_STACK as usize,
     ))
@@ -347,4 +399,30 @@ fn read_stack(at: usize) -> u64 {
 /// The address the double-fault stack grows down from.
 fn fault_stack_top() -> u64 {
     FAULT_STACK.address() + FAULT_STACK_BYTES as u64
+}
+
+/// A stack address minted only from the linker-owned enclave IST storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IstStackTop(u64);
+
+impl IstStackTop {
+    pub(super) const fn address(self) -> u64 {
+        self.0
+    }
+}
+
+pub(super) fn enclave_ist_stack_top() -> IstStackTop {
+    IstStackTop(fault_stack_top())
+}
+
+#[cfg(feature = "selftest")]
+pub(super) fn enclave_ist_stack_is_zeroed_for_test() -> bool {
+    let bytes = FAULT_STACK.as_mut_ptr().cast::<u8>();
+    (0..FAULT_STACK_BYTES).all(|offset| {
+        // SAFETY: paired route evidence is checked by the caller before this
+        // read, and the linker-owned allocation spans FAULT_STACK_BYTES.
+        let byte = unsafe { bytes.add(offset) };
+        // SAFETY: `byte` is inside that same inactive allocation.
+        unsafe { byte.read_volatile() == 0 }
+    })
 }

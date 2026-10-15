@@ -373,6 +373,46 @@ write-combining — a hypervisor may decline the MSR write, so it is read back
 rather than remembered — and the mapping must select it. Either alone leaves
 writes crossing the bus one at a time while the log says otherwise.
 
+## Post-phase implementation — paired-root KPTI (2026-10-14; external qualification open)
+
+D-407 records the design and its implementation. It does not reopen Phase 3's boot
+root: D-45's kernel-owned root remains the full root and the only root on which
+ordinary kernel Rust may execute. A user address space admitted through KPTI
+adds a stripped companion. Both roots point at the same owned lower-half user
+table subtrees; only the full root points at the frozen kernel higher half. The
+stripped root instead has a separate higher-half hierarchy containing the exact
+entry enclave and no direct map, heap, ordinary kernel image, ordinary task
+stack, page-table alias, framebuffer or device mapping.
+
+The enclave is not a convenient range around existing symbols. Dedicated
+page-aligned linker bounds name only the interrupt stubs and common assembly,
+the IDT plus GDT/TSS bytes hardware reads, a non-secret CPU-local routing page,
+and the guarded transition/IST stacks needed before the full-root load. The
+stripped permissions are exact: assembly read-only executable; descriptor and
+routing bytes read-only NX; stacks supervisor-only writable NX with their
+layout-owned lower guards absent. Every leaf is non-global, no page contains an
+unlisted kernel symbol, and a different frame or any additional present
+higher-half leaf refuses the pair before publication.
+
+Pair construction and destruction extend the existing frame discipline. The
+two top-level roots, stripped hierarchy and one shared set of user tables enter
+one rollback ledger. Neither root is published alone. Unmap changes the shared
+user leaves once, pays D-88's translation debt under the current no-PCID
+contract, and frame return waits until task release proves that neither member
+can be installed. A failed allocation, mapping, binding, revalidation or
+reclaim returns the entire unpublished ledger or retains the entire published
+pair; there is no successful cleanup record for half a pair.
+
+Host tests reject every missing, extra, differently backed or wrongly flagged
+enclave leaf and every divergent user leaf. Fault-injection tests stop
+after each allocation and publication edge and account for every frame. The
+machine proof forces KPTI under QEMU, walks the stripped root, reads back that
+PCID is off and enclave leaves are non-global, and exercises entry, exit,
+fault, timer, context-switch and retirement order. Each predicate has the
+retained mutation D-407 enumerates; mutations 2,048 through 2,061 were each
+observed red before restoration. Debug and optimized QEMU both reached 290/290.
+PW-706 remains open for the complete release sweep and fresh VMware evidence.
+
 ## The implementation, closed; the VMware record missing
 
 Every debt this file collected was either paid or explicitly transferred. W^X,

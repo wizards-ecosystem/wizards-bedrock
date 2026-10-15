@@ -25,7 +25,9 @@ const FORMAT: &str = "wizard-qualification-v6";
 const RECORD: &str = "record";
 const RECORD_TEMP: &str = "record.incomplete";
 const PASS: &str = "pass";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+// Qualification probes share a host with compiler-heavy release checks.
+// Thirty seconds remains a strict bound while tolerating scheduler latency.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const ADVISORY_TIMEOUT: Duration = Duration::from_secs(300);
 const WINDOWS_VMWARE: &str = r"C:\Program Files (x86)\VMware\VMware Workstation";
 

@@ -4183,16 +4183,9 @@ fn require_guarded_buffer_clear(
     source: &str,
     macro_name: &'static str,
     owner: Option<&str>,
+    expected_increments: usize,
     operand: &[&str],
 ) {
-    const GUARDED_INCREMENT: &[&str] = &[
-        ".if {record_clears}",
-        "jnz 3f",
-        "inc qword ptr [rip + BUFFER_CLEARS]",
-        "3:",
-        ".endif",
-    ];
-
     let syntax = syn::parse_file(source).expect("parse buffer-clear assembly source");
     let mut macros = BufferClearMacros::default();
     macros.visit_file(&syntax);
@@ -4211,36 +4204,39 @@ fn require_guarded_buffer_clear(
     let invocation = site.invocation;
     let mut strings = Vec::new();
     asm_strings(invocation.tokens.clone(), &mut strings);
-    assert_eq!(
-        strings
-            .iter()
-            .filter(|value| value.contains("BUFFER_CLEARS"))
-            .count(),
-        1,
-        "one buffer-clear symbol reference in the {macro_name} return path"
-    );
-    assert_eq!(
-        strings
-            .iter()
-            .find(|value| value.contains("BUFFER_CLEARS"))
-            .map(String::as_str),
-        Some("inc qword ptr [rip + BUFFER_CLEARS]"),
-        "the buffer-clear symbol has an unexpected assembly operation"
-    );
-    let start = strings
+    let increments = strings
         .iter()
-        .position(|value| value == GUARDED_INCREMENT[0])
-        .expect("buffer-clear tally has no assembler condition");
-    let guarded = strings
-        .get(start..start + GUARDED_INCREMENT.len())
-        .expect("buffer-clear assembler condition is incomplete");
-    assert!(
-        guarded
-            .iter()
-            .map(String::as_str)
-            .eq(GUARDED_INCREMENT.iter().copied()),
-        "buffer-clear tally is not wholly inside its assembler condition"
+        .enumerate()
+        .filter(|(_, value)| value.as_str() == "inc qword ptr [rip + BUFFER_CLEARS]")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        increments.len(),
+        expected_increments,
+        "unexpected buffer-clear symbol reference count in the {macro_name} return path"
     );
+    for increment in increments {
+        assert_eq!(
+            strings.get(increment.checked_sub(2).expect("unguarded tally")),
+            Some(&".if {record_clears}".to_string()),
+            "buffer-clear tally is not inside its assembler condition"
+        );
+        let jump = strings
+            .get(increment - 1)
+            .and_then(|value| value.strip_prefix("jnz "))
+            .and_then(|value| value.strip_suffix('f'))
+            .expect("buffer-clear tally has no conditional success jump");
+        assert_eq!(
+            strings.get(increment + 1).map(String::as_str),
+            Some(format!("{jump}:").as_str()),
+            "buffer-clear tally's success label does not match its jump"
+        );
+        assert_eq!(
+            strings.get(increment + 2).map(String::as_str),
+            Some(".endif"),
+            "buffer-clear tally is not wholly inside its assembler condition"
+        );
+    }
     let mut flattened = Vec::new();
     asm_tokens(invocation.tokens.clone(), &mut flattened);
     assert_eq!(
@@ -4539,31 +4535,12 @@ fn buffer_clear_assembly_writes_are_guarded() {
     let paths = Paths::discover().expect("workspace paths");
     let interrupt = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/interrupt.rs"))
         .expect("read interrupt source");
-    let task = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/task.rs"))
-        .expect("read task source");
     require_guarded_buffer_clear(
         &interrupt,
         "global_asm",
         None,
+        2,
         &["record_clears", "=", "const", "RECORD_BUFFER_CLEARS", ","],
-    );
-    require_guarded_buffer_clear(
-        &task,
-        "naked_asm",
-        Some("leave_for_user"),
-        &[
-            "record_clears",
-            "=",
-            "const",
-            "super",
-            ":",
-            ":",
-            "interrupt",
-            ":",
-            ":",
-            "RECORD_BUFFER_CLEARS",
-            ",",
-        ],
     );
 }
 
@@ -5874,13 +5851,11 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
         paging.matches("TASK_STACK_PIN.force_unlock(panic)").count(),
         1
     );
-    assert!(paging.contains("*pinned = Some((self.root, self.layout));"));
+    assert!(paging.contains("*pinned = Some((self.roots, self.layout));"));
     assert!(!paging.contains("*pinned = None;"));
-    assert!(
-        paging.contains(
-            "if let Some(pinned) = protected_stack_overlap(self.root(), virtual_base, len)"
-        )
-    );
+    assert!(paging.contains(
+        "if let Some(pinned) = protected_stack_overlap(self.roots(), virtual_base, len)"
+    ));
 
     let task = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/task.rs"))
         .expect("task source");

@@ -1069,6 +1069,7 @@ fn build(
 
         // Read-only and executable; read-only and not; writable and not. No
         // fourth combination exists, which is the whole of W^X.
+        let enclave = sections.entry_enclave;
         let classes = [
             (sections.text, Flags::NONE, "text"),
             (sections.rodata, Flags::NO_EXECUTE, "rodata"),
@@ -1077,8 +1078,30 @@ fn build(
                 Flags::WRITABLE.union(Flags::NO_EXECUTE),
                 "data",
             ),
+            (enclave.text, Flags::NONE, "entry text"),
+            (enclave.rodata, Flags::NO_EXECUTE, "entry rodata"),
+            (
+                enclave.tables,
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+                "entry tables",
+            ),
+            (
+                enclave.route,
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+                "entry route",
+            ),
+            (
+                enclave.transition_stack,
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+                "entry transition stack",
+            ),
+            (
+                enclave.ist_stack,
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+                "entry IST stack",
+            ),
         ];
-        let mut image_ranges = [(0, 0, Flags::NONE); 3];
+        let mut image_ranges = [(0, 0, Flags::NONE); 9];
         for ((section, flags, name), range) in classes.into_iter().zip(image_ranges.iter_mut()) {
             let physical = image
                 .to_physical(section.start)

@@ -663,10 +663,15 @@ fn page_table_context_ids_are_enabled() -> bool {
     read_cr4() & CR4_PCIDE != 0
 }
 
+/// Whether an ordinary `CR3` write flushes every non-global translation.
+pub(super) fn page_table_context_ids_are_disabled() -> bool {
+    !page_table_context_ids_are_enabled()
+}
+
 /// Whether page-table reloads flush every non-global translation.
 #[cfg(feature = "selftest")]
 pub fn page_table_context_ids_are_disabled_for_test() -> bool {
-    !page_table_context_ids_are_enabled()
+    page_table_context_ids_are_disabled()
 }
 
 /// A reversible change to the page attribute table.

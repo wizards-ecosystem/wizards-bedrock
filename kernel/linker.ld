@@ -5,8 +5,11 @@ ENTRY(kmain)
 
 PHDRS
 {
+    kpti_text   PT_LOAD FLAGS(5);
     text    PT_LOAD;
+    kpti_rodata PT_LOAD FLAGS(4);
     rodata  PT_LOAD;
+    kpti_data   PT_LOAD FLAGS(6);
     data    PT_LOAD;
 }
 
@@ -20,22 +23,80 @@ SECTIONS
        ends and the next begins (D-45). Each section is already aligned to
        MAXPAGESIZE, so every _start lands on a page boundary; the _end symbols
        are rounded up by the mapping code, not here. */
-    __text_start = .;
+    /* D-407's entry instructions occupy their own complete 4 KiB pages. Each
+       accepted input name is enumerated: a new enclave resident must first
+       extend the reviewed linker and ELF contracts rather than silently
+       joining a broad wildcard. */
+    .kpti.text : ALIGN(4096) {
+        __kpti_text_start = .;
+        KEEP(*(.kpti.text))
+        . = ALIGN(4096);
+        __kpti_text_end = .;
+    } :kpti_text
 
+    __text_start = .;
     .text : {
         *(.text .text.*)
     } :text
 
     __text_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    __rodata_start = .;
+    .kpti.rodata : ALIGN(4096) {
+        __kpti_rodata_start = .;
+        KEEP(*(.kpti.rodata.geometry))
+        KEEP(*(.kpti.rodata.verw_selector))
+        . = ALIGN(4096);
+        __kpti_rodata_end = .;
+    } :kpti_rodata
 
+    __rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
 
     __rodata_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    /* The full root writes these pages while constructing routes and tables;
+       a future stripped root maps the table and routing pages read-only. The
+       guard is a named page so paired-root construction can omit it rather
+       than trusting an address-sized hole inferred from stack arithmetic. */
+    .kpti.tables : ALIGN(4096) {
+        __kpti_tables_start = .;
+        KEEP(*(.kpti.tables.idt))
+        KEEP(*(.kpti.tables.gdt))
+        KEEP(*(.kpti.tables.tss))
+        . = ALIGN(4096);
+        __kpti_tables_end = .;
+    } :kpti_data
+
+    .kpti.data : ALIGN(4096) {
+        __kpti_route_start = .;
+        KEEP(*(.kpti.state.route))
+        . = ALIGN(4096);
+        __kpti_route_end = .;
+
+        __kpti_transition_guard_start = .;
+        . += 4096;
+        __kpti_transition_guard_end = .;
+
+        __kpti_transition_stack_start = .;
+        KEEP(*(.kpti.state.transition_stack))
+        . = ALIGN(4096);
+        __kpti_transition_stack_end = .;
+
+        __kpti_ist_guard_start = .;
+        . += 4096;
+        __kpti_ist_guard_end = .;
+
+        __kpti_ist_stack_start = .;
+        KEEP(*(.kpti.state.ist_stack))
+        . = ALIGN(4096);
+        __kpti_ist_stack_end = .;
+
+        . = ALIGN(4096);
+        __kpti_data_end = .;
+    } :kpti_data
+
     __data_start = .;
 
     /* Limine scans between the markers for request structures and writes its

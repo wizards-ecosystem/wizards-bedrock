@@ -23,7 +23,9 @@ const REPORT_SUFFIX: &str = ".report";
 const LAST_RUN: &str = "last-run";
 const STATE_ROOT_NAME: &str = "mutate";
 const MAX_STATE_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+// Git may contend with the compiler-heavy host suite on release builders.
+// Keep the query bounded without making scheduler latency a gate failure.
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
 const MAX_GIT_INDEX_BYTES: u64 = 16 * 1024 * 1024;

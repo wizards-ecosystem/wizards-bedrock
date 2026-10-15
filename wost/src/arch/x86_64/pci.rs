@@ -247,6 +247,10 @@ impl BarMapping {
     /// # Errors
     ///
     /// Returns the complete mapping if the running root no longer contains it.
+    #[expect(
+        clippy::result_large_err,
+        reason = "refusal must return the complete linear BAR authority without allocating"
+    )]
     pub fn claim_disabled(self) -> Result<DisabledBar, Self> {
         let Self { authority, mapping } = self;
         match mapping.claim_releasable() {

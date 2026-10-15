@@ -824,6 +824,38 @@ construction returns a typed refusal before allocating anything. KPTI remains
 the trigger when supported native hardware without `RDCL_NO` must run user
 programs.
 
+**That KPTI trigger has fired, and its implementation is present while external
+qualification remains open** (D-407). Current VMware guests read `0x44` without
+`RDCL_NO`; the different value printed in a Workstation log is not guest
+architectural authority. A no-`RDCL_NO` native process will therefore bind a
+pair: a full root with its user mappings and the kernel half, and a stripped
+root with the same lower-half user subtrees plus only the exact supervisor
+entry enclave. The existing D-250 shared-root path remains available only for
+affirmative guest-read `RDCL_NO` or the exact host-pinned QEMU TCG development
+tuple. Neither path silently falls back to the other.
+
+The first privilege-crossing instructions run on a dedicated guarded
+transition stack. They save the user frame, load the full root, move the frame
+to the pinned ordinary task stack, clear the transition stack and only then
+call Rust. The return tail finishes every secret-capable access under the full
+root, copies only sanitized user-visible state onto the clean transition stack,
+loads the stripped root and reaches `iretq` through enclave assembly without
+touching an ordinary kernel byte. The entry enclave contains only dedicated
+page-aligned stubs/common assembly, hardware-read descriptor bytes, one
+non-secret routing page and the transition/IST stack pages. No ordinary kernel
+text, data, direct map, task stack or device window is present there.
+
+D-106's task binding consequently becomes authority over both roots. A kernel
+context switch installs the destination's full root; only the final exit tail
+can install its stripped mate. D-88's no-PCID flush and release evidence cover
+the shared lower tables and both root frames, and cleanup retains the complete
+pair on any refusal. Machine checks name entry/exit ordering, exact enclave
+reach, stack guard and scrub, pair movement across two spaces and exact frame
+conservation. The host contracts and mutations 2,048 through 2,061 are
+retained, and forced-paired debug and optimized QEMU reached 290/290. PW-580
+and PW-706 stay open for the complete release sweep and fresh self-test plus
+shipped VMware boots.
+
 **`enter_user` is safe because it checks** (D-96). `iretq` will send the CPU to
 an unmapped address in a privilege level that cannot report it, so the tables,
 the entry's user-executability, the stack's user-writability, the alignment and

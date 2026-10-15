@@ -22,6 +22,12 @@ const SHT_NOBITS: u32 = 8;
 
 /// Section flag: this section is part of the loaded image.
 const SHF_ALLOC: u64 = 1 << 1;
+/// Section flag: bytes may be written after loading.
+const SHF_WRITE: u64 = 1;
+/// Section flag: bytes may be executed.
+const SHF_EXECUTE: u64 = 1 << 2;
+
+const PAGE_BYTES: u64 = 4096;
 
 const SECTION_HEADER_BYTES: usize = 64;
 
@@ -35,6 +41,16 @@ const MAX_SECTION_NAME_BYTES: usize = 1024 * 1024;
 /// Where the higher half begins — the base `kernel/linker.ld` links at, and
 /// the range the kernel code model can address.
 const HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
+
+const fn ranges_overlap(left: u64, left_size: u64, right: u64, right_size: u64) -> bool {
+    if left_size == 0 || right_size == 0 {
+        return false;
+    }
+    match (left.checked_add(left_size), right.checked_add(right_size)) {
+        (Some(left_end), Some(right_end)) => left < right_end && right < left_end,
+        _ => true,
+    }
+}
 
 /// One loadable segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +81,20 @@ impl Segment {
         ) {
             (Some(segment_end), Some(end)) => vaddr >= self.vaddr && end <= segment_end,
             _ => false,
+        }
+    }
+
+    /// Whether this segment intersects any byte of another non-empty range.
+    pub const fn overlaps(self, vaddr: u64, size: u64) -> bool {
+        if self.memory_size == 0 || size == 0 {
+            return false;
+        }
+        match (
+            self.vaddr.checked_add(self.memory_size),
+            vaddr.checked_add(size),
+        ) {
+            (Some(segment_end), Some(end)) => self.vaddr < end && vaddr < segment_end,
+            _ => true,
         }
     }
 
@@ -147,6 +177,23 @@ pub enum ImageError {
         /// Name of the section.
         name: &'static str,
     },
+    /// A dedicated entry-enclave section is not page-exact or has the wrong
+    /// memory permissions.
+    InvalidEnclaveSection {
+        /// Name of the malformed section.
+        name: String,
+    },
+    /// A dedicated entry-enclave segment contains unrelated bytes or has the
+    /// wrong memory permissions.
+    InvalidEnclaveSegment {
+        /// Name of the section whose segment is malformed.
+        name: &'static str,
+    },
+    /// An unrecognised allocated `.kpti.*` section escaped the closed set.
+    UnexpectedEnclaveSection {
+        /// Name the linker emitted.
+        name: String,
+    },
     /// A segment claims more file bytes than it will occupy in memory, or
     /// bytes that run off the end of the address space.
     ImpossibleSegment {
@@ -193,6 +240,18 @@ impl fmt::Display for ImageError {
             Self::MissingSection { name } => {
                 write!(f, "{name} is missing from the loaded image")
             }
+            Self::InvalidEnclaveSection { name } => {
+                write!(f, "{name} is not one complete page-exact enclave range")
+            }
+            Self::InvalidEnclaveSegment { name } => {
+                write!(f, "the load segment for {name} is not dedicated and exact")
+            }
+            Self::UnexpectedEnclaveSection { name } => {
+                write!(
+                    f,
+                    "unrecognised entry-enclave section {name} escaped the closed set"
+                )
+            }
         }
     }
 }
@@ -204,7 +263,21 @@ impl std::error::Error for ImageError {}
 /// `.requests` is where `wost::entry!` puts the Limine request block; without
 /// it the bootloader answers nothing and the kernel faults reading a response
 /// that was never filled in.
-const REQUIRED: &[&str] = &[".text", ".requests"];
+const REQUIRED: &[&str] = &[
+    ".text",
+    ".requests",
+    ".kpti.text",
+    ".kpti.rodata",
+    ".kpti.tables",
+    ".kpti.data",
+];
+
+const KPTI_SECTIONS: &[(&str, bool, bool)] = &[
+    (".kpti.text", false, true),
+    (".kpti.rodata", false, false),
+    (".kpti.tables", true, false),
+    (".kpti.data", true, false),
+];
 
 impl Image {
     /// Check every property `kernel/linker.ld` is written to produce.
@@ -267,7 +340,109 @@ impl Image {
             }
         }
 
+        self.verify_entry_enclave(&mut faults);
+
         faults
+    }
+
+    fn verify_entry_enclave(&self, faults: &mut Vec<ImageError>) {
+        for section in self
+            .sections
+            .iter()
+            .filter(|section| section.is_allocated() && section.name.starts_with(".kpti."))
+        {
+            if !KPTI_SECTIONS
+                .iter()
+                .any(|(name, _, _)| section.name == *name)
+            {
+                faults.push(ImageError::UnexpectedEnclaveSection {
+                    name: section.name.clone(),
+                });
+            }
+        }
+
+        for &(name, writable, executable) in KPTI_SECTIONS {
+            let Some(section) = self
+                .sections
+                .iter()
+                .find(|section| section.name == name && section.is_allocated())
+            else {
+                continue;
+            };
+            let page_exact = section.addr.is_multiple_of(PAGE_BYTES)
+                && section.size != 0
+                && section.size.is_multiple_of(PAGE_BYTES);
+            let permissions = (section.flags & SHF_WRITE != 0) == writable
+                && (section.flags & SHF_EXECUTE != 0) == executable;
+            let exclusive = !self.sections.iter().any(|other| {
+                other.is_allocated()
+                    && other.name != section.name
+                    && ranges_overlap(section.addr, section.size, other.addr, other.size)
+            });
+            if !page_exact || !permissions || !exclusive {
+                faults.push(ImageError::InvalidEnclaveSection {
+                    name: section.name.clone(),
+                });
+            }
+        }
+
+        let named = |name: &'static str| {
+            self.sections
+                .iter()
+                .find(|section| section.name == name && section.is_allocated())
+        };
+        for (name, expected_flags) in [
+            (".kpti.text", elf64::Segment::READ | elf64::Segment::EXECUTE),
+            (".kpti.rodata", elf64::Segment::READ),
+        ] {
+            let Some(section) = named(name) else {
+                continue;
+            };
+            let mut intersecting = self.segments.iter().copied().filter(|segment| {
+                segment.is_loadable() && segment.overlaps(section.addr, section.size)
+            });
+            let Some(segment) = intersecting.next() else {
+                continue;
+            };
+            if !segment.covers(section.addr, section.size)
+                || segment.vaddr != section.addr
+                || segment.memory_size != section.size
+                || segment.flags != expected_flags
+                || intersecting.next().is_some()
+            {
+                faults.push(ImageError::InvalidEnclaveSegment { name });
+            }
+        }
+
+        if let (Some(tables), Some(data)) = (named(".kpti.tables"), named(".kpti.data")) {
+            let covering = |section: &Section| {
+                self.segments
+                    .iter()
+                    .copied()
+                    .filter(|segment| {
+                        segment.is_loadable() && segment.overlaps(section.addr, section.size)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let table_segments = covering(tables);
+            let data_segments = covering(data);
+            let segment = table_segments.first().copied();
+            let same = table_segments.len() == 1
+                && data_segments.len() == 1
+                && segment == data_segments.first().copied();
+            let exact = segment.is_some_and(|segment| {
+                tables.addr.checked_add(tables.size) == Some(data.addr)
+                    && data.addr.checked_add(data.size)
+                        == segment.vaddr.checked_add(segment.memory_size)
+                    && segment.vaddr == tables.addr
+                    && segment.flags == (elf64::Segment::READ | elf64::Segment::WRITE)
+            });
+            if !same || !exact {
+                faults.push(ImageError::InvalidEnclaveSegment {
+                    name: ".kpti.tables/.kpti.data",
+                });
+            }
+        }
     }
 
     /// The loadable segment holding `section`, if any.
@@ -497,48 +672,91 @@ mod tests {
         }
     }
 
-    /// The shape `kernel/linker.ld` is written to produce: three segments,
-    /// read-execute then read-only then read-write, with `.bss` last and
-    /// costing no file space.
+    /// The shape `kernel/linker.ld` is written to produce: exact enclave
+    /// segments followed by the three ordinary protection classes, with
+    /// `.bss` last and costing no file space.
     fn good_image() -> Image {
         let data = Segment {
             kind: elf64::SegmentKind::Load.bits(),
             flags: elf64::Segment::WRITE | (1 << 2),
-            vaddr: HIGHER_HALF + 0x12000,
+            vaddr: HIGHER_HALF + 0x1f000,
             file_size: 0x100,
             memory_size: 0x8000,
         };
         Image {
             entry: HIGHER_HALF + 0x5bb0,
             segments: vec![
-                segment(HIGHER_HALF, 0x8000, elf64::Segment::EXECUTE | (1 << 2)),
-                segment(HIGHER_HALF + 0x8000, 0xa000, 1 << 2),
+                segment(
+                    HIGHER_HALF,
+                    0x2000,
+                    elf64::Segment::READ | elf64::Segment::EXECUTE,
+                ),
+                segment(
+                    HIGHER_HALF + 0x2000,
+                    0x6000,
+                    elf64::Segment::READ | elf64::Segment::EXECUTE,
+                ),
+                segment(HIGHER_HALF + 0x8000, 0x1000, elf64::Segment::READ),
+                segment(HIGHER_HALF + 0x9000, 0x9000, elf64::Segment::READ),
+                segment(
+                    HIGHER_HALF + 0x12000,
+                    0xd000,
+                    elf64::Segment::READ | elf64::Segment::WRITE,
+                ),
                 data,
             ],
             sections: vec![
-                section(".text", HIGHER_HALF, 0x7800, SHT_PROGBITS, TEXT_FLAGS),
+                section(
+                    ".text",
+                    HIGHER_HALF + 0x2000,
+                    0x5800,
+                    SHT_PROGBITS,
+                    TEXT_FLAGS,
+                ),
                 section(
                     ".rodata",
-                    HIGHER_HALF + 0x8000,
-                    0x9000,
+                    HIGHER_HALF + 0x9000,
+                    0x8000,
                     SHT_PROGBITS,
                     SHF_ALLOC,
                 ),
                 section(
                     ".requests",
-                    HIGHER_HALF + 0x12000,
+                    HIGHER_HALF + 0x1f000,
                     0x60,
                     SHT_PROGBITS,
                     SHF_ALLOC | 1,
                 ),
                 section(
                     ".bss",
-                    HIGHER_HALF + 0x12100,
+                    HIGHER_HALF + 0x1f100,
                     0x7f00,
                     SHT_NOBITS,
                     SHF_ALLOC | 1,
                 ),
                 section(".symtab", 0, 0x800, 2, 0),
+                section(".kpti.text", HIGHER_HALF, 0x2000, SHT_PROGBITS, TEXT_FLAGS),
+                section(
+                    ".kpti.rodata",
+                    HIGHER_HALF + 0x8000,
+                    0x1000,
+                    SHT_PROGBITS,
+                    SHF_ALLOC,
+                ),
+                section(
+                    ".kpti.tables",
+                    HIGHER_HALF + 0x12000,
+                    0x2000,
+                    SHT_PROGBITS,
+                    SHF_ALLOC | SHF_WRITE,
+                ),
+                section(
+                    ".kpti.data",
+                    HIGHER_HALF + 0x14000,
+                    0xb000,
+                    SHT_PROGBITS,
+                    SHF_ALLOC | SHF_WRITE,
+                ),
             ],
         }
     }
@@ -546,6 +764,359 @@ mod tests {
     #[test]
     fn the_shape_the_linker_script_produces_passes() {
         assert_eq!(good_image().verify(), []);
+    }
+
+    #[test]
+    fn every_entry_enclave_section_is_required_page_exact_and_permission_exact() {
+        for (name, _, _) in KPTI_SECTIONS {
+            let mut missing = good_image();
+            missing.sections.retain(|section| section.name != *name);
+            assert!(
+                missing
+                    .verify()
+                    .contains(&ImageError::MissingSection { name }),
+                "missing {name} was accepted"
+            );
+        }
+
+        let mut misaligned = good_image();
+        let text = misaligned
+            .sections
+            .iter_mut()
+            .find(|section| section.name == ".kpti.text")
+            .expect("entry text");
+        text.addr += 1;
+        assert!(
+            misaligned
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSection {
+                    name: ".kpti.text".to_string(),
+                })
+        );
+
+        let mut writable_text = good_image();
+        let text = writable_text
+            .sections
+            .iter_mut()
+            .find(|section| section.name == ".kpti.text")
+            .expect("entry text");
+        text.flags |= SHF_WRITE;
+        assert!(
+            writable_text
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSection {
+                    name: ".kpti.text".to_string(),
+                })
+        );
+    }
+
+    #[test]
+    fn an_entry_segment_cannot_absorb_an_unlisted_page_or_section() {
+        let mut enlarged = good_image();
+        enlarged.segments[0].memory_size += PAGE_BYTES;
+        assert!(
+            enlarged
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSegment { name: ".kpti.text" })
+        );
+
+        let mut unknown = good_image();
+        unknown.sections.push(section(
+            ".kpti.secret",
+            HIGHER_HALF + 0x1f080,
+            8,
+            SHT_PROGBITS,
+            SHF_ALLOC | SHF_WRITE,
+        ));
+        assert!(
+            unknown
+                .verify()
+                .contains(&ImageError::UnexpectedEnclaveSection {
+                    name: ".kpti.secret".to_string(),
+                })
+        );
+
+        let mut overlapping = good_image();
+        overlapping.segments.push(segment(
+            HIGHER_HALF,
+            0x2000,
+            elf64::Segment::READ | elf64::Segment::EXECUTE,
+        ));
+        assert!(
+            overlapping
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSegment { name: ".kpti.text" })
+        );
+
+        let mut partially_overlapping = good_image();
+        partially_overlapping.segments.push(segment(
+            HIGHER_HALF + PAGE_BYTES,
+            PAGE_BYTES,
+            elf64::Segment::READ | elf64::Segment::EXECUTE,
+        ));
+        assert!(
+            partially_overlapping
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSegment { name: ".kpti.text" })
+        );
+
+        let mut section_overlap = good_image();
+        section_overlap.sections.push(section(
+            ".ordinary.secret",
+            HIGHER_HALF + PAGE_BYTES,
+            8,
+            SHT_PROGBITS,
+            SHF_ALLOC,
+        ));
+        assert!(
+            section_overlap
+                .verify()
+                .contains(&ImageError::InvalidEnclaveSection {
+                    name: ".kpti.text".to_string(),
+                })
+        );
+    }
+
+    #[test]
+    fn kpti_entry_transition_switches_roots_in_the_exact_enclave_order() {
+        let entry = include_str!("../../wost/src/arch/x86_64/interrupt.rs");
+        let kpti = include_str!("../../wost/src/arch/x86_64/kpti.rs");
+        let cpu = include_str!("../../wost/src/arch/x86_64/cpu.rs");
+        let task = include_str!("../../wost/src/arch/x86_64/task.rs");
+        let linker = include_str!("../../kernel/linker.ld");
+
+        let section = entry
+            .find(".pushsection .kpti.text")
+            .expect("entry section");
+        let stubs = entry[section..]
+            .find("wost_interrupt_stubs")
+            .expect("all-vector table");
+        let dispatch = entry[section..]
+            .find("call {dispatch}")
+            .expect("common Rust call");
+        let end = entry[section..]
+            .find(".popsection")
+            .expect("entry section end");
+        assert!(stubs < dispatch && dispatch < end);
+        assert!(kpti.contains("const ENTRY_ROOT_SWITCH_IMPLEMENTED: bool = true;"));
+        for offset in [
+            "offset_of!(RoutingPage, state) == 0",
+            "offset_of!(RoutingPage, full_root) == 8",
+            "offset_of!(RoutingPage, stripped_root) == 16",
+            "offset_of!(RoutingPage, task_stack_top) == 24",
+            "offset_of!(RoutingPage, transition_stack_top) == 32",
+        ] {
+            assert!(kpti.contains(offset), "route ABI omitted {offset}");
+        }
+        let entry_load = entry
+            .find("wost_kpti_entry_load_full_root:")
+            .expect("full-root entry label");
+        let rust_call = entry
+            .find("wost_kpti_entry_call_rust:")
+            .expect("Rust dispatch label");
+        let last_secret = entry
+            .find("wost_kpti_exit_last_secret_access:")
+            .expect("last-secret exit label");
+        let stripped_load = entry
+            .find("wost_kpti_exit_load_stripped_root:")
+            .expect("stripped-root exit label");
+        let user_iret = entry.find("wost_kpti_exit_iret:").expect("user iret label");
+        assert!(entry_load < rust_call);
+        assert!(
+            rust_call < last_secret && last_secret < stripped_load && stripped_load < user_iret
+        );
+        let entry_to_rust = &entry[entry_load..rust_call];
+        assert!(entry_to_rust.contains("mov cr3, r11"));
+        let after_stripped = &entry[stripped_load..user_iret];
+        assert!(after_stripped.contains("mov cr3, r10"));
+        assert!(!after_stripped.contains("call {dispatch}"));
+        assert!(!after_stripped.contains("BUFFER_CLEARS"));
+        assert_eq!(entry.matches("mov cr3, r10").count(), 1);
+        assert_eq!(entry.matches("mov cr3, r11").count(), 2);
+        assert!(!kpti.contains("mov cr3"));
+        assert_eq!(cpu.matches("mov cr3").count(), 1);
+
+        let nested_window = entry
+            .find("A kernel-origin frame already inside either enclave stack")
+            .expect("nested transition proof");
+        assert!(nested_window < rust_call);
+        let nested_proof = &entry[nested_window..rust_call];
+        for required in [
+            "{route_transition_stack}",
+            "{route_interrupt_stack}",
+            "jae wost_kpti_stop",
+        ] {
+            assert!(
+                nested_proof.contains(required),
+                "nested proof omitted {required}"
+            );
+        }
+        assert_eq!(
+            entry
+                .matches("cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 2")
+                .count(),
+            2
+        );
+
+        let begin = task
+            .find("kpti::begin_route_update();")
+            .expect("route begin");
+        let publish = task[begin..]
+            .find("kpti::publish_route")
+            .map(|offset| begin + offset)
+            .expect("route fields");
+        let stacks = task[publish..]
+            .find("kpti::install_transition_rsp0()")
+            .map(|offset| publish + offset)
+            .expect("entry stacks");
+        let activate = task[stacks..]
+            .find("cpu::set_page_table_base(wanted)")
+            .map(|offset| stacks + offset)
+            .expect("full-root activation");
+        let finish = task[activate..]
+            .find("kpti::finish_route_update(roots)")
+            .map(|offset| activate + offset)
+            .expect("route publication");
+        assert!(begin < publish && publish < stacks && stacks < activate && activate < finish);
+
+        let finish_function = kpti
+            .split_once("pub(super) fn finish_route_update")
+            .expect("route finisher")
+            .1
+            .split_once("/// Whether the enclave")
+            .expect("route finisher end")
+            .0;
+        let active_root = finish_function
+            .find("cpu::page_table_base() != roots.full_root()")
+            .expect("active full-root check");
+        let published = finish_function
+            .find(".store(ROUTE_PUBLISHED, Ordering::Release)")
+            .expect("published store");
+        assert!(active_root < published);
+        assert!(kpti.contains("assert!(route_roots_are_valid(0, PAGE_BYTES));"));
+
+        for wildcard in [
+            ".kpti.text.*",
+            ".kpti.rodata.*",
+            ".kpti.tables.*",
+            ".kpti.state.*",
+        ] {
+            assert!(
+                !linker.contains(wildcard),
+                "linker admits wildcard {wildcard}"
+            );
+        }
+        for admitted in [
+            ".kpti.text",
+            ".kpti.rodata.geometry",
+            ".kpti.rodata.verw_selector",
+            ".kpti.tables.idt",
+            ".kpti.tables.gdt",
+            ".kpti.tables.tss",
+            ".kpti.state.route",
+            ".kpti.state.transition_stack",
+            ".kpti.state.ist_stack",
+        ] {
+            assert!(linker.contains(admitted), "linker omitted {admitted}");
+        }
+
+        for marker in [
+            "__kpti_text_start",
+            "__kpti_text_end",
+            "__kpti_tables_start",
+            "__kpti_tables_end",
+            "__kpti_transition_guard_start",
+            "__kpti_transition_stack_start",
+            "__kpti_ist_guard_start",
+            "__kpti_ist_stack_start",
+        ] {
+            assert!(linker.contains(marker), "linker omitted {marker}");
+        }
+    }
+
+    #[test]
+    fn kpti_entry_loads_full_root_before_rust() {
+        let entry = include_str!("../../wost/src/arch/x86_64/interrupt.rs");
+        let load = entry
+            .find("wost_kpti_entry_load_full_root:")
+            .expect("full-root label");
+        let rust = entry
+            .find("wost_kpti_entry_call_rust:")
+            .expect("Rust label");
+        let transition = &entry[load..rust];
+        let root = transition
+            .find("mov r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]")
+            .expect("full-root read");
+        let cr3 = transition.find("mov cr3, r11").expect("full-root load");
+        let ordinary_stack = transition
+            .find("{route_task_stack}")
+            .expect("ordinary stack destination");
+        let dispatch = entry[rust..]
+            .find("call {dispatch}")
+            .expect("Rust dispatch");
+        assert!(root < cr3 && cr3 < ordinary_stack);
+        assert!(dispatch > 0);
+    }
+
+    #[test]
+    fn kpti_exit_loads_stripped_root_after_scrub_and_last_secret_access() {
+        let entry = include_str!("../../wost/src/arch/x86_64/interrupt.rs");
+        let return_tail = entry
+            .find("wost_interrupt_return:")
+            .expect("user-return tail");
+        let scrub = entry[return_tail..]
+            .find("mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]")
+            .map(|offset| return_tail + offset)
+            .expect("transition scrub");
+        let last_secret = entry
+            .find("wost_kpti_exit_last_secret_access:")
+            .expect("last secret boundary");
+        let stripped = entry
+            .find("wost_kpti_exit_load_stripped_root:")
+            .expect("stripped-root boundary");
+        let user_iret = entry
+            .find("wost_kpti_exit_iret:")
+            .expect("user return boundary");
+        assert!(scrub < last_secret && last_secret < stripped && stripped < user_iret);
+
+        let tail = &entry[stripped..user_iret];
+        let instructions = tail
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix('"')
+                    .and_then(|line| line.strip_suffix("\","))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            instructions,
+            [
+                ".if {record_transition_evidence}",
+                "lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_prepared_returns}]",
+                ".endif",
+                "mov cr3, r10",
+                "pop r15",
+                "pop r14",
+                "pop r13",
+                "pop r12",
+                "pop r11",
+                "pop r10",
+                "pop r9",
+                "pop r8",
+                "pop rbp",
+                "pop rdi",
+                "pop rsi",
+                "pop rdx",
+                "pop rcx",
+                "pop rbx",
+                "pop rax",
+                "cmp byte ptr [rip + {clear}], 0",
+                "je 10f",
+                "verw word ptr [rip + {verw_selector}]",
+                "10:",
+                ".globl wost_kpti_exit_iret",
+            ]
+        );
     }
 
     /// The defect that motivated this module: `.got` placed after `.bss` by
@@ -557,7 +1128,7 @@ mod tests {
         data.file_size = data.memory_size;
         image.sections.push(section(
             ".got",
-            HIGHER_HALF + 0x1a000,
+            HIGHER_HALF + 0x28000,
             8,
             SHT_PROGBITS,
             SHF_ALLOC | 1,
@@ -572,7 +1143,7 @@ mod tests {
                 },
                 ImageError::SectionNotLoaded {
                     name: ".got".to_string(),
-                    addr: HIGHER_HALF + 0x1a000,
+                    addr: HIGHER_HALF + 0x28000,
                 },
             ]
         );
@@ -621,10 +1192,15 @@ mod tests {
 
         assert_eq!(
             image.verify(),
-            [ImageError::SectionNotLoaded {
-                name: ".text".to_string(),
-                addr: HIGHER_HALF,
-            }]
+            [
+                ImageError::SectionNotLoaded {
+                    name: ".text".to_string(),
+                    addr: HIGHER_HALF + 0x2000,
+                },
+                ImageError::InvalidEnclaveSection {
+                    name: ".kpti.rodata".to_string(),
+                },
+            ]
         );
     }
 
@@ -632,11 +1208,13 @@ mod tests {
     #[test]
     fn a_writable_executable_segment_is_caught() {
         let mut image = good_image();
-        image.segments[0].flags |= elf64::Segment::WRITE;
+        image.segments[1].flags |= elf64::Segment::WRITE;
 
         assert_eq!(
             image.verify(),
-            [ImageError::WritableAndExecutable { vaddr: HIGHER_HALF }]
+            [ImageError::WritableAndExecutable {
+                vaddr: HIGHER_HALF + 0x2000,
+            }]
         );
     }
 
@@ -697,7 +1275,7 @@ mod tests {
     fn every_fault_says_something_specific() {
         let mut image = good_image();
         image.entry = 0;
-        image.segments[0].flags |= elf64::Segment::WRITE;
+        image.segments[1].flags |= elf64::Segment::WRITE;
         image.sections.retain(|section| section.name != ".requests");
 
         let messages: Vec<String> = image.verify().iter().map(ToString::to_string).collect();

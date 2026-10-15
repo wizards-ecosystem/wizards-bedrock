@@ -198,6 +198,7 @@ impl Handlers {
     }
 }
 
+#[unsafe(link_section = ".kpti.tables.idt")]
 static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
     HardwareCell::new([Gate::MISSING; idt::TABLE_LEN]);
 static HANDLERS: AtomicPtr<Handlers> = AtomicPtr::new(core::ptr::null_mut());
@@ -406,6 +407,7 @@ pub fn gate_privilege(vector: u8) -> u8 {
 ///
 /// The entry stub needs one immutable byte; `clac` would fault without SMAP.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".kpti.state.route")]
 static mut SMAP_ARMED: u8 = 0;
 
 /// Let the entry path clear `AC` on the way in.
@@ -437,9 +439,18 @@ pub fn access_clear_is_armed() -> bool {
 ///
 /// The entry stub reads this immutable byte directly.
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".kpti.state.route")]
 pub(super) static mut MDS_CLEAR: u8 = 0;
 
 pub(super) const RECORD_BUFFER_CLEARS: usize = cfg!(feature = "selftest") as usize;
+
+/// Public, immutable selector consumed by the post-CR3 `VERW` boundary.
+///
+/// Keeping the operand in stripped-root read-only memory avoids writing even
+/// public scratch bytes back onto the already-scrubbed transition stack.
+#[used]
+#[unsafe(link_section = ".kpti.rodata.verw_selector")]
+static KPTI_VERW_SELECTOR: u16 = segment::KERNEL_DATA_BITS;
 
 /// Turn on the buffer flush that precedes every return to ring 3.
 ///
@@ -467,6 +478,7 @@ pub fn buffer_clears() -> u64 {
 /// The tally [`buffer_clears`] reports, incremented where the `verw` is.
 #[cfg(feature = "selftest")]
 #[unsafe(no_mangle)]
+#[unsafe(link_section = ".kpti.state.route")]
 static mut BUFFER_CLEARS: u64 = 0;
 
 /// Whether the buffer flush is armed.
@@ -848,6 +860,8 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     // register block with the exact `RawTrapFrame` layout. Copying it leaves
     // the assembly-owned frame untouched for `iretq`.
     let saved = unsafe { core::ptr::read(raw) };
+    #[cfg(feature = "selftest")]
+    super::kpti::record_rust_entry(saved.code_selector);
     let frame = TrapFrame {
         raw: saved,
         origin: raw,
@@ -903,9 +917,24 @@ unsafe extern "C" {
     /// One byte past the last stub.
     #[link_name = "wost_interrupt_stubs_end"]
     fn stub_table_end();
+
+    fn wost_leave_for_user(entry: u64, stack_top: u64) -> !;
+}
+
+/// Enter ring three through the same enclave tail used by trap returns.
+///
+/// # Safety
+///
+/// `entry` must be user-executable, `stack_top` must be user-writable, and the
+/// live task must have a completely installed shared or paired entry route.
+pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
+    // SAFETY: the caller supplies the mapping and route facts required by the
+    // assembly boundary, which consumes both values before changing roots.
+    unsafe { wost_leave_for_user(entry, stack_top) }
 }
 
 ::core::arch::global_asm!(
+    ".pushsection .kpti.text,\"ax\",@progbits",
     // Stubs are padded to one size so the table indexes by vector. Vectors
     // without an error code push a zero, so every frame has one shape;
     // `ERROR_CODE_VECTORS` is the one source, checked against the SDM on the host.
@@ -933,8 +962,8 @@ unsafe extern "C" {
     ".globl wost_interrupt_stubs_end",
     "wost_interrupt_stubs_end:",
 
-    // Entry clears neither DF nor the alignment debt. RBX survives the call
-    // and routes back to the frame; kernel code holds no floating-point state.
+    // Save the complete frame before using a general register. On paired user
+    // entry these are the only payload bytes exposed to the stripped root.
     "wost_interrupt_entry:",
     "cld",
     // Ring 3 controls `AC` and entry does not clear it, so every SMAP entry
@@ -962,11 +991,170 @@ unsafe extern "C" {
     "push r13",
     "push r14",
     "push r15",
+    // A published route admits exactly two live CR3 values. Kernel-origin
+    // entry stays on the full member; user-origin entry must arrive on the
+    // stripped member and change roots before any ordinary stack or Rust use.
+    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 1",
+    "je 14f",
+    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 2",
+    "je wost_kpti_stop",
+    "jmp 4f",
+    "14:",
+    "mov r11, cr3",
+    "shr r11, 12",
+    "shl r11, 12",
+    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped}]",
+    "je 5f",
+    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "jne wost_kpti_load_full_and_stop",
+    "test byte ptr [rsp + {frame_cs}], 3",
+    "jnz wost_kpti_stop",
+    // A kernel-origin frame already inside either enclave stack is a nested
+    // entry in a root-transition window, not an ordinary kernel trap.
+    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
+    "cmp rsp, r10",
+    "jae 12f",
+    "sub r10, {entry_stack_bytes}",
+    "cmp rsp, r10",
+    "jae wost_kpti_stop",
+    "12:",
+    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
+    "cmp rsp, r10",
+    "jae 13f",
+    "sub r10, {entry_stack_bytes}",
+    "cmp rsp, r10",
+    "jae wost_kpti_stop",
+    "13:",
+    "jmp 4f",
+    "5:",
+    ".globl wost_kpti_entry_load_full_root",
+    "wost_kpti_entry_load_full_root:",
+    "mov r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "mov cr3, r11",
+    // A fault or nested entry after the stripped-root load is kernel-origin.
+    // It restores the full root above, then stops without reaching Rust.
+    "test byte ptr [rsp + {frame_cs}], 3",
+    "jz wost_kpti_stop",
+    ".if {record_transition_evidence}",
+    "lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped_entries}]",
+    ".endif",
+    // Transfer the complete architectural frame before scrubbing both enclave
+    // stacks hardware can have selected while the stripped root was active.
+    "mov rsi, rsp",
+    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_task_stack}]",
+    "sub rdi, {raw_frame_bytes}",
+    "mov rbx, rdi",
+    "mov rcx, {raw_frame_words}",
+    "rep movsq",
+    "xor eax, eax",
+    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
+    "sub rdi, {entry_stack_bytes}",
+    "mov rcx, {entry_stack_words}",
+    "rep stosq",
+    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
+    "sub rdi, {entry_stack_bytes}",
+    "mov rcx, {entry_stack_words}",
+    "rep stosq",
+    "mov rsp, rbx",
+    "4:",
+    // A privilege-changing entry nulls live `SS`; dispatch may switch kernel
+    // contexts before `iretq`, so restore the kernel selector before Rust.
+    "mov ax, {kernel_data}",
+    "mov ss, ax",
     "mov rdi, rsp",
     "mov rbx, rsp",
     "and rsp, -16",
+    ".globl wost_kpti_entry_call_rust",
+    "wost_kpti_entry_call_rust:",
     "call {dispatch}",
     "mov rsp, rbx",
+    ".globl wost_interrupt_return",
+    "wost_interrupt_return:",
+    // Rust has validated a user return. A paired route copies only registers
+    // and the architected iret frame to freshly scrubbed enclave storage.
+    "test byte ptr [rsp + {frame_cs}], 3",
+    "jz 6f",
+    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 1",
+    "je 15f",
+    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 2",
+    "je wost_kpti_stop",
+    "jmp 7f",
+    "15:",
+    "mov r11, cr3",
+    "shr r11, 12",
+    "shl r11, 12",
+    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "jne wost_kpti_load_full_and_stop",
+    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped}]",
+    "mov rdx, rsp",
+    "xor eax, eax",
+    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
+    "sub rdi, {entry_stack_bytes}",
+    "mov rcx, {entry_stack_words}",
+    "rep stosq",
+    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
+    "sub rdi, {entry_stack_bytes}",
+    "mov rcx, {entry_stack_words}",
+    "rep stosq",
+    "mov rbx, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
+    "sub rbx, {user_frame_bytes}",
+    "mov rsi, rdx",
+    "mov rdi, rbx",
+    "mov rcx, {register_words}",
+    "rep movsq",
+    "lea rsi, [rdx + {frame_rip}]",
+    "lea rdi, [rbx + {user_frame_rip}]",
+    "mov rcx, {iret_words}",
+    ".globl wost_kpti_exit_last_secret_access",
+    "wost_kpti_exit_last_secret_access:",
+    "rep movsq",
+    // The first flush supplies the existing executable machine witness while
+    // the writable counter is reachable. The second remains after CR3, at the
+    // architectural boundary it protects.
+    "cmp byte ptr [rip + {clear}], 0",
+    "je 8f",
+    "mov word ptr [rbx - 8], {kernel_data}",
+    "verw word ptr [rbx - 8]",
+    ".if {record_clears}",
+    "jnz 9f",
+    "inc qword ptr [rip + BUFFER_CLEARS]",
+    "9:",
+    ".endif",
+    "mov word ptr [rbx - 8], 0",
+    "8:",
+    "mov rsp, rbx",
+    ".globl wost_kpti_exit_load_stripped_root",
+    "wost_kpti_exit_load_stripped_root:",
+    ".if {record_transition_evidence}",
+    "lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_prepared_returns}]",
+    ".endif",
+    "mov cr3, r10",
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop r11",
+    "pop r10",
+    "pop r9",
+    "pop r8",
+    "pop rbp",
+    "pop rdi",
+    "pop rsi",
+    "pop rdx",
+    "pop rcx",
+    "pop rbx",
+    "pop rax",
+    "cmp byte ptr [rip + {clear}], 0",
+    "je 10f",
+    "verw word ptr [rip + {verw_selector}]",
+    "10:",
+    ".globl wost_kpti_exit_iret",
+    "wost_kpti_exit_iret:",
+    "iretq",
+    // Kernel returns, and shared-root user returns, retain the original frame
+    // shape with vector and error-code words below the iret frame.
+    "6:",
+    "7:",
     "pop r15",
     "pop r14",
     "pop r13",
@@ -1002,8 +1190,56 @@ unsafe extern "C" {
     "add rsp, 8",
     "2:",
     "iretq",
+    // First entry constructs the same raw frame the interrupt path validates,
+    // then joins the one user-return tail above.
+    ".globl wost_leave_for_user",
+    ".type wost_leave_for_user,@function",
+    "wost_leave_for_user:",
+    "push {user_data}",
+    "push rsi",
+    "push 0x202",
+    "push {user_code}",
+    "push rdi",
+    "push 0",
+    "push 0",
+    ".rept {register_words}",
+    "push 0",
+    ".endr",
+    "jmp wost_interrupt_return",
+    ".size wost_leave_for_user, . - wost_leave_for_user",
+    // This path uses no Rust or ordinary memory. If the route still contains
+    // its full member, restore it before making the inconsistency terminal.
+    "wost_kpti_load_full_and_stop:",
+    "mov r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "mov cr3, r11",
+    "wost_kpti_stop:",
+    "cli",
+    "11:",
+    "hlt",
+    "jmp 11b",
+    ".popsection",
     stub_bytes = const STUB_BYTES,
+    raw_frame_bytes = const size_of::<RawTrapFrame>(),
+    raw_frame_words = const size_of::<RawTrapFrame>() / size_of::<u64>(),
+    user_frame_bytes = const 20 * size_of::<u64>(),
+    register_words = const 15,
+    iret_words = const 5,
+    frame_rip = const core::mem::offset_of!(RawTrapFrame, instruction_pointer),
+    frame_cs = const core::mem::offset_of!(RawTrapFrame, code_selector),
+    user_frame_rip = const 15 * size_of::<u64>(),
+    entry_stack_bytes = const super::kpti::STACK_BYTES,
+    entry_stack_words = const super::kpti::STACK_BYTES / size_of::<u64>(),
+    route_state = const super::kpti::ROUTE_STATE_OFFSET,
+    route_full = const super::kpti::ROUTE_FULL_ROOT_OFFSET,
+    route_stripped = const super::kpti::ROUTE_STRIPPED_ROOT_OFFSET,
+    route_task_stack = const super::kpti::ROUTE_TASK_STACK_TOP_OFFSET,
+    route_transition_stack = const super::kpti::ROUTE_TRANSITION_STACK_TOP_OFFSET,
+    route_interrupt_stack = const super::kpti::ROUTE_INTERRUPT_STACK_TOP_OFFSET,
+    route_stripped_entries = const super::kpti::ROUTE_STRIPPED_ENTRIES_OFFSET,
+    route_prepared_returns = const super::kpti::ROUTE_PREPARED_RETURNS_OFFSET,
+    record_transition_evidence = const (super::kpti::RECORD_TRANSITION_EVIDENCE as usize),
     clear = sym MDS_CLEAR,
+    verw_selector = sym KPTI_VERW_SELECTOR,
     record_clears = const RECORD_BUFFER_CLEARS,
     smap = sym SMAP_ARMED,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
@@ -1011,4 +1247,6 @@ unsafe extern "C" {
     interrupts = const idt::TABLE_LEN - exception::COUNT as usize,
     error_code_vectors = const exception::ERROR_CODE_VECTORS,
     dispatch = sym dispatch,
+    user_data = const (segment::USER_DATA_BITS as u64),
+    user_code = const (segment::USER_CODE_BITS as u64),
 );

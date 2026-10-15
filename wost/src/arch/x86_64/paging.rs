@@ -23,6 +23,11 @@ use mmio_range::{AddressRange, first_fit_by};
 use stack_layout::{Slot, StackLayout, ranges_overlap};
 use x86_paging::activation::State as ActivationState;
 use x86_paging::device::{DeviceRange as CheckedDeviceRange, DeviceRangeError};
+use x86_paging::kpti::{
+    EnclavePage, EnclavePermission, FlushPremise, FlushPremiseError, ObservedPage,
+    PairCleanupState, PairConstructionLedger, PairFrameAuthority, PcidState,
+    RootPair as CheckedRootPair, RootPairError, enclave_matches, shared_user_link_matches,
+};
 use x86_paging::{
     CanonicalAddress, ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, MappingRange,
     MappingRangeError, PAGE_SIZE, TablePrivilege, page_identity_matches, user_mapping_fits,
@@ -103,6 +108,14 @@ pub enum MapError {
     /// Activation froze the kernel's top-level entries, so a later mapping
     /// cannot create a root that older user spaces would not share.
     KernelTopologyFrozen(u64),
+    /// The full and stripped page-table roots do not form one valid pair.
+    InvalidRootPair(RootPairError),
+    /// PCID is enabled, so ordinary root loads do not provide D-407's flush.
+    InvalidPairedFlush(FlushPremiseError),
+    /// The entry enclave is missing, overbroad, or has the wrong identity.
+    InvalidEntryEnclave(u64),
+    /// The linker did not publish the exact entry-enclave geometry.
+    EntryEnclaveUnavailable,
 }
 
 /// A refused user mapping which retains its external-byte allocation.
@@ -148,11 +161,9 @@ impl core::error::Error for UserMapError {}
 pub struct StackRollback {
     /// Why the next stack could not be removed.
     pub reason: MapError,
-    /// Stack mappings present when rollback began.
-    pub mapped_stacks: usize,
     /// Pages already returned before the refusal.
     pub returned_pages: usize,
-    root: Paddr,
+    roots: AddressSpaceRoots,
     pending: StackCleanup,
 }
 
@@ -189,6 +200,23 @@ impl StackCleanup {
 }
 
 impl StackRollback {
+    /// Stack mappings present when rollback began.
+    pub fn mapped_stacks(&self) -> usize {
+        match &self.pending {
+            StackCleanup::One(_) => 1,
+            StackCleanup::Prefix { layout, remaining } => {
+                let returned_stacks = match layout.slot(0) {
+                    Some(slot) => {
+                        let pages = slot.stack_len() / PAGE_SIZE;
+                        self.returned_pages / pages as usize
+                    }
+                    None => 0,
+                };
+                remaining.saturating_add(returned_stacks)
+            }
+        }
+    }
+
     /// Stack mappings which still await removal.
     pub const fn remaining_stacks(&self) -> usize {
         self.pending.remaining_stacks()
@@ -308,6 +336,14 @@ impl fmt::Display for MapError {
                 f,
                 "the active kernel cannot add a top-level mapping at {address:#x}"
             ),
+            Self::InvalidRootPair(error) => write!(f, "invalid paired roots: {error}"),
+            Self::InvalidPairedFlush(error) => write!(f, "invalid paired-root flush: {error}"),
+            Self::InvalidEntryEnclave(address) => {
+                write!(f, "the entry enclave is invalid at {address:#x}")
+            }
+            Self::EntryEnclaveUnavailable => {
+                core::fmt::Write::write_str(f, "the entry enclave is unavailable")
+            }
             Self::Discontiguous(address) => {
                 write!(f, "the frames behind {address:#x} are not one run")
             }
@@ -356,8 +392,14 @@ pub enum ActivateError {
     /// A space offered for binding disagrees with the kernel's about the
     /// higher half, at this top-level slot.
     KernelHalfDiffers(usize),
+    /// A paired space's lower-half top-level links do not name one subtree.
+    UserHalfDiffers(usize),
     /// A space offered for binding was not built to share the kernel's half.
     NotAUserSpace,
+    /// A paired space has not acquired a validated entry enclave.
+    EntryEnclaveIncomplete,
+    /// PCID is enabled, invalidating paired roots' ordinary-load flush proof.
+    PairedFlushUnavailable,
     /// The device window's shared top-level table could not be reserved before
     /// activation froze kernel topology.
     SharedTopology(MapError),
@@ -394,8 +436,18 @@ impl fmt::Display for ActivateError {
                 f,
                 "top-level slot {index} of the higher half is not the kernel's"
             ),
+            Self::UserHalfDiffers(index) => {
+                write!(f, "top-level slot {index} does not share one user subtree")
+            }
             Self::NotAUserSpace => {
                 core::fmt::Write::write_str(f, "this space does not share the kernel's higher half")
+            }
+            Self::EntryEnclaveIncomplete => core::fmt::Write::write_str(
+                f,
+                "the paired address space has no validated entry enclave",
+            ),
+            Self::PairedFlushUnavailable => {
+                core::fmt::Write::write_str(f, "PCID is enabled for a paired address space")
             }
             Self::SharedTopology(reason) => {
                 write!(f, "shared kernel topology could not be reserved: {reason}")
@@ -574,7 +626,9 @@ pub fn admit_device_range(physical: Paddr, len: u64) -> Result<AdmittedDeviceRan
 /// risking a live sibling or freeing beneath `CR3` (D-88).
 #[derive(Debug)]
 pub struct AddressSpace {
-    root: Option<Paddr>,
+    roots: Option<AddressSpaceRoots>,
+    /// Linear ownership of both paired roots and every private table frame.
+    pair_authority: Option<PairFrameAuthority>,
     /// Physical ranges already promised to device mappings in this space.
     devices: Vec<Option<DeviceExtent>>,
     /// The frames this space's own tables are built from, so they can go back.
@@ -587,6 +641,9 @@ pub struct AddressSpace {
     reach: Reach,
     /// Whether a thread already runs on these tables.
     bound: bool,
+    /// Paired roots cannot become bindable until the exact entry enclave has
+    /// been installed and validated by the KPTI owner (D-407).
+    entry_enclave_ready: bool,
     /// Allocations reached by non-owning user mappings in this space.
     shared: Vec<SharedKeepalive>,
     /// Leaf pages whose frame ownership moved into this space.
@@ -599,6 +656,87 @@ struct OwnedTable {
     virtual_address: u64,
     level: Level,
     link: Entry,
+    root: TableRoot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableRoot {
+    Full,
+    Stripped,
+}
+
+/// The inseparable roots which identify one address space.
+///
+/// A shared-root space has no stripped member, so [`user_root`](Self::user_root)
+/// names the full root. A paired space keeps both identities in this one value;
+/// callers cannot manufacture or separate them into independently bindable
+/// authorities (D-407).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddressSpaceRoots {
+    full: Paddr,
+    /// The user root, with its otherwise-unused low bit marking a pair.
+    ///
+    /// Root addresses are page aligned, so this keeps the inseparable token
+    /// to two words without reserving physical frame zero as a sentinel.
+    user_tagged: Paddr,
+}
+
+impl AddressSpaceRoots {
+    const PAIRED_TAG: Paddr = 1;
+
+    const fn shared(full: Paddr) -> Self {
+        Self {
+            full,
+            user_tagged: full,
+        }
+    }
+
+    fn paired(full: Paddr, stripped: Paddr) -> Result<Self, MapError> {
+        let pair = CheckedRootPair::new(full, stripped).map_err(MapError::InvalidRootPair)?;
+        Ok(Self {
+            full: pair.full(),
+            user_tagged: pair.stripped() | Self::PAIRED_TAG,
+        })
+    }
+
+    /// The root under which ordinary kernel code may execute.
+    pub const fn full_root(self) -> Paddr {
+        self.full
+    }
+
+    /// The root to install for ring-three execution.
+    ///
+    /// This equals [`full_root`](Self::full_root) only for D-250's positively
+    /// admitted shared-root mode.
+    pub const fn user_root(self) -> Paddr {
+        if self.is_paired() {
+            self.user_tagged & !Self::PAIRED_TAG
+        } else {
+            self.full
+        }
+    }
+
+    /// The distinct stripped root, when this is a KPTI pair.
+    pub const fn stripped_root(self) -> Option<Paddr> {
+        if self.is_paired() {
+            Some(self.user_root())
+        } else {
+            None
+        }
+    }
+
+    /// Whether this identity contains a distinct stripped root.
+    pub const fn is_paired(self) -> bool {
+        self.user_tagged & Self::PAIRED_TAG != 0
+    }
+
+    const fn contains(self, root: Paddr) -> bool {
+        self.full == root || self.is_paired() && self.user_root() == root
+    }
+
+    const fn frames(self) -> usize {
+        if self.is_paired() { 2 } else { 1 }
+    }
 }
 
 /// How much of an address space its owner may map.
@@ -612,6 +750,12 @@ enum Reach {
     Everywhere,
     /// The lower half only. Everything above is somebody else's tables.
     UserHalfOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserRootKind {
+    Shared,
+    Paired,
 }
 
 /// The first address that is not user memory.
@@ -660,10 +804,12 @@ impl AddressSpace {
     pub fn new() -> Result<Self, MapError> {
         let root = take_table()?;
         Ok(Self {
-            root: Some(root),
+            roots: Some(AddressSpaceRoots::shared(root)),
+            pair_authority: None,
             devices: Vec::new(),
             tables: Vec::new(),
             bound: false,
+            entry_enclave_ready: true,
             reach: Reach::Everywhere,
             shared: Vec::new(),
             owned_pages: 0,
@@ -672,9 +818,16 @@ impl AddressSpace {
 
     /// The physical address of the top-level table — what `CR3` would hold.
     pub const fn root(&self) -> Paddr {
-        match self.root {
-            Some(root) => root,
+        match self.roots {
+            Some(roots) => roots.full_root(),
             None => panic!("a reclaimed address space has no root"),
+        }
+    }
+
+    const fn roots(&self) -> AddressSpaceRoots {
+        match self.roots {
+            Some(roots) => roots,
+            None => panic!("a reclaimed address space has no roots"),
         }
     }
 
@@ -704,11 +857,22 @@ impl AddressSpace {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
+        // The stripped root shares every lower-half table by reference with
+        // its full partner. Consequently every present lower leaf in a pair
+        // must be a user mapping: a supervisor-only leaf would still expose
+        // kernel or firmware bytes to transient ring-three reads (D-407).
+        // `map_user` and the typed shared-user doors add `USER`; the general
+        // kernel mapping doors must remain closed in this one root shape.
+        if self.roots().is_paired() && is_user_address(virtual_base) && !flags.contains(Flags::USER)
+        {
+            return Err(MapError::NotYours(virtual_base));
+        }
+
         if flags.is_write_execute() {
             return Err(MapError::WriteExecute(virtual_base));
         }
 
-        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {
+        if let Some(stack) = protected_stack_overlap(self.roots(), virtual_base, len) {
             return Err(MapError::Pinned(stack));
         }
 
@@ -751,6 +915,7 @@ impl AddressSpace {
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(range, offset, grain);
+            self.verify_shared_lower_link(virtual_address)?;
             let state = self.mapping_state(virtual_address, physical, flags, level)?;
             match transaction {
                 None => transaction = Some(state),
@@ -882,22 +1047,53 @@ impl AddressSpace {
                     "mapping rollback tried to return a nonempty table"
                 );
             }
-            let parent = self
-                .slot_at(owned.virtual_address, owned.level)
-                .unwrap_or_else(|reason| {
-                    panic!("mapping rollback lost an owned table link: {reason}")
-                });
+            let parent = match owned.root {
+                TableRoot::Full => self.slot_at(owned.virtual_address, owned.level),
+                TableRoot::Stripped => self
+                    .roots()
+                    .stripped_root()
+                    .ok_or(MapError::NotMapped(owned.virtual_address))
+                    .and_then(|root| slot_in(root, owned.virtual_address, owned.level)),
+            }
+            .unwrap_or_else(|reason| panic!("mapping rollback lost an owned table link: {reason}"));
             let current = EntrySlot::read(&parent);
             assert!(
                 current == owned.link,
                 "mapping rollback found a different owned table link"
             );
+            let paired = if owned.root == TableRoot::Full && owned.level == Level::Pml4 {
+                self.stripped_lower_slot(owned.virtual_address)
+                    .unwrap_or_else(|reason| {
+                        panic!("mapping rollback lost its paired table link: {reason}")
+                    })
+            } else {
+                None
+            };
+            if let Some(paired) = paired.as_ref() {
+                assert!(
+                    shared_user_link_matches(current, EntrySlot::read(paired)),
+                    "mapping rollback found a divergent paired table link"
+                );
+            }
             EntrySlot::write(&parent, Entry::ABSENT);
+            if let Some(paired) = paired.as_ref() {
+                EntrySlot::write(paired, Entry::ABSENT);
+            }
             // SAFETY: `take_owned_table` forgot exactly this allocation, and
             // the only page-table link to it is now absent.
             drop(unsafe { mm::Frame::from_raw(owned.frame) });
             self.tables.pop();
+            if let Some(authority) = self.pair_authority {
+                self.pair_authority = Some(authority.release_table().unwrap_or_else(|| {
+                    panic!("paired rollback lost its intermediate-table authority")
+                }));
+            }
         }
+        assert!(
+            self.pair_authority
+                .is_none_or(|authority| authority.table_frames() == self.tables.len()),
+            "paired rollback retained incomplete frame authority"
+        );
     }
 
     /// The existing entry slot for `virtual_address` at `target`, allocating
@@ -919,6 +1115,27 @@ impl AddressSpace {
             table = entry.address();
         }
         Err(MapError::NotMapped(virtual_address))
+    }
+
+    fn stripped_lower_slot(&self, virtual_address: u64) -> Result<Option<EntrySlot>, MapError> {
+        if !is_user_address(virtual_address) {
+            return Ok(None);
+        }
+        self.roots()
+            .stripped_root()
+            .map(|root| entry_slot(root, Level::Pml4.index(virtual_address)))
+            .transpose()
+    }
+
+    fn verify_shared_lower_link(&self, virtual_address: u64) -> Result<(), MapError> {
+        let Some(stripped) = self.stripped_lower_slot(virtual_address)? else {
+            return Ok(());
+        };
+        let full = entry_slot(self.root(), Level::Pml4.index(virtual_address))?;
+        if !shared_user_link_matches(EntrySlot::read(&full), EntrySlot::read(&stripped)) {
+            return Err(MapError::Conflict(virtual_address));
+        }
+        Ok(())
     }
 
     /// Map memory the boot handoff described, at `virtual_base`.
@@ -1151,7 +1368,7 @@ impl AddressSpace {
         // Guard verification follows mapping, so refusal must return the
         // just-owned frames.
         if let Err(cause) = self.verify_guard(slot) {
-            return match self.rollback_stack(slot, 1, 0) {
+            return match self.rollback_stack(slot, 0) {
                 Ok(_) => Err(StackMapError::Mapping(cause)),
                 Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),
             };
@@ -1159,7 +1376,7 @@ impl AddressSpace {
 
         Ok(MappedStack {
             identity: StackIdentity {
-                root: self.root(),
+                roots: self.roots(),
                 slot: *slot,
                 physical_base,
             },
@@ -1169,16 +1386,14 @@ impl AddressSpace {
     fn rollback_stack(
         &mut self,
         slot: &Slot,
-        mapped_stacks: usize,
         returned_pages: usize,
     ) -> Result<usize, StackRollback> {
         #[cfg(feature = "selftest")]
         if stack_refusal(&STACK_ROLLBACKS_BEFORE_REFUSAL) {
             return Err(StackRollback {
                 reason: MapError::Pinned(slot.stack_base()),
-                mapped_stacks,
                 returned_pages,
-                root: self.root(),
+                roots: self.roots(),
                 pending: StackCleanup::One(*slot),
             });
         }
@@ -1186,9 +1401,8 @@ impl AddressSpace {
             .unmap(slot.stack_base(), slot.stack_len())
             .map_err(|reason| StackRollback {
                 reason,
-                mapped_stacks,
                 returned_pages,
-                root: self.root(),
+                roots: self.roots(),
                 pending: StackCleanup::One(*slot),
             })?;
         let pages = returned.pages() as usize;
@@ -1200,7 +1414,6 @@ impl AddressSpace {
         &mut self,
         layout: &StackLayout,
         mut remaining: usize,
-        mapped_stacks: usize,
         mut returned_pages: usize,
     ) -> Result<usize, StackRollback> {
         assert!(
@@ -1216,9 +1429,8 @@ impl AddressSpace {
             if stack_refusal(&STACK_ROLLBACKS_BEFORE_REFUSAL) {
                 return Err(StackRollback {
                     reason: MapError::Pinned(slot.stack_base()),
-                    mapped_stacks,
                     returned_pages,
-                    root: self.root(),
+                    roots: self.roots(),
                     pending: StackCleanup::Prefix {
                         layout: *layout,
                         remaining,
@@ -1229,9 +1441,8 @@ impl AddressSpace {
                 .unmap(slot.stack_base(), slot.stack_len())
                 .map_err(|reason| StackRollback {
                     reason,
-                    mapped_stacks,
                     returned_pages,
-                    root: self.root(),
+                    roots: self.roots(),
                     pending: StackCleanup::Prefix {
                         layout: *layout,
                         remaining,
@@ -1257,16 +1468,16 @@ impl AddressSpace {
     /// address space already has a hardware-pinned stack and
     /// [`MapError::Inactive`] if the CPU is not walking this space.
     pub fn map_pinned_stack(&mut self, slot: &Slot) -> Result<PinnedStack, StackMapError> {
-        let root = self.root();
-        if current_mapping_root(root).is_none() {
-            return Err(MapError::Inactive(root).into());
+        let roots = self.roots();
+        if current_mapping_root(roots).is_none() {
+            return Err(MapError::Inactive(roots.full_root()).into());
         }
         if let Some(existing) = first_permanent_stack() {
             return Err(MapError::Pinned(existing).into());
         }
         let stack = self.map_stack(slot)?;
         if let Err(reason) = retain_permanent_stack(stack.identity) {
-            return match self.rollback_stack(slot, 1, 0) {
+            return match self.rollback_stack(slot, 0) {
                 Ok(_) => Err(StackMapError::Mapping(reason)),
                 Err(cleanup) => Err(StackMapError::Rollback {
                     cause: reason,
@@ -1280,11 +1491,11 @@ impl AddressSpace {
     /// Exercise map admission against one already-pinned stack guard.
     #[cfg(feature = "selftest")]
     pub fn pinned_stack_refuses_map_for_test(&mut self, slot: &Slot) -> Option<bool> {
-        let root = self.root();
+        let roots = self.roots();
         let guard = slot.guard_base();
         let stack = slot.stack_base();
         let top = slot.stack_top().checked_sub(1)?;
-        let expected_pin = protected_stack_overlap(root, guard, PAGE_SIZE)?;
+        let expected_pin = protected_stack_overlap(roots, guard, PAGE_SIZE)?;
         let before_guard = self.lookup(guard);
         let before_stack = self.lookup(stack)?;
         let before_top = self.lookup(top)?;
@@ -1350,24 +1561,233 @@ impl AddressSpace {
     /// if the direct map cannot reach a table. Also `OutOfMemory` before the
     /// kernel's own tables are installed, because there is nothing to share.
     pub fn for_user() -> Result<Self, MapError> {
+        Self::for_user_roots(UserRootKind::Shared)
+    }
+
+    /// Build a user address space with a validated full/stripped root pair.
+    ///
+    /// The KPTI owner must mint the exact linker witness; mapping or validation
+    /// refusal returns both roots and every intermediate table before this
+    /// returns.
+    pub fn for_user_isolated() -> Result<Self, MapError> {
+        if !super::kpti::entry_path_is_implemented() {
+            return Err(MapError::EntryEnclaveUnavailable);
+        }
+        let enclave = super::kpti::entry_enclave().ok_or(MapError::EntryEnclaveUnavailable)?;
+        Self::for_user_paired(enclave)
+    }
+
+    fn for_user_paired(enclave: super::kpti::EntryEnclave) -> Result<Self, MapError> {
+        let mut space = Self::for_user_roots(UserRootKind::Paired)?;
+        if let Err(reason) = space.install_entry_enclave(enclave) {
+            let returned = space.reclaim(None).unwrap_or_else(|failure| {
+                panic!("unpublished paired-root cleanup refused: {failure}")
+            });
+            assert!(returned >= 2, "paired-root cleanup lost a root frame");
+            return Err(reason);
+        }
+        space.entry_enclave_ready = true;
+        Ok(space)
+    }
+
+    fn for_user_roots(kind: UserRootKind) -> Result<Self, MapError> {
         if !is_active() {
             return Err(MapError::OutOfMemory);
         }
         let kernel = active_root();
-        let space = Self::new()?;
-
-        let mut space = space;
-        // Narrowed *before* the sharing, so a space that shares the kernel can
-        // never be told to change it (D-105).
-        space.reach = Reach::UserHalfOnly;
+        let mut construction = match kind {
+            UserRootKind::Shared => None,
+            UserRootKind::Paired => Some(PairConstructionLedger::new()),
+        };
+        let full = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
+        if let Some(ledger) = construction {
+            construction = Some(
+                ledger
+                    .acquire_root()
+                    .unwrap_or_else(|| panic!("paired construction acquired too many roots")),
+            );
+        }
+        let stripped = match kind {
+            UserRootKind::Shared => None,
+            UserRootKind::Paired => Some(mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?),
+        };
+        if let Some(ledger) = construction {
+            construction = Some(
+                ledger
+                    .acquire_root()
+                    .unwrap_or_else(|| panic!("paired construction acquired too many roots")),
+            );
+        }
+        let full_root = full.address();
+        let stripped_root = stripped.as_ref().map(mm::Frame::address);
 
         for index in ENTRIES / 2..ENTRIES {
             let from = entry_slot(kernel, index)?;
-            let into = entry_slot(space.root(), index)?;
+            let into = entry_slot(full_root, index)?;
             let entry = EntrySlot::read(&from);
             EntrySlot::write(&into, entry);
         }
-        Ok(space)
+
+        let roots = match stripped_root {
+            Some(stripped) => AddressSpaceRoots::paired(full_root, stripped)?,
+            None => AddressSpaceRoots::shared(full_root),
+        };
+        let pair_authority = construction.map(|ledger| {
+            ledger
+                .publish()
+                .unwrap_or_else(|| panic!("paired construction published incomplete roots"))
+        });
+        core::mem::forget(full);
+        if let Some(stripped) = stripped {
+            core::mem::forget(stripped);
+        }
+        Ok(Self {
+            roots: Some(roots),
+            pair_authority,
+            devices: Vec::new(),
+            tables: Vec::new(),
+            reach: Reach::UserHalfOnly,
+            bound: false,
+            entry_enclave_ready: kind == UserRootKind::Shared,
+            shared: Vec::new(),
+            owned_pages: 0,
+        })
+    }
+
+    fn install_entry_enclave(
+        &mut self,
+        enclave: super::kpti::EntryEnclave,
+    ) -> Result<(), MapError> {
+        let mappings = enclave.mappings();
+        let pages = mappings.iter().try_fold(0usize, |total, mapping| {
+            let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
+                .map_err(|_| MapError::OutOfMemory)?;
+            total.checked_add(pages).ok_or(MapError::OutOfMemory)
+        })?;
+        let mut expected_full = Vec::new();
+        let mut expected_stripped = Vec::new();
+        let mut observed_full = Vec::new();
+        expected_full
+            .try_reserve_exact(pages)
+            .map_err(|_| MapError::OutOfMemory)?;
+        expected_stripped
+            .try_reserve_exact(pages)
+            .map_err(|_| MapError::OutOfMemory)?;
+        observed_full
+            .try_reserve_exact(pages)
+            .map_err(|_| MapError::OutOfMemory)?;
+
+        for mapping in mappings {
+            let section = mapping.section();
+            let mut address = section.start;
+            while address < section.end {
+                let Some((physical, flags, span)) = walk(self.root(), address) else {
+                    return Err(MapError::InvalidEntryEnclave(address));
+                };
+                let full = enclave_permission(mapping.full_access());
+                let stripped = enclave_permission(mapping.stripped_access());
+                expected_full.push(
+                    EnclavePage::new(address, physical, full)
+                        .map_err(|_| MapError::InvalidEntryEnclave(address))?,
+                );
+                expected_stripped.push(
+                    EnclavePage::new(address, physical, stripped)
+                        .map_err(|_| MapError::InvalidEntryEnclave(address))?,
+                );
+                observed_full.push(ObservedPage::new(address, physical, span, flags));
+                address = address
+                    .checked_add(PAGE_SIZE)
+                    .ok_or(MapError::InvalidEntryEnclave(address))?;
+            }
+        }
+        if !enclave_matches(&expected_full, &observed_full) {
+            return Err(MapError::InvalidEntryEnclave(
+                expected_full
+                    .first()
+                    .map_or(self.root(), |page| page.virtual_address()),
+            ));
+        }
+        for guard in enclave.guards() {
+            let mut address = guard.start;
+            while address < guard.end {
+                if translate_in(self.root(), address).is_some() {
+                    return Err(MapError::InvalidEntryEnclave(address));
+                }
+                address = address
+                    .checked_add(PAGE_SIZE)
+                    .ok_or(MapError::InvalidEntryEnclave(address))?;
+            }
+        }
+
+        let mark = self.tables.len();
+        let mut written = 0usize;
+        for page in &expected_stripped {
+            let flags = enclave_flags(page.permission());
+            if let Err(reason) = self.set_in(
+                TableRoot::Stripped,
+                page.virtual_address(),
+                page.physical_address(),
+                flags,
+                Level::Pt,
+            ) {
+                self.rollback_stripped_enclave(&expected_stripped, written, mark);
+                return Err(reason);
+            }
+            written += 1;
+        }
+
+        let stripped = self
+            .roots()
+            .stripped_root()
+            .ok_or(MapError::InvalidEntryEnclave(self.root()))?;
+        for guard in enclave.guards() {
+            let mut address = guard.start;
+            while address < guard.end {
+                if translate_in(stripped, address).is_some() {
+                    self.rollback_stripped_enclave(&expected_stripped, written, mark);
+                    return Err(MapError::InvalidEntryEnclave(address));
+                }
+                address = address
+                    .checked_add(PAGE_SIZE)
+                    .ok_or(MapError::InvalidEntryEnclave(address))?;
+            }
+        }
+        let observed = match observe_stripped_higher_half(stripped, pages) {
+            Ok(observed) => observed,
+            Err(reason) => {
+                self.rollback_stripped_enclave(&expected_stripped, written, mark);
+                return Err(reason);
+            }
+        };
+        if !enclave_matches(&expected_stripped, &observed) {
+            self.rollback_stripped_enclave(&expected_stripped, written, mark);
+            return Err(MapError::InvalidEntryEnclave(
+                expected_stripped
+                    .first()
+                    .map_or(stripped, |page| page.virtual_address()),
+            ));
+        }
+        paired_flush_premise(self.roots())?;
+        Ok(())
+    }
+
+    fn rollback_stripped_enclave(
+        &mut self,
+        expected: &[EnclavePage],
+        written: usize,
+        table_mark: usize,
+    ) {
+        let stripped = self
+            .roots()
+            .stripped_root()
+            .unwrap_or_else(|| panic!("paired enclave rollback lost its stripped root"));
+        for page in &expected[..written] {
+            let slot = leaf_in(stripped, page.virtual_address()).unwrap_or_else(|reason| {
+                panic!("paired enclave rollback lost a written leaf: {reason}")
+            });
+            EntrySlot::write(&slot, Entry::ABSENT);
+        }
+        self.rollback_tables(table_mark);
     }
 
     /// Reserve the top-level table every later device mapping will share.
@@ -1422,6 +1842,22 @@ impl AddressSpace {
         if self.reach != Reach::UserHalfOnly {
             return Err(ActivateError::NotAUserSpace);
         }
+        if !self.entry_enclave_ready {
+            return Err(ActivateError::EntryEnclaveIncomplete);
+        }
+        let roots = self.roots();
+        if let Some(stripped) = roots.stripped_root() {
+            paired_flush_premise(roots).map_err(|_| ActivateError::PairedFlushUnavailable)?;
+            for index in 0..ENTRIES / 2 {
+                let full = entry_slot(roots.full_root(), index)
+                    .map_err(|_| ActivateError::UserHalfDiffers(index))?;
+                let stripped = entry_slot(stripped, index)
+                    .map_err(|_| ActivateError::UserHalfDiffers(index))?;
+                if !shared_user_link_matches(EntrySlot::read(&full), EntrySlot::read(&stripped)) {
+                    return Err(ActivateError::UserHalfDiffers(index));
+                }
+            }
+        }
         let kernel = active_root();
         for index in ENTRIES / 2..ENTRIES {
             let theirs =
@@ -1435,7 +1871,87 @@ impl AddressSpace {
             }
         }
         self.bound = true;
-        Ok(Binding { root: self.root() })
+        Ok(Binding { roots })
+    }
+
+    /// Whether the paired user root contains exactly its admitted enclave.
+    #[cfg(feature = "selftest")]
+    pub fn user_root_contains_only_entry_enclave_for_test(&self) -> bool {
+        let Some(roots) = self.roots else {
+            return false;
+        };
+        let Some(stripped) = roots.stripped_root() else {
+            return false;
+        };
+        if !self.entry_enclave_ready || self.reach != Reach::UserHalfOnly {
+            return false;
+        }
+        let Some(enclave) = super::kpti::entry_enclave() else {
+            return false;
+        };
+        let mappings = enclave.mappings();
+        let Some(pages) = mappings.iter().try_fold(0usize, |total, mapping| {
+            let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE).ok()?;
+            total.checked_add(pages)
+        }) else {
+            return false;
+        };
+        let mut expected = Vec::new();
+        if expected.try_reserve_exact(pages).is_err() {
+            return false;
+        }
+        for mapping in mappings {
+            let section = mapping.section();
+            let mut address = section.start;
+            while address < section.end {
+                let Some((physical, _, _)) = walk(roots.full_root(), address) else {
+                    return false;
+                };
+                let Ok(page) = EnclavePage::new(
+                    address,
+                    physical,
+                    enclave_permission(mapping.stripped_access()),
+                ) else {
+                    return false;
+                };
+                expected.push(page);
+                let Some(next) = address.checked_add(PAGE_SIZE) else {
+                    return false;
+                };
+                address = next;
+            }
+        }
+        let Ok(observed) = observe_stripped_higher_half(stripped, pages) else {
+            return false;
+        };
+        if !enclave_matches(&expected, &observed) {
+            return false;
+        }
+        for guard in enclave.guards() {
+            let mut address = guard.start;
+            while address < guard.end {
+                if translate_in(roots.full_root(), address).is_some()
+                    || translate_in(stripped, address).is_some()
+                {
+                    return false;
+                }
+                let Some(next) = address.checked_add(PAGE_SIZE) else {
+                    return false;
+                };
+                address = next;
+            }
+        }
+        if visit_present_leaves(stripped, 0, ENTRIES / 2, |address, _, flags, _| {
+            if !flags.contains(Flags::USER) || flags.contains(Flags::GLOBAL) {
+                return Err(MapError::InvalidEntryEnclave(address));
+            }
+            Ok(())
+        })
+        .is_err()
+        {
+            return false;
+        }
+        paired_flush_premise(roots).is_ok()
     }
 
     /// Bind after introducing only hardware `ACCESSED` drift in one shared root entry.
@@ -1510,7 +2026,7 @@ impl AddressSpace {
             return Err(MapError::NonCanonical(virtual_base));
         }
         self.may_reach(virtual_base, len)?;
-        if let Some(pinned) = protected_stack_overlap(self.root(), virtual_base, len) {
+        if let Some(pinned) = protected_stack_overlap(self.roots(), virtual_base, len) {
             return Err(MapError::Pinned(pinned));
         }
         let pages = len / PAGE_SIZE;
@@ -1691,7 +2207,7 @@ impl AddressSpace {
             address: virtual_base + offset,
             physical,
             len: len_usize,
-            root: self.root(),
+            roots: self.roots(),
             virtual_base,
             pages,
             device_slot,
@@ -1777,7 +2293,7 @@ impl AddressSpace {
             return Err(MapError::OutOfMemory);
         }
         let mapping = &region.mapping;
-        if mapping.root != self.root() {
+        if mapping.roots != self.roots() {
             return Err(MapError::NotYours(mapping.address));
         }
         let offset = mapping.physical % PAGE_SIZE;
@@ -1831,7 +2347,7 @@ impl AddressSpace {
         for mapped_stacks in 0..layout.slots() {
             let Some(slot) = layout.slot(mapped_stacks) else {
                 let cause = MapError::OutOfMemory;
-                return match self.rollback_stack_prefix(layout, mapped_stacks, mapped_stacks, 0) {
+                return match self.rollback_stack_prefix(layout, mapped_stacks, 0) {
                     Ok(_) => Err(StackMapError::Mapping(cause)),
                     Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),
                 };
@@ -1843,8 +2359,8 @@ impl AddressSpace {
                         StackMapError::Mapping(cause) => (cause, mapped_stacks, 0),
                         StackMapError::Rollback { cause, cleanup } => {
                             assert!(
-                                cleanup.root == self.root()
-                                    && cleanup.mapped_stacks == 1
+                                cleanup.roots == self.roots()
+                                    && cleanup.mapped_stacks() == 1
                                     && cleanup.returned_pages == 0
                                     && cleanup.remaining_stacks() == 1,
                                 "single-stack rollback lost its cleanup authority"
@@ -1852,12 +2368,7 @@ impl AddressSpace {
                             (cause, mapped_stacks + 1, cleanup.returned_pages)
                         }
                     };
-                    return match self.rollback_stack_prefix(
-                        layout,
-                        committed,
-                        committed,
-                        returned_pages,
-                    ) {
+                    return match self.rollback_stack_prefix(layout, committed, returned_pages) {
                         Ok(_) => Err(StackMapError::Mapping(cause)),
                         Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),
                     };
@@ -1866,26 +2377,25 @@ impl AddressSpace {
         }
         Ok(StackArena {
             layout: *layout,
-            root: self.root(),
+            roots: self.roots(),
             stacks,
         })
     }
 
     /// Remove every stack represented by `arena`, returning its frames.
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
-        if arena.root != self.root() {
+        if arena.roots != self.roots() {
             return Err(StackRollback {
                 reason: MapError::NotYours(arena.layout.base()),
-                mapped_stacks: arena.layout.slots(),
                 returned_pages: 0,
-                root: arena.root,
+                roots: arena.roots,
                 pending: StackCleanup::Prefix {
                     layout: arena.layout,
                     remaining: arena.layout.slots(),
                 },
             });
         }
-        self.rollback_stack_prefix(&arena.layout, arena.layout.slots(), arena.layout.slots(), 0)
+        self.rollback_stack_prefix(&arena.layout, arena.layout.slots(), 0)
     }
 
     /// Continue the exact stack cleanup represented by `rollback`.
@@ -1895,25 +2405,23 @@ impl AddressSpace {
         rollback: StackRollback,
     ) -> Result<usize, StackRollback> {
         let StackRollback {
-            mapped_stacks,
             returned_pages,
-            root,
+            roots,
             pending,
             ..
         } = rollback;
-        if root != self.root() {
+        if roots != self.roots() {
             return Err(StackRollback {
                 reason: MapError::NotYours(pending.address()),
-                mapped_stacks,
                 returned_pages,
-                root,
+                roots,
                 pending,
             });
         }
         match pending {
-            StackCleanup::One(slot) => self.rollback_stack(&slot, mapped_stacks, returned_pages),
+            StackCleanup::One(slot) => self.rollback_stack(&slot, returned_pages),
             StackCleanup::Prefix { layout, remaining } => {
-                self.rollback_stack_prefix(&layout, remaining, mapped_stacks, returned_pages)
+                self.rollback_stack_prefix(&layout, remaining, returned_pages)
             }
         }
     }
@@ -1926,7 +2434,24 @@ impl AddressSpace {
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
-        let mut table = self.root();
+        self.set_in(TableRoot::Full, virtual_address, physical, flags, target)
+    }
+
+    fn set_in(
+        &mut self,
+        root: TableRoot,
+        virtual_address: u64,
+        physical: Paddr,
+        flags: Flags,
+        target: Level,
+    ) -> Result<(), MapError> {
+        let mut table = match root {
+            TableRoot::Full => self.root(),
+            TableRoot::Stripped => self
+                .roots()
+                .stripped_root()
+                .ok_or(MapError::InvalidEntryEnclave(virtual_address))?,
+        };
 
         for level in Level::WALK {
             let slot = entry_slot(table, level.index(virtual_address))?;
@@ -1944,6 +2469,16 @@ impl AddressSpace {
             }
 
             let current = EntrySlot::read(&slot);
+            let paired = if root == TableRoot::Full && level == Level::Pml4 {
+                self.stripped_lower_slot(virtual_address)?
+            } else {
+                None
+            };
+            if let Some(paired) = paired.as_ref()
+                && !shared_user_link_matches(current, EntrySlot::read(paired))
+            {
+                return Err(MapError::Conflict(virtual_address));
+            }
             table = if current.is_present() {
                 if current.is_huge() {
                     return Err(MapError::Conflict(virtual_address));
@@ -1955,13 +2490,17 @@ impl AddressSpace {
                 }
                 current.address()
             } else {
-                let privilege = if flags.contains(Flags::USER) {
+                let privilege = if paired.is_some() || flags.contains(Flags::USER) {
                     TablePrivilege::User
                 } else {
                     TablePrivilege::Supervisor
                 };
-                let (frame, link) = self.take_owned_table(virtual_address, level, privilege)?;
+                let (frame, link) =
+                    self.take_owned_table_in(root, virtual_address, level, privilege)?;
                 EntrySlot::write(&slot, link);
+                if let Some(paired) = paired.as_ref() {
+                    EntrySlot::write(paired, link);
+                }
                 frame
             };
         }
@@ -2010,9 +2549,20 @@ impl AddressSpace {
         level: Level,
         privilege: TablePrivilege,
     ) -> Result<(Paddr, Entry), MapError> {
+        self.take_owned_table_in(TableRoot::Full, virtual_address, level, privilege)
+    }
+
+    fn take_owned_table_in(
+        &mut self,
+        root: TableRoot,
+        virtual_address: u64,
+        level: Level,
+        privilege: TablePrivilege,
+    ) -> Result<(Paddr, Entry), MapError> {
         if level == Level::Pml4
             && !is_user_address(virtual_address)
             && is_active()
+            && root == TableRoot::Full
             && self.root() == active_root()
         {
             return Err(MapError::KernelTopologyFrozen(virtual_address));
@@ -2020,6 +2570,10 @@ impl AddressSpace {
         self.tables
             .try_reserve(1)
             .map_err(|_| MapError::OutOfMemory)?;
+        let pair_authority = self
+            .pair_authority
+            .map(|authority| authority.acquire_table().ok_or(MapError::OutOfMemory))
+            .transpose()?;
         let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
         let address = frame.address();
         let link = Entry::table(address, privilege).map_err(MapError::Encoding)?;
@@ -2029,7 +2583,9 @@ impl AddressSpace {
             virtual_address,
             level,
             link,
+            root,
         });
+        self.pair_authority = pair_authority;
         Ok((address, link))
     }
 
@@ -2046,6 +2602,10 @@ impl AddressSpace {
         // A bound space needs the task table's linear `Released` evidence, and
         // a repeat could mint an owner for frame zero (D-123, D-139).
         if self.is_reclaimed() {
+            assert!(
+                self.pair_authority.is_none(),
+                "a reclaimed space retained paired frame authority"
+            );
             #[cfg(feature = "selftest")]
             RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
             return Err(ReclaimFailure {
@@ -2053,7 +2613,28 @@ impl AddressSpace {
                 released,
             });
         }
-        let root = self.root();
+        let roots = self.roots();
+        let root = roots.full_root();
+        if roots.is_paired() {
+            let authority = self
+                .pair_authority
+                .unwrap_or_else(|| panic!("paired space lost its complete frame authority"));
+            assert_eq!(
+                authority.table_frames(),
+                self.tables.len(),
+                "paired space frame authority disagrees with its tables"
+            );
+            assert_eq!(
+                authority.settle(0),
+                Ok(PairCleanupState::Retained(authority)),
+                "paired cleanup refusal would lose complete authority"
+            );
+        } else {
+            assert!(
+                self.pair_authority.is_none(),
+                "a shared-root space retained paired frame authority"
+            );
+        }
         if self.owned_pages != 0 {
             return Err(ReclaimFailure {
                 reason: ReclaimError::Mapped(self.owned_pages),
@@ -2067,7 +2648,7 @@ impl AddressSpace {
             && let Some(evidence) = released.as_ref()
         {
             return Err(ReclaimFailure {
-                reason: ReclaimError::UnexpectedRelease(evidence.root()),
+                reason: ReclaimError::UnexpectedRelease(evidence.roots().full_root()),
                 released,
             });
         }
@@ -2079,11 +2660,11 @@ impl AddressSpace {
                         released,
                     });
                 }
-                Some(evidence) if evidence.root() != root => {
+                Some(evidence) if evidence.roots() != roots => {
                     return Err(ReclaimFailure {
                         reason: ReclaimError::WrongRelease {
                             expected: root,
-                            found: evidence.root(),
+                            found: evidence.roots().full_root(),
                         },
                         released,
                     });
@@ -2091,14 +2672,14 @@ impl AddressSpace {
                 Some(_) => {}
             }
         }
-        if self.root_is_active(root, cpu::page_table_base()) {
+        if self.roots_are_active(roots, cpu::page_table_base()) {
             return Err(ReclaimFailure {
-                reason: ReclaimError::Active(root),
+                reason: ReclaimError::Active(cpu::page_table_base()),
                 released,
             });
         }
 
-        let returned = self.tables.len() + 1;
+        let returned = self.tables.len() + roots.frames();
         for table in self.tables.drain(..) {
             // SAFETY: each was allocated by `take_table` for this space and
             // forgotten there, so exactly one handle is being rebuilt for it;
@@ -2106,11 +2687,23 @@ impl AddressSpace {
             // establishes that nothing is walking it.
             drop(unsafe { mm::Frame::from_raw(table.frame) });
         }
-        // The root, which `new` took before there was anywhere to record it.
-        // SAFETY: as above.
+        if let Some(stripped) = roots.stripped_root() {
+            // SAFETY: paired construction allocated and forgot this distinct
+            // root exactly once, and the active-root refusal covers it too.
+            drop(unsafe { mm::Frame::from_raw(stripped) });
+        }
+        // The full root, which construction took before there was anywhere to
+        // record it. SAFETY: as above.
         drop(unsafe { mm::Frame::from_raw(root) });
+        if let Some(authority) = self.pair_authority.take() {
+            assert_eq!(
+                authority.settle(returned),
+                Ok(PairCleanupState::Released),
+                "paired cleanup returned an incomplete frame set"
+            );
+        }
         // Kept as an empty value so later safe operations refuse.
-        self.root = None;
+        self.roots = None;
         self.shared.clear();
 
         Ok(returned)
@@ -2121,21 +2714,21 @@ impl AddressSpace {
     /// A reclaimed space answers nothing and maps nothing. It is kept as a
     /// value rather than consumed so a refused reclaim can give it back.
     pub const fn is_reclaimed(&self) -> bool {
-        self.root.is_none()
+        self.roots.is_none()
     }
 
     /// Prove physical zero is represented as a live root, not empty state.
     #[cfg(feature = "selftest")]
     pub fn zero_root_is_live_for_test(&mut self) -> bool {
-        let saved = self.root;
-        self.root = Some(0);
+        let saved = self.roots;
+        self.roots = Some(AddressSpaceRoots::shared(0));
         let live = !self.is_reclaimed() && self.root() == 0;
-        self.root = saved;
+        self.roots = saved;
         live
     }
 
-    fn root_is_active(&self, root: Paddr, current_root: Paddr) -> bool {
-        current_root == root || (is_active() && active_root() == root)
+    fn roots_are_active(&self, roots: AddressSpaceRoots, current_root: Paddr) -> bool {
+        roots.contains(current_root) || (is_active() && roots.contains(active_root()))
     }
 
     fn device_reclaim_error(&self) -> Option<ReclaimError> {
@@ -2146,8 +2739,8 @@ impl AddressSpace {
     /// Exercise the permanent-root half independently of the current CR3.
     #[cfg(feature = "selftest")]
     pub fn permanent_root_blocks_reclaim_for_test(&self) -> bool {
-        self.root
-            .is_some_and(|root| self.root_is_active(root, root ^ PAGE_SIZE))
+        self.roots
+            .is_some_and(|roots| self.roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
     }
 
     /// Whether the device ledger independently blocks table reclaim.
@@ -2250,8 +2843,8 @@ impl AddressSpace {
 impl Drop for AddressSpace {
     fn drop(&mut self) {
         if self
-            .root
-            .is_some_and(|root| self.bound || self.root_is_active(root, cpu::page_table_base()))
+            .roots
+            .is_some_and(|roots| self.bound || self.roots_are_active(roots, cpu::page_table_base()))
             && !self.shared.is_empty()
         {
             let keepalives = core::mem::take(&mut self.shared);
@@ -2339,13 +2932,12 @@ fn clear_mapping_slot(slot: EntrySlot, address: u64, level: Level) {
     disabled.restore();
 }
 
-fn current_mapping_root(recorded: Paddr) -> Option<Paddr> {
+fn current_mapping_root(recorded: AddressSpaceRoots) -> Option<Paddr> {
     if !is_active() {
         return None;
     }
-    let published = active_root();
     let current = cpu::page_table_base();
-    (published == current && recorded == current).then_some(current)
+    recorded.contains(current).then_some(current)
 }
 
 fn canonical_mapping_address(address: u64) -> CanonicalAddress {
@@ -2599,7 +3191,7 @@ const MAX_PERMANENT_STACKS: usize = 2;
 static PERMANENT_STACKS: SpinLock<[Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
     SpinLock::new([None; MAX_PERMANENT_STACKS]);
 
-static TASK_STACK_PIN: SpinLock<Option<(Paddr, StackLayout)>> = SpinLock::new(None);
+static TASK_STACK_PIN: SpinLock<Option<(AddressSpaceRoots, StackLayout)>> = SpinLock::new(None);
 
 /// Reclaim the stack ledgers on the terminal panic path.
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
@@ -2623,18 +3215,18 @@ fn retain_permanent_stack(identity: StackIdentity) -> Result<(), MapError> {
     Ok(())
 }
 
-fn permanent_stack_overlap(root: Paddr, base: u64, len: u64) -> Option<u64> {
+fn permanent_stack_overlap(roots: AddressSpaceRoots, base: u64, len: u64) -> Option<u64> {
     let pinned = PERMANENT_STACKS.lock_leaf();
     pinned.iter().flatten().find_map(|identity| {
-        (identity.root == root && identity.overlaps(base, len))
+        (identity.roots == roots && identity.overlaps(base, len))
             .then_some(identity.slot.stack_base())
     })
 }
 
-fn task_stack_overlap(root: Paddr, base: u64, len: u64) -> Option<u64> {
+fn task_stack_overlap(roots: AddressSpaceRoots, base: u64, len: u64) -> Option<u64> {
     let pinned = *TASK_STACK_PIN.lock_leaf();
-    let (pinned_root, layout) = pinned?;
-    if pinned_root != root {
+    let (pinned_roots, layout) = pinned?;
+    if pinned_roots != roots {
         return None;
     }
     for index in 0..layout.slots() {
@@ -2647,8 +3239,8 @@ fn task_stack_overlap(root: Paddr, base: u64, len: u64) -> Option<u64> {
     None
 }
 
-fn protected_stack_overlap(root: Paddr, base: u64, len: u64) -> Option<u64> {
-    permanent_stack_overlap(root, base, len).or_else(|| task_stack_overlap(root, base, len))
+fn protected_stack_overlap(roots: AddressSpaceRoots, base: u64, len: u64) -> Option<u64> {
+    permanent_stack_overlap(roots, base, len).or_else(|| task_stack_overlap(roots, base, len))
 }
 
 #[cfg(feature = "selftest")]
@@ -2826,12 +3418,10 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
 
 /// First kernel-image page redirected or assigned the wrong protection class.
 fn kernel_image_gap(candidate: Paddr, current: Paddr) -> Option<u64> {
-    let sections = crate::boot::sections();
-    for (section, writable, executable) in [
-        (sections.text, false, true),
-        (sections.rodata, false, false),
-        (sections.data, true, false),
-    ] {
+    let Some(sections) = image_sections() else {
+        return Some(crate::boot::sections().entry_enclave.text.start);
+    };
+    for (section, writable, executable) in sections {
         let Some(end) = section.start.checked_add(section.mapped_len()) else {
             return Some(section.start);
         };
@@ -2860,7 +3450,40 @@ fn kernel_image_gap(candidate: Paddr, current: Paddr) -> Option<u64> {
             address = next;
         }
     }
+    let Some(enclave) = super::kpti::entry_enclave() else {
+        return Some(crate::boot::sections().entry_enclave.text.start);
+    };
+    for guard in enclave.guards() {
+        let mut address = guard.start;
+        while address < guard.end {
+            if translate_in(candidate, address).is_some() {
+                return Some(address);
+            }
+            address = address.checked_add(PAGE_SIZE)?;
+        }
+    }
     None
+}
+
+fn image_sections() -> Option<[(crate::boot::Section, bool, bool); 9]> {
+    let sections = crate::boot::sections();
+    let [text, rodata, tables, route, transition_stack, ist_stack] =
+        super::kpti::entry_enclave()?.mappings();
+    let described = [text, rodata, tables, route, transition_stack, ist_stack].map(|mapping| {
+        let (writable, executable) = enclave_access_policy(mapping.full_access());
+        (mapping.section(), writable, executable)
+    });
+    Some([
+        (sections.text, false, true),
+        (sections.rodata, false, false),
+        (sections.data, true, false),
+        described[0],
+        described[1],
+        described[2],
+        described[3],
+        described[4],
+        described[5],
+    ])
 }
 
 /// The first direct-map address `root` gets wrong, if any: every frame access
@@ -2874,19 +3497,14 @@ struct ImagePhysicalExtent {
     executable: bool,
 }
 
-fn image_physical_extents(current_root: Paddr) -> Option<[ImagePhysicalExtent; 3]> {
-    let sections = crate::boot::sections();
+fn image_physical_extents(current_root: Paddr) -> Option<[ImagePhysicalExtent; 9]> {
     let mut extents = [ImagePhysicalExtent {
         start: 0,
         end: 0,
         writable: false,
         executable: false,
-    }; 3];
-    for (slot, (section, writable, executable)) in extents.iter_mut().zip([
-        (sections.text, false, true),
-        (sections.rodata, false, false),
-        (sections.data, true, false),
-    ]) {
+    }; 9];
+    for (slot, (section, writable, executable)) in extents.iter_mut().zip(image_sections()?) {
         let start = translate_in(current_root, section.start)?.0;
         let end = start.checked_add(section.mapped_len())?;
         let mut offset = 0;
@@ -3054,6 +3672,136 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
     None
 }
 
+const fn enclave_permission(access: super::kpti::Access) -> EnclavePermission {
+    match access {
+        super::kpti::Access::Executable => EnclavePermission::Executable,
+        super::kpti::Access::ReadOnly => EnclavePermission::ReadOnly,
+        super::kpti::Access::Writable => EnclavePermission::Writable,
+    }
+}
+
+const fn enclave_access_policy(access: super::kpti::Access) -> (bool, bool) {
+    match access {
+        super::kpti::Access::Executable => (false, true),
+        super::kpti::Access::ReadOnly => (false, false),
+        super::kpti::Access::Writable => (true, false),
+    }
+}
+
+const fn enclave_flags(permission: EnclavePermission) -> Flags {
+    match permission {
+        EnclavePermission::Executable => Flags::PRESENT,
+        EnclavePermission::ReadOnly => Flags::PRESENT.union(Flags::NO_EXECUTE),
+        EnclavePermission::Writable => Flags::PRESENT
+            .union(Flags::WRITABLE)
+            .union(Flags::NO_EXECUTE),
+    }
+}
+
+fn observe_stripped_higher_half(
+    root: Paddr,
+    expected_pages: usize,
+) -> Result<Vec<ObservedPage>, MapError> {
+    let mut observed = Vec::new();
+    observed
+        .try_reserve_exact(expected_pages)
+        .map_err(|_| MapError::OutOfMemory)?;
+    visit_present_leaves(
+        root,
+        ENTRIES / 2,
+        ENTRIES,
+        |address, physical, flags, span| {
+            if observed.len() == expected_pages {
+                return Err(MapError::InvalidEntryEnclave(address));
+            }
+            observed.push(ObservedPage::new(address, physical, span, flags));
+            Ok(())
+        },
+    )?;
+    Ok(observed)
+}
+
+fn paired_flush_premise(roots: AddressSpaceRoots) -> Result<FlushPremise, MapError> {
+    let Some(stripped) = roots.stripped_root() else {
+        return Err(MapError::InvalidEntryEnclave(roots.full_root()));
+    };
+    let mut flags = Vec::new();
+    for root in [roots.full_root(), stripped] {
+        visit_present_leaves(root, 0, ENTRIES, |_, _, leaf_flags, _| {
+            flags.try_reserve(1).map_err(|_| MapError::OutOfMemory)?;
+            flags.push(leaf_flags);
+            Ok(())
+        })?;
+    }
+    let pcid = if cpu::page_table_context_ids_are_disabled() {
+        PcidState::Disabled
+    } else {
+        PcidState::Enabled
+    };
+    FlushPremise::new(pcid, &flags).map_err(MapError::InvalidPairedFlush)
+}
+
+fn visit_present_leaves(
+    root: Paddr,
+    first_pml4: usize,
+    end_pml4: usize,
+    mut visit: impl FnMut(u64, Paddr, Flags, u64) -> Result<(), MapError>,
+) -> Result<(), MapError> {
+    for pml4 in first_pml4..end_pml4 {
+        let pml4_entry = EntrySlot::read(&entry_slot(root, pml4)?);
+        if !pml4_entry.is_present() {
+            continue;
+        }
+        let mut pml4_address = (pml4 as u64) << 39;
+        if pml4 >= ENTRIES / 2 {
+            pml4_address |= 0xffff_0000_0000_0000;
+        }
+        if pml4_entry.is_huge() {
+            return Err(MapError::InvalidEntryEnclave(pml4_address));
+        }
+        for pdpt in 0..ENTRIES {
+            let pdpt_entry = EntrySlot::read(&entry_slot(pml4_entry.address(), pdpt)?);
+            if !pdpt_entry.is_present() {
+                continue;
+            }
+            let pdpt_address = pml4_address | (pdpt as u64) << 30;
+            if pdpt_entry.is_huge() {
+                let Some((physical, flags, span)) = walk(root, pdpt_address) else {
+                    return Err(MapError::InvalidEntryEnclave(pdpt_address));
+                };
+                visit(pdpt_address, physical, flags, span)?;
+                continue;
+            }
+            for pd in 0..ENTRIES {
+                let pd_entry = EntrySlot::read(&entry_slot(pdpt_entry.address(), pd)?);
+                if !pd_entry.is_present() {
+                    continue;
+                }
+                let pd_address = pdpt_address | (pd as u64) << 21;
+                if pd_entry.is_huge() {
+                    let Some((physical, flags, span)) = walk(root, pd_address) else {
+                        return Err(MapError::InvalidEntryEnclave(pd_address));
+                    };
+                    visit(pd_address, physical, flags, span)?;
+                    continue;
+                }
+                for pt in 0..ENTRIES {
+                    let entry = EntrySlot::read(&entry_slot(pd_entry.address(), pt)?);
+                    if !entry.is_present() {
+                        continue;
+                    }
+                    let address = pd_address | (pt as u64) << 12;
+                    let Some((physical, flags, span)) = walk(root, address) else {
+                        return Err(MapError::InvalidEntryEnclave(address));
+                    };
+                    visit(address, physical, flags, span)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// First address of the window device registers are mapped into.
 ///
 /// Well clear of the direct map below it and the kernel image above it, so a
@@ -3079,7 +3827,7 @@ struct DeviceExtent {
 #[derive(Debug)]
 pub struct StackArena {
     layout: StackLayout,
-    root: Paddr,
+    roots: AddressSpaceRoots,
     stacks: Vec<StackIdentity>,
 }
 
@@ -3093,7 +3841,7 @@ impl StackArena {
     pub(crate) fn pin(self) -> TaskStackPin {
         let mut pinned = TASK_STACK_PIN.lock_leaf();
         assert!(pinned.is_none(), "task stack arena pinned twice");
-        *pinned = Some((self.root, self.layout));
+        *pinned = Some((self.roots, self.layout));
         TaskStackPin {
             stacks: self.stacks,
         }
@@ -3101,7 +3849,7 @@ impl StackArena {
 
     /// First guard or stack page that disagrees with this arena's proof.
     pub(crate) fn invalid_page(&self) -> Option<u64> {
-        let Some(current) = current_mapping_root(self.root) else {
+        let Some(current) = current_mapping_root(self.roots) else {
             return Some(self.layout.base());
         };
         self.mapping_mismatch_in(current)
@@ -3115,7 +3863,7 @@ impl StackArena {
             let Some(slot) = self.layout.slot(index) else {
                 return Some(self.layout.base());
             };
-            if identity.root != self.root || identity.slot != slot {
+            if identity.roots != self.roots || identity.slot != slot {
                 return Some(slot.guard_base());
             }
             if let Some(page) = identity.invalid_page_in(root) {
@@ -3167,7 +3915,7 @@ impl TaskStackPin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StackIdentity {
-    root: Paddr,
+    roots: AddressSpaceRoots,
     slot: Slot,
     physical_base: Paddr,
 }
@@ -3240,7 +3988,7 @@ impl StackIdentity {
 
         let disabled = interrupt::disable();
         let result = (|| {
-            let root = current_mapping_root(self.root)?;
+            let root = current_mapping_root(self.roots)?;
             if self.invalid_page_in(root).is_some() {
                 return Some(false);
             }
@@ -3291,7 +4039,7 @@ pub fn permanent_stack_rejects_lower_leaf_substitution_for_test(base: u64) -> Op
         .find(|identity| identity.slot.stack_base() == base)
         .copied()?;
     identity.rejects_page_substitution_for_test(0, || {
-        current_mapping_root(identity.root)
+        current_mapping_root(identity.roots)
             .is_some_and(|root| identity.invalid_page_in(root) == Some(base))
     })
 }
@@ -3327,7 +4075,7 @@ impl PaintedStack {
             .identity
             .slot
             .span_below(pointer, Self::SCAN_CLEARANCE)?;
-        if reach.end < self.span.end || current_mapping_root(self.identity.root).is_none() {
+        if reach.end < self.span.end || current_mapping_root(self.identity.roots).is_none() {
             return None;
         }
         let mut address = self.span.start;
@@ -3357,7 +4105,7 @@ pub fn paint_current_permanent_stack_for_test() -> Option<PaintedStack> {
         .flatten()
         .find(|identity| identity.slot.usage_at(pointer).is_some())
         .copied()?;
-    let root = current_mapping_root(identity.root)?;
+    let root = current_mapping_root(identity.roots)?;
     if identity.invalid_page_in(root).is_some() {
         return None;
     }
@@ -3398,7 +4146,7 @@ impl MappedStack {
     /// the original owned, supervisor, write-back, writable and non-executable
     /// mapping. The complete re-walk rejects partial and substituted stacks.
     pub fn is_installed(&self) -> bool {
-        current_mapping_root(self.identity.root)
+        current_mapping_root(self.identity.roots)
             .is_some_and(|current| self.identity.invalid_page_in(current).is_none())
     }
 
@@ -3558,13 +4306,13 @@ enum MappingState {
 /// exit and take another's tables with it.
 #[derive(Debug)]
 pub struct Binding {
-    root: Paddr,
+    roots: AddressSpaceRoots,
 }
 
 impl Binding {
-    /// The table to load into `CR3`.
-    pub const fn root(&self) -> Paddr {
-        self.root
+    /// The inseparable root identity checked for this binding.
+    pub const fn roots(&self) -> AddressSpaceRoots {
+        self.roots
     }
 }
 
@@ -3617,7 +4365,7 @@ pub struct DeviceMapping {
     address: u64,
     physical: Paddr,
     len: usize,
-    root: Paddr,
+    roots: AddressSpaceRoots,
     virtual_base: u64,
     pages: u64,
     device_slot: usize,
@@ -3659,7 +4407,7 @@ impl DeviceMapping {
 
     /// Whether the complete page-rounded extent is unchanged in the live root.
     fn is_live(&self) -> bool {
-        let Some(current) = current_mapping_root(self.root) else {
+        let Some(current) = current_mapping_root(self.roots) else {
             return false;
         };
         let mut offset = 0u64;
@@ -3758,7 +4506,7 @@ impl DeviceMapping {
         };
 
         let disabled = interrupt::disable();
-        let Some(root) = current_mapping_root(self.root) else {
+        let Some(root) = current_mapping_root(self.roots) else {
             disabled.restore();
             return (self, false);
         };
