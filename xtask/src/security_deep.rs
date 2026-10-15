@@ -3983,8 +3983,8 @@ fn require_app_initialize(result: &JsonValue, expected_codex_home: &Path) -> Res
     let codex_version = CODEX_VERSION
         .strip_prefix("codex-cli ")
         .context("qualified Codex version has no CLI prefix")?;
-    let prefix = format!("codex_vscode/{codex_version} (");
-    let suffix = format!(") dumb (codex_security_deep_scan; {MCP_SERVER_VERSION})");
+    let prefix = format!("codex_security_deep_scan/{codex_version} (");
+    let suffix = format!(") unknown (codex_security_deep_scan; {MCP_SERVER_VERSION})");
     let host = user_agent
         .strip_prefix(&prefix)
         .and_then(|value| value.strip_suffix(&suffix))

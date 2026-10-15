@@ -367,7 +367,7 @@ fn initialize_result(repository: &Path, mode: &str) -> Result<JsonValue> {
             text_value(if mode == "initialize-agent-drift" {
                 "foreign-client/1"
             } else {
-                "codex_vscode/0.162.0-alpha.17.2 (Windows 10.0.26200; x86_64) dumb (codex_security_deep_scan; 0.1.160)"
+                "codex_security_deep_scan/0.162.0-alpha.17.2 (Windows 10.0.26200; x86_64) unknown (codex_security_deep_scan; 0.1.160)"
             }),
         ),
     ]);

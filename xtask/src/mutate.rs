@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2065;
+pub const NEXT_MUTATION_ID: u16 = 2066;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23046,6 +23046,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::config_tests::config_response_correlation_and_transport_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2065,
+        file: "xtask/src/security_deep.rs",
+        find: "    let prefix = format!(\"codex_security_deep_scan/{codex_version} (\");",
+        replace: "    let prefix = format!(\"codex_vscode/{codex_version} (\");",
+        breaks: "the owned Deep qualifier rejects its exact hermetic app-server client identity in favor of an ambient VS Code identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::config_tests::config_reader_emits_exact_requests_and_accepts_only_the_supported_notification",
         },
     },
 ];
