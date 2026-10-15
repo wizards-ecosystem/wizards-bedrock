@@ -3852,6 +3852,7 @@ fn read_codex_config_with_command(
     command.current_dir(&repository);
     apply_base_environment(&mut command, scratch, None)?;
     let config_repository = repository.clone();
+    let config_home = scratch.codex_home();
     let output = crate::bounded_process::output_dialogue(
         command,
         CONFIG_TIMEOUT,
@@ -3862,7 +3863,7 @@ fn read_codex_config_with_command(
             stderr_bytes: 1024 * 1024,
         },
         || Ok(()),
-        move |dialogue| exchange_codex_config(dialogue, &config_repository),
+        move |dialogue| exchange_codex_config(dialogue, &config_repository, &config_home),
     )?;
     ensure!(
         output.status.success(),
@@ -3896,6 +3897,7 @@ fn prepare_config_test_home(scratch: &OwnedScratch) -> Result<()> {
 fn exchange_codex_config(
     dialogue: &mut LineDialogue,
     repository: &Path,
+    codex_home: &Path,
 ) -> Result<EffectiveConfig> {
     send_app_request(
         dialogue,
@@ -3917,8 +3919,7 @@ fn exchange_codex_config(
         ]),
     )?;
     let initialized = receive_app_response(dialogue, 1)?;
-    let initialized = json_object(&initialized, "Codex app-server initialize result")?;
-    require_json_fields(initialized, &[], "Codex app-server initialize result")?;
+    require_app_initialize(&initialized, codex_home)?;
     send_value(
         dialogue,
         &object([
@@ -3943,6 +3944,60 @@ fn exchange_codex_config(
         "Codex app-server sent output after its final config/read response"
     );
     Ok(config)
+}
+
+fn require_app_initialize(result: &JsonValue, expected_codex_home: &Path) -> Result<()> {
+    let result = json_object(result, "Codex app-server initialize result")?;
+    require_json_fields(
+        result,
+        &["codexHome", "platformFamily", "platformOs", "userAgent"],
+        "Codex app-server initialize result",
+    )?;
+    let codex_home = json_string(
+        json_field(result, "codexHome", "Codex app-server initialize result")?,
+        "Codex app-server Codex home",
+    )?;
+    ensure!(
+        canonical_spelling_matches(expected_codex_home, Path::new(codex_home)),
+        "Codex app-server did not use the private Codex home"
+    );
+    ensure!(
+        json_string(
+            json_field(
+                result,
+                "platformFamily",
+                "Codex app-server initialize result"
+            )?,
+            "Codex app-server platform family"
+        )? == "windows"
+            && json_string(
+                json_field(result, "platformOs", "Codex app-server initialize result")?,
+                "Codex app-server platform OS"
+            )? == "windows",
+        "Codex app-server platform differs from the qualified Windows host"
+    );
+    let user_agent = json_string(
+        json_field(result, "userAgent", "Codex app-server initialize result")?,
+        "Codex app-server user agent",
+    )?;
+    let codex_version = CODEX_VERSION
+        .strip_prefix("codex-cli ")
+        .context("qualified Codex version has no CLI prefix")?;
+    let prefix = format!("codex_vscode/{codex_version} (");
+    let suffix = format!(") dumb (codex_security_deep_scan; {MCP_SERVER_VERSION})");
+    let host = user_agent
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(&suffix))
+        .context("Codex app-server user agent differs from the qualified client")?;
+    ensure!(
+        !host.is_empty()
+            && host.len() <= 256
+            && host
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() || byte == b' '),
+        "Codex app-server host identity is malformed"
+    );
+    Ok(())
 }
 
 fn send_app_request(

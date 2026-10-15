@@ -152,6 +152,7 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
     prepare_config_test_home(&fixture.scratch)?;
     apply_base_environment(&mut command, &fixture.scratch, None)?;
     let repository = fixture.repository.clone();
+    let codex_home = fixture.scratch.codex_home();
     let result = crate::bounded_process::output_dialogue(
         command,
         Duration::from_secs(30),
@@ -164,7 +165,7 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
         || Ok(()),
         move |dialogue| {
             wait_until_ready(dialogue)?;
-            exchange_codex_config(dialogue, &repository)
+            exchange_codex_config(dialogue, &repository, &codex_home)
         },
     )
     .and_then(|output| {
@@ -328,6 +329,52 @@ fn response(id: u64, result: JsonValue) -> JsonValue {
         ("id", JsonValue::Number(id.to_string())),
         ("result", result),
     ])
+}
+
+fn initialize_result(repository: &Path, mode: &str) -> Result<JsonValue> {
+    let codex_home = repository
+        .parent()
+        .context("fake repository has no fixture root")?
+        .join(OWNED_SCRATCH_NAME)
+        .join("codex-home");
+    let mut result = BTreeMap::from([
+        (
+            "codexHome".to_string(),
+            path_value(if mode == "initialize-home-drift" {
+                Path::new(r"C:\foreign-codex-home")
+            } else {
+                &codex_home
+            }),
+        ),
+        (
+            "platformFamily".to_string(),
+            text_value(if mode == "initialize-platform-drift" {
+                "unix"
+            } else {
+                "windows"
+            }),
+        ),
+        (
+            "platformOs".to_string(),
+            text_value(if mode == "initialize-platform-drift" {
+                "linux"
+            } else {
+                "windows"
+            }),
+        ),
+        (
+            "userAgent".to_string(),
+            text_value(if mode == "initialize-agent-drift" {
+                "foreign-client/1"
+            } else {
+                "codex_vscode/0.162.0-alpha.17.2 (Windows 10.0.26200; x86_64) dumb (codex_security_deep_scan; 0.1.160)"
+            }),
+        ),
+    ]);
+    if mode == "initialize-result-extra" {
+        result.insert("unexpected".to_string(), JsonValue::Null);
+    }
+    Ok(JsonValue::Object(result))
 }
 
 fn ambient_config() -> JsonValue {
@@ -534,12 +581,16 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
         issue_fault(repository, mode)?;
         return Ok(());
     }
-    let initialize_result = if mode == "initialize-result-extra" {
+    if matches!(
+        mode,
+        "initialize-result-extra"
+            | "initialize-home-drift"
+            | "initialize-platform-drift"
+            | "initialize-agent-drift"
+    ) {
         issue_fault(repository, mode)?;
-        object([("unexpected", JsonValue::Null)])
-    } else {
-        object(std::iter::empty::<(&str, JsonValue)>())
-    };
+    }
+    let initialize_result = initialize_result(repository, mode)?;
     send_value(&mut writer, &response(1, initialize_result))?;
     expect_value(
         &mut reader,
@@ -727,6 +778,18 @@ fn config_response_correlation_and_transport_fail_closed() {
         (
             "initialize-result-extra",
             "Codex app-server initialize result schema differs",
+        ),
+        (
+            "initialize-home-drift",
+            "did not use the private Codex home",
+        ),
+        (
+            "initialize-platform-drift",
+            "platform differs from the qualified Windows host",
+        ),
+        (
+            "initialize-agent-drift",
+            "user agent differs from the qualified client",
         ),
         ("wrong-id", "unexpected ID"),
         ("duplicate-id", "unexpected ID"),
