@@ -8194,21 +8194,21 @@ fn report_text(value: &str, fallback: &str) -> Result<String> {
     let mut escaped = String::new();
     let mut index = 0;
     while index < characters.len() {
-        if characters[index] == '`' && (index == 0 || characters[index - 1] != '`') {
-            if let Some(relative_end) = characters[index + 1..]
+        if characters[index] == '`'
+            && (index == 0 || characters[index - 1] != '`')
+            && let Some(relative_end) = characters[index + 1..]
                 .iter()
                 .position(|character| *character == '`')
+        {
+            let end = index + 1 + relative_end;
+            if end > index + 1
+                && characters
+                    .get(end + 1)
+                    .is_none_or(|character| *character != '`')
             {
-                let end = index + 1 + relative_end;
-                if end > index + 1
-                    && characters
-                        .get(end + 1)
-                        .is_none_or(|character| *character != '`')
-                {
-                    escaped.extend(&characters[index..=end]);
-                    index = end + 1;
-                    continue;
-                }
+                escaped.extend(&characters[index..=end]);
+                index = end + 1;
+                continue;
             }
         }
         let character = characters[index];
