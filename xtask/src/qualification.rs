@@ -4220,9 +4220,9 @@ mod tests {
                     ("authentication.channel", "codex-home-chatgpt"),
                     (
                         "environment.policy",
-                        "xtask-owned-codex-security-hermetic-v4",
+                        "xtask-owned-codex-security-hermetic-v6",
                     ),
-                    ("execution.authority", "xtask-mcp-wrapper-windows-job-v3"),
+                    ("execution.authority", "xtask-mcp-wrapper-windows-job-v5"),
                     ("execution.complete-tool", "complete_codex_security_scan"),
                     ("execution.model", "gpt-6.1-sol"),
                     ("execution.protocol", "2025-06-18"),
@@ -4238,7 +4238,7 @@ mod tests {
                     ),
                     (
                         "execution.worker-permission",
-                        "extends=:read-only;root=read;network=false",
+                        "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false",
                     ),
                     ("findings.critical", "0"),
                     ("findings.high", "0"),

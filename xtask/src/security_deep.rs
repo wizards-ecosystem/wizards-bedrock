@@ -58,9 +58,12 @@ const DAYBREAK_TOOL_SHA256: &str =
 const MODEL: &str = "gpt-6.1-sol";
 const REASONING: &str = "xhigh";
 const AUTHENTICATION_CHANNEL: &str = "codex-home-chatgpt";
-const ENVIRONMENT_POLICY: &str = "xtask-owned-codex-security-hermetic-v4";
-const EXECUTION_AUTHORITY: &str = "xtask-mcp-wrapper-windows-job-v3";
-const WORKER_PERMISSION: &str = "extends=:read-only;root=read;network=false";
+const ENVIRONMENT_POLICY: &str = "xtask-owned-codex-security-hermetic-v6";
+const EXECUTION_AUTHORITY: &str = "xtask-mcp-wrapper-windows-job-v5";
+const WORKER_PERMISSION: &str = "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false";
+const WINDOWS_SANDBOX_OVERRIDE: &str = "windows.sandbox=\"mxc\"";
+const WORKER_NAMED_PERMISSION_INPUT: &str = "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}";
+const WORKER_NAMED_PERMISSION_OVERRIDE: &str = "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"deny\"},network={enabled=false}}";
 const OFFICIAL_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const WRAPPER_MARKER_ENV: &str = "WIZARD_CODEX_DEEP_WRAPPER";
 const WRAPPER_REAL_ENV: &str = "WIZARD_CODEX_DEEP_REAL";
@@ -74,6 +77,10 @@ const PRIVATE_CREDENTIAL_DENIED_EXIT: i32 = 73;
 const PRIVATE_CREDENTIAL_READABLE_EXIT: i32 = 74;
 const PRIVATE_CREDENTIAL_ERROR_EXIT: i32 = 75;
 const FILE_READ_DATA_ACCESS: u32 = 0x0000_0001;
+const WORKER_ALLOWED_CANARY_NAME: &str = "worker-allowed-read-canary";
+const WORKER_DENIED_CANARY_NAME: &str = "worker-denied-read-canary";
+const WORKER_ALLOWED_CANARY: &[u8] = b"wizard worker allowlist probe v1\n";
+const WORKER_DENIED_CANARY: &[u8] = b"wizard worker deny-boundary probe v1\n";
 const PYTHON_WRAPPER_REAL_ENV: &str = "WIZARD_CODEX_DEEP_PYTHON_REAL";
 const PYTHON_WRAPPER_PLUGIN_ENV: &str = "WIZARD_CODEX_DEEP_PYTHON_PLUGIN";
 const PYTHON_WRAPPER_PYCACHE_ENV: &str = "WIZARD_CODEX_DEEP_PYTHON_PYCACHE";
@@ -138,6 +145,7 @@ const MAX_PYTHON_RUNTIME_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PYTHON_RUNTIME_ENTRIES: u64 = 100_000;
 const MAX_PYTHON_RUNTIME_DEPTH: usize = 32;
 const MAX_VERSION_BYTES: usize = 4096;
+const MAX_CLONE_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_CODEX_AUTH_BYTES: u64 = 64 * 1024;
 const MAX_MCP_LINE_BYTES: usize = 1024 * 1024;
 const MAX_MCP_STDOUT_BYTES: usize = 16 * 1024 * 1024;
@@ -192,6 +200,16 @@ struct ShellEnvironmentPolicy {
     temporary: PathBuf,
 }
 
+struct OwnedMcpInvocation<'a> {
+    source: &'a SourceIdentity,
+    scratch: &'a OwnedScratch,
+    worker_policy: &'a ManagedWorkerPolicy,
+    tools: &'a Toolchain,
+    git: &'a Path,
+    overrides: &'a [String],
+    shell_environment: &'a ShellEnvironmentPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PythonRuntimeIdentity {
     root: PathBuf,
@@ -233,18 +251,177 @@ struct PluginPackage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedScratch {
     root: PathBuf,
+    repository_parent: PathBuf,
     plugin: PathBuf,
     scan_root: PathBuf,
     state: PathBuf,
     temporary: PathBuf,
     pycache: PathBuf,
     codex_state: PathBuf,
+    worker_allowed_canary: PathBuf,
+    worker_denied_canary: PathBuf,
 }
 
 impl OwnedScratch {
     fn codex_home(&self) -> PathBuf {
         self.root.join("codex-home")
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedWorkerPolicy {
+    repository: PathBuf,
+    readable_entries: Vec<PathBuf>,
+    denied_entries: Vec<PathBuf>,
+    readable_probes: Vec<PathBuf>,
+    repository_metadata_probe: PathBuf,
+    live_auth: PathBuf,
+    projected_auth: PathBuf,
+    denied_canary: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerReadDecision {
+    Deny,
+    Allow,
+}
+
+impl WorkerReadDecision {
+    fn exit(self) -> i32 {
+        match self {
+            Self::Deny => PRIVATE_CREDENTIAL_DENIED_EXIT,
+            Self::Allow => PRIVATE_CREDENTIAL_READABLE_EXIT,
+        }
+    }
+
+    fn disposition(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Allow => "allow",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Deny => "Codex worker denied-read preflight",
+            Self::Allow => "Codex worker allowed-read preflight",
+        }
+    }
+}
+
+impl ManagedWorkerPolicy {
+    fn qualify(
+        repository: &Path,
+        scratch: &OwnedScratch,
+        live_auth: &Path,
+        projected_auth: &Path,
+        tools: &Toolchain,
+        shell_environment: &ShellEnvironmentPolicy,
+    ) -> Result<Self> {
+        let repository = canonical_directory(repository, "managed worker repository")?;
+        require_worker_canaries(scratch)?;
+        ensure!(
+            repository.parent() == Some(scratch.repository_parent.as_path())
+                && repository.file_name().is_some()
+                && projected_auth == scratch.codex_home().join("auth.json")
+                && live_auth != projected_auth
+                && live_auth.is_absolute()
+                && live_auth.file_name() == Some(OsStr::new("auth.json")),
+            "managed worker credential paths differ from the owned projection"
+        );
+        let (python_reads, python_denies, python_probes) =
+            python_worker_policy_entries(&tools.python_runtime)?;
+        let mut readable_entries = vec![
+            repository.clone(),
+            canonical_directory(&scratch.plugin, "managed worker plugin root")?,
+            canonical_directory(&scratch.scan_root, "managed worker scan root")?,
+            canonical_probe_path(&tools.node.path, "managed worker Node executable")?,
+            canonical_directory(&tools.codex_runtime.root, "managed worker Codex root")?,
+        ];
+        readable_entries.extend(python_reads);
+        ensure!(
+            readable_entries.iter().all(|path| path.is_absolute())
+                && readable_entries.iter().collect::<BTreeSet<_>>().len() == readable_entries.len()
+                && !readable_entries.contains(&scratch.root)
+                && !readable_entries.contains(&scratch.repository_parent),
+            "managed worker readable entries are not absolute and unique"
+        );
+        let mut readable_probes = vec![
+            repository.join("README.md"),
+            scratch.plugin.join("integrity.json"),
+            scratch.worker_allowed_canary.clone(),
+            tools.node.path.clone(),
+            tools.codex.path.clone(),
+            shell_environment.command_processor.clone(),
+        ];
+        readable_probes.extend(python_probes);
+        for probe in &readable_probes {
+            require_worker_probe_file(probe, "managed worker readable probe")?;
+            ensure!(
+                probe.starts_with(&shell_environment.system_root)
+                    || readable_entries
+                        .iter()
+                        .any(|entry| probe.starts_with(entry)),
+                "managed worker readable probe is not covered by its policy"
+            );
+        }
+        let repository_metadata_probe = repository.join(".git").join("HEAD");
+        require_worker_probe_file(
+            &repository_metadata_probe,
+            "managed worker repository-metadata deny probe",
+        )?;
+        let mut denied_entries = vec![repository.join(".git")];
+        denied_entries.extend(python_denies);
+        let denied_canary = scratch.worker_denied_canary.clone();
+        require_worker_probe_file(&denied_canary, "managed worker denied probe")?;
+        ensure!(
+            denied_canary.parent() == Some(scratch.root.as_path())
+                && !readable_entries
+                    .iter()
+                    .any(|root| denied_canary.starts_with(root))
+                && !readable_entries
+                    .iter()
+                    .any(|root| live_auth.starts_with(root))
+                && !readable_entries
+                    .iter()
+                    .any(|root| projected_auth.starts_with(root)),
+            "managed worker deny targets overlap an allowed read root"
+        );
+        Ok(Self {
+            repository,
+            readable_entries,
+            denied_entries,
+            readable_probes,
+            repository_metadata_probe,
+            live_auth: live_auth.to_path_buf(),
+            projected_auth: projected_auth.to_path_buf(),
+            denied_canary,
+        })
+    }
+
+    fn deny_probes(&self) -> [&Path; 4] {
+        [
+            &self.live_auth,
+            &self.projected_auth,
+            &self.denied_canary,
+            &self.repository_metadata_probe,
+        ]
+    }
+}
+
+fn worker_read_probe_plan(policy: &ManagedWorkerPolicy) -> Vec<(&Path, WorkerReadDecision)> {
+    let mut plan = policy
+        .deny_probes()
+        .into_iter()
+        .map(|path| (path, WorkerReadDecision::Deny))
+        .collect::<Vec<_>>();
+    plan.extend(
+        policy
+            .readable_probes
+            .iter()
+            .map(|path| (path.as_path(), WorkerReadDecision::Allow)),
+    );
+    plan
 }
 
 #[derive(Debug)]
@@ -460,6 +637,7 @@ struct EffectiveConfig {
     memories_generate: Option<bool>,
     memories_use: Option<bool>,
     feature_memories: Option<bool>,
+    windows_sandbox: Option<String>,
     mcp_servers: BTreeMap<String, McpRoute>,
     plugins: BTreeMap<String, bool>,
     model_providers: BTreeSet<String>,
@@ -1381,11 +1559,16 @@ fn parse_wrapper_overrides(serialized: &str) -> Result<Vec<String>> {
 
 fn require_wrapper_override_policy(overrides: &[String]) -> Result<()> {
     let fixed = fixed_safety_overrides();
+    let (sandbox, policy) = overrides
+        .split_last()
+        .context("private Codex wrapper safety policy is empty")?;
     ensure!(
-        overrides.len() >= fixed.len() && overrides[..fixed.len()] == fixed,
+        sandbox == WINDOWS_SANDBOX_OVERRIDE
+            && policy.len() >= fixed.len()
+            && policy[..fixed.len()] == fixed,
         "private Codex wrapper safety policy differs"
     );
-    let dynamic = &overrides[fixed.len()..];
+    let dynamic = &policy[fixed.len()..];
     ensure!(
         dynamic.windows(2).all(|pair| pair[0] < pair[1]),
         "private Codex wrapper dynamic policy is not unique and sorted"
@@ -1848,6 +2031,13 @@ fn inject_wrapper_overrides_for_scan_root(
         Some(context) => context.artifact_overrides()?,
         None => Vec::new(),
     };
+    let (sandbox_override, policy_overrides) = overrides
+        .split_last()
+        .context("private Codex wrapper safety policy is empty")?;
+    ensure!(
+        sandbox_override == WINDOWS_SANDBOX_OVERRIDE,
+        "private Codex wrapper MXC selector is not safety-last"
+    );
     let isolation_flags = if context.is_some() {
         &[
             OsString::from("--ephemeral"),
@@ -1872,11 +2062,24 @@ fn inject_wrapper_overrides_for_scan_root(
     } else {
         result.extend_from_slice(&arguments[..insertion]);
     }
-    for value in overrides.iter().chain(&artifact_overrides) {
+    for value in policy_overrides.iter().chain(&artifact_overrides) {
         result.push(OsString::from("--config"));
         result.push(OsString::from(value));
     }
+    result.push(OsString::from("--config"));
+    result.push(OsString::from(sandbox_override));
     result.extend_from_slice(&arguments[insertion..]);
+    let mut rewritten_permissions = 0usize;
+    for argument in &mut result {
+        if argument == WORKER_NAMED_PERMISSION_INPUT {
+            *argument = OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE);
+            rewritten_permissions += 1;
+        }
+    }
+    ensure!(
+        rewritten_permissions == 1,
+        "private Codex worker permission profile was not rewritten exactly once"
+    );
     Ok(result)
 }
 
@@ -1899,8 +2102,7 @@ fn validate_app_server_arguments(arguments: &[OsString]) -> Result<usize> {
             "default_permissions=\"codex_security_deep_scan_worker\"" => {
                 default_permissions += 1;
             }
-            "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}" =>
-            {
+            WORKER_NAMED_PERMISSION_INPUT => {
                 permission_profile += 1;
             }
             _ => bail!("private Codex app-server contains an unexpected config override"),
@@ -2625,6 +2827,92 @@ pub(crate) fn run(paths: &Paths, action: SecurityDeepAction) -> Result<()> {
     }
 }
 
+fn prepare_owned_worker_repository(
+    paths: &Paths,
+    scratch: &OwnedScratch,
+    git: &crate::git::Git,
+    source: &SourceIdentity,
+) -> Result<PathBuf> {
+    let name = paths
+        .root()
+        .file_name()
+        .context("Codex Security repository has no name")?;
+    let destination = scratch.repository_parent.join(name);
+    ensure!(
+        std::fs::symlink_metadata(&destination)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "owned Codex Security repository destination already exists"
+    );
+    let clone_parent = crate::cargo::child_process_path(&scratch.repository_parent);
+    let clone_source = crate::cargo::child_process_path(paths.root());
+    let clone_destination = crate::cargo::child_process_path(&destination);
+    let mut clone = Command::new(git.path());
+    crate::bounded_process::isolate_git_environment(&mut clone);
+    clone
+        .current_dir(&clone_parent)
+        .args([
+            "clone",
+            "--no-checkout",
+            "--no-hardlinks",
+            "--local",
+            "--no-tags",
+            "--config",
+            "core.hooksPath=NUL",
+            "--config",
+            "core.attributesFile=NUL",
+            "--config",
+            "core.excludesFile=NUL",
+            "--",
+        ])
+        .arg(&clone_source)
+        .arg(&clone_destination);
+    let output = crate::bounded_process::output_with_limit(
+        clone,
+        VERSION_TIMEOUT,
+        "owned Codex Security repository clone",
+        MAX_CLONE_OUTPUT_BYTES,
+    )?;
+    ensure!(
+        output.status.success(),
+        "owned Codex Security repository clone failed ({}): {}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let destination = canonical_directory(&destination, "owned Codex Security repository")?;
+    let git_destination = crate::cargo::child_process_path(&destination);
+    crate::mutation_workspace::copy_clean_tracked_to(paths.root(), &destination)?;
+    for (label, arguments) in [
+        (
+            "owned Codex Security repository index",
+            vec!["reset", "--mixed", "--quiet", source.commit.as_str()],
+        ),
+        (
+            "owned Codex Security repository remote removal",
+            vec!["remote", "remove", "origin"],
+        ),
+    ] {
+        let mut command = git.command(&git_destination);
+        command.args(arguments);
+        let output = crate::bounded_process::output_with_limit(
+            command,
+            VERSION_TIMEOUT,
+            label,
+            MAX_VERSION_BYTES,
+        )?;
+        ensure!(
+            output.status.success() && output.stdout.is_empty() && output.stderr.is_empty(),
+            "{label} failed or wrote diagnostics ({})",
+            output.status
+        );
+    }
+    ensure!(
+        qualification::source_identity(&git_destination)? == *source,
+        "owned Codex Security repository differs from the qualification source"
+    );
+    Ok(destination)
+}
+
 fn run_owned(paths: &Paths) -> Result<()> {
     ensure!(
         cfg!(windows),
@@ -2635,14 +2923,25 @@ fn run_owned(paths: &Paths) -> Result<()> {
     let source = attempt.source().clone();
     let scratch = reserve_scratch()?;
     let mut credential = prepare_private_codex_home(&scratch)?;
+    let live_auth = credential.source_path.clone();
+    let projected_auth = credential.auth_path.clone();
     let result = (|| -> Result<()> {
         let package = load_plugin_package()?;
         let tools = resolve_toolchain(paths.root(), &scratch)?;
         let git = crate::git::resolved()?;
         git.require_unchanged()?;
+        let worker_repository = prepare_owned_worker_repository(paths, &scratch, git, &source)?;
         let shell_environment = ShellEnvironmentPolicy::qualify(&tools, git.path(), &scratch)?;
         copy_plugin(&package, &scratch.plugin)?;
         require_mirror_exact(&scratch.plugin, &package)?;
+        let worker_policy = ManagedWorkerPolicy::qualify(
+            &worker_repository,
+            &scratch,
+            &live_auth,
+            &projected_auth,
+            &tools,
+            &shell_environment,
+        )?;
         require_chatgpt_login(&tools.codex, &scratch, paths.root())?;
         let ambient = read_codex_config(&tools.codex, paths.root(), &scratch, &[])?;
         require_safe_ambient_config(&ambient)?;
@@ -2657,16 +2956,16 @@ fn run_owned(paths: &Paths) -> Result<()> {
 
         let git_identity = git_identity(git)?;
         let request = render_owned_request(&source, &tools, &git_identity, &package);
-        require_worker_credential_read_denied(&tools, &scratch, paths.root(), &shell_environment)?;
-        let outcome = run_mcp(
-            paths.root(),
-            &source,
-            &scratch,
-            &tools,
-            git.path(),
-            &overrides,
-            &shell_environment,
-        )?;
+        require_worker_filesystem_policy(&tools, &scratch, &worker_policy, &shell_environment)?;
+        let outcome = run_mcp(OwnedMcpInvocation {
+            source: &source,
+            scratch: &scratch,
+            worker_policy: &worker_policy,
+            tools: &tools,
+            git: git.path(),
+            overrides: &overrides,
+            shell_environment: &shell_environment,
+        })?;
         let final_effective = read_codex_config(&tools.codex, paths.root(), &scratch, &overrides)?;
         ensure!(
             final_effective == effective,
@@ -2710,9 +3009,15 @@ fn run_owned(paths: &Paths) -> Result<()> {
             qualification::source_identity(paths.root())? == source,
             "qualification source changed during owned Codex Security execution"
         );
+        let worker_git_repository = crate::cargo::child_process_path(&worker_repository);
+        ensure!(
+            qualification::source_identity(&worker_git_repository)? == source,
+            "owned Codex Security repository changed during execution"
+        );
         git.require_unchanged()?;
         require_plugin_unchanged(&package)?;
         require_mirror_exact(&scratch.plugin, &package)?;
+        require_worker_canaries(&scratch)?;
         require_absent(&inert_mcp, "inert Codex MCP executable")?;
         observe_scratch(&scratch.root)?;
 
@@ -2773,13 +3078,23 @@ fn reserve_scratch() -> Result<OwnedScratch> {
         crate::mutation_workspace::prepare_real_child(&root, &root.join(name), label)
     };
     child("codex-home", "private Codex home")?;
+    let repository_parent = child("repository", "private Codex repository parent")?;
+    let plugin = child("plugin", "private Codex Security plugin mirror")?;
+    let scan_root = child("scans", "private Codex Security scan root")?;
+    let worker_allowed_canary = scan_root.join(WORKER_ALLOWED_CANARY_NAME);
+    let worker_denied_canary = root.join(WORKER_DENIED_CANARY_NAME);
+    write_new_file(&worker_allowed_canary, WORKER_ALLOWED_CANARY)?;
+    write_new_file(&worker_denied_canary, WORKER_DENIED_CANARY)?;
     Ok(OwnedScratch {
-        plugin: child("plugin", "private Codex Security plugin mirror")?,
-        scan_root: child("scans", "private Codex Security scan root")?,
+        repository_parent,
+        plugin,
+        scan_root,
         state: child("state", "private Codex Security state")?,
         temporary: child("temp", "private Codex Security temporary directory")?,
         pycache: child("pycache", "private Python bytecode directory")?,
         codex_state: child("codex-state", "private Codex state directory")?,
+        worker_allowed_canary,
+        worker_denied_canary,
         root,
     })
 }
@@ -2866,6 +3181,10 @@ fn prepare_private_codex_home_from(
         "ChatGPT authentication artifact changed while it was locked"
     );
     let source_links_before = identity.links;
+    ensure!(
+        source_links_before == 1,
+        "ChatGPT authentication artifact has a pre-existing hard-link alias"
+    );
     let mut credential =
         PrivateCodexCredential::new(scratch, auth_path, source, identity, source_links_before);
     std::fs::hard_link(&credential.source_path, &credential.auth_path)
@@ -2898,10 +3217,11 @@ fn require_private_codex_home_seed(
         names == BTreeSet::from(["auth.json".to_string(), "config.toml".to_string()]),
         "private Codex home contains ambient state"
     );
-    let linked = file_identity(&credential.auth_path)?;
+    let linked =
+        require_exact_credential_projection(&credential.source_path, &credential.auth_path)?;
     ensure!(
-        linked.id == credential.identity.id
-            && linked.links == credential.source_links_before + 1
+        credential.source_links_before == 1
+            && linked.id == credential.identity.id
             && read(&private.join("config.toml"), 1, "private Codex config")?.is_empty(),
         "private Codex home seed differs from its exact hard-link policy"
     );
@@ -3089,13 +3409,18 @@ fn require_private_credential_projection(private: &Path) -> Result<()> {
         canonical_spelling_matches(&live, &supplied_live),
         "ChatGPT Codex home is redirected"
     );
-    let source = file_identity(&live.join("auth.json"))?;
-    let projection = file_identity(&private.join("auth.json"))?;
+    require_exact_credential_projection(&live.join("auth.json"), &private.join("auth.json"))?;
+    Ok(())
+}
+
+fn require_exact_credential_projection(source: &Path, projection: &Path) -> Result<FileIdentity> {
+    let source = file_identity(source)?;
+    let projection = file_identity(projection)?;
     ensure!(
-        source.id == projection.id && source.links == projection.links && source.links >= 2,
+        source.id == projection.id && source.links == 2 && projection.links == 2,
         "private ChatGPT credential is not the exact live hard-link projection"
     );
-    Ok(())
+    Ok(source)
 }
 
 fn plugin_root() -> Result<PathBuf> {
@@ -3308,6 +3633,153 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .with_context(|| format!("writing private file {}", path.display()))
+}
+
+fn require_worker_probe_file(path: &Path, label: &str) -> Result<()> {
+    ensure!(path.is_absolute(), "{label} path is not absolute");
+    crate::mutation_workspace::open_real_file(path, label)?;
+    Ok(())
+}
+
+fn canonical_probe_path(path: &Path, label: &str) -> Result<PathBuf> {
+    require_worker_probe_file(path, label)?;
+    let canonical = std::fs::canonicalize(path)
+        .with_context(|| format!("canonicalizing {label} {}", path.display()))?;
+    ensure!(canonical == path, "{label} is redirected");
+    Ok(canonical)
+}
+
+fn python_worker_policy_entries(
+    runtime: &PythonRuntimeIdentity,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>)> {
+    let root = canonical_directory(&runtime.root, "managed worker Python root")?;
+    let mut reads = Vec::new();
+    for name in ["python.exe", "python3.dll", "python312.dll"] {
+        reads.push(canonical_probe_path(
+            &root.join(name),
+            "managed worker Python root file",
+        )?);
+    }
+    for entry in bounded_sorted_directory_entries(&root, 64)? {
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("Python runtime root name is not UTF-8"))?;
+        let lowercase = name.to_ascii_lowercase();
+        if lowercase.starts_with("vcruntime140") && lowercase.ends_with(".dll") {
+            reads.push(canonical_probe_path(
+                &entry.path(),
+                "managed worker Python runtime DLL",
+            )?);
+        }
+    }
+    let dlls = canonical_directory(&root.join("DLLs"), "managed worker Python DLL root")?;
+    let lib = canonical_directory(&root.join("Lib"), "managed worker Python library root")?;
+    reads.extend([dlls.clone(), lib.clone()]);
+    let mut denies = Vec::new();
+    collect_python_policy_exclusions(&dlls, 0, &mut denies)?;
+    collect_python_policy_exclusions(&lib, 0, &mut denies)?;
+    denies.sort();
+    denies.dedup();
+    let probes = vec![
+        root.join("python.exe"),
+        first_python_policy_file(&dlls, 0)?
+            .context("managed worker Python DLL tree contains no probe file")?,
+        first_python_policy_file(&lib, 0)?
+            .context("managed worker Python library tree contains no probe file")?,
+    ];
+    ensure!(
+        reads.iter().collect::<BTreeSet<_>>().len() == reads.len()
+            && denies.iter().all(|denied| {
+                reads.iter().any(|allowed| denied.starts_with(allowed))
+                    && !reads.iter().any(|allowed| allowed.starts_with(denied))
+            }),
+        "managed worker Python policy is not a narrow identity-covered tree"
+    );
+    Ok((reads, denies, probes))
+}
+
+fn collect_python_policy_exclusions(
+    directory: &Path,
+    depth: usize,
+    denied: &mut Vec<PathBuf>,
+) -> Result<()> {
+    ensure!(
+        depth <= MAX_PYTHON_RUNTIME_DEPTH,
+        "managed worker Python exclusion walk exceeds its depth limit"
+    );
+    let remaining = usize::try_from(MAX_PYTHON_RUNTIME_ENTRIES)
+        .context("Python runtime entry limit does not fit usize")?
+        .saturating_sub(denied.len());
+    for entry in bounded_sorted_directory_entries(directory, remaining)? {
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("inspecting Python policy entry {}", path.display()))?;
+        if !crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+            continue;
+        }
+        let excluded = entry.file_name().to_str().is_some_and(|name| {
+            name.eq_ignore_ascii_case("__pycache__") || name.eq_ignore_ascii_case("site-packages")
+        });
+        if excluded {
+            denied.push(path);
+        } else {
+            collect_python_policy_exclusions(&path, depth + 1, denied)?;
+        }
+    }
+    Ok(())
+}
+
+fn first_python_policy_file(directory: &Path, depth: usize) -> Result<Option<PathBuf>> {
+    ensure!(
+        depth <= MAX_PYTHON_RUNTIME_DEPTH,
+        "managed worker Python probe walk exceeds its depth limit"
+    );
+    for entry in bounded_sorted_directory_entries(directory, MAX_PYTHON_RUNTIME_ENTRIES as usize)? {
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("inspecting Python probe entry {}", path.display()))?;
+        if metadata.file_type().is_file() {
+            return canonical_probe_path(&path, "managed worker Python probe").map(Some);
+        }
+        if crate::mutation_workspace::metadata_is_real_directory(&metadata)
+            && !entry.file_name().to_str().is_some_and(|name| {
+                name.eq_ignore_ascii_case("__pycache__")
+                    || name.eq_ignore_ascii_case("site-packages")
+            })
+            && let Some(probe) = first_python_policy_file(&path, depth + 1)?
+        {
+            return Ok(Some(probe));
+        }
+    }
+    Ok(None)
+}
+
+fn require_worker_canaries(scratch: &OwnedScratch) -> Result<()> {
+    ensure!(
+        scratch.worker_allowed_canary == scratch.scan_root.join(WORKER_ALLOWED_CANARY_NAME)
+            && scratch.worker_denied_canary == scratch.root.join(WORKER_DENIED_CANARY_NAME),
+        "managed worker canary paths differ from their owned roots"
+    );
+    for (path, expected, label) in [
+        (
+            scratch.worker_allowed_canary.as_path(),
+            WORKER_ALLOWED_CANARY,
+            "managed worker allowed canary",
+        ),
+        (
+            scratch.worker_denied_canary.as_path(),
+            WORKER_DENIED_CANARY,
+            "managed worker denied canary",
+        ),
+    ] {
+        require_worker_probe_file(path, label)?;
+        ensure!(
+            read(path, 128, label)? == expected,
+            "{label} content changed"
+        );
+    }
+    Ok(())
 }
 
 fn require_plugin_unchanged(package: &PluginPackage) -> Result<()> {
@@ -3858,17 +4330,17 @@ fn require_chatgpt_login_output(stdout: &[u8], stderr: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn require_worker_credential_read_denied(
+fn require_worker_filesystem_policy(
     tools: &Toolchain,
     scratch: &OwnedScratch,
-    repository: &Path,
+    policy: &ManagedWorkerPolicy,
     shell_environment: &ShellEnvironmentPolicy,
 ) -> Result<()> {
     ensure!(
         cfg!(windows),
-        "private credential read-denial probe requires Windows"
+        "managed worker filesystem preflight requires Windows"
     );
-    let repository = canonical_directory(repository, "credential probe repository")?;
+    let repository = canonical_directory(&policy.repository, "worker probe repository")?;
     let supplied_fixture = std::env::current_exe().context("resolving credential probe fixture")?;
     let fixture = std::fs::canonicalize(&supplied_fixture).with_context(|| {
         format!(
@@ -3882,51 +4354,73 @@ fn require_worker_credential_read_denied(
     );
     ensure!(
         fixture != tools.codex.path,
-        "credential probe fixture resolves to the Codex runtime"
+        "worker probe fixture resolves to the Codex runtime"
     );
-    let auth = scratch.codex_home().join("auth.json");
+    ensure!(
+        policy.projected_auth == scratch.codex_home().join("auth.json")
+            && policy.live_auth != policy.projected_auth,
+        "worker probe targets differ from the owned credential policy"
+    );
+    require_worker_canaries(scratch)?;
     let shell_environment_override = shell_environment.set_override()?;
-    let arguments = private_credential_probe_arguments(
-        &repository,
-        &fixture,
-        &auth,
-        &shell_environment_override,
-    )?;
     let runtime_before = identify_codex_runtime(&tools.codex.path)?;
     ensure!(
         runtime_before == tools.codex_runtime,
         "Codex sandbox runtime changed before credential preflight"
     );
-    let mut command = Command::new(&tools.codex.path);
-    command.args(arguments).current_dir(&repository);
-    apply_base_environment(&mut command, scratch, None)?;
-    shell_environment.apply(&mut command);
-    require_private_credential_projection(&scratch.codex_home())?;
-    let output = crate::bounded_process::output_with_limit(
-        command,
-        VERSION_TIMEOUT,
-        "Codex worker credential read-denial preflight",
-        MAX_VERSION_BYTES,
-    )?;
-    require_private_credential_projection(&scratch.codex_home())?;
+    for (probe_target, decision) in worker_read_probe_plan(policy) {
+        let arguments = worker_read_probe_arguments(
+            policy,
+            &fixture,
+            probe_target,
+            &shell_environment_override,
+        )?;
+        let mut command = Command::new(&tools.codex.path);
+        command.args(arguments).current_dir(&repository);
+        apply_base_environment(&mut command, scratch, None)?;
+        shell_environment.apply(&mut command);
+        require_private_credential_projection(&scratch.codex_home())?;
+        let output = crate::bounded_process::output_with_limit(
+            command,
+            VERSION_TIMEOUT,
+            decision.label(),
+            MAX_VERSION_BYTES,
+        )?;
+        require_private_credential_projection(&scratch.codex_home())?;
+        require_worker_read_probe_result(
+            output.status.code(),
+            &output.stdout,
+            &output.stderr,
+            decision.exit(),
+            decision.disposition(),
+        )?;
+    }
+    require_worker_canaries(scratch)?;
     ensure!(
         identify_codex_runtime(&tools.codex.path)? == runtime_before,
         "Codex sandbox runtime changed during credential preflight"
     );
-    require_private_credential_probe_result(output.status.code(), &output.stdout, &output.stderr)
+    Ok(())
 }
 
-fn private_credential_probe_arguments(
-    repository: &Path,
+fn worker_read_probe_arguments(
+    policy: &ManagedWorkerPolicy,
     fixture: &Path,
-    auth: &Path,
+    probe_target: &Path,
     shell_environment: &str,
 ) -> Result<Vec<OsString>> {
     ensure!(
-        repository.is_absolute() && fixture.is_absolute() && auth.is_absolute(),
-        "credential probe paths are not absolute"
+        policy.repository.is_absolute()
+            && fixture.is_absolute()
+            && probe_target.is_absolute()
+            && (policy.deny_probes().contains(&probe_target)
+                || policy
+                    .readable_probes
+                    .iter()
+                    .any(|path| path == probe_target)),
+        "worker read probe path is not owned by the policy"
     );
-    let state = render_json(&managed_read_only_sandbox_state(repository))?;
+    let state = render_json(&managed_read_only_sandbox_state(policy)?)?;
     Ok(vec![
         OsString::from("--no-daemon"),
         OsString::from("sandbox"),
@@ -3936,24 +4430,30 @@ fn private_credential_probe_arguments(
         OsString::from("shell_environment_policy.ignore_default_excludes=false"),
         OsString::from("--config"),
         OsString::from(shell_environment),
+        OsString::from("--config"),
+        OsString::from(WINDOWS_SANDBOX_OVERRIDE),
         OsString::from("--sandbox-state-json"),
         OsString::from(state),
         OsString::from("--sandbox-state-disable-network"),
         OsString::from("--"),
         fixture.as_os_str().to_owned(),
         OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT),
-        auth.as_os_str().to_owned(),
+        probe_target.as_os_str().to_owned(),
     ])
 }
 
-fn require_private_credential_probe_result(
+fn require_worker_read_probe_result(
     code: Option<i32>,
     stdout: &[u8],
     stderr: &[u8],
+    expected: i32,
+    disposition: &str,
 ) -> Result<()> {
     ensure!(
-        code == Some(PRIVATE_CREDENTIAL_DENIED_EXIT) && stdout.is_empty() && stderr.is_empty(),
-        "managed read-only worker sandbox did not silently deny credential content access"
+        code == Some(expected) && stdout.is_empty() && stderr.is_empty(),
+        "managed MXC worker sandbox did not silently enforce the {disposition} read decision (exit={code:?}, stdout-bytes={}, stderr-bytes={})",
+        stdout.len(),
+        stderr.len()
     );
     Ok(())
 }
@@ -4319,6 +4819,7 @@ fn parse_effective_config(result: &JsonValue) -> Result<EffectiveConfig> {
         .unwrap_or_default();
     let memories = optional_object(config, "memories", "Codex memories")?;
     let features = optional_object(config, "features", "Codex features")?;
+    let windows = optional_object(config, "windows", "Codex Windows")?;
     let notify_is_empty = match config.get("notify") {
         None | Some(JsonValue::Null) => true,
         Some(value) => json_array(value, "Codex notify commands")?.is_empty(),
@@ -4346,6 +4847,10 @@ fn parse_effective_config(result: &JsonValue) -> Result<EffectiveConfig> {
         memories_generate: optional_bool(memories, "generate_memories", "Codex memories")?,
         memories_use: optional_bool(memories, "use_memories", "Codex memories")?,
         feature_memories: optional_bool(features, "memories", "Codex features")?,
+        windows_sandbox: match windows.and_then(|windows| windows.get("sandbox")) {
+            None | Some(JsonValue::Null) => None,
+            Some(value) => Some(json_string(value, "Codex Windows sandbox")?.to_string()),
+        },
         mcp_servers,
         plugins,
         model_providers,
@@ -4375,6 +4880,7 @@ fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<
         &["generate_memories", "use_memories"],
     )?;
     remove_owned_config_fields(&mut defaults, "features", &["memories"])?;
+    remove_owned_config_fields(&mut defaults, "windows", &["sandbox"])?;
     // Disabling memories makes this Codex runtime project the rest of the
     // memories schema, and its associated network feature, as explicit nulls.
     // Normalize only those exact inert values; any active or newly introduced
@@ -4691,6 +5197,7 @@ fn safety_overrides(ambient: &EffectiveConfig, inert_mcp: &Path) -> Result<Vec<S
     }
     dynamic.sort();
     overrides.extend(dynamic);
+    overrides.push(WINDOWS_SANDBOX_OVERRIDE.to_string());
     require_wrapper_override_policy(&overrides)?;
     Ok(overrides)
 }
@@ -4723,6 +5230,7 @@ fn require_safe_effective_config(
         "memories.generate_memories",
         "memories.use_memories",
         "features.memories",
+        "windows.sandbox",
     ]
     .into_iter()
     .map(str::to_string)
@@ -4765,6 +5273,10 @@ fn require_safe_effective_config(
             && effective.memories_use == Some(false)
             && effective.feature_memories == Some(false),
         "effective Codex side-effect features are not disabled"
+    );
+    ensure!(
+        effective.windows_sandbox.as_deref() == Some("mxc"),
+        "effective Codex Windows sandbox is not the required MXC backend"
     );
     ensure!(
         effective.model_providers.is_empty(),
@@ -4818,6 +5330,7 @@ fn require_safe_effective_config(
         "memories.generate_memories",
         "memories.use_memories",
         "features.memories",
+        "windows.sandbox",
     ] {
         ensure!(
             effective.origins.contains(field),
@@ -5183,16 +5696,22 @@ fn remove_entry_no_follow(path: &Path, metadata: &std::fs::Metadata) -> Result<(
     }
 }
 
-fn run_mcp(
-    repository: &Path,
-    source: &SourceIdentity,
-    scratch: &OwnedScratch,
-    tools: &Toolchain,
-    git: &Path,
-    overrides: &[String],
-    shell_environment: &ShellEnvironmentPolicy,
-) -> Result<McpOutcome> {
-    let repository = canonical_directory(repository, "Codex Security target")?;
+fn run_mcp(invocation: OwnedMcpInvocation<'_>) -> Result<McpOutcome> {
+    let OwnedMcpInvocation {
+        source,
+        scratch,
+        worker_policy,
+        tools,
+        git,
+        overrides,
+        shell_environment,
+    } = invocation;
+    let repository = canonical_directory(&worker_policy.repository, "Codex Security target")?;
+    ensure!(
+        worker_policy.projected_auth == scratch.codex_home().join("auth.json")
+            && worker_policy.live_auth != worker_policy.projected_auth,
+        "Codex Security worker credential deny targets differ"
+    );
     let mut command = Command::new(&tools.node.path);
     command
         .arg(scratch.plugin.join("mcp").join("server.mjs"))
@@ -5210,7 +5729,7 @@ fn run_mcp(
         overrides,
     )?;
 
-    let dialogue_repository = repository.clone();
+    let dialogue_worker_policy = worker_policy.clone();
     let dialogue_source = source.clone();
     let dialogue_scan_root = scratch.scan_root.clone();
     let observer_root = scratch.root.clone();
@@ -5235,7 +5754,7 @@ fn run_mcp(
         move |dialogue| {
             exchange_mcp(
                 dialogue,
-                &dialogue_repository,
+                &dialogue_worker_policy,
                 &dialogue_source,
                 &dialogue_scan_root,
             )
@@ -5256,15 +5775,15 @@ fn run_mcp(
 
 fn exchange_mcp(
     dialogue: &mut LineDialogue,
-    repository: &Path,
+    worker_policy: &ManagedWorkerPolicy,
     source: &SourceIdentity,
     scan_root: &Path,
 ) -> Result<McpOutcome> {
     initialize_mcp(dialogue)?;
     require_mcp_tools(dialogue)?;
-    call_daybreak_advisory(dialogue, repository, source)?;
-    let start = call_start(dialogue, repository, source, scan_root)?;
-    let outcome = call_complete(dialogue, repository, source, scan_root, &start)?;
+    call_daybreak_advisory(dialogue, worker_policy, source)?;
+    let start = call_start(dialogue, worker_policy, source, scan_root)?;
+    let outcome = call_complete(dialogue, worker_policy, source, scan_root, &start)?;
     dialogue.close_input();
     ensure!(
         dialogue.receive_line()?.is_none(),
@@ -5495,11 +6014,11 @@ fn pinned_mcp_tool_inventory_for_test() -> Vec<JsonValue> {
 
 fn call_daybreak_advisory(
     dialogue: &mut LineDialogue,
-    repository: &Path,
+    worker_policy: &ManagedWorkerPolicy,
     source: &SourceIdentity,
 ) -> Result<()> {
     let params = object([
-        ("_meta", call_metadata(repository, source)),
+        ("_meta", call_metadata(worker_policy, source)?),
         ("arguments", object(std::iter::empty::<(&str, JsonValue)>())),
         ("name", text_value(DAYBREAK_TOOL)),
     ]);
@@ -5794,16 +6313,17 @@ struct StartReceipt {
 
 fn call_start(
     dialogue: &mut LineDialogue,
-    repository: &Path,
+    worker_policy: &ManagedWorkerPolicy,
     source: &SourceIdentity,
     scan_root: &Path,
 ) -> Result<StartReceipt> {
+    let repository = worker_policy.repository.as_path();
     let arguments = object([
         ("scope", text_value(".")),
         ("targetPath", path_value(repository)),
     ]);
     let params = object([
-        ("_meta", call_metadata(repository, source)),
+        ("_meta", call_metadata(worker_policy, source)?),
         ("arguments", arguments),
         ("name", text_value(START_TOOL)),
     ]);
@@ -5858,14 +6378,15 @@ fn call_start(
 
 fn call_complete(
     dialogue: &mut LineDialogue,
-    repository: &Path,
+    worker_policy: &ManagedWorkerPolicy,
     source: &SourceIdentity,
     scan_root: &Path,
     start: &StartReceipt,
 ) -> Result<McpOutcome> {
+    let repository = worker_policy.repository.as_path();
     let arguments = object([("scanId", text_value(&start.scan_id))]);
     let params = object([
-        ("_meta", call_metadata(repository, source)),
+        ("_meta", call_metadata(worker_policy, source)?),
         ("arguments", arguments),
         ("name", text_value(COMPLETE_TOOL)),
     ]);
@@ -6544,27 +7065,77 @@ fn require_scan_directory_shape(
     Ok(())
 }
 
-fn managed_read_only_sandbox_state(repository: &Path) -> JsonValue {
-    object([
+fn managed_read_only_sandbox_state(policy: &ManagedWorkerPolicy) -> Result<JsonValue> {
+    ensure!(
+        policy.repository.is_absolute()
+            && policy.live_auth.is_absolute()
+            && policy.projected_auth.is_absolute()
+            && policy.live_auth != policy.projected_auth
+            && policy.live_auth.file_name() == Some(OsStr::new("auth.json"))
+            && policy.projected_auth.file_name() == Some(OsStr::new("auth.json"))
+            && !policy
+                .readable_entries
+                .iter()
+                .any(|entry| policy.denied_canary.starts_with(entry)),
+        "managed worker sandbox paths differ from the owned credential policy"
+    );
+    let mut entries = vec![
+        object([
+            ("access", text_value("deny")),
+            (
+                "path",
+                object([
+                    ("type", text_value("special")),
+                    ("value", object([("kind", text_value("root"))])),
+                ]),
+            ),
+        ]),
+        object([
+            ("access", text_value("read")),
+            (
+                "path",
+                object([
+                    ("type", text_value("special")),
+                    ("value", object([("kind", text_value("minimal"))])),
+                ]),
+            ),
+        ]),
+    ];
+    entries.extend(policy.readable_entries.iter().map(|path| {
+        object([
+            ("access", text_value("read")),
+            (
+                "path",
+                object([("path", path_value(path)), ("type", text_value("path"))]),
+            ),
+        ])
+    }));
+    entries.extend(policy.denied_entries.iter().map(|path| {
+        object([
+            ("access", text_value("deny")),
+            (
+                "path",
+                object([("path", path_value(path)), ("type", text_value("path"))]),
+            ),
+        ])
+    }));
+    entries.extend([&policy.live_auth, &policy.projected_auth].map(|path| {
+        object([
+            ("access", text_value("deny")),
+            (
+                "path",
+                object([("path", path_value(path)), ("type", text_value("path"))]),
+            ),
+        ])
+    }));
+    Ok(object([
         (
             "permissionProfile",
             object([
                 (
                     "file_system",
                     object([
-                        (
-                            "entries",
-                            JsonValue::Array(vec![object([
-                                ("access", text_value("read")),
-                                (
-                                    "path",
-                                    object([
-                                        ("type", text_value("special")),
-                                        ("value", object([("kind", text_value("root"))])),
-                                    ]),
-                                ),
-                            ])]),
-                        ),
+                        ("entries", JsonValue::Array(entries)),
                         ("type", text_value("restricted")),
                     ]),
                 ),
@@ -6572,15 +7143,19 @@ fn managed_read_only_sandbox_state(repository: &Path) -> JsonValue {
                 ("type", text_value("managed")),
             ]),
         ),
-        ("sandboxCwd", path_value(repository)),
-    ])
+        (
+            "sandboxCwd",
+            text_value(&windows_file_url(&policy.repository)?),
+        ),
+        ("useMxc", JsonValue::Bool(true)),
+    ]))
 }
 
-fn call_metadata(repository: &Path, source: &SourceIdentity) -> JsonValue {
-    object([
+fn call_metadata(policy: &ManagedWorkerPolicy, source: &SourceIdentity) -> Result<JsonValue> {
+    Ok(object([
         (
             "codex/sandbox-state-meta",
-            managed_read_only_sandbox_state(repository),
+            managed_read_only_sandbox_state(policy)?,
         ),
         (
             "openai/threadId",
@@ -6593,7 +7168,26 @@ fn call_metadata(repository: &Path, source: &SourceIdentity) -> JsonValue {
                 ("reasoning_effort", text_value(REASONING)),
             ]),
         ),
-    ])
+    ]))
+}
+
+#[cfg(test)]
+fn test_worker_policy(
+    repository: &Path,
+    live_auth: &Path,
+    projected_auth: &Path,
+) -> ManagedWorkerPolicy {
+    let parent = repository.parent().unwrap_or(repository);
+    ManagedWorkerPolicy {
+        repository: repository.to_path_buf(),
+        readable_entries: vec![repository.to_path_buf()],
+        denied_entries: vec![repository.join(".git")],
+        readable_probes: Vec::new(),
+        repository_metadata_probe: repository.join(".git").join("HEAD"),
+        live_auth: live_auth.to_path_buf(),
+        projected_auth: projected_auth.to_path_buf(),
+        denied_canary: parent.join("worker-denied-read-canary"),
+    }
 }
 
 fn send_request(
@@ -6875,6 +7469,42 @@ fn text_value(value: &str) -> JsonValue {
 
 fn path_value(value: &Path) -> JsonValue {
     text_value(&value.to_string_lossy())
+}
+
+fn windows_file_url(path: &Path) -> Result<String> {
+    let path = path
+        .to_str()
+        .context("Windows file URL path is not UTF-8")?;
+    let normalized = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!("//{unc}")
+    } else if let Some(disk) = path.strip_prefix(r"\\?\") {
+        disk.to_string()
+    } else {
+        path.to_string()
+    }
+    .replace('\\', "/");
+    let prefix = if normalized.starts_with("//") {
+        "file:"
+    } else {
+        ensure!(
+            normalized.as_bytes().get(1) == Some(&b':')
+                && normalized.as_bytes().get(2) == Some(&b'/')
+                && normalized.as_bytes()[0].is_ascii_alphabetic(),
+            "Windows file URL path is not an absolute drive or UNC path"
+        );
+        "file:///"
+    };
+    let mut encoded = String::with_capacity(prefix.len() + normalized.len());
+    encoded.push_str(prefix);
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/' | b':') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            write!(&mut encoded, "%{byte:02X}").expect("writing to String cannot fail");
+        }
+    }
+    Ok(encoded)
 }
 
 fn boolean(object: &BTreeMap<String, JsonValue>, field: &str, label: &str) -> Result<bool> {
@@ -7923,11 +8553,64 @@ mod tests {
     }
 
     fn private_test_root() -> (PathBuf, PathBuf) {
-        let outer = unique_test_directory("wizard-security-deep-policy-test");
+        let outer = unique_test_directory("wsdp");
         let root = outer.join(OWNED_SCRATCH_NAME);
         std::fs::create_dir(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
         (outer, root)
+    }
+
+    fn test_owned_scratch() -> (PathBuf, OwnedScratch) {
+        let (outer, root) = private_test_root();
+        let child = |name: &str, label: &str| {
+            crate::mutation_workspace::prepare_real_child(&root, &root.join(name), label).unwrap()
+        };
+        child("codex-home", "test private Codex home");
+        let repository_parent = child("repository", "test worker repository parent");
+        let plugin = child("plugin", "test worker plugin");
+        let scan_root = child("scans", "test worker scan root");
+        let worker_allowed_canary = scan_root.join(WORKER_ALLOWED_CANARY_NAME);
+        let worker_denied_canary = root.join(WORKER_DENIED_CANARY_NAME);
+        write_new_file(&worker_allowed_canary, WORKER_ALLOWED_CANARY).unwrap();
+        write_new_file(&worker_denied_canary, WORKER_DENIED_CANARY).unwrap();
+        let scratch = OwnedScratch {
+            repository_parent,
+            plugin,
+            scan_root,
+            state: child("state", "test worker state"),
+            temporary: child("temp", "test worker temporary directory"),
+            pycache: child("pycache", "test worker Python cache"),
+            codex_state: child("codex-state", "test worker Codex state"),
+            worker_allowed_canary,
+            worker_denied_canary,
+            root,
+        };
+        (outer, scratch)
+    }
+
+    fn fixture_git(root: &Path, arguments: &[&str]) -> std::process::Output {
+        let git = crate::git::resolved().unwrap();
+        let mut command = Command::new(git.path());
+        crate::bounded_process::isolate_git_environment(&mut command);
+        command.current_dir(root).args(arguments);
+        crate::bounded_process::output_with_limit(
+            command,
+            Duration::from_secs(10),
+            "Codex Security Git fixture",
+            64 * 1024,
+        )
+        .unwrap()
+    }
+
+    fn require_fixture_git(root: &Path, arguments: &[&str]) -> std::process::Output {
+        let output = fixture_git(root, arguments);
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
     }
 
     fn ambient_config() -> EffectiveConfig {
@@ -7942,6 +8625,7 @@ mod tests {
             memories_generate: None,
             memories_use: None,
             feature_memories: None,
+            windows_sandbox: None,
             mcp_servers: BTreeMap::from([(
                 "node_repl".to_string(),
                 McpRoute {
@@ -7978,6 +8662,7 @@ mod tests {
             "memories.generate_memories",
             "memories.use_memories",
             "features.memories",
+            "windows.sandbox",
             "mcp_servers.node_repl.enabled",
             "mcp_servers.node_repl.env.AMBIENT_KEY",
             "mcp_servers.node_repl.environment_id",
@@ -8000,6 +8685,7 @@ mod tests {
             memories_generate: Some(false),
             memories_use: Some(false),
             feature_memories: Some(false),
+            windows_sandbox: Some("mxc".to_string()),
             mcp_servers: BTreeMap::from([(
                 "node_repl".to_string(),
                 McpRoute {
@@ -8239,7 +8925,18 @@ mod tests {
         let fields = verify_owned_request(&request, &source, &tools.python_runtime, &git).unwrap();
         let fields: BTreeMap<_, _> = fields.into_iter().collect();
         assert_eq!(fields["execution.protocol"], MCP_PROTOCOL);
-        assert_eq!(fields["execution.worker-permission"], WORKER_PERMISSION);
+        assert_eq!(
+            fields["environment.policy"],
+            "xtask-owned-codex-security-hermetic-v6"
+        );
+        assert_eq!(
+            fields["execution.authority"],
+            "xtask-mcp-wrapper-windows-job-v5"
+        );
+        assert_eq!(
+            fields["execution.worker-permission"],
+            "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false"
+        );
         assert_eq!(fields["tool.node.sha256"], NODE_SHA256);
         assert_eq!(fields["tool.python.sha256"], PYTHON_SHA256);
         assert_eq!(fields["tool.codex.sha256"], CODEX_SHA256);
@@ -8318,57 +9015,77 @@ mod tests {
     fn owned_metadata_names_the_exact_managed_read_only_parent() {
         let source = source();
         let repository = Path::new(r"C:\repo");
+        let live_auth = Path::new(r"C:\Users\owner\.codex\auth.json");
+        let projected_auth = Path::new(r"C:\private-home\auth.json");
+        let policy = test_worker_policy(repository, live_auth, projected_auth);
+        let metadata = call_metadata(&policy, &source).unwrap();
+        let metadata = json_object(&metadata, "test metadata").unwrap();
+        let state = json_object(
+            json_field(metadata, "codex/sandbox-state-meta", "test metadata").unwrap(),
+            "test sandbox state",
+        )
+        .unwrap();
         assert_eq!(
-            call_metadata(repository, &source),
-            object([
-                (
-                    "codex/sandbox-state-meta",
-                    object([
-                        (
-                            "permissionProfile",
-                            object([
-                                (
-                                    "file_system",
-                                    object([
-                                        (
-                                            "entries",
-                                            JsonValue::Array(vec![object([
-                                                ("access", text_value("read")),
-                                                (
-                                                    "path",
-                                                    object([
-                                                        ("type", text_value("special")),
-                                                        (
-                                                            "value",
-                                                            object([("kind", text_value("root"))]),
-                                                        ),
-                                                    ]),
-                                                ),
-                                            ])]),
-                                        ),
-                                        ("type", text_value("restricted")),
-                                    ]),
-                                ),
-                                ("network", text_value("restricted")),
-                                ("type", text_value("managed")),
-                            ]),
-                        ),
-                        ("sandboxCwd", text_value(r"C:\repo")),
-                    ]),
-                ),
-                (
-                    "openai/threadId",
-                    text_value(&format!("wizard-bedrock-deep-{}", source.commit)),
-                ),
-                (
-                    "x-codex-turn-metadata",
-                    object([
-                        ("model", text_value(MODEL)),
-                        ("reasoning_effort", text_value(REASONING)),
-                    ]),
-                ),
-            ])
+            string(state, "sandboxCwd", "test sandbox state").unwrap(),
+            "file:///C:/repo"
         );
+        assert_eq!(state.get("useMxc"), Some(&JsonValue::Bool(true)));
+        let profile = json_object(
+            json_field(state, "permissionProfile", "test sandbox state").unwrap(),
+            "test permission profile",
+        )
+        .unwrap();
+        assert_eq!(
+            string(profile, "network", "test permission profile").unwrap(),
+            "restricted"
+        );
+        let filesystem = json_object(
+            json_field(profile, "file_system", "test permission profile").unwrap(),
+            "test filesystem profile",
+        )
+        .unwrap();
+        assert_eq!(
+            string(filesystem, "type", "test filesystem profile").unwrap(),
+            "restricted"
+        );
+        let entries = json_array(
+            json_field(filesystem, "entries", "test filesystem profile").unwrap(),
+            "test filesystem entries",
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 6);
+        assert!(
+            render_json(&entries[0])
+                .unwrap()
+                .contains("\"access\":\"deny\"")
+        );
+        assert!(
+            render_json(&entries[0])
+                .unwrap()
+                .contains("\"kind\":\"root\"")
+        );
+        assert!(
+            render_json(&entries[1])
+                .unwrap()
+                .contains("\"kind\":\"minimal\"")
+        );
+        let entry_path = |entry: &JsonValue| {
+            let entry = json_object(entry, "test filesystem entry").unwrap();
+            let path = json_object(
+                json_field(entry, "path", "test filesystem entry").unwrap(),
+                "test filesystem path",
+            )
+            .unwrap();
+            string(path, "path", "test filesystem path")
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(entry_path(&entries[2]), r"C:\repo");
+        assert_eq!(entry_path(&entries[3]), r"C:\repo\.git");
+        assert_eq!(entry_path(&entries[4]), r"C:\Users\owner\.codex\auth.json");
+        assert_eq!(entry_path(&entries[5]), r"C:\private-home\auth.json");
+        let rendered = render_json(&JsonValue::Object(metadata.clone())).unwrap();
+        assert!(!rendered.contains("worker-denied-read-canary"));
     }
 
     #[test]
@@ -8439,6 +9156,24 @@ mod tests {
         let live = std::fs::canonicalize(live).unwrap();
         let mut credential = prepare_private_codex_home_from(&live, &scratch).unwrap();
         require_private_codex_home_seed(&scratch.codex_home(), &credential).unwrap();
+        assert_eq!(file_identity(&live.join("auth.json")).unwrap().links, 2);
+        assert_eq!(
+            file_identity(&scratch.codex_home().join("auth.json"))
+                .unwrap()
+                .links,
+            2
+        );
+        let late_alias = live.join("late-auth-alias.json");
+        std::fs::hard_link(live.join("auth.json"), &late_alias).unwrap();
+        assert!(
+            require_exact_credential_projection(
+                &live.join("auth.json"),
+                &scratch.codex_home().join("auth.json"),
+            )
+            .is_err()
+        );
+        std::fs::remove_file(late_alias).unwrap();
+        require_private_codex_home_seed(&scratch.codex_home(), &credential).unwrap();
         assert_eq!(
             std::fs::read(scratch.codex_home().join("config.toml")).unwrap(),
             b""
@@ -8447,6 +9182,23 @@ mod tests {
             assert!(!scratch.codex_home().join(name).exists());
         }
         credential.scrub().unwrap();
+        assert!(!scratch.codex_home().join("auth.json").exists());
+        remove_scratch(&scratch).unwrap();
+    }
+
+    #[test]
+    fn private_codex_home_refuses_a_preexisting_credential_hard_link() {
+        let scratch = reserve_scratch().unwrap();
+        let live = scratch.root.join("hostile-live-home-with-alias");
+        std::fs::create_dir(&live).unwrap();
+        let auth = live.join("auth.json");
+        std::fs::write(&auth, br#"{"tokens":"non-secret-fixture"}"#).unwrap();
+        std::fs::hard_link(&auth, live.join("auth-alias.json")).unwrap();
+        let live = std::fs::canonicalize(live).unwrap();
+        let error = prepare_private_codex_home_from(&live, &scratch)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("pre-existing hard-link alias"));
         assert!(!scratch.codex_home().join("auth.json").exists());
         remove_scratch(&scratch).unwrap();
     }
@@ -8567,8 +9319,22 @@ mod tests {
             private_credential_probe_exit(Err(std::io::Error::from(std::io::ErrorKind::NotFound,))),
             PRIVATE_CREDENTIAL_ERROR_EXIT
         );
-        require_private_credential_probe_result(Some(PRIVATE_CREDENTIAL_DENIED_EXIT), b"", b"")
-            .unwrap();
+        require_worker_read_probe_result(
+            Some(PRIVATE_CREDENTIAL_DENIED_EXIT),
+            b"",
+            b"",
+            PRIVATE_CREDENTIAL_DENIED_EXIT,
+            "deny",
+        )
+        .unwrap();
+        require_worker_read_probe_result(
+            Some(PRIVATE_CREDENTIAL_READABLE_EXIT),
+            b"",
+            b"",
+            PRIVATE_CREDENTIAL_READABLE_EXIT,
+            "allow",
+        )
+        .unwrap();
         for (code, stdout, stderr) in [
             (Some(PRIVATE_CREDENTIAL_READABLE_EXIT), &b""[..], &b""[..]),
             (Some(PRIVATE_CREDENTIAL_ERROR_EXIT), &b""[..], &b""[..]),
@@ -8584,7 +9350,21 @@ mod tests {
                 &b"noise"[..],
             ),
         ] {
-            assert!(require_private_credential_probe_result(code, stdout, stderr).is_err());
+            let error = require_worker_read_probe_result(
+                code,
+                stdout,
+                stderr,
+                PRIVATE_CREDENTIAL_DENIED_EXIT,
+                "deny",
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(&format!(
+                "exit={code:?}, stdout-bytes={}, stderr-bytes={}",
+                stdout.len(),
+                stderr.len()
+            )));
+            assert!(!error.contains("noise"));
         }
 
         let tag = OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT);
@@ -8630,21 +9410,26 @@ mod tests {
         assert!(!body.contains("std::fs::read"));
 
         let preflight = implementation
-            .find("fn require_worker_credential_read_denied")
+            .find("fn require_worker_filesystem_policy")
             .unwrap();
         let arguments = implementation[preflight..]
-            .find("fn private_credential_probe_arguments")
+            .find("fn worker_read_probe_arguments")
             .unwrap()
             + preflight;
         let body = &implementation[preflight..arguments];
         assert!(body.contains("scratch.codex_home().join(\"auth.json\")"));
+        assert!(body.contains("for (probe_target, decision) in worker_read_probe_plan(policy)"));
         let projection_checks = body
             .match_indices("require_private_credential_projection")
             .map(|(offset, _)| offset)
             .collect::<Vec<_>>();
         assert_eq!(projection_checks.len(), 2);
-        let execution = body.find("output_with_limit").unwrap();
-        assert!(projection_checks[0] < execution && execution < projection_checks[1]);
+        let executions = body
+            .match_indices("output_with_limit")
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        assert_eq!(executions.len(), 1);
+        assert!(projection_checks[0] < executions[0] && executions[0] < projection_checks[1]);
         assert_eq!(body.match_indices("identify_codex_runtime").count(), 2);
         assert!(body.contains("runtime_before == tools.codex_runtime"));
     }
@@ -8653,30 +9438,554 @@ mod tests {
     fn credential_probe_command_uses_the_exact_owned_worker_sandbox() {
         let repository = std::env::temp_dir().join("credential-probe-repository");
         let fixture = repository.join("xtask.exe");
-        let auth = repository.join("private-home").join("auth.json");
+        let live_auth = repository.join("live-home").join("auth.json");
+        let projected_auth = repository.join("private-home").join("auth.json");
         let shell_environment = "shell_environment_policy.set={}";
-        let state = render_json(&managed_read_only_sandbox_state(&repository)).unwrap();
+        let policy = test_worker_policy(&repository, &live_auth, &projected_auth);
+        let state = render_json(&managed_read_only_sandbox_state(&policy).unwrap()).unwrap();
+        let mut expected = vec![
+            OsString::from("--no-daemon"),
+            OsString::from("sandbox"),
+            OsString::from("--config"),
+            OsString::from("shell_environment_policy.inherit=\"none\""),
+            OsString::from("--config"),
+            OsString::from("shell_environment_policy.ignore_default_excludes=false"),
+            OsString::from("--config"),
+            OsString::from(shell_environment),
+            OsString::from("--config"),
+            OsString::from(WINDOWS_SANDBOX_OVERRIDE),
+            OsString::from("--sandbox-state-json"),
+            OsString::from(state),
+            OsString::from("--sandbox-state-disable-network"),
+            OsString::from("--"),
+            fixture.clone().into_os_string(),
+            OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT),
+            live_auth.clone().into_os_string(),
+        ];
         assert_eq!(
-            private_credential_probe_arguments(&repository, &fixture, &auth, shell_environment,)
-                .unwrap(),
-            vec![
-                OsString::from("--no-daemon"),
-                OsString::from("sandbox"),
-                OsString::from("--config"),
-                OsString::from("shell_environment_policy.inherit=\"none\""),
-                OsString::from("--config"),
-                OsString::from("shell_environment_policy.ignore_default_excludes=false"),
-                OsString::from("--config"),
-                OsString::from(shell_environment),
-                OsString::from("--sandbox-state-json"),
-                OsString::from(state),
-                OsString::from("--sandbox-state-disable-network"),
-                OsString::from("--"),
-                fixture.into_os_string(),
-                OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT),
-                auth.into_os_string(),
-            ]
+            worker_read_probe_arguments(&policy, &fixture, &live_auth, shell_environment).unwrap(),
+            expected
         );
+        *expected.last_mut().unwrap() = projected_auth.clone().into_os_string();
+        assert_eq!(
+            worker_read_probe_arguments(&policy, &fixture, &projected_auth, shell_environment)
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn managed_worker_policy_is_clone_backed_narrow_and_single_source() {
+        let implementation = include_str!("security_deep.rs");
+        let clone_start = implementation
+            .find("fn prepare_owned_worker_repository(")
+            .unwrap();
+        let clone_end = implementation[clone_start..].find("fn run_owned(").unwrap() + clone_start;
+        let clone = &implementation[clone_start..clone_end];
+        for required in [
+            "\"--no-checkout\"",
+            "\"--no-hardlinks\"",
+            "copy_clean_tracked_to(paths.root(), &destination)?",
+            "vec![\"remote\", \"remove\", \"origin\"]",
+            "qualification::source_identity(&git_destination)? == *source",
+        ] {
+            assert!(
+                clone.contains(required),
+                "missing owned-clone guard {required}"
+            );
+        }
+
+        let policy_start = implementation.find("impl ManagedWorkerPolicy").unwrap();
+        let policy_end = implementation[policy_start..]
+            .find("#[derive(Debug)]\nstruct PrivateCodexCredential")
+            .unwrap()
+            + policy_start;
+        let policy = &implementation[policy_start..policy_end];
+        for required in [
+            "repository.parent() == Some(scratch.repository_parent.as_path())",
+            "canonical_directory(&scratch.plugin",
+            "canonical_directory(&scratch.scan_root",
+            "canonical_probe_path(&tools.node.path",
+            "python_worker_policy_entries(&tools.python_runtime)",
+            "canonical_directory(&tools.codex_runtime.root",
+            "vec![repository.join(\".git\")]",
+            "!readable_entries.contains(&scratch.root)",
+        ] {
+            assert!(
+                policy.contains(required),
+                "missing worker-policy guard {required}"
+            );
+        }
+        assert!(!policy.contains("git_root"));
+        assert!(!policy.contains("tools.node.path.parent()"));
+        assert!(policy.contains("&self.denied_canary"));
+        let python_probe_start = implementation.find("fn first_python_policy_file(").unwrap();
+        let python_probe_end = implementation[python_probe_start..]
+            .find("fn require_worker_canaries(")
+            .unwrap()
+            + python_probe_start;
+        let python_probe = &implementation[python_probe_start..python_probe_end];
+        assert!(
+            python_probe
+                .contains("&& let Some(probe) = first_python_policy_file(&path, depth + 1)?")
+        );
+        assert!(!python_probe.contains("if let Ok(probe)"));
+
+        let state_start = implementation
+            .find("fn managed_read_only_sandbox_state(")
+            .unwrap();
+        let state_end = implementation[state_start..]
+            .find("fn call_metadata(")
+            .unwrap()
+            + state_start;
+        let state = &implementation[state_start..state_end];
+        let root_deny = state.find("(\"access\", text_value(\"deny\"))").unwrap();
+        let root_kind = state
+            .find("object([(\"kind\", text_value(\"root\"))])")
+            .unwrap();
+        let minimal_kind = state
+            .find("object([(\"kind\", text_value(\"minimal\"))])")
+            .unwrap();
+        let dynamic_reads = state.find("policy.readable_entries.iter().map").unwrap();
+        let dynamic_denies = state.find("policy.denied_entries.iter().map").unwrap();
+        let credential_denies = state
+            .find("[&policy.live_auth, &policy.projected_auth]")
+            .unwrap();
+        assert!(
+            root_deny < root_kind
+                && root_kind < minimal_kind
+                && minimal_kind < dynamic_reads
+                && dynamic_reads < dynamic_denies
+                && dynamic_denies < credential_denies
+        );
+        assert!(!state.contains("path_value(&policy.denied_canary)"));
+
+        let wrapper_start = implementation
+            .find("fn inject_wrapper_overrides_for_scan_root(")
+            .unwrap();
+        let wrapper_end = implementation[wrapper_start..]
+            .find("fn validate_app_server_arguments(")
+            .unwrap()
+            + wrapper_start;
+        let wrapper = &implementation[wrapper_start..wrapper_end];
+        assert!(wrapper.contains("argument == WORKER_NAMED_PERMISSION_INPUT"));
+        assert!(wrapper.contains("OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE)"));
+        assert!(wrapper.contains("rewritten_permissions == 1"));
+
+        let run_start = implementation.find("fn run_owned(").unwrap();
+        let run_end = implementation[run_start..]
+            .find("fn finalize_owned_transaction")
+            .unwrap()
+            + run_start;
+        let run = &implementation[run_start..run_end];
+        let prepare = run.find("prepare_owned_worker_repository").unwrap();
+        let qualify = run
+            .find("ManagedWorkerPolicy::qualify(\n            &worker_repository,")
+            .unwrap();
+        let preflight = run.find("require_worker_filesystem_policy").unwrap();
+        let mcp = run.find("run_mcp(OwnedMcpInvocation").unwrap();
+        let post_identity = run
+            .find("qualification::source_identity(&worker_git_repository)? == source")
+            .unwrap();
+        let post_canaries = run.find("require_worker_canaries(&scratch)?").unwrap();
+        assert!(prepare < qualify && qualify < preflight && preflight < mcp);
+        assert!(mcp < post_identity && post_identity < post_canaries);
+        assert!(run.contains("worker_policy: &worker_policy"));
+
+        let preflight_start = implementation
+            .find("fn require_worker_filesystem_policy(")
+            .unwrap();
+        let preflight_end = implementation[preflight_start..]
+            .find("fn worker_read_probe_arguments(")
+            .unwrap()
+            + preflight_start;
+        let preflight = &implementation[preflight_start..preflight_end];
+        let canary_checks = preflight
+            .match_indices("require_worker_canaries(scratch)?")
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>();
+        let probe_loop = preflight
+            .find("for (probe_target, decision) in worker_read_probe_plan(policy)")
+            .unwrap();
+        assert_eq!(canary_checks.len(), 2);
+        assert!(canary_checks[0] < probe_loop && probe_loop < canary_checks[1]);
+    }
+
+    #[test]
+    fn owned_worker_repository_is_a_clean_detached_projection() {
+        let repository = crate::cargo::child_process_path(&unique_test_directory("wdss"));
+        require_fixture_git(&repository, &["init", "--quiet"]);
+        std::fs::write(repository.join(".gitignore"), b"ignored/\n").unwrap();
+        std::fs::write(repository.join("README.md"), b"fixture repository\n").unwrap();
+        std::fs::write(repository.join("tracked.txt"), b"tracked source\n").unwrap();
+        std::fs::create_dir(repository.join("ignored")).unwrap();
+        std::fs::write(
+            repository.join("ignored").join("host-secret"),
+            b"not an input",
+        )
+        .unwrap();
+        require_fixture_git(
+            &repository,
+            &["add", ".gitignore", "README.md", "tracked.txt"],
+        );
+        require_fixture_git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Wizard Test",
+                "-c",
+                "user.email=wizard@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        );
+        require_fixture_git(&repository, &["tag", "fixture-tag"]);
+        let source = qualification::source_identity(&repository).unwrap();
+        let paths = Paths::new(repository.clone(), Some(&repository.join("target")));
+        let (scratch_outer, scratch) = test_owned_scratch();
+        let occupied_destination = scratch
+            .repository_parent
+            .join(repository.file_name().unwrap());
+        std::fs::create_dir(&occupied_destination).unwrap();
+        let occupied_error = prepare_owned_worker_repository(
+            &paths,
+            &scratch,
+            crate::git::resolved().unwrap(),
+            &source,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(occupied_error.contains("destination already exists"));
+        std::fs::remove_dir(&occupied_destination).unwrap();
+        let worker = prepare_owned_worker_repository(
+            &paths,
+            &scratch,
+            crate::git::resolved().unwrap(),
+            &source,
+        )
+        .unwrap();
+
+        assert_eq!(worker.parent(), Some(scratch.repository_parent.as_path()));
+        assert_eq!(
+            qualification::source_identity(&crate::cargo::child_process_path(&worker)).unwrap(),
+            source
+        );
+        assert_eq!(
+            std::fs::read(worker.join("tracked.txt")).unwrap(),
+            b"tracked source\n"
+        );
+        assert!(!worker.join("ignored").exists());
+        assert!(require_fixture_git(&worker, &["remote"]).stdout.is_empty());
+        assert!(
+            require_fixture_git(&worker, &["tag", "--list"])
+                .stdout
+                .is_empty()
+        );
+
+        let object_relative = PathBuf::from(".git")
+            .join("objects")
+            .join(&source.commit[..2])
+            .join(&source.commit[2..]);
+        let original_object = file_identity(&repository.join(&object_relative)).unwrap();
+        let worker_object = file_identity(&worker.join(&object_relative)).unwrap();
+        assert_ne!(original_object.id, worker_object.id);
+        assert_eq!(original_object.links, 1);
+        assert_eq!(worker_object.links, 1);
+
+        for path in [scratch_outer, repository] {
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            remove_entry_no_follow(&path, &metadata).unwrap();
+        }
+    }
+
+    #[test]
+    fn managed_worker_policy_is_an_executable_default_deny_allowlist() {
+        let (outer, scratch) = test_owned_scratch();
+        let repository = crate::mutation_workspace::prepare_real_child(
+            &scratch.repository_parent,
+            &scratch.repository_parent.join("wizards-bedrock"),
+            "test owned worker repository",
+        )
+        .unwrap();
+        std::fs::write(repository.join("README.md"), b"repository").unwrap();
+        std::fs::create_dir(repository.join(".git")).unwrap();
+        std::fs::write(
+            repository.join(".git").join("HEAD"),
+            b"ref: refs/heads/main\n",
+        )
+        .unwrap();
+        std::fs::write(scratch.plugin.join("integrity.json"), b"{}").unwrap();
+
+        let node_root = outer.join("node");
+        let python_root = outer.join("python");
+        let codex_root = outer.join("codex");
+        let system_root = outer.join("windows");
+        let live_root = outer.join("live");
+        let wrong_projection_root = outer.join("wrong-projection");
+        let fixture_directories = [
+            node_root.clone(),
+            python_root.clone(),
+            codex_root.clone(),
+            system_root.join("System32"),
+            live_root.clone(),
+            wrong_projection_root.clone(),
+            python_root.join("DLLs"),
+            python_root.join("Lib"),
+            python_root.join("DLLs").join("__pycache__"),
+            python_root.join("Lib").join("site-packages"),
+        ];
+        for directory in &fixture_directories {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let node = node_root.join("node.exe");
+        let python = python_root.join("python.exe");
+        let codex = codex_root.join("codex.exe");
+        let command_processor = system_root.join("System32").join("cmd.exe");
+        let live_auth = live_root.join("auth.json");
+        let projected_auth = scratch.codex_home().join("auth.json");
+        let wrong_projected_auth = wrong_projection_root.join("auth.json");
+        let fixture_files = [
+            node.clone(),
+            python.clone(),
+            python_root.join("python3.dll"),
+            python_root.join("python312.dll"),
+            python_root.join("vcruntime140.dll"),
+            python_root.join("DLLs").join("fixture.pyd"),
+            python_root.join("Lib").join("fixture.py"),
+            codex.clone(),
+            command_processor.clone(),
+            live_auth.clone(),
+            projected_auth.clone(),
+            wrong_projected_auth.clone(),
+        ];
+        for path in &fixture_files {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        std::fs::write(
+            python_root
+                .join("DLLs")
+                .join("__pycache__")
+                .join("ignored.pyc"),
+            b"ignored",
+        )
+        .unwrap();
+        std::fs::write(
+            python_root
+                .join("Lib")
+                .join("site-packages")
+                .join("ignored.py"),
+            b"ignored",
+        )
+        .unwrap();
+
+        let tools = Toolchain {
+            node: ToolIdentity {
+                path: node.clone(),
+                bytes: 1,
+                sha256: "a".repeat(64),
+                version: "fixture".to_string(),
+            },
+            python: ToolIdentity {
+                path: python.clone(),
+                bytes: 1,
+                sha256: "b".repeat(64),
+                version: "fixture".to_string(),
+            },
+            python_runtime: PythonRuntimeIdentity {
+                root: python_root.clone(),
+                entries: 1,
+                bytes: 1,
+                sha256: "c".repeat(64),
+            },
+            codex: ToolIdentity {
+                path: codex.clone(),
+                bytes: 1,
+                sha256: "d".repeat(64),
+                version: "fixture".to_string(),
+            },
+            codex_runtime: CodexRuntimeIdentity {
+                root: codex_root.clone(),
+                entries: 1,
+                bytes: 1,
+                sha256: "e".repeat(64),
+            },
+        };
+        let shell = ShellEnvironmentPolicy {
+            system_root,
+            command_processor: command_processor.clone(),
+            search_path: OsString::new().to_owned(),
+            temporary: scratch.temporary.clone(),
+        };
+        let policy = ManagedWorkerPolicy::qualify(
+            &repository,
+            &scratch,
+            &live_auth,
+            &projected_auth,
+            &tools,
+            &shell,
+        )
+        .unwrap();
+
+        let expected_reads = vec![
+            repository.clone(),
+            scratch.plugin.clone(),
+            scratch.scan_root.clone(),
+            node.clone(),
+            codex_root.clone(),
+            python.clone(),
+            python_root.join("python3.dll"),
+            python_root.join("python312.dll"),
+            python_root.join("vcruntime140.dll"),
+            python_root.join("DLLs"),
+            python_root.join("Lib"),
+        ];
+        for expected in &expected_reads {
+            assert!(
+                policy.readable_entries.contains(expected),
+                "missing exact worker read {}",
+                expected.display()
+            );
+        }
+        assert!(!policy.readable_entries.contains(&node_root));
+        assert!(!policy.readable_entries.contains(&python_root));
+        let expected_denied = [
+            repository.join(".git"),
+            python_root.join("DLLs").join("__pycache__"),
+            python_root.join("Lib").join("site-packages"),
+        ];
+        for expected in &expected_denied {
+            assert!(policy.denied_entries.contains(expected));
+        }
+        assert!(
+            !policy
+                .denied_entries
+                .contains(&scratch.worker_denied_canary)
+        );
+        let plan = worker_read_probe_plan(&policy);
+        let expected_deny_probes = [
+            live_auth.clone(),
+            projected_auth.clone(),
+            scratch.worker_denied_canary.clone(),
+            repository.join(".git").join("HEAD"),
+        ];
+        assert_eq!(
+            plan.len(),
+            expected_deny_probes.len() + policy.readable_probes.len()
+        );
+        for ((path, decision), expected) in plan.iter().zip(&expected_deny_probes) {
+            assert_eq!(*path, expected);
+            assert_eq!(*decision, WorkerReadDecision::Deny);
+        }
+        assert!(
+            plan[expected_deny_probes.len()..]
+                .iter()
+                .all(|(_, decision)| *decision == WorkerReadDecision::Allow)
+        );
+        let state = render_json(&managed_read_only_sandbox_state(&policy).unwrap()).unwrap();
+        assert!(state.contains("\"kind\":\"root\""));
+        assert!(state.contains("\"kind\":\"minimal\""));
+        assert!(!state.contains(WORKER_DENIED_CANARY_NAME));
+
+        assert!(
+            ManagedWorkerPolicy::qualify(
+                &repository,
+                &scratch,
+                &live_auth,
+                &wrong_projected_auth,
+                &tools,
+                &shell,
+            )
+            .is_err()
+        );
+        let foreign_repository = outer.join("foreign-repository");
+        std::fs::create_dir(&foreign_repository).unwrap();
+        std::fs::write(foreign_repository.join("README.md"), b"foreign").unwrap();
+        std::fs::create_dir(foreign_repository.join(".git")).unwrap();
+        std::fs::write(
+            foreign_repository.join(".git").join("HEAD"),
+            b"ref: refs/heads/main\n",
+        )
+        .unwrap();
+        assert!(
+            ManagedWorkerPolicy::qualify(
+                &foreign_repository,
+                &scratch,
+                &live_auth,
+                &projected_auth,
+                &tools,
+                &shell,
+            )
+            .is_err()
+        );
+        let overlapping_auth = repository.join("auth.json");
+        std::fs::write(&overlapping_auth, b"overlap").unwrap();
+        assert!(
+            ManagedWorkerPolicy::qualify(
+                &repository,
+                &scratch,
+                &overlapping_auth,
+                &projected_auth,
+                &tools,
+                &shell,
+            )
+            .is_err()
+        );
+
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
+    fn worker_canaries_are_owned_and_tamper_evident() {
+        let (outer, scratch) = test_owned_scratch();
+        require_worker_canaries(&scratch).unwrap();
+        std::fs::write(&scratch.worker_denied_canary, b"tampered denied canary").unwrap();
+        assert!(require_worker_canaries(&scratch).is_err());
+        std::fs::write(&scratch.worker_denied_canary, WORKER_DENIED_CANARY).unwrap();
+        std::fs::write(&scratch.worker_allowed_canary, b"tampered allowed canary").unwrap();
+        assert!(require_worker_canaries(&scratch).is_err());
+
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
+    fn python_probe_walk_propagates_deep_errors() {
+        let root = unique_test_directory("wizard-security-deep-python-probe-test");
+        let mut nested = root.join("a");
+        for _ in 0..=MAX_PYTHON_RUNTIME_DEPTH {
+            std::fs::create_dir(&nested).unwrap();
+            nested = nested.join("a");
+        }
+        std::fs::write(root.join("z.py"), b"reachable only after swallowed error").unwrap();
+        let error = first_python_policy_file(&root, 0).unwrap_err().to_string();
+        assert!(error.contains("depth limit"), "{error}");
+
+        let metadata = std::fs::symlink_metadata(&root).unwrap();
+        remove_entry_no_follow(&root, &metadata).unwrap();
+    }
+
+    #[test]
+    fn managed_sandbox_cwd_is_an_exact_windows_file_url() {
+        assert_eq!(
+            windows_file_url(Path::new(r"C:\repo path\hash#percent%")).unwrap(),
+            "file:///C:/repo%20path/hash%23percent%25"
+        );
+        assert_eq!(
+            windows_file_url(Path::new(r"\\?\C:\repo")).unwrap(),
+            "file:///C:/repo"
+        );
+        assert_eq!(
+            windows_file_url(Path::new(r"\\server\share\repo")).unwrap(),
+            "file://server/share/repo"
+        );
+        assert_eq!(
+            windows_file_url(Path::new(r"\\?\UNC\server\share\repo")).unwrap(),
+            "file://server/share/repo"
+        );
+        assert!(windows_file_url(Path::new("relative")).is_err());
     }
 
     #[test]
@@ -8749,11 +10058,11 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(owned.match_indices("&shell_environment").count(), 2);
+        assert_eq!(owned.match_indices("&shell_environment").count(), 3);
         for (start, end) in [
             (
-                "fn require_worker_credential_read_denied(",
-                "fn private_credential_probe_arguments(",
+                "fn require_worker_filesystem_policy(",
+                "fn worker_read_probe_arguments(",
             ),
             ("fn run_mcp(", "fn exchange_mcp("),
         ] {
@@ -8961,9 +10270,23 @@ mod tests {
 
     #[test]
     fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
+        assert_eq!(WINDOWS_SANDBOX_OVERRIDE, "windows.sandbox=\"mxc\"");
         let (outer, root) = private_test_root();
         let inert = inert_mcp_executable(&root).unwrap();
         let overrides = safety_overrides(&ambient_config(), &inert).unwrap();
+        assert!(require_wrapper_override_policy(&overrides[..overrides.len() - 1]).is_err());
+        let mut wrong_last = overrides.clone();
+        *wrong_last.last_mut().unwrap() = "windows.sandbox=\"unelevated\"".to_string();
+        assert!(require_wrapper_override_policy(&wrong_last).is_err());
+        let mut after_mxc = overrides.clone();
+        after_mxc.push("plugins.after-mxc.enabled=false".to_string());
+        assert!(require_wrapper_override_policy(&after_mxc).is_err());
+        let mut duplicate_mxc = overrides.clone();
+        duplicate_mxc.insert(
+            duplicate_mxc.len() - 1,
+            WINDOWS_SANDBOX_OVERRIDE.to_string(),
+        );
+        assert!(require_wrapper_override_policy(&duplicate_mxc).is_err());
 
         let app = [
             "--config",
@@ -8981,8 +10304,35 @@ mod tests {
             .iter()
             .position(|value| value == "app-server")
             .unwrap();
-        assert_eq!(&injected[..4], &app[..4]);
+        assert_eq!(
+            &injected[..4],
+            &[
+                OsString::from("--config"),
+                OsString::from("default_permissions=\"codex_security_deep_scan_worker\""),
+                OsString::from("--config"),
+                OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE),
+            ]
+        );
+        assert!(
+            !injected
+                .iter()
+                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
+        );
+        assert_eq!(
+            injected
+                .iter()
+                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .count(),
+            1
+        );
         assert_eq!(app_server, 4 + overrides.len() * 2);
+        assert_eq!(
+            &injected[app_server - 2..app_server],
+            &[
+                OsString::from("--config"),
+                OsString::from(WINDOWS_SANDBOX_OVERRIDE),
+            ]
+        );
         assert_eq!(&injected[app_server..], &app[4..]);
 
         let repository = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
@@ -9141,7 +10491,26 @@ mod tests {
                 + (overrides.len() + context.artifact_overrides().unwrap().len()) * 2
         );
         assert_eq!(&injected[resume..], &exec[exec.len() - 2..]);
+        assert_eq!(
+            &injected[resume - 2..resume],
+            &[
+                OsString::from("--config"),
+                OsString::from(WINDOWS_SANDBOX_OVERRIDE),
+            ]
+        );
         assert_eq!(injected.first(), Some(&OsString::from("--no-daemon")));
+        assert!(
+            !injected
+                .iter()
+                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
+        );
+        assert_eq!(
+            injected
+                .iter()
+                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .count(),
+            1
+        );
         for isolation in [
             "--ephemeral",
             "--ignore-user-config",
@@ -9167,7 +10536,27 @@ mod tests {
         }
 
         let initial = make_exec(false);
-        inject_wrapper_overrides_for_scan_root(&initial, &overrides, Some(&context)).unwrap();
+        let initial_injected =
+            inject_wrapper_overrides_for_scan_root(&initial, &overrides, Some(&context)).unwrap();
+        assert_eq!(
+            &initial_injected[initial_injected.len() - 2..],
+            &[
+                OsString::from("--config"),
+                OsString::from(WINDOWS_SANDBOX_OVERRIDE),
+            ]
+        );
+        assert!(
+            !initial_injected
+                .iter()
+                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
+        );
+        assert_eq!(
+            initial_injected
+                .iter()
+                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .count(),
+            1
+        );
 
         for forbidden in [
             "--sandbox",
@@ -9539,7 +10928,7 @@ mod tests {
             "require_safe_effective_config(&effective",
             "let git_identity = git_identity(git)?",
             "let request = render_owned_request",
-            "require_worker_credential_read_denied",
+            "require_worker_filesystem_policy",
             "let outcome = run_mcp",
         ];
         let preflight_positions = preflight_sequence
@@ -9560,10 +10949,12 @@ mod tests {
             "credential.scrub()?",
             "let manifest = read(",
             "let scan = verify_scan",
-            "qualification::source_identity",
+            "qualification::source_identity(paths.root())? == source",
+            "qualification::source_identity(&worker_git_repository)? == source",
             "git.require_unchanged()?",
             "require_plugin_unchanged(&package)?",
             "require_mirror_exact(&scratch.plugin, &package)?",
+            "require_worker_canaries(&scratch)?",
             "require_absent(&inert_mcp",
             "observe_scratch(&scratch.root)?",
             "let artifacts = qualification::ObservedDeepArtifacts",

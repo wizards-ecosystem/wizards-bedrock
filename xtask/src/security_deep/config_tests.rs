@@ -83,6 +83,7 @@ impl Fixture {
             .context("writing fake config mode")?;
         for directory in [
             &scratch_root,
+            &scratch_root.join("repository"),
             &scratch_root.join("plugin"),
             &scratch_root.join("scans"),
             &scratch_root.join("state"),
@@ -94,12 +95,15 @@ impl Fixture {
                 .with_context(|| format!("creating fixture directory {}", directory.display()))?;
         }
         let scratch = OwnedScratch {
+            repository_parent: scratch_root.join("repository"),
             plugin: scratch_root.join("plugin"),
             scan_root: scratch_root.join("scans"),
             state: scratch_root.join("state"),
             temporary: scratch_root.join("temp"),
             pycache: scratch_root.join("pycache"),
             codex_state: scratch_root.join("codex-state"),
+            worker_allowed_canary: scratch_root.join("scans").join(WORKER_ALLOWED_CANARY_NAME),
+            worker_denied_canary: scratch_root.join(WORKER_DENIED_CANARY_NAME),
             root: scratch_root,
         };
         let inert_mcp = scratch.root.join(INERT_MCP_EXECUTABLE);
@@ -510,12 +514,29 @@ fn safe_config(inert_mcp: &Path, mode: &str) -> JsonValue {
             )]),
         ),
         ("service_tier".to_string(), text_value("default")),
+        (
+            "windows".to_string(),
+            object([(
+                "sandbox",
+                text_value(if mode == "drift-windows-sandbox" {
+                    "unelevated"
+                } else {
+                    "mxc"
+                }),
+            )]),
+        ),
     ]);
     if mode == "config-extra" {
         config.insert("unexpected".to_string(), JsonValue::Null);
     }
     if mode == "default-drift" {
         config.insert("approval_policy".to_string(), text_value("never"));
+    }
+    if mode == "windows-default-drift" {
+        let JsonValue::Object(windows) = config.get_mut("windows").unwrap() else {
+            unreachable!()
+        };
+        windows.insert("unexpected".to_string(), JsonValue::Null);
     }
     JsonValue::Object(config)
 }
@@ -538,9 +559,13 @@ fn origins(mode: &str) -> JsonValue {
         "openai_base_url",
         "plugins.browser@openai-bundled.enabled",
         "service_tier",
+        "windows.sandbox",
     ];
     if mode == "drift-origin" {
         names.retain(|name| *name != "model");
+    }
+    if mode == "drift-windows-origin" {
+        names.retain(|name| *name != "windows.sandbox");
     }
     if mode == "foreign-origin" {
         names.push("approval_policy");
@@ -732,8 +757,11 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
                 "result-extra"
                     | "config-extra"
                     | "default-drift"
+                    | "windows-default-drift"
                     | "dependent-default-drift"
                     | "drift-model"
+                    | "drift-windows-sandbox"
+                    | "drift-windows-origin"
                     | "drift-plugin-enabled"
                     | "drift-mcp"
                     | "drift-origin"
@@ -781,6 +809,7 @@ fn expected_overrides(inert_mcp: &Path) -> Vec<String> {
         format!("mcp_servers.node_repl.startup_timeout_sec={INERT_MCP_TIMEOUT_SECONDS}"),
         format!("mcp_servers.node_repl.tool_timeout_sec={INERT_MCP_TIMEOUT_SECONDS}"),
         "plugins.browser@openai-bundled.enabled=false".to_string(),
+        WINDOWS_SANDBOX_OVERRIDE.to_string(),
     ]
 }
 
@@ -875,12 +904,24 @@ fn effective_config_schemas_and_safety_fields_fail_closed() {
         ("config-extra", "Codex originless default config differs"),
         ("default-drift", "Codex originless default config differs"),
         (
+            "windows-default-drift",
+            "Codex originless default config differs",
+        ),
+        (
             "dependent-default-drift",
             "Codex features network_proxy dependent default is not null",
         ),
     ]);
     for (mode, expected) in [
         ("drift-model", "model route differs"),
+        (
+            "drift-windows-sandbox",
+            "Windows sandbox is not the required MXC backend",
+        ),
+        (
+            "drift-windows-origin",
+            "has no origin for safety field windows.sandbox",
+        ),
         (
             "drift-plugin-enabled",
             "enabled or unexpected MCP/plugin route",

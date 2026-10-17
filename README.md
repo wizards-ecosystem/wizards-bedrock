@@ -233,13 +233,22 @@ Daybreak access advisory before exactly one Deep start plus one completion on
 the same MCP session. The advisory reports account display access only: it
 cannot grant model entitlement, select a provider, mint PASS or stop a scan.
 It clears inherited routing inputs,
-proves the effective official ChatGPT configuration, proves that the exact
-managed worker sandbox cannot read the projected login credential, and injects
-the same fail-closed policy through
-private CLI and Python wrappers for every worker, including exact allowed exec
-arguments, a shell environment derived only from qualified paths, and mirrored
-scripts. It requires the pinned completion reply and remeasures the source and
-tools after their
+proves the effective official ChatGPT configuration, refuses a live login
+credential with any pre-existing hard-link alias, and gives every worker a
+newly written clean clone of the frozen tracked source rather than the live
+checkout. Its exact `useMxc: true` state denies host-root access by default,
+allows only `:minimal`, the owned repository/scan/plugin trees and qualified
+runtime bytes, and denies clone metadata, unqualified Python package/cache
+trees, and both live and projected credential names. Before launch it proves
+the positive read set and silent denial of `.git`, both credential names and a
+harmless outside-root canary; that canary has no explicit deny, so it detects a
+regression of the root default itself. The wrapper also rewrites the provider's
+one exact root-readable named profile to root-deny exactly once, forces
+`windows.sandbox="mxc"` as the unique final override with its exact effective
+origin, and disables worker network access through private CLI and Python
+wrappers, including exact allowed exec arguments, a shell environment derived
+only from qualified paths, and mirrored scripts. It requires the pinned
+completion reply and remeasures the owned clone, source and tools after their
 last use, replays the five canonical artifacts, cleans its private scratch, and
 only then commits PASS. Its Git queries run with a fixed-only environment,
 absolute repository bindings and every effective repository content-filter

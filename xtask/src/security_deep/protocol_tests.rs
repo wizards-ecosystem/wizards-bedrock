@@ -236,6 +236,22 @@ fn path_text(path: &Path) -> JsonValue {
     JsonValue::String(path.to_string_lossy().into_owned())
 }
 
+fn live_auth_path(repository: &Path) -> PathBuf {
+    repository
+        .parent()
+        .expect("fake repository has a fixture parent")
+        .join("live-codex-home")
+        .join("auth.json")
+}
+
+fn projected_auth_path(repository: &Path) -> PathBuf {
+    repository
+        .parent()
+        .expect("fake repository has a fixture parent")
+        .join("codex-home")
+        .join("auth.json")
+}
+
 fn response(id: &str, result: JsonValue) -> JsonValue {
     object([
         ("id", text_value(id)),
@@ -272,51 +288,13 @@ fn initialize_result(mode: &str) -> JsonValue {
 }
 
 fn expected_metadata(repository: &Path, source: &SourceIdentity) -> JsonValue {
-    object([
-        (
-            "codex/sandbox-state-meta",
-            object([
-                (
-                    "permissionProfile",
-                    object([
-                        (
-                            "file_system",
-                            object([
-                                (
-                                    "entries",
-                                    JsonValue::Array(vec![object([
-                                        ("access", text_value("read")),
-                                        (
-                                            "path",
-                                            object([
-                                                ("type", text_value("special")),
-                                                ("value", object([("kind", text_value("root"))])),
-                                            ]),
-                                        ),
-                                    ])]),
-                                ),
-                                ("type", text_value("restricted")),
-                            ]),
-                        ),
-                        ("network", text_value("restricted")),
-                        ("type", text_value("managed")),
-                    ]),
-                ),
-                ("sandboxCwd", path_text(repository)),
-            ]),
-        ),
-        (
-            "openai/threadId",
-            text_value(&format!("wizard-bedrock-deep-{}", source.commit)),
-        ),
-        (
-            "x-codex-turn-metadata",
-            object([
-                ("model", text_value(MODEL)),
-                ("reasoning_effort", text_value(REASONING)),
-            ]),
-        ),
-    ])
+    let live_auth = live_auth_path(repository);
+    let projected_auth = projected_auth_path(repository);
+    call_metadata(
+        &test_worker_policy(repository, &live_auth, &projected_auth),
+        source,
+    )
+    .unwrap()
 }
 
 fn expected_initialize_request() -> JsonValue {
@@ -1611,6 +1589,9 @@ fn run_fake(mode: &str) -> Result<FakeRun> {
         .env(FAKE_MODE_ENV, mode)
         .env(FAKE_ROOT_ENV, &fixture.paths.root);
     let repository = fixture.paths.repository.clone();
+    let live_auth = live_auth_path(&repository);
+    let projected_auth = projected_auth_path(&repository);
+    let worker_policy = test_worker_policy(&repository, &live_auth, &projected_auth);
     let scan_root = fixture.paths.scan_root.clone();
     let expected_directory = fixture.paths.scan_directory.clone();
     let source = source();
@@ -1627,7 +1608,7 @@ fn run_fake(mode: &str) -> Result<FakeRun> {
             || Ok(()),
             move |dialogue| {
                 wait_until_ready(dialogue)?;
-                exchange_mcp(dialogue, &repository, &source, &scan_root)
+                exchange_mcp(dialogue, &worker_policy, &source, &scan_root)
             },
         )?;
         ensure!(output.status.success(), "fake MCP child failed");

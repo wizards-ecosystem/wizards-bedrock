@@ -593,6 +593,20 @@ pub(crate) fn with_clean_source_copy<T>(
     }
 }
 
+/// Populate an already-owned directory with newly written copies of every
+/// tracked file from one clean checkout, and prove that the copied bytes match.
+pub(crate) fn copy_clean_tracked_to(source: &Path, destination: &Path) -> Result<()> {
+    let baseline = Baseline::discover(source)?;
+    let destination =
+        canonical_existing_real_directory(destination, "owned clean source-copy destination")?;
+    copy_tracked(source, &destination, &baseline.tracked)?;
+    ensure!(
+        digest_tracked(&destination, &baseline.tracked)? == baseline.source_digest,
+        "the owned clean source copy differs from the checkout"
+    );
+    Ok(())
+}
+
 /// Open one real directory without following any path component and retain
 /// the handle as the authority for later relative operations.
 pub(crate) fn open_real_directory(path: &Path, label: &str) -> Result<File> {

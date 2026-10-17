@@ -20,7 +20,7 @@ artifact and a runtime seam; WZ-001 through WZ-004 are externally owned
 `wizards-ink` blockers, not Bedrock implementation work.
 
 D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
-the sole finite kernel backlog while that gate is closed. Every new item needs
+the authoritative finite kernel foundation register. Every new item needs
 the defect, invariant, proof gap, handoff consumer or trigger the register
 requires; `TRIGGER` and post-gate rows are stopped work, not invitations.
 

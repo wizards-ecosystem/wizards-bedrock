@@ -110,8 +110,8 @@ reference, not followed linearly). Docs are numbered in creation order.
    checks BODY evidence in comment-free code and selected disputed REMAINDER
    labels against kernel witnesses. Slice table in
    `011-userspace.md`*
-6. VFS + storage: **planned slices landed 2026-08-25; not closed.** D-18's
-   evidence and D-184's audited pre-Wizzy foundation register remain open in
+6. VFS + storage: **planned slices landed 2026-08-25.** D-184's authoritative
+   finite foundation and current phase-close status is maintained in
    `016-pre-wizzy-foundation.md`. *The ABI half first (D-149): a
    completion carries a handle, the clock became a page rather than a call, and
    a dead program's work is finished rather than forgotten. Then PCI with a

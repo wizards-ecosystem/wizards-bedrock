@@ -3,9 +3,10 @@
 D-366 transfers compiler readiness and the Phase 7 product plan to
 [Realm](https://github.com/wizards-ecosystem/wizards-realm/blob/main/docs/003-compiler-readiness.md).
 D-183 keeps the kernel Rust and first-party target-side applications Wizzy.
-D-184's [016-pre-wizzy-foundation.md](016-pre-wizzy-foundation.md) remains the
-finite kernel backlog. This document owns Bedrock's kernel integration
-requirements, not Realm's application semantics or Ink's language semantics.
+D-184's [016-pre-wizzy-foundation.md](016-pre-wizzy-foundation.md) is the
+authoritative finite kernel foundation record. This document owns Bedrock's
+kernel integration requirements, not Realm's application semantics or Ink's
+language semantics.
 
 ## Current integration admission
 

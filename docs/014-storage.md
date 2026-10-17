@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 290 |
-| Mutations | 2088 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 2119 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-419 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-420 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1137,7 +1137,8 @@ say which of seven it was, and until one happens there is nothing honest to
 write here.
 
 **What the four boots were worth.** Three defects and a rule apiece, none of
-them findable on QEMU, in a phase that closed green: a driver shipped to a
+them findable on QEMU, in planned slices whose current phase-close evidence
+those boots did not supply: a driver shipped to a
 machine with no such device, four load-bearing paging checks that had never
 executed anywhere but one emulator, and a keyboard whose configuration byte and
 whose behaviour disagree. **A second machine does not re-run the checks; it
