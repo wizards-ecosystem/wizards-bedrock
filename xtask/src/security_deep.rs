@@ -92,42 +92,42 @@ const PLUGIN_INTEGRITY_SHA256: &str =
 const PLUGIN_INTEGRITY_BYTES: u64 = 17_465;
 const PLUGIN_FILES: usize = 142;
 const NODE_VERSION: &str = "v24.21.0";
-const NODE_SHA256: &str = "4b7b75810def61ee47e6d70c3ec7ce296e117665e99c4d071a4496fa4b0b96d8";
+const NODE_SHA256: &str = "81690694aa9c11d3d4b4503f467182bf63e2859bdc0269eeb61dc89a5819cf50";
 const NODE_BYTES: u64 = 93_381_936;
 const PYTHON_VERSION: &str = "Python 3.12.10";
 const PYTHON_SHA256: &str = "4d6f5f81a4bca11191c4c7c6b43632694d0a4ce74e068619d8fdc161d469859a";
 const PYTHON_BYTES: u64 = 104_952;
-const CODEX_VERSION: &str = "codex-cli 0.162.0-alpha.17.2";
-const CODEX_SHA256: &str = "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e";
-const CODEX_BYTES: u64 = 334_121_776;
+const CODEX_VERSION: &str = "codex-cli 0.163.0-alpha.10.2";
+const CODEX_SHA256: &str = "9ecb9df2ecafcc00542ef0966c6f1737a81397dc9531b0a4b178238e2bf4a46d";
+const CODEX_BYTES: u64 = 341_312_816;
 const CODEX_DEFAULT_CONFIG_SHA256: &str =
-    "f3172941fcf2fa607b4f079c84e3d2a3a898d98b61885e65a1e3d9f8b3453d20";
+    "ca92daadf6d70a31d9f9e9463dfb19916376b40d3da96950e43dafac1bdaa3bf";
 const CODEX_SYSTEM_SKILLS_ENTRIES: u64 = 71;
-const CODEX_SYSTEM_SKILLS_BYTES: u64 = 314_050;
+const CODEX_SYSTEM_SKILLS_BYTES: u64 = 314_963;
 const CODEX_SYSTEM_SKILLS_SHA256: &str =
-    "db27dc3f9f4018c64cd90dd7ce4b3bd51ff361aa29f8814f102418c8933f56ff";
+    "1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c";
 const MAX_CODEX_SYSTEM_SKILLS_DEPTH: usize = 16;
 const CODEX_RUNTIME_FILES: [(&str, u64, &str); 4] = [
     (
         "codex-code-mode-host.exe",
-        74_712_368,
-        "ec4b09849f3a5bdf4a0c3d1f3c566bda392fdcd9b4aef6bd169a81ef1283fc3d",
+        74_921_776,
+        "b1b21c0dc7f2cb72d27970479403ae8a10fef6ef4af417fe7fe9f960f8c2755a",
     ),
     (
         "codex-command-runner.exe",
-        8_204_592,
-        "bdf5160289bc4d64bc2fa38c43f9679558b3a4386226adc66a0af741e41424b7",
+        8_217_392,
+        "0de2b882d1f763ecdf4fcc3873fec18ddcf20646b6291dac54d33a9f9116d4c4",
     ),
     (
         "codex-windows-sandbox-setup.exe",
-        17_725_744,
-        "4c24960e4039b90b9c0e5e86418834f823218ed6db35ca08efad8a5a654295ed",
+        17_700_144,
+        "192827caa1e5dfaee2805849e4a8bf9fb8b52126acf334172fb4de19cc883cfc",
     ),
     ("codex.exe", CODEX_BYTES, CODEX_SHA256),
 ];
-const CODEX_RUNTIME_BYTES: u64 = 434_764_480;
+const CODEX_RUNTIME_BYTES: u64 = 442_152_128;
 const CODEX_RUNTIME_SHA256: &str =
-    "8dbddb6107989fe3465a01302bb9ebbadf764c48d2997172d829ac05ec3b8880";
+    "5e5c505d977265593a37faee54e5952fc6cbf4ff00c0de05db0f614c9a1e0094";
 
 const OWNED_SCRATCH_NAME: &str = "wizard-codex-security-deep-retained";
 const MAX_PLUGIN_MANIFEST_BYTES: u64 = 256 * 1024;
@@ -2645,10 +2645,7 @@ fn run_owned(paths: &Paths) -> Result<()> {
         require_mirror_exact(&scratch.plugin, &package)?;
         require_chatgpt_login(&tools.codex, &scratch, paths.root())?;
         let ambient = read_codex_config(&tools.codex, paths.root(), &scratch, &[])?;
-        ensure!(
-            ambient.origins.is_empty(),
-            "private empty Codex config has an ambient origin"
-        );
+        require_safe_ambient_config(&ambient)?;
         ensure!(
             ambient.model_providers.is_empty(),
             "owned Codex Security refuses ambient custom model-provider definitions"
@@ -2941,7 +2938,10 @@ fn require_qualified_system_skills(root: &Path) -> Result<()> {
     let identity = measure_qualified_system_skills(root)?;
     ensure!(
         codex_system_skills_identity_is_allowed(&identity),
-        "private Codex system skills differ from the qualified runtime"
+        "private Codex system skills differ from the qualified runtime: observed {} entries, {} bytes, sha256 {}",
+        identity.entries,
+        identity.bytes,
+        identity.sha256
     );
     Ok(())
 }
@@ -3328,7 +3328,7 @@ fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<Toolchain> {
             .join("Codex")
             .join("runtimes")
             .join("cua_node")
-            .join("a9ba6825a525118c")
+            .join("a5a02988362ca169")
             .join("bin")
             .join("node.exe"),
         &["--version"],
@@ -3366,7 +3366,7 @@ fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<Toolchain> {
         .join("OpenAI")
         .join("Codex")
         .join("bin")
-        .join("9614f1d9b40d9c4f")
+        .join("e78bad9887fa50cf")
         .join("codex.exe");
     let codex_runtime_before = identify_codex_runtime(&codex_path)?;
     let codex = identify_tool(
@@ -4399,7 +4399,7 @@ fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<
     ));
     ensure!(
         codex_default_config_digest_is_allowed(&digest),
-        "Codex originless default config differs"
+        "Codex originless default config differs: observed sha256 {digest}"
     );
     Ok(())
 }
@@ -4691,6 +4691,18 @@ fn safety_overrides(ambient: &EffectiveConfig, inert_mcp: &Path) -> Result<Vec<S
     Ok(overrides)
 }
 
+fn require_safe_ambient_config(ambient: &EffectiveConfig) -> Result<()> {
+    ensure!(
+        ambient.origins.is_empty(),
+        "private empty Codex config has an ambient origin"
+    );
+    ensure!(
+        ambient.notify_is_empty,
+        "private empty Codex config has active notification commands"
+    );
+    Ok(())
+}
+
 fn require_safe_effective_config(
     effective: &EffectiveConfig,
     ambient: &EffectiveConfig,
@@ -4799,7 +4811,6 @@ fn require_safe_effective_config(
         "model",
         "model_reasoning_effort",
         "service_tier",
-        "notify",
         "memories.generate_memories",
         "memories.use_memories",
         "features.memories",
@@ -7753,10 +7764,10 @@ fn verify_owned_request(
         ("tool.python.sha256", PYTHON_SHA256),
         ("tool.python.version", PYTHON_VERSION),
         ("tool.python.runtime.root", "parent-of-tool.python"),
-        ("tool.codex.bytes", "334121776"),
+        ("tool.codex.bytes", "341312816"),
         ("tool.codex.sha256", CODEX_SHA256),
         ("tool.codex.version", CODEX_VERSION),
-        ("tool.codex.runtime.bytes", "434764480"),
+        ("tool.codex.runtime.bytes", "442152128"),
         ("tool.codex.runtime.files", "4"),
         ("tool.codex.runtime.root", "parent-of-tool.codex"),
         ("tool.codex.runtime.sha256", CODEX_RUNTIME_SHA256),

@@ -185,7 +185,10 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
             .unwrap_or_else(|_| "fake child emitted no diagnostics".to_string());
         error.context(diagnostics)
     });
-    if mode != "ambient" && mode != "safe" && mode != "supported-notification" {
+    if !matches!(
+        mode,
+        "ambient" | "ambient-active-notify" | "safe" | "supported-notification"
+    ) {
         ensure!(
             fixture.marker(mode).is_file(),
             "fake Codex config mode {mode} did not issue its fault marker"
@@ -367,7 +370,7 @@ fn initialize_result(repository: &Path, mode: &str) -> Result<JsonValue> {
             text_value(if mode == "initialize-agent-drift" {
                 "foreign-client/1"
             } else {
-                "codex_security_deep_scan/0.162.0-alpha.17.2 (Windows 10.0.26200; x86_64) unknown (codex_security_deep_scan; 0.1.160)"
+                "codex_security_deep_scan/0.163.0-alpha.10.2 (Windows 10.0.26200; x86_64) unknown (codex_security_deep_scan; 0.1.160)"
             }),
         ),
     ]);
@@ -377,8 +380,8 @@ fn initialize_result(repository: &Path, mode: &str) -> Result<JsonValue> {
     Ok(JsonValue::Object(result))
 }
 
-fn ambient_config() -> JsonValue {
-    object([
+fn ambient_config(mode: &str) -> JsonValue {
+    let JsonValue::Object(mut config) = object([
         (
             "mcp_servers",
             object([(
@@ -405,7 +408,16 @@ fn ambient_config() -> JsonValue {
                 object([("enabled", JsonValue::Bool(true))]),
             )]),
         ),
-    ])
+    ]) else {
+        unreachable!();
+    };
+    if mode == "ambient-active-notify" {
+        config.insert(
+            "notify".to_string(),
+            JsonValue::Array(vec![text_value("hostile-notifier")]),
+        );
+    }
+    JsonValue::Object(config)
 }
 
 fn safe_config(inert_mcp: &Path, mode: &str) -> JsonValue {
@@ -523,7 +535,6 @@ fn origins(mode: &str) -> JsonValue {
         "model",
         "model_provider",
         "model_reasoning_effort",
-        "notify",
         "openai_base_url",
         "plugins.browser@openai-bundled.enabled",
         "service_tier",
@@ -548,8 +559,9 @@ fn config_result(repository: &Path, mode: &str) -> JsonValue {
         .expect("fixture repository has a parent")
         .join(OWNED_SCRATCH_NAME)
         .join(INERT_MCP_EXECUTABLE);
-    let config = if mode == "ambient" {
-        ambient_config()
+    let ambient = matches!(mode, "ambient" | "ambient-active-notify");
+    let config = if ambient {
+        ambient_config(mode)
     } else {
         safe_config(&inert_mcp, mode)
     };
@@ -557,7 +569,7 @@ fn config_result(repository: &Path, mode: &str) -> JsonValue {
         ("config".to_string(), config),
         (
             "origins".to_string(),
-            if mode == "ambient" {
+            if ambient {
                 object(std::iter::empty::<(&str, JsonValue)>())
             } else {
                 origins(mode)
@@ -801,7 +813,21 @@ fn ambient_overrides_produce_the_exact_safe_effective_config() {
     let overrides = safety_overrides(&ambient, &fixture.inert_mcp).unwrap();
     assert_eq!(overrides, expected_overrides(&fixture.inert_mcp));
     let (effective, safe_fixture) = run_fake("safe").unwrap();
+    assert!(!effective.origins.contains("notify"));
     require_safe_effective_config(&effective, &ambient, &safe_fixture.inert_mcp).unwrap();
+}
+
+#[test]
+fn originless_ambient_notifications_are_refused_before_safety_overrides() {
+    let (ambient, _) = run_fake("ambient").unwrap();
+    require_safe_ambient_config(&ambient).unwrap();
+
+    let (active, _) = run_fake("ambient-active-notify").unwrap();
+    let error = require_safe_ambient_config(&active).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("active notification commands"),
+        "wrong ambient-notification error: {error:#}"
+    );
 }
 
 #[test]

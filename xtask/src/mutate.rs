@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2085;
+pub const NEXT_MUTATION_ID: u16 = 2086;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23266,6 +23266,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::protocol_tests::daybreak_operator_stream_failures_are_non_gating",
+        },
+    },
+    Mutation {
+        id: 2085,
+        file: "xtask/src/security_deep.rs",
+        find: "    ensure!(\n        ambient.notify_is_empty,\n        \"private empty Codex config has active notification commands\"\n    );",
+        replace: "    ensure!(\n        true,\n        \"private empty Codex config has active notification commands\"\n    );",
+        breaks: "an originless Codex notification default can become active before the owned safety override is read back",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::config_tests::originless_ambient_notifications_are_refused_before_safety_overrides",
         },
     },
 ];
