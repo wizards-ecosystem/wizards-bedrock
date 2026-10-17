@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2151;
+pub const NEXT_MUTATION_ID: u16 = 2152;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -23731,6 +23731,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::owned_request_binds_every_runtime_and_authority_field",
+        },
+    },
+    Mutation {
+        id: 2151,
+        file: "xtask/src/security_deep.rs",
+        find: "        .is_empty(),\n        \"Codex Security coverage has open questions\"",
+        replace: "        .len() < 2,\n        \"Codex Security coverage has open questions\"",
+        breaks: "a Deep scan with an open question can seal",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::coverage_must_be_the_complete_unqualified_repository_workflow",
         },
     },
 ];

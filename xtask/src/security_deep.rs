@@ -7709,6 +7709,7 @@ fn verify_scan(
             "surfaces",
             "explicitExclusions",
             "deferred",
+            "openQuestions",
         ],
         "Codex Security coverage",
     )?;
@@ -7739,6 +7740,14 @@ fn verify_scan(
         )?
         .is_empty(),
         "Codex Security coverage has deferred work"
+    );
+    ensure!(
+        json_array(
+            json_field(coverage_root, "openQuestions", "coverage")?,
+            "coverage open questions"
+        )?
+        .is_empty(),
+        "Codex Security coverage has open questions"
     );
     let surfaces = json_array(
         json_field(coverage_root, "surfaces", "coverage")?,
@@ -8470,6 +8479,7 @@ mod tests {
     use super::*;
 
     const TEST_SCAN_ID: &str = "11111111-1111-4111-8111-111111111111";
+    static SCRATCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn source() -> SourceIdentity {
         SourceIdentity {
@@ -8732,7 +8742,7 @@ mod tests {
     ) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
         let finding = finding_level.map_or(String::new(), |level| format!(r#"{{"findingId":"csf_000000000000000000000001","fingerprints":{{"algorithm":"codex-security/v1","primary":"codex-security/v1:sha256:{}"}},"severity":{{"level":"{level}"}}}}"#, "1".repeat(64)));
         let findings = format!(r#"{{"documentType":"codex-security.findings","schemaVersion":"1.0","scanId":"{TEST_SCAN_ID}","findings":[{finding}]}}"#).into_bytes();
-        let coverage = format!(r#"{{"documentType":"codex-security.coverage","schemaVersion":"1.0","scanId":"{TEST_SCAN_ID}","mode":"deep_repository","completeness":"{completeness}","inventoryStrategy":"repository","includePaths":["."],"excludePaths":[],"surfaces":[],"explicitExclusions":[],"deferred":[]}}"#).into_bytes();
+        let coverage = format!(r#"{{"documentType":"codex-security.coverage","schemaVersion":"1.0","scanId":"{TEST_SCAN_ID}","mode":"deep_repository","completeness":"{completeness}","inventoryStrategy":"repository","includePaths":["."],"excludePaths":[],"surfaces":[],"explicitExclusions":[],"deferred":[],"openQuestions":[]}}"#).into_bytes();
         let manifest = format!(r#"{{"documentType":"codex-security.scan-manifest","schemaVersion":"1.0","scan":{{"id":"{TEST_SCAN_ID}","producer":{{"name":"codex-security-plugin","version":"0.1.32"}},"status":"completed","startedAt":"2026-09-28T00:00:00Z","completedAt":"2026-09-28T01:00:00Z","sealedAt":"2026-09-28T01:00:00Z","target":{{"kind":"git_revision","targetId":"target-1","displayName":"wizards-bedrock","revision":"{revision}"}},"scope":{{"includePaths":["."],"excludePaths":[]}},"coverageRef":"coverage.json","findingsRef":"findings.json","artifacts":[{{"path":"findings.json","sha256":"{}","mediaType":"application/json"}},{{"path":"coverage.json","sha256":"{}","mediaType":"application/json"}}]}}}}"#, sha256::hex(&sha256::digest(&findings)), sha256::hex(&sha256::digest(&coverage))).into_bytes();
         let report = format!(
             "# Security Review: wizards-bedrock\n\n## Scope\n\nThe scan was configured for the include paths and exclusions listed below.\n\n- Scan mode: deep_repository\n- Target kind: git_revision\n- Target ID: target-1\n- Revision: {revision}\n- Inventory strategy: repository\n- Included paths: .\n- Excluded paths: none\n\n### Scan Summary\n\n| Field | Value |\n| --- | --- |\n| Scan outcome | completed |\n| Reportable DSS findings | 0 |\n| Report instances | 0 |\n| Report severity mix | none |\n| Report confidence mix | none |\n| Coverage | complete |\n| Validation mode | not recorded |\n\nCanonical artifacts: `scan-manifest.json`, `findings.json`, and `coverage.json`. This report is a deterministic projection of those files.\n\n## Threat Model\n\nNo explicit canonical threat-model summary was recorded.\n\n## Findings\n\n### No findings\n\nNo reportable findings survived the canonical discovery, validation, and reportability gates.\n"
@@ -8880,6 +8890,10 @@ mod tests {
                 r#""explicitExclusions":["vm"]"#,
             ),
             (r#""deferred":[]"#, r#""deferred":["kernel"]"#),
+            (
+                r#""openQuestions":[]"#,
+                r#""openQuestions":["unresolved authority"]"#,
+            ),
             (r#""surfaces":[]"#, r#""surfaces":[{}]"#),
         ] {
             let (manifest, findings, coverage, report) = with_coverage(from, to);
@@ -9144,6 +9158,9 @@ mod tests {
 
     #[test]
     fn private_codex_home_projects_only_locked_auth_and_scrubs_it() {
+        let _scratch_guard = SCRATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let scratch = reserve_scratch().unwrap();
         let live = scratch.root.join("hostile-live-home");
         std::fs::create_dir(&live).unwrap();
@@ -9188,6 +9205,9 @@ mod tests {
 
     #[test]
     fn private_codex_home_refuses_a_preexisting_credential_hard_link() {
+        let _scratch_guard = SCRATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let scratch = reserve_scratch().unwrap();
         let live = scratch.root.join("hostile-live-home-with-alias");
         std::fs::create_dir(&live).unwrap();

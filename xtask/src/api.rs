@@ -11688,16 +11688,46 @@ harness = false
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn reserve_fixture_root(parent: &Path, prefix: &str, next: &AtomicUsize) -> PathBuf {
+        loop {
+            let candidate =
+                parent.join(format!("{prefix}-{}", next.fetch_add(1, Ordering::Relaxed)));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => return candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!(
+                    "create exclusive fixture root {}: {error}",
+                    candidate.display()
+                ),
+            }
+        }
+    }
+
     fn fixture(source: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-fixture-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let prefix = format!("wizard-api-fixture-{}", std::process::id());
+        let root = reserve_fixture_root(&std::env::temp_dir(), &prefix, &NEXT);
         std::fs::create_dir_all(root.join("libs/fixture/src")).expect("fixture directory");
         std::fs::create_dir_all(root.join("wost/src")).expect("empty wost source directory");
         std::fs::write(root.join("libs/fixture/src/main.rs"), source).expect("fixture source");
         root
+    }
+
+    #[test]
+    fn fixture_reservation_never_reopens_a_stale_process_directory() {
+        let root = fixture("fn main() {}\n");
+        let stale = root.join("candidate-0");
+        std::fs::create_dir(&stale).expect("stale fixture candidate");
+        std::fs::write(stale.join("unrelated.rs"), "stale bytes").expect("stale fixture contents");
+        let next = AtomicUsize::new(0);
+
+        let reserved = reserve_fixture_root(&root, "candidate", &next);
+
+        assert_eq!(reserved, root.join("candidate-1"));
+        assert_eq!(
+            std::fs::read_to_string(stale.join("unrelated.rs")).expect("stale fixture remains"),
+            "stale bytes"
+        );
+        std::fs::remove_dir_all(root).expect("remove reservation fixture");
     }
 
     fn compile_fixture(root: &Path, extra: &[&str]) -> String {
@@ -11813,13 +11843,6 @@ harness = false
 
     #[test]
     fn reexports_docs_and_same_names_are_resolved_by_the_compiler() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-fixture-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join("libs/fixture/src")).expect("fixture directory");
-        std::fs::create_dir_all(root.join("wost/src")).expect("empty wost source directory");
         let source = r#"#![warn(deprecated)]
 mod api {
     pub fn direct() {}
@@ -11842,7 +11865,7 @@ fn main() {
     docs_only();
 }
 "#;
-        std::fs::write(root.join("libs/fixture/src/main.rs"), source).expect("fixture source");
+        let root = fixture(source);
 
         let inventory = Inventory::discover(&root).expect("fixture inventory");
         let mut uses = Uses::default();
