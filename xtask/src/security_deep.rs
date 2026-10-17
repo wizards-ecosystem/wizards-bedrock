@@ -8058,9 +8058,15 @@ fn require_threat_model_scope(value: &JsonValue) -> Result<()> {
         &["includePaths", "excludePaths", "summary"],
         label,
     )?;
-    require_nonempty_string_array(json_field(scope, "includePaths", label)?, label)?;
+    ensure!(
+        json_string_array(json_field(scope, "includePaths", label)?, label)? == ["."],
+        "scan manifest threat model scope is not the complete repository"
+    );
     if let Some(exclude_paths) = scope.get("excludePaths") {
-        require_nonempty_string_array(exclude_paths, label)?;
+        ensure!(
+            json_string_array(exclude_paths, label)?.is_empty(),
+            "scan manifest threat model scope excludes paths"
+        );
     }
     optional_nonempty_string(scope, "summary", label)?;
     Ok(())
@@ -9273,7 +9279,7 @@ mod tests {
         let source = source();
         let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
         let rich_threat_model = r#""threatModel":{"summary":"Assets in `kernel` and *host*.","assets":["Kernel [state]"],"trustBoundaries":["Host > guest boundary"],"attackerCapabilities":["Can supply repository inputs."],"securityObjectives":["Keep authority local."],"assumptions":["Pinned tools are trusted."],"scope":{"includePaths":["."],"excludePaths":[],"summary":"Repository source."},"origin":"reconciled"}"#;
-        let markdown_threat_model = r####""threatModel":{"format":"markdown","content":"### Model\n\nRaw *Markdown* with `code`.","origin":"provided","scope":{"includePaths":["src"],"excludePaths":["generated"],"summary":"Modeled source."}}"####;
+        let markdown_threat_model = r####""threatModel":{"format":"markdown","content":"### Model\n\nRaw *Markdown* with `code`.","origin":"provided","scope":{"includePaths":["."],"summary":"Modeled source."}}"####;
         let manifest = String::from_utf8(manifest)
             .unwrap()
             .replace(rich_threat_model, markdown_threat_model);
@@ -9308,6 +9314,33 @@ mod tests {
 
         for (malformed, expected) in [
             (
+                manifest.replace(
+                    r#""scope":{"includePaths":["."],"summary":"Modeled source."}"#,
+                    r#""scope":{"includePaths":["src"],"summary":"Modeled source."}"#,
+                ),
+                "scan manifest threat model scope is not the complete repository",
+            ),
+            (
+                manifest.replace(
+                    r#""scope":{"includePaths":["."],"summary":"Modeled source."}"#,
+                    r#""scope":{"includePaths":["."],"excludePaths":["generated"],"summary":"Modeled source."}"#,
+                ),
+                "scan manifest threat model scope excludes paths",
+            ),
+        ] {
+            let error = verify_scan(
+                malformed.as_bytes(),
+                &findings,
+                &coverage,
+                report.as_bytes(),
+                &source,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(expected));
+        }
+
+        for (malformed, expected) in [
+            (
                 manifest.replace(r#""format":"markdown""#, r#""format":"html""#),
                 "scan manifest threat model format is unsupported",
             ),
@@ -9323,7 +9356,10 @@ mod tests {
                 "scan manifest threat model origin is unsupported",
             ),
             (
-                manifest.replace(r#""includePaths":["src"]"#, r#""includePaths":"src""#),
+                manifest.replace(
+                    r#""scope":{"includePaths":["."],"summary":"Modeled source."}"#,
+                    r#""scope":{"includePaths":".","summary":"Modeled source."}"#,
+                ),
                 "scan manifest threat model scope is not an array",
             ),
         ] {

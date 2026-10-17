@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2162;
+pub const NEXT_MUTATION_ID: u16 = 2164;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -23852,6 +23852,28 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::manifest_preserved_sources_are_canonical_sha256_bindings",
+        },
+    },
+    Mutation {
+        id: 2162,
+        file: "xtask/src/security_deep.rs",
+        find: "        json_string_array(json_field(scope, \"includePaths\", label)?, label)? == [\".\"],\n        \"scan manifest threat model scope is not the complete repository\"",
+        replace: "        !json_string_array(json_field(scope, \"includePaths\", label)?, label)?.is_empty(),\n        \"scan manifest threat model scope is not the complete repository\"",
+        breaks: "a narrowed threat-model scope can accompany full repository coverage",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::markdown_threat_model_is_embedded_verbatim_and_strictly_typed",
+        },
+    },
+    Mutation {
+        id: 2163,
+        file: "xtask/src/security_deep.rs",
+        find: "            json_string_array(exclude_paths, label)?.is_empty(),\n            \"scan manifest threat model scope excludes paths\"",
+        replace: "            json_string_array(exclude_paths, label)?.len() < 2,\n            \"scan manifest threat model scope excludes paths\"",
+        breaks: "a threat-model scope can exclude one repository path while coverage claims none",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::markdown_threat_model_is_embedded_verbatim_and_strictly_typed",
         },
     },
 ];
