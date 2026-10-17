@@ -29,7 +29,21 @@ const NVME_VMDK_NAME: &str = "wizard-nvm.vmdk";
 const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
 const VMX_NAME: &str = "bedrock.vmx";
 const DISPLAY_NAME: &str = "The Wizard's Bedrock";
-const VMWARE_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: rdcl_no";
+const VMWARE_ISOLATION_PREFIX: &str = "cpu: user isolation";
+const VMWARE_PAIRED_ISOLATION_MARKER: &str =
+    "cpu: user isolation paired roots: selected; shared mappings refused";
+const VMWARE_SELFTEST_SHARED_ISOLATION_MARKER: &str =
+    "cpu: user isolation paired roots: forced for self-test; shared proof retained: rdcl_no";
+const VMWARE_SHIPPED_SHARED_ISOLATION_MARKER: &str =
+    "cpu: user isolation shared kernel mappings: rdcl_no";
+const SELFTEST_ISOLATION_MARKERS: &[&str] = &[
+    VMWARE_PAIRED_ISOLATION_MARKER,
+    VMWARE_SELFTEST_SHARED_ISOLATION_MARKER,
+];
+const SHIPPED_ISOLATION_MARKERS: &[&str] = &[
+    VMWARE_PAIRED_ISOLATION_MARKER,
+    VMWARE_SHIPPED_SHARED_ISOLATION_MARKER,
+];
 const VMWARE_DMA_HANDOFF_MARKER: &str =
     "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
@@ -315,6 +329,7 @@ where
 #[derive(Debug, Clone, Copy)]
 enum TranscriptMarker {
     Exact(&'static str),
+    Isolation(Kernel),
     ExtendedState,
     LocalApic,
     Nvme,
@@ -328,6 +343,7 @@ impl TranscriptMarker {
     const fn example(self) -> &'static str {
         match self {
             Self::Exact(message) => message,
+            Self::Isolation(_) => VMWARE_PAIRED_ISOLATION_MARKER,
             Self::ExtendedState => "cpu: extended state 832 bytes, xcr0 0x7, compacted",
             Self::LocalApic => "apic: x2apic id 0 version 0x14 (bootstrap)",
             Self::Nvme => {
@@ -343,6 +359,7 @@ impl TranscriptMarker {
     fn matches(self, message: &str) -> bool {
         match self {
             Self::Exact(expected) => message == expected,
+            Self::Isolation(kernel) => isolation_markers(kernel).contains(&message),
             Self::ExtendedState => extended_state_record(message),
             Self::LocalApic => local_apic_record(message),
             Self::Nvme => nvme_record(message),
@@ -366,7 +383,7 @@ const SELFTEST_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::Exact("cpu: protections wp smep smap umip nx"),
     TranscriptMarker::ExtendedState,
     TranscriptMarker::LocalApic,
-    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),
+    TranscriptMarker::Isolation(Kernel::SelfTest),
     TranscriptMarker::Exact("selftest: a thread crosses into ring three and calls back"),
     TranscriptMarker::Exact("selftest: awaiting storage-delay keystroke"),
     TranscriptMarker::Exact(
@@ -382,7 +399,7 @@ const SELFTEST_MARKERS: &[TranscriptMarker] = &[
 
 const SHIPPED_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
-    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),
+    TranscriptMarker::Isolation(Kernel::Shipped),
     TranscriptMarker::Nvme,
     TranscriptMarker::Fat32,
     TranscriptMarker::Tmpfs,
@@ -391,6 +408,13 @@ const SHIPPED_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::UserSlot,
     TranscriptMarker::KeyboardUptime,
 ];
+
+const fn isolation_markers(kernel: Kernel) -> &'static [&'static str] {
+    match kernel {
+        Kernel::SelfTest => SELFTEST_ISOLATION_MARKERS,
+        Kernel::Shipped => SHIPPED_ISOLATION_MARKERS,
+    }
+}
 
 fn positive_decimal(text: &str) -> bool {
     canonical_decimal(text).is_some_and(|value| value != 0)
@@ -603,12 +627,42 @@ fn require_translation_before_storage(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn isolation_occurrence(text: &str, kernel: Kernel) -> Result<(usize, &str)> {
+    let mut offset = 0;
+    let records = text
+        .split_inclusive('\n')
+        .filter_map(|record| {
+            let at = offset;
+            offset += record.len();
+            let line = record.strip_suffix('\n')?;
+            line.contains(VMWARE_ISOLATION_PREFIX).then_some((at, line))
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        records.len() == 1,
+        "VMware transcript contains {} user-isolation records",
+        records.len()
+    );
+    let (at, record) = records[0];
+    let message = record
+        .strip_prefix("[info ] ")
+        .context("VMware user-isolation record is not canonically info-framed")?;
+    ensure!(
+        isolation_markers(kernel).contains(&message),
+        "VMware transcript contains a user-isolation record not allowed for the selected image"
+    );
+    Ok((at, message))
+}
+
 fn require_once_in_order(text: &str, markers: &[TranscriptMarker]) -> Result<usize> {
     let mut end = 0;
     for marker in markers {
-        let occurrences: Vec<(usize, &str)> = info_records(text)
-            .filter(|(_, message)| marker.matches(message))
-            .collect();
+        let occurrences: Vec<(usize, &str)> = match *marker {
+            TranscriptMarker::Isolation(kernel) => vec![isolation_occurrence(text, kernel)?],
+            _ => info_records(text)
+                .filter(|(_, message)| marker.matches(message))
+                .collect(),
+        };
         ensure!(
             occurrences.len() == 1,
             "VMware transcript contains canonical `{}` {} times",
@@ -903,24 +957,51 @@ mod tests {
     // then the kept controller's.
     const RETIRED_TRANSLATION: &str = "[info ] iommu: translation on for 00:04.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
     const KEPT_TRANSLATION: &str = "[info ] iommu: translation on for 00:05.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
+    const FIXTURE_PAIRED_ISOLATION: &str =
+        "cpu: user isolation paired roots: selected; shared mappings refused";
+    const FIXTURE_SELFTEST_SHARED_ISOLATION: &str =
+        "cpu: user isolation paired roots: forced for self-test; shared proof retained: rdcl_no";
+    const FIXTURE_SHIPPED_SHARED_ISOLATION: &str =
+        "cpu: user isolation shared kernel mappings: rdcl_no";
+    const FIXTURE_QEMU_ISOLATION: &str = "cpu: user isolation shared kernel mappings: qemu_tcg";
 
     fn storage_records() -> String {
         format!(
-            "{RETIRED_TRANSLATION}{KEPT_TRANSLATION}[info ] {}\n",
-            TranscriptMarker::Nvme.example()
+            "{RETIRED_TRANSLATION}{KEPT_TRANSLATION}[info ] nvme: up \u{2014} 8 entries a queue, 4096 blocks of 512 bytes, doorbells 4 apart\n"
         )
     }
 
-    fn selftest_transcript() -> String {
+    fn selftest_transcript_with_isolation(isolation: &str) -> String {
         let expected = expected_selftest_checks(&repository_root()).expect("current check count");
         let mut transcript = String::new();
-        for marker in SELFTEST_MARKERS {
+        for marker in [
+            "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester",
+            "cpu: protections wp smep smap umip nx",
+            "cpu: extended state 832 bytes, xcr0 0x7, compacted",
+            "apic: x2apic id 0 version 0x14 (bootstrap)",
+        ] {
             transcript.push_str("[info ] ");
-            transcript.push_str(marker.example());
+            transcript.push_str(marker);
             transcript.push('\n');
-            if marker.example() == VMWARE_ISOLATION_MARKER {
-                transcript.push_str(&storage_records());
-            }
+        }
+        transcript.push_str("[info ] ");
+        transcript.push_str(isolation);
+        transcript.push('\n');
+        transcript.push_str(&storage_records());
+        for marker in [
+            "selftest: a thread crosses into ring three and calls back",
+            "selftest: awaiting storage-delay keystroke",
+            "selftest: delayed read evidence deferred=true device=true retained=true interrupts=true completed=true exact=true",
+            "selftest: the kernel reads the file the host wrote",
+            "selftest: both calibrated rates are believable",
+            "selftest: awaiting injected keystroke",
+            "selftest: an injected keystroke arrives, and its release follows",
+            "selftest: awaiting translated keystroke",
+            "selftest: a translated keystroke decodes to the same key",
+        ] {
+            transcript.push_str("[info ] ");
+            transcript.push_str(marker);
+            transcript.push('\n');
         }
         transcript.push_str(&format!(
             "[info ] selftest: verdict v1 PASS passed={expected} failed=0 expected={expected}\n"
@@ -928,14 +1009,32 @@ mod tests {
         transcript
     }
 
+    fn selftest_transcript() -> String {
+        selftest_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION)
+    }
+
+    fn shipped_transcript_with_isolation(isolation: &str) -> String {
+        let mut transcript = format!(
+            "[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester\n[info ] {isolation}\n"
+        );
+        transcript.push_str(&storage_records());
+        for marker in [
+            "fat32: mounted \u{2014} 129046 clusters of 512 bytes",
+            "tmpfs: 1 file(s) and 1 directory(ies) at the root",
+            "devfs: storage is a block device",
+            "devfs: console is a character device",
+            "user: program running in slot 0",
+            "kernel: reading the keyboard, uptime 1 ms",
+        ] {
+            transcript.push_str("[info ] ");
+            transcript.push_str(marker);
+            transcript.push('\n');
+        }
+        transcript
+    }
+
     fn shipped_transcript() -> String {
-        SHIPPED_MARKERS
-            .iter()
-            .map(|marker| match marker {
-                TranscriptMarker::Nvme => storage_records(),
-                _ => format!("[info ] {}\n", marker.example()),
-            })
-            .collect()
+        shipped_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION)
     }
 
     #[test]
@@ -1065,24 +1164,103 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn isolation_near_misses_are_rejected(root: &Path, kernel: Kernel, valid: &str) {
-        for near_miss in [
-            valid.replace(
-                VMWARE_ISOLATION_MARKER,
-                "cpu: user isolation shared kernel mappings: qemu_tcg",
-            ),
-            valid.replace(
-                VMWARE_ISOLATION_MARKER,
-                "cpu: user isolation shared kernel mappings: rdcl_no trailing",
-            ),
-            valid.replace(
-                &format!("[info ] {VMWARE_ISOLATION_MARKER}"),
-                &format!("[warn ] {VMWARE_ISOLATION_MARKER}"),
-            ),
+    #[test]
+    fn vmware_isolation_markers_are_bound_to_kernel_producers() {
+        let kernel = std::fs::read_to_string(repository_root().join("kernel/src/main.rs"))
+            .expect("reading kernel entry source");
+        let forced = VMWARE_SELFTEST_SHARED_ISOLATION_MARKER.replace("rdcl_no", "{reason}");
+        let shared = VMWARE_SHIPPED_SHARED_ISOLATION_MARKER.replace("rdcl_no", "{reason}");
+
+        for producer in [
+            format!("\"{VMWARE_PAIRED_ISOLATION_MARKER}\""),
+            format!("\"{forced}\""),
+            format!("info!(\"{shared}\")"),
         ] {
             assert!(
-                verify_transcript(root, kernel, near_miss.as_bytes()).is_err(),
-                "accepted a non-VMware or inexact consumed-isolation marker"
+                kernel.contains(&producer),
+                "the verifier marker is not bound to kernel producer {producer}"
+            );
+        }
+    }
+
+    #[test]
+    fn vmware_isolation_records_are_selector_specific_exact_and_unique() {
+        let root = repository_root();
+        for (kernel, transcript) in [
+            (
+                Kernel::SelfTest,
+                selftest_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION),
+            ),
+            (
+                Kernel::SelfTest,
+                selftest_transcript_with_isolation(FIXTURE_SELFTEST_SHARED_ISOLATION),
+            ),
+            (
+                Kernel::Shipped,
+                shipped_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION),
+            ),
+            (
+                Kernel::Shipped,
+                shipped_transcript_with_isolation(FIXTURE_SHIPPED_SHARED_ISOLATION),
+            ),
+        ] {
+            verify_transcript(&root, kernel, transcript.as_bytes())
+                .expect("selector-appropriate isolation evidence");
+        }
+
+        let selftest = selftest_transcript();
+        let shipped = shipped_transcript();
+        let paired = format!("[info ] {FIXTURE_PAIRED_ISOLATION}\n");
+        let selftest_shared = format!("[info ] {FIXTURE_SELFTEST_SHARED_ISOLATION}\n");
+        let shipped_shared = format!("[info ] {FIXTURE_SHIPPED_SHARED_ISOLATION}\n");
+        let qemu = format!("[info ] {FIXTURE_QEMU_ISOLATION}\n");
+        let unknown = "[info ] cpu: user isolation invented native claim\n";
+        let trailing = format!("[info ] {FIXTURE_PAIRED_ISOLATION} trailing\n");
+        let warning = format!("[warn ] {FIXTURE_PAIRED_ISOLATION}\n");
+
+        let rejected = [
+            (
+                Kernel::SelfTest,
+                selftest_transcript_with_isolation(FIXTURE_SHIPPED_SHARED_ISOLATION),
+            ),
+            (
+                Kernel::Shipped,
+                shipped_transcript_with_isolation(FIXTURE_SELFTEST_SHARED_ISOLATION),
+            ),
+            (
+                Kernel::SelfTest,
+                selftest_transcript_with_isolation(FIXTURE_QEMU_ISOLATION),
+            ),
+            (
+                Kernel::Shipped,
+                shipped_transcript_with_isolation(FIXTURE_QEMU_ISOLATION),
+            ),
+            (Kernel::SelfTest, selftest.replacen(&paired, "", 1)),
+            (Kernel::Shipped, shipped.replacen(&paired, "", 1)),
+            (Kernel::SelfTest, selftest.replacen(&paired, unknown, 1)),
+            (Kernel::SelfTest, selftest.replacen(&paired, &trailing, 1)),
+            (Kernel::SelfTest, selftest.replacen(&paired, &warning, 1)),
+            (
+                Kernel::SelfTest,
+                selftest.replacen(&paired, &format!("{paired}{paired}"), 1),
+            ),
+            (
+                Kernel::SelfTest,
+                selftest.replacen(&paired, &format!("{paired}{selftest_shared}"), 1),
+            ),
+            (
+                Kernel::Shipped,
+                shipped.replacen(&paired, &format!("{paired}{shipped_shared}"), 1),
+            ),
+            (
+                Kernel::SelfTest,
+                selftest.replacen(&paired, &format!("{paired}{qemu}"), 1),
+            ),
+        ];
+        for (kernel, transcript) in rejected {
+            assert!(
+                verify_transcript(&root, kernel, transcript.as_bytes()).is_err(),
+                "accepted missing, ambiguous, cross-selector or inexact isolation evidence"
             );
         }
     }
@@ -1118,7 +1296,6 @@ mod tests {
         let root = repository_root();
         let valid = selftest_transcript();
         assert!(verify_transcript(&root, Kernel::SelfTest, valid.as_bytes()).is_ok());
-        isolation_near_misses_are_rejected(&root, Kernel::SelfTest, &valid);
 
         for marker in SELFTEST_MARKERS {
             let omitted = valid.replacen(marker.example(), "omitted", 1);
@@ -1192,7 +1369,6 @@ mod tests {
         let root = repository_root();
         let valid = shipped_transcript();
         assert!(verify_transcript(&root, Kernel::Shipped, valid.as_bytes()).is_ok());
-        isolation_near_misses_are_rejected(&root, Kernel::Shipped, &valid);
 
         for marker in SHIPPED_MARKERS {
             let omitted = valid.replacen(marker.example(), "omitted", 1);

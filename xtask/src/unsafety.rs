@@ -152,7 +152,7 @@ mod tests {
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "d20e4cca573d84e3dcc456c65de7ab0de2dce33b33cfd827fa02c0467cf6259a",
+            "d464094cc35edfa067d7d2ef3dfb55d06491769d7d1c9c7e97cdd2ce8eabb83f",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",

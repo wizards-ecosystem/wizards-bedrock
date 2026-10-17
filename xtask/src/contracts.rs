@@ -4184,6 +4184,7 @@ fn require_guarded_buffer_clear(
     macro_name: &'static str,
     owner: Option<&str>,
     expected_increments: usize,
+    expected_instructions: &[&str],
     operand: &[&str],
 ) {
     let syntax = syn::parse_file(source).expect("parse buffer-clear assembly source");
@@ -4215,7 +4216,17 @@ fn require_guarded_buffer_clear(
         expected_increments,
         "unexpected buffer-clear symbol reference count in the {macro_name} return path"
     );
-    for increment in increments {
+    assert_eq!(
+        expected_instructions.len(),
+        expected_increments,
+        "every buffer-clear tally needs one expected instruction"
+    );
+    for (increment, expected_instruction) in increments.into_iter().zip(expected_instructions) {
+        assert_eq!(
+            strings.get(increment.checked_sub(3).expect("tally without instruction")),
+            Some(&(*expected_instruction).to_string()),
+            "buffer-clear tally is not bound to its expected instruction"
+        );
         assert_eq!(
             strings.get(increment.checked_sub(2).expect("unguarded tally")),
             Some(&".if {record_clears}".to_string()),
@@ -4540,6 +4551,7 @@ fn buffer_clear_assembly_writes_are_guarded() {
         "global_asm",
         None,
         2,
+        &["verw word ptr [rbx - 8]", "verw word ptr [rsp]"],
         &["record_clears", "=", "const", "RECORD_BUFFER_CLEARS", ","],
     );
 }

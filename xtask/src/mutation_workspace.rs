@@ -2486,7 +2486,14 @@ mod tests {
             std::fs::canonicalize(&index).unwrap()
         );
 
-        assert!(require_confined_absolute_file(&root, ".git/index", "relative Git index").is_err());
+        let error = require_confined_absolute_file(&root, ".git/index", "relative Git index")
+            .expect_err("relative Git index was accepted");
+        assert!(
+            error
+                .to_string()
+                .contains("relative Git index is not an absolute path"),
+            "{error:#}"
+        );
         let same_name_inside = root.join("outside");
         std::fs::write(&same_name_inside, b"inside").unwrap();
         let outside = temp.0.join("outside");

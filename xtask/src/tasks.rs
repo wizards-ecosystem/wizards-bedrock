@@ -98,9 +98,13 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
 ///
 /// If the kernel cannot be built, QEMU cannot run, or its serial and exit
 /// evidence do not form one valid outcome.
-pub fn observe_test_boot(paths: &Paths, profile: Profile) -> Result<qemu::SelftestOutcome> {
+pub fn observe_test_boot(
+    paths: &Paths,
+    profile: Profile,
+    timeout: Duration,
+) -> Result<qemu::SelftestOutcome> {
     let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
-    qemu::observe_selftest(paths, image.path(), selftest_timeout(profile))
+    qemu::observe_selftest(paths, image.path(), timeout)
 }
 
 /// How long a self-test boot may take, by profile.
@@ -118,6 +122,11 @@ const fn selftest_timeout(profile: Profile) -> Duration {
 /// Generous enough for a cold QEMU start on a loaded machine; short enough that
 /// a hung kernel is reported rather than waited on.
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Machine mutations can trigger several bounded red paths before their exact
+/// witness. Keep enough room for those paths and the interactive rounds while
+/// retaining exact shorter deadlines for mutations whose property is timeout.
+pub(crate) const MUTATION_SELFTEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Boot the shipped kernel and require it to reach its steady state.
 ///
@@ -472,6 +481,20 @@ mod tests {
             args(None),
             ["clippy", "--package", "pixel", "--all-targets", "--", "-D"]
         );
+    }
+
+    #[test]
+    fn the_mutation_observer_forwards_its_caller_deadline() {
+        let source = include_str!("tasks.rs");
+        let start = source
+            .find("pub fn observe_test_boot(")
+            .expect("observe_test_boot definition");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("observe_test_boot end");
+        let body = &body[..end];
+        let expected = ["qemu::observe_selftest(paths, image.path(), ", "timeout)"].concat();
+
+        assert!(body.contains(&expected), "caller deadline is not forwarded");
     }
 
     #[test]

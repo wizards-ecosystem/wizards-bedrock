@@ -1057,10 +1057,6 @@ pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
     "rep stosq",
     "mov rsp, rbx",
     "4:",
-    // A privilege-changing entry nulls live `SS`; dispatch may switch kernel
-    // contexts before `iretq`, so restore the kernel selector before Rust.
-    "mov ax, {kernel_data}",
-    "mov ss, ax",
     "mov rdi, rsp",
     "mov rbx, rsp",
     "and rsp, -16",

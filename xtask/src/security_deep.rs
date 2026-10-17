@@ -40,7 +40,10 @@ const MCP_INITIALIZE_SHA256: &str =
     "d46d70c9a2a362b61fd391d9a77fce33a7103628cfcfce42169e9763994c56a1";
 const START_TOOL: &str = "start_codex_security_deep_scan";
 const COMPLETE_TOOL: &str = "complete_codex_security_scan";
+const DAYBREAK_TOOL: &str = "get_codex_security_daybreak_access";
 const COMPLETE_CONTENT: &str = "Validated and indexed the completed Codex Security scan.";
+const DAYBREAK_NOT_GRANTED_SUFFIX: &str = " This ChatGPT account check is advisory: a scan may run, but protected results associated with this account may not be displayable. It does not determine Amazon Bedrock model access or access to local CLI results.";
+const DAYBREAK_ENROLLMENT_FALLBACK: &str = "https://chatgpt.com/cyber";
 const MCP_TOOLS_COUNT: usize = 47;
 const MCP_TOOLS_BYTES: usize = 79_316;
 const MCP_TOOLS_SHA256: &str = "514a38fefaaa3f89b1b897755721eca31b0fef5589c506102a696163e4add29a";
@@ -49,6 +52,9 @@ const START_TOOL_SHA256: &str = "1c8ab14ee8e3b7a7dbac01872bcf7c4ab9bd5a321b6926f
 const COMPLETE_TOOL_BYTES: usize = 1_793;
 const COMPLETE_TOOL_SHA256: &str =
     "72e514b76f8aedd88aa4dbe549150ccba546d1c97ee03d53603a563f7b484a0a";
+const DAYBREAK_TOOL_BYTES: usize = 718;
+const DAYBREAK_TOOL_SHA256: &str =
+    "44787ff68bf20a00a06e128e33a1d4ba42b0a63a5c2b61ee83dfdaddb019f09a";
 const MODEL: &str = "gpt-6.1-sol";
 const REASONING: &str = "xhigh";
 const AUTHENTICATION_CHANNEL: &str = "codex-home-chatgpt";
@@ -403,6 +409,43 @@ fn open_locked_auth(path: &Path) -> Result<std::fs::File> {
 struct McpOutcome {
     scan_id: String,
     scan_directory: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum McpReply {
+    Success(JsonValue),
+    Error(JsonValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaybreakStatus {
+    Granted,
+    NotGranted,
+    Unknown,
+}
+
+impl DaybreakStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::NotGranted => "not_granted",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaybreakAdvisory {
+    status: DaybreakStatus,
+    programs: Vec<String>,
+    enrollment_url: Option<String>,
+    stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaybreakPresentation {
+    Standard(String),
+    Warning(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5204,6 +5247,7 @@ fn exchange_mcp(
 ) -> Result<McpOutcome> {
     initialize_mcp(dialogue)?;
     require_mcp_tools(dialogue)?;
+    call_daybreak_advisory(dialogue, repository, source)?;
     let start = call_start(dialogue, repository, source, scan_root)?;
     let outcome = call_complete(dialogue, repository, source, scan_root, &start)?;
     dialogue.close_input();
@@ -5341,6 +5385,7 @@ fn require_exact_mcp_tools(tools: &[JsonValue]) -> Result<()> {
     );
     let mut start = 0usize;
     let mut complete = 0usize;
+    let mut daybreak = 0usize;
     for (tool, rendered) in tools.iter().zip(&descriptors) {
         let tool = json_object(tool, "MCP tool")?;
         let name = string(tool, "name", "MCP tool")?;
@@ -5362,10 +5407,19 @@ fn require_exact_mcp_tools(tools: &[JsonValue]) -> Result<()> {
                 COMPLETE_TOOL_SHA256,
                 COMPLETE_TOOL,
             )?;
+        } else if name == DAYBREAK_TOOL {
+            daybreak += 1;
+            require_tool_descriptor(
+                tool,
+                rendered,
+                DAYBREAK_TOOL_BYTES,
+                DAYBREAK_TOOL_SHA256,
+                DAYBREAK_TOOL,
+            )?;
         }
     }
     ensure!(
-        start == 1 && complete == 1,
+        start == 1 && complete == 1 && daybreak == 1,
         "Codex Security MCP tool authority differs from the qualified workflow"
     );
     Ok(())
@@ -5422,6 +5476,299 @@ fn pinned_mcp_tool_inventory_for_test() -> Vec<JsonValue> {
         panic!("pinned MCP tool inventory is not an array")
     };
     tools
+}
+
+fn call_daybreak_advisory(
+    dialogue: &mut LineDialogue,
+    repository: &Path,
+    source: &SourceIdentity,
+) -> Result<()> {
+    let params = object([
+        ("_meta", call_metadata(repository, source)),
+        ("arguments", object(std::iter::empty::<(&str, JsonValue)>())),
+        ("name", text_value(DAYBREAK_TOOL)),
+    ]);
+    send_request(dialogue, "daybreak", "tools/call", params)?;
+    let McpReply::Success(result) = receive_mcp_reply(dialogue, "daybreak")? else {
+        return Ok(());
+    };
+    let Ok(advisory) = parse_daybreak_advisory(&result) else {
+        return Ok(());
+    };
+    present_daybreak_advisory(&advisory);
+    Ok(())
+}
+
+fn parse_daybreak_advisory(value: &JsonValue) -> Result<DaybreakAdvisory> {
+    let result = require_tool_success(value, "Codex Security Daybreak advisory")?;
+    let structured = json_object(
+        json_field(
+            result,
+            "structuredContent",
+            "Codex Security Daybreak advisory",
+        )?,
+        "Codex Security Daybreak advisory result",
+    )?;
+    require_allowed_fields(
+        structured,
+        &[
+            "schemaVersion",
+            "status",
+            "programs",
+            "enrollmentUrl",
+            "checkedAt",
+            "stale",
+        ],
+        "Codex Security Daybreak advisory result",
+    )?;
+    ensure!(
+        json_u64(
+            json_field(
+                structured,
+                "schemaVersion",
+                "Codex Security Daybreak advisory result",
+            )?,
+            "Codex Security Daybreak advisory schema version",
+        )? == 1,
+        "Codex Security Daybreak advisory schema differs"
+    );
+    let status = match string(
+        structured,
+        "status",
+        "Codex Security Daybreak advisory result",
+    )? {
+        "granted" => DaybreakStatus::Granted,
+        "not_granted" => DaybreakStatus::NotGranted,
+        "unknown" => DaybreakStatus::Unknown,
+        _ => bail!("Codex Security Daybreak advisory status differs"),
+    };
+    let program_values = json_array(
+        json_field(
+            structured,
+            "programs",
+            "Codex Security Daybreak advisory result",
+        )?,
+        "Codex Security Daybreak programs",
+    )?;
+    ensure!(
+        program_values.len() <= 2,
+        "Codex Security Daybreak program list differs"
+    );
+    let mut unique = BTreeSet::new();
+    let mut programs = Vec::with_capacity(program_values.len());
+    for program in program_values {
+        let program = json_string(program, "Codex Security Daybreak program")?;
+        ensure!(
+            matches!(program, "Daybreak Blue" | "Daybreak Red")
+                && unique.insert(program.to_string()),
+            "Codex Security Daybreak program list differs"
+        );
+        programs.push(program.to_string());
+    }
+    ensure!(
+        (status == DaybreakStatus::Granted) == !programs.is_empty(),
+        "Codex Security Daybreak status and programs differ"
+    );
+    let checked_at = nonempty_string(
+        structured,
+        "checkedAt",
+        "Codex Security Daybreak advisory result",
+    )?;
+    ensure!(
+        qualification::is_rfc3339_timestamp(checked_at),
+        "Codex Security Daybreak check time is not RFC3339"
+    );
+    let stale = boolean(
+        structured,
+        "stale",
+        "Codex Security Daybreak advisory result",
+    )?;
+    ensure!(
+        !stale || status == DaybreakStatus::Unknown,
+        "Codex Security Daybreak stale status differs"
+    );
+    let enrollment_url = match structured.get("enrollmentUrl") {
+        Some(JsonValue::String(value)) => {
+            ensure!(
+                value.len() <= 2048 && !value.contains(['\r', '\n', '\0']),
+                "Codex Security Daybreak enrollment URL is malformed"
+            );
+            Some(value.clone())
+        }
+        Some(_) => bail!("Codex Security Daybreak enrollment URL is not text"),
+        None => None,
+    };
+    let programs_text = if programs.is_empty() {
+        "none".to_string()
+    } else {
+        programs.join(", ")
+    };
+    let suffix = if status == DaybreakStatus::NotGranted {
+        DAYBREAK_NOT_GRANTED_SUFFIX
+    } else {
+        ""
+    };
+    let expected = format!(
+        "Codex Security Daybreak access: status={}; programs={programs_text}; checkedAt={checked_at}; stale={stale}.{suffix}",
+        status.as_str(),
+    );
+    require_single_text_content(result, &expected, "Codex Security Daybreak advisory")?;
+    Ok(DaybreakAdvisory {
+        status,
+        programs,
+        enrollment_url,
+        stale,
+    })
+}
+
+fn daybreak_presentation(advisory: &DaybreakAdvisory) -> Option<DaybreakPresentation> {
+    if advisory.stale || advisory.status == DaybreakStatus::Unknown {
+        None
+    } else if advisory.status == DaybreakStatus::Granted {
+        Some(DaybreakPresentation::Standard(format!(
+            "[xtask] Codex Security Daybreak access: status=granted; programs={}",
+            advisory.programs.join(", ")
+        )))
+    } else {
+        let enrollment_url = advisory
+            .enrollment_url
+            .as_deref()
+            .filter(|url| safe_https_url(url))
+            .unwrap_or(DAYBREAK_ENROLLMENT_FALLBACK)
+            .to_string();
+        Some(DaybreakPresentation::Warning(format!(
+            "[xtask] WARNING: Codex Security Daybreak access is not granted for this ChatGPT account; protected scan outputs may not be displayable. Apply at {enrollment_url}"
+        )))
+    }
+}
+
+fn safe_https_url(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 2048
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b' ' || byte == b'\\')
+    {
+        return false;
+    }
+    let Some(remainder) = value.strip_prefix("https://") else {
+        return false;
+    };
+    let boundary = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let (authority, suffix) = remainder.split_at(boundary);
+    safe_https_authority(authority) && safe_https_suffix(suffix)
+}
+
+fn safe_https_authority(authority: &str) -> bool {
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let mut parts = authority.split(':');
+    let host = parts.next().unwrap_or_default();
+    let port = parts.next();
+    if parts.next().is_some()
+        || port.is_some_and(|port| {
+            port.is_empty()
+                || !port.bytes().all(|byte| byte.is_ascii_digit())
+                || port.parse::<u16>().is_err()
+        })
+        || host.len() > 253
+    {
+        return false;
+    }
+    host.split('.').all(|label| {
+        (1..=63).contains(&label.len())
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+fn safe_https_suffix(suffix: &str) -> bool {
+    let bytes = suffix.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+            continue;
+        }
+        if !(byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b':'
+                    | b'/'
+                    | b'?'
+                    | b'#'
+                    | b'['
+                    | b']'
+                    | b'@'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+            ))
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+fn write_daybreak_presentation(
+    presentation: Option<&DaybreakPresentation>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> std::io::Result<()> {
+    match presentation {
+        None => Ok(()),
+        Some(DaybreakPresentation::Standard(line)) => writeln!(stdout, "{line}"),
+        Some(DaybreakPresentation::Warning(line)) => writeln!(stderr, "{line}"),
+    }
+}
+
+fn present_daybreak_with_writers(
+    presentation: Option<&DaybreakPresentation>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) {
+    // The advisory is operator information, not scan authority. A detached or
+    // broken console must not stop the owned Deep dialogue.
+    let _ignored_operator_stream_failure =
+        write_daybreak_presentation(presentation, stdout, stderr);
+}
+
+fn present_daybreak_advisory(advisory: &DaybreakAdvisory) {
+    let presentation = daybreak_presentation(advisory);
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    present_daybreak_with_writers(presentation.as_ref(), &mut stdout, &mut stderr);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6257,6 +6604,16 @@ fn send_value(dialogue: &mut LineDialogue, value: &JsonValue) -> Result<()> {
 }
 
 fn receive_response(dialogue: &mut LineDialogue, expected_id: &str) -> Result<JsonValue> {
+    match receive_mcp_reply(dialogue, expected_id)? {
+        McpReply::Success(result) => Ok(result),
+        McpReply::Error(error) => bail!(
+            "Codex Security MCP request {expected_id} failed: {}",
+            render_json(&error)?
+        ),
+    }
+}
+
+fn receive_mcp_reply(dialogue: &mut LineDialogue, expected_id: &str) -> Result<McpReply> {
     loop {
         let mut line = dialogue
             .receive_line()?
@@ -6293,16 +6650,52 @@ fn receive_response(dialogue: &mut LineDialogue, expected_id: &str) -> Result<Js
             response.contains_key("result") ^ response.contains_key("error"),
             "Codex Security MCP response must contain exactly one result or error"
         );
-        if let Some(error) = response.get("error") {
-            bail!(
-                "Codex Security MCP request {expected_id} failed: {}",
-                render_json(error)?
-            );
+        if let Some(error) = response.remove("error") {
+            require_mcp_error(&error)?;
+            return Ok(McpReply::Error(error));
         }
-        return response
-            .remove("result")
-            .context("Codex Security MCP response has no result");
+        return Ok(McpReply::Success(
+            response
+                .remove("result")
+                .context("Codex Security MCP response has no result")?,
+        ));
     }
+}
+
+fn require_mcp_error(value: &JsonValue) -> Result<()> {
+    let error = json_object(value, "Codex Security MCP error")?;
+    require_allowed_fields(
+        error,
+        &["code", "message", "data"],
+        "Codex Security MCP error",
+    )?;
+    require_signed_json_integer(
+        json_field(error, "code", "Codex Security MCP error")?,
+        "Codex Security MCP error code",
+    )?;
+    let message = json_string(
+        json_field(error, "message", "Codex Security MCP error")?,
+        "Codex Security MCP error message",
+    )?;
+    ensure!(
+        !message.is_empty() && message.chars().all(|character| !character.is_control()),
+        "Codex Security MCP error message is malformed"
+    );
+    Ok(())
+}
+
+fn require_signed_json_integer(value: &JsonValue, label: &str) -> Result<i64> {
+    let JsonValue::Number(value) = value else {
+        bail!("{label} is not numeric");
+    };
+    let parsed = value
+        .parse::<i64>()
+        .with_context(|| format!("{label} is not a signed integer"))?;
+    ensure!(
+        parsed.to_string() == value.as_str(),
+        "{label} is not canonical"
+    );
+    Ok(parsed)
 }
 
 fn handle_server_message(
@@ -7694,8 +8087,19 @@ mod tests {
     #[test]
     fn foreign_partial_and_high_finding_scans_are_refused() {
         let source = source();
-        let (manifest, findings, coverage, report) = artifacts(None, "complete", &"c".repeat(40));
-        assert!(verify_scan(&manifest, &findings, &coverage, &report, &source).is_err());
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let foreign_manifest = String::from_utf8(manifest)
+            .unwrap()
+            .replace(&source.commit, &"c".repeat(40));
+        let error = verify_scan(
+            foreign_manifest.as_bytes(),
+            &findings,
+            &coverage,
+            &report,
+            &source,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("scan belongs to another commit"));
         let (manifest, findings, coverage, report) = artifacts(None, "partial", &source.commit);
         assert!(verify_scan(&manifest, &findings, &coverage, &report, &source).is_err());
         let (manifest, findings, coverage, report) =
@@ -8938,7 +9342,7 @@ mod tests {
             parse_python_runtime_policy(&render_python_runtime_policy(&identity).unwrap()).unwrap(),
             identity
         );
-        std::fs::write(runtime.join("Lib").join("runpy.py"), b"changed").unwrap();
+        std::fs::write(runtime.join("Lib").join("runpy.py"), b"replaced").unwrap();
         assert_ne!(identify_python_runtime(&executable).unwrap(), identity);
         std::fs::write(runtime.join("pyvenv.cfg"), b"home=other").unwrap();
         assert!(identify_python_runtime(&executable).is_err());

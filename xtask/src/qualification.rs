@@ -3690,7 +3690,7 @@ fn verify_advisory_report(
     })
 }
 
-fn is_rfc3339_timestamp(value: &str) -> bool {
+pub(crate) fn is_rfc3339_timestamp(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < 20
         || !value.is_ascii()
@@ -4632,7 +4632,9 @@ mod tests {
                 .count(),
             1
         );
-        let token = security.find("pub(crate) struct DeepAuthority {").unwrap();
+        let token = security
+            .find("#[derive(Debug)]\npub(crate) struct DeepAuthority {")
+            .unwrap();
         let token_end = security[token..]
             .find("\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
             .unwrap()

@@ -18,7 +18,7 @@ rest is written down here.** Where a convention could be a lint, it is one.
 | Crate | May write `unsafe`? | Purpose |
 |---|---|---|
 | `wost/` | **yes, and nowhere else does** | Privileged framework: boot handoff, port I/O, MMIO, CPU control, locking. The kernel's memory-safety TCB. |
-| `kernel/` | no (`#![deny(unsafe_code)]`) | The kernel binary: drivers, console, logging, panic reporting, scheduler, and eventually VFS. |
+| `kernel/` | no (`#![deny(unsafe_code)]`) | The kernel binary: drivers, console, logging, panic reporting, and scheduler. |
 | `libs/` | no (`#![forbid(unsafe_code)]`) | Pure, hardware-free logic, host-testable. |
 | `xtask/` | no | Host build tooling. Not part of the kernel. |
 

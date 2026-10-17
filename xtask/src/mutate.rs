@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2070;
+pub const NEXT_MUTATION_ID: u16 = 2085;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -2276,7 +2276,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    \"mov word ptr [rsp], {kernel_data}\",\n    \"verw word ptr [rsp]\",\n    \".if {record_clears}\",",
         replace: "    \"mov word ptr [rsp], {kernel_data}\",\n    \".if {record_clears}\",",
         breaks: "the buffer flush is the instruction, not its neighbour",
-        reddens: Caught::Check("the return to ring three clears buffers"),
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::buffer_clear_assembly_writes_are_guarded",
+        },
     },
     // Charging one slot too few leaves the final insertion no prepaid room,
     // the boundary that would allocate or panic in trap context (D-182).
@@ -6185,8 +6188,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 542,
         file: "xtask/src/mutate.rs",
-        find: "const MACHINE_OBSERVATIONS: usize = 2;\n\nfn qualify_machine_mutation",
-        replace: "const MACHINE_OBSERVATIONS: usize = 1;\n\nfn qualify_machine_mutation",
+        find: "const MACHINE_OBSERVATIONS: usize = 2;\n\nconst fn machine_observation_timeout",
+        replace: "const MACHINE_OBSERVATIONS: usize = 1;\n\nconst fn machine_observation_timeout",
         breaks: "one incidental machine failure can invalidate an otherwise exact mutation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7104,45 +7107,45 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 629,
         file: "xtask/src/vmware.rs",
-        find: "const VMWARE_ISOLATION_MARKER: &str = \"cpu: user isolation shared kernel mappings: rdcl_no\";",
-        replace: "const VMWARE_ISOLATION_MARKER: &str = \"cpu: user isolation shared kernel mappings: qemu_tcg\";",
+        find: "const VMWARE_PAIRED_ISOLATION_MARKER: &str =\n    \"cpu: user isolation paired roots: selected; shared mappings refused\";",
+        replace: "const VMWARE_PAIRED_ISOLATION_MARKER: &str =\n    \"cpu: user isolation shared kernel mappings: qemu_tcg\";",
         breaks: "VMware qualification accepts the QEMU-only shared-mapping policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "vmware::tests::a_vmware_selftest_transcript_is_complete_current_and_unambiguous",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
         },
     },
     Mutation {
         id: 630,
         file: "xtask/src/vmware.rs",
-        find: "            Self::Exact(expected) => message == expected,",
-        replace: "            Self::Exact(expected) => message.contains(expected),",
+        find: "    ensure!(\n        isolation_markers(kernel).contains(&message),\n        \"VMware transcript contains a user-isolation record not allowed for the selected image\"\n    );",
+        replace: "    ensure!(\n        isolation_markers(kernel)\n            .iter()\n            .any(|expected| message.contains(*expected)),\n        \"VMware transcript contains a user-isolation record not allowed for the selected image\"\n    );",
         breaks: "a near-miss VMware isolation line satisfies the native policy proof",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "vmware::tests::a_vmware_selftest_transcript_is_complete_current_and_unambiguous",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
         },
     },
     Mutation {
         id: 631,
         file: "xtask/src/vmware.rs",
-        find: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
+        find: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Isolation(Kernel::SelfTest),\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
         replace: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
         breaks: "the VMware self-test selector omits the consumed native isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "vmware::tests::a_vmware_selftest_transcript_is_complete_current_and_unambiguous",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
         },
     },
     Mutation {
         id: 632,
         file: "xtask/src/vmware.rs",
-        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Nvme,",
+        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Isolation(Kernel::Shipped),\n    TranscriptMarker::Nvme,",
         replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Nvme,",
         breaks: "the shipped VMware selector omits the consumed native isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "vmware::tests::a_shipped_vmware_transcript_proves_liveness_without_selftest_substitution",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
         },
     },
     Mutation {
@@ -21194,12 +21197,12 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1894,
         file: "xtask/src/bounded_process.rs",
-        find: "    let deadline = Instant::now()\n        .checked_add(timeout)\n        .context(\"bounded child deadline overflowed\")?;\n    command\n        .stdin(Stdio::piped())",
-        replace: "    let deadline = Instant::now()\n        .checked_add(timeout.saturating_mul(2))\n        .context(\"bounded child deadline overflowed\")?;\n    command\n        .stdin(Stdio::piped())",
+        find: "    start\n        .checked_add(timeout)\n        .context(\"bounded child deadline overflowed\")",
+        replace: "    start\n        .checked_add(timeout.saturating_mul(2))\n        .context(\"bounded child deadline overflowed\")",
         breaks: "dialogue execution receives twice the caller's original deadline",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "bounded_process::tests::closing_dialogue_input_does_not_reset_the_original_deadline",
+            name: "bounded_process::tests::a_dialogue_deadline_preserves_the_exact_duration",
         },
     },
     Mutation {
@@ -22449,7 +22452,7 @@ fn mint_stopped<'controller>(
         id: 2008,
         file: "xtask/src/git.rs",
         find: "            \"--includes\",",
-        replace: "",
+        replace: "            \"--no-includes\",",
         breaks: "content filters reached through repository includes escape discovery",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -22459,8 +22462,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2009,
         file: "xtask/src/git.rs",
-        find: "                format!(\"filter.{driver}.clean=\"),",
-        replace: "",
+        find: "                format!(\"filter.{driver}.clean=\"),\n                format!(\"filter.{driver}.smudge=\"),\n                format!(\"filter.{driver}.process=\"),\n                format!(\"filter.{driver}.required=false\"),",
+        replace: "                format!(\"filter.{driver}.smudge=\"),\n                format!(\"filter.{driver}.required=false\"),",
         breaks: "a discovered clean filter remains executable during a source query",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23103,6 +23106,168 @@ fn mint_stopped<'controller>(
             name: "security_deep::config_tests::effective_config_schemas_and_safety_fields_fail_closed",
         },
     },
+    Mutation {
+        id: 2070,
+        file: "xtask/src/security_deep.rs",
+        find: "    call_daybreak_advisory(dialogue, repository, source)?;",
+        replace: "    let _omitted_daybreak_advisory = (repository, source);",
+        breaks: "the owned Deep dialogue skips its required once-only Daybreak advisory before scan start",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_mcp_exchange_emits_the_exact_five_step_protocol_and_handles_server_messages",
+        },
+    },
+    Mutation {
+        id: 2071,
+        file: "xtask/src/security_deep.rs",
+        find: "        if let Some(error) = response.remove(\"error\") {\n            require_mcp_error(&error)?;\n            return Ok(McpReply::Error(error));\n        }",
+        replace: "        if let Some(error) = response.remove(\"error\") {\n            return Ok(McpReply::Error(error));\n        }",
+        breaks: "malformed JSON-RPC errors are silently downgraded as advisory tool failures",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_daybreak_wire_and_error_envelopes_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2072,
+        file: "xtask/src/vmware.rs",
+        find: "        records.len() == 1,",
+        replace: "        !records.is_empty(),",
+        breaks: "multiple physical user-isolation records can masquerade as one VMware decision",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
+        },
+    },
+    Mutation {
+        id: 2073,
+        file: "xtask/src/vmware.rs",
+        find: "const SELFTEST_ISOLATION_MARKERS: &[&str] = &[\n    VMWARE_PAIRED_ISOLATION_MARKER,\n    VMWARE_SELFTEST_SHARED_ISOLATION_MARKER,\n];",
+        replace: "const SELFTEST_ISOLATION_MARKERS: &[&str] = &[\n    VMWARE_PAIRED_ISOLATION_MARKER,\n    VMWARE_SELFTEST_SHARED_ISOLATION_MARKER,\n    VMWARE_SHIPPED_SHARED_ISOLATION_MARKER,\n];",
+        breaks: "the self-test VMware selector accepts the shipped-only shared-root decision",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
+        },
+    },
+    Mutation {
+        id: 2074,
+        file: "xtask/src/vmware.rs",
+        find: "const SHIPPED_ISOLATION_MARKERS: &[&str] = &[\n    VMWARE_PAIRED_ISOLATION_MARKER,\n    VMWARE_SHIPPED_SHARED_ISOLATION_MARKER,\n];",
+        replace: "const SHIPPED_ISOLATION_MARKERS: &[&str] = &[\n    VMWARE_PAIRED_ISOLATION_MARKER,\n    VMWARE_SHIPPED_SHARED_ISOLATION_MARKER,\n    VMWARE_SELFTEST_SHARED_ISOLATION_MARKER,\n];",
+        breaks: "the shipped VMware selector accepts the self-test-only forced-paired decision",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
+        },
+    },
+    Mutation {
+        id: 2075,
+        file: "xtask/src/vmware.rs",
+        find: "    let message = record\n        .strip_prefix(\"[info ] \")\n        .context(\"VMware user-isolation record is not canonically info-framed\")?;",
+        replace: "    let message = record\n        .split_once(\"] \")\n        .map(|(_, message)| message)\n        .context(\"VMware user-isolation record is not canonically info-framed\")?;",
+        breaks: "a warning-severity user-isolation claim can qualify as canonical VMware evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::vmware_isolation_records_are_selector_specific_exact_and_unique",
+        },
+    },
+    Mutation {
+        id: 2076,
+        file: "xtask/src/mutate.rs",
+        find: "const fn machine_observation_timeout(wanted: Caught) -> Duration {\n    match wanted {\n        Caught::Timeout { seconds, .. } => Duration::from_secs(seconds),\n        _ => tasks::MUTATION_SELFTEST_TIMEOUT,\n    }\n}",
+        replace: "const fn machine_observation_timeout(wanted: Caught) -> Duration {\n    match wanted {\n        Caught::Timeout { seconds, .. } => Duration::from_secs(seconds),\n        _ => Duration::from_secs(60),\n    }\n}",
+        breaks: "ordinary machine mutations lose the extended observation budget needed to reach late exact witnesses",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_timeout_requires_its_exact_deadline_and_terminal_rationale",
+        },
+    },
+    Mutation {
+        id: 2077,
+        file: "xtask/src/tasks.rs",
+        find: "    qemu::observe_selftest(paths, image.path(), timeout)",
+        replace: "    qemu::observe_selftest(paths, image.path(), selftest_timeout(profile))",
+        breaks: "the mutation observer discards its selected deadline before starting QEMU",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::the_mutation_observer_forwards_its_caller_deadline",
+        },
+    },
+    Mutation {
+        id: 2078,
+        file: "xtask/src/security_deep.rs",
+        find: "    safe_https_authority(authority) && safe_https_suffix(suffix)",
+        replace: "    !authority.is_empty() && safe_https_suffix(suffix)",
+        breaks: "a malformed HTTPS authority can be presented instead of the fixed enrollment fallback",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::daybreak_payload_and_presentation_are_exact",
+        },
+    },
+    Mutation {
+        id: 2079,
+        file: "xtask/src/security_deep.rs",
+        find: "        !message.is_empty() && message.chars().all(|character| !character.is_control()),",
+        replace: "        !message.is_empty() && message.bytes().all(|byte| !byte.is_ascii_control()),",
+        breaks: "a Unicode control character can enter an MCP error diagnostic",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_daybreak_wire_and_error_envelopes_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2080,
+        file: "xtask/src/security_deep.rs",
+        find: "        Some(DaybreakPresentation::Warning(line)) => writeln!(stderr, \"{line}\"),",
+        replace: "        Some(DaybreakPresentation::Warning(line)) => writeln!(stdout, \"{line}\"),",
+        breaks: "the not-granted Daybreak warning loses its prominent stderr channel",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::daybreak_payload_and_presentation_are_exact",
+        },
+    },
+    Mutation {
+        id: 2081,
+        file: "xtask/src/security_deep.rs",
+        find: "        !message.is_empty() && message.chars().all(|character| !character.is_control()),",
+        replace: "        message.chars().all(|character| !character.is_control()),",
+        breaks: "an empty MCP error message is accepted as an actionable error envelope",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_daybreak_wire_and_error_envelopes_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2082,
+        file: "xtask/src/security_deep.rs",
+        find: "    ensure!(\n        parsed.to_string() == value.as_str(),\n        \"{label} is not canonical\"\n    );",
+        replace: "    let _unchecked_canonical_integer = value;",
+        breaks: "a noncanonical JSON-RPC error code can enter the owned protocol",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_daybreak_wire_and_error_envelopes_fail_closed",
+        },
+    },
+    Mutation {
+        id: 2083,
+        file: "kernel/src/selftest.rs",
+        find: "fn spawn_resources_are_restored(before: &SpawnResources) -> bool {\n    !user::has_zombies() && spawn_resources().has_same_ownership(before)\n}",
+        replace: "fn spawn_resources_are_restored(before: &SpawnResources) -> bool {\n    let _ignored_ownership = before;\n    !user::has_zombies()\n}",
+        breaks: "a live process that has not become a zombie can satisfy self-test cleanup",
+        reddens: Caught::Check("an unserved call is refused without stopping the machine"),
+    },
+    Mutation {
+        id: 2084,
+        file: "xtask/src/security_deep.rs",
+        find: "    let _ignored_operator_stream_failure =\n        write_daybreak_presentation(presentation, stdout, stderr);",
+        replace: "    write_daybreak_presentation(presentation, stdout, stderr)\n        .expect(\"presenting the operator advisory\");",
+        breaks: "a detached operator stream can stop the non-authoritative Daybreak advisory path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::daybreak_operator_stream_failures_are_non_gating",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -23401,12 +23566,20 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
             }
         };
     }
+    let timeout = machine_observation_timeout(wanted);
     qualify_machine_mutation(wanted, || {
-        tasks::observe_test_boot(paths, crate::cargo::Profile::Release)
+        tasks::observe_test_boot(paths, crate::cargo::Profile::Release, timeout)
     })
 }
 
 const MACHINE_OBSERVATIONS: usize = 2;
+
+const fn machine_observation_timeout(wanted: Caught) -> Duration {
+    match wanted {
+        Caught::Timeout { seconds, .. } => Duration::from_secs(seconds),
+        _ => tasks::MUTATION_SELFTEST_TIMEOUT,
+    }
+}
 
 fn qualify_machine_mutation(
     wanted: Caught,
@@ -24106,6 +24279,18 @@ mod tests {
             .is_err()
         );
         assert!(assess_machine_error(wanted, anyhow::anyhow!("the emulator disappeared")).is_err());
+        assert_eq!(machine_observation_timeout(wanted), Duration::from_secs(60));
+        assert_eq!(
+            machine_observation_timeout(Caught::Check("fixture check")),
+            tasks::MUTATION_SELFTEST_TIMEOUT
+        );
+        assert_eq!(
+            machine_observation_timeout(Caught::Panic {
+                marker: "fixture panic",
+                why: "a sufficiently detailed fixture rationale for the panic witness",
+            }),
+            tasks::MUTATION_SELFTEST_TIMEOUT
+        );
         assert!(
             assess_selftest(
                 wanted,

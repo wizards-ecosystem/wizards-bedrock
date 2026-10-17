@@ -6795,8 +6795,8 @@ can read the answer.
 **Decision.** The handler leaves a number; something else says it. The refusal
 increments a counter and stores the number asked for, and the **idle thread**
 reports it — a kernel thread, in a context where taking the console's lock is
-legal. Once per refusal, so a program in a loop cannot turn a refusal into a
-flood.
+legal. At most once per boot, so a program in a loop cannot turn refusals into
+a flood.
 
 That is the general shape and worth stating as one: **a trap handler that
 wants to say something writes a number, and a thread says it.** The handler
@@ -6810,6 +6810,20 @@ check running at all.
 
 Broken once, and the break panics at `sync.rs:406` — the assert itself, which
 is the defect being a defect. `cargo xtask mutate` carries it.
+
+**2026-10-16 validation amendment.** Mutation 1,630 changes the one-shot latch
+so each later unknown syscall can re-arm synchronous UART output. Its original
+machine witness shared aggregate process-retirement state with surrounding
+checks and could time out before it observed the mutation. The repaired witness
+drains pre-existing zombies within a bound, retains each `Spawned` authority,
+waits for that exact process's last rites, issues a second real refusal, and
+requires the raw boot-global report latch to remain exactly one before bounded
+cleanup. Mutation 2,083 removes cleanup's ownership comparison; a child held
+live at the existing ring-entry gate makes that exact break red before it is
+unconditionally released and matched to its own last rites. This changes the
+witness, not the once-per-boot production policy. Implementation of that
+hermetic witness is present; the replacement full sweep is still qualification
+work rather than evidence already earned.
 
 **And the program's own jump was hand-computed and wrong.** Adding the third
 behaviour meant a new `jz`, and computing its displacement by hand put it two
@@ -19376,6 +19390,21 @@ interrupts around the console was rejected because rendering latency would
 become interrupt latency. A single restored boot was rejected because the
 original defect was intermittent enough to demand consecutive current runs.
 
+**2026-10-17 witness correction.** A current CI boot completed its scroll in
+6,538,992 emulated ns and sampled the armed APIC timer before QEMU injected it,
+so the immediate post-MMIO expiry read failed despite two immediate restored
+boots passing the same check. The witness now records scroll duration before a
+bounded wait for the real timer expiry, with both the wait and its observation
+still inside the same live console guard. Mutation 189's outer interrupt
+exclusion therefore cannot deliver the expiry until after the result is fixed
+as false, while ordinary execution no longer relies on framebuffer work taking
+long enough to schedule a virtual interrupt. The unrelated runnable helper was
+removed; later APIC checks retain their count-sensitive self-interrupt oracle.
+Applied mutation 189 then failed only `a console scroll does not block
+interrupts` at 289/290 with a 145,660,393 ns scroll. Exact restoration passed
+two consecutive debug boots at 290/290 with 154,644,248 ns and 156,624,274 ns
+scrolls, then passed release at 290/290 with a 4,018,112 ns scroll.
+
 ## D-333 Final user entry is tested through the production xstate predicate — Status: Accepted (2026-09-28), amends D-270; advances PW-132
 
 **Context.** D-270 requires early construction and the final ring-3 crossing
@@ -21723,6 +21752,17 @@ already-disabled-unit drain omission, numerically ordered sibling hierarchies
 and duplicate-scope proof-work amplification; it found no remaining
 post-write owner-loss path.
 
+**2026-10-16 validation amendment.** Mutation 1,665 still names the production
+defect in this decision: skipping the first governed requester must fail
+`every shared vtd requester was fenced across controller fallback`. Its two
+inconclusive observations exhausted the ordinary 60-second boot bound while
+earlier deliberate red paths ran; they did not contradict the late witness.
+Ordinary check and panic mutations now receive an explicit 180-second
+observation budget, while a timeout mutation retains its own exact registered
+deadline. Source tests bind both the deadline selection and its forwarding into
+QEMU. This is mutation-harness implementation only; mutation 1,665 must still
+be observed red in the replacement complete sweep before qualification closes.
+
 **Alternatives.** Treating `Coverage::Endpoint` as singleton evidence misses
 sibling endpoint scopes. Fencing only the ordinary topology walk leaves bridge
 requesters, hidden function numbers and unresolved requester IDs unproved.
@@ -23882,6 +23922,17 @@ lines in 160 blocks; the six-line increase is the architecture boundary for
 the paired root and its hardware-retained tables, with per-file fingerprints
 updated after review.
 
+**2026-10-16 validation amendment.** The later complete sweep found a witness
+gap in permanent mutation 196, not a new paired-root defect. That mutation
+removes the shared-root return's `verw word ptr [rsp]`; the forced-paired
+self-test selected D-407's different exit and therefore could not observe the
+shared path. The host assembly contract now enumerates both required buffer
+clears and binds each tally to its exact preceding operand: `verw word ptr
+[rbx - 8]` for the paired exit and `verw word ptr [rsp]` for the shared exit.
+Mutation 196 now names that host contract directly. The stronger verifier is
+implemented, but its green focused test and the earlier 290/290 boots are not a
+substitute for observing the mutation red in the replacement complete sweep.
+
 PW-580 and PW-706 remain open only for the complete current release sweep and
 fresh self-test plus shipped VMware qualifications. Those records must show
 that guest-read `0x44` selects the paired path, reaches ring 3 on the stripped
@@ -24124,3 +24175,57 @@ it would not distinguish the raw and safety-derived phases and would obscure
 why the projection differs. Removing the dependent fields without checking
 their values was rejected because a future active default would escape both
 the exact-null contract and the canonical digest.
+
+## D-416 The owned Deep dialogue gives Daybreak one advisory read before scan start - Status: Accepted (2026-10-16), implemented with qualification OPEN; amends D-406; advances PW-026
+
+**Context.** D-406 owns the full MCP process and scan dialogue, but its pinned
+sequence went directly from tool discovery to Deep start. Codex Security's
+Daybreak access tool reports whether the authenticated ChatGPT account can
+display protected scan results. That is useful operator information, but it is
+not Amazon Bedrock model entitlement, provider selection, scan authorization or
+release evidence. Treating it as any of those would conflate access advice with
+the authority D-406 derives only from the completed owned scan and its replayed
+artifacts.
+
+**Decision.** After MCP initialization and exact tool discovery, the same
+bounded `LineDialogue` performs exactly one
+`get_codex_security_daybreak_access` call before the one Deep start. Its
+`arguments` object is empty; the call carries only D-406's already-owned source
+and managed-sandbox metadata and cannot inject an entitlement. The discovered
+descriptor is required exactly once and is byte-bound at 718 bytes with SHA-256
+`44787ff68bf20a00a06e128e33a1d4ba42b0a63a5c2b61ee83dfdaddb019f09a`.
+
+A fresh `granted` result may name only Daybreak Blue and Daybreak Red and is
+displayed as information. A fresh `not_granted` result emits a prominent
+warning and only a syntactically safe HTTPS enrollment URL, otherwise the fixed
+`https://chatgpt.com/cyber` fallback. An `unknown` or stale result, a valid MCP
+tool error, or a malformed advisory payload remains silent and the scan
+continues. The advisory status never enters the PASS predicate. By contrast,
+malformed JSON-RPC framing or correlation remains a fatal protocol error:
+an error object needs an integer code, a non-empty control-free message and at
+most optional data. This preserves D-406's transport integrity without
+promoting the optional advisory payload into release authority.
+
+**Proof required.** Protocol fixtures must require the five-step sequence
+initialize, tools/list, Daybreak advisory, Deep start and completion; reject a
+missing, duplicate or drifted advisory descriptor; bind the empty arguments and
+owned metadata; cover granted, not-granted, unknown, stale, malformed-payload
+and valid-tool-error continuations; and reject malformed error envelopes. The
+wire-shape and operator-notice tests must prove that unsafe enrollment URLs use
+the fixed fallback and that advisory content cannot alter scan inputs or PASS.
+Mutations 2,070, 2,071, 2,078 through 2,082 and 2,084 retain the omitted advisory,
+malformed URL, Unicode-control, presentation-channel and JSON-RPC-error defects
+against their exact host witnesses.
+
+**Qualification boundary.** The sequence and verifier are implemented. PW-026
+remains open until a clean frozen source completes the real owned Deep run,
+produces the canonical zero-finding result, passes the complete replacement
+mutation sweep and is replayed into release evidence. A Daybreak Blue grant, by
+itself, closes none of those gates.
+
+**Alternatives.** Skipping the advisory discards account-specific display
+guidance required by the owned workflow. Making `not_granted`, `unknown` or an
+advisory-tool error stop the scan would turn non-authoritative account advice
+into scan authority. Supplying account or program arguments was rejected
+because the tool already observes the authenticated account and the caller has
+no authority to manufacture its result.

@@ -40,11 +40,12 @@ The supported VMware target currently reads no `RDCL_NO` bit, so D-250
 correctly keeps its shared-root user path closed. D-407 accepts the replacement
 path: a user address space on that target owns paired full/stripped roots and
 crosses through an exact non-secret entry enclave on a guarded, scrubbed stack,
-with PCID still off. The implementation, host contracts, retained mutations and
-forced-paired debug/release QEMU checks are present. PW-580 and PW-706 remain
-open for the complete release sweep and fresh self-test plus shipped VMware
-qualifications; no Workstation log, CPU signature or inferred capability
-substitutes for the guest's architectural read.
+with PCID still off. The implementation, host contracts, retained mutations,
+forced-paired debug/release QEMU checks and selector-specific exact VMware
+transcript verifier are present. PW-580 and PW-706 remain open for the complete
+release sweep and fresh self-test plus shipped VMware qualifications; landing
+the verifier does not supply those boots, and no Workstation log, CPU signature
+or inferred capability substitutes for the guest's architectural read.
 
 [docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
 the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
@@ -222,8 +223,11 @@ authority. `qualify-security-deep --run` resolves and hash-pins the selected
 plugin, Node, Python executable and Codex, records and stability-binds the
 complete isolated Python-owned runtime tree, the four-file adjacent Codex
 runtime and Git, reserves one
-budget-observed OS-temporary run, and owns exactly one Deep start
-plus one completion on the same MCP session. It clears inherited routing inputs,
+budget-observed OS-temporary run, and owns exactly one non-authoritative
+Daybreak access advisory before exactly one Deep start plus one completion on
+the same MCP session. The advisory reports account display access only: it
+cannot grant model entitlement, select a provider, mint PASS or stop a scan.
+It clears inherited routing inputs,
 proves the effective official ChatGPT configuration, proves that the exact
 managed worker sandbox cannot read the projected login credential, and injects
 the same fail-closed policy through

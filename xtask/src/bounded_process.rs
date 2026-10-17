@@ -127,6 +127,12 @@ impl LineDialogue {
     }
 }
 
+fn dialogue_deadline(start: Instant, timeout: Duration) -> Result<Instant> {
+    start
+        .checked_add(timeout)
+        .context("bounded child deadline overflowed")
+}
+
 /// Run one line-framed dialogue through one deadline and capture diagnostics.
 ///
 /// The dialogue runs off the polling thread so a blocked pipe cannot prevent
@@ -146,9 +152,7 @@ where
     O: FnMut() -> Result<()>,
     F: FnOnce(&mut LineDialogue) -> Result<T> + Send + 'static,
 {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .context("bounded child deadline overflowed")?;
+    let deadline = dialogue_deadline(Instant::now(), timeout)?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1486,6 +1490,15 @@ mod tests {
             closed.load(std::sync::atomic::Ordering::Relaxed),
             "the fixture timed out before dialogue input was half-closed"
         );
+    }
+
+    #[test]
+    fn a_dialogue_deadline_preserves_the_exact_duration() {
+        let start = Instant::now();
+        let timeout = Duration::from_millis(1_500);
+        let deadline = dialogue_deadline(start, timeout).expect("representable dialogue deadline");
+
+        assert_eq!(deadline.saturating_duration_since(start), timeout);
     }
 
     #[test]

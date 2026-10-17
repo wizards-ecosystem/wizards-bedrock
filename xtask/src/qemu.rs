@@ -2792,8 +2792,9 @@ mod tests {
         const ROUNDS: u64 = 3;
         let unanswered = Duration::from_millis(wait_ms * ROUNDS);
         assert!(
-            unanswered < BOOT_TIMEOUT,
-            "{ROUNDS} rounds of {wait_ms}ms exceed the {BOOT_TIMEOUT:?} boot timeout"
+            unanswered < crate::tasks::MUTATION_SELFTEST_TIMEOUT,
+            "{ROUNDS} rounds of {wait_ms}ms exceed the {:?} mutation timeout",
+            crate::tasks::MUTATION_SELFTEST_TIMEOUT
         );
     }
     use super::*;

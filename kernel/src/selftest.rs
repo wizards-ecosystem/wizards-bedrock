@@ -5325,40 +5325,95 @@ fn a_dead_program_gives_its_memory_back() -> bool {
 fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
     // Before the stateful ring-3 group, and waited for: the trap-context
     // logging mutation must assert before later state can hide the cause.
-    let (refused_before, _, _) = user::refusals();
-    let retirements_before = thread::retirements();
-    let faults_before = trap::last_user_fault().count;
+    let isolated = runs_until(2_000, || {
+        while user::collect().is_some() {}
+        !user::has_zombies()
+    });
+    let resources_before = if isolated {
+        Some(spawn_resources())
+    } else {
+        None
+    };
+    let live_owner_was_visible = resources_before
+        .as_ref()
+        .is_some_and(a_gated_process_holds_spawn_ownership);
+    let result = isolated
+        && live_owner_was_visible
+        && (|| {
+            let (refused_before, _, _) = user::refusals();
+            let faults_before = trap::last_user_fault().count;
 
-    let Ok(_) = user::run_probing() else {
+            let Ok(first) = user::run_probing() else {
+                return false;
+            };
+            if last_rites_for(&first, 2_000).is_none() {
+                return false;
+            }
+
+            let (refused_after, number, unanswered) = user::refusals();
+            // Exactly one refusal, of the number the program asked for.
+            let counted = refused_after == refused_before + 1 && number == 0x0BAD_0BAD;
+            // Every answer was written back: a program that got nothing cannot tell a
+            // call it made wrong from one the kernel dropped.
+            let answered = unanswered == 0;
+            // And it left by exiting, not by faulting — so the refusal really did
+            // return to ring 3 and the program ran on.
+            let exited = trap::last_user_fault().count == faults_before;
+
+            // Whichever observer wins says the one warning. A second real refusal
+            // still advances accounting but must not re-arm UART output.
+            let _first_observer_may_already_have_reported = user::report_refusals();
+            let Ok(second) = user::run_probing() else {
+                return false;
+            };
+            let second_finished = last_rites_for(&second, 2_000).is_some();
+            let (refused_final, final_number, unanswered_final) = user::refusals();
+            let second_counted = refused_final == refused_after + 1
+                && final_number == 0x0BAD_0BAD
+                && unanswered_final == 0;
+            let warning_is_one_shot =
+                !user::report_refusals() && user::refusal_report_latch_for_test() == 1;
+
+            counted
+                && answered
+                && exited
+                && second_finished
+                && second_counted
+                && warning_is_one_shot
+        })();
+    let cleaned = runs_until(2_000, || {
+        while user::collect().is_some() {}
+        if user::has_zombies() {
+            return false;
+        }
+        // A process that has not reached orphaning is not a zombie yet. The
+        // ownership baseline keeps every early exit waiting for its live
+        // process records, thread slot, and allocated resources to return.
+        match resources_before {
+            Some(before) => spawn_resources_are_restored(&before),
+            None => true,
+        }
+    });
+
+    result && cleaned
+}
+
+fn a_gated_process_holds_spawn_ownership(before: &SpawnResources) -> bool {
+    let Ok(spawned) = user::run_gated_for_wake() else {
         return false;
     };
-    if !runs_until(2000, || thread::retirements() > retirements_before) {
-        return false;
-    }
+    let waiting = runs_until(500, user::gated_cross_is_waiting);
+    let live_owner_visible = waiting && !spawn_resources_are_restored(before);
+    // Release after every successful spawn, even when the observations above
+    // fail, so the witness cannot strand the process it uses.
+    let released = user::release_gated_cross() == 1;
+    let finished = last_rites_for(&spawned, 2_000).is_some();
 
-    let (refused_after, number, unanswered) = user::refusals();
-    // Exactly one refusal, of the number the program asked for.
-    let counted = refused_after == refused_before + 1 && number == 0x0BAD_0BAD;
-    // Every answer was written back: a program that got nothing cannot tell a
-    // call it made wrong from one the kernel dropped.
-    let answered = unanswered == 0;
-    // And it left by exiting, not by faulting — so the refusal really did
-    // return to ring 3 and the program ran on.
-    let exited = trap::last_user_fault().count == faults_before;
+    waiting && live_owner_visible && released && finished
+}
 
-    // Whichever observer wins says the one warning. A second real refusal
-    // still advances accounting but must not re-arm UART output.
-    let _first_observer_may_already_have_reported = user::report_refusals();
-    let second_retirements = thread::retirements();
-    let second_started = user::run_probing().is_ok();
-    let second_finished =
-        second_started && runs_until(2000, || thread::retirements() > second_retirements);
-    let (refused_final, final_number, unanswered_final) = user::refusals();
-    let second_counted =
-        refused_final == refused_after + 1 && final_number == 0x0BAD_0BAD && unanswered_final == 0;
-    let warning_is_one_shot = !user::report_refusals();
-
-    counted && answered && exited && second_finished && second_counted && warning_is_one_shot
+fn spawn_resources_are_restored(before: &SpawnResources) -> bool {
+    !user::has_zombies() && spawn_resources().has_same_ownership(before)
 }
 
 fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
@@ -8201,6 +8256,7 @@ fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
 }
 
 fn a_scroll_does_not_block_interrupts() -> bool {
+    const DELIVERY_ATTEMPTS: u32 = 1_000_000;
     const EXPECTED_EXPIRIES: u64 = 1;
 
     let Some((_, (_, line_height))) = dev::console_cursor() else {
@@ -8210,13 +8266,6 @@ fn a_scroll_does_not_block_interrupts() -> bool {
         return false;
     };
     let rows = geometry.height / line_height.max(1);
-
-    STOP_SPINNING.store(0, Ordering::Release);
-    LIGHT_SPINS.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("scroll-witness", light_spinner).is_err() {
-        return false;
-    }
 
     let measured = (|| {
         let mut ready = false;
@@ -8244,25 +8293,27 @@ fn a_scroll_does_not_block_interrupts() -> bool {
             excluded.restore();
             let before = time::now_ns();
             console.write_line("");
-            result = Some((
-                time::now_ns() - before,
-                time::expiries() - taken,
-                console.cursor().1 == cursor,
-            ));
+            let elapsed = time::now_ns() - before;
+            // Framebuffer MMIO can finish before an already-due virtual APIC
+            // timer is injected. Keep the observation inside the console
+            // guard: mutation 189's outer exclusion must prevent this real
+            // delivery until after the result has been fixed as false.
+            let delivered = spins_until(DELIVERY_ATTEMPTS, || {
+                time::expiries() - taken >= EXPECTED_EXPIRIES
+            });
+            result = Some((elapsed, delivered, console.cursor().1 == cursor));
         });
         result
     })();
     thread::rearm_current_for_test();
 
-    STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(|| thread::free_slots() == free);
-    let Some((elapsed, expiries, scrolled)) = measured else {
+    let Some((elapsed, delivered, scrolled)) = measured else {
         LONGEST_SCROLL.store(0, Ordering::Relaxed);
         return false;
     };
     LONGEST_SCROLL.store(elapsed as usize, Ordering::Relaxed);
 
-    exited && scrolled && elapsed > 0 && expiries >= EXPECTED_EXPIRIES
+    scrolled && elapsed > 0 && delivered
 }
 
 static LONGEST_SCROLL: AtomicUsize = AtomicUsize::new(0);

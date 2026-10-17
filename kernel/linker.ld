@@ -57,7 +57,7 @@ SECTIONS
     __rodata_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     /* The full root writes these pages while constructing routes and tables;
-       a future stripped root maps the table and routing pages read-only. The
+       the stripped root maps the table and routing pages read-only. The
        guard is a named page so paired-root construction can omit it rather
        than trusting an address-sized hole inferred from stack arithmetic. */
     .kpti.tables : ALIGN(4096) {

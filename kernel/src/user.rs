@@ -1880,6 +1880,12 @@ pub(crate) fn refusals() -> (usize, usize, usize) {
     )
 }
 
+/// Raw one-shot refusal-warning latch for the machine witness.
+#[cfg(feature = "selftest")]
+pub(crate) fn refusal_report_latch_for_test() -> usize {
+    REPORTED.load(Ordering::Acquire)
+}
+
 /// RingEnter completion wakes observed to arm before the handler returned.
 #[cfg(feature = "selftest")]
 pub(crate) fn ring_enter_arms_for_test() -> usize {

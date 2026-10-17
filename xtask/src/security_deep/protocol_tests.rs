@@ -360,6 +360,22 @@ fn expected_tools_request() -> JsonValue {
     ])
 }
 
+fn expected_daybreak_request(repository: &Path, source: &SourceIdentity) -> JsonValue {
+    object([
+        ("id", text_value("daybreak")),
+        ("jsonrpc", text_value("2.0")),
+        ("method", text_value("tools/call")),
+        (
+            "params",
+            object([
+                ("_meta", expected_metadata(repository, source)),
+                ("arguments", object(std::iter::empty::<(&str, JsonValue)>())),
+                ("name", text_value(DAYBREAK_TOOL)),
+            ]),
+        ),
+    ])
+}
+
 fn expected_start_request(repository: &Path, source: &SourceIdentity) -> JsonValue {
     object([
         ("id", text_value("start")),
@@ -420,6 +436,7 @@ fn tools_result(mode: &str, paths: &FakePaths) -> JsonValue {
     };
     let start = find(&tools, START_TOOL);
     let complete = find(&tools, COMPLETE_TOOL);
+    let daybreak = find(&tools, DAYBREAK_TOOL);
     match mode {
         "tools-wrong-name" => {
             let JsonValue::Object(tool) = &mut tools[start] else {
@@ -440,6 +457,21 @@ fn tools_result(mode: &str, paths: &FakePaths) -> JsonValue {
         "tools-reordered" => tools.swap(start, complete),
         "tools-schema-drift" => {
             let JsonValue::Object(tool) = &mut tools[start] else {
+                unreachable!()
+            };
+            tool.insert("unexpected".to_string(), JsonValue::Null);
+        }
+        "tools-daybreak-missing" => {
+            tools.remove(daybreak);
+        }
+        "tools-daybreak-duplicate" => {
+            let JsonValue::Object(tool) = &mut tools[complete] else {
+                unreachable!()
+            };
+            tool.insert("name".to_string(), text_value(DAYBREAK_TOOL));
+        }
+        "tools-daybreak-schema-drift" => {
+            let JsonValue::Object(tool) = &mut tools[daybreak] else {
                 unreachable!()
             };
             tool.insert("unexpected".to_string(), JsonValue::Null);
@@ -465,6 +497,169 @@ fn tools_result(mode: &str, paths: &FakePaths) -> JsonValue {
         ),
     ]);
     if mode == "tools-result-schema-drift" {
+        result.insert("unexpected".to_string(), JsonValue::Null);
+    }
+    JsonValue::Object(result)
+}
+
+fn jsonrpc_error_response(id: &str, error: JsonValue) -> JsonValue {
+    object([
+        ("error", error),
+        ("id", text_value(id)),
+        ("jsonrpc", text_value("2.0")),
+    ])
+}
+
+fn daybreak_structured(
+    status: &str,
+    programs: &[&str],
+    checked_at: &str,
+    stale: bool,
+    enrollment_url: Option<JsonValue>,
+) -> BTreeMap<String, JsonValue> {
+    let mut structured = BTreeMap::from([
+        ("checkedAt".to_string(), text_value(checked_at)),
+        (
+            "programs".to_string(),
+            JsonValue::Array(programs.iter().map(|program| text_value(program)).collect()),
+        ),
+        (
+            "schemaVersion".to_string(),
+            JsonValue::Number("1".to_string()),
+        ),
+        ("stale".to_string(), JsonValue::Bool(stale)),
+        ("status".to_string(), text_value(status)),
+    ]);
+    if let Some(enrollment_url) = enrollment_url {
+        structured.insert("enrollmentUrl".to_string(), enrollment_url);
+    }
+    structured
+}
+
+fn daybreak_text(status: &str, programs: &[&str], checked_at: &str, stale: bool) -> String {
+    let programs = if programs.is_empty() {
+        "none".to_string()
+    } else {
+        programs.join(", ")
+    };
+    let suffix = if status == "not_granted" {
+        DAYBREAK_NOT_GRANTED_SUFFIX
+    } else {
+        ""
+    };
+    format!(
+        "Codex Security Daybreak access: status={status}; programs={programs}; checkedAt={checked_at}; stale={stale}.{suffix}"
+    )
+}
+
+fn daybreak_result(mode: &str) -> JsonValue {
+    let checked_at = "2026-10-15T00:00:00Z";
+    let (status, programs, stale, enrollment_url): (&str, Vec<&str>, bool, Option<JsonValue>) =
+        match mode {
+            "daybreak-granted-blue" => ("granted", vec!["Daybreak Blue"], false, None),
+            "daybreak-granted-red" => ("granted", vec!["Daybreak Red"], false, None),
+            "daybreak-granted-both" => (
+                "granted",
+                vec!["Daybreak Blue", "Daybreak Red"],
+                false,
+                None,
+            ),
+            "daybreak-not-granted" => ("not_granted", Vec::new(), false, None),
+            "daybreak-not-granted-url" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(text_value("https://chatgpt.com/cyber/apply")),
+            ),
+            "daybreak-not-granted-url-port" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(text_value(
+                    "https://chatgpt.com:443/cyber/apply?from=deep#access",
+                )),
+            ),
+            "daybreak-not-granted-unsafe-url" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(text_value("http://example.invalid/apply")),
+            ),
+            "daybreak-not-granted-invalid-authority" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(text_value("https://:")),
+            ),
+            "daybreak-not-granted-invalid-escape" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(text_value("https://chatgpt.com/cyber/%zz")),
+            ),
+            "daybreak-stale" => ("unknown", Vec::new(), true, None),
+            "daybreak-payload-status" => ("other", Vec::new(), false, None),
+            "daybreak-payload-program" => ("granted", vec!["Daybreak Green"], false, None),
+            "daybreak-payload-duplicate-program" => (
+                "granted",
+                vec!["Daybreak Blue", "Daybreak Blue"],
+                false,
+                None,
+            ),
+            "daybreak-payload-status-programs" => ("unknown", vec!["Daybreak Blue"], false, None),
+            "daybreak-payload-stale-status" => ("granted", vec!["Daybreak Blue"], true, None),
+            "daybreak-payload-enrollment-type" => (
+                "not_granted",
+                Vec::new(),
+                false,
+                Some(JsonValue::Bool(true)),
+            ),
+            _ => ("unknown", Vec::new(), false, None),
+        };
+    let result_checked_at = if mode == "daybreak-payload-checked-at" {
+        "not-a-timestamp"
+    } else {
+        checked_at
+    };
+    let mut structured =
+        daybreak_structured(status, &programs, result_checked_at, stale, enrollment_url);
+    if mode == "daybreak-payload-schema-version" {
+        structured.insert(
+            "schemaVersion".to_string(),
+            JsonValue::Number("2".to_string()),
+        );
+    } else if mode == "daybreak-payload-extra" {
+        structured.insert("unexpected".to_string(), JsonValue::Null);
+    } else if mode == "daybreak-payload-missing-status" {
+        structured.remove("status");
+    }
+    let content_text = if mode == "daybreak-payload-text-mismatch" {
+        "different advisory text".to_string()
+    } else {
+        daybreak_text(status, &programs, result_checked_at, stale)
+    };
+    let mut result = BTreeMap::from([
+        (
+            "content".to_string(),
+            JsonValue::Array(vec![object([
+                ("text", text_value(&content_text)),
+                ("type", text_value("text")),
+            ])]),
+        ),
+        (
+            "isError".to_string(),
+            JsonValue::Bool(mode == "daybreak-tool-error"),
+        ),
+        (
+            "structuredContent".to_string(),
+            JsonValue::Object(structured),
+        ),
+    ]);
+    if mode == "daybreak-payload-missing-content" {
+        result.remove("content");
+    } else if mode == "daybreak-payload-missing-structured" {
+        result.remove("structuredContent");
+    } else if mode == "daybreak-payload-result-extra" {
         result.insert("unexpected".to_string(), JsonValue::Null);
     }
     JsonValue::Object(result)
@@ -1072,6 +1267,132 @@ fn send_initialize_response(writer: &mut impl Write, mode: &str, paths: &FakePat
     send_value(writer, &value)
 }
 
+fn send_daybreak_response(writer: &mut impl Write, mode: &str, paths: &FakePaths) -> Result<bool> {
+    if mode == "daybreak-premature-eof" {
+        issue_fault(paths, mode)?;
+        return Ok(false);
+    }
+    if mode == "daybreak-malformed-json" {
+        issue_fault(paths, mode)?;
+        writer.write_all(b"{not-json}\n")?;
+        writer.flush()?;
+        return Ok(true);
+    }
+    let valid_error = object([
+        ("code", JsonValue::Number("-32000".to_string())),
+        ("data", object([("retryable", JsonValue::Bool(false))])),
+        ("message", text_value("fixture advisory unavailable")),
+    ]);
+    let mut value = match mode {
+        "daybreak-wrong-id" => response("other", daybreak_result(mode)),
+        "daybreak-jsonrpc-error" => jsonrpc_error_response("daybreak", valid_error),
+        "daybreak-error-null" => jsonrpc_error_response("daybreak", JsonValue::Null),
+        "daybreak-error-missing-code" => jsonrpc_error_response(
+            "daybreak",
+            object([("message", text_value("fixture advisory unavailable"))]),
+        ),
+        "daybreak-error-float-code" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000.0".to_string())),
+                ("message", text_value("fixture advisory unavailable")),
+            ]),
+        ),
+        "daybreak-error-code-overflow" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("9223372036854775808".to_string())),
+                ("message", text_value("fixture advisory unavailable")),
+            ]),
+        ),
+        "daybreak-error-code-noncanonical" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-0".to_string())),
+                ("message", text_value("fixture advisory unavailable")),
+            ]),
+        ),
+        "daybreak-error-message-type" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000".to_string())),
+                ("message", JsonValue::Bool(true)),
+            ]),
+        ),
+        "daybreak-error-message-empty" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000".to_string())),
+                ("message", text_value("")),
+            ]),
+        ),
+        "daybreak-error-message-control" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000".to_string())),
+                ("message", text_value("fixture\tadvisory unavailable")),
+            ]),
+        ),
+        "daybreak-error-message-unicode-control" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000".to_string())),
+                ("message", text_value("fixture\u{0085}advisory unavailable")),
+            ]),
+        ),
+        "daybreak-error-extra" => jsonrpc_error_response(
+            "daybreak",
+            object([
+                ("code", JsonValue::Number("-32000".to_string())),
+                ("message", text_value("fixture advisory unavailable")),
+                ("unexpected", JsonValue::Null),
+            ]),
+        ),
+        "daybreak-error-and-result" => {
+            let JsonValue::Object(mut response) = response("daybreak", daybreak_result(mode))
+            else {
+                unreachable!()
+            };
+            response.insert("error".to_string(), valid_error);
+            JsonValue::Object(response)
+        }
+        _ => response("daybreak", daybreak_result(mode)),
+    };
+    if mode == "daybreak-response-extra" {
+        let JsonValue::Object(response) = &mut value else {
+            unreachable!()
+        };
+        response.insert("unexpected".to_string(), JsonValue::Null);
+    } else if mode == "daybreak-wrong-jsonrpc" {
+        let JsonValue::Object(response) = &mut value else {
+            unreachable!()
+        };
+        response.insert("jsonrpc".to_string(), text_value("1.0"));
+    } else if mode == "daybreak-oversized-line" {
+        let JsonValue::Object(response) = &mut value else {
+            unreachable!()
+        };
+        let JsonValue::Object(result) = response.get_mut("result").unwrap() else {
+            unreachable!()
+        };
+        result.insert(
+            "padding".to_string(),
+            text_value(&"x".repeat(MAX_MCP_LINE_BYTES)),
+        );
+    }
+    if mode.starts_with("daybreak-") {
+        issue_fault(paths, mode)?;
+    }
+    if mode == "daybreak-crlf-response" {
+        writer.write_all(render_json(&value)?.as_bytes())?;
+        writer.write_all(b"\r\n")?;
+        writer.flush()?;
+        return Ok(true);
+    }
+    send_value(writer, &value)?;
+    Ok(true)
+}
+
 fn exchange_server_messages(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
@@ -1194,6 +1515,15 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
         issue_fault(paths, mode)?;
     }
     send_value(&mut writer, &tools)?;
+
+    expect_value(
+        &mut reader,
+        expected_daybreak_request(&paths.repository, &source),
+        "Daybreak advisory request",
+    )?;
+    if !send_daybreak_response(&mut writer, mode, paths)? {
+        return Ok(());
+    }
 
     expect_value(
         &mut reader,
@@ -1332,8 +1662,20 @@ fn assert_rejected(cases: &[(&str, &str)]) {
     }
 }
 
+fn assert_advisory_non_gating(modes: &[&str]) {
+    for mode in modes {
+        let run = run_fake(mode).unwrap();
+        let (outcome, expected_directory) = run
+            .result
+            .unwrap_or_else(|error| panic!("mode {mode} unexpectedly gated the scan: {error:#}"));
+        assert_eq!(outcome.scan_id, SCAN_ID);
+        assert_eq!(outcome.scan_directory, expected_directory);
+        assert_eq!(run.fault_issued.as_deref(), Some(*mode));
+    }
+}
+
 #[test]
-fn owned_mcp_exchange_emits_the_exact_four_step_protocol_and_handles_server_messages() {
+fn owned_mcp_exchange_emits_the_exact_five_step_protocol_and_handles_server_messages() {
     let run = run_fake("happy").unwrap();
     assert_eq!(run.fault_issued, None);
     let (outcome, expected_directory) = run.result.unwrap();
@@ -1366,11 +1708,203 @@ fn owned_mcp_initialization_and_tool_authority_are_exact() {
         ("tools-extra", "tool inventory differs"),
         ("tools-reordered", "tool inventory differs"),
         ("tools-schema-drift", "tool inventory differs"),
+        ("tools-daybreak-missing", "tool inventory differs"),
+        ("tools-daybreak-duplicate", "tool inventory differs"),
+        ("tools-daybreak-schema-drift", "tool inventory differs"),
         (
             "tools-result-schema-drift",
             "MCP tools result has an unexpected field",
         ),
     ]);
+}
+
+#[test]
+fn owned_daybreak_advisory_is_once_immediately_before_start_and_non_gating() {
+    assert_advisory_non_gating(&[
+        "daybreak-unknown",
+        "daybreak-stale",
+        "daybreak-granted-blue",
+        "daybreak-granted-red",
+        "daybreak-granted-both",
+        "daybreak-not-granted",
+        "daybreak-not-granted-url",
+        "daybreak-not-granted-url-port",
+        "daybreak-not-granted-unsafe-url",
+        "daybreak-not-granted-invalid-authority",
+        "daybreak-not-granted-invalid-escape",
+        "daybreak-jsonrpc-error",
+        "daybreak-tool-error",
+        "daybreak-payload-missing-content",
+        "daybreak-payload-missing-structured",
+        "daybreak-payload-result-extra",
+        "daybreak-payload-schema-version",
+        "daybreak-payload-extra",
+        "daybreak-payload-missing-status",
+        "daybreak-payload-status",
+        "daybreak-payload-program",
+        "daybreak-payload-duplicate-program",
+        "daybreak-payload-status-programs",
+        "daybreak-payload-checked-at",
+        "daybreak-payload-stale-status",
+        "daybreak-payload-enrollment-type",
+        "daybreak-payload-text-mismatch",
+    ]);
+}
+
+#[test]
+fn owned_daybreak_wire_and_error_envelopes_fail_closed() {
+    assert_rejected(&[
+        ("daybreak-wrong-id", "unexpected ID"),
+        ("daybreak-error-and-result", "exactly one result or error"),
+        (
+            "daybreak-response-extra",
+            "response has an unexpected field",
+        ),
+        ("daybreak-wrong-jsonrpc", "another protocol version"),
+        ("daybreak-malformed-json", "Codex Security MCP response"),
+        ("daybreak-crlf-response", "not strict LF framing"),
+        ("daybreak-oversized-line", "line longer than 1048576 bytes"),
+        ("daybreak-premature-eof", "closed before its response"),
+        ("daybreak-error-null", "MCP error is not an object"),
+        ("daybreak-error-missing-code", "has no `code` field"),
+        ("daybreak-error-float-code", "not a signed integer"),
+        ("daybreak-error-code-overflow", "not a signed integer"),
+        ("daybreak-error-code-noncanonical", "not canonical"),
+        (
+            "daybreak-error-message-type",
+            "error message is not a string",
+        ),
+        ("daybreak-error-message-empty", "error message is malformed"),
+        (
+            "daybreak-error-message-control",
+            "error message is malformed",
+        ),
+        (
+            "daybreak-error-message-unicode-control",
+            "error message is malformed",
+        ),
+        ("daybreak-error-extra", "MCP error has an unexpected field"),
+    ]);
+}
+
+#[test]
+fn daybreak_payload_and_presentation_are_exact() {
+    let parse = |mode| parse_daybreak_advisory(&daybreak_result(mode)).unwrap();
+    let render = |mode| {
+        let presentation = daybreak_presentation(&parse(mode));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        write_daybreak_presentation(presentation.as_ref(), &mut stdout, &mut stderr).unwrap();
+        (
+            presentation,
+            String::from_utf8(stdout).unwrap(),
+            String::from_utf8(stderr).unwrap(),
+        )
+    };
+    for mode in ["daybreak-unknown", "daybreak-stale"] {
+        assert_eq!(render(mode), (None, String::new(), String::new()));
+    }
+    let granted = "[xtask] Codex Security Daybreak access: status=granted; programs=Daybreak Blue, Daybreak Red";
+    assert_eq!(
+        render("daybreak-granted-both"),
+        (
+            Some(DaybreakPresentation::Standard(granted.to_string())),
+            format!("{granted}\n"),
+            String::new()
+        )
+    );
+    for (mode, url) in [
+        (
+            "daybreak-not-granted-url",
+            "https://chatgpt.com/cyber/apply",
+        ),
+        (
+            "daybreak-not-granted-url-port",
+            "https://chatgpt.com:443/cyber/apply?from=deep#access",
+        ),
+    ] {
+        let warning = format!(
+            "[xtask] WARNING: Codex Security Daybreak access is not granted for this ChatGPT account; protected scan outputs may not be displayable. Apply at {url}"
+        );
+        assert_eq!(
+            render(mode),
+            (
+                Some(DaybreakPresentation::Warning(warning.clone())),
+                String::new(),
+                format!("{warning}\n")
+            )
+        );
+    }
+    for mode in [
+        "daybreak-not-granted",
+        "daybreak-not-granted-unsafe-url",
+        "daybreak-not-granted-invalid-authority",
+        "daybreak-not-granted-invalid-escape",
+    ] {
+        let warning = format!(
+            "[xtask] WARNING: Codex Security Daybreak access is not granted for this ChatGPT account; protected scan outputs may not be displayable. Apply at {DAYBREAK_ENROLLMENT_FALLBACK}"
+        );
+        assert_eq!(
+            render(mode),
+            (
+                Some(DaybreakPresentation::Warning(warning.clone())),
+                String::new(),
+                format!("{warning}\n")
+            )
+        );
+    }
+    for mode in [
+        "daybreak-tool-error",
+        "daybreak-payload-missing-content",
+        "daybreak-payload-missing-structured",
+        "daybreak-payload-result-extra",
+        "daybreak-payload-schema-version",
+        "daybreak-payload-extra",
+        "daybreak-payload-missing-status",
+        "daybreak-payload-status",
+        "daybreak-payload-program",
+        "daybreak-payload-duplicate-program",
+        "daybreak-payload-status-programs",
+        "daybreak-payload-checked-at",
+        "daybreak-payload-stale-status",
+        "daybreak-payload-enrollment-type",
+        "daybreak-payload-text-mismatch",
+    ] {
+        assert!(
+            parse_daybreak_advisory(&daybreak_result(mode)).is_err(),
+            "{mode}"
+        );
+    }
+}
+
+#[test]
+fn daybreak_operator_stream_failures_are_non_gating() {
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fixture operator stream is closed",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fixture operator stream is closed",
+            ))
+        }
+    }
+
+    for presentation in [
+        DaybreakPresentation::Standard("fixture standard notice".to_string()),
+        DaybreakPresentation::Warning("fixture warning notice".to_string()),
+    ] {
+        let mut stdout = BrokenWriter;
+        let mut stderr = BrokenWriter;
+        present_daybreak_with_writers(Some(&presentation), &mut stdout, &mut stderr);
+    }
 }
 
 #[test]
