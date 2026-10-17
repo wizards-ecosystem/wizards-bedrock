@@ -114,6 +114,11 @@ section is checked byte for byte against the registry that execution iterates,
 so changing a Cargo graph or gate stage requires a reviewable documentation
 change (D-212).
 
+On Windows, `cargo xtask clean` may leave only the currently running
+`target/xtask/xtask.exe` image until that process exits. The task treats the
+platform lock as success only after proving that exact executable is the sole
+target residual; any other artifact or redirect remains a failure (D-418).
+
 <!-- CI-REGISTRY:START -->
 Cargo graphs used by each Cargo-driven gate stage:
 

@@ -63,7 +63,7 @@ NOT IN CI (exceptional dependency, interaction, or runtime):
 
 HOUSEKEEPING:
     update-sbom       regenerate the SPDX SBOM from the reviewed inventory
-    clean             remove build output
+    clean             remove build output (the running xtask image may remain)
 
 OPTIONS:
     --release         build optimised (default)

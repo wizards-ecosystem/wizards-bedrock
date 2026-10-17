@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -47,14 +47,22 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let status = command(paths)
-        .args(args)
-        .status()
-        .with_context(|| format!("could not spawn cargo to {description}"))?;
+    let status = run_status(paths, description, args)?;
     if !status.success() {
         bail!("{description} failed ({status})");
     }
     Ok(())
+}
+
+pub(crate) fn run_status<I, S>(paths: &Paths, description: &str, args: I) -> Result<ExitStatus>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    command(paths)
+        .args(args)
+        .status()
+        .with_context(|| format!("could not spawn cargo to {description}"))
 }
 
 fn command(paths: &Paths) -> Command {

@@ -3,6 +3,7 @@
 //! Each Cargo-driven task runs over every graph in `crate::gate::REGISTRY`,
 //! so standalone commands and the complete local gate cannot drift apart.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
@@ -238,7 +239,19 @@ fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
 
 /// Remove build output.
 pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
-    cargo::run(paths, "clean", ["clean"])?;
+    let status = cargo::run_status(paths, "clean", ["clean"])?;
+    let retained_runner = if status.success() {
+        finish_cargo_clean(true, paths.target_dir(), None)?
+    } else {
+        let current = std::env::current_exe().context("resolving the running clean executable")?;
+        finish_cargo_clean(false, paths.target_dir(), Some(&current))
+            .with_context(|| format!("clean failed ({status})"))?
+    };
+    if retained_runner {
+        println!(
+            "[xtask] Cargo retained only the running clean executable; every other target artifact was removed"
+        );
+    }
     if scope == CleanScope::Everything {
         let vm_dir = paths.vm_dir();
         if remove_vm_directory(paths.root(), &vm_dir)? {
@@ -246,6 +259,70 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn finish_cargo_clean(
+    succeeded: bool,
+    target: &Path,
+    current_executable: Option<&Path>,
+) -> Result<bool> {
+    if succeeded {
+        return Ok(false);
+    }
+    let current_executable =
+        current_executable.context("failed clean has no running executable")?;
+    let target =
+        crate::mutation_workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
+    let profile = target.join("xtask");
+    let executable = profile.join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+
+    let mut target_entries = std::fs::read_dir(&target)
+        .with_context(|| format!("listing Cargo clean target {}", target.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    target_entries.sort_by_key(std::fs::DirEntry::file_name);
+    ensure!(
+        target_entries.len() == 1,
+        "failed Cargo clean left an unexpected target-root entry"
+    );
+    ensure!(
+        target_entries[0].path() == profile,
+        "failed Cargo clean left an unexpected target-root name"
+    );
+    let profile_metadata = std::fs::symlink_metadata(&profile)
+        .context("inspecting retained xtask profile directory")?;
+    ensure!(
+        crate::mutation_workspace::metadata_is_real_directory(&profile_metadata)
+            && std::fs::canonicalize(&profile)
+                .context("canonicalizing retained xtask profile directory")?
+                == profile,
+        "failed Cargo clean retained a redirected xtask profile directory"
+    );
+
+    let mut profile_entries = std::fs::read_dir(&profile)
+        .context("listing retained xtask profile directory")?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    profile_entries.sort_by_key(std::fs::DirEntry::file_name);
+    ensure!(
+        profile_entries.len() == 1,
+        "failed Cargo clean left an unexpected xtask-profile entry"
+    );
+    ensure!(
+        profile_entries[0].path() == executable,
+        "failed Cargo clean left an unexpected xtask-profile name"
+    );
+    let _running = crate::mutation_workspace::open_real_file(
+        &executable,
+        "retained running clean executable",
+    )?;
+    let current_executable = std::fs::canonicalize(current_executable)
+        .context("canonicalizing the running clean executable")?;
+    ensure!(
+        std::fs::canonicalize(&executable)
+            .context("canonicalizing the retained running clean executable")?
+            == current_executable,
+        "failed Cargo clean retained an executable other than its running image"
+    );
+    Ok(true)
 }
 
 fn remove_vm_directory(root: &std::path::Path, directory: &std::path::Path) -> Result<bool> {
@@ -435,6 +512,16 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating cleanup file symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
+        std::os::windows::fs::symlink_file(target, link).expect("creating cleanup file symlink");
+    }
+
+    #[cfg(unix)]
     fn remove_directory_symlink(path: &std::path::Path) {
         std::fs::remove_file(path).expect("removing cleanup directory symlink");
     }
@@ -452,6 +539,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&fixture).expect("cleanup fixture");
         fixture
+    }
+
+    fn retained_runner_fixture(
+        label: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let fixture = clean_fixture(label);
+        let target = fixture.join("target");
+        let runner = target
+            .join("xtask")
+            .join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, b"running clean image").unwrap();
+        (fixture, target, runner)
     }
 
     const PIXEL: &[&str] = &["pixel"];
@@ -613,6 +713,128 @@ mod tests {
                 pass.label()
             );
         }
+    }
+
+    #[test]
+    fn a_failed_clean_requires_the_exact_live_executable_residual() {
+        let missing_fixture = clean_fixture("missing-runner");
+        let missing_target = missing_fixture.join("target");
+        let missing_runner = missing_target
+            .join("xtask")
+            .join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+
+        assert!(!finish_cargo_clean(true, &missing_target, None).unwrap());
+        assert!(finish_cargo_clean(false, &missing_target, Some(&missing_runner)).is_err());
+        std::fs::remove_dir_all(missing_fixture).unwrap();
+
+        let (fixture, target, runner) = retained_runner_fixture("exact-runner");
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).unwrap());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_an_extra_target_entry() {
+        let (fixture, target, runner) = retained_runner_fixture("extra-target");
+        std::fs::write(target.join("zz-residue"), b"unexpected target state").unwrap();
+
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).is_err());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_an_extra_xtask_profile_entry() {
+        let (fixture, target, runner) = retained_runner_fixture("extra-profile");
+        std::fs::write(
+            runner.parent().unwrap().join("zz-residue"),
+            b"unexpected profile state",
+        )
+        .unwrap();
+
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).is_err());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_a_foreign_executable_identity() {
+        let (fixture, target, runner) = retained_runner_fixture("foreign-runner");
+        let foreign = fixture.join(format!("foreign{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&foreign, b"foreign executable").unwrap();
+
+        assert!(finish_cargo_clean(false, &target, Some(&foreign)).is_err());
+        assert!(runner.is_file());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_a_non_file_runner() {
+        let fixture = clean_fixture("non-file-runner");
+        let target = fixture.join("target");
+        let runner = target
+            .join("xtask")
+            .join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(&runner).unwrap();
+
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).is_err());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_a_redirected_target_directory() {
+        let fixture = clean_fixture("redirected-target");
+        let target = fixture.join("target");
+        let outside_target = fixture.join("outside-target");
+        let runner = outside_target
+            .join("xtask")
+            .join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, b"outside target executable").unwrap();
+        create_directory_symlink(&outside_target, &target);
+
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).is_err());
+        assert_eq!(
+            std::fs::read(&runner).unwrap(),
+            b"outside target executable"
+        );
+        remove_directory_symlink(&target);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_a_redirected_xtask_profile() {
+        let fixture = clean_fixture("redirected-profile");
+        let target = fixture.join("target");
+        let profile = target.join("xtask");
+        let outside_profile = fixture.join("outside-profile");
+        let runner = outside_profile.join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&outside_profile).unwrap();
+        std::fs::write(&runner, b"outside profile executable").unwrap();
+        create_directory_symlink(&outside_profile, &profile);
+
+        assert!(finish_cargo_clean(false, &target, Some(&runner)).is_err());
+        assert_eq!(
+            std::fs::read(&runner).unwrap(),
+            b"outside profile executable"
+        );
+        remove_directory_symlink(&profile);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clean_rejects_a_redirected_runner() {
+        let fixture = clean_fixture("redirected-runner");
+        let target = fixture.join("target");
+        let runner = target
+            .join("xtask")
+            .join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        let outside = fixture.join(format!("outside{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&outside, b"outside executable").unwrap();
+        create_file_symlink(&outside, &runner);
+
+        assert!(finish_cargo_clean(false, &target, Some(&outside)).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside executable");
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

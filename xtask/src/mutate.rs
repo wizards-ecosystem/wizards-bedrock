@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2086;
+pub const NEXT_MUTATION_ID: u16 = 2093;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23277,6 +23277,83 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::config_tests::originless_ambient_notifications_are_refused_before_safety_overrides",
+        },
+    },
+    Mutation {
+        id: 2086,
+        file: "xtask/src/tasks.rs",
+        find: "    if succeeded {\n        return Ok(false);\n    }",
+        replace: "    if true {\n        return Ok(false);\n    }",
+        breaks: "a failed Cargo clean can be reported complete without validating its residual tree",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_requires_the_exact_live_executable_residual",
+        },
+    },
+    Mutation {
+        id: 2087,
+        file: "xtask/src/tasks.rs",
+        find: "    ensure!(\n        target_entries.len() == 1,\n        \"failed Cargo clean left an unexpected target-root entry\"\n    );",
+        replace: "    ensure!(\n        !target_entries.is_empty(),\n        \"failed Cargo clean left an unexpected target-root entry\"\n    );",
+        breaks: "a failed Cargo clean can leave additional target-root artifacts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_an_extra_target_entry",
+        },
+    },
+    Mutation {
+        id: 2088,
+        file: "xtask/src/tasks.rs",
+        find: "    ensure!(\n        profile_entries.len() == 1,\n        \"failed Cargo clean left an unexpected xtask-profile entry\"\n    );",
+        replace: "    ensure!(\n        !profile_entries.is_empty(),\n        \"failed Cargo clean left an unexpected xtask-profile entry\"\n    );",
+        breaks: "a failed Cargo clean can leave additional xtask-profile artifacts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_an_extra_xtask_profile_entry",
+        },
+    },
+    Mutation {
+        id: 2089,
+        file: "xtask/src/tasks.rs",
+        find: "    ensure!(\n        std::fs::canonicalize(&executable)\n            .context(\"canonicalizing the retained running clean executable\")?\n            == current_executable,\n        \"failed Cargo clean retained an executable other than its running image\"\n    );",
+        replace: "    ensure!(\n        true,\n        \"failed Cargo clean retained an executable other than its running image\"\n    );",
+        breaks: "a foreign executable can be accepted as the sole failed-clean residual",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_a_foreign_executable_identity",
+        },
+    },
+    Mutation {
+        id: 2090,
+        file: "xtask/src/tasks.rs",
+        find: "    let _running = crate::mutation_workspace::open_real_file(\n        &executable,\n        \"retained running clean executable\",\n    )?;",
+        replace: "    let _running = &executable;",
+        breaks: "a non-file or redirected runner can be accepted as the sole failed-clean residual",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_a_non_file_runner",
+        },
+    },
+    Mutation {
+        id: 2091,
+        file: "xtask/src/tasks.rs",
+        find: "    let target =\n        crate::mutation_workspace::canonical_existing_real_directory(target, \"Cargo clean target\")?;",
+        replace: "    let target = std::fs::canonicalize(target)\n        .context(\"canonicalizing Cargo clean target without reparse validation\")?;",
+        breaks: "a redirected target directory can become the authority for a failed cleanup",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_a_redirected_target_directory",
+        },
+    },
+    Mutation {
+        id: 2092,
+        file: "xtask/src/tasks.rs",
+        find: "    ensure!(\n        crate::mutation_workspace::metadata_is_real_directory(&profile_metadata)\n            && std::fs::canonicalize(&profile)\n                .context(\"canonicalizing retained xtask profile directory\")?\n                == profile,\n        \"failed Cargo clean retained a redirected xtask profile directory\"\n    );",
+        replace: "    let _redirected_profile = profile_metadata;\n    ensure!(\n        std::fs::canonicalize(&profile).is_ok(),\n        \"failed Cargo clean retained a redirected xtask profile directory\"\n    );",
+        breaks: "a redirected xtask profile can supply the sole apparent failed-clean residual",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::a_failed_clean_rejects_a_redirected_xtask_profile",
         },
     },
 ];
