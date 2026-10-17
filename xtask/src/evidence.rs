@@ -1678,6 +1678,7 @@ fn write_manifest(root: &Path, manifest: &Path, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::reserve_temp_directory;
 
     #[test]
     #[ignore]
@@ -1771,12 +1772,7 @@ mod tests {
         assert!(implementation[reproduce..absent].contains("std::fs::hard_link"));
         assert!(!implementation[reproduce..absent].contains("credentials.toml"));
 
-        let root =
-            std::env::temp_dir().join(format!("wizard-host-path-evidence-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-host-path-evidence");
         let artifact = root.join("artifact");
         let host = PathBuf::from(r"C:\private host");
         std::fs::write(&artifact, b"prefix C:\\private host suffix").unwrap();
@@ -1896,11 +1892,7 @@ mod tests {
 
     #[test]
     fn an_oversized_manifest_is_refused_before_payload_allocation() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-oversized-manifest-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-oversized-manifest");
         let paths = Paths::new(root.join("repository"), Some(&root.join("target")));
         let evidence = evidence_root(&paths);
         std::fs::create_dir_all(&evidence).unwrap();
@@ -1916,14 +1908,7 @@ mod tests {
 
     #[test]
     fn generic_evidence_digests_have_a_streaming_ceiling() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-digest-bound-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-evidence-digest-bound");
         let path = root.join("artifact");
         File::create(&path).unwrap().set_len(33).unwrap();
 
@@ -1940,14 +1925,7 @@ mod tests {
 
     #[test]
     fn generic_evidence_digest_growth_is_refused_after_measurement() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-digest-growth-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-evidence-digest-growth");
         let path = root.join("artifact");
         std::fs::write(&path, b"x").unwrap();
         let growing = path.clone();
@@ -1976,14 +1954,7 @@ mod tests {
 
     #[test]
     fn generic_evidence_digest_truncation_is_refused_during_hashing() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-digest-truncation-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-evidence-digest-truncation");
         let path = root.join("artifact");
         std::fs::write(&path, b"1234").unwrap();
         let shrinking = path.clone();
@@ -2012,14 +1983,7 @@ mod tests {
 
     #[test]
     fn generic_evidence_digest_remeasures_after_hashing() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-digest-remeasure-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-evidence-digest-remeasure");
         let path = root.join("artifact");
         std::fs::write(&path, b"1234").unwrap();
         let shrinking = path.clone();
@@ -2048,14 +2012,7 @@ mod tests {
 
     #[test]
     fn deterministic_artifact_size_is_checked_before_hashing_payload_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-exact-evidence-artifact-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-exact-evidence-artifact");
         let path = root.join("oversized.img");
         File::create(&path).unwrap().set_len(33).unwrap();
         let reached = std::cell::Cell::new(false);
@@ -2077,14 +2034,7 @@ mod tests {
 
     #[test]
     fn deterministic_artifact_digest_requires_the_exact_returned_byte_count() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-exact-evidence-count-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-exact-evidence-count");
         let path = root.join("image");
         File::create(&path).unwrap().set_len(32).unwrap();
 
@@ -2106,14 +2056,7 @@ mod tests {
 
     #[test]
     fn deterministic_artifact_digest_remeasures_the_exact_extent() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-exact-evidence-remeasure-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = reserve_temp_directory("wizard-exact-evidence-remeasure");
         let path = root.join("image");
         File::create(&path).unwrap().set_len(32).unwrap();
         let growing = path.clone();
@@ -2204,11 +2147,7 @@ mod tests {
 
     #[test]
     fn a_broken_manifest_symlink_cannot_redirect_the_writer() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-evidence-symlink-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-symlink");
         let paths = Paths::new(root.join("repo"), Some(&root.join("target")));
         let evidence = evidence_root(&paths);
         let external = root.join("outside-manifest");
@@ -2257,11 +2196,7 @@ mod tests {
 
     #[test]
     fn a_substituted_evidence_root_is_never_recursively_reset() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-evidence-root-link-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-root-link");
         let outside = root.join("outside");
         let evidence = root.join("evidence-link");
         std::fs::create_dir_all(outside.join("work-a")).unwrap();
@@ -2284,13 +2219,7 @@ mod tests {
 
     #[test]
     fn a_redirected_target_is_refused_before_evidence_root_creation() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-target-link-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-target-link");
         let outside = root.join("outside");
         let target = root.join("target-link");
         std::fs::create_dir_all(&outside).unwrap();
@@ -2304,13 +2233,7 @@ mod tests {
 
     #[test]
     fn artifact_bytes_must_match_the_manifest() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-artifact-fixture-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-artifact-fixture");
         for spec in ARTIFACTS {
             let path = root.join(spec.relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2340,13 +2263,7 @@ mod tests {
 
     #[test]
     fn an_evidence_attempt_invalidates_an_older_success_first() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-invalidation-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-invalidation");
         let paths = Paths::new(root.join("repo"), Some(&root.join("target")));
         let evidence = evidence_root(&paths);
         std::fs::create_dir_all(&evidence).unwrap();
@@ -2429,13 +2346,7 @@ mod tests {
                 "qualification/vmware-shipped/dma-handoff.bin",
             ])
         );
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-qualification-fixture-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-qualification-fixture");
         write_qualification_bundle_fixture(&root);
         let mut record = Record::default();
         add_qualification_files(&mut record, &root).unwrap();
@@ -2458,13 +2369,7 @@ mod tests {
 
     #[test]
     fn a_bundle_parent_link_is_rejected_before_qualification_hashing() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-parent-link-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-parent-link");
         let spec = qualification::BUNDLE_FILES
             .iter()
             .find(|spec| spec.relative == "qualification/model/record")
@@ -2490,13 +2395,7 @@ mod tests {
 
     #[test]
     fn exceptional_artifacts_are_the_exact_reproduced_inputs() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-evidence-cross-artifact-fixture-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = reserve_temp_directory("wizard-evidence-cross-artifact-fixture");
         let repository = root.join("repo");
         let evidence = root.join("evidence");
         let paths = Paths::new(repository.clone(), None);

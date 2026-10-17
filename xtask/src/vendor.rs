@@ -374,14 +374,11 @@ mod tests {
 
     #[test]
     fn consumed_payload_authentication_requires_one_exact_adjacent_entry() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-vendor-consumption-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
-        let payload = root.join("BOOTX64.EFI");
-        let listing = root.join("CHECKSUMS");
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-consumption");
+        let vendor = root.join("vendor");
+        std::fs::create_dir(&vendor).unwrap();
+        let payload = vendor.join("BOOTX64.EFI");
+        let listing = vendor.join("CHECKSUMS");
         let bytes = b"reviewed bootloader";
         std::fs::write(&payload, bytes).unwrap();
         let digest = sha256::hex(&sha256::digest(bytes));
@@ -405,10 +402,7 @@ mod tests {
             .to_string();
         assert!(error.contains("instead of the consumed payload"), "{error}");
 
-        let outside = root.parent().unwrap().join(format!(
-            "wizard-vendor-consumption-outside-{}",
-            std::process::id()
-        ));
+        let outside = root.join("outside");
         let error = verify_payload_bytes(&listing, &outside, bytes)
             .unwrap_err()
             .to_string();
@@ -418,13 +412,7 @@ mod tests {
 
     #[test]
     fn consumed_payload_authentication_refuses_a_redirected_listing() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vendor-consumption-link-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-consumption-link");
         let vendor = root.join("vendor");
         let outside = root.join("outside");
         std::fs::create_dir_all(&vendor).unwrap();
@@ -453,14 +441,7 @@ mod tests {
 
     #[test]
     fn oversized_checksum_listings_are_refused_before_allocation() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vendor-listing-bound-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-listing-bound");
         let listing = root.join("CHECKSUMS");
         File::create(&listing)
             .unwrap()
@@ -477,14 +458,7 @@ mod tests {
 
     #[test]
     fn checksum_listing_growth_is_refused_after_measurement() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vendor-listing-growth-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-listing-growth");
         let listing = root.join("CHECKSUMS");
         std::fs::write(&listing, b"x").unwrap();
         let growing = listing.clone();
@@ -507,14 +481,7 @@ mod tests {
 
     #[test]
     fn oversized_vendored_payloads_are_refused_before_hashing() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vendor-payload-bound-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-payload-bound");
         let listing = root.join("CHECKSUMS");
         std::fs::write(&listing, format!("{DIGEST}  payload\n")).unwrap();
         File::create(root.join("payload"))
@@ -532,12 +499,7 @@ mod tests {
 
     #[test]
     fn vendored_directories_have_an_independent_total_payload_bound() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-vendor-total-bound-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-vendor-total-bound");
         let mut listing = String::new();
         for index in 0..5 {
             let name = format!("payload-{index}");

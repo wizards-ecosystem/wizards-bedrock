@@ -469,15 +469,7 @@ mod tests {
     #[test]
     fn a_local_fsmonitor_command_cannot_run_during_a_hardened_query() {
         let git = resolved().expect("Git resolves on the development host");
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-git-fsmonitor-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-git-fsmonitor");
         assert!(
             run_fixture_git(git, &root, &["init", "--quiet"])
                 .status
@@ -565,15 +557,8 @@ mod tests {
         attributes: AttributeSource,
         config: FilterConfigSource,
     ) {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-git-filter-{name}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root =
+            crate::test_support::reserve_temp_directory(&format!("wizard-git-filter-{name}"));
         assert!(
             run_fixture_git(git, &root, &["init", "--quiet"])
                 .status
@@ -717,15 +702,7 @@ mod tests {
     #[test]
     fn malformed_repository_configuration_fails_closed_before_the_query() {
         let git = resolved().expect("Git resolves on the development host");
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-git-malformed-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-git-malformed");
         assert!(
             run_fixture_git(git, &root, &["init", "--quiet"])
                 .status
@@ -769,12 +746,7 @@ mod tests {
     #[test]
     fn linked_worktree_and_submodule_style_gitfiles_remain_supported() {
         let git = resolved().expect("Git resolves on the development host");
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("wizard-git-layouts-{}-{nonce}", std::process::id()));
+        let root = crate::test_support::reserve_temp_directory("wizard-git-layouts");
         let main = root.join("main");
         let linked = root.join("linked");
         let nested = root.join("nested");
@@ -849,7 +821,7 @@ mod tests {
     #[test]
     fn the_first_git_on_the_search_path_is_the_one_recorded() {
         let real = resolved().expect("Git resolves on the development host");
-        let root = std::env::temp_dir().join(format!("wizard-git-decoy-{}", std::process::id()));
+        let root = crate::test_support::reserve_temp_directory("wizard-git-decoy");
         let decoy = root.join("decoy");
         std::fs::create_dir_all(&decoy).unwrap();
         let name = format!("git{}", std::env::consts::EXE_SUFFIX);
@@ -876,8 +848,7 @@ mod tests {
     #[test]
     fn a_changed_executable_blocks_publication() {
         let real = resolved().expect("Git resolves on the development host");
-        let root = std::env::temp_dir().join(format!("wizard-git-change-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-git-change");
         let copy = std::fs::canonicalize(&root).unwrap().join("git-copy");
         std::fs::copy(&real.path, &copy).unwrap();
         let (bytes, sha256) = measure(&copy).unwrap();

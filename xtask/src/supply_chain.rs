@@ -1142,15 +1142,7 @@ mod tests {
 
     #[test]
     fn oversized_supply_chain_text_is_refused_before_allocation() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-supply-text-bound-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&fixture).unwrap();
+        let fixture = crate::test_support::reserve_temp_directory("wizard-supply-text-bound");
         let path = fixture.join("inventory.txt");
         File::create(&path)
             .unwrap()
@@ -1169,15 +1161,7 @@ mod tests {
 
     #[test]
     fn supply_chain_text_growth_is_refused_after_measurement() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-supply-text-growth-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&fixture).unwrap();
+        let fixture = crate::test_support::reserve_temp_directory("wizard-supply-text-growth");
         let path = fixture.join("inventory.txt");
         std::fs::write(&path, b"x").unwrap();
         let growing = path.clone();
@@ -1201,17 +1185,9 @@ mod tests {
 
     #[test]
     fn supply_chain_text_rejects_a_redirect_before_opening() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-supply-text-link-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-supply-text-link");
         let source = fixture.join("outside");
         let redirected = fixture.join("inventory.txt");
-        std::fs::create_dir(&fixture).unwrap();
         std::fs::write(&source, b"outside authority").unwrap();
         create_file_symlink(&source, &redirected);
         let opened = std::cell::Cell::new(false);
@@ -1230,17 +1206,10 @@ mod tests {
 
     #[test]
     fn supply_chain_text_revalidates_its_path_after_reading() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-supply-text-revalidation-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture =
+            crate::test_support::reserve_temp_directory("wizard-supply-text-revalidation");
         let path = fixture.join("inventory.txt");
         let outside = fixture.join("outside");
-        std::fs::create_dir(&fixture).unwrap();
         std::fs::write(&path, b"original authority").unwrap();
         std::fs::write(&outside, b"outside authority").unwrap();
         let replacement = path.clone();
@@ -1361,12 +1330,7 @@ mod tests {
 
     #[test]
     fn spdx_publication_never_writes_through_an_external_link() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture =
-            std::env::temp_dir().join(format!("wizard-spdx-links-{}-{nonce}", std::process::id()));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-spdx-links");
         let repository = fixture.join("repository");
         let directory = repository.join("supply-chain");
         let outside = fixture.join("outside");
@@ -1391,12 +1355,7 @@ mod tests {
 
     #[test]
     fn a_failed_spdx_stage_never_exposes_partial_authoritative_bytes() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture =
-            std::env::temp_dir().join(format!("wizard-spdx-stage-{}-{nonce}", std::process::id()));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-spdx-stage");
         let repository = fixture.join("repository");
         let directory = repository.join("supply-chain");
         let destination = repository.join(SPDX);
@@ -1411,14 +1370,7 @@ mod tests {
 
     #[test]
     fn a_late_spdx_publication_refusal_restores_the_previous_document() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-spdx-rollback-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-spdx-rollback");
         let repository = fixture.join("repository");
         let directory = repository.join("supply-chain");
         let destination = repository.join(SPDX);
@@ -1441,14 +1393,7 @@ mod tests {
 
     #[test]
     fn oversized_spdx_renderings_are_refused_before_staging() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-spdx-output-bound-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-spdx-output-bound");
         let repository = fixture.join("repository");
         let directory = repository.join("supply-chain");
         let destination = repository.join(SPDX);

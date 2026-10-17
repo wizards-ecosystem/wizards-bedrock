@@ -247,20 +247,11 @@ pub(crate) fn verify_documentation(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{README_BYTES, REGISTRY_END, REGISTRY_START, markdown, verify_documentation};
 
-    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
     fn fixture(name: &str) -> PathBuf {
-        let identity = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-gate-{name}-{}-{identity}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).expect("create gate fixture");
-        root
+        crate::test_support::reserve_temp_directory(&format!("wizard-gate-{name}"))
     }
 
     fn valid_readme() -> String {

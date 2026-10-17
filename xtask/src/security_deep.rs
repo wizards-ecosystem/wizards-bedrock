@@ -7624,10 +7624,12 @@ fn verify_scan(
         string(target, "revision", "scan target")? == source.commit,
         "Codex Security scan belongs to another commit"
     );
-    require_scope(
+    let scope = require_scope(
         json_field(scan, "scope", "scan manifest")?,
         "scan manifest scope",
     )?;
+    let threat_model = require_threat_model(json_field(scan, "threatModel", "scan manifest")?)?;
+    require_preserved_sources(json_field(scan, "preservedSources", "scan manifest")?)?;
     verify_manifest_artifacts(
         json_field(scan, "artifacts", "scan manifest")?,
         findings,
@@ -7757,7 +7759,7 @@ fn verify_scan(
         surfaces.is_empty(),
         "Codex Security deep aggregate has noncanonical surface rows"
     );
-    require_zero_finding_report(report, target, source)?;
+    require_zero_finding_report(report, target, scope, threat_model, source)?;
     Ok(Scan {
         id: id.to_string(),
         producer_name,
@@ -7774,31 +7776,122 @@ fn verify_scan(
 fn require_zero_finding_report(
     report: &str,
     target: &BTreeMap<String, JsonValue>,
+    scope: &BTreeMap<String, JsonValue>,
+    threat_model: &BTreeMap<String, JsonValue>,
     source: &SourceIdentity,
 ) -> Result<()> {
     ensure!(
-        report.ends_with('\n') && !report.contains('\r'),
-        "Codex Security provider report is not canonical LF Markdown"
+        report.ends_with('\n'),
+        "Codex Security provider report has no terminal newline"
     );
-    let display_name = string(target, "displayName", "scan target")?;
-    let target_id = string(target, "targetId", "scan target")?;
-    for (value, label) in [
-        (display_name, "display name"),
-        (target_id, "target identity"),
-    ] {
-        ensure!(
-            !value.is_empty()
-                && !value.contains(['\r', '\n', '\0'])
-                && !value
-                    .bytes()
-                    .any(|byte| matches!(byte, b'\\' | b'`' | b'*' | b'[' | b']' | b'<' | b'>')),
-            "Codex Security report {label} requires Markdown escaping"
-        );
+    let mut lines = vec![
+        format!(
+            "# Security Review: {}",
+            report_text(
+                string(target, "displayName", "scan target")?,
+                "Unknown target"
+            )?
+        ),
+        String::new(),
+        "## Scope".to_string(),
+        String::new(),
+        report_text(
+            optional_nonempty_string(scope, "summary", "scan manifest scope")?.unwrap_or(""),
+            "The scan was configured for the include paths and exclusions listed below.",
+        )?,
+        String::new(),
+        "- Scan mode: deep_repository".to_string(),
+        "- Target kind: git_revision".to_string(),
+        format!(
+            "- Target ID: {}",
+            report_text(string(target, "targetId", "scan target")?, "not recorded")?
+        ),
+        format!("- Revision: {}", report_text(&source.commit, "")?),
+        "- Inventory strategy: repository".to_string(),
+        "- Included paths: .".to_string(),
+        "- Excluded paths: none".to_string(),
+    ];
+    let artifacts_reviewed = report_strings(
+        scope.get("artifactsReviewed"),
+        "scan manifest artifacts reviewed",
+    )?;
+    if !artifacts_reviewed.is_empty() {
+        lines.push(format!(
+            "- Artifacts reviewed: {}",
+            artifacts_reviewed.join(", ")
+        ));
     }
-    let expected = format!(
-        "# Security Review: {display_name}\n\n## Scope\n\nThe scan was configured for the include paths and exclusions listed below.\n\n- Scan mode: deep_repository\n- Target kind: git_revision\n- Target ID: {target_id}\n- Revision: {}\n- Inventory strategy: repository\n- Included paths: .\n- Excluded paths: none\n\n### Scan Summary\n\n| Field | Value |\n| --- | --- |\n| Scan outcome | completed |\n| Reportable DSS findings | 0 |\n| Report instances | 0 |\n| Report severity mix | none |\n| Report confidence mix | none |\n| Coverage | complete |\n| Validation mode | not recorded |\n\nCanonical artifacts: `scan-manifest.json`, `findings.json`, and `coverage.json`. This report is a deterministic projection of those files.\n\n## Threat Model\n\nNo explicit canonical threat-model summary was recorded.\n\n## Findings\n\n### No findings\n\nNo reportable findings survived the canonical discovery, validation, and reportability gates.\n",
-        source.commit,
-    );
+    let context = report_text(
+        optional_nonempty_string(scope, "context", "scan manifest scope")?.unwrap_or(""),
+        "",
+    )?;
+    if !context.is_empty() {
+        lines.push(format!("- Scan context: {context}"));
+    }
+    let limitations = report_strings(scope.get("limitations"), "scan manifest limitations")?;
+    if !limitations.is_empty() {
+        lines.extend([String::new(), "Limitations and exclusions:".to_string()]);
+        lines.extend(limitations.into_iter().map(|item| format!("- {item}")));
+    }
+    lines.extend([
+        String::new(),
+        "### Scan Summary".to_string(),
+        String::new(),
+        "| Field | Value |".to_string(),
+        "| --- | --- |".to_string(),
+        "| Scan outcome | completed |".to_string(),
+        "| Reportable DSS findings | 0 |".to_string(),
+        "| Report instances | 0 |".to_string(),
+        "| Report severity mix | none |".to_string(),
+        "| Report confidence mix | none |".to_string(),
+        "| Coverage | complete |".to_string(),
+        format!(
+            "| Validation mode | {} |",
+            report_cell(
+                optional_nonempty_string(scope, "validationMode", "scan manifest scope")?
+                    .unwrap_or("not recorded")
+            )?
+        ),
+        String::new(),
+        "Canonical artifacts: `scan-manifest.json`, `findings.json`, and `coverage.json`. This report is a deterministic projection of those files.".to_string(),
+        String::new(),
+        "## Threat Model".to_string(),
+        String::new(),
+    ]);
+    if threat_model.contains_key("format") {
+        lines.push(string(threat_model, "content", "scan manifest threat model")?.to_string());
+    } else {
+        lines.push(report_text(
+            string(threat_model, "summary", "scan manifest threat model")?,
+            "No explicit canonical threat-model summary was recorded.",
+        )?);
+        for (heading, field) in [
+            ("Assets", "assets"),
+            ("Trust Boundaries", "trustBoundaries"),
+            ("Attacker Capabilities", "attackerCapabilities"),
+            ("Security Objectives", "securityObjectives"),
+            ("Assumptions", "assumptions"),
+        ] {
+            let values = report_strings(
+                threat_model.get(field),
+                &format!("scan manifest threat model {field}"),
+            )?;
+            if !values.is_empty() {
+                lines.extend([String::new(), format!("### {heading}"), String::new()]);
+                lines.extend(values.into_iter().map(|item| format!("- {item}")));
+            }
+        }
+    }
+    lines.extend([
+        String::new(),
+        "## Findings".to_string(),
+        String::new(),
+        "### No findings".to_string(),
+        String::new(),
+        "No reportable findings survived the canonical discovery, validation, and reportability gates."
+            .to_string(),
+    ]);
+    let expected = format!("{}\n", lines.join("\n"));
     ensure!(
         report == expected,
         "Codex Security provider report is not the exact pinned zero-finding projection"
@@ -7818,6 +7911,8 @@ fn require_strict_scan_profile(scan: &BTreeMap<String, JsonValue>) -> Result<()>
             "sealedAt",
             "target",
             "scope",
+            "threatModel",
+            "preservedSources",
             "coverageRef",
             "findingsRef",
             "artifacts",
@@ -7862,10 +7957,262 @@ fn require_document(root: &BTreeMap<String, JsonValue>, document: &str) -> Resul
     Ok(())
 }
 
-fn require_scope(value: &JsonValue, label: &str) -> Result<()> {
+fn require_scope<'a>(value: &'a JsonValue, label: &str) -> Result<&'a BTreeMap<String, JsonValue>> {
     let scope = json_object(value, label)?;
-    require_json_fields(scope, &["includePaths", "excludePaths"], label)?;
-    require_scope_value(scope, label)
+    require_allowed_json_fields(
+        scope,
+        &["includePaths", "excludePaths"],
+        &[
+            "includePaths",
+            "excludePaths",
+            "summary",
+            "artifactsReviewed",
+            "runtimeStatus",
+            "validationMode",
+            "context",
+            "limitations",
+        ],
+        label,
+    )?;
+    require_scope_value(scope, label)?;
+    for field in ["summary", "runtimeStatus", "validationMode", "context"] {
+        optional_nonempty_string(scope, field, label)?;
+    }
+    for field in ["artifactsReviewed", "limitations"] {
+        if let Some(value) = scope.get(field) {
+            require_nonempty_string_array(value, label)?;
+        }
+    }
+    Ok(scope)
+}
+
+fn require_threat_model(value: &JsonValue) -> Result<&BTreeMap<String, JsonValue>> {
+    let label = "scan manifest threat model";
+    let threat_model = json_object(value, label)?;
+    if threat_model.contains_key("format") {
+        require_allowed_json_fields(
+            threat_model,
+            &["format", "content"],
+            &["format", "content", "scope", "origin"],
+            label,
+        )?;
+        ensure!(
+            string(threat_model, "format", label)? == "markdown",
+            "scan manifest threat model format is unsupported"
+        );
+        let content = nonempty_string(threat_model, "content", label)?;
+        ensure!(
+            !content.trim().is_empty(),
+            "scan manifest threat model content is blank"
+        );
+    } else {
+        require_allowed_json_fields(
+            threat_model,
+            &["summary"],
+            &[
+                "summary",
+                "assets",
+                "trustBoundaries",
+                "attackerCapabilities",
+                "securityObjectives",
+                "assumptions",
+                "scope",
+                "origin",
+            ],
+            label,
+        )?;
+        nonempty_string(threat_model, "summary", label)?;
+        for field in [
+            "assets",
+            "trustBoundaries",
+            "attackerCapabilities",
+            "securityObjectives",
+            "assumptions",
+        ] {
+            if let Some(value) = threat_model.get(field) {
+                require_nonempty_string_array(value, label)?;
+            }
+        }
+    }
+    if let Some(scope) = threat_model.get("scope") {
+        require_threat_model_scope(scope)?;
+    }
+    if let Some(origin) = optional_nonempty_string(threat_model, "origin", label)? {
+        ensure!(
+            matches!(
+                origin,
+                "generated" | "provided" | "reconciled" | "recovered"
+            ),
+            "scan manifest threat model origin is unsupported"
+        );
+    }
+    Ok(threat_model)
+}
+
+fn require_threat_model_scope(value: &JsonValue) -> Result<()> {
+    let label = "scan manifest threat model scope";
+    let scope = json_object(value, label)?;
+    require_allowed_json_fields(
+        scope,
+        &["includePaths"],
+        &["includePaths", "excludePaths", "summary"],
+        label,
+    )?;
+    require_nonempty_string_array(json_field(scope, "includePaths", label)?, label)?;
+    if let Some(exclude_paths) = scope.get("excludePaths") {
+        require_nonempty_string_array(exclude_paths, label)?;
+    }
+    optional_nonempty_string(scope, "summary", label)?;
+    Ok(())
+}
+
+fn require_allowed_json_fields(
+    object: &BTreeMap<String, JsonValue>,
+    required: &[&str],
+    allowed: &[&str],
+    label: &str,
+) -> Result<()> {
+    ensure!(
+        required.iter().all(|field| object.contains_key(*field))
+            && object.keys().all(|field| allowed.contains(&field.as_str())),
+        "{label} differs from the qualified projection profile"
+    );
+    Ok(())
+}
+
+fn optional_nonempty_string<'a>(
+    object: &'a BTreeMap<String, JsonValue>,
+    field: &str,
+    label: &str,
+) -> Result<Option<&'a str>> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    let value = json_string(value, &format!("{label} `{field}`"))?;
+    ensure!(!value.is_empty(), "{label} `{field}` is empty");
+    Ok(Some(value))
+}
+
+fn require_nonempty_string_array(value: &JsonValue, label: &str) -> Result<()> {
+    for item in json_string_array(value, label)? {
+        ensure!(!item.is_empty(), "{label} contains an empty string");
+    }
+    Ok(())
+}
+
+fn require_preserved_sources(value: &JsonValue) -> Result<()> {
+    let sources = json_object(value, "scan manifest preserved sources")?;
+    ensure!(
+        !sources.is_empty(),
+        "scan manifest preserved sources are empty"
+    );
+    for (path, digest) in sources {
+        plugin_relative_path(path).with_context(|| {
+            format!("scan manifest preserved source `{path}` is not a safe relative path")
+        })?;
+        let digest = json_string(digest, "scan manifest preserved source digest")?;
+        ensure!(
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
+            "scan manifest preserved source `{path}` has a noncanonical SHA-256 digest"
+        );
+    }
+    Ok(())
+}
+
+fn report_strings(value: Option<&JsonValue>, label: &str) -> Result<Vec<String>> {
+    match value {
+        Some(value) => {
+            let values = json_string_array(value, label)?
+                .into_iter()
+                .map(|value| report_text(value, ""))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(values
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect())
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+fn report_cell(value: &str) -> Result<String> {
+    Ok(report_text(value, "none")?.replace('|', "\\|"))
+}
+
+fn report_text(value: &str, fallback: &str) -> Result<String> {
+    let candidate = if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    };
+    let mut normalized = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars = normalized.chars().collect::<Vec<_>>();
+    let numeric_prefix = chars
+        .iter()
+        .take_while(|character| character.is_numeric())
+        .count();
+    ensure!(
+        !(numeric_prefix > 0
+            && chars[..numeric_prefix]
+                .iter()
+                .any(|character| !character.is_ascii())
+            && chars.get(numeric_prefix) == Some(&'.')
+            && chars.get(numeric_prefix + 1) == Some(&' ')),
+        "Codex Security report text has an unsupported Unicode numeric list prefix"
+    );
+    let prefixed = normalized.starts_with('|')
+        || normalized.starts_with("```")
+        || matches!(chars.as_slice(), [first, ' ', ..] if matches!(first, '-' | '*' | '+' | '>'))
+        || {
+            let hashes = chars
+                .iter()
+                .take_while(|character| **character == '#')
+                .count();
+            (1..=6).contains(&hashes) && chars.get(hashes) == Some(&' ')
+        }
+        || {
+            let digits = chars
+                .iter()
+                .take_while(|character| character.is_ascii_digit())
+                .count();
+            digits > 0 && chars.get(digits) == Some(&'.') && chars.get(digits + 1) == Some(&' ')
+        };
+    if prefixed {
+        normalized.insert_str(0, "Text: ");
+    }
+
+    let characters = normalized.chars().collect::<Vec<_>>();
+    let mut escaped = String::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if characters[index] == '`' && (index == 0 || characters[index - 1] != '`') {
+            if let Some(relative_end) = characters[index + 1..]
+                .iter()
+                .position(|character| *character == '`')
+            {
+                let end = index + 1 + relative_end;
+                if end > index + 1
+                    && characters
+                        .get(end + 1)
+                        .is_none_or(|character| *character != '`')
+                {
+                    escaped.extend(&characters[index..=end]);
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+        let character = characters[index];
+        if matches!(character, '\\' | '`' | '*' | '[' | ']' | '<' | '>') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+        index += 1;
+    }
+    Ok(escaped)
 }
 
 fn require_scope_value(scope: &BTreeMap<String, JsonValue>, label: &str) -> Result<()> {
@@ -8743,9 +9090,9 @@ mod tests {
         let finding = finding_level.map_or(String::new(), |level| format!(r#"{{"findingId":"csf_000000000000000000000001","fingerprints":{{"algorithm":"codex-security/v1","primary":"codex-security/v1:sha256:{}"}},"severity":{{"level":"{level}"}}}}"#, "1".repeat(64)));
         let findings = format!(r#"{{"documentType":"codex-security.findings","schemaVersion":"1.0","scanId":"{TEST_SCAN_ID}","findings":[{finding}]}}"#).into_bytes();
         let coverage = format!(r#"{{"documentType":"codex-security.coverage","schemaVersion":"1.0","scanId":"{TEST_SCAN_ID}","mode":"deep_repository","completeness":"{completeness}","inventoryStrategy":"repository","includePaths":["."],"excludePaths":[],"surfaces":[],"explicitExclusions":[],"deferred":[],"openQuestions":[]}}"#).into_bytes();
-        let manifest = format!(r#"{{"documentType":"codex-security.scan-manifest","schemaVersion":"1.0","scan":{{"id":"{TEST_SCAN_ID}","producer":{{"name":"codex-security-plugin","version":"0.1.32"}},"status":"completed","startedAt":"2026-09-28T00:00:00Z","completedAt":"2026-09-28T01:00:00Z","sealedAt":"2026-09-28T01:00:00Z","target":{{"kind":"git_revision","targetId":"target-1","displayName":"wizards-bedrock","revision":"{revision}"}},"scope":{{"includePaths":["."],"excludePaths":[]}},"coverageRef":"coverage.json","findingsRef":"findings.json","artifacts":[{{"path":"findings.json","sha256":"{}","mediaType":"application/json"}},{{"path":"coverage.json","sha256":"{}","mediaType":"application/json"}}]}}}}"#, sha256::hex(&sha256::digest(&findings)), sha256::hex(&sha256::digest(&coverage))).into_bytes();
+        let manifest = format!(r#"{{"documentType":"codex-security.scan-manifest","schemaVersion":"1.0","scan":{{"id":"{TEST_SCAN_ID}","producer":{{"name":"codex-security-plugin","version":"0.1.32"}},"status":"completed","startedAt":"2026-09-28T00:00:00Z","completedAt":"2026-09-28T01:00:00Z","sealedAt":"2026-09-28T01:00:00Z","target":{{"kind":"git_revision","targetId":"target-1","displayName":"wizards-bedrock","revision":"{revision}"}},"scope":{{"includePaths":["."],"excludePaths":[],"summary":"Review of the complete `wizards-bedrock` tree.","artifactsReviewed":["Rust *sources*","qualification harness"],"runtimeStatus":"Static and host-side validation completed.","validationMode":"independent | host","context":"Paths [owned] <local>","limitations":["No runtime boot; source-only."]}},"threatModel":{{"summary":"Assets in `kernel` and *host*.","assets":["Kernel [state]"],"trustBoundaries":["Host > guest boundary"],"attackerCapabilities":["Can supply repository inputs."],"securityObjectives":["Keep authority local."],"assumptions":["Pinned tools are trusted."],"scope":{{"includePaths":["."],"excludePaths":[],"summary":"Repository source."}},"origin":"reconciled"}},"preservedSources":{{"workers/discovery/checkpoint.json":"{}"}},"coverageRef":"coverage.json","findingsRef":"findings.json","artifacts":[{{"path":"findings.json","sha256":"{}","mediaType":"application/json"}},{{"path":"coverage.json","sha256":"{}","mediaType":"application/json"}}]}}}}"#, "2".repeat(64), sha256::hex(&sha256::digest(&findings)), sha256::hex(&sha256::digest(&coverage))).into_bytes();
         let report = format!(
-            "# Security Review: wizards-bedrock\n\n## Scope\n\nThe scan was configured for the include paths and exclusions listed below.\n\n- Scan mode: deep_repository\n- Target kind: git_revision\n- Target ID: target-1\n- Revision: {revision}\n- Inventory strategy: repository\n- Included paths: .\n- Excluded paths: none\n\n### Scan Summary\n\n| Field | Value |\n| --- | --- |\n| Scan outcome | completed |\n| Reportable DSS findings | 0 |\n| Report instances | 0 |\n| Report severity mix | none |\n| Report confidence mix | none |\n| Coverage | complete |\n| Validation mode | not recorded |\n\nCanonical artifacts: `scan-manifest.json`, `findings.json`, and `coverage.json`. This report is a deterministic projection of those files.\n\n## Threat Model\n\nNo explicit canonical threat-model summary was recorded.\n\n## Findings\n\n### No findings\n\nNo reportable findings survived the canonical discovery, validation, and reportability gates.\n"
+            "# Security Review: wizards-bedrock\n\n## Scope\n\nReview of the complete `wizards-bedrock` tree.\n\n- Scan mode: deep_repository\n- Target kind: git_revision\n- Target ID: target-1\n- Revision: {revision}\n- Inventory strategy: repository\n- Included paths: .\n- Excluded paths: none\n- Artifacts reviewed: Rust \\*sources\\*, qualification harness\n- Scan context: Paths \\[owned\\] \\<local\\>\n\nLimitations and exclusions:\n- No runtime boot; source-only.\n\n### Scan Summary\n\n| Field | Value |\n| --- | --- |\n| Scan outcome | completed |\n| Reportable DSS findings | 0 |\n| Report instances | 0 |\n| Report severity mix | none |\n| Report confidence mix | none |\n| Coverage | complete |\n| Validation mode | independent \\| host |\n\nCanonical artifacts: `scan-manifest.json`, `findings.json`, and `coverage.json`. This report is a deterministic projection of those files.\n\n## Threat Model\n\nAssets in `kernel` and \\*host\\*.\n\n### Assets\n\n- Kernel \\[state\\]\n\n### Trust Boundaries\n\n- Host \\> guest boundary\n\n### Attacker Capabilities\n\n- Can supply repository inputs.\n\n### Security Objectives\n\n- Keep authority local.\n\n### Assumptions\n\n- Pinned tools are trusted.\n\n## Findings\n\n### No findings\n\nNo reportable findings survived the canonical discovery, validation, and reportability gates.\n"
         )
         .into_bytes();
         (manifest, findings, coverage, report)
@@ -8778,6 +9125,244 @@ mod tests {
             format!("{error:#}")
                 .contains("provider report is not the exact pinned zero-finding projection")
         );
+    }
+
+    #[test]
+    fn manifest_scope_accepts_official_optionality_and_rejects_unqualified_fields() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let manifest = String::from_utf8(manifest).unwrap();
+        let minimal = manifest.replace(
+            r#""scope":{"includePaths":["."],"excludePaths":[],"summary":"Review of the complete `wizards-bedrock` tree.","artifactsReviewed":["Rust *sources*","qualification harness"],"runtimeStatus":"Static and host-side validation completed.","validationMode":"independent | host","context":"Paths [owned] <local>","limitations":["No runtime boot; source-only."]}"#,
+            r#""scope":{"includePaths":["."],"excludePaths":[]}"#,
+        );
+        let minimal_report = String::from_utf8(report.clone())
+            .unwrap()
+            .replace(
+                "Review of the complete `wizards-bedrock` tree.",
+                "The scan was configured for the include paths and exclusions listed below.",
+            )
+            .replace(
+                "- Artifacts reviewed: Rust \\*sources\\*, qualification harness\n",
+                "",
+            )
+            .replace("- Scan context: Paths \\[owned\\] \\<local\\>\n", "")
+            .replace(
+                "\nLimitations and exclusions:\n- No runtime boot; source-only.\n",
+                "",
+            )
+            .replace("independent \\| host", "not recorded");
+        verify_scan(
+            minimal.as_bytes(),
+            &findings,
+            &coverage,
+            minimal_report.as_bytes(),
+            &source,
+        )
+        .expect("official optional scope fields may be absent");
+
+        let unicode_list_prefix = manifest.replace(
+            "Review of the complete `wizards-bedrock` tree.",
+            "١. disguised list item",
+        );
+        let error = verify_scan(
+            unicode_list_prefix.as_bytes(),
+            &findings,
+            &coverage,
+            &report,
+            &source,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("unsupported Unicode numeric list prefix"));
+
+        let unexpected = manifest.replace(
+            r#""runtimeStatus":"Static and host-side validation completed.""#,
+            r#""runtimeStatus":"Static and host-side validation completed.","unexpected":"drift""#,
+        );
+        let error = verify_scan(
+            unexpected.as_bytes(),
+            &findings,
+            &coverage,
+            &report,
+            &source,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("scan manifest scope differs from the qualified projection profile")
+        );
+
+        for (malformed, expected) in [
+            (
+                manifest.replace(r#""context":"Paths [owned] <local>""#, r#""context":7"#),
+                "scan manifest scope `context` is not a string",
+            ),
+            (
+                manifest.replace(
+                    r#""summary":"Review of the complete `wizards-bedrock` tree.""#,
+                    r#""summary":"""#,
+                ),
+                "scan manifest scope `summary` is empty",
+            ),
+        ] {
+            let error = verify_scan(malformed.as_bytes(), &findings, &coverage, &report, &source)
+                .unwrap_err();
+            assert!(format!("{error:#}").contains(expected));
+        }
+    }
+
+    #[test]
+    fn manifest_threat_model_accepts_structured_optionality_and_rejects_unqualified_fields() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let manifest = String::from_utf8(manifest).unwrap();
+        let optional_fields = r#","assets":["Kernel [state]"],"trustBoundaries":["Host > guest boundary"],"attackerCapabilities":["Can supply repository inputs."],"securityObjectives":["Keep authority local."],"assumptions":["Pinned tools are trusted."],"scope":{"includePaths":["."],"excludePaths":[],"summary":"Repository source."},"origin":"reconciled""#;
+        let minimal = manifest.replace(optional_fields, "");
+        assert_ne!(minimal, manifest, "fixture has structured optional fields");
+        let structured_sections = "\n\n### Assets\n\n- Kernel \\[state\\]\n\n### Trust Boundaries\n\n- Host \\> guest boundary\n\n### Attacker Capabilities\n\n- Can supply repository inputs.\n\n### Security Objectives\n\n- Keep authority local.\n\n### Assumptions\n\n- Pinned tools are trusted.";
+        let minimal_report = String::from_utf8(report.clone())
+            .unwrap()
+            .replace(structured_sections, "");
+        verify_scan(
+            minimal.as_bytes(),
+            &findings,
+            &coverage,
+            minimal_report.as_bytes(),
+            &source,
+        )
+        .expect("official structured threat-model fields may be absent");
+
+        let blank_summary = manifest.replace(
+            r#""summary":"Assets in `kernel` and *host*.""#,
+            r#""summary":"   ""#,
+        );
+        let fallback_report = String::from_utf8(report.clone()).unwrap().replace(
+            "Assets in `kernel` and \\*host\\*.",
+            "No explicit canonical threat-model summary was recorded.",
+        );
+        verify_scan(
+            blank_summary.as_bytes(),
+            &findings,
+            &coverage,
+            fallback_report.as_bytes(),
+            &source,
+        )
+        .expect("the pinned renderer fallback for a whitespace-only structured summary");
+
+        let unexpected = manifest.replace(
+            r#""origin":"reconciled""#,
+            r#""origin":"reconciled","unexpected":"drift""#,
+        );
+        let error = verify_scan(
+            unexpected.as_bytes(),
+            &findings,
+            &coverage,
+            &report,
+            &source,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains(
+                "scan manifest threat model differs from the qualified projection profile"
+            )
+        );
+    }
+
+    #[test]
+    fn markdown_threat_model_is_embedded_verbatim_and_strictly_typed() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let rich_threat_model = r#""threatModel":{"summary":"Assets in `kernel` and *host*.","assets":["Kernel [state]"],"trustBoundaries":["Host > guest boundary"],"attackerCapabilities":["Can supply repository inputs."],"securityObjectives":["Keep authority local."],"assumptions":["Pinned tools are trusted."],"scope":{"includePaths":["."],"excludePaths":[],"summary":"Repository source."},"origin":"reconciled"}"#;
+        let markdown_threat_model = r####""threatModel":{"format":"markdown","content":"### Model\n\nRaw *Markdown* with `code`.","origin":"provided","scope":{"includePaths":["src"],"excludePaths":["generated"],"summary":"Modeled source."}}"####;
+        let manifest = String::from_utf8(manifest)
+            .unwrap()
+            .replace(rich_threat_model, markdown_threat_model);
+        let structured = "Assets in `kernel` and \\*host\\*.\n\n### Assets\n\n- Kernel \\[state\\]\n\n### Trust Boundaries\n\n- Host \\> guest boundary\n\n### Attacker Capabilities\n\n- Can supply repository inputs.\n\n### Security Objectives\n\n- Keep authority local.\n\n### Assumptions\n\n- Pinned tools are trusted.";
+        let report = String::from_utf8(report)
+            .unwrap()
+            .replace(structured, "### Model\n\nRaw *Markdown* with `code`.");
+        verify_scan(
+            manifest.as_bytes(),
+            &findings,
+            &coverage,
+            report.as_bytes(),
+            &source,
+        )
+        .expect("the official Markdown threat-model form");
+
+        let unexpected = manifest.replace(
+            r#""summary":"Modeled source.""#,
+            r#""summary":"Modeled source.","unexpected":"drift""#,
+        );
+        let error = verify_scan(
+            unexpected.as_bytes(),
+            &findings,
+            &coverage,
+            report.as_bytes(),
+            &source,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(
+            "scan manifest threat model scope differs from the qualified projection profile"
+        ));
+
+        for (malformed, expected) in [
+            (
+                manifest.replace(r#""format":"markdown""#, r#""format":"html""#),
+                "scan manifest threat model format is unsupported",
+            ),
+            (
+                manifest.replace(
+                    r####""content":"### Model\n\nRaw *Markdown* with `code`.""####,
+                    r#""content":"   ""#,
+                ),
+                "scan manifest threat model content is blank",
+            ),
+            (
+                manifest.replace(r#""origin":"provided""#, r#""origin":"inherited""#),
+                "scan manifest threat model origin is unsupported",
+            ),
+            (
+                manifest.replace(r#""includePaths":["src"]"#, r#""includePaths":"src""#),
+                "scan manifest threat model scope is not an array",
+            ),
+        ] {
+            let error = verify_scan(
+                malformed.as_bytes(),
+                &findings,
+                &coverage,
+                report.as_bytes(),
+                &source,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(expected));
+        }
+    }
+
+    #[test]
+    fn manifest_preserved_sources_are_canonical_sha256_bindings() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let manifest = String::from_utf8(manifest).unwrap();
+        for invalid in [
+            manifest.replace(
+                &format!(
+                    r#""preservedSources":{{"workers/discovery/checkpoint.json":"{}"}}"#,
+                    "2".repeat(64)
+                ),
+                r#""preservedSources":{}"#,
+            ),
+            manifest.replace(
+                "workers/discovery/checkpoint.json",
+                "workers/../checkpoint.json",
+            ),
+            manifest.replace(&"2".repeat(64), &"G".repeat(64)),
+        ] {
+            assert!(
+                verify_scan(invalid.as_bytes(), &findings, &coverage, &report, &source).is_err(),
+                "accepted a malformed preserved-source binding"
+            );
+        }
     }
 
     #[test]
@@ -8837,8 +9422,8 @@ mod tests {
         );
         assert!(verify_scan(limited.as_bytes(), &findings, &coverage, &report, &source).is_err());
         let limited_scope = manifest.replace(
-            r#""scope":{"includePaths":["."],"excludePaths":[]}"#,
-            r#""scope":{"includePaths":["."],"excludePaths":[],"validationMode":"sampled"}"#,
+            r#""validationMode":"independent | host""#,
+            r#""validationMode":"sampled""#,
         );
         assert!(
             verify_scan(

@@ -1239,12 +1239,7 @@ mod tests {
 
     #[test]
     fn a_second_stream_failure_rolls_back_the_first_capture_and_directory() {
-        let parent = std::env::temp_dir().join(format!(
-            "wizard-capture-rollback-{}-{}",
-            std::process::id(),
-            NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&parent).unwrap();
+        let parent = crate::test_support::reserve_temp_directory("wizard-capture-rollback");
         let mut stream = 0;
 
         let error = match Capture::create_in(&parent, |_, _| {
@@ -1592,12 +1587,7 @@ mod tests {
     }
 
     fn parked_family(label: &str, lingers: bool) -> (PathBuf, PathBuf, Command) {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-parked-{label}-{}-{}",
-            std::process::id(),
-            NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory(&format!("wizard-parked-{label}"));
         let lock = root.join("parked.lock");
         let mut command = Command::new(std::env::current_exe().unwrap());
         command

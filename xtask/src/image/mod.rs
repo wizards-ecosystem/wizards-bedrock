@@ -342,7 +342,6 @@ mod tests {
     use super::*;
 
     const TEST_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-    static NEXT_TEST_TARGET: AtomicU64 = AtomicU64::new(0);
 
     #[cfg(unix)]
     fn create_directory_symlink(target: &Path, link: &Path) {
@@ -375,22 +374,14 @@ mod tests {
     }
 
     fn test_root(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-image-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEST_TARGET.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).expect("image test root");
-        root
+        crate::test_support::reserve_temp_directory(&format!("wizard-image-{label}"))
     }
 
     #[test]
     fn two_qemu_images_are_private_and_removed() {
-        let target = Arc::new(std::env::temp_dir().join(format!(
-            "wizard image,fixture-{}-{}",
-            std::process::id(),
-            NEXT_TEST_TARGET.fetch_add(1, Ordering::Relaxed)
-        )));
+        let target = Arc::new(crate::test_support::reserve_temp_directory(
+            "wizard image,fixture",
+        ));
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let reserve = |target: Arc<PathBuf>, barrier: Arc<std::sync::Barrier>| {
             std::thread::spawn(move || {

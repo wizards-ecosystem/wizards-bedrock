@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syn::visit::{self, Visit};
 use syn::{
@@ -12,8 +11,6 @@ use syn::{
 };
 
 use crate::paths::{KERNEL_TARGET, Paths};
-
-static NEXT_PROBE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
 struct BooleanType(bool);
@@ -68,9 +65,7 @@ impl Probe {
             "contract probe parent",
         )
         .expect("contract probe parent");
-        let root = fresh_probe_directory(&parent, label, || {
-            NEXT_PROBE.fetch_add(1, Ordering::Relaxed)
-        });
+        let root = crate::test_support::reserve_directory(&parent, label);
         std::fs::create_dir(root.join("src")).expect("contract source directory");
 
         let wost = paths
@@ -159,12 +154,12 @@ fn contract_probes_are_fresh_directories_inside_the_target_tree() {
     );
     drop(probe);
 
-    let parent = target.join("contract-probes");
+    let parent = crate::test_support::reserve_directory(
+        &target.join("contract-probes"),
+        "contract-probe-reservation-test",
+    );
     let occupied = parent.join(format!("occupied-{}-0", std::process::id()));
-    let outside = parent.join(format!("outside-{}", std::process::id()));
-    let _ = std::fs::remove_file(&occupied).or_else(|_| std::fs::remove_dir(&occupied));
-    let _ = std::fs::remove_dir_all(&outside);
-    let _ = std::fs::remove_dir(parent.join(format!("occupied-{}-1", std::process::id())));
+    let outside = parent.join("outside");
     std::fs::create_dir(&outside).expect("outside fixture");
     std::fs::write(outside.join("marker"), b"outside").expect("outside marker");
     #[cfg(windows)]
@@ -187,11 +182,7 @@ fn contract_probes_are_fresh_directories_inside_the_target_tree() {
         1,
         "a pre-placed link redirected the probe"
     );
-    std::fs::remove_dir(&fresh).expect("removing the fresh probe");
-    std::fs::remove_file(&occupied)
-        .or_else(|_| std::fs::remove_dir(&occupied))
-        .expect("removing the occupying link");
-    std::fs::remove_dir_all(&outside).expect("removing the outside fixture");
+    std::fs::remove_dir_all(parent).expect("removing the contract reservation fixture");
 }
 
 fn diagnostic_codes(output: &Output) -> Vec<&str> {

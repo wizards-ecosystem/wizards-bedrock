@@ -661,14 +661,7 @@ mod tests {
 
     #[test]
     fn a_redirected_model_scratch_is_refused_without_touching_outside_bytes() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("host clock")
-            .as_nanos();
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-model-scratch-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-model-scratch");
         let repository = fixture.join("repository");
         let target = fixture.join("target");
         let state = target.join("model-check");

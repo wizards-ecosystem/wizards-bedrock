@@ -522,7 +522,7 @@ review limit states exactly what automation still cannot decide.
 ## What is left
 
 The failed `f28428a` and `44e1c89` reports are historical repair inventories,
-not qualification. The complete current 2,120-entry registry must pass on the
+not qualification. The complete current 2,130-entry registry must pass on the
 frozen qualification commit; no earlier verdict may be inherited.
 The finite order is now:
 

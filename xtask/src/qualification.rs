@@ -4401,11 +4401,8 @@ mod tests {
     }
 
     fn advisory_fixture(label: &str) -> (PathBuf, Paths, PathBuf, SourceIdentity) {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-advisory-{label}-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture =
+            crate::test_support::reserve_temp_directory(&format!("wizard-advisory-{label}"));
         let repository = fixture.join("repository");
         let root = fixture.join("qualification");
         let directory = root.join(Kind::Advisory.slug());
@@ -4843,11 +4840,7 @@ mod tests {
 
     #[test]
     fn advisory_database_identity_rejects_forged_origin_and_dirty_bytes() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-advisory-database-{}-{nonce}",
-            std::process::id()
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-advisory-database");
         let parent = fixture.join("advisory");
         let database = parent.join(ADVISORY_DATABASE);
         std::fs::create_dir_all(&database).unwrap();
@@ -5223,12 +5216,7 @@ mod tests {
 
     #[test]
     fn semantic_artifacts_are_bounded_before_and_during_allocation() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-bounded-artifact-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-bounded-artifact");
         let path = root.join("artifact");
         let file = File::create(&path).unwrap();
         file.set_len(33).unwrap();
@@ -5259,12 +5247,7 @@ mod tests {
 
     #[test]
     fn an_artifact_swapped_for_a_link_after_its_check_is_never_read() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-swapped-artifact-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-swapped-artifact");
         let path = root.join("report.md");
         let parked = root.join("parked");
         let secret = root.join("secret");
@@ -5296,12 +5279,7 @@ mod tests {
 
     #[test]
     fn generic_qualification_digests_have_a_streaming_ceiling() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-bounded-digest-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-bounded-digest");
         let path = root.join("artifact");
         File::create(&path).unwrap().set_len(33).unwrap();
 
@@ -5316,12 +5294,7 @@ mod tests {
 
     #[test]
     fn generic_qualification_digest_growth_is_refused_after_measurement() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-growing-digest-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-growing-digest");
         let path = root.join("artifact");
         std::fs::write(&path, b"x").unwrap();
         let growing = path.clone();
@@ -5343,12 +5316,7 @@ mod tests {
 
     #[test]
     fn generic_qualification_digest_truncation_is_refused_after_measurement() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-truncated-digest-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-truncated-digest");
         let path = root.join("artifact");
         std::fs::write(&path, b"1234").unwrap();
         let shrinking = path.clone();
@@ -5367,12 +5335,8 @@ mod tests {
 
     #[test]
     fn an_oversized_qualification_record_is_refused_before_parsing() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-oversized-qualification-record-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root =
+            crate::test_support::reserve_temp_directory("wizard-oversized-qualification-record");
         let path = root.join("record");
         File::create(&path)
             .unwrap()
@@ -5390,12 +5354,8 @@ mod tests {
 
     #[test]
     fn an_oversized_generation_receipt_is_refused_before_parsing() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-oversized-generation-record-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root =
+            crate::test_support::reserve_temp_directory("wizard-oversized-generation-record");
         let path = root.join(VMWARE_GENERATION_RECEIPT);
         File::create(&path)
             .unwrap()
@@ -5415,11 +5375,7 @@ mod tests {
 
     #[test]
     fn tracked_model_files_are_size_checked_before_streaming() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-model-input-bound-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-model-input-bound");
         let models = root.join("models");
         std::fs::create_dir_all(&models).unwrap();
         run_git(&root, &["init", "--quiet"]);
@@ -5443,11 +5399,7 @@ mod tests {
 
     #[test]
     fn tracked_model_tree_has_an_independent_total_size_bound() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-model-tree-bound-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-model-tree-bound");
         let models = root.join("models");
         std::fs::create_dir_all(&models).unwrap();
         run_git(&root, &["init", "--quiet"]);
@@ -5478,11 +5430,7 @@ mod tests {
 
     #[test]
     fn streamed_model_tree_digest_preserves_the_length_delimited_schema() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-model-digest-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-model-digest");
         std::fs::create_dir_all(root.join("models/nested")).unwrap();
         run_git(&root, &["init", "--quiet"]);
         for (path, contents) in [
@@ -5558,12 +5506,7 @@ mod tests {
 
     #[test]
     fn deterministic_machine_images_have_exact_sizes_before_verification() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-exact-artifact-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-exact-artifact");
         let image = root.join(VMWARE_IMAGE);
         File::create(&image)
             .unwrap()
@@ -5776,10 +5719,7 @@ mod tests {
         }
 
         assert_eq!(BUNDLE_FILES.len(), expected.len());
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("wizard-size-policy-{}-{nonce}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-size-policy");
         let path = root.join("sparse-artifact");
         File::create(&path).unwrap();
 
@@ -5838,12 +5778,7 @@ mod tests {
 
     #[test]
     fn vmware_capture_preflights_image_size_before_streaming() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-streamed-artifact-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-streamed-artifact");
         let source = root.join("source.img");
         let captured = root.join("captured.img");
         File::create(&source).unwrap().set_len(4097).unwrap();
@@ -5869,12 +5804,7 @@ mod tests {
 
     #[test]
     fn vmware_capture_refuses_growth_after_its_preflight_measurement() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-growing-vmware-capture-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-growing-vmware-capture");
         let source = root.join("source.img");
         let captured = root.join("captured.img");
         File::create(&source).unwrap().set_len(4096).unwrap();
@@ -5898,12 +5828,7 @@ mod tests {
 
     #[test]
     fn vmware_capture_refuses_truncation_after_exact_preflight() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-truncated-vmware-capture-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-truncated-vmware-capture");
         let source = root.join("source.img");
         let captured = root.join("captured.img");
         File::create(&source).unwrap().set_len(4096).unwrap();
@@ -5967,14 +5892,7 @@ mod tests {
 
     #[test]
     fn copied_support_bytes_must_match_their_inner_record() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-support-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-support");
         let paths = Paths::new(root.join("repository"), None);
         let directory = root.join(Kind::Mutation.slug());
         std::fs::create_dir_all(&directory).unwrap();
@@ -5998,11 +5916,7 @@ mod tests {
 
     #[test]
     fn model_support_rejects_omitted_substituted_and_reordered_runs() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-model-support-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-model-support");
         let paths = Paths::new(root.join("repository"), None);
         let directory = root.join(Kind::Model.slug());
         std::fs::create_dir_all(&directory).unwrap();
@@ -6060,11 +5974,8 @@ mod tests {
 
     #[test]
     fn a_snapshot_parent_link_cannot_substitute_qualification_bytes() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-snapshot-link-{}-{nonce}",
-            std::process::id()
-        ));
+        let root =
+            crate::test_support::reserve_temp_directory("wizard-qualification-snapshot-link");
         write_snapshot_bundle(&root);
         let digests = BUNDLE_FILES
             .iter()
@@ -6090,11 +6001,7 @@ mod tests {
 
     #[test]
     fn bundle_directories_are_validated_before_any_redirected_creation() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-install-link-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-install-link");
         let source = root.join("source");
         let evidence = root.join("evidence");
         let outside = root.join("outside");
@@ -6130,11 +6037,7 @@ mod tests {
 
     #[test]
     fn snapshot_retains_mutation_lock_through_install_refusal() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-install-lock-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-install-lock");
         let source = root.join("source");
         let evidence = root.join("not-a-directory");
         write_snapshot_bundle(&source);
@@ -6216,15 +6119,7 @@ mod tests {
 
     #[test]
     fn generation_receipt_binds_reset_source_selector_and_machine_bytes() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "wizard-vmware-receipt-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
+        let directory = crate::test_support::reserve_temp_directory("wizard-vmware-receipt");
         for name in [
             VMWARE_IMAGE,
             VMWARE_NAMESPACE,
@@ -6300,11 +6195,8 @@ mod tests {
 
     #[test]
     fn vmware_accepts_only_the_source_defined_dma_handoff_authority() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "wizard-vmware-handoff-{}-{nonce}.bin",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-handoff");
+        let path = root.join("handoff.bin");
         let mut foreign = crate::platform_acpi::dma_handoff_table();
         foreign[10] ^= 1;
         foreign[9] = 0;
@@ -6319,7 +6211,7 @@ mod tests {
             "the near miss must remain structurally valid ACPI"
         );
         assert!(verified_dma_handoff_digest(&path).is_err());
-        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6388,11 +6280,7 @@ mod tests {
             .unwrap()
         }
 
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-capture-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-capture");
         let source = SourceIdentity {
             commit: "a".repeat(40),
             tree: "b".repeat(40),
@@ -6505,11 +6393,7 @@ mod tests {
 
     #[test]
     fn a_vmware_selector_directory_cannot_be_substituted() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-selector-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-selector");
         let repository = root.join("repository");
         let vm_root = repository.join("vm");
         let selector = vm_root.join("self-test");
@@ -6538,11 +6422,7 @@ mod tests {
 
     #[test]
     fn vmrun_list_requires_one_exact_running_machine() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmrun-list-{}-{}",
-            std::process::id(),
-            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmrun-list");
         let expected = root.join("expected.vmx");
         let foreign = root.join("foreign.vmx");
         std::fs::create_dir_all(&root).unwrap();
@@ -6575,11 +6455,7 @@ mod tests {
 
     #[test]
     fn offline_vmware_observer_is_bound_to_its_exact_selector() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmrun-replay-{}-{}",
-            std::process::id(),
-            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmrun-replay");
         let repository = root.join("repository");
         let qualification = root.join("qualification");
         let paths = Paths::new(repository.clone(), Some(&root.join("target")));
@@ -6629,11 +6505,7 @@ mod tests {
 
     #[test]
     fn vmrun_observation_executes_list_between_exact_tool_probes() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmrun-order-{}-{}",
-            std::process::id(),
-            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmrun-order");
         let expected = root.join("expected.vmx");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&expected, "vmx").unwrap();
@@ -6678,13 +6550,7 @@ mod tests {
 
     #[test]
     fn starting_an_attempt_invalidates_an_older_pass() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-invalidation-{}",
-            std::process::id()
-        ));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-invalidation");
         let paths = Paths::new(root.join("repo"), Some(&root.join("target")));
         let directory = qualification_root(&paths).join(Kind::VmwareSelfTest.slug());
         std::fs::create_dir_all(&directory).unwrap();
@@ -6703,11 +6569,7 @@ mod tests {
 
     #[test]
     fn advisory_invalidation_precedes_even_failed_tool_resolution() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-advisory-invalidation-{}-{}",
-            std::process::id(),
-            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-advisory-invalidation");
         let paths = Paths::new(root.join("repo"), Some(&root.join("target")));
         let directory = qualification_root(&paths).join(Kind::Advisory.slug());
         std::fs::create_dir_all(&directory).unwrap();
@@ -6728,11 +6590,7 @@ mod tests {
 
     #[test]
     fn a_qualification_kind_directory_cannot_be_substituted() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-parent-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-parent");
         let paths = Paths::new(root.join("repository"), Some(&root.join("target")));
         let qualification = qualification_root(&paths);
         let model = qualification.join(Kind::Model.slug());
@@ -6749,11 +6607,7 @@ mod tests {
 
     #[test]
     fn a_qualification_root_cannot_be_substituted() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-root-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-root");
         let target = root.join("target");
         let qualification = target.join("qualification");
         let alternate = target.join("alternate");
@@ -6773,11 +6627,7 @@ mod tests {
 
     #[test]
     fn a_redirected_target_is_refused_before_qualification_root_creation() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-target-link-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-target-link");
         let outside = root.join("outside");
         let target = root.join("target-link");
         std::fs::create_dir_all(&outside).unwrap();
@@ -6791,11 +6641,7 @@ mod tests {
 
     #[test]
     fn source_is_rechecked_immediately_before_a_record_commits() {
-        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "wizard-qualification-source-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-qualification-source");
         let repository = root.join("repository");
         std::fs::create_dir_all(&repository).unwrap();
         run_git(&repository, &["init", "--quiet"]);
@@ -6849,15 +6695,8 @@ mod tests {
 
     #[test]
     fn generation_start_invalidates_both_receipt_names() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "wizard-generation-invalidation-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
+        let directory =
+            crate::test_support::reserve_temp_directory("wizard-generation-invalidation");
         let receipt = directory.join(VMWARE_GENERATION_RECEIPT);
         std::fs::write(&receipt, "stale pass").unwrap();
         std::fs::write(directory.join(VMWARE_GENERATION_TEMP), "partial pass").unwrap();

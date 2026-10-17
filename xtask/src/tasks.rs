@@ -498,8 +498,6 @@ fn pass_args(
 mod tests {
     use super::*;
 
-    static NEXT_CLEAN_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
     #[cfg(unix)]
     fn create_directory_symlink(target: &std::path::Path, link: &std::path::Path) {
         std::os::unix::fs::symlink(target, link).expect("creating cleanup directory symlink");
@@ -532,13 +530,7 @@ mod tests {
     }
 
     fn clean_fixture(label: &str) -> std::path::PathBuf {
-        let nonce = NEXT_CLEAN_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-clean-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&fixture).expect("cleanup fixture");
-        fixture
+        crate::test_support::reserve_temp_directory(&format!("wizard-clean-{label}"))
     }
 
     fn retained_runner_fixture(

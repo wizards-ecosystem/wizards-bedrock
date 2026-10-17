@@ -1654,18 +1654,7 @@ mod tests {
     use super::*;
 
     fn with_fixture_root<T>(operation: impl FnOnce(&Path) -> T) -> T {
-        let parent = std::env::temp_dir();
-        let parent = crate::mutation_workspace::canonical_existing_real_directory(
-            &parent,
-            "cargo-mutants test fixture parent",
-        )
-        .unwrap();
-        let root = parent.join(format!(
-            "wizard-mutants-grade-fixture-{}-{}",
-            std::process::id(),
-            NEXT_CAMPAIGN.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).expect("creating exclusive cargo-mutants test fixture");
+        let root = crate::test_support::reserve_temp_directory("wizard-mutants-grade-fixture");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&root)));
         std::fs::remove_dir_all(&root).expect("removing cargo-mutants test fixture");
         match outcome {
@@ -2179,11 +2168,7 @@ mod tests {
 
     #[test]
     fn owned_temp_root_controls_cargo_configuration_discovery() {
-        let fixture = std::env::temp_dir().join(format!(
-            "wizard-mutants-temp-discovery-{}-{}",
-            std::process::id(),
-            NEXT_CAMPAIGN.fetch_add(1, Ordering::Relaxed)
-        ));
+        let fixture = crate::test_support::reserve_temp_directory("wizard-mutants-temp-discovery");
         let repository = fixture.join("repository");
         let target = repository.join("target");
         crate::mutation_workspace::prepare_real_directory_tree(
@@ -2270,12 +2255,7 @@ mod tests {
 
     #[test]
     fn campaign_scratch_is_exclusively_reserved_under_target_and_removed() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-owned-mutants-{}-{}",
-            std::process::id(),
-            NEXT_CAMPAIGN.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-owned-mutants");
         let paths = Paths::new(root.join("repository"), Some(&root.join("target")));
         let source = SourceIdentity {
             commit: "a".repeat(40),

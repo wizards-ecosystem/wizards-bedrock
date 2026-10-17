@@ -1536,17 +1536,7 @@ mod tests {
 
     #[test]
     fn a_kernel_file_over_the_shared_ceiling_is_refused_before_allocation() {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "bedrock-elf-limit-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-            .expect("exclusive sparse ELF fixture");
+        let (path, file) = crate::test_support::reserve_temp_file("bedrock-elf-limit");
         file.set_len(MAX_KERNEL_ELF_BYTES + 1)
             .expect("sparse oversized ELF fixture");
         drop(file);

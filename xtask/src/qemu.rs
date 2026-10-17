@@ -3185,8 +3185,6 @@ mod tests {
         assert_eq!(injection_action(2, 1), InjectionAction::Skip);
     }
 
-    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
     struct QemuFixture {
         root: PathBuf,
         template: PathBuf,
@@ -3194,12 +3192,7 @@ mod tests {
 
     impl QemuFixture {
         fn create() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "wizard qemu,fixture-{}-{}",
-                std::process::id(),
-                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&root).expect("QEMU fixture directory");
+            let root = crate::test_support::reserve_temp_directory("wizard qemu,fixture");
             let template = root.join("firmware template,pristine.fd");
             std::fs::write(&template, b"pristine firmware variables")
                 .expect("QEMU variable-store template");

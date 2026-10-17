@@ -904,14 +904,7 @@ mod tests {
 
     #[test]
     fn vmware_generation_never_writes_through_preexisting_output_links() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-output-link-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-output-link");
         let directory = root.join("selector");
         let input = root.join("input");
         let sentinel = root.join("outside-sentinel");
@@ -1142,12 +1135,7 @@ mod tests {
 
     #[test]
     fn oversized_source_counts_are_refused_before_text_allocation() {
-        let root =
-            std::env::temp_dir().join(format!("wizard-vmware-source-bound-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir(&root).unwrap();
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-source-bound");
         let path = root.join("selftest.rs");
         File::create(&path)
             .unwrap()
@@ -1534,13 +1522,7 @@ mod tests {
 
     #[test]
     fn a_generated_vm_creates_one_empty_serial_transcript() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("host clock")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("wizard-vmware-{}-{nonce}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("VMware fixture directory");
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware");
         let log = root.join(format!("serial-{}.log", "1".repeat(64)));
 
         write_new(&log, &[]).expect("fresh transcript");
@@ -1555,14 +1537,7 @@ mod tests {
 
     #[test]
     fn generation_replaces_only_its_exact_selector_directory() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("host clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-reset-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-reset");
         let repository = root.join("repository");
         let paths = Paths::new(repository.clone(), None);
         let selftest = vm_directory(&paths, Kernel::SelfTest);
@@ -1590,14 +1565,7 @@ mod tests {
 
     #[test]
     fn a_redirected_repository_ancestor_is_refused_before_vmware_root_creation() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("host clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-ancestor-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-ancestor");
         let outside_parent = root.join("outside-parent");
         let outside_repository = outside_parent.join("repository");
         let redirected_parent = root.join("redirected-parent");
@@ -1615,14 +1583,7 @@ mod tests {
 
     #[test]
     fn destructive_vmware_paths_require_one_canonical_parent() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("host clock")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "wizard-vmware-canonical-{}-{nonce}",
-            std::process::id()
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-vmware-canonical");
         let parent = root.join("parent");
         let child = parent.join("child");
         let sibling = root.join("sibling");

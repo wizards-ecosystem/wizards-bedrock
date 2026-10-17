@@ -9016,11 +9016,7 @@ fn build_script_authority_path(relative: &Path) -> Option<BuildScriptAuthorityPa
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn virtual_source_diagnostics_accept_native_separators_without_traversal() {
@@ -9331,11 +9327,7 @@ macro_rules! entry {
 
     #[test]
     fn checksum_verified_archives_form_an_immutable_isolated_cargo_source() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-private-cargo-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-private-cargo");
         let cargo = root.join("audit-cargo");
         let home = cargo.join("home");
         let registry = cargo.join("registry-source");
@@ -9436,11 +9428,7 @@ dependencies = [
                     .to_string(),
             ),
         ] {
-            let root = std::env::temp_dir().join(format!(
-                "wizard-api-registry-marker-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
+            let root = crate::test_support::reserve_temp_directory("wizard-api-registry-marker");
             let package_root = root.join("fixture-1.0.0");
             std::fs::create_dir_all(package_root.join("src"))
                 .expect("registry marker fixture directory");
@@ -9477,11 +9465,7 @@ dependencies = [
 
     #[test]
     fn compiler_graphs_have_distinct_stable_build_directories() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-graph-build-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-graph-build");
         let build = root.join("build");
         std::fs::create_dir_all(&build).expect("graph build root");
         let graph_zero = graph_build_directory(&build, 0).expect("graph zero build");
@@ -9501,11 +9485,7 @@ dependencies = [
 
     #[test]
     fn instrumented_rounds_cannot_change_build_script_output_authority() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-build-authority-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-build-authority");
         let package = root.join("debug/build/fixture-build-id");
         let out = package.join("out");
         std::fs::create_dir_all(&out).expect("build-script OUT_DIR fixture");
@@ -9529,11 +9509,7 @@ dependencies = [
 
     #[test]
     fn pristine_generated_source_cannot_mint_a_diagnostic_marker() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-generated-marker-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-generated-marker");
         let out = root.join("debug/build/fixture-build-id/out");
         std::fs::create_dir_all(&out).expect("generated marker OUT_DIR");
         std::fs::write(
@@ -9553,11 +9529,7 @@ dependencies = [
 
     #[test]
     fn compiler_binaries_and_target_metadata_cannot_mint_a_diagnostic_marker() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-sysroot-marker-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-sysroot-marker");
         let bin = root.join("bin");
         let host_lib = root.join("lib/rustlib/fixture-host/lib");
         let kernel_lib = root.join("lib/rustlib/fixture-kernel/lib");
@@ -10425,11 +10397,7 @@ checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     #[test]
     fn cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-diagnostic-origin-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-diagnostic-origin");
         let source = root.join("libs/fixture/src/main.rs");
         std::fs::create_dir_all(source.parent().unwrap()).expect("first-party source directory");
         std::fs::create_dir_all(root.join("tools/evil/src")).expect("sibling package source");
@@ -10604,11 +10572,7 @@ checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     #[test]
     fn cross_crate_entry_diagnostics_require_the_exact_compiler_origin_bridge() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-entry-origin-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-entry-origin");
         std::fs::create_dir_all(root.join("libs")).expect("empty entry fixture libs directory");
         std::fs::create_dir_all(root.join("wost/src/boot"))
             .expect("entry fixture wost source directory");
@@ -11011,11 +10975,7 @@ checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
     #[test]
     fn core_offset_of_diagnostics_are_discarded_at_the_terminal_opaque_callsite() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-offset-of-expansion-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-offset-of-expansion");
         std::fs::create_dir_all(root.join("libs/fixture/src"))
             .expect("offset_of fixture source directory");
         std::fs::create_dir_all(root.join("wost/src"))
@@ -11311,11 +11271,7 @@ mod tests {
 
     #[test]
     fn a_macro_generated_custom_harness_main_is_refused_from_its_manifest() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-custom-harness-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-custom-harness");
         std::fs::create_dir_all(root.join("libs/fixture/tests"))
             .expect("custom harness fixture directory");
         std::fs::create_dir_all(root.join("wost/src")).expect("empty custom harness wost source");
@@ -11562,11 +11518,7 @@ harness = false
 
     #[test]
     fn redirected_api_audit_paths_are_refused_without_touching_outside_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-path-fixture-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-path-fixture");
         let outside = root.join("outside");
         let target = root.join("target-link");
         std::fs::create_dir_all(&outside).unwrap();
@@ -11577,10 +11529,8 @@ harness = false
         std::fs::remove_dir_all(&root).unwrap();
 
         for redirected in ["workspace", "build"] {
-            let root = std::env::temp_dir().join(format!(
-                "wizard-api-{redirected}-fixture-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
+            let root = crate::test_support::reserve_temp_directory(&format!(
+                "wizard-api-{redirected}-fixture"
             ));
             let target = root.join("target");
             let state = target.join("api-audit");
@@ -11598,11 +11548,7 @@ harness = false
             std::fs::remove_dir_all(&root).unwrap();
         }
 
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-lock-fixture-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-lock-fixture");
         let target = root.join("target");
         let state = target.join("api-audit");
         let outside = root.join("outside-lock");
@@ -11617,11 +11563,7 @@ harness = false
 
     #[test]
     fn api_audit_copy_never_writes_through_an_external_link() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-copy-link-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-copy-link");
         let source = root.join("source");
         let workspace = root.join("workspace");
         let sentinel = root.join("outside-sentinel");
@@ -11688,46 +11630,12 @@ harness = false
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn reserve_fixture_root(parent: &Path, prefix: &str, next: &AtomicUsize) -> PathBuf {
-        loop {
-            let candidate =
-                parent.join(format!("{prefix}-{}", next.fetch_add(1, Ordering::Relaxed)));
-            match std::fs::create_dir(&candidate) {
-                Ok(()) => return candidate,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!(
-                    "create exclusive fixture root {}: {error}",
-                    candidate.display()
-                ),
-            }
-        }
-    }
-
     fn fixture(source: &str) -> PathBuf {
-        let prefix = format!("wizard-api-fixture-{}", std::process::id());
-        let root = reserve_fixture_root(&std::env::temp_dir(), &prefix, &NEXT);
+        let root = crate::test_support::reserve_temp_directory("wizard-api-fixture");
         std::fs::create_dir_all(root.join("libs/fixture/src")).expect("fixture directory");
         std::fs::create_dir_all(root.join("wost/src")).expect("empty wost source directory");
         std::fs::write(root.join("libs/fixture/src/main.rs"), source).expect("fixture source");
         root
-    }
-
-    #[test]
-    fn fixture_reservation_never_reopens_a_stale_process_directory() {
-        let root = fixture("fn main() {}\n");
-        let stale = root.join("candidate-0");
-        std::fs::create_dir(&stale).expect("stale fixture candidate");
-        std::fs::write(stale.join("unrelated.rs"), "stale bytes").expect("stale fixture contents");
-        let next = AtomicUsize::new(0);
-
-        let reserved = reserve_fixture_root(&root, "candidate", &next);
-
-        assert_eq!(reserved, root.join("candidate-1"));
-        assert_eq!(
-            std::fs::read_to_string(stale.join("unrelated.rs")).expect("stale fixture remains"),
-            "stale bytes"
-        );
-        std::fs::remove_dir_all(root).expect("remove reservation fixture");
     }
 
     fn compile_fixture(root: &Path, extra: &[&str]) -> String {
@@ -14678,11 +14586,7 @@ fn main() {}
 
     #[test]
     fn an_api_verdict_cannot_outlive_its_source_snapshot() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-snapshot-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-snapshot");
         for directory in COPY_DIRECTORIES {
             std::fs::create_dir_all(root.join(directory)).expect("snapshot directory");
         }
@@ -14739,11 +14643,7 @@ fn main() {}
 
     #[test]
     fn compiler_graphs_cannot_change_the_instrumented_copy() {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-api-copy-snapshot-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = crate::test_support::reserve_temp_directory("wizard-api-copy-snapshot");
         for directory in COPY_DIRECTORIES {
             std::fs::create_dir_all(root.join(directory)).expect("snapshot directory");
         }

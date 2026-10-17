@@ -94,22 +94,13 @@ pub fn populate<D: ReadWriteSeek>(
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use fatfs::FsOptions;
 
     use super::*;
 
-    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(0);
-
     fn test_root(label: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-esp-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).expect("creating ESP test root");
-        root
+        crate::test_support::reserve_temp_directory(&format!("wizard-esp-{label}"))
     }
 
     #[cfg(unix)]

@@ -2407,12 +2407,10 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use std::process::Command;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use super::*;
 
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     const CHILD_STATE: &str = "WIZARD_MUTATION_CHILD_STATE";
     const CHILD_MARKER: &str = "WIZARD_MUTATION_CHILD_MARKER";
 
@@ -2420,12 +2418,8 @@ mod tests {
 
     impl TempTree {
         fn new(name: &str) -> Self {
-            let unique = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "wizard-mutation-{name}-{}-{unique}",
-                std::process::id()
-            ));
-            std::fs::create_dir(&path).expect("creating unique mutation test directory");
+            let path =
+                crate::test_support::reserve_temp_directory(&format!("wizard-mutation-{name}"));
             Self(path)
         }
     }

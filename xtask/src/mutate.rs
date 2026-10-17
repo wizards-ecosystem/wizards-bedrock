@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2152;
+pub const NEXT_MUTATION_ID: u16 = 2162;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -20003,9 +20003,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1785,
-        file: "xtask/src/mutants_grade.rs",
-        find: "        let parent = std::env::temp_dir();",
-        replace: "        let parent = Path::new(env!(\"CARGO_MANIFEST_DIR\"))\n            .parent()\n            .unwrap()\n            .to_path_buf();",
+        file: "xtask/src/test_support.rs",
+        find: "    reserve_directory_with(&std::env::temp_dir(), label, &NEXT_DIRECTORY)",
+        replace: "    reserve_directory_with(\n        Path::new(env!(\"CARGO_MANIFEST_DIR\"))\n            .parent()\n            .unwrap(),\n        label,\n        &NEXT_DIRECTORY,\n    )",
         breaks: "cargo-mutants command fixtures inherit Cargo configuration from the compiling checkout",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23742,6 +23742,116 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::coverage_must_be_the_complete_unqualified_repository_workflow",
+        },
+    },
+    Mutation {
+        id: 2152,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"limitations\",\n        ],\n        label,\n    )?;",
+        replace: "            \"limitations\",\n            \"unexpected\",\n        ],\n        label,\n    )?;",
+        breaks: "a Deep scope can carry a field outside the qualified projection profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_scope_accepts_official_optionality_and_rejects_unqualified_fields",
+        },
+    },
+    Mutation {
+        id: 2153,
+        file: "xtask/src/security_deep.rs",
+        find: "                \"origin\",\n            ],\n            label,\n        )?;",
+        replace: "                \"origin\",\n                \"unexpected\",\n            ],\n            label,\n        )?;",
+        breaks: "a structured Deep threat model can carry a field outside the qualified projection profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_threat_model_accepts_structured_optionality_and_rejects_unqualified_fields",
+        },
+    },
+    Mutation {
+        id: 2154,
+        file: "xtask/src/security_deep.rs",
+        find: "    require_preserved_sources(json_field(scan, \"preservedSources\", \"scan manifest\")?)?;",
+        replace: "    let _ = json_field(scan, \"preservedSources\", \"scan manifest\")?;",
+        breaks: "malformed paths and digests can masquerade as preserved Deep source bindings",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_preserved_sources_are_canonical_sha256_bindings",
+        },
+    },
+    Mutation {
+        id: 2155,
+        file: "xtask/src/security_deep.rs",
+        find: "        report == expected,",
+        replace: "        !report.is_empty(),",
+        breaks: "a noncanonical report can accompany otherwise canonical zero-finding artifacts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::report_bytes_must_match_the_exact_canonical_projection",
+        },
+    },
+    Mutation {
+        id: 2156,
+        file: "xtask/src/test_support.rs",
+        find: "        match std::fs::create_dir(&candidate) {",
+        replace: "        match std::fs::create_dir_all(&candidate) {",
+        breaks: "shared host-test fixture reservation reopens a stale process directory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "test_support::tests::stale_candidates_are_skipped_without_touching_their_bytes",
+        },
+    },
+    Mutation {
+        id: 2157,
+        file: "xtask/src/security_deep.rs",
+        find: "        lines.push(string(threat_model, \"content\", \"scan manifest threat model\")?.to_string());",
+        replace: "        lines.push(report_text(\n            string(threat_model, \"content\", \"scan manifest threat model\")?,\n            \"\",\n        )?);",
+        breaks: "a Markdown threat model is normalized and escaped instead of embedded verbatim",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::markdown_threat_model_is_embedded_verbatim_and_strictly_typed",
+        },
+    },
+    Mutation {
+        id: 2158,
+        file: "xtask/src/security_deep.rs",
+        find: "                .any(|character| !character.is_ascii())",
+        replace: "                .any(|character| character.is_ascii())",
+        breaks: "a Unicode numeric Markdown-list prefix can cross the Python projection boundary ambiguously",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_scope_accepts_official_optionality_and_rejects_unqualified_fields",
+        },
+    },
+    Mutation {
+        id: 2159,
+        file: "xtask/src/security_deep.rs",
+        find: "    if let Some(scope) = threat_model.get(\"scope\") {\n        require_threat_model_scope(scope)?;\n    }",
+        replace: "",
+        breaks: "an embedded threat-model scope can carry unqualified or malformed fields",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::markdown_threat_model_is_embedded_verbatim_and_strictly_typed",
+        },
+    },
+    Mutation {
+        id: 2160,
+        file: "xtask/src/security_deep.rs",
+        find: "            string(threat_model, \"summary\", \"scan manifest threat model\")?,\n            \"No explicit canonical threat-model summary was recorded.\",\n        )?",
+        replace: "            string(threat_model, \"summary\", \"scan manifest threat model\")?,\n            \"\",\n        )?",
+        breaks: "a whitespace-only structured threat-model summary loses the pinned renderer fallback",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_threat_model_accepts_structured_optionality_and_rejects_unqualified_fields",
+        },
+    },
+    Mutation {
+        id: 2161,
+        file: "xtask/src/security_deep.rs",
+        find: "        !sources.is_empty(),\n        \"scan manifest preserved sources are empty\"",
+        replace: "        sources.is_empty(),\n        \"scan manifest preserved sources are empty\"",
+        breaks: "an empty preserved-source map can seal without binding any retained Deep evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::manifest_preserved_sources_are_canonical_sha256_bindings",
         },
     },
 ];
