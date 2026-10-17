@@ -24257,11 +24257,13 @@ Two fresh empty private homes independently returned the same strict
 initialize/config schemas, canonical 3,056-byte originless default projection
 with SHA-256
 `ca92daadf6d70a31d9f9e9463dfb19916376b40d3da96950e43dafac1bdaa3bf`,
-and generated system-skills tree of 71 entries, 314,963 file bytes and folded
-SHA-256
+and generated system-skills tree of 71 entries and 314,963 file bytes. The
+separate compatibility probe reported folded SHA-256
 `1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c`.
-Those facts replace the old runtime's trusted data; no schema or tree-shape
-predicate is widened.
+Those observations replaced the old runtime's trusted data; no schema or
+tree-shape predicate was widened. D-419 corrects the probe's host-culture path
+ordering to the production verifier's ordinal ordering without changing the
+observed tree.
 
 The new runtime preserves every fixed safety value but omits an origin for
 `notify=[]` when that override equals its empty originless default. The
@@ -24272,8 +24274,9 @@ notification value to be inert before constructing overrides, closing the
 otherwise unhashed value that D-412 intentionally parses separately.
 
 **Proof.** Both controlled private-home probes exited successfully, emitted no
-trailing output and produced identical canonical defaults and system-skill
-identities; their exact temporary roots were then removed. The focused Deep
+trailing output and produced identical canonical defaults and independently
+measured system-skill summaries; their exact temporary roots were then removed.
+The focused Deep
 configuration, protocol, runtime, request and verifier suite accepts the new
 tuple and origin behavior while retaining every drift refusal. Mutation 2,085
 admits an active originless notification command and fails only
@@ -24281,7 +24284,7 @@ admits an active originless notification command and fails only
 
 **Qualification boundary.** The source change invalidates every exceptional
 record made on `6d2b9ee`. PW-026 remains open until one new clean frozen commit
-passes the complete current mutation registry and the real D-406/D-416/D-417
+passes the complete current mutation registry and the real D-406/D-416/D-417/D-419
 owned Deep run, whose artifacts are replayed into final evidence.
 
 **Alternatives.** Restoring deleted executables, selecting from `PATH`, or
@@ -24326,3 +24329,47 @@ the status does not prove what remains. Parsing localized stderr was rejected
 because text is not filesystem authority. Spawning a delayed deletion helper
 or scheduling deletion at reboot was rejected because either expands process
 and persistence authority for a deterministic one-file platform lock.
+
+## D-419 Generated system-skill identity uses the verifier's ordinal path order - Status: Accepted (2026-10-17), implemented with qualification OPEN; amends D-413 and D-417; advances PW-026
+
+**Context.** The first owned Deep attempt on `71148f1` stopped before Daybreak
+or scan creation because the private system-skills tree had the expected 71
+entries and 314,963 file bytes but the verifier measured SHA-256
+`54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8`
+instead of D-417's `1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c`.
+The retained tree reproduced both values: D-417's independent PowerShell probe
+used culture-aware `Sort-Object relative`, while production Rust orders the
+same normalized paths with ordinal, case-sensitive `String::cmp`. The first
+divergence places uppercase `LICENSE.txt` before lowercase `agents` in
+production. No executable, plugin, configuration or generated skill byte had
+changed.
+
+**Decision.** The one allowed system-skills identity remains exactly 71 entries
+and 314,963 bytes, but its digest is the production-canonical ordinal value
+`54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8`.
+The legacy culture-sorted digest is refused rather than admitted as an
+alternative. Both inventories in the race check use one shared ordinal sorting
+function. Future pin refreshes must obtain the identity through the verifier's
+measurement implementation or prove byte-for-byte equivalence to its ordering;
+an independently reimplemented host sort is not authority.
+
+**Proof.** A mixed-case sibling fixture fixes the ordinal fold independently of
+host culture, while a second fixture admits the one production digest and
+rejects D-417's legacy value. Mutations 2,093 through 2,095 respectively replace
+ordinal ordering with case-insensitive ordering, restore the legacy pin and
+admit both digests; each names one of those exact witnesses. Recomputing the
+retained failed-run tree under production ordering yields the new pin, while
+the original probe command reproduces only the refused legacy value.
+
+**Qualification boundary.** The failed attempt produced no advisory, scan or
+canonical artifact. This correction changes the source after the successful
+model and advisory records on `71148f1`, so every exceptional qualification
+must be repeated on one new clean frozen commit before PW-026 or release can
+close.
+
+**Alternatives.** Rotating the hash without explaining the mismatch was
+rejected because it would hide a provenance defect. Admitting both digests was
+rejected because only the production verifier's ordering defines authority.
+Excluding mixed-case files or normalizing case was rejected because names are
+part of the exact executable instruction tree and Windows still preserves
+their spelling.

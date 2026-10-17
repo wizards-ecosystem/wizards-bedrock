@@ -105,7 +105,7 @@ const CODEX_DEFAULT_CONFIG_SHA256: &str =
 const CODEX_SYSTEM_SKILLS_ENTRIES: u64 = 71;
 const CODEX_SYSTEM_SKILLS_BYTES: u64 = 314_963;
 const CODEX_SYSTEM_SKILLS_SHA256: &str =
-    "1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c";
+    "54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8";
 const MAX_CODEX_SYSTEM_SKILLS_DEPTH: usize = 16;
 const CODEX_RUNTIME_FILES: [(&str, u64, &str); 4] = [
     (
@@ -2955,7 +2955,7 @@ fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentity> {
     )? {
         collect_qualified_system_skill_entries(root, &child.path(), 0, &mut entries)?;
     }
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    sort_qualified_system_skill_entries(&mut entries);
     ensure!(
         entries.len() as u64 <= CODEX_SYSTEM_SKILLS_ENTRIES,
         "private Codex system skills exceed their entry limit"
@@ -2992,7 +2992,7 @@ fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentity> {
     )? {
         collect_qualified_system_skill_entries(root, &child.path(), 0, &mut after)?;
     }
-    after.sort_by(|left, right| left.0.cmp(&right.0));
+    sort_qualified_system_skill_entries(&mut after);
     ensure!(
         after
             .iter()
@@ -3005,6 +3005,10 @@ fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentity> {
         bytes,
         sha256: sha256::hex(&folded.finish()),
     })
+}
+
+fn sort_qualified_system_skill_entries(entries: &mut [(String, PathBuf, bool)]) {
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
 }
 
 fn collect_qualified_system_skill_entries(
@@ -8468,6 +8472,44 @@ mod tests {
         );
         let metadata = std::fs::symlink_metadata(&outer).unwrap();
         remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
+    fn system_skill_tree_fold_uses_ordinal_case_sensitive_path_order() {
+        let (outer, root) = private_test_root();
+        let skills = root.join("system-skills");
+        std::fs::create_dir(&skills).unwrap();
+        std::fs::write(skills.join("Zeta"), b"z").unwrap();
+        std::fs::write(skills.join("alpha"), b"a").unwrap();
+
+        let identity = measure_qualified_system_skills(&skills).unwrap();
+        assert_eq!(identity.entries, 2);
+        assert_eq!(identity.bytes, 2);
+        assert_eq!(
+            identity.sha256,
+            "5b60bb4b4bbbf8e58be96bf961a4a12a660e04b36b7352acfe1b0808ee026be5"
+        );
+
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
+    fn legacy_culture_sorted_system_skill_digest_is_refused() {
+        assert_eq!(
+            CODEX_SYSTEM_SKILLS_SHA256,
+            "54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8"
+        );
+        assert!(codex_system_skills_identity_is_allowed(&TreeIdentity {
+            entries: CODEX_SYSTEM_SKILLS_ENTRIES,
+            bytes: CODEX_SYSTEM_SKILLS_BYTES,
+            sha256: CODEX_SYSTEM_SKILLS_SHA256.to_string(),
+        }));
+        assert!(!codex_system_skills_identity_is_allowed(&TreeIdentity {
+            entries: CODEX_SYSTEM_SKILLS_ENTRIES,
+            bytes: CODEX_SYSTEM_SKILLS_BYTES,
+            sha256: "1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c".to_string(),
+        }));
     }
 
     #[test]

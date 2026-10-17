@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2093;
+pub const NEXT_MUTATION_ID: u16 = 2096;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -23354,6 +23354,39 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "tasks::tests::a_failed_clean_rejects_a_redirected_xtask_profile",
+        },
+    },
+    Mutation {
+        id: 2093,
+        file: "xtask/src/security_deep.rs",
+        find: "fn sort_qualified_system_skill_entries(entries: &mut [(String, PathBuf, bool)]) {\n    entries.sort_by(|left, right| left.0.cmp(&right.0));\n}",
+        replace: "fn sort_qualified_system_skill_entries(entries: &mut [(String, PathBuf, bool)]) {\n    entries.sort_by(|left, right| {\n        left.0\n            .to_ascii_lowercase()\n            .cmp(&right.0.to_ascii_lowercase())\n            .then_with(|| left.0.cmp(&right.0))\n    });\n}",
+        breaks: "the generated system-skill identity uses a culture-like case-insensitive path order instead of the verifier's canonical ordinal order",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::system_skill_tree_fold_uses_ordinal_case_sensitive_path_order",
+        },
+    },
+    Mutation {
+        id: 2094,
+        file: "xtask/src/security_deep.rs",
+        find: "    \"54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8\";",
+        replace: "    \"1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c\";",
+        breaks: "the generated system-skill pin records a host-culture fold instead of the production verifier's ordinal fold",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::legacy_culture_sorted_system_skill_digest_is_refused",
+        },
+    },
+    Mutation {
+        id: 2095,
+        file: "xtask/src/security_deep.rs",
+        find: "        && identity.sha256 == CODEX_SYSTEM_SKILLS_SHA256\n    {",
+        replace: "        && (identity.sha256 == CODEX_SYSTEM_SKILLS_SHA256\n            || identity.sha256 == \"1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c\")\n    {",
+        breaks: "the generated system-skill authority admits the legacy host-culture digest as a second valid identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::legacy_culture_sorted_system_skill_digest_is_refused",
         },
     },
 ];
