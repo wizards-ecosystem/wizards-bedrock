@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2164;
+pub const NEXT_MUTATION_ID: u16 = 2165;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -23874,6 +23874,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::markdown_threat_model_is_embedded_verbatim_and_strictly_typed",
+        },
+    },
+    Mutation {
+        id: 2164,
+        file: "xtask/src/vmware.rs",
+        find: "const SELFTEST_DELAYED_READ_MARKER: &str = \"selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true\";",
+        replace: "const SELFTEST_DELAYED_READ_MARKER: &str = \"selftest: delayed read evidence deferred=true device=true retained=true interrupts=true completed=true exact=true\";",
+        breaks: "the VMware verifier drifts from the kernel's delayed-read format literal",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_delayed_read_marker_matches_the_unique_kernel_format_literal",
         },
     },
 ];

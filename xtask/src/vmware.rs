@@ -46,6 +46,7 @@ const SHIPPED_ISOLATION_MARKERS: &[&str] = &[
 ];
 const VMWARE_DMA_HANDOFF_MARKER: &str =
     "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
+const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Heads per cylinder in the geometry VMware expects.
@@ -386,9 +387,7 @@ const SELFTEST_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::Isolation(Kernel::SelfTest),
     TranscriptMarker::Exact("selftest: a thread crosses into ring three and calls back"),
     TranscriptMarker::Exact("selftest: awaiting storage-delay keystroke"),
-    TranscriptMarker::Exact(
-        "selftest: delayed read evidence deferred=true device=true retained=true interrupts=true completed=true exact=true",
-    ),
+    TranscriptMarker::Exact(SELFTEST_DELAYED_READ_MARKER),
     TranscriptMarker::Exact("selftest: the kernel reads the file the host wrote"),
     TranscriptMarker::Exact("selftest: both calibrated rates are believable"),
     TranscriptMarker::Exact("selftest: awaiting injected keystroke"),
@@ -984,7 +983,7 @@ mod tests {
         for marker in [
             "selftest: a thread crosses into ring three and calls back",
             "selftest: awaiting storage-delay keystroke",
-            "selftest: delayed read evidence deferred=true device=true retained=true interrupts=true completed=true exact=true",
+            SELFTEST_DELAYED_READ_MARKER,
             "selftest: the kernel reads the file the host wrote",
             "selftest: both calibrated rates are believable",
             "selftest: awaiting injected keystroke",
@@ -1004,6 +1003,35 @@ mod tests {
 
     fn selftest_transcript() -> String {
         selftest_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION)
+    }
+
+    #[test]
+    fn the_delayed_read_marker_matches_the_unique_kernel_format_literal() {
+        let kernel = std::fs::read_to_string(repository_root().join("kernel/src/selftest.rs"))
+            .expect("reading kernel self-test source");
+        let prefix = "\"selftest: delayed read evidence ";
+        let occurrences = kernel.match_indices(prefix).collect::<Vec<_>>();
+        assert_eq!(
+            occurrences.len(),
+            1,
+            "the kernel must own one delayed-read evidence format"
+        );
+        let format = &kernel[occurrences[0].0 + 1..];
+        let format = &format[..format
+            .find('"')
+            .expect("the delayed-read evidence format must terminate")];
+        let success = format
+            .replace("{deferred}", "true")
+            .replace("{reached_device}", "true")
+            .replace("{retained}", "true")
+            .replace("{input_progress}", "true")
+            .replace("{completed}", "true")
+            .replace("{exact}", "true");
+        assert!(
+            !success.contains('{') && !success.contains('}'),
+            "every delayed-read evidence placeholder must be rendered"
+        );
+        assert_eq!(success, SELFTEST_DELAYED_READ_MARKER);
     }
 
     fn shipped_transcript_with_isolation(isolation: &str) -> String {
