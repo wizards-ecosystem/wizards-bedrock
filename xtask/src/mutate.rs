@@ -77,12 +77,12 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2165;
+pub const NEXT_MUTATION_ID: u16 = 2261;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
     116, 514, 515, 517, 1005, 1521, 1563, 1967, 1983, 1984, 1986, 1987, 1988, 2002, 2014, 2070,
-    2096, 2097, 2098, 2099, 2100, 2104, 2109, 2112, 2115, 2116, 2117, 2120, 2121, 2123, 2124,
+    2096, 2097, 2098, 2099, 2100, 2104, 2109, 2112, 2115, 2116, 2117, 2120, 2121, 2123, 2124, 2192,
 ];
 
 /// The defects, each of which some check must notice.
@@ -22003,12 +22003,12 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1968,
         file: "xtask/src/security_deep.rs",
-        find: "                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),",
-        replace: "                (\"network\", text_value(\"enabled\")),\n                (\"type\", text_value(\"managed\")),",
+        find: "                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
+        replace: "                (\"network\", text_value(\"enabled\")),\n                (\"type\", text_value(\"managed\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
         breaks: "owned tool-call metadata can request network-enabled worker authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "security_deep::tests::owned_metadata_names_the_exact_managed_read_only_parent",
+            name: "security_deep::tests::managed_worker_policy_is_clone_backed_narrow_and_single_source",
         },
     },
     Mutation {
@@ -22168,9 +22168,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1985,
         file: "xtask/src/security_deep.rs",
-        find: "        OsString::from(\"--sandbox-state-json\"),\n        OsString::from(state),\n        OsString::from(\"--sandbox-state-disable-network\"),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
-        replace: "        OsString::from(\"--sandbox-state-json\"),\n        OsString::from(state),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
-        breaks: "the credential preflight does not explicitly disable sandbox network authority",
+        find: "        OsString::from(\"--permission-profile\"),\n        OsString::from(WORKER_NAMED_PERMISSION_NAME),\n        OsString::from(\"--include-managed-config\"),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
+        replace: "        OsString::from(\"--permission-profile\"),\n        OsString::from(WORKER_NAMED_PERMISSION_NAME),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
+        breaks: "the named-profile preflight omits managed requirements that govern the real exec profile",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::credential_probe_command_uses_the_exact_owned_worker_sandbox",
@@ -22646,7 +22646,7 @@ fn mint_stopped<'controller>(
         breaks: "the managed Deep worker regains host-root read authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "security_deep::tests::owned_metadata_names_the_exact_managed_read_only_parent",
+            name: "security_deep::tests::managed_worker_policy_is_clone_backed_narrow_and_single_source",
         },
     },
     Mutation {
@@ -22657,14 +22657,14 @@ fn mint_stopped<'controller>(
         breaks: "the managed Deep worker substitutes a second host-root grant for its minimal system read",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "security_deep::tests::owned_metadata_names_the_exact_managed_read_only_parent",
+            name: "security_deep::tests::managed_worker_policy_is_clone_backed_narrow_and_single_source",
         },
     },
     Mutation {
         id: 2035,
         file: "xtask/src/security_deep.rs",
-        find: "                        (\"entries\", JsonValue::Array(entries)),\n                        (\"type\", text_value(\"restricted\")),",
-        replace: "                        (\"entries\", JsonValue::Array(entries)),\n                        (\"type\", text_value(\"unrestricted\")),",
+        find: "                        (\"entries\", JsonValue::Array(entries)),\n                        (\"type\", text_value(\"restricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
+        replace: "                        (\"entries\", JsonValue::Array(entries)),\n                        (\"type\", text_value(\"unrestricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
         breaks: "owned worker metadata advertises an unrestricted filesystem despite its allowlist",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -22674,8 +22674,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2036,
         file: "xtask/src/security_deep.rs",
-        find: "                        (\"type\", text_value(\"restricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),",
-        replace: "                        (\"type\", text_value(\"restricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"danger-full-access\")),",
+        find: "                        (\"type\", text_value(\"restricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"managed\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
+        replace: "                        (\"type\", text_value(\"restricted\")),\n                    ]),\n                ),\n                (\"network\", text_value(\"restricted\")),\n                (\"type\", text_value(\"danger-full-access\")),\n            ]),\n        ),\n        (\n            \"sandboxCwd\",\n            text_value(&windows_file_url(&policy.repository)?),\n        ),\n        (\"useMxc\", JsonValue::Bool(true)),\n    ]))\n}\n\nfn call_metadata",
         breaks: "owned tool-call metadata does not retain the managed permission profile",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23428,8 +23428,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2119,
         file: "xtask/src/security_deep.rs",
-        find: "    Ok(vec![\n        OsString::from(\"--no-daemon\"),\n        OsString::from(\"sandbox\"),\n        OsString::from(\"--config\"),\n        OsString::from(\"shell_environment_policy.inherit=\\\"none\\\"\"),\n        OsString::from(\"--config\"),\n        OsString::from(\"shell_environment_policy.ignore_default_excludes=false\"),\n        OsString::from(\"--config\"),\n        OsString::from(shell_environment),\n        OsString::from(\"--config\"),\n        OsString::from(WINDOWS_SANDBOX_OVERRIDE),\n        OsString::from(\"--sandbox-state-json\"),",
-        replace: "    Ok(vec![\n        OsString::from(\"--no-daemon\"),\n        OsString::from(\"sandbox\"),\n        OsString::from(\"--config\"),\n        OsString::from(\"shell_environment_policy.inherit=\\\"none\\\"\"),\n        OsString::from(\"--config\"),\n        OsString::from(\"shell_environment_policy.ignore_default_excludes=false\"),\n        OsString::from(\"--config\"),\n        OsString::from(shell_environment),\n        OsString::from(\"--sandbox-state-json\"),",
+        find: "        OsString::from(shell_environment),\n        OsString::from(\"--config\"),\n        OsString::from(WINDOWS_SANDBOX_OVERRIDE),\n        OsString::from(\"--permission-profile\"),",
+        replace: "        OsString::from(shell_environment),\n        OsString::from(\"--permission-profile\"),",
         breaks: "the credential preflight does not explicitly select the qualified MXC backend",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23571,8 +23571,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2136,
         file: "xtask/src/security_deep.rs",
-        find: "            canonical_directory(&scratch.scan_root, \"managed worker scan root\")?,",
-        replace: "",
+        find: "            canonical_directory(&scratch.plugin, \"managed worker plugin root\")?,\n            probe_directory.clone(),",
+        replace: "            canonical_directory(&scratch.plugin, \"managed worker plugin root\")?,",
         breaks: "the worker policy omits its owned scan-artifact read root",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23598,7 +23598,7 @@ fn mint_stopped<'controller>(
         breaks: "the outside canary receives an explicit deny that masks loss of root-default denial",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "security_deep::tests::owned_metadata_names_the_exact_managed_read_only_parent",
+            name: "security_deep::tests::managed_worker_policy_is_an_executable_default_deny_allowlist",
         },
     },
     Mutation {
@@ -23648,9 +23648,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2143,
         file: "xtask/src/security_deep.rs",
-        find: "            *argument = OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE);",
-        replace: "            *argument = OsString::from(WORKER_NAMED_PERMISSION_INPUT);",
-        breaks: "the provider's host-root-readable named profile survives the wrapper rewrite",
+        find: "    if context.is_some() {\n        let mut rewritten_permissions = 0usize;",
+        replace: "    if true {\n        let mut rewritten_permissions = 0usize;",
+        breaks: "the app-server provider envelope is mistakenly attenuated before the provider can launch workers",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::wrapper_injects_safety_last_and_rejects_unpinned_shapes",
@@ -23659,9 +23659,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2144,
         file: "xtask/src/security_deep.rs",
-        find: "            *argument = OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE);",
-        replace: "            *argument = OsString::from(if context.is_none() {\n                WORKER_NAMED_PERMISSION_OVERRIDE\n            } else {\n                WORKER_NAMED_PERMISSION_INPUT\n            });",
-        breaks: "exec workers retain the provider's host-root-readable permission profile",
+        find: "                *argument = OsString::from(worker_permission);",
+        replace: "                *argument = OsString::from(provider_permission);",
+        breaks: "exec workers retain the provider envelope instead of receiving the strict effective profile",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::wrapper_injects_safety_last_and_rejects_unpinned_shapes",
@@ -23703,9 +23703,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2148,
         file: "xtask/src/security_deep.rs",
-        find: "const ENVIRONMENT_POLICY: &str = \"xtask-owned-codex-security-hermetic-v6\";",
-        replace: "const ENVIRONMENT_POLICY: &str = \"xtask-owned-codex-security-hermetic-v5\";",
-        breaks: "owned Deep evidence retains the pre-default-deny environment-policy identity",
+        find: "const ENVIRONMENT_POLICY: &str = \"xtask-owned-codex-security-hermetic-v9\";",
+        replace: "const ENVIRONMENT_POLICY: &str = \"xtask-owned-codex-security-hermetic-v8\";",
+        breaks: "owned Deep evidence retains the pre-thread-lifecycle environment-policy identity",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::owned_request_binds_every_runtime_and_authority_field",
@@ -23714,9 +23714,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2149,
         file: "xtask/src/security_deep.rs",
-        find: "const EXECUTION_AUTHORITY: &str = \"xtask-mcp-wrapper-windows-job-v5\";",
-        replace: "const EXECUTION_AUTHORITY: &str = \"xtask-mcp-wrapper-windows-job-v4\";",
-        breaks: "owned Deep evidence retains the pre-allowlist execution-authority identity",
+        find: "const EXECUTION_AUTHORITY: &str = \"xtask-mcp-wrapper-windows-job-v8\";",
+        replace: "const EXECUTION_AUTHORITY: &str = \"xtask-mcp-wrapper-windows-job-v7\";",
+        breaks: "owned Deep evidence retains the pre-thread-lifecycle execution-authority identity",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "security_deep::tests::owned_request_binds_every_runtime_and_authority_field",
@@ -23725,8 +23725,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2150,
         file: "xtask/src/security_deep.rs",
-        find: "const WORKER_PERMISSION: &str = \"backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false\";",
-        replace: "const WORKER_PERMISSION: &str = \"backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;network=false\";",
+        find: "const WORKER_PERMISSION: &str = \"provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,outside-canary=default-deny-probed,network=false\";",
+        replace: "const WORKER_PERMISSION: &str = \"provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,network=false\";",
         breaks: "sealed Deep evidence omits proof that an outside canary exercises root-default denial",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -23885,6 +23885,1051 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "vmware::tests::the_delayed_read_marker_matches_the_unique_kernel_format_literal",
+        },
+    },
+    Mutation {
+        id: 2165,
+        file: "xtask/src/security_deep.rs",
+        find: "    render_named_permission_profile(\"read\", false, &[], &complete_worker_denies(policy))",
+        replace: "    render_named_permission_profile(\"deny\", false, &[], &complete_worker_denies(policy))",
+        breaks: "the provider envelope denies root instead of retaining its provider-compatible read authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2166,
+        file: "xtask/src/security_deep.rs",
+        find: "        \"deny\",\n        true,\n        &policy.readable_entries,",
+        replace: "        \"read\",\n        true,\n        &policy.readable_entries,",
+        breaks: "the effective worker profile inherits root-read authority instead of default-denying it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2167,
+        file: "xtask/src/security_deep.rs",
+        find: "        &policy.readable_entries,",
+        replace: "        &policy.readable_entries[1..],",
+        breaks: "the effective worker profile omits its first owned readable root",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2168,
+        file: "xtask/src/security_deep.rs",
+        find: "        .chain([policy.live_auth.as_path(), policy.projected_auth.as_path()])",
+        replace: "        .chain([policy.live_auth.as_path()])",
+        breaks: "the named permission profiles omit the projected credential's explicit deny",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2169,
+        file: "xtask/src/security_deep.rs",
+        find: "        \"{WORKER_NAMED_PERMISSION_PREFIX}{{extends=\\\":read-only\\\",filesystem={{{}}},network={{enabled=false}}}}\",",
+        replace: "        \"{WORKER_NAMED_PERMISSION_PREFIX}{{extends=\\\":read-only\\\",filesystem={{{}}},network={{enabled=true}}}}\",",
+        breaks: "the provider and effective named permission profiles enable network access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2170,
+        file: "xtask/src/security_deep.rs",
+        find: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.parent_state,\n        permissions.provider_profile,\n        source.commit,",
+        replace: "        permissions.parent_state,\n        permissions.effective_state,\n        permissions.parent_state,\n        permissions.provider_profile,\n        source.commit,",
+        breaks: "the owned request binds the parent-state digest under the effective-profile field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::owned_request_binds_every_runtime_and_authority_field",
+        },
+    },
+    Mutation {
+        id: 2171,
+        file: "xtask/src/security_deep.rs",
+        find: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.parent_state,\n        permissions.provider_profile,\n        source.commit,",
+        replace: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.provider_profile,\n        permissions.provider_profile,\n        source.commit,",
+        breaks: "the owned request binds the provider-profile digest under the parent-state field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::sealed_verifier_derives_only_owned_request_and_scan_fields",
+        },
+    },
+    Mutation {
+        id: 2172,
+        file: "xtask/src/security_deep.rs",
+        find: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.parent_state,\n        permissions.provider_profile,\n        source.commit,",
+        replace: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.parent_state,\n        permissions.effective_profile,\n        source.commit,",
+        breaks: "the owned request binds the effective-profile digest under the provider-profile field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::sealed_verifier_derives_only_owned_request_and_scan_fields",
+        },
+    },
+    Mutation {
+        id: 2173,
+        file: "xtask/src/security_deep.rs",
+        find: "fn provider_parent_sandbox_state(policy: &ManagedWorkerPolicy) -> Result<JsonValue> {\n    ensure!(\n        policy.repository.is_absolute()\n            && policy.live_auth.is_absolute()\n            && policy.projected_auth.is_absolute()\n            && policy.live_auth != policy.projected_auth\n            && policy.live_auth.file_name() == Some(OsStr::new(\"auth.json\"))\n            && policy.projected_auth.file_name() == Some(OsStr::new(\"auth.json\")),\n        \"provider parent sandbox paths differ from the owned credential policy\"\n    );\n    let mut entries = vec![object([\n        (\"access\", text_value(\"read\")),",
+        replace: "fn provider_parent_sandbox_state(policy: &ManagedWorkerPolicy) -> Result<JsonValue> {\n    ensure!(\n        policy.repository.is_absolute()\n            && policy.live_auth.is_absolute()\n            && policy.projected_auth.is_absolute()\n            && policy.live_auth != policy.projected_auth\n            && policy.live_auth.file_name() == Some(OsStr::new(\"auth.json\"))\n            && policy.projected_auth.file_name() == Some(OsStr::new(\"auth.json\")),\n        \"provider parent sandbox paths differ from the owned credential policy\"\n    );\n    let mut entries = vec![object([\n        (\"access\", text_value(\"deny\")),",
+        breaks: "the provider-compatible parent metadata denies root instead of retaining its required read envelope",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::owned_metadata_names_the_exact_managed_read_only_parent",
+        },
+    },
+    Mutation {
+        id: 2174,
+        file: "xtask/src/security_deep.rs",
+        find: "fn effective_worker_named_permission_profile(policy: &ManagedWorkerPolicy) -> Result<String> {\n    render_named_permission_profile(\n        \"deny\",\n        true,\n        &policy.readable_entries,",
+        replace: "fn effective_worker_named_permission_profile(policy: &ManagedWorkerPolicy) -> Result<String> {\n    render_named_permission_profile(\n        \"deny\",\n        false,\n        &policy.readable_entries,",
+        breaks: "the effective worker profile omits its minimal Windows runtime read grant",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2175,
+        file: "xtask/src/security_deep.rs",
+        find: "fn complete_worker_denies(policy: &ManagedWorkerPolicy) -> Vec<&Path> {\n    policy\n        .denied_entries\n        .iter()\n        .map(PathBuf::as_path)\n        .chain([policy.live_auth.as_path(), policy.projected_auth.as_path()])",
+        replace: "fn complete_worker_denies(policy: &ManagedWorkerPolicy) -> Vec<&Path> {\n    policy\n        .denied_entries\n        .iter()\n        .map(PathBuf::as_path)\n        .chain([policy.projected_auth.as_path()])",
+        breaks: "the provider and effective profiles omit the live credential's explicit deny",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2176,
+        file: "xtask/src/security_deep.rs",
+        find: "        parent_state: sha256::hex(&sha256::digest(parent.as_bytes())),",
+        replace: "        parent_state: sha256::hex(&sha256::digest(provider.as_bytes())),",
+        breaks: "the parent-state field hashes the provider profile instead of exact MCP metadata",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2177,
+        file: "xtask/src/security_deep.rs",
+        find: "            provider_permission == expected_provider && worker_permission == expected_worker,",
+        replace: "            provider_permission != worker_permission,",
+        breaks: "the exec wrapper accepts arbitrary distinct provider and effective profiles",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_injects_safety_last_and_rejects_unpinned_shapes",
+        },
+    },
+    Mutation {
+        id: 2178,
+        file: "xtask/src/security_deep.rs",
+        find: "        context.artifact_node.path.clone(),\n        context.codex_runtime.root.clone(),\n        context.python_wrapper.clone(),\n    ];",
+        replace: "        context.artifact_node.path.clone(),\n        context.python_wrapper.clone(),\n    ];",
+        breaks: "exec-time profile reconstruction omits the qualified Codex runtime read root",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_injects_safety_last_and_rejects_unpinned_shapes",
+        },
+    },
+    Mutation {
+        id: 2179,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-effective-profile.sha256\".to_string(),\n            permissions.effective_profile.clone(),",
+        replace: "            \"execution.worker-effective-profile.sha256\".to_string(),\n            permissions.parent_state.clone(),",
+        breaks: "the Deep record maps the parent-state digest into the effective-profile field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::record_fields_bind_exact_permission_digests",
+        },
+    },
+    Mutation {
+        id: 2180,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-parent-state.sha256\".to_string(),\n            permissions.parent_state.clone(),",
+        replace: "            \"execution.worker-parent-state.sha256\".to_string(),\n            permissions.provider_profile.clone(),",
+        breaks: "the Deep record maps the provider-profile digest into the parent-state field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::record_fields_bind_exact_permission_digests",
+        },
+    },
+    Mutation {
+        id: 2181,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-provider-profile.sha256\".to_string(),\n            permissions.provider_profile.clone(),",
+        replace: "            \"execution.worker-provider-profile.sha256\".to_string(),\n            permissions.effective_profile.clone(),",
+        breaks: "the Deep record maps the effective-profile digest into the provider-profile field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::record_fields_bind_exact_permission_digests",
+        },
+    },
+    Mutation {
+        id: 2182,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        replace: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        breaks: "qualification can admit owned Deep evidence without the effective-profile digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2183,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
+        replace: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
+        breaks: "qualification can admit owned Deep evidence without the parent-state digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2184,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
+        replace: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
+        breaks: "qualification can admit owned Deep evidence without the provider-profile digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2185,
+        file: "xtask/src/security_deep.rs",
+        find: "fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Command {\n    let mut command = Command::new(executable);\n    command\n        .args(arguments)\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)",
+        replace: "fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Command {\n    let mut command = Command::new(executable);\n    command\n        .args(arguments)\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)",
+        breaks: "the real Codex child inherits the provider-profile wrapper control",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::private_child_command_specs_pin_arguments_and_strip_wrapper_controls",
+        },
+    },
+    Mutation {
+        id: 2186,
+        file: "xtask/src/security_deep.rs",
+        find: "    command\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)\n        .env_remove(WRAPPER_TRANSITIONS_ENV)\n        .env_remove(\"CODEX_CLI_PATH\")\n        .env_remove(PYTHON_WRAPPER_REAL_ENV)",
+        replace: "    command\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_TRANSITIONS_ENV)\n        .env_remove(\"CODEX_CLI_PATH\")\n        .env_remove(PYTHON_WRAPPER_REAL_ENV)",
+        breaks: "the real Python child inherits the effective-profile wrapper control",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::private_child_command_specs_pin_arguments_and_strip_wrapper_controls",
+        },
+    },
+    Mutation {
+        id: 2187,
+        file: "xtask/src/security_deep.rs",
+        find: "        .env(WRAPPER_LIVE_AUTH_ENV, &worker_policy.live_auth)\n        .env(WRAPPER_PROVIDER_PERMISSION_ENV, provider_permission)\n        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)",
+        replace: "        .env(WRAPPER_LIVE_AUTH_ENV, &worker_policy.live_auth)\n        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)",
+        breaks: "the MCP control plane does not receive the exact provider permission profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_environment_propagates_both_exact_permission_profiles",
+        },
+    },
+    Mutation {
+        id: 2188,
+        file: "xtask/src/security_deep.rs",
+        find: "        .env(WRAPPER_PROVIDER_PERMISSION_ENV, provider_permission)\n        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)\n        .env(WRAPPER_TRANSITIONS_ENV, &scratch.transitions)\n        .env(\"PYTHON\", &wrapper)",
+        replace: "        .env(WRAPPER_PROVIDER_PERMISSION_ENV, provider_permission)\n        .env(WRAPPER_TRANSITIONS_ENV, &scratch.transitions)\n        .env(\"PYTHON\", &wrapper)",
+        breaks: "the MCP control plane does not receive the exact effective worker profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_environment_propagates_both_exact_permission_profiles",
+        },
+    },
+    Mutation {
+        id: 2189,
+        file: "xtask/src/security_deep.rs",
+        find: "        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)\n        .env(WRAPPER_TRANSITIONS_ENV, &scratch.transitions)\n        .env(\"PYTHON\", &wrapper)",
+        replace: "        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)\n        .env(\"PYTHON\", &wrapper)",
+        breaks: "the MCP control plane cannot give the mandatory wrapper its private transition ledger",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_environment_propagates_both_exact_permission_profiles",
+        },
+    },
+    Mutation {
+        id: 2190,
+        file: "xtask/src/security_deep.rs",
+        find: "        if let Err(error) = write_worker_transition_receipt(\n            source,\n            invocation.transition,\n            WorkerTransitionStage::Launched,\n            &worker.path,\n            None,\n            &invocation.arguments,\n        ) {\n            let _ = child.kill();\n            let _ = child.wait();\n            return Err(error);\n        }",
+        replace: "        let _unrecorded_app_server_launch = (&worker, &child);",
+        breaks: "an app-server crossing can launch without recording its runtime authority transition",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_dispatch_is_early_and_strips_control_environment",
+        },
+    },
+    Mutation {
+        id: 2191,
+        file: "xtask/src/security_deep.rs",
+        find: "            let transition = if validated.resumed_thread.is_some() {\n                WorkerTransitionKind::ExecResumedAttenuated\n            } else {\n                WorkerTransitionKind::ExecInitialAttenuated\n            };",
+        replace: "            let transition = if validated.resumed_thread.is_some() {\n                WorkerTransitionKind::ExecResumedAttenuated\n            } else {\n                WorkerTransitionKind::ExecResumedAttenuated\n            };",
+        breaks: "an initial exec crossing is misclassified as a resumed transition",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_injects_safety_last_and_rejects_unpinned_shapes",
+        },
+    },
+    Mutation {
+        id: 2193,
+        file: "xtask/src/security_deep.rs",
+        find: "            && receipt.effective_profile == permissions.effective_profile\n            && receipt.applied_profile\n                == receipt.kind.applied_digest(\n                    &permissions.provider_profile,\n                    &permissions.effective_profile,\n                ),",
+        replace: "            && receipt.effective_profile == permissions.effective_profile,",
+        breaks: "a transition receipt can claim the wrong actually applied permission profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_receipts_and_ledger_are_canonical_and_source_bound",
+        },
+    },
+    Mutation {
+        id: 2194,
+        file: "xtask/src/security_deep.rs",
+        find: "    let worker_transitions =\n        verify_worker_transition_ledger(&worker_transitions, source, &permissions)?;",
+        replace: "    let worker_transitions = WorkerTransitionLedger {\n        bytes: worker_transitions,\n        app_server: 2,\n        exec_initial: 1,\n        exec_resumed: 1,\n        exec_exited_zero: 0,\n        thread_ids: BTreeSet::from([\"thread-1\".to_string()]),\n        execution_threads: BTreeSet::from([\"thread-1\".to_string()]),\n        probes: WorkerProbeSummary {\n            allowed_reads: 7,\n            denied_reads: 4,\n            denied_write_creates: 2,\n            denied_write_mutations: 3,\n            denied_network_listeners: 1,\n            denied_network_connections: 1,\n            denied_descendants: 1,\n        },\n    };",
+        breaks: "the sealed verifier trusts transition counts without replaying the transition ledger",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::sealed_verifier_derives_only_owned_request_and_scan_fields",
+        },
+    },
+    Mutation {
+        id: 2195,
+        file: "xtask/src/qualification.rs",
+        find: "            (\"artifact.report\", \"report.md\", artifacts.report.as_slice()),\n            (\n                \"artifact.worker-transitions\",\n                \"worker-transitions\",\n                artifacts.worker_transitions.as_slice(),\n            ),",
+        replace: "            (\"artifact.report\", \"report.md\", artifacts.report.as_slice()),",
+        breaks: "owned Deep publication omits the replayable worker-transition artifact",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::owned_deep_replays_copied_artifacts_before_committing_pass",
+        },
+    },
+    Mutation {
+        id: 2196,
+        file: "xtask/src/qualification.rs",
+        find: "    BundleFile {\n        prefix: \"qualification.codex-security-deep.worker-transitions\",\n        relative: \"qualification/codex-security-deep/worker-transitions\",\n    },",
+        replace: "",
+        breaks: "offline evidence omits the owned Deep worker-transition artifact",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::qualification_records_cannot_be_omitted_or_changed_offline",
+        },
+    },
+    Mutation {
+        id: 2197,
+        file: "xtask/src/security_deep.rs",
+        find: "fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Command {\n    let mut command = Command::new(executable);\n    command\n        .args(arguments)\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)\n        .env_remove(WRAPPER_TRANSITIONS_ENV)",
+        replace: "fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Command {\n    let mut command = Command::new(executable);\n    command\n        .args(arguments)\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)",
+        breaks: "the real Codex child inherits the private transition-ledger write path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::private_child_command_specs_pin_arguments_and_strip_wrapper_controls",
+        },
+    },
+    Mutation {
+        id: 2198,
+        file: "xtask/src/security_deep.rs",
+        find: "    command\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)\n        .env_remove(WRAPPER_TRANSITIONS_ENV)\n        .env_remove(\"CODEX_CLI_PATH\")",
+        replace: "    command\n        .env_remove(WRAPPER_MARKER_ENV)\n        .env_remove(WRAPPER_REAL_ENV)\n        .env_remove(WRAPPER_OVERRIDES_ENV)\n        .env_remove(WRAPPER_REPOSITORY_ENV)\n        .env_remove(WRAPPER_NODE_ENV)\n        .env_remove(WRAPPER_LIVE_AUTH_ENV)\n        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)\n        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)\n        .env_remove(\"CODEX_CLI_PATH\")",
+        breaks: "the real Python child inherits the private transition-ledger write path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::private_child_command_specs_pin_arguments_and_strip_wrapper_controls",
+        },
+    },
+    Mutation {
+        id: 2199,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"execution.worker-transitions.exec-resumed\".to_string(),\n                \"findings.critical\".to_string(),",
+        replace: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"findings.critical\".to_string(),",
+        breaks: "qualification can admit owned Deep evidence without the resumed-transition count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2200,
+        file: "xtask/src/qualification.rs",
+        find: "            (\"artifact.report\", \"report.md\"),\n            (\"artifact.worker-transitions\", \"worker-transitions\"),",
+        replace: "            (\"artifact.report\", \"report.md\"),",
+        breaks: "qualification support verification does not replay the transition artifact's path and digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::owned_deep_replays_copied_artifacts_before_committing_pass",
+        },
+    },
+    Mutation {
+        id: 2201,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-transitions.exec-resumed\".to_string(),\n            transitions.exec_resumed.to_string(),",
+        replace: "            \"execution.worker-transitions.exec-resumed\".to_string(),\n            transitions.exec_initial.to_string(),",
+        breaks: "the Deep record maps the initial-exec count into the resumed-exec field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2202,
+        file: "xtask/src/security_deep.rs",
+        find: "        render_worker_transition_receipt(&receipt)? == bytes,\n        \"private Codex transition receipt is noncanonical\"",
+        replace: "        render_worker_transition_receipt(&receipt)?.len() == bytes.len(),\n        \"private Codex transition receipt is noncanonical\"",
+        breaks: "a checksum-valid transition receipt can retain a noncanonical process identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_receipts_and_ledger_are_canonical_and_source_bound",
+        },
+    },
+    Mutation {
+        id: 2203,
+        file: "xtask/src/security_deep.rs",
+        find: "            Self::AppServerPassThrough => provider,\n            Self::ExecInitialAttenuated | Self::ExecResumedAttenuated => effective,",
+        replace: "            Self::AppServerPassThrough => effective,\n            Self::ExecInitialAttenuated | Self::ExecResumedAttenuated => effective,",
+        breaks: "the app-server transition claims the attenuated worker profile instead of provider pass-through",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_receipts_and_ledger_are_canonical_and_source_bound",
+        },
+    },
+    Mutation {
+        id: 2204,
+        file: "xtask/src/security_deep.rs",
+        find: "    let worker_transitions = read(\n        &directory.join(WORKER_TRANSITIONS),\n        MAX_WORKER_TRANSITIONS_BYTES,\n        \"sealed private Codex transition ledger\",\n    )?;",
+        replace: "    let worker_transitions = read(\n        &directory.join(REPORT),\n        MAX_WORKER_TRANSITIONS_BYTES,\n        \"sealed private Codex transition ledger\",\n    )?;",
+        breaks: "the sealed Deep verifier reads the report in place of the transition ledger artifact",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::sealed_verifier_derives_only_owned_request_and_scan_fields",
+        },
+    },
+    Mutation {
+        id: 2205,
+        file: "xtask/src/security_deep.rs",
+        find: "        effective_state: sha256::hex(&sha256::digest(effective_state.as_bytes())),",
+        replace: "        effective_state: sha256::hex(&sha256::digest(parent.as_bytes())),",
+        breaks: "the effective sandbox-state digest is replaced with the provider parent state",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::named_permission_profiles_separate_provider_and_effective_authority",
+        },
+    },
+    Mutation {
+        id: 2206,
+        file: "xtask/src/security_deep.rs",
+        find: "    plan.extend(\n        policy\n            .denied_probes\n            .iter()\n            .map(|path| (path.as_path(), WorkerReadDecision::Deny)),\n    );",
+        replace: "    let _unprobed_denied_reads = &policy.denied_probes;",
+        breaks: "explicit Python deny subtrees are omitted from the executable read matrix",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::managed_worker_policy_is_an_executable_default_deny_allowlist",
+        },
+    },
+    Mutation {
+        id: 2207,
+        file: "xtask/src/security_deep.rs",
+        find: "        let denied_write_probes = vec![\n            scratch.scan_root.join(WORKER_SCAN_WRITE_CANARY_NAME),\n            scratch.root.join(WORKER_OUTSIDE_WRITE_CANARY_NAME),\n        ];",
+        replace: "        let denied_write_probes = vec![\n            scratch.scan_root.join(WORKER_SCAN_WRITE_CANARY_NAME),\n        ];",
+        breaks: "the worker policy omits its outside-root denied-write probe",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::managed_worker_policy_is_an_executable_default_deny_allowlist",
+        },
+    },
+    Mutation {
+        id: 2208,
+        file: "xtask/src/security_deep.rs",
+        find: "    for probe_target in &policy.denied_write_probes {",
+        replace: "    for probe_target in &policy.denied_write_probes[..1] {",
+        breaks: "the runtime matrix executes only one of its two denied-write probes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2209,
+        file: "xtask/src/security_deep.rs",
+        find: "        std::net::TcpListener::bind(\"127.0.0.1:0\").map(drop),",
+        replace: "        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),",
+        breaks: "the network fixture fabricates a denial without attempting its loopback bind",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2210,
+        file: "xtask/src/security_deep.rs",
+        find: "    let executable = std::env::current_exe().context(\"resolving private descendant probe\")?;\n    let status = Command::new(executable)\n        .arg(PRIVATE_CREDENTIAL_PROBE_ARGUMENT)\n        .arg(target)\n        .env_clear()\n        .status()\n        .context(\"running private descendant read probe\")?;\n    Ok(match status.code() {\n        Some(PRIVATE_CREDENTIAL_DENIED_EXIT) => PRIVATE_CREDENTIAL_DENIED_EXIT,\n        Some(_) => PRIVATE_CREDENTIAL_READABLE_EXIT,\n        None => PRIVATE_CREDENTIAL_ERROR_EXIT,\n    })",
+        replace: "    let _unspawned_target = target;\n    Ok(PRIVATE_CREDENTIAL_DENIED_EXIT)",
+        breaks: "the descendant fixture fabricates a denial without spawning the nested read probe",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2211,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_write_creates == 2",
+        replace: "                && self.denied_write_creates >= 1",
+        breaks: "one denied create can qualify as the required two-boundary create matrix",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2212,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_network_listeners == 1",
+        replace: "                && self.denied_network_listeners <= 1",
+        breaks: "a missing listener-denial probe can qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2213,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_descendants == 1,",
+        replace: "                && self.denied_descendants <= 1,",
+        breaks: "a missing descendant-denial probe can qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2214,
+        file: "xtask/src/security_deep.rs",
+        find: "            self.allowed_reads >= 1",
+        replace: "            self.allowed_reads <= MAX_WORKER_POLICY_PROBES",
+        breaks: "a worker policy can qualify without any successful allowed-read probe",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2215,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_reads >= 4",
+        replace: "                && self.denied_reads <= MAX_WORKER_POLICY_PROBES",
+        breaks: "the four mandatory denied-read boundaries can be omitted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2216,
+        file: "xtask/src/security_deep.rs",
+        find: "        permissions.effective_state,\n        probes.allowed_reads,",
+        replace: "        permissions.effective_profile,\n        probes.allowed_reads,",
+        breaks: "the canonical ledger binds the named profile twice instead of the raw effective sandbox state",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_receipts_and_ledger_are_canonical_and_source_bound",
+        },
+    },
+    Mutation {
+        id: 2217,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-effective-state.sha256\".to_string(),\n            permissions.effective_state.clone(),",
+        replace: "            \"execution.worker-effective-state.sha256\".to_string(),\n            permissions.effective_profile.clone(),",
+        breaks: "the Deep record maps the named profile into the effective sandbox-state field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::record_fields_bind_exact_permission_digests",
+        },
+    },
+    Mutation {
+        id: 2218,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        replace: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        breaks: "qualification can omit the raw effective sandbox-state digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2219,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-preflight.allowed-reads\".to_string(),\n                \"execution.worker-preflight.denied-reads\".to_string(),",
+        replace: "                \"execution.worker-preflight.denied-reads\".to_string(),",
+        breaks: "qualification can omit the allowed-read preflight count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2220,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-preflight.denied-write-creates\".to_string(),\n                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
+        replace: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
+        breaks: "qualification can omit the denied-create preflight count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2221,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),\n                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
+        replace: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
+        breaks: "qualification can omit the denied existing-file mutation count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2222,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),\n                \"execution.worker-preflight.denied-network-connections\".to_string(),",
+        replace: "                \"execution.worker-preflight.denied-network-connections\".to_string(),",
+        breaks: "qualification can omit the denied-listener preflight count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2223,
+        file: "xtask/src/qualification.rs",
+        find: "                \"execution.worker-preflight.denied-network-connections\".to_string(),\n                \"execution.worker-preflight.denied-descendants\".to_string(),",
+        replace: "                \"execution.worker-preflight.denied-descendants\".to_string(),",
+        breaks: "qualification can omit the denied outbound-connect preflight count",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::qualification_schema_rejects_omission_and_invention",
+        },
+    },
+    Mutation {
+        id: 2224,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.allowed-reads\".to_string(),\n            transitions.probes.allowed_reads.to_string(),",
+        replace: "            \"execution.worker-preflight.allowed-reads\".to_string(),\n            transitions.probes.denied_reads.to_string(),",
+        breaks: "the Deep record maps denied reads into the allowed-read preflight field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2225,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-reads\".to_string(),\n            transitions.probes.denied_reads.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-reads\".to_string(),\n            transitions.probes.allowed_reads.to_string(),",
+        breaks: "the Deep record maps allowed reads into the denied-read preflight field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2226,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-write-creates\".to_string(),\n            transitions.probes.denied_write_creates.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-write-creates\".to_string(),\n            transitions.probes.denied_reads.to_string(),",
+        breaks: "the Deep record maps denied reads into the denied-create preflight field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2227,
+        file: "xtask/src/security_deep.rs",
+        find: "        permissions.effective_profile,\n        permissions.effective_state,\n        permissions.parent_state,",
+        replace: "        permissions.effective_profile,\n        permissions.effective_profile,\n        permissions.parent_state,",
+        breaks: "the owned request binds the named profile twice instead of the effective sandbox-state digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::owned_request_binds_every_runtime_and_authority_field",
+        },
+    },
+    Mutation {
+        id: 2228,
+        file: "xtask/src/security_deep.rs",
+        find: "            &permission_digests,\n            &worker_probes,\n        )?;",
+        replace: "            &permission_digests,\n            &WorkerProbeSummary {\n                allowed_reads: 7,\n                denied_reads: 4,\n                denied_write_creates: 2,\n                denied_write_mutations: 3,\n                denied_network_listeners: 1,\n                denied_network_connections: 1,\n                denied_descendants: 1,\n            },\n        )?;",
+        breaks: "the final ledger can discard the measured worker-probe summary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::managed_worker_policy_is_clone_backed_narrow_and_single_source",
+        },
+    },
+    Mutation {
+        id: 2229,
+        file: "xtask/src/security_deep.rs",
+        find: "        require_worker_probe_execution(\n            tools,\n            scratch,\n            policy,\n            shell_environment,\n            &arguments,\n            WorkerProbeExpectation {\n                label: decision.label(),\n                exit: decision.exit(),\n                disposition: decision.disposition(),\n            },\n        )?;\n        match decision {",
+        replace: "        let _unexecuted_read_probe = arguments;\n        match decision {",
+        breaks: "the read preflight ledger records planned counts without executing the read probe",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2230,
+        file: "xtask/src/security_deep.rs",
+        find: "    let worker_permission = effective_worker_named_permission_profile(policy)?;",
+        replace: "    let worker_permission = provider_named_permission_profile(policy)?;",
+        breaks: "the runtime preflight compiles the provider envelope instead of the attenuated worker profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_command_uses_the_exact_owned_worker_sandbox",
+        },
+    },
+    Mutation {
+        id: 2231,
+        file: "xtask/src/security_deep.rs",
+        find: "        OsString::from(\"--permission-profile\"),\n        OsString::from(WORKER_NAMED_PERMISSION_NAME),\n        OsString::from(\"--include-managed-config\"),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
+        replace: "        OsString::from(\"--permission-profile\"),\n        OsString::from(\"read-only\"),\n        OsString::from(\"--include-managed-config\"),\n        OsString::from(\"--\"),\n        fixture.as_os_str().to_owned(),",
+        breaks: "the runtime preflight explicitly selects a different named permission profile",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_command_uses_the_exact_owned_worker_sandbox",
+        },
+    },
+    Mutation {
+        id: 2232,
+        file: "xtask/src/security_deep.rs",
+        find: "        if status.code() == Some(0) {\n            write_worker_transition_receipt(\n                source,\n                invocation.transition,\n                WorkerTransitionStage::ExitedZero,\n                &worker.path,\n                Some(&thread),\n                &invocation.arguments,\n            )?;\n        }",
+        replace: "        let _unrecorded_zero_exit = (status, thread);",
+        breaks: "a zero-exit Codex child can complete without a completed lifecycle receipt",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_dispatch_is_early_and_strips_control_environment",
+        },
+    },
+    Mutation {
+        id: 2233,
+        file: "xtask/src/security_deep.rs",
+        find: "    ensure!(\n        summary.allowed_reads == policy.readable_probes.len()\n            && summary.denied_reads == policy.deny_probes().len() + policy.denied_probes.len()\n            && summary.denied_write_creates == policy.denied_write_probes.len()\n            && summary.denied_write_mutations == 3\n            && summary.denied_network_listeners == 1\n            && summary.denied_network_connections == 1\n            && summary.denied_descendants == 1,\n        \"managed worker preflight counts differ from the executed policy plan\"\n    );",
+        replace: "    let _unchecked_probe_plan = policy;",
+        breaks: "the live preflight summary need not exactly match every probe in the executed policy plan",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2234,
+        file: "xtask/src/security_deep.rs",
+        find: "        if status.code() == Some(0) {\n            write_worker_transition_receipt(\n                source,\n                invocation.transition,\n                WorkerTransitionStage::ExitedZero,\n                &worker.path,\n                Some(&thread),\n                &invocation.arguments,\n            )?;\n        }",
+        replace: "        write_worker_transition_receipt(\n            source,\n            invocation.transition,\n            WorkerTransitionStage::parse(\"exited-zero\")?,\n            &worker.path,\n            Some(&thread),\n            &invocation.arguments,\n        )?;",
+        breaks: "a failed Codex child can be recorded as a successful completed transition",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::wrapper_dispatch_is_early_and_strips_control_environment",
+        },
+    },
+    Mutation {
+        id: 2235,
+        file: "xtask/src/security_deep.rs",
+        find: "        Some(PRIVATE_WRITE_APPEND_PROBE_ARGUMENT) => OpenOptions::new()\n            .append(true)\n            .open(path)\n            .and_then(|mut file| file.write_all(b\"wizard append probe\")),",
+        replace: "        Some(PRIVATE_WRITE_APPEND_PROBE_ARGUMENT) => {\n            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))\n        }",
+        breaks: "the existing-file append probe fabricates denial without attempting append access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2236,
+        file: "xtask/src/security_deep.rs",
+        find: "        Some(PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT) => OpenOptions::new()\n            .write(true)\n            .truncate(true)\n            .open(path)\n            .map(drop),",
+        replace: "        Some(PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT) => {\n            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))\n        }",
+        breaks: "the existing-file truncate probe fabricates denial without attempting truncate access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2237,
+        file: "xtask/src/security_deep.rs",
+        find: "        Some(PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT) => OpenOptions::new()\n            .write(true)\n            .open(path)\n            .and_then(|mut file| file.write_all(b\"wizard overwrite probe\")),",
+        replace: "        Some(PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT) => {\n            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))\n        }",
+        breaks: "the existing-file overwrite probe fabricates denial without attempting overwrite access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2238,
+        file: "xtask/src/security_deep.rs",
+        find: "        require_worker_probe_execution(\n            tools,\n            scratch,\n            policy,\n            shell_environment,\n            &arguments,\n            WorkerProbeExpectation {\n                label: \"Codex worker denied-existing-write preflight\",\n                exit: PRIVATE_CREDENTIAL_DENIED_EXIT,\n                disposition: \"deny existing-file mutation\",\n            },\n        )?;",
+        replace: "        let _unexecuted_existing_write_probe = arguments;",
+        breaks: "the preflight records existing-file mutation denials without executing the sandboxed probes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2239,
+        file: "xtask/src/security_deep.rs",
+        find: "        std::net::TcpStream::connect_timeout(&endpoint, Duration::from_secs(5)).map(drop),",
+        replace: "        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),",
+        breaks: "the outbound-connect probe fabricates denial without attempting a bounded TCP connection",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2240,
+        file: "xtask/src/security_deep.rs",
+        find: "    require_worker_probe_execution(\n        tools,\n        scratch,\n        policy,\n        shell_environment,\n        &connect_arguments,\n        WorkerProbeExpectation {\n            label: \"Codex worker denied-network-connect preflight\",\n            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,\n            disposition: \"deny network connect\",\n        },\n    )?;",
+        replace: "    let _unexecuted_connect_probe = connect_arguments;",
+        breaks: "the preflight records an outbound-connect denial without executing the sandboxed probe",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2241,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_write_mutations == 3",
+        replace: "                && self.denied_write_mutations >= 1",
+        breaks: "an incomplete existing-file mutation matrix can qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2242,
+        file: "xtask/src/security_deep.rs",
+        find: "                && self.denied_network_connections == 1",
+        replace: "                && self.denied_network_connections <= 1",
+        breaks: "a missing outbound-connect denial can qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_summary_requires_the_complete_bounded_matrix",
+        },
+    },
+    Mutation {
+        id: 2243,
+        file: "xtask/src/security_deep.rs",
+        find: "const WORKER_TRANSITIONS_SCHEMA: &str = \"wizard-codex-security-worker-transitions-v3\";",
+        replace: "const WORKER_TRANSITIONS_SCHEMA: &str = \"wizard-codex-security-worker-transitions-v2\";",
+        breaks: "thread-bound lifecycle evidence is mislabeled with the anonymous transition-ledger schema",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_receipts_and_ledger_are_canonical_and_source_bound",
+        },
+    },
+    Mutation {
+        id: 2244,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-write-mutations\".to_string(),\n            transitions.probes.denied_write_mutations.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-write-mutations\".to_string(),\n            transitions.probes.denied_write_creates.to_string(),",
+        breaks: "the Deep record maps denied creates into the existing-file mutation field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2245,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-network-listeners\".to_string(),\n            transitions.probes.denied_network_listeners.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-network-listeners\".to_string(),\n            transitions.probes.denied_write_mutations.to_string(),",
+        breaks: "the Deep record maps existing-file mutations into the listener field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2246,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-network-connections\".to_string(),\n            transitions.probes.denied_network_connections.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-network-connections\".to_string(),\n            transitions.probes.denied_write_creates.to_string(),",
+        breaks: "the Deep record maps denied creates into the outbound-connect field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2247,
+        file: "xtask/src/security_deep.rs",
+        find: "        .write_all(b\"-after\")\n        .context(\"writing managed worker append positive control\")?;",
+        replace: "        .write_all(b\"\")\n        .context(\"writing managed worker append positive control\")?;",
+        breaks: "the append positive control succeeds without demonstrating a content mutation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_positive_controls_exercise_each_operation_and_clean_up",
+        },
+    },
+    Mutation {
+        id: 2248,
+        file: "xtask/src/security_deep.rs",
+        find: "    OpenOptions::new()\n        .write(true)\n        .truncate(true)\n        .open(&truncate_target)\n        .context(\"opening managed worker truncate positive control\")?;",
+        replace: "    OpenOptions::new()\n        .write(true)\n        .truncate(false)\n        .open(&truncate_target)\n        .context(\"opening managed worker truncate positive control\")?;",
+        breaks: "the truncate positive control opens an existing file without truncating it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_positive_controls_exercise_each_operation_and_clean_up",
+        },
+    },
+    Mutation {
+        id: 2249,
+        file: "xtask/src/security_deep.rs",
+        find: "        .write_all(b\"X\")\n        .context(\"writing managed worker overwrite positive control\")?;",
+        replace: "        .write_all(b\"before\")\n        .context(\"writing managed worker overwrite positive control\")?;",
+        breaks: "the overwrite positive control rewrites the original bytes instead of changing them",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_positive_controls_exercise_each_operation_and_clean_up",
+        },
+    },
+    Mutation {
+        id: 2250,
+        file: "xtask/src/security_deep.rs",
+        find: "    let client = std::net::TcpStream::connect_timeout(&endpoint, Duration::from_secs(5))\n        .context(\"connecting managed worker network positive control\")?;",
+        replace: "    let client = listener\n        .try_clone()\n        .context(\"connecting managed worker network positive control\")?;",
+        breaks: "the network positive control clones the listener instead of proving an outbound connection",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_probe_positive_controls_exercise_each_operation_and_clean_up",
+        },
+    },
+    Mutation {
+        id: 2251,
+        file: "xtask/src/security_deep.rs",
+        find: "        endpoint.is_ipv4()\n            && endpoint.ip().is_loopback()\n            && endpoint.port() != 0\n            && endpoint.to_string() == value,",
+        replace: "        endpoint.is_ipv4(),",
+        breaks: "the outbound probe accepts external, zero-port or noncanonical endpoints",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_command_uses_the_exact_owned_worker_sandbox",
+        },
+    },
+    Mutation {
+        id: 2252,
+        file: "xtask/src/security_deep.rs",
+        find: "        require_existing_write_probe_unchanged(\n            &policy.existing_write_probe,\n            WORKER_ALLOWED_CANARY,\n        )?;\n        summary.denied_write_mutations += 1;",
+        replace: "        summary.denied_write_mutations += 1;",
+        breaks: "the preflight records denied mutations without checking the existing canary afterward",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2253,
+        file: "xtask/src/security_deep.rs",
+        find: "    require_worker_probe_positive_controls(scratch)?;",
+        replace: "    let _unexercised_worker_probe_positive_controls = scratch;",
+        breaks: "the live preflight omits the host capability positive controls",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::credential_probe_is_exact_content_open_only_and_fails_closed",
+        },
+    },
+    Mutation {
+        id: 2254,
+        file: "xtask/src/security_deep.rs",
+        find: "            \"execution.worker-preflight.denied-descendants\".to_string(),\n            transitions.probes.denied_descendants.to_string(),",
+        replace: "            \"execution.worker-preflight.denied-descendants\".to_string(),\n            transitions.probes.denied_network_connections.to_string(),",
+        breaks: "the Deep record maps outbound connections into the descendant field",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_fields_bind_pairwise_distinct_counts",
+        },
+    },
+    Mutation {
+        id: 2255,
+        file: "xtask/src/security_deep.rs",
+        find: "        execution_threads.is_subset(&initial_threads),\n        \"Codex Security completion execution threads lack observed initial wrapper starts\"",
+        replace: "        execution_threads.len() <= initial_threads.len(),\n        \"Codex Security completion execution threads lack observed initial wrapper starts\"",
+        breaks: "provider-reported execution identities can evade observed initial wrapper-start coverage",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing",
+        },
+    },
+    Mutation {
+        id: 2256,
+        file: "xtask/src/security_deep.rs",
+        find: "            && execution_threads.is_subset(thread_ids),",
+        replace: "            && execution_threads.len() <= thread_ids.len(),",
+        breaks: "an execution identity absent from the provider thread set can qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::protocol_tests::owned_mcp_completion_is_exact_source_bound_and_clean",
+        },
+    },
+    Mutation {
+        id: 2257,
+        file: "xtask/src/security_deep.rs",
+        find: "            initial_pairs.contains(&(receipt.worker.clone(), thread.clone())),\n            \"private Codex resumed execution thread lacks same-worker initial ancestry\"",
+        replace: "            thread_ids.contains(thread),\n            \"private Codex resumed execution thread lacks same-worker initial ancestry\"",
+        breaks: "a resumed execution identity can qualify without same-worker initial ancestry",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing",
+        },
+    },
+    Mutation {
+        id: 2258,
+        file: "xtask/src/security_deep.rs",
+        find: "                thread == expected,\n                \"private Codex resumed thread differs from its thread.started event\"",
+        replace: "                !thread.is_empty() && !expected.is_empty(),\n                \"private Codex resumed thread differs from its thread.started event\"",
+        breaks: "a resumed thread.started event can name an identity different from its resume argument",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::exec_jsonl_observation_binds_thread_identity_and_preserves_other_events",
+        },
+    },
+    Mutation {
+        id: 2259,
+        file: "xtask/src/security_deep.rs",
+        find: "            app_server_by_worker.get(&worker).copied().unwrap_or(0) >= exec_starts,\n            \"private Codex exec starts lack same-worker app-server launches\"",
+        replace: "            app_server_by_worker.get(&worker).copied().unwrap_or(0) >= 1,\n            \"private Codex exec starts lack same-worker app-server launches\"",
+        breaks: "one app-server launch can cover multiple same-worker exec starts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing",
+        },
+    },
+    Mutation {
+        id: 2260,
+        file: "xtask/src/security_deep.rs",
+        find: "            receipts.iter().any(|started| {\n                started.stage == WorkerTransitionStage::Started\n                    && started.kind == receipt.kind\n                    && started.process_id == receipt.process_id\n                    && started.worker == receipt.worker\n                    && started.execution_thread == receipt.execution_thread\n                    && started.applied_profile == receipt.applied_profile\n                    && started.arguments == receipt.arguments\n            }),",
+        replace: "            receipts\n                .iter()\n                .any(|started| started.stage == WorkerTransitionStage::Started),",
+        breaks: "a zero-exit lifecycle receipt can qualify without its exact matching start",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing",
         },
     },
 ];

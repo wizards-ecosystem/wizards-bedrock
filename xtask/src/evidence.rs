@@ -2311,6 +2311,7 @@ mod tests {
                 "qualification/codex-security-deep/report.md",
                 "qualification/codex-security-deep/request",
                 "qualification/codex-security-deep/scan-manifest.json",
+                "qualification/codex-security-deep/worker-transitions",
                 "qualification/advisory/.cargo/audit.toml",
                 "qualification/advisory/cargo-audit-refresh.transcript",
                 "qualification/advisory/cargo-audit.transcript",

@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -25,11 +25,18 @@ const MANIFEST: &str = "scan-manifest.json";
 const FINDINGS: &str = "findings.json";
 const COVERAGE: &str = "coverage.json";
 const REPORT: &str = "report.md";
+const WORKER_TRANSITIONS: &str = "worker-transitions";
 const MAX_REQUEST_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_FINDINGS_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_COVERAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_WORKER_TRANSITION_RECEIPT_BYTES: u64 = 2048;
+const MAX_WORKER_TRANSITIONS_BYTES: u64 = 1024 * 1024;
+const MAX_WORKER_TRANSITIONS: usize = 1024;
+const MAX_WORKER_POLICY_PROBES: usize = 128;
+const WORKER_TRANSITION_RECEIPT_SCHEMA: &str = "wizard-codex-security-worker-transition-v3";
+const WORKER_TRANSITIONS_SCHEMA: &str = "wizard-codex-security-worker-transitions-v3";
 const PRODUCER_NAME: &str = "codex-security-plugin";
 const PRODUCER_VERSION: &str = "0.1.32";
 const MCP_PROTOCOL: &str = "2025-06-18";
@@ -58,27 +65,45 @@ const DAYBREAK_TOOL_SHA256: &str =
 const MODEL: &str = "gpt-6.1-sol";
 const REASONING: &str = "xhigh";
 const AUTHENTICATION_CHANNEL: &str = "codex-home-chatgpt";
-const ENVIRONMENT_POLICY: &str = "xtask-owned-codex-security-hermetic-v6";
-const EXECUTION_AUTHORITY: &str = "xtask-mcp-wrapper-windows-job-v5";
-const WORKER_PERMISSION: &str = "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false";
+const ENVIRONMENT_POLICY: &str = "xtask-owned-codex-security-hermetic-v9";
+const EXECUTION_AUTHORITY: &str = "xtask-mcp-wrapper-windows-job-v8";
+const WORKER_PERMISSION: &str = "provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,outside-canary=default-deny-probed,network=false";
 const WINDOWS_SANDBOX_OVERRIDE: &str = "windows.sandbox=\"mxc\"";
-const WORKER_NAMED_PERMISSION_INPUT: &str = "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}";
-const WORKER_NAMED_PERMISSION_OVERRIDE: &str = "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"deny\"},network={enabled=false}}";
+const WORKER_NAMED_PERMISSION_NAME: &str = "codex_security_deep_scan_worker";
+const WORKER_NAMED_PERMISSION_PREFIX: &str = "permissions.codex_security_deep_scan_worker=";
 const OFFICIAL_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const WRAPPER_MARKER_ENV: &str = "WIZARD_CODEX_DEEP_WRAPPER";
 const WRAPPER_REAL_ENV: &str = "WIZARD_CODEX_DEEP_REAL";
 const WRAPPER_OVERRIDES_ENV: &str = "WIZARD_CODEX_DEEP_OVERRIDES";
 const WRAPPER_REPOSITORY_ENV: &str = "WIZARD_CODEX_DEEP_REPOSITORY";
 const WRAPPER_NODE_ENV: &str = "WIZARD_CODEX_DEEP_NODE";
+const WRAPPER_LIVE_AUTH_ENV: &str = "WIZARD_CODEX_DEEP_LIVE_AUTH";
+const WRAPPER_PROVIDER_PERMISSION_ENV: &str = "WIZARD_CODEX_DEEP_PROVIDER_PERMISSION";
+const WRAPPER_WORKER_PERMISSION_ENV: &str = "WIZARD_CODEX_DEEP_WORKER_PERMISSION";
+const WRAPPER_TRANSITIONS_ENV: &str = "WIZARD_CODEX_DEEP_TRANSITIONS";
 const WRAPPER_MARKER_PREFIX: &str = "wizard-codex-security-deep-v2:";
 const PRIVATE_CREDENTIAL_PROBE_ARGUMENT: &str =
     "__wizard-codex-security-private-credential-read-probe-v1";
+const PRIVATE_WRITE_PROBE_ARGUMENT: &str = "__wizard-codex-security-private-write-probe-v1";
+const PRIVATE_NETWORK_PROBE_ARGUMENT: &str = "__wizard-codex-security-private-network-probe-v1";
+const PRIVATE_WRITE_APPEND_PROBE_ARGUMENT: &str =
+    "__wizard-codex-security-private-write-append-probe-v1";
+const PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT: &str =
+    "__wizard-codex-security-private-write-truncate-probe-v1";
+const PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT: &str =
+    "__wizard-codex-security-private-write-overwrite-probe-v1";
+const PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT: &str =
+    "__wizard-codex-security-private-network-connect-probe-v1";
+const PRIVATE_DESCENDANT_PROBE_ARGUMENT: &str =
+    "__wizard-codex-security-private-descendant-probe-v1";
 const PRIVATE_CREDENTIAL_DENIED_EXIT: i32 = 73;
 const PRIVATE_CREDENTIAL_READABLE_EXIT: i32 = 74;
 const PRIVATE_CREDENTIAL_ERROR_EXIT: i32 = 75;
 const FILE_READ_DATA_ACCESS: u32 = 0x0000_0001;
 const WORKER_ALLOWED_CANARY_NAME: &str = "worker-allowed-read-canary";
 const WORKER_DENIED_CANARY_NAME: &str = "worker-denied-read-canary";
+const WORKER_SCAN_WRITE_CANARY_NAME: &str = "worker-scan-write-denied-canary";
+const WORKER_OUTSIDE_WRITE_CANARY_NAME: &str = "worker-outside-write-denied-canary";
 const WORKER_ALLOWED_CANARY: &[u8] = b"wizard worker allowlist probe v1\n";
 const WORKER_DENIED_CANARY: &[u8] = b"wizard worker deny-boundary probe v1\n";
 const PYTHON_WRAPPER_REAL_ENV: &str = "WIZARD_CODEX_DEEP_PYTHON_REAL";
@@ -105,10 +130,10 @@ const PYTHON_VERSION: &str = "Python 3.12.10";
 const PYTHON_SHA256: &str = "4d6f5f81a4bca11191c4c7c6b43632694d0a4ce74e068619d8fdc161d469859a";
 const PYTHON_BYTES: u64 = 104_952;
 const CODEX_VERSION: &str = "codex-cli 0.163.0-alpha.10.2";
-const CODEX_SHA256: &str = "9ecb9df2ecafcc00542ef0966c6f1737a81397dc9531b0a4b178238e2bf4a46d";
+const CODEX_SHA256: &str = "f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312";
 const CODEX_BYTES: u64 = 341_312_816;
 const CODEX_DEFAULT_CONFIG_SHA256: &str =
-    "ca92daadf6d70a31d9f9e9463dfb19916376b40d3da96950e43dafac1bdaa3bf";
+    "d78831b7ffc95fa8e14e2cf26770c3d8138156b7496a699a3567a465929e8aea";
 const CODEX_SYSTEM_SKILLS_ENTRIES: u64 = 71;
 const CODEX_SYSTEM_SKILLS_BYTES: u64 = 314_963;
 const CODEX_SYSTEM_SKILLS_SHA256: &str =
@@ -118,23 +143,23 @@ const CODEX_RUNTIME_FILES: [(&str, u64, &str); 4] = [
     (
         "codex-code-mode-host.exe",
         74_921_776,
-        "b1b21c0dc7f2cb72d27970479403ae8a10fef6ef4af417fe7fe9f960f8c2755a",
+        "3b6a9179a4da17fa5fc6948219cd61486dc3b534c683838076d8c61bd311c68e",
     ),
     (
         "codex-command-runner.exe",
         8_217_392,
-        "0de2b882d1f763ecdf4fcc3873fec18ddcf20646b6291dac54d33a9f9116d4c4",
+        "ce80b56a2f37f808815fde33cceb97ac858ceecde296425ad3860f0f37fb4877",
     ),
     (
         "codex-windows-sandbox-setup.exe",
         17_700_144,
-        "192827caa1e5dfaee2805849e4a8bf9fb8b52126acf334172fb4de19cc883cfc",
+        "c4da812016cbfb92d9a62791f78460c59e9662faadb0a2720d3aa5d0535b80bd",
     ),
     ("codex.exe", CODEX_BYTES, CODEX_SHA256),
 ];
 const CODEX_RUNTIME_BYTES: u64 = 442_152_128;
 const CODEX_RUNTIME_SHA256: &str =
-    "5e5c505d977265593a37faee54e5952fc6cbf4ff00c0de05db0f614c9a1e0094";
+    "72dd0efdd65e34488bc013f88166a8f549cf1f7441d0d23ad7116bc5758de1d5";
 
 const OWNED_SCRATCH_NAME: &str = "wizard-codex-security-deep-retained";
 const MAX_PLUGIN_MANIFEST_BYTES: u64 = 256 * 1024;
@@ -258,6 +283,7 @@ struct OwnedScratch {
     temporary: PathBuf,
     pycache: PathBuf,
     codex_state: PathBuf,
+    transitions: PathBuf,
     worker_allowed_canary: PathBuf,
     worker_denied_canary: PathBuf,
 }
@@ -271,9 +297,13 @@ impl OwnedScratch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManagedWorkerPolicy {
     repository: PathBuf,
+    probe_directory: PathBuf,
     readable_entries: Vec<PathBuf>,
     denied_entries: Vec<PathBuf>,
     readable_probes: Vec<PathBuf>,
+    denied_probes: Vec<PathBuf>,
+    denied_write_probes: Vec<PathBuf>,
+    existing_write_probe: PathBuf,
     repository_metadata_probe: PathBuf,
     live_auth: PathBuf,
     projected_auth: PathBuf,
@@ -331,12 +361,19 @@ impl ManagedWorkerPolicy {
         );
         let (python_reads, python_denies, python_probes) =
             python_worker_policy_entries(&tools.python_runtime)?;
+        let wrapper = std::fs::canonicalize(
+            std::env::current_exe().context("resolving managed worker wrapper")?,
+        )
+        .context("canonicalizing managed worker wrapper")?;
+        let wrapper = canonical_probe_path(&wrapper, "managed worker wrapper")?;
+        let probe_directory = canonical_directory(&scratch.scan_root, "managed worker probe root")?;
         let mut readable_entries = vec![
             repository.clone(),
             canonical_directory(&scratch.plugin, "managed worker plugin root")?,
-            canonical_directory(&scratch.scan_root, "managed worker scan root")?,
+            probe_directory.clone(),
             canonical_probe_path(&tools.node.path, "managed worker Node executable")?,
             canonical_directory(&tools.codex_runtime.root, "managed worker Codex root")?,
+            wrapper.clone(),
         ];
         readable_entries.extend(python_reads);
         ensure!(
@@ -353,6 +390,7 @@ impl ManagedWorkerPolicy {
             tools.node.path.clone(),
             tools.codex.path.clone(),
             shell_environment.command_processor.clone(),
+            wrapper,
         ];
         readable_probes.extend(python_probes);
         for probe in &readable_probes {
@@ -372,6 +410,47 @@ impl ManagedWorkerPolicy {
         )?;
         let mut denied_entries = vec![repository.join(".git")];
         denied_entries.extend(python_denies);
+        let mut denied_probes = Vec::new();
+        for category in ["__pycache__", "site-packages"] {
+            if let Some(directory) = denied_entries.iter().find(|path| {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case(category))
+            }) {
+                denied_probes.push(first_python_policy_file(directory, 0)?.with_context(|| {
+                    format!("managed worker Python {category} tree contains no deny probe")
+                })?);
+            }
+        }
+        ensure!(
+            denied_probes
+                .iter()
+                .all(|probe| { denied_entries.iter().any(|entry| probe.starts_with(entry)) }),
+            "managed worker denied read probe is not covered by an explicit deny"
+        );
+        let denied_write_probes = vec![
+            scratch.scan_root.join(WORKER_SCAN_WRITE_CANARY_NAME),
+            scratch.root.join(WORKER_OUTSIDE_WRITE_CANARY_NAME),
+        ];
+        for probe in &denied_write_probes {
+            ensure!(
+                probe.is_absolute() && !probe.exists(),
+                "managed worker denied write probe is not a fresh absolute target"
+            );
+        }
+        let existing_write_probe = scratch.worker_allowed_canary.clone();
+        require_worker_probe_file(&existing_write_probe, "managed worker existing-write probe")?;
+        ensure!(
+            readable_probes.contains(&existing_write_probe)
+                && readable_entries
+                    .iter()
+                    .any(|entry| existing_write_probe.starts_with(entry))
+                && !denied_entries
+                    .iter()
+                    .any(|entry| existing_write_probe.starts_with(entry))
+                && !denied_write_probes.contains(&existing_write_probe),
+            "managed worker existing-write probe is not an owned readable file"
+        );
         let denied_canary = scratch.worker_denied_canary.clone();
         require_worker_probe_file(&denied_canary, "managed worker denied probe")?;
         ensure!(
@@ -387,11 +466,33 @@ impl ManagedWorkerPolicy {
                     .any(|root| projected_auth.starts_with(root)),
             "managed worker deny targets overlap an allowed read root"
         );
+        let read_probe_count = 4 + denied_probes.len() + readable_probes.len();
+        let unique_read_probes = [
+            live_auth,
+            projected_auth,
+            denied_canary.as_path(),
+            repository_metadata_probe.as_path(),
+        ]
+        .into_iter()
+        .chain(denied_probes.iter().map(PathBuf::as_path))
+        .chain(readable_probes.iter().map(PathBuf::as_path))
+        .collect::<BTreeSet<_>>();
+        ensure!(
+            read_probe_count <= MAX_WORKER_POLICY_PROBES
+                && unique_read_probes.len() == read_probe_count
+                && denied_write_probes.iter().collect::<BTreeSet<_>>().len()
+                    == denied_write_probes.len(),
+            "managed worker enforcement probes are duplicated or exceed their policy"
+        );
         Ok(Self {
             repository,
+            probe_directory,
             readable_entries,
             denied_entries,
             readable_probes,
+            denied_probes,
+            denied_write_probes,
+            existing_write_probe,
             repository_metadata_probe,
             live_auth: live_auth.to_path_buf(),
             projected_auth: projected_auth.to_path_buf(),
@@ -409,12 +510,158 @@ impl ManagedWorkerPolicy {
     }
 }
 
+fn complete_worker_denies(policy: &ManagedWorkerPolicy) -> Vec<&Path> {
+    policy
+        .denied_entries
+        .iter()
+        .map(PathBuf::as_path)
+        .chain([policy.live_auth.as_path(), policy.projected_auth.as_path()])
+        .collect()
+}
+
+fn render_named_permission_profile(
+    root_access: &str,
+    include_minimal: bool,
+    readable_entries: &[PathBuf],
+    denied_entries: &[&Path],
+) -> Result<String> {
+    ensure!(
+        matches!(root_access, "read" | "deny")
+            && readable_entries.iter().all(|path| path.is_absolute())
+            && denied_entries.iter().all(|path| path.is_absolute()),
+        "named worker permission profile contains an invalid authority"
+    );
+    let mut filesystem = vec![format!("\":root\"=\"{root_access}\"")];
+    if include_minimal {
+        filesystem.push("\":minimal\"=\"read\"".to_string());
+    }
+    for path in readable_entries {
+        let path = path
+            .to_str()
+            .context("named worker readable path is not UTF-8")?;
+        filesystem.push(format!("{}=\"read\"", quote_toml_string(path)));
+    }
+    for path in denied_entries {
+        let path = path
+            .to_str()
+            .context("named worker denied path is not UTF-8")?;
+        filesystem.push(format!("{}=\"deny\"", quote_toml_string(path)));
+    }
+    ensure!(
+        filesystem.iter().collect::<BTreeSet<_>>().len() == filesystem.len(),
+        "named worker permission profile contains duplicate entries"
+    );
+    Ok(format!(
+        "{WORKER_NAMED_PERMISSION_PREFIX}{{extends=\":read-only\",filesystem={{{}}},network={{enabled=false}}}}",
+        filesystem.join(",")
+    ))
+}
+
+fn provider_named_permission_profile(policy: &ManagedWorkerPolicy) -> Result<String> {
+    render_named_permission_profile("read", false, &[], &complete_worker_denies(policy))
+}
+
+fn effective_worker_named_permission_profile(policy: &ManagedWorkerPolicy) -> Result<String> {
+    render_named_permission_profile(
+        "deny",
+        true,
+        &policy.readable_entries,
+        &complete_worker_denies(policy),
+    )
+}
+
+fn context_named_permission_profiles(
+    context: &PrivateExecutionContext,
+) -> Result<(String, String)> {
+    let (python_reads, python_denies, _) = python_worker_policy_entries(&context.python_runtime)?;
+    let mut reads = vec![
+        context.repository.clone(),
+        context.plugin_mirror.clone(),
+        context.scan_root.clone(),
+        context.artifact_node.path.clone(),
+        context.codex_runtime.root.clone(),
+        context.python_wrapper.clone(),
+    ];
+    reads.extend(python_reads);
+    let mut denies = vec![context.repository.join(".git")];
+    denies.extend(python_denies);
+    denies.extend([context.live_auth.clone(), context.projected_auth.clone()]);
+    let deny_refs = denies.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    Ok((
+        render_named_permission_profile("read", false, &[], &deny_refs)?,
+        render_named_permission_profile("deny", true, &reads, &deny_refs)?,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerPermissionDigests {
+    parent_state: String,
+    provider_profile: String,
+    effective_profile: String,
+    effective_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerProbeSummary {
+    allowed_reads: usize,
+    denied_reads: usize,
+    denied_write_creates: usize,
+    denied_write_mutations: usize,
+    denied_network_listeners: usize,
+    denied_network_connections: usize,
+    denied_descendants: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkerProbeExpectation {
+    label: &'static str,
+    exit: i32,
+    disposition: &'static str,
+}
+
+impl WorkerProbeSummary {
+    fn require_complete(&self) -> Result<()> {
+        ensure!(
+            self.allowed_reads >= 1
+                && self.allowed_reads <= MAX_WORKER_POLICY_PROBES
+                && self.denied_reads >= 4
+                && self.denied_reads <= MAX_WORKER_POLICY_PROBES
+                && self.denied_write_creates == 2
+                && self.denied_write_mutations == 3
+                && self.denied_network_listeners == 1
+                && self.denied_network_connections == 1
+                && self.denied_descendants == 1,
+            "managed worker enforcement probe summary is incomplete"
+        );
+        Ok(())
+    }
+}
+
+fn worker_permission_digests(policy: &ManagedWorkerPolicy) -> Result<WorkerPermissionDigests> {
+    let parent = render_json(&provider_parent_sandbox_state(policy)?)?;
+    let provider = provider_named_permission_profile(policy)?;
+    let effective = effective_worker_named_permission_profile(policy)?;
+    let effective_state = render_json(&managed_read_only_sandbox_state(policy)?)?;
+    Ok(WorkerPermissionDigests {
+        parent_state: sha256::hex(&sha256::digest(parent.as_bytes())),
+        provider_profile: sha256::hex(&sha256::digest(provider.as_bytes())),
+        effective_profile: sha256::hex(&sha256::digest(effective.as_bytes())),
+        effective_state: sha256::hex(&sha256::digest(effective_state.as_bytes())),
+    })
+}
+
 fn worker_read_probe_plan(policy: &ManagedWorkerPolicy) -> Vec<(&Path, WorkerReadDecision)> {
     let mut plan = policy
         .deny_probes()
         .into_iter()
         .map(|path| (path, WorkerReadDecision::Deny))
         .collect::<Vec<_>>();
+    plan.extend(
+        policy
+            .denied_probes
+            .iter()
+            .map(|path| (path.as_path(), WorkerReadDecision::Deny)),
+    );
     plan.extend(
         policy
             .readable_probes
@@ -586,6 +833,8 @@ fn open_locked_auth(path: &Path) -> Result<std::fs::File> {
 struct McpOutcome {
     scan_id: String,
     scan_directory: PathBuf,
+    thread_ids: BTreeSet<String>,
+    execution_threads: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -707,6 +956,37 @@ pub(crate) fn dispatch_private_wrapper() -> Option<Result<i32>> {
     {
         return Some(dispatch_private_credential_probe(&arguments));
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == PRIVATE_WRITE_PROBE_ARGUMENT)
+    {
+        return Some(dispatch_private_write_probe(&arguments));
+    }
+    if arguments.first().is_some_and(|argument| {
+        argument == PRIVATE_WRITE_APPEND_PROBE_ARGUMENT
+            || argument == PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT
+            || argument == PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT
+    }) {
+        return Some(dispatch_private_existing_write_probe(&arguments));
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == PRIVATE_NETWORK_PROBE_ARGUMENT)
+    {
+        return Some(dispatch_private_network_probe(&arguments));
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT)
+    {
+        return Some(dispatch_private_network_connect_probe(&arguments));
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == PRIVATE_DESCENDANT_PROBE_ARGUMENT)
+    {
+        return Some(dispatch_private_descendant_probe(&arguments));
+    }
     let marker = std::env::var_os(WRAPPER_MARKER_ENV)?;
     Some(match classify_private_wrapper(&arguments) {
         Ok(PrivateWrapperKind::Codex) => dispatch_private_wrapper_inner(&marker, &arguments),
@@ -738,6 +1018,123 @@ fn private_credential_probe_exit(result: std::io::Result<()>) -> i32 {
         Ok(()) => PRIVATE_CREDENTIAL_READABLE_EXIT,
         Err(_) => PRIVATE_CREDENTIAL_ERROR_EXIT,
     }
+}
+
+fn dispatch_private_write_probe(arguments: &[OsString]) -> Result<i32> {
+    ensure!(
+        arguments.len() == 2 && arguments[0] == PRIVATE_WRITE_PROBE_ARGUMENT,
+        "private write probe invocation differs"
+    );
+    let path = Path::new(&arguments[1]);
+    ensure!(
+        path.is_absolute(),
+        "private write probe path is not absolute"
+    );
+    Ok(private_credential_probe_exit(
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .map(drop),
+    ))
+}
+
+fn dispatch_private_existing_write_probe(arguments: &[OsString]) -> Result<i32> {
+    ensure!(
+        arguments.len() == 2
+            && matches!(
+                arguments[0].to_str(),
+                Some(PRIVATE_WRITE_APPEND_PROBE_ARGUMENT)
+                    | Some(PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT)
+                    | Some(PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT)
+            ),
+        "private existing-write probe invocation differs"
+    );
+    let path = Path::new(&arguments[1]);
+    ensure!(
+        path.is_absolute(),
+        "private existing-write probe path is not absolute"
+    );
+    require_worker_probe_file(path, "private existing-write probe")?;
+    let result = match arguments[0].to_str() {
+        Some(PRIVATE_WRITE_APPEND_PROBE_ARGUMENT) => OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(b"wizard append probe")),
+        Some(PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT) => OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map(drop),
+        Some(PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT) => OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(b"wizard overwrite probe")),
+        _ => bail!("private existing-write probe tag changed after validation"),
+    };
+    Ok(private_credential_probe_exit(result))
+}
+
+fn dispatch_private_network_probe(arguments: &[OsString]) -> Result<i32> {
+    ensure!(
+        arguments.len() == 1 && arguments[0] == PRIVATE_NETWORK_PROBE_ARGUMENT,
+        "private network probe invocation differs"
+    );
+    Ok(private_credential_probe_exit(
+        std::net::TcpListener::bind("127.0.0.1:0").map(drop),
+    ))
+}
+
+fn parse_private_loopback_endpoint(value: &OsStr) -> Result<std::net::SocketAddr> {
+    let value = value
+        .to_str()
+        .context("private network-connect endpoint is not UTF-8")?;
+    let endpoint = value
+        .parse::<std::net::SocketAddr>()
+        .context("private network-connect endpoint is malformed")?;
+    ensure!(
+        endpoint.is_ipv4()
+            && endpoint.ip().is_loopback()
+            && endpoint.port() != 0
+            && endpoint.to_string() == value,
+        "private network-connect endpoint is not a canonical IPv4 loopback socket"
+    );
+    Ok(endpoint)
+}
+
+fn dispatch_private_network_connect_probe(arguments: &[OsString]) -> Result<i32> {
+    ensure!(
+        arguments.len() == 2 && arguments[0] == PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
+        "private network-connect probe invocation differs"
+    );
+    let endpoint = parse_private_loopback_endpoint(&arguments[1])?;
+    Ok(private_credential_probe_exit(
+        std::net::TcpStream::connect_timeout(&endpoint, Duration::from_secs(5)).map(drop),
+    ))
+}
+
+fn dispatch_private_descendant_probe(arguments: &[OsString]) -> Result<i32> {
+    ensure!(
+        arguments.len() == 2 && arguments[0] == PRIVATE_DESCENDANT_PROBE_ARGUMENT,
+        "private descendant probe invocation differs"
+    );
+    let target = Path::new(&arguments[1]);
+    ensure!(
+        target.is_absolute(),
+        "private descendant probe path is not absolute"
+    );
+    let executable = std::env::current_exe().context("resolving private descendant probe")?;
+    let status = Command::new(executable)
+        .arg(PRIVATE_CREDENTIAL_PROBE_ARGUMENT)
+        .arg(target)
+        .env_clear()
+        .status()
+        .context("running private descendant read probe")?;
+    Ok(match status.code() {
+        Some(PRIVATE_CREDENTIAL_DENIED_EXIT) => PRIVATE_CREDENTIAL_DENIED_EXIT,
+        Some(_) => PRIVATE_CREDENTIAL_READABLE_EXIT,
+        None => PRIVATE_CREDENTIAL_ERROR_EXIT,
+    })
 }
 
 #[cfg(windows)]
@@ -788,22 +1185,221 @@ fn dispatch_private_wrapper_inner(marker: &OsStr, arguments: &[OsString]) -> Res
     let serialized = std::env::var(WRAPPER_OVERRIDES_ENV)
         .context("private Codex wrapper has no serialized safety policy")?;
     let overrides = parse_wrapper_overrides(&serialized)?;
-    let arguments = inject_wrapper_overrides(arguments, &overrides)?;
+    let invocation = inject_wrapper_overrides(arguments, &overrides)?;
     let private_home = PathBuf::from(
         std::env::var_os("CODEX_HOME").context("private Codex wrapper has no private home")?,
     );
     require_private_credential_projection(&private_home)?;
-    let status = private_codex_child_command(&canonical, &arguments)
-        .status()
-        .context("running the private Codex child")?;
+    let status = if invocation.transition == WorkerTransitionKind::AppServerPassThrough {
+        let worker = current_private_worker_directory()?;
+        let mut command = private_codex_child_command(&canonical, &invocation.arguments);
+        command.stdout(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("starting the private Codex app-server child")?;
+        if let Err(error) = write_worker_transition_receipt(
+            source,
+            invocation.transition,
+            WorkerTransitionStage::Launched,
+            &worker.path,
+            None,
+            &invocation.arguments,
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        if let Err(error) = relay_private_child_stdout(&mut child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        child
+            .wait()
+            .context("running the private Codex app-server child")?
+    } else {
+        let worker = invocation
+            .worker
+            .as_ref()
+            .context("private Codex exec has no validated worker directory")?;
+        let mut command = private_codex_child_command(&canonical, &invocation.arguments);
+        command.stdout(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .context("starting the private Codex exec child")?;
+        let thread = match relay_private_exec_stdout(source, &invocation, &worker.path, &mut child)
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        let status = child
+            .wait()
+            .context("running the private Codex exec child")?;
+        if status.code() == Some(0) {
+            write_worker_transition_receipt(
+                source,
+                invocation.transition,
+                WorkerTransitionStage::ExitedZero,
+                &worker.path,
+                Some(&thread),
+                &invocation.arguments,
+            )?;
+        }
+        status
+    };
     require_private_credential_projection(&private_home)?;
     ensure!(
         identify_codex_runtime(&canonical)? == runtime,
         "private Codex runtime changed during child execution"
     );
-    status
+    let code = status
         .code()
-        .context("private Codex child exited without an exit code")
+        .context("private Codex child exited without an exit code")?;
+    Ok(code)
+}
+
+fn relay_private_child_stdout(child: &mut std::process::Child) -> Result<()> {
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .context("private Codex child has no captured stdout")?;
+    let mut parent_stdout = std::io::stdout().lock();
+    std::io::copy(&mut child_stdout, &mut parent_stdout)
+        .context("relaying private Codex child stdout")?;
+    parent_stdout
+        .flush()
+        .context("flushing private Codex child stdout")
+}
+
+fn current_private_worker_directory() -> Result<WorkerDirectory> {
+    let pycache = PathBuf::from(
+        std::env::var_os(PYTHON_WRAPPER_PYCACHE_ENV)
+            .context("private Codex wrapper has no Python bytecode directory")?,
+    );
+    let scratch = canonical_directory(
+        pycache
+            .parent()
+            .context("private Python bytecode directory has no scratch parent")?,
+        "private Codex transition scratch",
+    )?;
+    require_scratch_cleanup_target(&scratch)?;
+    let current = std::env::current_dir().context("resolving private Codex worker directory")?;
+    require_worker_directory(&current, &scratch.join("scans"))
+}
+
+fn relay_private_exec_stdout(
+    source: &str,
+    invocation: &InjectedCodexInvocation,
+    worker: &Path,
+    child: &mut std::process::Child,
+) -> Result<String> {
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .context("private Codex exec child has no captured stdout")?;
+    let mut parent_stdout = std::io::stdout().lock();
+    let mut chunk = [0u8; 8192];
+    let mut line = Vec::new();
+    let mut observed_thread = None;
+    loop {
+        let count = child_stdout
+            .read(&mut chunk)
+            .context("reading private Codex exec JSONL")?;
+        if count == 0 {
+            break;
+        }
+        for byte in &chunk[..count] {
+            line.push(*byte);
+            ensure!(
+                line.len() <= MAX_MCP_LINE_BYTES,
+                "private Codex exec JSONL line exceeds its size limit"
+            );
+            if *byte != b'\n' {
+                continue;
+            }
+            relay_private_exec_line(
+                source,
+                invocation,
+                worker,
+                &line,
+                &mut observed_thread,
+                &mut parent_stdout,
+            )?;
+            line.clear();
+        }
+    }
+    ensure!(
+        line.is_empty(),
+        "private Codex exec ended with an incomplete JSONL record"
+    );
+    parent_stdout
+        .flush()
+        .context("flushing private Codex exec JSONL")?;
+    observed_thread.context("private Codex exec emitted no thread.started event")
+}
+
+fn relay_private_exec_line(
+    source: &str,
+    invocation: &InjectedCodexInvocation,
+    worker: &Path,
+    line: &[u8],
+    observed_thread: &mut Option<String>,
+    output: &mut impl Write,
+) -> Result<()> {
+    let started =
+        observe_private_exec_line(line, invocation.expected_thread.as_deref(), observed_thread)?;
+    if let Some(thread) = started {
+        write_worker_transition_receipt(
+            source,
+            invocation.transition,
+            WorkerTransitionStage::Started,
+            worker,
+            Some(&thread),
+            &invocation.arguments,
+        )?;
+    }
+    output
+        .write_all(line)
+        .context("relaying private Codex exec JSONL")?;
+    output
+        .flush()
+        .context("flushing private Codex exec JSONL event")
+}
+
+fn observe_private_exec_line(
+    line: &[u8],
+    expected_thread: Option<&str>,
+    observed_thread: &mut Option<String>,
+) -> Result<Option<String>> {
+    let json = line.strip_suffix(b"\n").unwrap_or(line);
+    ensure!(
+        !json.is_empty() && !json.contains(&b'\r') && !json.contains(&b'\0'),
+        "private Codex exec JSONL framing differs"
+    );
+    let value = parse_json(json, "private Codex exec event")?;
+    let event = json_object(&value, "private Codex exec event")?;
+    let event_type = string(event, "type", "private Codex exec event")?;
+    if event_type == "thread.started" {
+        let thread = nonempty_string(event, "thread_id", "private Codex thread.started event")?;
+        require_safe_identity(thread, "private Codex thread.started identity")?;
+        ensure!(
+            observed_thread.is_none(),
+            "private Codex exec emitted duplicate thread.started events"
+        );
+        if let Some(expected) = expected_thread {
+            ensure!(
+                thread == expected,
+                "private Codex resumed thread differs from its thread.started event"
+            );
+        }
+        *observed_thread = Some(thread.to_string());
+        return Ok(Some(thread.to_string()));
+    }
+    Ok(None)
 }
 
 fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Command {
@@ -815,6 +1411,10 @@ fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Com
         .env_remove(WRAPPER_OVERRIDES_ENV)
         .env_remove(WRAPPER_REPOSITORY_ENV)
         .env_remove(WRAPPER_NODE_ENV)
+        .env_remove(WRAPPER_LIVE_AUTH_ENV)
+        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)
+        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)
+        .env_remove(WRAPPER_TRANSITIONS_ENV)
         .env_remove("CODEX_CLI_PATH")
         .env_remove(PYTHON_WRAPPER_REAL_ENV)
         .env_remove(PYTHON_WRAPPER_PLUGIN_ENV)
@@ -822,6 +1422,758 @@ fn private_codex_child_command(executable: &Path, arguments: &[OsString]) -> Com
         .env_remove(PYTHON_WRAPPER_RUNTIME_ENV)
         .env_remove("PYTHON");
     command
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct WorkerTransitionReceipt {
+    kind: WorkerTransitionKind,
+    stage: WorkerTransitionStage,
+    process_id: u32,
+    source_commit: String,
+    provider_profile: String,
+    effective_profile: String,
+    applied_profile: String,
+    worker: String,
+    execution_thread: Option<String>,
+    arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerTransitionLedger {
+    bytes: Vec<u8>,
+    app_server: usize,
+    exec_initial: usize,
+    exec_resumed: usize,
+    exec_exited_zero: usize,
+    thread_ids: BTreeSet<String>,
+    execution_threads: BTreeSet<String>,
+    probes: WorkerProbeSummary,
+}
+
+fn worker_transition_worker_digest(worker: &Path) -> Result<String> {
+    let worker = worker
+        .to_str()
+        .context("private Codex worker directory is not UTF-8")?;
+    ensure!(
+        !worker.is_empty() && !worker.contains(['\r', '\n', '\0']),
+        "private Codex worker directory is malformed"
+    );
+    let mut digest = sha256::Hasher::new();
+    digest.update(&(worker.len() as u64).to_be_bytes())?;
+    digest.update(worker.as_bytes())?;
+    Ok(sha256::hex(&digest.finish()))
+}
+
+fn worker_transition_argument_digest(arguments: &[OsString]) -> Result<String> {
+    let mut digest = sha256::Hasher::new();
+    for argument in arguments {
+        let argument = argument
+            .to_str()
+            .context("private Codex transition argument is not UTF-8")?;
+        ensure!(
+            !argument.contains(['\r', '\n', '\0']),
+            "private Codex transition argument is malformed"
+        );
+        digest.update(&(argument.len() as u64).to_be_bytes())?;
+        digest.update(argument.as_bytes())?;
+    }
+    Ok(sha256::hex(&digest.finish()))
+}
+
+fn require_worker_transition_shape(receipt: &WorkerTransitionReceipt) -> Result<()> {
+    ensure!(
+        receipt.process_id != 0
+            && receipt.source_commit.len() == 40
+            && receipt
+                .source_commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "private Codex transition identity is malformed"
+    );
+    match (
+        receipt.kind,
+        receipt.stage,
+        receipt.execution_thread.as_deref(),
+    ) {
+        (WorkerTransitionKind::AppServerPassThrough, WorkerTransitionStage::Launched, None) => {}
+        (
+            WorkerTransitionKind::ExecInitialAttenuated
+            | WorkerTransitionKind::ExecResumedAttenuated,
+            WorkerTransitionStage::Started | WorkerTransitionStage::ExitedZero,
+            Some(thread),
+        ) => require_safe_identity(thread, "private Codex transition execution thread")?,
+        _ => bail!("private Codex transition kind, stage, and thread differ"),
+    }
+    Ok(())
+}
+
+fn render_worker_transition_receipt(receipt: &WorkerTransitionReceipt) -> Result<Vec<u8>> {
+    require_worker_transition_shape(receipt)?;
+    for digest in [
+        receipt.provider_profile.as_str(),
+        receipt.effective_profile.as_str(),
+        receipt.applied_profile.as_str(),
+        receipt.worker.as_str(),
+        receipt.arguments.as_str(),
+    ] {
+        require_sha256(digest, "private Codex transition digest")?;
+    }
+    let execution_thread = receipt.execution_thread.as_deref().unwrap_or("none");
+    let body = format!(
+        "{WORKER_TRANSITION_RECEIPT_SCHEMA}\nsource.commit={}\nwrapper.id={}\ntransition.kind={}\ntransition.stage={}\nworker.sha256={}\nexecution.thread={}\nprofile.provider.sha256={}\nprofile.effective.sha256={}\nprofile.applied.sha256={}\narguments.sha256={}\n",
+        receipt.source_commit,
+        receipt.process_id,
+        receipt.kind.as_str(),
+        receipt.stage.as_str(),
+        receipt.worker,
+        execution_thread,
+        receipt.provider_profile,
+        receipt.effective_profile,
+        receipt.applied_profile,
+        receipt.arguments,
+    );
+    let checksum = sha256::hex(&sha256::digest(body.as_bytes()));
+    Ok(format!("{body}checksum.sha256={checksum}\n").into_bytes())
+}
+
+fn parse_worker_transition_receipt(bytes: &[u8]) -> Result<WorkerTransitionReceipt> {
+    ensure!(
+        bytes.len() as u64 <= MAX_WORKER_TRANSITION_RECEIPT_BYTES,
+        "private Codex transition receipt exceeds its size limit"
+    );
+    let text =
+        std::str::from_utf8(bytes).context("private Codex transition receipt is not UTF-8")?;
+    ensure!(
+        text.ends_with('\n') && !text.contains('\r') && !text.contains('\0'),
+        "private Codex transition receipt framing differs"
+    );
+    let mut lines = text.lines();
+    ensure!(
+        lines.next() == Some(WORKER_TRANSITION_RECEIPT_SCHEMA),
+        "private Codex transition receipt schema differs"
+    );
+    let mut values = BTreeMap::new();
+    for expected in [
+        "source.commit",
+        "wrapper.id",
+        "transition.kind",
+        "transition.stage",
+        "worker.sha256",
+        "execution.thread",
+        "profile.provider.sha256",
+        "profile.effective.sha256",
+        "profile.applied.sha256",
+        "arguments.sha256",
+    ] {
+        let line = lines
+            .next()
+            .with_context(|| format!("private Codex transition receipt has no {expected}"))?;
+        let (key, value) = line
+            .split_once('=')
+            .context("private Codex transition receipt field has no separator")?;
+        ensure!(
+            key == expected && !value.is_empty() && values.insert(key, value).is_none(),
+            "private Codex transition receipt field order or uniqueness differs"
+        );
+    }
+    let checksum = lines
+        .next()
+        .context("private Codex transition receipt has no checksum")?
+        .strip_prefix("checksum.sha256=")
+        .context("private Codex transition receipt checksum field differs")?;
+    require_sha256(checksum, "private Codex transition receipt checksum")?;
+    ensure!(
+        lines.next().is_none(),
+        "private Codex transition receipt has trailing fields"
+    );
+    let checksum_offset = text
+        .rfind("checksum.sha256=")
+        .context("private Codex transition receipt has no checksum offset")?;
+    ensure!(
+        sha256::hex(&sha256::digest(&text.as_bytes()[..checksum_offset])) == checksum,
+        "private Codex transition receipt checksum differs"
+    );
+    let value = |key: &str| -> Result<&str> {
+        values
+            .get(key)
+            .copied()
+            .with_context(|| format!("private Codex transition receipt has no {key}"))
+    };
+    let process_id = value("wrapper.id")?
+        .parse::<u32>()
+        .context("private Codex transition wrapper identity is not an integer")?;
+    let execution_thread = match value("execution.thread")? {
+        "none" => None,
+        value => Some(value.to_string()),
+    };
+    let receipt = WorkerTransitionReceipt {
+        kind: WorkerTransitionKind::parse(value("transition.kind")?)?,
+        stage: WorkerTransitionStage::parse(value("transition.stage")?)?,
+        process_id,
+        source_commit: value("source.commit")?.to_string(),
+        provider_profile: value("profile.provider.sha256")?.to_string(),
+        effective_profile: value("profile.effective.sha256")?.to_string(),
+        applied_profile: value("profile.applied.sha256")?.to_string(),
+        worker: value("worker.sha256")?.to_string(),
+        execution_thread,
+        arguments: value("arguments.sha256")?.to_string(),
+    };
+    ensure!(
+        render_worker_transition_receipt(&receipt)? == bytes,
+        "private Codex transition receipt is noncanonical"
+    );
+    Ok(receipt)
+}
+
+fn write_worker_transition_receipt(
+    source: &str,
+    kind: WorkerTransitionKind,
+    stage: WorkerTransitionStage,
+    worker: &Path,
+    execution_thread: Option<&str>,
+    arguments: &[OsString],
+) -> Result<()> {
+    let transitions = PathBuf::from(
+        std::env::var_os(WRAPPER_TRANSITIONS_ENV)
+            .context("private Codex wrapper has no transition directory")?,
+    );
+    let transitions = canonical_directory(&transitions, "private Codex transition directory")?;
+    let pycache = PathBuf::from(
+        std::env::var_os(PYTHON_WRAPPER_PYCACHE_ENV)
+            .context("private Codex wrapper has no Python bytecode directory")?,
+    );
+    let scratch = canonical_directory(
+        pycache
+            .parent()
+            .context("private Python bytecode directory has no scratch parent")?,
+        "private Codex transition scratch",
+    )?;
+    require_scratch_cleanup_target(&scratch)?;
+    ensure!(
+        transitions == scratch.join("transitions"),
+        "private Codex transition directory escaped owned scratch"
+    );
+    let provider = std::env::var(WRAPPER_PROVIDER_PERMISSION_ENV)
+        .context("private Codex transition has no provider profile")?;
+    let effective = std::env::var(WRAPPER_WORKER_PERMISSION_ENV)
+        .context("private Codex transition has no effective profile")?;
+    let provider_profile = sha256::hex(&sha256::digest(provider.as_bytes()));
+    let effective_profile = sha256::hex(&sha256::digest(effective.as_bytes()));
+    let process_id = std::process::id();
+    let receipt = WorkerTransitionReceipt {
+        kind,
+        stage,
+        process_id,
+        source_commit: source.to_string(),
+        provider_profile: provider_profile.clone(),
+        effective_profile: effective_profile.clone(),
+        applied_profile: kind
+            .applied_digest(&provider_profile, &effective_profile)
+            .to_string(),
+        worker: worker_transition_worker_digest(worker)?,
+        execution_thread: execution_thread.map(str::to_string),
+        arguments: worker_transition_argument_digest(arguments)?,
+    };
+    let name = format!("{}-{}-{process_id}.receipt", kind.as_str(), stage.as_str());
+    write_new_file(
+        &transitions.join(name),
+        &render_worker_transition_receipt(&receipt)?,
+    )
+}
+
+fn require_worker_transition_receipt(
+    receipt: &WorkerTransitionReceipt,
+    source: &SourceIdentity,
+    permissions: &WorkerPermissionDigests,
+) -> Result<()> {
+    ensure!(
+        receipt.source_commit == source.commit
+            && receipt.provider_profile == permissions.provider_profile
+            && receipt.effective_profile == permissions.effective_profile
+            && receipt.applied_profile
+                == receipt.kind.applied_digest(
+                    &permissions.provider_profile,
+                    &permissions.effective_profile,
+                ),
+        "private Codex transition receipt differs from its source or permission authority"
+    );
+    require_worker_transition_shape(receipt)?;
+    require_sha256(&receipt.worker, "private Codex transition worker digest")?;
+    Ok(())
+}
+
+fn render_worker_transition_ledger(
+    receipts: &[WorkerTransitionReceipt],
+    thread_ids: &BTreeSet<String>,
+    execution_threads: &BTreeSet<String>,
+    source: &SourceIdentity,
+    permissions: &WorkerPermissionDigests,
+    probes: &WorkerProbeSummary,
+) -> Result<WorkerTransitionLedger> {
+    probes.require_complete()?;
+    for digest in [
+        permissions.provider_profile.as_str(),
+        permissions.effective_profile.as_str(),
+        permissions.effective_state.as_str(),
+    ] {
+        require_sha256(digest, "private Codex worker-policy digest")?;
+    }
+    ensure!(
+        !receipts.is_empty() && receipts.len() <= MAX_WORKER_TRANSITIONS,
+        "private Codex transition count is outside its policy"
+    );
+    require_worker_thread_sets(thread_ids, execution_threads)?;
+    let mut receipts = receipts.to_vec();
+    receipts.sort();
+    let mut process_stages = BTreeSet::new();
+    let mut process_kinds = BTreeMap::new();
+    for receipt in &receipts {
+        require_worker_transition_receipt(receipt, source, permissions)?;
+        ensure!(
+            process_stages.insert((receipt.process_id, receipt.stage)),
+            "private Codex transition wrapper stage is duplicated"
+        );
+        ensure!(
+            process_kinds
+                .insert(receipt.process_id, receipt.kind)
+                .is_none_or(|kind| kind == receipt.kind),
+            "private Codex transition wrapper changed kind"
+        );
+    }
+    let app_server = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.kind == WorkerTransitionKind::AppServerPassThrough
+                && receipt.stage == WorkerTransitionStage::Launched
+        })
+        .count();
+    let exec_initial = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.kind == WorkerTransitionKind::ExecInitialAttenuated
+                && receipt.stage == WorkerTransitionStage::Started
+        })
+        .count();
+    let exec_resumed = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.kind == WorkerTransitionKind::ExecResumedAttenuated
+                && receipt.stage == WorkerTransitionStage::Started
+        })
+        .count();
+    let exec_exited_zero = receipts
+        .iter()
+        .filter(|receipt| receipt.stage == WorkerTransitionStage::ExitedZero)
+        .count();
+    ensure!(
+        app_server >= 1 && exec_initial >= 1,
+        "private Codex transition ledger lacks an app-server or initial exec crossing"
+    );
+    let initial_starts = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.kind == WorkerTransitionKind::ExecInitialAttenuated
+                && receipt.stage == WorkerTransitionStage::Started
+        })
+        .collect::<Vec<_>>();
+    let mut initial_threads = BTreeSet::new();
+    let mut initial_pairs = BTreeSet::new();
+    for receipt in &initial_starts {
+        let thread = receipt
+            .execution_thread
+            .as_ref()
+            .context("private Codex initial transition has no execution thread")?;
+        ensure!(
+            initial_threads.insert(thread.clone()),
+            "private Codex initial execution thread is duplicated"
+        );
+        initial_pairs.insert((receipt.worker.clone(), thread.clone()));
+    }
+    ensure!(
+        execution_threads.is_subset(&initial_threads),
+        "Codex Security completion execution threads lack observed initial wrapper starts"
+    );
+    for receipt in receipts.iter().filter(|receipt| {
+        receipt.kind == WorkerTransitionKind::ExecResumedAttenuated
+            && receipt.stage == WorkerTransitionStage::Started
+    }) {
+        let thread = receipt
+            .execution_thread
+            .as_ref()
+            .context("private Codex resumed transition has no execution thread")?;
+        ensure!(
+            initial_pairs.contains(&(receipt.worker.clone(), thread.clone())),
+            "private Codex resumed execution thread lacks same-worker initial ancestry"
+        );
+    }
+    let mut app_server_by_worker = BTreeMap::new();
+    let mut exec_starts_by_worker = BTreeMap::new();
+    for receipt in &receipts {
+        if receipt.kind == WorkerTransitionKind::AppServerPassThrough
+            && receipt.stage == WorkerTransitionStage::Launched
+        {
+            *app_server_by_worker
+                .entry(receipt.worker.clone())
+                .or_insert(0usize) += 1;
+        } else if receipt.stage == WorkerTransitionStage::Started {
+            *exec_starts_by_worker
+                .entry(receipt.worker.clone())
+                .or_insert(0usize) += 1;
+        }
+    }
+    for (worker, exec_starts) in exec_starts_by_worker {
+        ensure!(
+            app_server_by_worker.get(&worker).copied().unwrap_or(0) >= exec_starts,
+            "private Codex exec starts lack same-worker app-server launches"
+        );
+    }
+    for receipt in receipts
+        .iter()
+        .filter(|receipt| receipt.stage == WorkerTransitionStage::ExitedZero)
+    {
+        ensure!(
+            receipts.iter().any(|started| {
+                started.stage == WorkerTransitionStage::Started
+                    && started.kind == receipt.kind
+                    && started.process_id == receipt.process_id
+                    && started.worker == receipt.worker
+                    && started.execution_thread == receipt.execution_thread
+                    && started.applied_profile == receipt.applied_profile
+                    && started.arguments == receipt.arguments
+            }),
+            "private Codex zero-exit transition lacks its matching start"
+        );
+    }
+    let mut body = format!(
+        "{WORKER_TRANSITIONS_SCHEMA}\nsource.commit={}\nprofile.provider.sha256={}\nprofile.effective.sha256={}\nprofile.effective-state.sha256={}\npreflight.allowed-reads={}\npreflight.denied-reads={}\npreflight.denied-write-creates={}\npreflight.denied-write-mutations={}\npreflight.denied-network-listeners={}\npreflight.denied-network-connections={}\npreflight.denied-descendants={}\ncompletion.threads={}\ncompletion.execution-threads={}\ntransition.app-server-launched={}\ntransition.exec-initial-started={}\ntransition.exec-resumed-started={}\ntransition.exec-exited-zero={}\ntransition.count={}\n",
+        source.commit,
+        permissions.provider_profile,
+        permissions.effective_profile,
+        permissions.effective_state,
+        probes.allowed_reads,
+        probes.denied_reads,
+        probes.denied_write_creates,
+        probes.denied_write_mutations,
+        probes.denied_network_listeners,
+        probes.denied_network_connections,
+        probes.denied_descendants,
+        thread_ids.len(),
+        execution_threads.len(),
+        app_server,
+        exec_initial,
+        exec_resumed,
+        exec_exited_zero,
+        receipts.len(),
+    );
+    for (index, thread) in thread_ids.iter().enumerate() {
+        body.push_str(&format!("completion.thread.{index:04}={thread}\n"));
+    }
+    for (index, thread) in execution_threads.iter().enumerate() {
+        body.push_str(&format!(
+            "completion.execution-thread.{index:04}={thread}\n"
+        ));
+    }
+    for (index, receipt) in receipts.iter().enumerate() {
+        body.push_str(&format!(
+            "transition.{index:04}.kind={}\ntransition.{index:04}.stage={}\ntransition.{index:04}.wrapper={}\ntransition.{index:04}.worker.sha256={}\ntransition.{index:04}.execution.thread={}\ntransition.{index:04}.profile.applied.sha256={}\ntransition.{index:04}.arguments.sha256={}\n",
+            receipt.kind.as_str(),
+            receipt.stage.as_str(),
+            receipt.process_id,
+            receipt.worker,
+            receipt.execution_thread.as_deref().unwrap_or("none"),
+            receipt.applied_profile,
+            receipt.arguments,
+        ));
+    }
+    let checksum = sha256::hex(&sha256::digest(body.as_bytes()));
+    let bytes = format!("{body}checksum.sha256={checksum}\n").into_bytes();
+    ensure!(
+        bytes.len() as u64 <= MAX_WORKER_TRANSITIONS_BYTES,
+        "private Codex transition ledger exceeds its size limit"
+    );
+    Ok(WorkerTransitionLedger {
+        bytes,
+        app_server,
+        exec_initial,
+        exec_resumed,
+        exec_exited_zero,
+        thread_ids: thread_ids.clone(),
+        execution_threads: execution_threads.clone(),
+        probes: probes.clone(),
+    })
+}
+
+fn require_worker_thread_sets(
+    thread_ids: &BTreeSet<String>,
+    execution_threads: &BTreeSet<String>,
+) -> Result<()> {
+    ensure!(
+        !thread_ids.is_empty()
+            && !execution_threads.is_empty()
+            && execution_threads.is_subset(thread_ids),
+        "Codex Security completion execution threads differ from its thread set"
+    );
+    for thread in thread_ids {
+        require_safe_identity(thread, "Codex Security completion thread identity")?;
+    }
+    Ok(())
+}
+
+fn aggregate_worker_transitions(
+    directory: &Path,
+    thread_ids: &BTreeSet<String>,
+    execution_threads: &BTreeSet<String>,
+    source: &SourceIdentity,
+    permissions: &WorkerPermissionDigests,
+    probes: &WorkerProbeSummary,
+) -> Result<WorkerTransitionLedger> {
+    let directory = canonical_directory(directory, "private Codex transition directory")?;
+    let mut entries = BTreeMap::new();
+    for entry in
+        std::fs::read_dir(&directory).context("listing private Codex transition directory")?
+    {
+        let entry = entry.context("reading private Codex transition directory")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("private Codex transition name is not UTF-8"))?;
+        ensure!(
+            entries.insert(name, entry.path()).is_none() && entries.len() <= MAX_WORKER_TRANSITIONS,
+            "private Codex transition name is duplicated or count exceeds its policy"
+        );
+    }
+    let mut receipts = Vec::with_capacity(entries.len());
+    for (name, path) in entries {
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("inspecting private Codex transition {name}"))?;
+        ensure!(
+            metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && !metadata_is_reparse_point(&metadata)
+                && metadata.len() <= MAX_WORKER_TRANSITION_RECEIPT_BYTES,
+            "private Codex transition receipt is redirected, special, or oversized"
+        );
+        let bytes = read(
+            &path,
+            MAX_WORKER_TRANSITION_RECEIPT_BYTES,
+            "private Codex transition receipt",
+        )?;
+        let receipt = parse_worker_transition_receipt(&bytes)?;
+        ensure!(
+            name == format!(
+                "{}-{}-{}.receipt",
+                receipt.kind.as_str(),
+                receipt.stage.as_str(),
+                receipt.process_id
+            ),
+            "private Codex transition receipt name differs"
+        );
+        receipts.push(receipt);
+    }
+    render_worker_transition_ledger(
+        &receipts,
+        thread_ids,
+        execution_threads,
+        source,
+        permissions,
+        probes,
+    )
+}
+
+fn verify_worker_transition_ledger(
+    bytes: &[u8],
+    source: &SourceIdentity,
+    permissions: &WorkerPermissionDigests,
+) -> Result<WorkerTransitionLedger> {
+    ensure!(
+        bytes.len() as u64 <= MAX_WORKER_TRANSITIONS_BYTES,
+        "sealed private Codex transition ledger exceeds its size limit"
+    );
+    let text = std::str::from_utf8(bytes)
+        .context("sealed private Codex transition ledger is not UTF-8")?;
+    ensure!(
+        text.ends_with('\n') && !text.contains('\r') && !text.contains('\0'),
+        "sealed private Codex transition ledger framing differs"
+    );
+    let mut lines = text.lines();
+    ensure!(
+        lines.next() == Some(WORKER_TRANSITIONS_SCHEMA),
+        "sealed private Codex transition ledger schema differs"
+    );
+    let read_field = |lines: &mut std::str::Lines<'_>, expected: &str| -> Result<String> {
+        let line = lines
+            .next()
+            .with_context(|| format!("sealed private Codex transition ledger has no {expected}"))?;
+        let (key, value) = line
+            .split_once('=')
+            .context("sealed private Codex transition field has no separator")?;
+        ensure!(
+            key == expected && !value.is_empty(),
+            "sealed private Codex transition field order differs"
+        );
+        Ok(value.to_string())
+    };
+    ensure!(
+        read_field(&mut lines, "source.commit")? == source.commit
+            && read_field(&mut lines, "profile.provider.sha256")? == permissions.provider_profile
+            && read_field(&mut lines, "profile.effective.sha256")? == permissions.effective_profile
+            && read_field(&mut lines, "profile.effective-state.sha256")?
+                == permissions.effective_state,
+        "sealed private Codex transition ledger source or profiles differ"
+    );
+    let probes = WorkerProbeSummary {
+        allowed_reads: read_field(&mut lines, "preflight.allowed-reads")?
+            .parse::<usize>()
+            .context("sealed allowed-read preflight count is not an integer")?,
+        denied_reads: read_field(&mut lines, "preflight.denied-reads")?
+            .parse::<usize>()
+            .context("sealed denied-read preflight count is not an integer")?,
+        denied_write_creates: read_field(&mut lines, "preflight.denied-write-creates")?
+            .parse::<usize>()
+            .context("sealed denied-write-create preflight count is not an integer")?,
+        denied_write_mutations: read_field(&mut lines, "preflight.denied-write-mutations")?
+            .parse::<usize>()
+            .context("sealed denied-write-mutation preflight count is not an integer")?,
+        denied_network_listeners: read_field(&mut lines, "preflight.denied-network-listeners")?
+            .parse::<usize>()
+            .context("sealed denied-network-listener preflight count is not an integer")?,
+        denied_network_connections: read_field(&mut lines, "preflight.denied-network-connections")?
+            .parse::<usize>()
+            .context("sealed denied-network-connection preflight count is not an integer")?,
+        denied_descendants: read_field(&mut lines, "preflight.denied-descendants")?
+            .parse::<usize>()
+            .context("sealed denied-descendant preflight count is not an integer")?,
+    };
+    probes.require_complete()?;
+    let thread_count = read_field(&mut lines, "completion.threads")?
+        .parse::<usize>()
+        .context("sealed completion thread count is not an integer")?;
+    let execution_thread_count = read_field(&mut lines, "completion.execution-threads")?
+        .parse::<usize>()
+        .context("sealed completion execution-thread count is not an integer")?;
+    let app_server = read_field(&mut lines, "transition.app-server-launched")?
+        .parse::<usize>()
+        .context("sealed app-server transition count is not an integer")?;
+    let exec_initial = read_field(&mut lines, "transition.exec-initial-started")?
+        .parse::<usize>()
+        .context("sealed initial-exec transition count is not an integer")?;
+    let exec_resumed = read_field(&mut lines, "transition.exec-resumed-started")?
+        .parse::<usize>()
+        .context("sealed resumed-exec transition count is not an integer")?;
+    let exec_exited_zero = read_field(&mut lines, "transition.exec-exited-zero")?
+        .parse::<usize>()
+        .context("sealed zero-exit transition count is not an integer")?;
+    let count = read_field(&mut lines, "transition.count")?
+        .parse::<usize>()
+        .context("sealed transition count is not an integer")?;
+    ensure!(
+        count <= MAX_WORKER_TRANSITIONS
+            && thread_count <= MAX_WORKER_TRANSITIONS
+            && execution_thread_count <= MAX_WORKER_TRANSITIONS
+            && app_server >= 1
+            && exec_initial >= 1
+            && count == app_server + exec_initial + exec_resumed + exec_exited_zero,
+        "sealed private Codex transition counts differ"
+    );
+    let mut thread_ids = BTreeSet::new();
+    for index in 0..thread_count {
+        let thread = read_field(&mut lines, &format!("completion.thread.{index:04}"))?;
+        require_safe_identity(&thread, "sealed completion thread identity")?;
+        ensure!(
+            thread_ids.insert(thread),
+            "sealed completion thread identity is duplicated"
+        );
+    }
+    let mut execution_threads = BTreeSet::new();
+    for index in 0..execution_thread_count {
+        let thread = read_field(
+            &mut lines,
+            &format!("completion.execution-thread.{index:04}"),
+        )?;
+        require_safe_identity(&thread, "sealed completion execution-thread identity")?;
+        ensure!(
+            execution_threads.insert(thread),
+            "sealed completion execution-thread identity is duplicated"
+        );
+    }
+    require_worker_thread_sets(&thread_ids, &execution_threads)?;
+    let mut receipts = Vec::with_capacity(count);
+    let mut process_stages = BTreeSet::new();
+    for index in 0..count {
+        let kind = WorkerTransitionKind::parse(&read_field(
+            &mut lines,
+            &format!("transition.{index:04}.kind"),
+        )?)?;
+        let stage = WorkerTransitionStage::parse(&read_field(
+            &mut lines,
+            &format!("transition.{index:04}.stage"),
+        )?)?;
+        let process_id = read_field(&mut lines, &format!("transition.{index:04}.wrapper"))?
+            .parse::<u32>()
+            .context("sealed transition wrapper identity is not an integer")?;
+        ensure!(
+            process_id != 0 && process_stages.insert((process_id, stage)),
+            "sealed transition wrapper stage is zero or duplicated"
+        );
+        let worker = read_field(&mut lines, &format!("transition.{index:04}.worker.sha256"))?;
+        let execution_thread = match read_field(
+            &mut lines,
+            &format!("transition.{index:04}.execution.thread"),
+        )?
+        .as_str()
+        {
+            "none" => None,
+            value => Some(value.to_string()),
+        };
+        let applied_profile = read_field(
+            &mut lines,
+            &format!("transition.{index:04}.profile.applied.sha256"),
+        )?;
+        let arguments = read_field(
+            &mut lines,
+            &format!("transition.{index:04}.arguments.sha256"),
+        )?;
+        require_sha256(&worker, "sealed transition worker digest")?;
+        require_sha256(&applied_profile, "sealed transition applied-profile digest")?;
+        require_sha256(&arguments, "sealed transition argument digest")?;
+        let receipt = WorkerTransitionReceipt {
+            kind,
+            stage,
+            process_id,
+            source_commit: source.commit.clone(),
+            provider_profile: permissions.provider_profile.clone(),
+            effective_profile: permissions.effective_profile.clone(),
+            applied_profile,
+            worker,
+            execution_thread,
+            arguments,
+        };
+        require_worker_transition_receipt(&receipt, source, permissions)?;
+        receipts.push(receipt);
+    }
+    let checksum = lines
+        .next()
+        .context("sealed private Codex transition ledger has no checksum")?
+        .strip_prefix("checksum.sha256=")
+        .context("sealed private Codex transition checksum field differs")?;
+    require_sha256(checksum, "sealed private Codex transition checksum")?;
+    ensure!(
+        lines.next().is_none(),
+        "sealed private Codex transition ledger has trailing fields"
+    );
+    let canonical = render_worker_transition_ledger(
+        &receipts,
+        &thread_ids,
+        &execution_threads,
+        source,
+        permissions,
+        &probes,
+    )?;
+    ensure!(
+        canonical.bytes == bytes,
+        "sealed private Codex transition ledger is noncanonical or has an invalid checksum"
+    );
+    Ok(canonical)
 }
 
 const PYTHON_RUNPY_BOOTSTRAP: &str = "import runpy,sys;p=sys.argv.pop(1);d=sys.argv.pop(1);sys.path.insert(0,d);sys.argv[0]=p;runpy.run_path(p,run_name='__main__')";
@@ -974,6 +2326,10 @@ fn private_python_child_command(
         .env_remove(WRAPPER_OVERRIDES_ENV)
         .env_remove(WRAPPER_REPOSITORY_ENV)
         .env_remove(WRAPPER_NODE_ENV)
+        .env_remove(WRAPPER_LIVE_AUTH_ENV)
+        .env_remove(WRAPPER_PROVIDER_PERMISSION_ENV)
+        .env_remove(WRAPPER_WORKER_PERMISSION_ENV)
+        .env_remove(WRAPPER_TRANSITIONS_ENV)
         .env_remove("CODEX_CLI_PATH")
         .env_remove(PYTHON_WRAPPER_REAL_ENV)
         .env_remove(PYTHON_WRAPPER_PLUGIN_ENV)
@@ -1657,7 +3013,14 @@ fn require_wrapper_override_policy(overrides: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn inject_wrapper_overrides(arguments: &[OsString], overrides: &[String]) -> Result<Vec<OsString>> {
+fn inject_wrapper_overrides(
+    arguments: &[OsString],
+    overrides: &[String],
+) -> Result<InjectedCodexInvocation> {
+    let provider_permission = std::env::var(WRAPPER_PROVIDER_PERMISSION_ENV)
+        .context("private Codex wrapper has no provider permission profile")?;
+    let worker_permission = std::env::var(WRAPPER_WORKER_PERMISSION_ENV)
+        .context("private Codex wrapper has no effective worker permission profile")?;
     let context = if arguments.first().is_some_and(|arg| arg == "exec") {
         let supplied = std::env::var_os("CODEX_SECURITY_SCAN_ROOT")
             .context("private Codex exec has no owned scan root")?;
@@ -1677,6 +3040,12 @@ fn inject_wrapper_overrides(arguments: &[OsString], overrides: &[String]) -> Res
             .context("private Codex exec has no qualified Node runtime")?;
         let codex = std::env::var_os(WRAPPER_REAL_ENV)
             .context("private Codex exec has no qualified Codex runtime")?;
+        let live_auth = std::env::var_os(WRAPPER_LIVE_AUTH_ENV)
+            .context("private Codex exec has no live credential deny path")?;
+        let projected_auth = PathBuf::from(
+            std::env::var_os("CODEX_HOME").context("private Codex exec has no private home")?,
+        )
+        .join("auth.json");
         let git = std::env::var_os("CODEX_SECURITY_GIT")
             .context("private Codex exec has no qualified Git runtime")?;
         let marker = std::env::var(WRAPPER_MARKER_ENV)
@@ -1720,6 +3089,9 @@ fn inject_wrapper_overrides(arguments: &[OsString], overrides: &[String]) -> Res
                 sha256: NODE_SHA256.to_string(),
                 version: NODE_VERSION.to_string(),
             },
+            codex_runtime: identify_codex_runtime(Path::new(&codex))?,
+            live_auth: PathBuf::from(live_auth),
+            projected_auth,
             shell_environment,
             marker,
         };
@@ -1728,7 +3100,13 @@ fn inject_wrapper_overrides(arguments: &[OsString], overrides: &[String]) -> Res
     } else {
         None
     };
-    inject_wrapper_overrides_for_scan_root(arguments, overrides, context.as_ref())
+    inject_wrapper_overrides_for_scan_root(
+        arguments,
+        overrides,
+        context.as_ref(),
+        &provider_permission,
+        &worker_permission,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1741,8 +3119,85 @@ struct PrivateExecutionContext {
     pycache: PathBuf,
     python_runtime: PythonRuntimeIdentity,
     artifact_node: ToolIdentity,
+    codex_runtime: CodexRuntimeIdentity,
+    live_auth: PathBuf,
+    projected_auth: PathBuf,
     shell_environment: ShellEnvironmentPolicy,
     marker: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum WorkerTransitionKind {
+    AppServerPassThrough,
+    ExecInitialAttenuated,
+    ExecResumedAttenuated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum WorkerTransitionStage {
+    Launched,
+    Started,
+    ExitedZero,
+}
+
+impl WorkerTransitionStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Launched => "launched",
+            Self::Started => "started",
+            Self::ExitedZero => "exited-zero",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "launched" => Ok(Self::Launched),
+            "started" => Ok(Self::Started),
+            "exited-zero" => Ok(Self::ExitedZero),
+            _ => bail!("private Codex worker transition stage differs"),
+        }
+    }
+}
+
+impl WorkerTransitionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AppServerPassThrough => "app-server-pass-through",
+            Self::ExecInitialAttenuated => "exec-initial-attenuated",
+            Self::ExecResumedAttenuated => "exec-resumed-attenuated",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "app-server-pass-through" => Ok(Self::AppServerPassThrough),
+            "exec-initial-attenuated" => Ok(Self::ExecInitialAttenuated),
+            "exec-resumed-attenuated" => Ok(Self::ExecResumedAttenuated),
+            _ => bail!("private Codex worker transition kind differs"),
+        }
+    }
+
+    fn applied_digest<'a>(self, provider: &'a str, effective: &'a str) -> &'a str {
+        match self {
+            Self::AppServerPassThrough => provider,
+            Self::ExecInitialAttenuated | Self::ExecResumedAttenuated => effective,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InjectedCodexInvocation {
+    arguments: Vec<OsString>,
+    transition: WorkerTransitionKind,
+    worker: Option<WorkerDirectory>,
+    expected_thread: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedExecArguments {
+    insertion: usize,
+    worker: WorkerDirectory,
+    resumed_thread: Option<String>,
 }
 
 impl PrivateExecutionContext {
@@ -1766,7 +3221,8 @@ impl PrivateExecutionContext {
         ensure!(
             self.scan_root == scratch.join("scans")
                 && self.plugin_mirror == scratch.join("plugin")
-                && self.pycache == scratch.join("pycache"),
+                && self.pycache == scratch.join("pycache")
+                && self.projected_auth == scratch.join("codex-home").join("auth.json"),
             "private wrapper context escaped owned scratch"
         );
         let (bytes, digest) = measure_file(
@@ -1799,6 +3255,14 @@ impl PrivateExecutionContext {
         ensure!(
             self.python_wrapper != self.python_real,
             "private Python wrapper resolves to its real runtime"
+        );
+        ensure!(
+            self.live_auth.is_absolute()
+                && self.projected_auth.is_absolute()
+                && self.live_auth != self.projected_auth
+                && self.live_auth.file_name() == Some(OsStr::new("auth.json"))
+                && self.projected_auth.file_name() == Some(OsStr::new("auth.json")),
+            "private wrapper credential deny paths differ"
         );
         self.shell_environment.require_current()?;
         Ok(())
@@ -2009,24 +3473,56 @@ fn inject_wrapper_overrides_for_scan_root(
     arguments: &[OsString],
     overrides: &[String],
     context: Option<&PrivateExecutionContext>,
-) -> Result<Vec<OsString>> {
+    provider_permission: &str,
+    worker_permission: &str,
+) -> Result<InjectedCodexInvocation> {
     require_wrapper_override_policy(overrides)?;
-    let insertion = if arguments.first().is_some_and(|arg| arg == "exec") {
-        ensure!(
-            arguments
-                .get(1)
-                .is_some_and(|arg| arg == "--experimental-json"),
-            "private Codex exec lacks its pinned protocol mode"
-        );
-        let context = context.context("private Codex exec has no owned runtime context")?;
-        validate_exec_arguments(arguments, context)?
-    } else {
-        ensure!(
-            context.is_none(),
-            "private Codex app-server received an exec context"
-        );
-        validate_app_server_arguments(arguments)?
-    };
+    ensure!(
+        !provider_permission.is_empty()
+            && !worker_permission.is_empty()
+            && provider_permission != worker_permission
+            && !provider_permission.contains(['\r', '\n', '\0'])
+            && !worker_permission.contains(['\r', '\n', '\0']),
+        "private Codex named permission profiles differ"
+    );
+    let (insertion, transition, worker, expected_thread) =
+        if arguments.first().is_some_and(|arg| arg == "exec") {
+            ensure!(
+                arguments
+                    .get(1)
+                    .is_some_and(|arg| arg == "--experimental-json"),
+                "private Codex exec lacks its pinned protocol mode"
+            );
+            let context = context.context("private Codex exec has no owned runtime context")?;
+            let (expected_provider, expected_worker) = context_named_permission_profiles(context)?;
+            ensure!(
+                provider_permission == expected_provider && worker_permission == expected_worker,
+                "private Codex exec named permission profiles differ from the owned context"
+            );
+            let validated = validate_exec_arguments(arguments, context, provider_permission)?;
+            let transition = if validated.resumed_thread.is_some() {
+                WorkerTransitionKind::ExecResumedAttenuated
+            } else {
+                WorkerTransitionKind::ExecInitialAttenuated
+            };
+            (
+                validated.insertion,
+                transition,
+                Some(validated.worker),
+                validated.resumed_thread,
+            )
+        } else {
+            ensure!(
+                context.is_none(),
+                "private Codex app-server received an exec context"
+            );
+            (
+                validate_app_server_arguments(arguments, provider_permission)?,
+                WorkerTransitionKind::AppServerPassThrough,
+                None,
+                None,
+            )
+        };
     let artifact_overrides = match context {
         Some(context) => context.artifact_overrides()?,
         None => Vec::new(),
@@ -2069,21 +3565,43 @@ fn inject_wrapper_overrides_for_scan_root(
     result.push(OsString::from("--config"));
     result.push(OsString::from(sandbox_override));
     result.extend_from_slice(&arguments[insertion..]);
-    let mut rewritten_permissions = 0usize;
-    for argument in &mut result {
-        if argument == WORKER_NAMED_PERMISSION_INPUT {
-            *argument = OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE);
-            rewritten_permissions += 1;
+    if context.is_some() {
+        let mut rewritten_permissions = 0usize;
+        for argument in &mut result {
+            if argument == provider_permission {
+                *argument = OsString::from(worker_permission);
+                rewritten_permissions += 1;
+            }
         }
+        ensure!(
+            rewritten_permissions == 1,
+            "private Codex worker permission profile was not attenuated exactly once"
+        );
+    } else {
+        ensure!(
+            result
+                .iter()
+                .filter(|argument| argument.as_os_str() == OsStr::new(provider_permission))
+                .count()
+                == 1
+                && !result
+                    .iter()
+                    .any(|argument| argument.as_os_str() == OsStr::new(worker_permission)),
+            "private Codex app-server permission profile was altered"
+        );
     }
-    ensure!(
-        rewritten_permissions == 1,
-        "private Codex worker permission profile was not rewritten exactly once"
-    );
-    Ok(result)
+    Ok(InjectedCodexInvocation {
+        arguments: result,
+        transition,
+        worker,
+        expected_thread,
+    })
 }
 
-fn validate_app_server_arguments(arguments: &[OsString]) -> Result<usize> {
+fn validate_app_server_arguments(
+    arguments: &[OsString],
+    provider_permission: &str,
+) -> Result<usize> {
     let mut index = 0usize;
     let mut default_permissions = 0usize;
     let mut permission_profile = 0usize;
@@ -2102,7 +3620,7 @@ fn validate_app_server_arguments(arguments: &[OsString]) -> Result<usize> {
             "default_permissions=\"codex_security_deep_scan_worker\"" => {
                 default_permissions += 1;
             }
-            WORKER_NAMED_PERMISSION_INPUT => {
+            value if value == provider_permission => {
                 permission_profile += 1;
             }
             _ => bail!("private Codex app-server contains an unexpected config override"),
@@ -2129,7 +3647,8 @@ fn validate_app_server_arguments(arguments: &[OsString]) -> Result<usize> {
 fn validate_exec_arguments(
     arguments: &[OsString],
     context: &PrivateExecutionContext,
-) -> Result<usize> {
+    provider_permission: &str,
+) -> Result<ValidatedExecArguments> {
     let scan_root = canonical_directory(&context.scan_root, "private Codex exec scan root")?;
     let plugin_mirror =
         canonical_directory(&context.plugin_mirror, "private Codex exec plugin mirror")?;
@@ -2156,7 +3675,7 @@ fn validate_exec_arguments(
     let mut optional_configs = BTreeSet::new();
     let mut artifact_environment = BTreeMap::new();
     let mut worker_directory = None;
-    let mut resumed = false;
+    let mut resumed_thread = None;
     while index < arguments.len() {
         let argument = arguments[index]
             .to_str()
@@ -2166,11 +3685,15 @@ fn validate_exec_arguments(
                 .get(index + 1)
                 .context("private Codex resume has no thread identity")?;
             require_nonempty_argument(thread, "private Codex resume thread")?;
+            let thread = thread
+                .to_str()
+                .context("private Codex resume thread is not UTF-8")?;
+            require_safe_identity(thread, "private Codex resume thread")?;
             ensure!(
                 index + 2 == arguments.len(),
                 "private Codex resume is not the terminal positional form"
             );
-            resumed = true;
+            resumed_thread = Some(thread.to_string());
             break;
         }
         if argument == "--skip-git-repo-check" {
@@ -2209,7 +3732,12 @@ fn validate_exec_arguments(
                 working_directory += 1;
             }
             "--config" => {
-                match require_provider_exec_config(value, &plugin_mirror, &context.artifact_node)? {
+                match require_provider_exec_config(
+                    value,
+                    &plugin_mirror,
+                    &context.artifact_node,
+                    provider_permission,
+                )? {
                     ProviderExecConfig::Approval => approval += 1,
                     ProviderExecConfig::DefaultPermissions => default_permissions += 1,
                     ProviderExecConfig::PermissionProfile => permission_profile += 1,
@@ -2243,7 +3771,8 @@ fn validate_exec_arguments(
         "private Codex exec lacks its exact model, directory, or Git policy"
     );
     ensure!(
-        (resumed && thread_source == 0) || (!resumed && thread_source == 1),
+        (resumed_thread.is_some() && thread_source == 0)
+            || (resumed_thread.is_none() && thread_source == 1),
         "private Codex exec source and resume policy differs"
     );
     ensure!(
@@ -2263,18 +3792,25 @@ fn validate_exec_arguments(
             && multi_agent_maximum == 1,
         "private Codex exec provider configuration is incomplete or duplicated"
     );
+    let worker = worker_directory.context("private Codex exec has no worker directory")?;
     require_artifact_environment(
         &artifact_environment,
-        worker_directory
-            .as_ref()
-            .context("private Codex exec has no worker directory")?,
+        &worker,
         &scan_root,
         &repository,
         &plugin_mirror,
         &context.python_wrapper,
         &context.marker,
     )?;
-    Ok(if resumed { index } else { arguments.len() })
+    Ok(ValidatedExecArguments {
+        insertion: if resumed_thread.is_some() {
+            index
+        } else {
+            arguments.len()
+        },
+        worker,
+        resumed_thread,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2301,6 +3837,7 @@ fn require_provider_exec_config(
     value: &str,
     plugin_mirror: &Path,
     artifact_node: &ToolIdentity,
+    provider_permission: &str,
 ) -> Result<ProviderExecConfig> {
     ensure!(
         !value.is_empty() && !value.contains(['\r', '\n', '\0']),
@@ -2320,7 +3857,9 @@ fn require_provider_exec_config(
             ProviderExecConfig::DefaultPermissions,
         ),
         "permissions.codex_security_deep_scan_worker" => exact(
-            "{extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}",
+            provider_permission
+                .strip_prefix(WORKER_NAMED_PERMISSION_PREFIX)
+                .context("private Codex provider permission profile key differs")?,
             ProviderExecConfig::PermissionProfile,
         ),
         "model_reasoning_effort" => {
@@ -2955,8 +4494,16 @@ fn run_owned(paths: &Paths) -> Result<()> {
         require_safe_effective_config(&effective, &ambient, &inert_mcp)?;
 
         let git_identity = git_identity(git)?;
-        let request = render_owned_request(&source, &tools, &git_identity, &package);
-        require_worker_filesystem_policy(&tools, &scratch, &worker_policy, &shell_environment)?;
+        let permission_digests = worker_permission_digests(&worker_policy)?;
+        let request = render_owned_request(
+            &source,
+            &tools,
+            &git_identity,
+            &package,
+            &permission_digests,
+        );
+        let worker_probes =
+            require_worker_filesystem_policy(&tools, &scratch, &worker_policy, &shell_environment)?;
         let outcome = run_mcp(OwnedMcpInvocation {
             source: &source,
             scratch: &scratch,
@@ -3004,6 +4551,14 @@ fn run_owned(paths: &Paths) -> Result<()> {
             scan.id == outcome.scan_id,
             "Codex Security completion and sealed manifest name different scans"
         );
+        let transitions = aggregate_worker_transitions(
+            &scratch.transitions,
+            &outcome.thread_ids,
+            &outcome.execution_threads,
+            &source,
+            &permission_digests,
+            &worker_probes,
+        )?;
 
         ensure!(
             qualification::source_identity(paths.root())? == source,
@@ -3027,8 +4582,9 @@ fn run_owned(paths: &Paths) -> Result<()> {
             findings,
             coverage,
             report,
+            worker_transitions: transitions.bytes.clone(),
         };
-        let fields = fields(&scan, &tools, &package);
+        let fields = fields(&scan, &tools, &package, &permission_digests, &transitions);
         finalize_owned_transaction(
             || remove_scratch(&scratch),
             || attempt.pass_observed_deep(authority, &fields, artifacts),
@@ -3093,6 +4649,7 @@ fn reserve_scratch() -> Result<OwnedScratch> {
         temporary: child("temp", "private Codex Security temporary directory")?,
         pycache: child("pycache", "private Python bytecode directory")?,
         codex_state: child("codex-state", "private Codex state directory")?,
+        transitions: child("transitions", "private Codex worker transition directory")?,
         worker_allowed_canary,
         worker_denied_canary,
         root,
@@ -3842,7 +5399,7 @@ fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<Toolchain> {
         .join("OpenAI")
         .join("Codex")
         .join("bin")
-        .join("e78bad9887fa50cf")
+        .join("896a0166b774037a")
         .join("codex.exe");
     let codex_runtime_before = identify_codex_runtime(&codex_path)?;
     let codex = identify_tool(
@@ -4330,17 +5887,139 @@ fn require_chatgpt_login_output(stdout: &[u8], stderr: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn require_worker_probe_positive_controls(scratch: &OwnedScratch) -> Result<()> {
+    let root = scratch.scan_root.join("worker-probe-positive-controls");
+    require_absent(&root, "managed worker positive-control directory")?;
+    std::fs::create_dir(&root).context("creating managed worker positive-control directory")?;
+
+    let create_target = root.join("create");
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&create_target)
+        .context("opening managed worker create positive control")?
+        .write_all(b"create")
+        .context("writing managed worker create positive control")?;
+    ensure!(
+        std::fs::read(&create_target).context("reading managed worker create positive control")?
+            == b"create",
+        "managed worker create positive control did not change its target"
+    );
+
+    let append_target = root.join("append");
+    std::fs::write(&append_target, b"before")
+        .context("creating managed worker append positive control")?;
+    OpenOptions::new()
+        .append(true)
+        .open(&append_target)
+        .context("opening managed worker append positive control")?
+        .write_all(b"-after")
+        .context("writing managed worker append positive control")?;
+    ensure!(
+        std::fs::read(&append_target).context("reading managed worker append positive control")?
+            == b"before-after",
+        "managed worker append positive control did not change its target"
+    );
+
+    let truncate_target = root.join("truncate");
+    std::fs::write(&truncate_target, b"before")
+        .context("creating managed worker truncate positive control")?;
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&truncate_target)
+        .context("opening managed worker truncate positive control")?;
+    ensure!(
+        std::fs::read(&truncate_target)
+            .context("reading managed worker truncate positive control")?
+            .is_empty(),
+        "managed worker truncate positive control did not change its target"
+    );
+
+    let overwrite_target = root.join("overwrite");
+    std::fs::write(&overwrite_target, b"before")
+        .context("creating managed worker overwrite positive control")?;
+    OpenOptions::new()
+        .write(true)
+        .open(&overwrite_target)
+        .context("opening managed worker overwrite positive control")?
+        .write_all(b"X")
+        .context("writing managed worker overwrite positive control")?;
+    ensure!(
+        std::fs::read(&overwrite_target)
+            .context("reading managed worker overwrite positive control")?
+            == b"Xefore",
+        "managed worker overwrite positive control did not change its target"
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("binding managed worker network positive control")?;
+    let endpoint = listener
+        .local_addr()
+        .context("reading managed worker network positive-control endpoint")?;
+    ensure!(
+        endpoint.is_ipv4() && endpoint.ip().is_loopback() && endpoint.port() != 0,
+        "managed worker network positive-control endpoint is not IPv4 loopback"
+    );
+    listener
+        .set_nonblocking(true)
+        .context("bounding managed worker network positive-control listener")?;
+    let client = std::net::TcpStream::connect_timeout(&endpoint, Duration::from_secs(5))
+        .context("connecting managed worker network positive control")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (server, peer) = loop {
+        match listener.accept() {
+            Ok(accepted) => break accepted,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => {
+                return Err(error).context("accepting managed worker network positive control");
+            }
+        }
+    };
+    ensure!(
+        peer.ip().is_loopback(),
+        "managed worker network positive control accepted a non-loopback peer"
+    );
+    drop((client, server, listener));
+
+    let metadata = std::fs::symlink_metadata(&root)
+        .context("inspecting managed worker positive-control directory")?;
+    remove_entry_no_follow(&root, &metadata)
+        .context("removing managed worker positive-control directory")?;
+    require_absent(&root, "managed worker positive-control directory")
+}
+
+fn require_existing_write_probe_unchanged(path: &Path, expected: &[u8]) -> Result<()> {
+    require_worker_probe_file(path, "managed worker existing-write probe")?;
+    ensure!(
+        read(path, 128, "managed worker existing-write probe")? == expected,
+        "managed worker existing-write probe changed despite a denied mutation"
+    );
+    Ok(())
+}
+
 fn require_worker_filesystem_policy(
     tools: &Toolchain,
     scratch: &OwnedScratch,
     policy: &ManagedWorkerPolicy,
     shell_environment: &ShellEnvironmentPolicy,
-) -> Result<()> {
+) -> Result<WorkerProbeSummary> {
     ensure!(
         cfg!(windows),
         "managed worker filesystem preflight requires Windows"
     );
-    let repository = canonical_directory(&policy.repository, "worker probe repository")?;
+    ensure!(
+        canonical_directory(&policy.repository, "worker probe repository")? == policy.repository
+            && canonical_directory(&policy.probe_directory, "worker probe directory")?
+                == policy.probe_directory
+            && policy.probe_directory == scratch.scan_root
+            && policy.probe_directory != policy.repository,
+        "worker probe repository or execution directory is redirected"
+    );
     let supplied_fixture = std::env::current_exe().context("resolving credential probe fixture")?;
     let fixture = std::fs::canonicalize(&supplied_fixture).with_context(|| {
         format!(
@@ -4362,12 +6041,22 @@ fn require_worker_filesystem_policy(
         "worker probe targets differ from the owned credential policy"
     );
     require_worker_canaries(scratch)?;
+    require_worker_probe_positive_controls(scratch)?;
     let shell_environment_override = shell_environment.set_override()?;
     let runtime_before = identify_codex_runtime(&tools.codex.path)?;
     ensure!(
         runtime_before == tools.codex_runtime,
         "Codex sandbox runtime changed before credential preflight"
     );
+    let mut summary = WorkerProbeSummary {
+        allowed_reads: 0,
+        denied_reads: 0,
+        denied_write_creates: 0,
+        denied_write_mutations: 0,
+        denied_network_listeners: 0,
+        denied_network_connections: 0,
+        denied_descendants: 0,
+    };
     for (probe_target, decision) in worker_read_probe_plan(policy) {
         let arguments = worker_read_probe_arguments(
             policy,
@@ -4375,32 +6064,169 @@ fn require_worker_filesystem_policy(
             probe_target,
             &shell_environment_override,
         )?;
-        let mut command = Command::new(&tools.codex.path);
-        command.args(arguments).current_dir(&repository);
-        apply_base_environment(&mut command, scratch, None)?;
-        shell_environment.apply(&mut command);
-        require_private_credential_projection(&scratch.codex_home())?;
-        let output = crate::bounded_process::output_with_limit(
-            command,
-            VERSION_TIMEOUT,
-            decision.label(),
-            MAX_VERSION_BYTES,
+        require_worker_probe_execution(
+            tools,
+            scratch,
+            policy,
+            shell_environment,
+            &arguments,
+            WorkerProbeExpectation {
+                label: decision.label(),
+                exit: decision.exit(),
+                disposition: decision.disposition(),
+            },
         )?;
-        require_private_credential_projection(&scratch.codex_home())?;
-        require_worker_read_probe_result(
-            output.status.code(),
-            &output.stdout,
-            &output.stderr,
-            decision.exit(),
-            decision.disposition(),
-        )?;
+        match decision {
+            WorkerReadDecision::Deny => summary.denied_reads += 1,
+            WorkerReadDecision::Allow => summary.allowed_reads += 1,
+        }
     }
+    for probe_target in &policy.denied_write_probes {
+        require_absent(probe_target, "managed worker denied write probe")?;
+        let arguments = worker_private_probe_arguments(
+            policy,
+            &fixture,
+            PRIVATE_WRITE_PROBE_ARGUMENT,
+            Some(probe_target.as_os_str()),
+            &shell_environment_override,
+        )?;
+        require_worker_probe_execution(
+            tools,
+            scratch,
+            policy,
+            shell_environment,
+            &arguments,
+            WorkerProbeExpectation {
+                label: "Codex worker denied-write preflight",
+                exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+                disposition: "deny write",
+            },
+        )?;
+        require_absent(probe_target, "managed worker denied write probe")?;
+        summary.denied_write_creates += 1;
+    }
+    for probe_argument in [
+        PRIVATE_WRITE_APPEND_PROBE_ARGUMENT,
+        PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT,
+        PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT,
+    ] {
+        require_existing_write_probe_unchanged(
+            &policy.existing_write_probe,
+            WORKER_ALLOWED_CANARY,
+        )?;
+        let arguments = worker_private_probe_arguments(
+            policy,
+            &fixture,
+            probe_argument,
+            Some(policy.existing_write_probe.as_os_str()),
+            &shell_environment_override,
+        )?;
+        require_worker_probe_execution(
+            tools,
+            scratch,
+            policy,
+            shell_environment,
+            &arguments,
+            WorkerProbeExpectation {
+                label: "Codex worker denied-existing-write preflight",
+                exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+                disposition: "deny existing-file mutation",
+            },
+        )?;
+        require_existing_write_probe_unchanged(
+            &policy.existing_write_probe,
+            WORKER_ALLOWED_CANARY,
+        )?;
+        summary.denied_write_mutations += 1;
+    }
+    let network_arguments = worker_private_probe_arguments(
+        policy,
+        &fixture,
+        PRIVATE_NETWORK_PROBE_ARGUMENT,
+        None,
+        &shell_environment_override,
+    )?;
+    require_worker_probe_execution(
+        tools,
+        scratch,
+        policy,
+        shell_environment,
+        &network_arguments,
+        WorkerProbeExpectation {
+            label: "Codex worker denied-network preflight",
+            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+            disposition: "deny network",
+        },
+    )?;
+    summary.denied_network_listeners += 1;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("binding managed worker denied-connect control listener")?;
+    let endpoint = listener
+        .local_addr()
+        .context("reading managed worker denied-connect control endpoint")?;
+    ensure!(
+        endpoint.is_ipv4() && endpoint.ip().is_loopback() && endpoint.port() != 0,
+        "managed worker denied-connect endpoint is not IPv4 loopback"
+    );
+    let endpoint = endpoint.to_string();
+    let connect_arguments = worker_private_probe_arguments(
+        policy,
+        &fixture,
+        PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
+        Some(OsStr::new(&endpoint)),
+        &shell_environment_override,
+    )?;
+    require_worker_probe_execution(
+        tools,
+        scratch,
+        policy,
+        shell_environment,
+        &connect_arguments,
+        WorkerProbeExpectation {
+            label: "Codex worker denied-network-connect preflight",
+            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+            disposition: "deny network connect",
+        },
+    )?;
+    drop(listener);
+    summary.denied_network_connections += 1;
+    let descendant_arguments = worker_private_probe_arguments(
+        policy,
+        &fixture,
+        PRIVATE_DESCENDANT_PROBE_ARGUMENT,
+        Some(policy.denied_canary.as_os_str()),
+        &shell_environment_override,
+    )?;
+    require_worker_probe_execution(
+        tools,
+        scratch,
+        policy,
+        shell_environment,
+        &descendant_arguments,
+        WorkerProbeExpectation {
+            label: "Codex worker denied-descendant preflight",
+            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+            disposition: "deny descendant read",
+        },
+    )?;
+    summary.denied_descendants += 1;
     require_worker_canaries(scratch)?;
     ensure!(
         identify_codex_runtime(&tools.codex.path)? == runtime_before,
         "Codex sandbox runtime changed during credential preflight"
     );
-    Ok(())
+    ensure!(
+        summary.allowed_reads == policy.readable_probes.len()
+            && summary.denied_reads == policy.deny_probes().len() + policy.denied_probes.len()
+            && summary.denied_write_creates == policy.denied_write_probes.len()
+            && summary.denied_write_mutations == 3
+            && summary.denied_network_listeners == 1
+            && summary.denied_network_connections == 1
+            && summary.denied_descendants == 1,
+        "managed worker preflight counts differ from the executed policy plan"
+    );
+    summary.require_complete()?;
+    Ok(summary)
 }
 
 fn worker_read_probe_arguments(
@@ -4409,21 +6235,66 @@ fn worker_read_probe_arguments(
     probe_target: &Path,
     shell_environment: &str,
 ) -> Result<Vec<OsString>> {
+    worker_private_probe_arguments(
+        policy,
+        fixture,
+        PRIVATE_CREDENTIAL_PROBE_ARGUMENT,
+        Some(probe_target.as_os_str()),
+        shell_environment,
+    )
+}
+
+fn worker_private_probe_arguments(
+    policy: &ManagedWorkerPolicy,
+    fixture: &Path,
+    probe_argument: &str,
+    probe_target: Option<&OsStr>,
+    shell_environment: &str,
+) -> Result<Vec<OsString>> {
+    let denied_read = |target: &Path| {
+        policy.deny_probes().contains(&target)
+            || policy.denied_probes.iter().any(|path| path == target)
+    };
+    let valid_probe = match (probe_argument, probe_target) {
+        (PRIVATE_CREDENTIAL_PROBE_ARGUMENT, Some(value)) => {
+            let target = Path::new(value);
+            denied_read(target) || policy.readable_probes.iter().any(|path| path == target)
+        }
+        (PRIVATE_WRITE_PROBE_ARGUMENT, Some(value)) => {
+            let target = Path::new(value);
+            policy.denied_write_probes.iter().any(|path| path == target)
+        }
+        (
+            PRIVATE_WRITE_APPEND_PROBE_ARGUMENT
+            | PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT
+            | PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT,
+            Some(value),
+        ) => Path::new(value) == policy.existing_write_probe,
+        (PRIVATE_NETWORK_PROBE_ARGUMENT, None) => true,
+        (PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT, Some(value)) => {
+            parse_private_loopback_endpoint(value).is_ok()
+        }
+        (PRIVATE_DESCENDANT_PROBE_ARGUMENT, Some(value)) => denied_read(Path::new(value)),
+        _ => false,
+    };
     ensure!(
-        policy.repository.is_absolute()
-            && fixture.is_absolute()
-            && probe_target.is_absolute()
-            && (policy.deny_probes().contains(&probe_target)
-                || policy
-                    .readable_probes
-                    .iter()
-                    .any(|path| path == probe_target)),
-        "worker read probe path is not owned by the policy"
+        policy.repository.is_absolute() && fixture.is_absolute() && valid_probe,
+        "worker enforcement probe is not owned by the policy"
     );
-    let state = render_json(&managed_read_only_sandbox_state(policy)?)?;
-    Ok(vec![
+    let worker_permission = effective_worker_named_permission_profile(policy)?;
+    let mut arguments = vec![
         OsString::from("--no-daemon"),
+        OsString::from("--strict-config"),
+        OsString::from("--cd"),
+        policy.probe_directory.as_os_str().to_owned(),
         OsString::from("sandbox"),
+        OsString::from("--config"),
+        OsString::from(format!(
+            "default_permissions={}",
+            quote_toml_string(WORKER_NAMED_PERMISSION_NAME)
+        )),
+        OsString::from("--config"),
+        OsString::from(worker_permission),
         OsString::from("--config"),
         OsString::from("shell_environment_policy.inherit=\"none\""),
         OsString::from("--config"),
@@ -4432,14 +6303,46 @@ fn worker_read_probe_arguments(
         OsString::from(shell_environment),
         OsString::from("--config"),
         OsString::from(WINDOWS_SANDBOX_OVERRIDE),
-        OsString::from("--sandbox-state-json"),
-        OsString::from(state),
-        OsString::from("--sandbox-state-disable-network"),
+        OsString::from("--permission-profile"),
+        OsString::from(WORKER_NAMED_PERMISSION_NAME),
+        OsString::from("--include-managed-config"),
         OsString::from("--"),
         fixture.as_os_str().to_owned(),
-        OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT),
-        probe_target.as_os_str().to_owned(),
-    ])
+        OsString::from(probe_argument),
+    ];
+    if let Some(target) = probe_target {
+        arguments.push(target.to_owned());
+    }
+    Ok(arguments)
+}
+
+fn require_worker_probe_execution(
+    tools: &Toolchain,
+    scratch: &OwnedScratch,
+    policy: &ManagedWorkerPolicy,
+    shell_environment: &ShellEnvironmentPolicy,
+    arguments: &[OsString],
+    expected: WorkerProbeExpectation,
+) -> Result<()> {
+    let mut command = Command::new(&tools.codex.path);
+    command.args(arguments).current_dir(&policy.probe_directory);
+    apply_base_environment(&mut command, scratch, None)?;
+    shell_environment.apply(&mut command);
+    require_private_credential_projection(&scratch.codex_home())?;
+    let output = crate::bounded_process::output_with_limit(
+        command,
+        VERSION_TIMEOUT,
+        expected.label,
+        MAX_VERSION_BYTES,
+    )?;
+    require_private_credential_projection(&scratch.codex_home())?;
+    require_worker_read_probe_result(
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+        expected.exit,
+        expected.disposition,
+    )
 }
 
 fn require_worker_read_probe_result(
@@ -5723,9 +7626,9 @@ fn run_mcp(invocation: OwnedMcpInvocation<'_>) -> Result<McpOutcome> {
         &mut command,
         source,
         tools,
+        worker_policy,
         &repository,
-        &scratch.plugin,
-        &scratch.pycache,
+        scratch,
         overrides,
     )?;
 
@@ -5796,9 +7699,9 @@ fn apply_wrapper_environment(
     command: &mut Command,
     source: &SourceIdentity,
     tools: &Toolchain,
+    worker_policy: &ManagedWorkerPolicy,
     repository: &Path,
-    plugin_mirror: &Path,
-    pycache: &Path,
+    scratch: &OwnedScratch,
     overrides: &[String],
 ) -> Result<()> {
     require_wrapper_override_policy(overrides)?;
@@ -5813,6 +7716,8 @@ fn apply_wrapper_environment(
         overrides.iter().cloned().map(JsonValue::String).collect(),
     ))?;
     let python_runtime = render_python_runtime_policy(&tools.python_runtime)?;
+    let provider_permission = provider_named_permission_profile(worker_policy)?;
+    let worker_permission = effective_worker_named_permission_profile(worker_policy)?;
     command
         .env("CODEX_CLI_PATH", &wrapper)
         .env(
@@ -5823,10 +7728,14 @@ fn apply_wrapper_environment(
         .env(WRAPPER_OVERRIDES_ENV, serialized)
         .env(WRAPPER_REPOSITORY_ENV, repository)
         .env(WRAPPER_NODE_ENV, &tools.node.path)
+        .env(WRAPPER_LIVE_AUTH_ENV, &worker_policy.live_auth)
+        .env(WRAPPER_PROVIDER_PERMISSION_ENV, provider_permission)
+        .env(WRAPPER_WORKER_PERMISSION_ENV, worker_permission)
+        .env(WRAPPER_TRANSITIONS_ENV, &scratch.transitions)
         .env("PYTHON", &wrapper)
         .env(PYTHON_WRAPPER_REAL_ENV, &tools.python.path)
-        .env(PYTHON_WRAPPER_PLUGIN_ENV, plugin_mirror)
-        .env(PYTHON_WRAPPER_PYCACHE_ENV, pycache)
+        .env(PYTHON_WRAPPER_PLUGIN_ENV, &scratch.plugin)
+        .env(PYTHON_WRAPPER_PYCACHE_ENV, &scratch.pycache)
         .env(PYTHON_WRAPPER_RUNTIME_ENV, python_runtime);
     Ok(())
 }
@@ -6556,8 +8465,9 @@ fn call_complete(
         .is_empty(),
         "Codex Security completion has nonzero or unexpected severity counts"
     );
-    require_thread_id_list(scan, "threadIds")?;
-    require_thread_id_list(scan, "executionThreadIds")?;
+    let thread_ids = require_thread_id_list(scan, "threadIds")?;
+    let execution_threads = require_thread_id_list(scan, "executionThreadIds")?;
+    require_worker_thread_sets(&thread_ids, &execution_threads)?;
     let scan_updated = crate::mutants_grade::parse_utc_timestamp(
         nonempty_string(scan, "updatedAt", "Codex Security completed scan")?,
         "Codex Security completion update time",
@@ -6616,6 +8526,8 @@ fn call_complete(
     Ok(McpOutcome {
         scan_id: start.scan_id.clone(),
         scan_directory,
+        thread_ids,
+        execution_threads,
     })
 }
 
@@ -6714,7 +8626,10 @@ fn require_completion_contract(
     Ok(())
 }
 
-fn require_thread_id_list(scan: &BTreeMap<String, JsonValue>, field: &str) -> Result<()> {
+fn require_thread_id_list(
+    scan: &BTreeMap<String, JsonValue>,
+    field: &str,
+) -> Result<BTreeSet<String>> {
     let values = json_string_array(
         json_field(scan, field, "Codex Security completed scan")?,
         &format!("Codex Security completion {field}"),
@@ -6727,11 +8642,11 @@ fn require_thread_id_list(scan: &BTreeMap<String, JsonValue>, field: &str) -> Re
     for value in values {
         require_safe_identity(value, &format!("Codex Security completion {field}"))?;
         ensure!(
-            unique.insert(value),
+            unique.insert(value.to_string()),
             "Codex Security completion {field} is duplicated"
         );
     }
-    Ok(())
+    Ok(unique)
 }
 
 fn require_completion_progress(
@@ -7151,11 +9066,63 @@ fn managed_read_only_sandbox_state(policy: &ManagedWorkerPolicy) -> Result<JsonV
     ]))
 }
 
+fn provider_parent_sandbox_state(policy: &ManagedWorkerPolicy) -> Result<JsonValue> {
+    ensure!(
+        policy.repository.is_absolute()
+            && policy.live_auth.is_absolute()
+            && policy.projected_auth.is_absolute()
+            && policy.live_auth != policy.projected_auth
+            && policy.live_auth.file_name() == Some(OsStr::new("auth.json"))
+            && policy.projected_auth.file_name() == Some(OsStr::new("auth.json")),
+        "provider parent sandbox paths differ from the owned credential policy"
+    );
+    let mut entries = vec![object([
+        ("access", text_value("read")),
+        (
+            "path",
+            object([
+                ("type", text_value("special")),
+                ("value", object([("kind", text_value("root"))])),
+            ]),
+        ),
+    ])];
+    entries.extend(complete_worker_denies(policy).into_iter().map(|path| {
+        object([
+            ("access", text_value("deny")),
+            (
+                "path",
+                object([("path", path_value(path)), ("type", text_value("path"))]),
+            ),
+        ])
+    }));
+    Ok(object([
+        (
+            "permissionProfile",
+            object([
+                (
+                    "file_system",
+                    object([
+                        ("entries", JsonValue::Array(entries)),
+                        ("type", text_value("restricted")),
+                    ]),
+                ),
+                ("network", text_value("restricted")),
+                ("type", text_value("managed")),
+            ]),
+        ),
+        (
+            "sandboxCwd",
+            text_value(&windows_file_url(&policy.repository)?),
+        ),
+        ("useMxc", JsonValue::Bool(true)),
+    ]))
+}
+
 fn call_metadata(policy: &ManagedWorkerPolicy, source: &SourceIdentity) -> Result<JsonValue> {
     Ok(object([
         (
             "codex/sandbox-state-meta",
-            managed_read_only_sandbox_state(policy)?,
+            provider_parent_sandbox_state(policy)?,
         ),
         (
             "openai/threadId",
@@ -7180,9 +9147,16 @@ fn test_worker_policy(
     let parent = repository.parent().unwrap_or(repository);
     ManagedWorkerPolicy {
         repository: repository.to_path_buf(),
+        probe_directory: parent.to_path_buf(),
         readable_entries: vec![repository.to_path_buf()],
         denied_entries: vec![repository.join(".git")],
         readable_probes: Vec::new(),
+        denied_probes: Vec::new(),
+        denied_write_probes: vec![
+            repository.join(WORKER_SCAN_WRITE_CANARY_NAME),
+            parent.join(WORKER_OUTSIDE_WRITE_CANARY_NAME),
+        ],
+        existing_write_probe: repository.join(WORKER_ALLOWED_CANARY_NAME),
         repository_metadata_probe: repository.join(".git").join("HEAD"),
         live_auth: live_auth.to_path_buf(),
         projected_auth: projected_auth.to_path_buf(),
@@ -8321,6 +10295,35 @@ fn verify_sealed_with_identities(
         "sealed Codex Security request",
     )?;
     let request_fields = verify_owned_request(&request, source, runtime, git)?;
+    let request_values: BTreeMap<&str, &str> = request_fields
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let permissions = WorkerPermissionDigests {
+        parent_state: request_values
+            .get("execution.worker-parent-state.sha256")
+            .context("sealed request has no worker parent-state digest")?
+            .to_string(),
+        provider_profile: request_values
+            .get("execution.worker-provider-profile.sha256")
+            .context("sealed request has no worker provider-profile digest")?
+            .to_string(),
+        effective_profile: request_values
+            .get("execution.worker-effective-profile.sha256")
+            .context("sealed request has no worker effective-profile digest")?
+            .to_string(),
+        effective_state: request_values
+            .get("execution.worker-effective-state.sha256")
+            .context("sealed request has no worker effective-state digest")?
+            .to_string(),
+    };
+    let worker_transitions = read(
+        &directory.join(WORKER_TRANSITIONS),
+        MAX_WORKER_TRANSITIONS_BYTES,
+        "sealed private Codex transition ledger",
+    )?;
+    let worker_transitions =
+        verify_worker_transition_ledger(&worker_transitions, source, &permissions)?;
     let manifest = read(
         &directory.join(MANIFEST),
         MAX_MANIFEST_BYTES,
@@ -8343,6 +10346,7 @@ fn verify_sealed_with_identities(
     )?;
     let scan = verify_scan(&manifest, &findings, &coverage, &report, source)?;
     let mut derived = request_fields;
+    derived.extend(worker_transition_fields(&worker_transitions));
     derived.extend(scan_fields(&scan));
     let unique: BTreeMap<&str, &str> = derived
         .iter()
@@ -8355,7 +10359,58 @@ fn verify_sealed_with_identities(
     Ok(derived)
 }
 
-fn fields(scan: &Scan, tools: &Toolchain, package: &PluginPackage) -> Vec<(String, String)> {
+fn worker_transition_fields(transitions: &WorkerTransitionLedger) -> Vec<(String, String)> {
+    vec![
+        (
+            "execution.worker-preflight.allowed-reads".to_string(),
+            transitions.probes.allowed_reads.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-reads".to_string(),
+            transitions.probes.denied_reads.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-write-creates".to_string(),
+            transitions.probes.denied_write_creates.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-write-mutations".to_string(),
+            transitions.probes.denied_write_mutations.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-network-listeners".to_string(),
+            transitions.probes.denied_network_listeners.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-network-connections".to_string(),
+            transitions.probes.denied_network_connections.to_string(),
+        ),
+        (
+            "execution.worker-preflight.denied-descendants".to_string(),
+            transitions.probes.denied_descendants.to_string(),
+        ),
+        (
+            "execution.worker-transitions.app-server".to_string(),
+            transitions.app_server.to_string(),
+        ),
+        (
+            "execution.worker-transitions.exec-initial".to_string(),
+            transitions.exec_initial.to_string(),
+        ),
+        (
+            "execution.worker-transitions.exec-resumed".to_string(),
+            transitions.exec_resumed.to_string(),
+        ),
+    ]
+}
+
+fn fields(
+    scan: &Scan,
+    tools: &Toolchain,
+    package: &PluginPackage,
+    permissions: &WorkerPermissionDigests,
+    transitions: &WorkerTransitionLedger,
+) -> Vec<(String, String)> {
     let mut result = owned_identity_fields(
         tools.node.bytes,
         &tools.node.sha256,
@@ -8370,6 +10425,25 @@ fn fields(scan: &Scan, tools: &Toolchain, package: &PluginPackage) -> Vec<(Strin
         package.integrity.len() as u64,
         &tools.python_runtime,
     );
+    result.extend([
+        (
+            "execution.worker-effective-profile.sha256".to_string(),
+            permissions.effective_profile.clone(),
+        ),
+        (
+            "execution.worker-effective-state.sha256".to_string(),
+            permissions.effective_state.clone(),
+        ),
+        (
+            "execution.worker-parent-state.sha256".to_string(),
+            permissions.parent_state.clone(),
+        ),
+        (
+            "execution.worker-provider-profile.sha256".to_string(),
+            permissions.provider_profile.clone(),
+        ),
+    ]);
+    result.extend(worker_transition_fields(transitions));
     result.extend(scan_fields(scan));
     result
 }
@@ -8541,9 +10615,10 @@ fn render_owned_request(
     tools: &Toolchain,
     git: &GitIdentity,
     package: &PluginPackage,
+    permissions: &WorkerPermissionDigests,
 ) -> Vec<u8> {
     let body = format!(
-        "wizard-codex-security-request-v2\n\
+        "wizard-codex-security-request-v3\n\
 authentication.channel={AUTHENTICATION_CHANNEL}\n\
 environment.policy={ENVIRONMENT_POLICY}\n\
 execution.authority={EXECUTION_AUTHORITY}\n\
@@ -8558,6 +10633,10 @@ execution.tools.bytes={MCP_TOOLS_BYTES}\n\
 execution.tools.count={MCP_TOOLS_COUNT}\n\
 execution.tools.sha256={MCP_TOOLS_SHA256}\n\
 execution.worker-permission={WORKER_PERMISSION}\n\
+execution.worker-effective-profile.sha256={}\n\
+execution.worker-effective-state.sha256={}\n\
+execution.worker-parent-state.sha256={}\n\
+execution.worker-provider-profile.sha256={}\n\
 source.commit={}\n\
 source.tree={}\n\
 tool.git.bytes={}\n\
@@ -8592,6 +10671,10 @@ tool.codex.runtime.bytes={}\n\
 tool.codex.runtime.files={}\n\
 tool.codex.runtime.root=parent-of-tool.codex\n\
 tool.codex.runtime.sha256={}\n",
+        permissions.effective_profile,
+        permissions.effective_state,
+        permissions.parent_state,
+        permissions.provider_profile,
         source.commit,
         source.tree,
         git.bytes,
@@ -8633,7 +10716,7 @@ fn verify_owned_request(
     );
     let mut lines = text.lines();
     ensure!(
-        lines.next() == Some("wizard-codex-security-request-v2"),
+        lines.next() == Some("wizard-codex-security-request-v3"),
         "owned Codex Security request schema differs"
     );
     let expected_keys = [
@@ -8651,6 +10734,10 @@ fn verify_owned_request(
         "execution.tools.count",
         "execution.tools.sha256",
         "execution.worker-permission",
+        "execution.worker-effective-profile.sha256",
+        "execution.worker-effective-state.sha256",
+        "execution.worker-parent-state.sha256",
+        "execution.worker-provider-profile.sha256",
         "source.commit",
         "source.tree",
         "tool.git.bytes",
@@ -8710,6 +10797,20 @@ fn verify_owned_request(
         lines.next().is_none(),
         "owned Codex Security request has trailing fields"
     );
+    for field in [
+        "execution.worker-effective-profile.sha256",
+        "execution.worker-effective-state.sha256",
+        "execution.worker-parent-state.sha256",
+        "execution.worker-provider-profile.sha256",
+    ] {
+        require_sha256(
+            values
+                .get(field)
+                .copied()
+                .context("owned Codex Security request has no worker-policy digest")?,
+            "owned Codex Security worker-policy digest",
+        )?;
+    }
     let checksum_offset = text
         .rfind("checksum.sha256=")
         .context("owned Codex Security request has no checksum offset")?;
@@ -8788,7 +10889,7 @@ fn verify_owned_request(
         "owned Codex Security request Python runtime identity differs"
     );
     let codex_runtime = qualified_codex_runtime_identity();
-    Ok(owned_identity_fields(
+    let mut fields = owned_identity_fields(
         NODE_BYTES,
         NODE_SHA256,
         NODE_VERSION,
@@ -8801,7 +10902,23 @@ fn verify_owned_request(
         &codex_runtime,
         PLUGIN_INTEGRITY_BYTES,
         python_runtime,
-    ))
+    );
+    for key in [
+        "execution.worker-effective-profile.sha256",
+        "execution.worker-effective-state.sha256",
+        "execution.worker-parent-state.sha256",
+        "execution.worker-provider-profile.sha256",
+    ] {
+        fields.push((
+            key.to_string(),
+            values
+                .get(key)
+                .copied()
+                .context("owned Codex Security request has no worker-policy digest")?
+                .to_string(),
+        ));
+    }
+    Ok(fields)
 }
 
 fn qualified_codex_runtime_identity() -> CodexRuntimeIdentity {
@@ -8888,6 +11005,111 @@ mod tests {
         }
     }
 
+    fn owned_permission_digests() -> WorkerPermissionDigests {
+        WorkerPermissionDigests {
+            parent_state: "1".repeat(64),
+            provider_profile: "2".repeat(64),
+            effective_profile: "3".repeat(64),
+            effective_state: "4".repeat(64),
+        }
+    }
+
+    fn owned_probe_summary() -> WorkerProbeSummary {
+        WorkerProbeSummary {
+            allowed_reads: 7,
+            denied_reads: 4,
+            denied_write_creates: 2,
+            denied_write_mutations: 3,
+            denied_network_listeners: 1,
+            denied_network_connections: 1,
+            denied_descendants: 1,
+        }
+    }
+
+    fn mapping_probe_summary() -> WorkerProbeSummary {
+        WorkerProbeSummary {
+            allowed_reads: 11,
+            denied_reads: 13,
+            denied_write_creates: 17,
+            denied_write_mutations: 19,
+            denied_network_listeners: 23,
+            denied_network_connections: 29,
+            denied_descendants: 31,
+        }
+    }
+
+    fn owned_transition_ledger() -> WorkerTransitionLedger {
+        WorkerTransitionLedger {
+            bytes: Vec::new(),
+            app_server: 1,
+            exec_initial: 2,
+            exec_resumed: 3,
+            exec_exited_zero: 4,
+            thread_ids: BTreeSet::from(["thread-1".to_string()]),
+            execution_threads: BTreeSet::from(["thread-1".to_string()]),
+            probes: owned_probe_summary(),
+        }
+    }
+
+    fn test_worker_transition_ledger(
+        source: &SourceIdentity,
+        permissions: &WorkerPermissionDigests,
+    ) -> WorkerTransitionLedger {
+        let receipt =
+            |kind, stage, process_id, execution_thread: Option<&str>| WorkerTransitionReceipt {
+                kind,
+                stage,
+                process_id,
+                source_commit: source.commit.clone(),
+                provider_profile: permissions.provider_profile.clone(),
+                effective_profile: permissions.effective_profile.clone(),
+                applied_profile: kind
+                    .applied_digest(
+                        &permissions.provider_profile,
+                        &permissions.effective_profile,
+                    )
+                    .to_string(),
+                worker: "a".repeat(64),
+                execution_thread: execution_thread.map(str::to_string),
+                arguments: format!("{process_id:064x}"),
+            };
+        let thread_ids = BTreeSet::from(["thread-1".to_string()]);
+        render_worker_transition_ledger(
+            &[
+                receipt(
+                    WorkerTransitionKind::AppServerPassThrough,
+                    WorkerTransitionStage::Launched,
+                    1,
+                    None,
+                ),
+                receipt(
+                    WorkerTransitionKind::AppServerPassThrough,
+                    WorkerTransitionStage::Launched,
+                    4,
+                    None,
+                ),
+                receipt(
+                    WorkerTransitionKind::ExecInitialAttenuated,
+                    WorkerTransitionStage::Started,
+                    2,
+                    Some("thread-1"),
+                ),
+                receipt(
+                    WorkerTransitionKind::ExecResumedAttenuated,
+                    WorkerTransitionStage::Started,
+                    3,
+                    Some("thread-1"),
+                ),
+            ],
+            &thread_ids,
+            &thread_ids,
+            source,
+            permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap()
+    }
+
     fn unique_test_directory(prefix: &str) -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = std::time::SystemTime::now()
@@ -8944,6 +11166,7 @@ mod tests {
             temporary: child("temp", "test worker temporary directory"),
             pycache: child("pycache", "test worker Python cache"),
             codex_state: child("codex-state", "test worker Codex state"),
+            transitions: child("transitions", "test worker transition directory"),
             worker_allowed_canary,
             worker_denied_canary,
             root,
@@ -9082,6 +11305,13 @@ mod tests {
     }
 
     fn rebind_owned_request(text: &str) -> Vec<u8> {
+        let offset = text.rfind("checksum.sha256=").unwrap();
+        let body = &text[..offset];
+        let checksum = sha256::hex(&sha256::digest(body.as_bytes()));
+        format!("{body}checksum.sha256={checksum}\n").into_bytes()
+    }
+
+    fn rebind_worker_transition_ledger(text: &str) -> Vec<u8> {
         let offset = text.rfind("checksum.sha256=").unwrap();
         let body = &text[..offset];
         let checksum = sha256::hex(&sha256::digest(body.as_bytes()));
@@ -9556,21 +11786,43 @@ mod tests {
         let source = source();
         let tools = owned_tools();
         let git = owned_git();
-        let request = render_owned_request(&source, &tools, &git, &owned_package());
+        let request = render_owned_request(
+            &source,
+            &tools,
+            &git,
+            &owned_package(),
+            &owned_permission_digests(),
+        );
         let fields = verify_owned_request(&request, &source, &tools.python_runtime, &git).unwrap();
         let fields: BTreeMap<_, _> = fields.into_iter().collect();
         assert_eq!(fields["execution.protocol"], MCP_PROTOCOL);
         assert_eq!(
             fields["environment.policy"],
-            "xtask-owned-codex-security-hermetic-v6"
+            "xtask-owned-codex-security-hermetic-v9"
         );
         assert_eq!(
             fields["execution.authority"],
-            "xtask-mcp-wrapper-windows-job-v5"
+            "xtask-mcp-wrapper-windows-job-v8"
         );
         assert_eq!(
             fields["execution.worker-permission"],
-            "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false"
+            "provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,outside-canary=default-deny-probed,network=false"
+        );
+        assert_eq!(
+            fields["execution.worker-parent-state.sha256"],
+            "1".repeat(64)
+        );
+        assert_eq!(
+            fields["execution.worker-provider-profile.sha256"],
+            "2".repeat(64)
+        );
+        assert_eq!(
+            fields["execution.worker-effective-profile.sha256"],
+            "3".repeat(64)
+        );
+        assert_eq!(
+            fields["execution.worker-effective-state.sha256"],
+            "4".repeat(64)
         );
         assert_eq!(fields["tool.node.sha256"], NODE_SHA256);
         assert_eq!(fields["tool.python.sha256"], PYTHON_SHA256);
@@ -9600,11 +11852,584 @@ mod tests {
     }
 
     #[test]
+    fn record_fields_bind_exact_permission_digests() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let scan = verify_scan(&manifest, &findings, &coverage, &report, &source).unwrap();
+        let permissions = owned_permission_digests();
+        let fields: BTreeMap<_, _> = fields(
+            &scan,
+            &owned_tools(),
+            &owned_package(),
+            &permissions,
+            &owned_transition_ledger(),
+        )
+        .into_iter()
+        .collect();
+        assert_eq!(
+            fields["execution.worker-effective-profile.sha256"],
+            permissions.effective_profile
+        );
+        assert_eq!(
+            fields["execution.worker-effective-state.sha256"],
+            permissions.effective_state
+        );
+        assert_eq!(
+            fields["execution.worker-parent-state.sha256"],
+            permissions.parent_state
+        );
+        assert_eq!(
+            fields["execution.worker-provider-profile.sha256"],
+            permissions.provider_profile
+        );
+        assert_eq!(fields["execution.worker-transitions.app-server"], "1");
+        assert_eq!(fields["execution.worker-transitions.exec-initial"], "2");
+        assert_eq!(fields["execution.worker-transitions.exec-resumed"], "3");
+        assert_eq!(fields["execution.worker-preflight.allowed-reads"], "7");
+        assert_eq!(fields["execution.worker-preflight.denied-reads"], "4");
+        assert_eq!(
+            fields["execution.worker-preflight.denied-write-creates"],
+            "2"
+        );
+        assert_eq!(
+            fields["execution.worker-preflight.denied-write-mutations"],
+            "3"
+        );
+        assert_eq!(
+            fields["execution.worker-preflight.denied-network-listeners"],
+            "1"
+        );
+        assert_eq!(
+            fields["execution.worker-preflight.denied-network-connections"],
+            "1"
+        );
+        assert_eq!(fields["execution.worker-preflight.denied-descendants"], "1");
+    }
+
+    #[test]
+    fn worker_transition_fields_bind_pairwise_distinct_counts() {
+        let transitions = WorkerTransitionLedger {
+            bytes: Vec::new(),
+            app_server: 37,
+            exec_initial: 41,
+            exec_resumed: 43,
+            exec_exited_zero: 47,
+            thread_ids: BTreeSet::from(["thread-1".to_string()]),
+            execution_threads: BTreeSet::from(["thread-1".to_string()]),
+            probes: mapping_probe_summary(),
+        };
+        let fields: BTreeMap<_, _> = worker_transition_fields(&transitions).into_iter().collect();
+        let expected: BTreeMap<_, _> = [
+            ("execution.worker-preflight.allowed-reads", "11"),
+            ("execution.worker-preflight.denied-reads", "13"),
+            ("execution.worker-preflight.denied-write-creates", "17"),
+            ("execution.worker-preflight.denied-write-mutations", "19"),
+            ("execution.worker-preflight.denied-network-listeners", "23"),
+            (
+                "execution.worker-preflight.denied-network-connections",
+                "29",
+            ),
+            ("execution.worker-preflight.denied-descendants", "31"),
+            ("execution.worker-transitions.app-server", "37"),
+            ("execution.worker-transitions.exec-initial", "41"),
+            ("execution.worker-transitions.exec-resumed", "43"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+        assert_eq!(fields, expected);
+    }
+
+    #[test]
+    fn worker_probe_summary_requires_the_complete_bounded_matrix() {
+        let complete = owned_probe_summary();
+        complete.require_complete().unwrap();
+        let mut incomplete = Vec::new();
+        let mut summary = complete.clone();
+        summary.allowed_reads = 0;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_reads = 3;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_write_creates = 1;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_write_mutations = 2;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_network_listeners = 0;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_network_connections = 0;
+        incomplete.push(summary);
+        let mut summary = complete.clone();
+        summary.denied_descendants = 0;
+        incomplete.push(summary);
+        let mut summary = complete;
+        summary.allowed_reads = MAX_WORKER_POLICY_PROBES + 1;
+        incomplete.push(summary);
+        assert!(
+            incomplete
+                .iter()
+                .all(|summary| summary.require_complete().is_err())
+        );
+    }
+
+    #[test]
+    fn worker_transition_receipts_and_ledger_are_canonical_and_source_bound() {
+        let source = source();
+        let permissions = owned_permission_digests();
+        let ledger = test_worker_transition_ledger(&source, &permissions);
+        assert!(
+            ledger
+                .bytes
+                .starts_with(b"wizard-codex-security-worker-transitions-v3\n")
+        );
+        let verified =
+            verify_worker_transition_ledger(&ledger.bytes, &source, &permissions).unwrap();
+        assert_eq!(verified, ledger);
+
+        let receipt = WorkerTransitionReceipt {
+            kind: WorkerTransitionKind::ExecInitialAttenuated,
+            stage: WorkerTransitionStage::Started,
+            process_id: 41,
+            source_commit: source.commit.clone(),
+            provider_profile: permissions.provider_profile.clone(),
+            effective_profile: permissions.effective_profile.clone(),
+            applied_profile: permissions.effective_profile.clone(),
+            worker: "5".repeat(64),
+            execution_thread: Some("thread-41".to_string()),
+            arguments: "4".repeat(64),
+        };
+        let bytes = render_worker_transition_receipt(&receipt).unwrap();
+        assert_eq!(parse_worker_transition_receipt(&bytes).unwrap(), receipt);
+        let mut wrong_applied = receipt.clone();
+        wrong_applied.kind = WorkerTransitionKind::AppServerPassThrough;
+        assert!(require_worker_transition_receipt(&wrong_applied, &source, &permissions).is_err());
+        let mut malformed = receipt.clone();
+        malformed.stage = WorkerTransitionStage::Launched;
+        assert!(render_worker_transition_receipt(&malformed).is_err());
+        assert!(require_worker_transition_receipt(&malformed, &source, &permissions).is_err());
+        let mut noncanonical = String::from_utf8(bytes.clone())
+            .unwrap()
+            .replace("wrapper.id=41\n", "wrapper.id=041\n");
+        let checksum_offset = noncanonical.rfind("checksum.sha256=").unwrap();
+        let checksum = sha256::hex(&sha256::digest(&noncanonical.as_bytes()[..checksum_offset]));
+        noncanonical.replace_range(checksum_offset.., &format!("checksum.sha256={checksum}\n"));
+        assert!(parse_worker_transition_receipt(noncanonical.as_bytes()).is_err());
+
+        let text = String::from_utf8(ledger.bytes.clone()).unwrap();
+        for changed in [
+            text.replace(
+                "transition.app-server-launched=2",
+                "transition.app-server-launched=3",
+            ),
+            text.replace(
+                "completion.execution-thread.0000=thread-1",
+                "completion.execution-thread.0000=thread-2",
+            ),
+            text.replace(&source.commit, &"c".repeat(40)),
+            text.replace(&permissions.effective_profile, &"d".repeat(64)),
+            text.replace(&permissions.effective_state, &"e".repeat(64)),
+            text.replace("preflight.allowed-reads=7", "preflight.allowed-reads=0"),
+            text.replace("preflight.denied-reads=4", "preflight.denied-reads=3"),
+            text.replace(
+                "preflight.denied-write-creates=2",
+                "preflight.denied-write-creates=1",
+            ),
+            text.replace(
+                "preflight.denied-write-mutations=3",
+                "preflight.denied-write-mutations=2",
+            ),
+            text.replace(
+                "preflight.denied-network-listeners=1",
+                "preflight.denied-network-listeners=0",
+            ),
+            text.replace(
+                "preflight.denied-network-connections=1",
+                "preflight.denied-network-connections=0",
+            ),
+            text.replace(
+                "preflight.denied-descendants=1",
+                "preflight.denied-descendants=0",
+            ),
+        ] {
+            let changed = rebind_worker_transition_ledger(&changed);
+            assert!(verify_worker_transition_ledger(&changed, &source, &permissions).is_err());
+        }
+    }
+
+    #[test]
+    fn exec_jsonl_observation_binds_thread_identity_and_preserves_other_events() {
+        let started = b"{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n";
+        let mut observed = None;
+        assert_eq!(
+            observe_private_exec_line(started, Some("thread-1"), &mut observed).unwrap(),
+            Some("thread-1".to_string())
+        );
+        assert_eq!(observed.as_deref(), Some("thread-1"));
+        assert!(observe_private_exec_line(started, Some("thread-1"), &mut observed).is_err());
+
+        let mut observed = None;
+        assert!(observe_private_exec_line(started, Some("thread-2"), &mut observed).is_err());
+        assert!(observed.is_none());
+        assert!(observe_private_exec_line(b"not-json\n", None, &mut observed).is_err());
+        assert!(
+            observe_private_exec_line(
+                b"{\"type\":\"thread.started\",\"thread_id\":\"bad thread\"}\n",
+                None,
+                &mut observed,
+            )
+            .is_err()
+        );
+
+        let invocation = InjectedCodexInvocation {
+            arguments: Vec::new(),
+            transition: WorkerTransitionKind::ExecInitialAttenuated,
+            worker: None,
+            expected_thread: None,
+        };
+        let event = b"{\"type\":\"item.completed\",\"item\":{\"text\":\"exact bytes\"}}\n";
+        let mut output = Vec::new();
+        relay_private_exec_line(
+            &"a".repeat(40),
+            &invocation,
+            Path::new("unused"),
+            event,
+            &mut None,
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(output, event);
+    }
+
+    #[test]
+    fn worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing() {
+        let source = source();
+        let permissions = owned_permission_digests();
+        let receipt =
+            |kind, stage, process_id, worker: char, thread: Option<&str>| WorkerTransitionReceipt {
+                kind,
+                stage,
+                process_id,
+                source_commit: source.commit.clone(),
+                provider_profile: permissions.provider_profile.clone(),
+                effective_profile: permissions.effective_profile.clone(),
+                applied_profile: kind
+                    .applied_digest(
+                        &permissions.provider_profile,
+                        &permissions.effective_profile,
+                    )
+                    .to_string(),
+                worker: worker.to_string().repeat(64),
+                execution_thread: thread.map(str::to_string),
+                arguments: format!("{process_id:064x}"),
+            };
+        let threads = BTreeSet::from([
+            "thread-1".to_string(),
+            "thread-2".to_string(),
+            "thread-extra".to_string(),
+        ]);
+        let execution = BTreeSet::from(["thread-1".to_string()]);
+        let base = vec![
+            receipt(
+                WorkerTransitionKind::AppServerPassThrough,
+                WorkerTransitionStage::Launched,
+                1,
+                'a',
+                None,
+            ),
+            receipt(
+                WorkerTransitionKind::AppServerPassThrough,
+                WorkerTransitionStage::Launched,
+                2,
+                'a',
+                None,
+            ),
+            receipt(
+                WorkerTransitionKind::ExecInitialAttenuated,
+                WorkerTransitionStage::Started,
+                3,
+                'a',
+                Some("thread-1"),
+            ),
+            receipt(
+                WorkerTransitionKind::ExecResumedAttenuated,
+                WorkerTransitionStage::Started,
+                4,
+                'a',
+                Some("thread-1"),
+            ),
+        ];
+        render_worker_transition_ledger(
+            &base,
+            &threads,
+            &execution,
+            &source,
+            &permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap();
+
+        let uncovered = BTreeSet::from(["thread-2".to_string()]);
+        assert!(
+            render_worker_transition_ledger(
+                &base,
+                &threads,
+                &uncovered,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+
+        let mut unrelated_resume = base.clone();
+        unrelated_resume[3].execution_thread = Some("thread-2".to_string());
+        assert!(
+            render_worker_transition_ledger(
+                &unrelated_resume,
+                &threads,
+                &execution,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+
+        let mut missing_preflight = base.clone();
+        missing_preflight[1].worker = "b".repeat(64);
+        assert!(
+            render_worker_transition_ledger(
+                &missing_preflight,
+                &threads,
+                &execution,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+
+        let mut unmatched_exit = base.clone();
+        unmatched_exit.push(receipt(
+            WorkerTransitionKind::ExecInitialAttenuated,
+            WorkerTransitionStage::ExitedZero,
+            99,
+            'a',
+            Some("thread-1"),
+        ));
+        assert!(
+            render_worker_transition_ledger(
+                &unmatched_exit,
+                &threads,
+                &execution,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+
+        let mut with_matched_exit = base.clone();
+        let mut exited = with_matched_exit[2].clone();
+        exited.stage = WorkerTransitionStage::ExitedZero;
+        with_matched_exit.push(exited);
+        render_worker_transition_ledger(
+            &with_matched_exit,
+            &threads,
+            &execution,
+            &source,
+            &permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap();
+
+        let mut abandoned_retry = base;
+        abandoned_retry.push(receipt(
+            WorkerTransitionKind::AppServerPassThrough,
+            WorkerTransitionStage::Launched,
+            5,
+            'a',
+            None,
+        ));
+        abandoned_retry.push(receipt(
+            WorkerTransitionKind::ExecInitialAttenuated,
+            WorkerTransitionStage::Started,
+            6,
+            'a',
+            Some("thread-extra"),
+        ));
+        render_worker_transition_ledger(
+            &abandoned_retry,
+            &threads,
+            &execution,
+            &source,
+            &permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn transition_aggregation_requires_every_crossing_and_rejects_unknown_files() {
+        let (outer, scratch) = test_owned_scratch();
+        let source = source();
+        let permissions = owned_permission_digests();
+        let receipt =
+            |kind, stage, process_id, execution_thread: Option<&str>| WorkerTransitionReceipt {
+                kind,
+                stage,
+                process_id,
+                source_commit: source.commit.clone(),
+                provider_profile: permissions.provider_profile.clone(),
+                effective_profile: permissions.effective_profile.clone(),
+                applied_profile: kind
+                    .applied_digest(
+                        &permissions.provider_profile,
+                        &permissions.effective_profile,
+                    )
+                    .to_string(),
+                worker: "a".repeat(64),
+                execution_thread: execution_thread.map(str::to_string),
+                arguments: format!("{process_id:064x}"),
+            };
+        for transition in [
+            receipt(
+                WorkerTransitionKind::AppServerPassThrough,
+                WorkerTransitionStage::Launched,
+                11,
+                None,
+            ),
+            receipt(
+                WorkerTransitionKind::AppServerPassThrough,
+                WorkerTransitionStage::Launched,
+                14,
+                None,
+            ),
+            receipt(
+                WorkerTransitionKind::ExecInitialAttenuated,
+                WorkerTransitionStage::Started,
+                12,
+                Some("thread-1"),
+            ),
+            receipt(
+                WorkerTransitionKind::ExecResumedAttenuated,
+                WorkerTransitionStage::Started,
+                13,
+                Some("thread-1"),
+            ),
+        ] {
+            write_new_file(
+                &scratch.transitions.join(format!(
+                    "{}-{}-{}.receipt",
+                    transition.kind.as_str(),
+                    transition.stage.as_str(),
+                    transition.process_id
+                )),
+                &render_worker_transition_receipt(&transition).unwrap(),
+            )
+            .unwrap();
+        }
+        let thread_ids = BTreeSet::from(["thread-1".to_string()]);
+        let ledger = aggregate_worker_transitions(
+            &scratch.transitions,
+            &thread_ids,
+            &thread_ids,
+            &source,
+            &permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap();
+        assert_eq!(
+            (ledger.app_server, ledger.exec_initial, ledger.exec_resumed),
+            (2, 1, 1)
+        );
+
+        std::fs::write(scratch.transitions.join("unknown"), b"unknown").unwrap();
+        assert!(
+            aggregate_worker_transitions(
+                &scratch.transitions,
+                &thread_ids,
+                &thread_ids,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+
+        let no_resume = [
+            receipt(
+                WorkerTransitionKind::AppServerPassThrough,
+                WorkerTransitionStage::Launched,
+                15,
+                None,
+            ),
+            receipt(
+                WorkerTransitionKind::ExecInitialAttenuated,
+                WorkerTransitionStage::Started,
+                16,
+                Some("thread-1"),
+            ),
+        ];
+        let no_resume_ledger = render_worker_transition_ledger(
+            &no_resume,
+            &thread_ids,
+            &thread_ids,
+            &source,
+            &permissions,
+            &owned_probe_summary(),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                no_resume_ledger.app_server,
+                no_resume_ledger.exec_initial,
+                no_resume_ledger.exec_resumed,
+            ),
+            (1, 1, 0)
+        );
+        let verified_no_resume =
+            verify_worker_transition_ledger(&no_resume_ledger.bytes, &source, &permissions)
+                .unwrap();
+        assert_eq!(verified_no_resume.exec_resumed, 0);
+
+        let no_initial = [receipt(
+            WorkerTransitionKind::AppServerPassThrough,
+            WorkerTransitionStage::Launched,
+            17,
+            None,
+        )];
+        assert!(
+            render_worker_transition_ledger(
+                &no_initial,
+                &thread_ids,
+                &thread_ids,
+                &source,
+                &permissions,
+                &owned_probe_summary(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn owned_request_rejects_source_and_tool_substitution_after_rebinding() {
         let source = source();
         let tools = owned_tools();
         let git = owned_git();
-        let request = render_owned_request(&source, &tools, &git, &owned_package());
+        let request = render_owned_request(
+            &source,
+            &tools,
+            &git,
+            &owned_package(),
+            &owned_permission_digests(),
+        );
         let text = String::from_utf8(request).unwrap();
         for changed in [
             text.replace(&source.commit, &"c".repeat(40)),
@@ -9671,6 +12496,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            string(profile, "type", "test permission profile").unwrap(),
+            "managed"
+        );
+        assert_eq!(
             string(profile, "network", "test permission profile").unwrap(),
             "restricted"
         );
@@ -9688,21 +12517,16 @@ mod tests {
             "test filesystem entries",
         )
         .unwrap();
-        assert_eq!(entries.len(), 6);
+        assert_eq!(entries.len(), 4);
         assert!(
             render_json(&entries[0])
                 .unwrap()
-                .contains("\"access\":\"deny\"")
+                .contains("\"access\":\"read\"")
         );
         assert!(
             render_json(&entries[0])
                 .unwrap()
                 .contains("\"kind\":\"root\"")
-        );
-        assert!(
-            render_json(&entries[1])
-                .unwrap()
-                .contains("\"kind\":\"minimal\"")
         );
         let entry_path = |entry: &JsonValue| {
             let entry = json_object(entry, "test filesystem entry").unwrap();
@@ -9715,12 +12539,55 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        assert_eq!(entry_path(&entries[2]), r"C:\repo");
-        assert_eq!(entry_path(&entries[3]), r"C:\repo\.git");
-        assert_eq!(entry_path(&entries[4]), r"C:\Users\owner\.codex\auth.json");
-        assert_eq!(entry_path(&entries[5]), r"C:\private-home\auth.json");
+        assert_eq!(entry_path(&entries[1]), r"C:\repo\.git");
+        assert_eq!(entry_path(&entries[2]), r"C:\Users\owner\.codex\auth.json");
+        assert_eq!(entry_path(&entries[3]), r"C:\private-home\auth.json");
+        for entry in &entries[1..] {
+            assert!(render_json(entry).unwrap().contains("\"access\":\"deny\""));
+        }
         let rendered = render_json(&JsonValue::Object(metadata.clone())).unwrap();
         assert!(!rendered.contains("worker-denied-read-canary"));
+    }
+
+    #[test]
+    fn named_permission_profiles_separate_provider_and_effective_authority() {
+        let policy = test_worker_policy(
+            Path::new(r"C:\repo"),
+            Path::new(r"C:\Users\owner\.codex\auth.json"),
+            Path::new(r"C:\private-home\auth.json"),
+        );
+        let provider = provider_named_permission_profile(&policy).unwrap();
+        let effective = effective_worker_named_permission_profile(&policy).unwrap();
+        assert_eq!(
+            provider,
+            r#"permissions.codex_security_deep_scan_worker={extends=":read-only",filesystem={":root"="read","C:\\repo\\.git"="deny","C:\\Users\\owner\\.codex\\auth.json"="deny","C:\\private-home\\auth.json"="deny"},network={enabled=false}}"#
+        );
+        assert_eq!(
+            effective,
+            r#"permissions.codex_security_deep_scan_worker={extends=":read-only",filesystem={":root"="deny",":minimal"="read","C:\\repo"="read","C:\\repo\\.git"="deny","C:\\Users\\owner\\.codex\\auth.json"="deny","C:\\private-home\\auth.json"="deny"},network={enabled=false}}"#
+        );
+        let digests = worker_permission_digests(&policy).unwrap();
+        assert_eq!(
+            digests.provider_profile,
+            sha256::hex(&sha256::digest(provider.as_bytes()))
+        );
+        assert_eq!(
+            digests.effective_profile,
+            sha256::hex(&sha256::digest(effective.as_bytes()))
+        );
+        let parent = render_json(&provider_parent_sandbox_state(&policy).unwrap()).unwrap();
+        let effective_state =
+            render_json(&managed_read_only_sandbox_state(&policy).unwrap()).unwrap();
+        assert_eq!(
+            digests.parent_state,
+            sha256::hex(&sha256::digest(parent.as_bytes()))
+        );
+        assert_ne!(digests.parent_state, digests.provider_profile);
+        assert_eq!(
+            digests.effective_state,
+            sha256::hex(&sha256::digest(effective_state.as_bytes()))
+        );
+        assert_ne!(digests.effective_state, digests.effective_profile);
     }
 
     #[test]
@@ -10021,6 +12888,98 @@ mod tests {
             dispatch_private_credential_probe(&[tag, OsString::from("relative-auth.json")])
                 .is_err()
         );
+        assert!(dispatch_private_write_probe(&[]).is_err());
+        assert!(dispatch_private_existing_write_probe(&[]).is_err());
+        assert!(
+            dispatch_private_network_probe(&[
+                OsString::from(PRIVATE_NETWORK_PROBE_ARGUMENT),
+                OsString::from("unexpected"),
+            ])
+            .is_err()
+        );
+        assert!(
+            dispatch_private_network_connect_probe(&[
+                OsString::from(PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT),
+                OsString::from("8.8.8.8:53"),
+            ])
+            .is_err()
+        );
+        assert!(
+            dispatch_private_network_connect_probe(&[
+                OsString::from(PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT),
+                OsString::from("127.0.0.1:0"),
+            ])
+            .is_err()
+        );
+        assert!(
+            dispatch_private_descendant_probe(&[
+                OsString::from(PRIVATE_DESCENDANT_PROBE_ARGUMENT,)
+            ])
+            .is_err()
+        );
+
+        let positive_root = unique_test_directory("wizard-worker-probe-positive");
+        let write_target = positive_root.join("fresh-write-target");
+        assert_eq!(
+            dispatch_private_write_probe(&[
+                OsString::from(PRIVATE_WRITE_PROBE_ARGUMENT),
+                write_target.clone().into_os_string(),
+            ])
+            .unwrap(),
+            PRIVATE_CREDENTIAL_READABLE_EXIT
+        );
+        assert!(write_target.is_file());
+        let existing_target = positive_root.join("existing-write-target");
+        std::fs::write(&existing_target, b"before").unwrap();
+        assert_eq!(
+            dispatch_private_existing_write_probe(&[
+                OsString::from(PRIVATE_WRITE_APPEND_PROBE_ARGUMENT),
+                existing_target.clone().into_os_string(),
+            ])
+            .unwrap(),
+            PRIVATE_CREDENTIAL_READABLE_EXIT
+        );
+        assert_eq!(
+            std::fs::read(&existing_target).unwrap(),
+            b"beforewizard append probe"
+        );
+        std::fs::write(&existing_target, b"before").unwrap();
+        assert_eq!(
+            dispatch_private_existing_write_probe(&[
+                OsString::from(PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT),
+                existing_target.clone().into_os_string(),
+            ])
+            .unwrap(),
+            PRIVATE_CREDENTIAL_READABLE_EXIT
+        );
+        assert!(std::fs::read(&existing_target).unwrap().is_empty());
+        std::fs::write(&existing_target, b"before-before-before-before").unwrap();
+        assert_eq!(
+            dispatch_private_existing_write_probe(&[
+                OsString::from(PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT),
+                existing_target.clone().into_os_string(),
+            ])
+            .unwrap(),
+            PRIVATE_CREDENTIAL_READABLE_EXIT
+        );
+        assert!(
+            std::fs::read(&existing_target)
+                .unwrap()
+                .starts_with(b"wizard overwrite probe")
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        assert_eq!(
+            dispatch_private_network_connect_probe(&[
+                OsString::from(PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT),
+                OsString::from(endpoint),
+            ])
+            .unwrap(),
+            PRIVATE_CREDENTIAL_READABLE_EXIT
+        );
+        drop(listener);
+        let metadata = std::fs::symlink_metadata(&positive_root).unwrap();
+        remove_entry_no_follow(&positive_root, &metadata).unwrap();
 
         let implementation = include_str!("security_deep.rs");
         let dispatch = implementation
@@ -10031,12 +12990,19 @@ mod tests {
             .unwrap()
             + dispatch;
         let dispatch_body = &implementation[dispatch..probe];
-        assert!(
-            dispatch_body
-                .find("PRIVATE_CREDENTIAL_PROBE_ARGUMENT")
-                .unwrap()
-                < dispatch_body.find("WRAPPER_MARKER_ENV").unwrap()
-        );
+        let marker = dispatch_body.find("WRAPPER_MARKER_ENV").unwrap();
+        for probe in [
+            "PRIVATE_CREDENTIAL_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_APPEND_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT",
+            "PRIVATE_NETWORK_PROBE_ARGUMENT",
+            "PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT",
+            "PRIVATE_DESCENDANT_PROBE_ARGUMENT",
+        ] {
+            assert!(dispatch_body.find(probe).unwrap() < marker);
+        }
         let start = implementation
             .find("fn open_private_credential_for_probe")
             .unwrap();
@@ -10049,6 +13015,46 @@ mod tests {
         assert!(!body.contains(".read("));
         assert!(!body.contains("read_to_end"));
         assert!(!body.contains("std::fs::read"));
+        let network_start = implementation
+            .find("fn dispatch_private_network_probe")
+            .unwrap();
+        let descendant_start = implementation[network_start..]
+            .find("fn dispatch_private_descendant_probe")
+            .unwrap()
+            + network_start;
+        let credential_open = implementation[descendant_start..]
+            .find("fn open_private_credential_for_probe")
+            .unwrap()
+            + descendant_start;
+        assert!(
+            implementation[network_start..descendant_start]
+                .contains("std::net::TcpListener::bind(\"127.0.0.1:0\").map(drop)")
+        );
+        assert!(
+            implementation[network_start..descendant_start]
+                .contains("std::net::TcpStream::connect_timeout")
+        );
+        let existing_write_start = implementation
+            .find("fn dispatch_private_existing_write_probe")
+            .unwrap();
+        let existing_write_end = implementation[existing_write_start..]
+            .find("fn dispatch_private_network_probe")
+            .unwrap()
+            + existing_write_start;
+        let existing_write = &implementation[existing_write_start..existing_write_end];
+        for operation in [
+            ".append(true)",
+            ".truncate(true)",
+            "file.write_all(b\"wizard overwrite probe\")",
+        ] {
+            assert!(existing_write.contains(operation));
+        }
+        let descendant = &implementation[descendant_start..credential_open];
+        assert!(descendant.contains("Command::new(executable)"));
+        assert!(descendant.contains(".arg(PRIVATE_CREDENTIAL_PROBE_ARGUMENT)"));
+        assert!(descendant.contains(".arg(target)"));
+        assert!(descendant.contains(".env_clear()"));
+        assert!(descendant.contains(".status()"));
 
         let preflight = implementation
             .find("fn require_worker_filesystem_policy")
@@ -10059,13 +13065,59 @@ mod tests {
             + preflight;
         let body = &implementation[preflight..arguments];
         assert!(body.contains("scratch.codex_home().join(\"auth.json\")"));
+        assert!(body.contains("require_worker_probe_positive_controls(scratch)?"));
         assert!(body.contains("for (probe_target, decision) in worker_read_probe_plan(policy)"));
-        let projection_checks = body
+        for required in [
+            "PRIVATE_WRITE_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_APPEND_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT",
+            "PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT",
+            "PRIVATE_NETWORK_PROBE_ARGUMENT",
+            "PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT",
+            "PRIVATE_DESCENDANT_PROBE_ARGUMENT",
+            "for probe_target in &policy.denied_write_probes",
+            "for probe_argument in [",
+            "WorkerReadDecision::Deny => summary.denied_reads += 1",
+            "WorkerReadDecision::Allow => summary.allowed_reads += 1",
+            "summary.denied_write_creates += 1",
+            "summary.denied_write_mutations += 1",
+            "summary.denied_network_listeners += 1",
+            "summary.denied_network_connections += 1",
+            "summary.denied_descendants += 1",
+            "summary.allowed_reads == policy.readable_probes.len()",
+            "summary.denied_reads == policy.deny_probes().len() + policy.denied_probes.len()",
+            "summary.denied_write_creates == policy.denied_write_probes.len()",
+            "summary.denied_write_mutations == 3",
+            "summary.denied_network_listeners == 1",
+            "summary.denied_network_connections == 1",
+            "summary.require_complete()?",
+        ] {
+            assert!(body.contains(required));
+        }
+        assert_eq!(
+            body.match_indices("require_worker_probe_execution(")
+                .count(),
+            6
+        );
+        assert_eq!(
+            body.match_indices("require_existing_write_probe_unchanged(")
+                .count(),
+            2
+        );
+        let executor_start = implementation
+            .find("fn require_worker_probe_execution(")
+            .unwrap();
+        let executor_end = implementation[executor_start..]
+            .find("fn require_worker_read_probe_result(")
+            .unwrap()
+            + executor_start;
+        let executor = &implementation[executor_start..executor_end];
+        let projection_checks = executor
             .match_indices("require_private_credential_projection")
             .map(|(offset, _)| offset)
             .collect::<Vec<_>>();
         assert_eq!(projection_checks.len(), 2);
-        let executions = body
+        let executions = executor
             .match_indices("output_with_limit")
             .map(|(offset, _)| offset)
             .collect::<Vec<_>>();
@@ -10076,6 +13128,17 @@ mod tests {
     }
 
     #[test]
+    fn worker_probe_positive_controls_exercise_each_operation_and_clean_up() {
+        let (outer, scratch) = test_owned_scratch();
+        let controls = scratch.scan_root.join("worker-probe-positive-controls");
+        require_worker_probe_positive_controls(&scratch).unwrap();
+        assert!(!controls.exists());
+        require_worker_canaries(&scratch).unwrap();
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
     fn credential_probe_command_uses_the_exact_owned_worker_sandbox() {
         let repository = std::env::temp_dir().join("credential-probe-repository");
         let fixture = repository.join("xtask.exe");
@@ -10083,10 +13146,17 @@ mod tests {
         let projected_auth = repository.join("private-home").join("auth.json");
         let shell_environment = "shell_environment_policy.set={}";
         let policy = test_worker_policy(&repository, &live_auth, &projected_auth);
-        let state = render_json(&managed_read_only_sandbox_state(&policy).unwrap()).unwrap();
+        let worker_permission = effective_worker_named_permission_profile(&policy).unwrap();
         let mut expected = vec![
             OsString::from("--no-daemon"),
+            OsString::from("--strict-config"),
+            OsString::from("--cd"),
+            policy.probe_directory.clone().into_os_string(),
             OsString::from("sandbox"),
+            OsString::from("--config"),
+            OsString::from("default_permissions=\"codex_security_deep_scan_worker\""),
+            OsString::from("--config"),
+            OsString::from(worker_permission),
             OsString::from("--config"),
             OsString::from("shell_environment_policy.inherit=\"none\""),
             OsString::from("--config"),
@@ -10095,9 +13165,9 @@ mod tests {
             OsString::from(shell_environment),
             OsString::from("--config"),
             OsString::from(WINDOWS_SANDBOX_OVERRIDE),
-            OsString::from("--sandbox-state-json"),
-            OsString::from(state),
-            OsString::from("--sandbox-state-disable-network"),
+            OsString::from("--permission-profile"),
+            OsString::from(WORKER_NAMED_PERMISSION_NAME),
+            OsString::from("--include-managed-config"),
             OsString::from("--"),
             fixture.clone().into_os_string(),
             OsString::from(PRIVATE_CREDENTIAL_PROBE_ARGUMENT),
@@ -10107,11 +13177,121 @@ mod tests {
             worker_read_probe_arguments(&policy, &fixture, &live_auth, shell_environment).unwrap(),
             expected
         );
+        assert!(!expected.iter().any(|argument| {
+            argument == "--sandbox-state-json" || argument == "--sandbox-state-disable-network"
+        }));
         *expected.last_mut().unwrap() = projected_auth.clone().into_os_string();
         assert_eq!(
             worker_read_probe_arguments(&policy, &fixture, &projected_auth, shell_environment)
                 .unwrap(),
             expected
+        );
+        let prefix = expected[..expected.len() - 2].to_vec();
+        let mut write = prefix.clone();
+        write.extend([
+            OsString::from(PRIVATE_WRITE_PROBE_ARGUMENT),
+            policy.denied_write_probes[0].clone().into_os_string(),
+        ]);
+        assert_eq!(
+            worker_private_probe_arguments(
+                &policy,
+                &fixture,
+                PRIVATE_WRITE_PROBE_ARGUMENT,
+                Some(policy.denied_write_probes[0].as_os_str()),
+                shell_environment,
+            )
+            .unwrap(),
+            write
+        );
+        for probe_argument in [
+            PRIVATE_WRITE_APPEND_PROBE_ARGUMENT,
+            PRIVATE_WRITE_TRUNCATE_PROBE_ARGUMENT,
+            PRIVATE_WRITE_OVERWRITE_PROBE_ARGUMENT,
+        ] {
+            let mut existing_write = prefix.clone();
+            existing_write.extend([
+                OsString::from(probe_argument),
+                policy.existing_write_probe.clone().into_os_string(),
+            ]);
+            assert_eq!(
+                worker_private_probe_arguments(
+                    &policy,
+                    &fixture,
+                    probe_argument,
+                    Some(policy.existing_write_probe.as_os_str()),
+                    shell_environment,
+                )
+                .unwrap(),
+                existing_write
+            );
+        }
+        let mut network = prefix.clone();
+        network.push(OsString::from(PRIVATE_NETWORK_PROBE_ARGUMENT));
+        assert_eq!(
+            worker_private_probe_arguments(
+                &policy,
+                &fixture,
+                PRIVATE_NETWORK_PROBE_ARGUMENT,
+                None,
+                shell_environment,
+            )
+            .unwrap(),
+            network
+        );
+        let endpoint = OsStr::new("127.0.0.1:47321");
+        let mut connect = prefix.clone();
+        connect.extend([
+            OsString::from(PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT),
+            endpoint.to_owned(),
+        ]);
+        assert_eq!(
+            worker_private_probe_arguments(
+                &policy,
+                &fixture,
+                PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
+                Some(endpoint),
+                shell_environment,
+            )
+            .unwrap(),
+            connect
+        );
+        for rejected in ["127.0.0.1:0", "8.8.8.8:53", "[::1]:47321"] {
+            assert!(
+                worker_private_probe_arguments(
+                    &policy,
+                    &fixture,
+                    PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
+                    Some(OsStr::new(rejected)),
+                    shell_environment,
+                )
+                .is_err()
+            );
+        }
+        let mut descendant = prefix;
+        descendant.extend([
+            OsString::from(PRIVATE_DESCENDANT_PROBE_ARGUMENT),
+            policy.denied_canary.clone().into_os_string(),
+        ]);
+        assert_eq!(
+            worker_private_probe_arguments(
+                &policy,
+                &fixture,
+                PRIVATE_DESCENDANT_PROBE_ARGUMENT,
+                Some(policy.denied_canary.as_os_str()),
+                shell_environment,
+            )
+            .unwrap(),
+            descendant
+        );
+        assert!(
+            worker_private_probe_arguments(
+                &policy,
+                &fixture,
+                PRIVATE_NETWORK_PROBE_ARGUMENT,
+                Some(live_auth.as_os_str()),
+                shell_environment,
+            )
+            .is_err()
         );
     }
 
@@ -10209,9 +13389,11 @@ mod tests {
             .unwrap()
             + wrapper_start;
         let wrapper = &implementation[wrapper_start..wrapper_end];
-        assert!(wrapper.contains("argument == WORKER_NAMED_PERMISSION_INPUT"));
-        assert!(wrapper.contains("OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE)"));
+        assert!(wrapper.contains("if context.is_some()"));
+        assert!(wrapper.contains("argument == provider_permission"));
+        assert!(wrapper.contains("OsString::from(worker_permission)"));
         assert!(wrapper.contains("rewritten_permissions == 1"));
+        assert!(wrapper.contains("app-server permission profile was altered"));
 
         let run_start = implementation.find("fn run_owned(").unwrap();
         let run_end = implementation[run_start..]
@@ -10232,6 +13414,7 @@ mod tests {
         assert!(prepare < qualify && qualify < preflight && preflight < mcp);
         assert!(mcp < post_identity && post_identity < post_canaries);
         assert!(run.contains("worker_policy: &worker_policy"));
+        assert!(run.contains("&worker_probes"));
 
         let preflight_start = implementation
             .find("fn require_worker_filesystem_policy(")
@@ -10481,6 +13664,7 @@ mod tests {
             python_root.join("vcruntime140.dll"),
             python_root.join("DLLs"),
             python_root.join("Lib"),
+            std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap(),
         ];
         for expected in &expected_reads {
             assert!(
@@ -10510,6 +13694,14 @@ mod tests {
             projected_auth.clone(),
             scratch.worker_denied_canary.clone(),
             repository.join(".git").join("HEAD"),
+            python_root
+                .join("DLLs")
+                .join("__pycache__")
+                .join("ignored.pyc"),
+            python_root
+                .join("Lib")
+                .join("site-packages")
+                .join("ignored.py"),
         ];
         assert_eq!(
             plan.len(),
@@ -10524,6 +13716,21 @@ mod tests {
                 .iter()
                 .all(|(_, decision)| *decision == WorkerReadDecision::Allow)
         );
+        assert_eq!(
+            policy.denied_write_probes,
+            [
+                scratch.scan_root.join(WORKER_SCAN_WRITE_CANARY_NAME),
+                scratch.root.join(WORKER_OUTSIDE_WRITE_CANARY_NAME),
+            ]
+        );
+        assert!(policy.denied_write_probes.iter().all(|path| !path.exists()));
+        assert_eq!(policy.existing_write_probe, scratch.worker_allowed_canary);
+        assert!(
+            policy
+                .readable_probes
+                .contains(&policy.existing_write_probe)
+        );
+        assert!(policy.existing_write_probe.is_file());
         let state = render_json(&managed_read_only_sandbox_state(&policy).unwrap()).unwrap();
         assert!(state.contains("\"kind\":\"root\""));
         assert!(state.contains("\"kind\":\"minimal\""));
@@ -10703,7 +13910,7 @@ mod tests {
         for (start, end) in [
             (
                 "fn require_worker_filesystem_policy(",
-                "fn worker_read_probe_arguments(",
+                "fn apply_base_environment(",
             ),
             ("fn run_mcp(", "fn exchange_mcp("),
         ] {
@@ -10826,6 +14033,10 @@ mod tests {
             WRAPPER_OVERRIDES_ENV,
             WRAPPER_REPOSITORY_ENV,
             WRAPPER_NODE_ENV,
+            WRAPPER_LIVE_AUTH_ENV,
+            WRAPPER_PROVIDER_PERMISSION_ENV,
+            WRAPPER_WORKER_PERMISSION_ENV,
+            WRAPPER_TRANSITIONS_ENV,
             "CODEX_CLI_PATH",
             PYTHON_WRAPPER_REAL_ENV,
             PYTHON_WRAPPER_PLUGIN_ENV,
@@ -10884,6 +14095,10 @@ mod tests {
             WRAPPER_OVERRIDES_ENV,
             WRAPPER_REPOSITORY_ENV,
             WRAPPER_NODE_ENV,
+            WRAPPER_LIVE_AUTH_ENV,
+            WRAPPER_PROVIDER_PERMISSION_ENV,
+            WRAPPER_WORKER_PERMISSION_ENV,
+            WRAPPER_TRANSITIONS_ENV,
             "CODEX_CLI_PATH",
             PYTHON_WRAPPER_REAL_ENV,
             PYTHON_WRAPPER_PLUGIN_ENV,
@@ -10910,6 +14125,50 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_environment_propagates_both_exact_permission_profiles() {
+        let (outer, scratch) = test_owned_scratch();
+        let inert = inert_mcp_executable(&scratch.root).unwrap();
+        let overrides = safety_overrides(&ambient_config(), &inert).unwrap();
+        let policy = test_worker_policy(
+            Path::new(r"C:\repo"),
+            Path::new(r"C:\Users\owner\.codex\auth.json"),
+            Path::new(r"C:\private-home\auth.json"),
+        );
+        let provider = provider_named_permission_profile(&policy).unwrap();
+        let effective = effective_worker_named_permission_profile(&policy).unwrap();
+        let mut command = Command::new("node");
+        apply_wrapper_environment(
+            &mut command,
+            &source(),
+            &owned_tools(),
+            &policy,
+            Path::new(r"C:\repo"),
+            &scratch,
+            &overrides,
+        )
+        .unwrap();
+        let environment: BTreeMap<OsString, Option<OsString>> = command
+            .get_envs()
+            .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+            .collect();
+        assert_eq!(
+            environment.get(OsStr::new(WRAPPER_PROVIDER_PERMISSION_ENV)),
+            Some(&Some(OsString::from(provider)))
+        );
+        assert_eq!(
+            environment.get(OsStr::new(WRAPPER_WORKER_PERMISSION_ENV)),
+            Some(&Some(OsString::from(effective)))
+        );
+        assert_eq!(
+            environment.get(OsStr::new(WRAPPER_TRANSITIONS_ENV)),
+            Some(&Some(scratch.transitions.clone().into_os_string()))
+        );
+
+        let metadata = std::fs::symlink_metadata(&outer).unwrap();
+        remove_entry_no_follow(&outer, &metadata).unwrap();
+    }
+
+    #[test]
     fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         assert_eq!(WINDOWS_SANDBOX_OVERRIDE, "windows.sandbox=\"mxc\"");
         let (outer, root) = private_test_root();
@@ -10929,18 +14188,34 @@ mod tests {
         );
         assert!(require_wrapper_override_policy(&duplicate_mxc).is_err());
 
-        let app = [
-            "--config",
-            "default_permissions=\"codex_security_deep_scan_worker\"",
-            "--config",
-            "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}",
-            "app-server",
-            "--stdio",
-        ]
-        .into_iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
-        let injected = inject_wrapper_overrides(&app, &overrides).unwrap();
+        let app_policy = test_worker_policy(
+            Path::new(r"C:\repo"),
+            Path::new(r"C:\Users\owner\.codex\auth.json"),
+            Path::new(r"C:\private-home\auth.json"),
+        );
+        let app_provider_permission = provider_named_permission_profile(&app_policy).unwrap();
+        let app_worker_permission = effective_worker_named_permission_profile(&app_policy).unwrap();
+        let app = vec![
+            OsString::from("--config"),
+            OsString::from("default_permissions=\"codex_security_deep_scan_worker\""),
+            OsString::from("--config"),
+            OsString::from(&app_provider_permission),
+            OsString::from("app-server"),
+            OsString::from("--stdio"),
+        ];
+        let injected = inject_wrapper_overrides_for_scan_root(
+            &app,
+            &overrides,
+            None,
+            &app_provider_permission,
+            &app_worker_permission,
+        )
+        .unwrap();
+        assert_eq!(
+            injected.transition,
+            WorkerTransitionKind::AppServerPassThrough
+        );
+        let injected = injected.arguments;
         let app_server = injected
             .iter()
             .position(|value| value == "app-server")
@@ -10951,20 +14226,20 @@ mod tests {
                 OsString::from("--config"),
                 OsString::from("default_permissions=\"codex_security_deep_scan_worker\""),
                 OsString::from("--config"),
-                OsString::from(WORKER_NAMED_PERMISSION_OVERRIDE),
+                OsString::from(&app_provider_permission),
             ]
-        );
-        assert!(
-            !injected
-                .iter()
-                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
         );
         assert_eq!(
             injected
                 .iter()
-                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .filter(|value| value.as_os_str() == OsStr::new(&app_provider_permission))
                 .count(),
             1
+        );
+        assert!(
+            !injected
+                .iter()
+                .any(|value| value.as_os_str() == OsStr::new(&app_worker_permission))
         );
         assert_eq!(app_server, 4 + overrides.len() * 2);
         assert_eq!(
@@ -11009,7 +14284,19 @@ mod tests {
         };
         let python_real = root.join("python.exe");
         std::fs::write(&python_real, b"synthetic python").unwrap();
+        std::fs::write(root.join("python3.dll"), b"synthetic python3").unwrap();
+        std::fs::write(root.join("python312.dll"), b"synthetic python312").unwrap();
+        std::fs::write(root.join("vcruntime140.dll"), b"synthetic runtime").unwrap();
+        std::fs::create_dir(root.join("DLLs")).unwrap();
+        std::fs::create_dir(root.join("Lib")).unwrap();
+        std::fs::write(root.join("DLLs").join("probe.dll"), b"probe").unwrap();
+        std::fs::write(root.join("Lib").join("probe.py"), b"probe").unwrap();
         let python_real = std::fs::canonicalize(python_real).unwrap();
+        let codex_runtime_root = root.join("codex-runtime");
+        std::fs::create_dir(&codex_runtime_root).unwrap();
+        let codex_runtime_root = std::fs::canonicalize(codex_runtime_root).unwrap();
+        let live_auth = root.join("live").join("auth.json");
+        let projected_auth = root.join("codex-home").join("auth.json");
         let context = PrivateExecutionContext {
             scan_root,
             plugin_mirror: plugin.clone(),
@@ -11024,6 +14311,14 @@ mod tests {
             python_real,
             pycache,
             artifact_node,
+            codex_runtime: CodexRuntimeIdentity {
+                root: codex_runtime_root,
+                entries: 1,
+                bytes: 1,
+                sha256: "e".repeat(64),
+            },
+            live_auth,
+            projected_auth,
             shell_environment: ShellEnvironmentPolicy {
                 system_root: PathBuf::from(r"C:\WINDOWS"),
                 command_processor: PathBuf::from(r"C:\WINDOWS\System32\cmd.exe"),
@@ -11032,6 +14327,43 @@ mod tests {
             },
             marker: format!("{WRAPPER_MARKER_PREFIX}{}", source().commit),
         };
+        let (provider_permission, worker_permission) =
+            context_named_permission_profiles(&context).unwrap();
+        let (python_reads, python_denies, _) =
+            python_worker_policy_entries(&context.python_runtime).unwrap();
+        let mut readable_entries = vec![
+            context.repository.clone(),
+            context.plugin_mirror.clone(),
+            context.scan_root.clone(),
+            context.artifact_node.path.clone(),
+            context.codex_runtime.root.clone(),
+            context.python_wrapper.clone(),
+        ];
+        readable_entries.extend(python_reads);
+        let mut denied_entries = vec![context.repository.join(".git")];
+        denied_entries.extend(python_denies);
+        let equivalent_policy = ManagedWorkerPolicy {
+            repository: context.repository.clone(),
+            probe_directory: context.scan_root.clone(),
+            readable_entries,
+            denied_entries,
+            readable_probes: Vec::new(),
+            denied_probes: Vec::new(),
+            denied_write_probes: Vec::new(),
+            existing_write_probe: context.scan_root.join(WORKER_ALLOWED_CANARY_NAME),
+            repository_metadata_probe: context.repository.join(".git").join("HEAD"),
+            live_auth: context.live_auth.clone(),
+            projected_auth: context.projected_auth.clone(),
+            denied_canary: root.join(WORKER_DENIED_CANARY_NAME),
+        };
+        assert_eq!(
+            provider_permission,
+            provider_named_permission_profile(&equivalent_policy).unwrap()
+        );
+        assert_eq!(
+            worker_permission,
+            effective_worker_named_permission_profile(&equivalent_policy).unwrap()
+        );
         let discovery_context = object([
             ("scanId", text_value(TEST_SCAN_ID)),
             ("pluginRoot", text_value(plugin.to_str().unwrap())),
@@ -11048,7 +14380,7 @@ mod tests {
         std::fs::write(worker_output.parent().unwrap().join("prompt.md"), prompt).unwrap();
         let provider_configs = vec![
             "default_permissions=\"codex_security_deep_scan_worker\"".to_string(),
-            "permissions.codex_security_deep_scan_worker={extends=\":read-only\",filesystem={\":root\"=\"read\"},network={enabled=false}}".to_string(),
+            provider_permission.clone(),
             format!("model_reasoning_effort=\"{REASONING}\""),
             "mcp_servers.codex-security.command=\"node\"".to_string(),
             "mcp_servers.codex-security.enabled=false".to_string(),
@@ -11058,12 +14390,7 @@ mod tests {
             ),
             format!(
                 "mcp_servers.cs_artifacts.args=[{}, \"--artifact-writer\", \"--stdio\"]",
-                quote_toml_string(
-                    &plugin
-                        .join("mcp")
-                        .join("server.mjs")
-                        .to_string_lossy()
-                )
+                quote_toml_string(&plugin.join("mcp").join("server.mjs").to_string_lossy())
             ),
             "mcp_servers.cs_artifacts.required=true".to_string(),
             "mcp_servers.cs_artifacts.startup_timeout_sec=180".to_string(),
@@ -11081,9 +14408,7 @@ mod tests {
                 quote_toml_string(repository.to_str().unwrap())
             ),
             "mcp_servers.cs_artifacts.env.CODEX_SECURITY_ARTIFACT_LAYOUT=\"worker\"".to_string(),
-            format!(
-                "mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCAN_ID=\"{TEST_SCAN_ID}\""
-            ),
+            format!("mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCAN_ID=\"{TEST_SCAN_ID}\""),
             format!(
                 "mcp_servers.cs_artifacts.env.CODEX_SECURITY_PLUGIN_ROOT={}",
                 quote_toml_string(plugin.to_str().unwrap())
@@ -11121,8 +14446,37 @@ mod tests {
             exec
         };
         let exec = make_exec(true);
-        let injected =
-            inject_wrapper_overrides_for_scan_root(&exec, &overrides, Some(&context)).unwrap();
+        let injected = inject_wrapper_overrides_for_scan_root(
+            &exec,
+            &overrides,
+            Some(&context),
+            &provider_permission,
+            &worker_permission,
+        )
+        .unwrap();
+        assert_eq!(
+            injected.transition,
+            WorkerTransitionKind::ExecResumedAttenuated
+        );
+        assert_eq!(injected.expected_thread.as_deref(), Some("thread-1"));
+        assert_eq!(
+            injected.worker.as_ref().map(|worker| worker.path.as_path()),
+            Some(worker_output.as_path())
+        );
+        let injected = injected.arguments;
+        let wrong_worker_permission =
+            worker_permission.replace("\":minimal\"=\"read\"", "\":minimal\"=\"deny\"");
+        assert_ne!(wrong_worker_permission, worker_permission);
+        assert!(
+            inject_wrapper_overrides_for_scan_root(
+                &exec,
+                &overrides,
+                Some(&context),
+                &provider_permission,
+                &wrong_worker_permission,
+            )
+            .is_err()
+        );
         let resume = injected.iter().position(|value| value == "resume").unwrap();
         assert_eq!(
             resume,
@@ -11143,12 +14497,12 @@ mod tests {
         assert!(
             !injected
                 .iter()
-                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
+                .any(|value| value.as_os_str() == OsStr::new(&provider_permission))
         );
         assert_eq!(
             injected
                 .iter()
-                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .filter(|value| value.as_os_str() == OsStr::new(&worker_permission))
                 .count(),
             1
         );
@@ -11168,8 +14522,14 @@ mod tests {
             let mut supplied = make_exec(false);
             supplied.push(OsString::from(isolation));
             assert!(
-                inject_wrapper_overrides_for_scan_root(&supplied, &overrides, Some(&context))
-                    .is_err()
+                inject_wrapper_overrides_for_scan_root(
+                    &supplied,
+                    &overrides,
+                    Some(&context),
+                    &provider_permission,
+                    &worker_permission,
+                )
+                .is_err()
             );
         }
         for private in context.artifact_overrides().unwrap() {
@@ -11177,8 +14537,27 @@ mod tests {
         }
 
         let initial = make_exec(false);
-        let initial_injected =
-            inject_wrapper_overrides_for_scan_root(&initial, &overrides, Some(&context)).unwrap();
+        let initial_injected = inject_wrapper_overrides_for_scan_root(
+            &initial,
+            &overrides,
+            Some(&context),
+            &provider_permission,
+            &worker_permission,
+        )
+        .unwrap();
+        assert_eq!(
+            initial_injected.transition,
+            WorkerTransitionKind::ExecInitialAttenuated
+        );
+        assert_eq!(initial_injected.expected_thread, None);
+        assert_eq!(
+            initial_injected
+                .worker
+                .as_ref()
+                .map(|worker| worker.path.as_path()),
+            Some(worker_output.as_path())
+        );
+        let initial_injected = initial_injected.arguments;
         assert_eq!(
             &initial_injected[initial_injected.len() - 2..],
             &[
@@ -11189,12 +14568,12 @@ mod tests {
         assert!(
             !initial_injected
                 .iter()
-                .any(|value| value == WORKER_NAMED_PERMISSION_INPUT)
+                .any(|value| value.as_os_str() == OsStr::new(&provider_permission))
         );
         assert_eq!(
             initial_injected
                 .iter()
-                .filter(|value| *value == WORKER_NAMED_PERMISSION_OVERRIDE)
+                .filter(|value| value.as_os_str() == OsStr::new(&worker_permission))
                 .count(),
             1
         );
@@ -11209,8 +14588,14 @@ mod tests {
             let mut rejected = initial.clone();
             rejected.extend([OsString::from(forbidden), OsString::from("value")]);
             assert!(
-                inject_wrapper_overrides_for_scan_root(&rejected, &overrides, Some(&context))
-                    .is_err(),
+                inject_wrapper_overrides_for_scan_root(
+                    &rejected,
+                    &overrides,
+                    Some(&context),
+                    &provider_permission,
+                    &worker_permission,
+                )
+                .is_err(),
                 "accepted forbidden {forbidden}"
             );
         }
@@ -11254,8 +14639,14 @@ mod tests {
             ("wrong scan identity", wrong_scan),
         ] {
             assert!(
-                inject_wrapper_overrides_for_scan_root(&rejected, &overrides, Some(&context))
-                    .is_err(),
+                inject_wrapper_overrides_for_scan_root(
+                    &rejected,
+                    &overrides,
+                    Some(&context),
+                    &provider_permission,
+                    &worker_permission,
+                )
+                .is_err(),
                 "accepted {name}"
             );
         }
@@ -11268,8 +14659,14 @@ mod tests {
         ] {
             let rejected = rejected.into_iter().map(OsString::from).collect::<Vec<_>>();
             assert!(
-                inject_wrapper_overrides_for_scan_root(&rejected, &overrides, Some(&context))
-                    .is_err()
+                inject_wrapper_overrides_for_scan_root(
+                    &rejected,
+                    &overrides,
+                    Some(&context),
+                    &provider_permission,
+                    &worker_permission,
+                )
+                .is_err()
             );
         }
         let metadata = std::fs::symlink_metadata(&root).unwrap();
@@ -11590,6 +14987,7 @@ mod tests {
             "credential.scrub()?",
             "let manifest = read(",
             "let scan = verify_scan",
+            "let transitions = aggregate_worker_transitions(",
             "qualification::source_identity(paths.root())? == source",
             "qualification::source_identity(&worker_git_repository)? == source",
             "git.require_unchanged()?",
@@ -11599,7 +14997,7 @@ mod tests {
             "require_absent(&inert_mcp",
             "observe_scratch(&scratch.root)?",
             "let artifacts = qualification::ObservedDeepArtifacts",
-            "let fields = fields(&scan, &tools, &package)",
+            "let fields = fields(",
             "finalize_owned_transaction(",
             "remove_scratch(&scratch)",
             "pass_observed_deep(authority",
@@ -11662,10 +15060,39 @@ mod tests {
             "WRAPPER_MARKER_ENV",
             "WRAPPER_REAL_ENV",
             "WRAPPER_OVERRIDES_ENV",
+            "WRAPPER_LIVE_AUTH_ENV",
+            "WRAPPER_PROVIDER_PERMISSION_ENV",
+            "WRAPPER_WORKER_PERMISSION_ENV",
+            "WRAPPER_TRANSITIONS_ENV",
             "\"CODEX_CLI_PATH\"",
         ] {
             assert!(body.contains(&format!(".env_remove({variable})")));
         }
+        let child = body.find("private_codex_child_command").unwrap();
+        let receipt = body.find("write_worker_transition_receipt").unwrap();
+        let credential = body.find("require_private_credential_projection").unwrap();
+        assert!(credential < child && child < receipt);
+        let app_server_relay = body.find("relay_private_child_stdout").unwrap();
+        assert!(receipt < app_server_relay);
+        assert!(body.contains("WorkerTransitionStage::Launched"));
+        assert!(body.contains("WorkerTransitionStage::Started"));
+        assert!(body.contains("WorkerTransitionStage::ExitedZero"));
+        let exit_guard = body.find("if status.code() == Some(0)").unwrap();
+        let exit_receipt = body[exit_guard..]
+            .find("write_worker_transition_receipt")
+            .unwrap()
+            + exit_guard;
+        assert!(body[exit_guard..exit_receipt].contains("Some(0)"));
+        assert!(body[exit_receipt..].starts_with("write_worker_transition_receipt"));
+        let relay_start = body.find("fn relay_private_exec_line").unwrap();
+        let relay_end = body[relay_start..]
+            .find("fn observe_private_exec_line")
+            .unwrap()
+            + relay_start;
+        let relay = &body[relay_start..relay_end];
+        let relay_receipt = relay.find("write_worker_transition_receipt").unwrap();
+        let relay_output = relay.find(".write_all(line)").unwrap();
+        assert!(relay_receipt < relay_output);
         assert_eq!(body.match_indices("identify_codex_runtime").count(), 2);
     }
 
@@ -11675,16 +15102,19 @@ mod tests {
         let root = unique_test_directory("wizard-security-deep-sealed-test");
         let tools = owned_tools();
         let git = owned_git();
+        let permissions = owned_permission_digests();
+        let transitions = test_worker_transition_ledger(&source, &permissions);
         let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
         for (name, bytes) in [
             (
                 REQUEST,
-                render_owned_request(&source, &tools, &git, &owned_package()),
+                render_owned_request(&source, &tools, &git, &owned_package(), &permissions),
             ),
             (MANIFEST, manifest),
             (FINDINGS, findings),
             (COVERAGE, coverage),
             (REPORT, report),
+            (WORKER_TRANSITIONS, transitions.bytes),
         ] {
             std::fs::write(root.join(name), bytes).unwrap();
         }
@@ -11706,6 +15136,35 @@ mod tests {
             ("execution.tools.count", MCP_TOOLS_COUNT.to_string()),
             ("execution.tools.sha256", MCP_TOOLS_SHA256.to_string()),
             ("execution.worker-permission", WORKER_PERMISSION.to_string()),
+            ("execution.worker-effective-profile.sha256", "3".repeat(64)),
+            ("execution.worker-effective-state.sha256", "4".repeat(64)),
+            ("execution.worker-parent-state.sha256", "1".repeat(64)),
+            ("execution.worker-provider-profile.sha256", "2".repeat(64)),
+            ("execution.worker-preflight.allowed-reads", "7".to_string()),
+            ("execution.worker-preflight.denied-reads", "4".to_string()),
+            (
+                "execution.worker-preflight.denied-write-creates",
+                "2".to_string(),
+            ),
+            (
+                "execution.worker-preflight.denied-write-mutations",
+                "3".to_string(),
+            ),
+            (
+                "execution.worker-preflight.denied-network-listeners",
+                "1".to_string(),
+            ),
+            (
+                "execution.worker-preflight.denied-network-connections",
+                "1".to_string(),
+            ),
+            (
+                "execution.worker-preflight.denied-descendants",
+                "1".to_string(),
+            ),
+            ("execution.worker-transitions.app-server", "2".to_string()),
+            ("execution.worker-transitions.exec-initial", "1".to_string()),
+            ("execution.worker-transitions.exec-resumed", "1".to_string()),
             ("findings.critical", "0".to_string()),
             ("findings.high", "0".to_string()),
             ("findings.informational", "0".to_string()),
@@ -11760,6 +15219,10 @@ mod tests {
         .map(|(key, value)| (key.to_string(), value))
         .collect();
         assert_eq!(fields, expected);
+        std::fs::write(root.join(WORKER_TRANSITIONS), b"forged transitions\n").unwrap();
+        assert!(
+            verify_sealed_with_identities(&root, &source, &tools.python_runtime, &git).is_err()
+        );
         let metadata = std::fs::symlink_metadata(&root).unwrap();
         remove_entry_no_follow(&root, &metadata).unwrap();
     }

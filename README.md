@@ -236,21 +236,40 @@ It clears inherited routing inputs,
 proves the effective official ChatGPT configuration, refuses a live login
 credential with any pre-existing hard-link alias, and gives every worker a
 newly written clean clone of the frozen tracked source rather than the live
-checkout. Its exact `useMxc: true` state denies host-root access by default,
+checkout. Provider metadata carries the one exact root-readable `managed`
+named profile accepted by official pinned Codex Security. The wrapper validates
+and preserves that provider-generated app-server permission profile unchanged;
+only
+an initial or resumed `codex exec` crosses the mandatory attenuation boundary,
+where the wrapper validates the complete invocation and replaces the named
+profile exactly once. The effective profile denies host-root access by default,
 allows only `:minimal`, the owned repository/scan/plugin trees and qualified
-runtime bytes, and denies clone metadata, unqualified Python package/cache
-trees, and both live and projected credential names. Before launch it proves
-the positive read set and silent denial of `.git`, both credential names and a
-harmless outside-root canary; that canary has no explicit deny, so it detects a
-regression of the root default itself. The wrapper also rewrites the provider's
-one exact root-readable named profile to root-deny exactly once, forces
+runtime bytes, denies clone metadata, unqualified Python package/cache trees
+and both live and projected credential names, disables network, and forces
 `windows.sandbox="mxc"` as the unique final override with its exact effective
-origin, and disables worker network access through private CLI and Python
-wrappers, including exact allowed exec arguments, a shell environment derived
-only from qualified paths, and mirrored scripts. It requires the pinned
-completion reply and remeasures the owned clone, source and tools after their
-last use, replays the five canonical artifacts, cleans its private scratch, and
-only then commits PASS. Its Git queries run with a fixed-only environment,
+origin. Before MCP, pinned Codex/MXC explicitly compiles and selects that exact
+effective named profile from the owned scan root. Positive controls first prove
+that the probe operations work outside the sandbox; the selected profile must
+then satisfy every planned allowed read while denying every planned denied
+read, two fresh-file creates, append/truncate/overwrite against an existing
+readable canary, a loopback listener, an outbound loopback connection and a
+descendant read. The split canonical v3 ledger binds those seven exact probe
+counts independently of the worker-transition proof. Each real app-server
+child produces a launch receipt for its worker attempt, so parallel or retried
+workers may produce multiple launches. Each initial or resumed exec must emit
+its actual `thread.started` identity; the wrapper seals that start before
+forwarding the event, and any zero-exit receipt must pair with the same process,
+worker, arguments and thread start. The exact completion `threadIds` and
+`executionThreadIds` sets are retained: execution identities must be a nonempty
+subset of the completed thread set, every one must have an observed initial
+start, and every resumed start must have same-worker initial ancestry. Private
+CLI and Python wrappers constrain the allowed exec arguments, derive the worker
+shell environment only from qualified paths and mirror their scripts. It
+requires the pinned completion reply and remeasures the owned clone, source and
+tools after their last use, replays the six canonical artifacts (request,
+manifest, findings, coverage, report and worker-transition ledger), cleans its
+private scratch, and only then commits PASS. Its Git queries run with a
+fixed-only environment,
 absolute repository bindings and every effective repository content-filter
 driver disabled. `--begin` still publishes the source-bound
 request and `--verify=RESULT_DIR` still validates imported artifacts for

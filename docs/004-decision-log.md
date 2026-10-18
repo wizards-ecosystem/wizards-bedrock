@@ -24522,3 +24522,298 @@ fixture could drift with it again. Sharing only a verifier-side constant was
 insufficient for the same reason. Importing host tooling into the no-std kernel
 or weakening the selector to accept either field was rejected: the fresh
 runtime record is the authority, and one exact current schema is required.
+
+## D-422 Deep separates the authenticated control-plane envelope from the effective default-deny worker profile - Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-406, D-416, D-417, D-419 and D-420; advances PW-026
+
+**Context.** The complete 2,133-entry mutation sweep on `0dfcb76` executed to
+completion and caught 2,132 entries, with no inconclusive result. Permanent
+mutation 2,036 survived because the owned-metadata witness parsed the parent
+permission profile but did not independently assert its required `managed`
+type. Investigation of that missing assertion reproduced a separate provider
+boundary defect before another owned Deep launch: official pinned Codex
+Security 0.1.32 rejects a special root deny in the supplied parent metadata,
+requires a root-readable parent envelope, generates a root-readable named
+profile, and compares the app-server's observed profile byte-for-byte with that
+generated value. D-420's wrapper instead rewrote that profile for both
+app-server and exec. The real workflow would therefore stop at provider
+preflight before Daybreak or worker execution even though the direct MXC
+sentinels pass. This is a fail-closed integration defect rather than an
+attacker escape, but it invalidates the claimed qualification route and blocks
+release.
+
+The installed package is proprietary and supplies no redistribution or
+modification grant, while no newer compatible official package is available.
+Vendoring or byte-patching it is therefore not a Bedrock release option.
+Putting the whole authenticated controller inside the worker sandbox is also
+rejected: the controller needs the projected login, network and private state,
+and nested Windows broker behavior does not prove that a later sandbox token
+intersects with an outer token or Job.
+
+**Decision.** The authenticated app-server is a measured trusted control plane,
+not a model worker. Metadata supplies the provider's least permissive accepted
+envelope: one `managed` profile with root read, the complete ordered set of
+absolute explicit denies, restricted network, the owned source working
+directory and MXC selected. The wrapper validates the provider-generated named
+permission profile exactly and preserves it unchanged while injecting only the
+fixed and dynamic safety overrides and final MXC selection, so the provider's
+own preflight remains authoritative. The app-server may perform configuration,
+account and API orchestration only; it is not authority for repository-selected
+commands or model-selected tools.
+
+Every `codex exec`, initial or resumed, remains a required wrapper crossing.
+Only after validating the complete provider invocation, source-bound private
+context and exact provider profile does the wrapper replace that profile
+exactly once with a dynamically rendered effective profile. That effective
+profile denies root by default, admits `:minimal`, grants read only to the
+owned repository, scan and plugin trees and identity-covered runtime paths,
+retains every nested repository, Python and credential deny, disables network,
+forces MXC safety-last, disables the daemon and ignores ambient user
+configuration and rules. The measured real Codex executable receives no
+wrapper-control environment. Missing, duplicate, reordered, broadened or
+unrepresentable policy input fails closed.
+
+As amended by D-424 and the identity-bearing v3 transition proof, the owned
+environment is `xtask-owned-codex-security-hermetic-v9` and execution authority
+is `xtask-mcp-wrapper-windows-job-v8`. The sealed worker-permission description
+must distinguish the provider envelope from the effective model-worker
+authority rather than claim that one unchanged profile governs both layers.
+The request and qualification record bind canonical SHA-256 digests of the
+provider metadata state, provider named profile, effective exec profile and
+effective MXC sandbox state in addition to their semantic tuple; the owned
+request advances to v3 for its required request fields. A digest disagreement,
+wrapper bypass or missing observed transition prevents PASS.
+
+**Proof.** Focused witnesses independently assert the metadata profile type,
+the provider-compatible root-read envelope and its exact denies, app-server
+pass-through, initial and resumed exec-only replacement, strict root deny,
+minimal and every positive grant, every explicit deny, network denial,
+MXC-last ordering, environment removal and profile digests. Protocol fixtures
+construct their expected metadata independently of the producer. Permanent
+mutation 2,036 remains active and must be caught; obsolete both-command rewrite
+mutations are retired or retargeted, and new permanent mutations remove or
+broaden one side of the control-plane/worker boundary.
+
+Runtime proof is deliberately split across two non-substitutable observations.
+The real plugin route may launch multiple app-server children across parallel
+or retried worker attempts; each real child produces a launch receipt only
+after spawn, with the provider-generated permission profile preserved
+unchanged. Every initial or resumed exec relays JSONL transparently but seals
+its actual `thread.started` identity before forwarding that event. A zero-exit
+receipt is valid only when paired to the exact same process, worker, arguments,
+profile and thread start. The ledger retains the completion's exact `threadIds`
+and `executionThreadIds`; the nonempty execution set must be a subset of the
+completed thread set and every identity in it must have an observed initial
+start, while every resumed start must have same-worker initial ancestry. A
+failed, killed, mismatched or unobservable transition cannot satisfy those
+relations. Before MCP, pinned Codex/MXC explicitly compiles and selects the
+exact effective
+named profile used by attenuated exec, includes managed requirements, forces
+MXC safety-last and resolves it from the owned non-repository scan root. It
+exercises every planned allowed and denied read, exactly two denied fresh-file
+creates (one in the readable evidence area and one outside the allowlist),
+denied append, truncate and overwrite attempts against an existing readable
+canary, a denied loopback listener, a denied outbound loopback connection and a
+descendant's denied read. The canonical worker-transition ledger joins those
+identity-bearing transitions and the preflight, binds the provider-profile,
+effective-profile and
+independently rendered effective-state digests, and records seven probe counts
+exactly matching the executed plan: allowed reads, denied reads, denied write
+creates, denied existing-file mutations, denied network listeners, denied
+network connections and denied descendants. The fixed artifact MCP is admitted
+only as its existing measured, argument-constrained broker; the worker must not
+be able to forge qualification evidence directly. The retained thread
+identities validate every provider-reported execution thread's exact
+default-profile wiring, while the explicit preflight exercises the pinned
+runtime's named-profile resolver and enforcement. This combined proof does not
+claim that the proprietary model selected each negative operation or that both
+CLI paths have identical argument shapes. A complete real Deep run must succeed
+without fallback, bind the ledger and remeasure source, plugin, runtimes,
+profiles and artifacts before PASS.
+
+**Qualification boundary.** The failed mutation sweep and all earlier Deep
+diagnostics remain non-authoritative. This correction changes source,
+qualification policy, evidence bindings and the mutation registry. PW-026 and
+release remain open until one new clean frozen commit passes ordinary CI, the
+entire updated mutation registry, and the real owned D-406/D-416/D-417/D-419/
+D-420/D-422/D-424 workflow with the mandatory runtime boundary probes.
+
+**Alternatives.** Retaining D-420's both-command rewrite was rejected because
+the provider detects the app-server mismatch before scanning. Sending the
+strict parent metadata unchanged was rejected because the pinned provider
+rejects it. Keeping root read for model workers was rejected because explicit
+secret denies cannot enumerate unrelated host data. Patching the proprietary
+plugin was rejected without an upstream licensed release. Sandboxing the whole
+controller was rejected because it either removes capabilities required for
+authentication and API use or silently relies on unproved nested-sandbox
+intersection. Configuration-only tests were rejected as release authority.
+Conversely, requiring the proprietary model to select each negative operation
+was rejected as nondeterministic: identity-bearing real-plugin transitions and
+the exact named-profile Codex/MXC enforcement preflight are both mandatory.
+
+## D-423 The active Codex tuple and normalized default projection are remeasured together - Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-417 and D-422; advances PW-026
+
+**Context.** Before D-422's corrected worker boundary could be frozen, the
+ChatGPT Codex installation replaced D-417's content-addressed
+`e78bad9887fa50cf` child with `896a0166b774037a`. The old directory is absent.
+The entrypoint still reports `codex-cli 0.163.0-alpha.10.2`, and all four file
+sizes, the aggregate byte count and the generated system-skill tree are
+unchanged, but every runtime file digest and the folded tree digest changed.
+Using D-417's missing path or silently selecting an ambient executable would
+therefore stop or weaken the owned workflow.
+
+Two new empty private-home probes also agreed on a canonical 3,041-byte
+originless default projection with SHA-256
+`d78831b7ffc95fa8e14e2cf26770c3d8138156b7496a699a3567a465929e8aea`
+instead of D-417's 3,056-byte projection. The exact field-level delta is only
+the removal of top-level `windows: null`: reinserting that member reproduces
+the old bytes and SHA-256 exactly. This is a normalization change for the
+qualifier-owned `windows.sandbox` field, not an activated ambient default.
+
+**Decision.** The owned Codex child advances only to
+`896a0166b774037a`. Its exact files are
+`codex-code-mode-host.exe` (74,921,776 bytes, SHA-256
+`3b6a9179a4da17fa5fc6948219cd61486dc3b534c683838076d8c61bd311c68e`),
+`codex-command-runner.exe` (8,217,392 bytes, SHA-256
+`ce80b56a2f37f808815fde33cceb97ac858ceecde296425ad3860f0f37fb4877`),
+`codex-windows-sandbox-setup.exe` (17,700,144 bytes, SHA-256
+`c4da812016cbfb92d9a62791f78460c59e9662faadb0a2720d3aa5d0535b80bd`)
+and `codex.exe` (341,312,816 bytes, SHA-256
+`f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312`).
+The exact four-file tree remains 442,152,128 bytes and advances to folded
+SHA-256 `72dd0efdd65e34488bc013f88166a8f549cf1f7441d0d23ad7116bc5758de1d5`.
+Manual provenance review also found valid Authenticode signatures from OpenAI
+OpCo, LLC with certificate thumbprint
+`8C1BBD222297A3669B63F95B42710343619559BB`. That observation establishes the
+measured tuple's provenance; the automated qualifier pins and remeasures the
+exact paths, inventory, sizes and content hashes, but does not enforce
+Authenticode signer or certificate identity.
+
+The default projection advances to the independently repeated 3,041-byte
+digest above. Normalization may remove only the qualifier-owned
+`windows.sandbox` value and collapse an otherwise absent, null or empty
+`windows` object; other Windows defaults remain identity-bearing. The
+effective configuration still requires the safety-last
+`windows.sandbox="mxc"` override and its authorized origin, while rejecting a
+missing origin, a different backend or an unexpected sibling value. The
+generated system-skill identity remains 71 entries, 314,963 file bytes and
+SHA-256 `54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8`.
+
+**Proof.** Independent host remeasurement verified each file's absolute
+content identity and size, and the separate manual Authenticode review verified
+the signer and signing-certificate thumbprint. Both empty-home probes produced
+byte-identical defaults. A
+field-by-field comparison found no added member and no changed common value;
+programmatic reconstruction with only `windows: null` reproduced D-417's old
+projection and hash. Focused Deep and qualification suites accept the new
+tuple, while their existing witnesses still reject runtime, default,
+effective-config, origin and unexpected-Windows-field drift. At this decision's
+implementation point the active mutation registry contained 2,203 entries with
+next permanent identity 2,235; that count excluded the 31 permanently retired
+identities and does not include D-424's later additions.
+
+**Qualification boundary.** These measurements establish what the owned
+workflow must execute; they are not a Deep result or release qualification.
+D-422 and PW-026 remain open until the new clean frozen commit passes ordinary
+CI, the complete then-current mutation registry and the real owned Deep workflow,
+which must remeasure this exact tuple after its last use and replay the
+canonical zero-finding artifacts into final evidence.
+
+**Alternatives.** Restoring the missing D-417 child, accepting any directory
+with the same version string, trusting signatures without content hashes or
+retaining only the entrypoint digest was rejected because each loses the exact
+process-tree authority. Treating the removed null member as a security default
+change was rejected by the byte-for-byte reconstruction. Ignoring all Windows
+defaults was rejected because only the owned sandbox field may be normalized;
+every unexpected sibling remains digest-bearing and fail-closed.
+
+## D-424 Deep separately proves existing-file mutation and outbound connection denial - Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-422 and D-423; advances PW-026
+
+**Context.** Immutable-diff Codex Security scan
+`07b1e0b0-b33c-4e0b-9f63-00fbb1619bcf` completed against snapshot
+`codex-security-snapshot/v1:sha256:6ebf6eb26fc11ac402368674e6a4b359820668f3a5137f2ef2b29cbadb97bc72`
+with two Low-severity, Medium-confidence findings. The
+`sandbox.existing-file-write-probe` finding observed that both negative write
+probes used `create_new(true)` against absent paths. Those probes establish
+fresh-file creation denial, but do not establish that a model worker cannot
+append to, truncate or overwrite a file which its profile legitimately permits
+it to read. The `sandbox.network-egress-probe` finding observed that binding
+`127.0.0.1:0` proves listener denial, not denial of an outbound connection.
+Neither finding reproduces an escape from the current exact profile. Both are
+nevertheless release-blocking proof gaps because the owned qualifier claims
+write and network denial rather than only the narrower operations it had
+exercised.
+
+The later immutable-diff scan
+`48614dd5-45eb-4833-b549-67809a44cceb` found one further Low-severity proof gap:
+anonymous transition counts did not prove that every provider-reported
+execution thread crossed the attenuating wrapper. It also exposed a fail-closed
+lifecycle mismatch in the old app-server receipt rule: the provider can stop a
+wrapper after its real child launches, and parallel or retried workers can
+legitimately produce more than one app-server crossing. A singular post-exit
+receipt was therefore neither complete identity evidence nor a satisfiable
+description of the provider lifecycle.
+
+**Decision.** The exact effective named profile remains the authority under
+test. Before its negative probes, the owner runs bounded positive controls on
+disposable private state so creation, append, truncate, overwrite, loopback
+listen and loopback connect are known to work on the host. The sandboxed
+preflight then retains its two denied fresh-file creates and separately attempts
+append, truncate and overwrite against the existing readable worker canary.
+Before and after each attempt it requires that canary to remain the same real
+file with its exact bytes unchanged. Network proof likewise keeps the denied
+loopback listener and adds a denied outbound connection to a parent-owned IPv4
+loopback listener that remains live for the probe; no public network or DNS is
+involved. Only the silent permission-denied probe status is success. A
+successful operation, another error, changed canary, missing positive control,
+non-loopback endpoint, timeout or unobserved child fails closed.
+
+The owned environment advances to
+`xtask-owned-codex-security-hermetic-v9`, execution authority advances to
+`xtask-mcp-wrapper-windows-job-v8`, and the canonical worker-transition ledger
+advances to `wizard-codex-security-worker-transitions-v3`. Its preflight tuple
+has seven independent, plan-exact counts: allowed reads, denied reads, denied
+fresh-file creates, denied existing-file mutations, denied network listeners,
+denied network connections and denied descendants. The required operation
+cardinality is two creates, three existing-file mutations, one listener, one
+connection and one descendant. An aggregate write or network count cannot
+substitute for either split observation.
+
+The v3 transition half is identity-bearing rather than count-only. Each real
+app-server child creates a launch receipt for its worker attempt after spawn;
+multiple launches are permitted. Each initial or resumed exec must emit an
+actual `thread.started` event, and its receipt is sealed before that event is
+forwarded to the provider. A zero-exit receipt must pair with the same process,
+worker, arguments, profile and thread start. The ledger retains both exact
+completion sets, requires nonempty `executionThreadIds` to be a subset of
+`threadIds` and covered by observed initial starts, and requires every resumed
+start to have same-worker initial ancestry. Extra initial starts from abandoned
+fresh retries may remain in the ledger; they cannot substitute for a reported
+execution identity.
+
+**Proof.** Focused host witnesses must exercise every positive control, every
+private probe dispatch, strict loopback endpoint validation, exact-profile
+argument construction, unchanged-canary verification, v3 ledger
+render/parse/replay, exact completion-set retention, provider-ID coverage,
+same-worker resume ancestry, start/exit pairing and all four split record
+fields. Permanent mutations must
+remove or fabricate each new operation, relax each exact count or restore the
+aggregate schema and red its named witness. A fresh immutable post-patch scan
+must then find none of the reported gaps. These are implementation and correction
+checks only; they do not mint the owned Deep PASS.
+
+**Qualification boundary.** PW-026 and release remain open. One new clean
+frozen commit must pass ordinary CI, the complete updated mutation registry and
+the real owned D-406/D-416/D-417/D-419/D-420/D-422/D-424 workflow. That run must
+compile and select the exact effective named profile, execute the full split
+probe plan, bind its v3 ledger to the six canonical Deep artifacts and replay a
+complete zero-finding result into final evidence.
+
+**Alternatives.** Renaming the old listener result as egress evidence was
+rejected because listening and connecting exercise different authority.
+Replacing the two create probes was rejected because existing-file mutation
+denial does not prove fresh-name denial. One generic existing-file write was
+rejected because append, truncation at open and overwrite reach distinct host
+operations. An Internet endpoint was rejected because it adds external
+availability and disclosure to a local enforcement proof. Keeping aggregate
+counts was rejected because a fabricated result in one operation class could
+mask an omitted probe in the other.

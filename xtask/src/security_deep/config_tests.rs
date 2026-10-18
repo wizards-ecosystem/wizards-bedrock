@@ -90,6 +90,7 @@ impl Fixture {
             &scratch_root.join("temp"),
             &scratch_root.join("pycache"),
             &scratch_root.join("codex-state"),
+            &scratch_root.join("transitions"),
         ] {
             std::fs::create_dir(directory)
                 .with_context(|| format!("creating fixture directory {}", directory.display()))?;
@@ -102,6 +103,7 @@ impl Fixture {
             temporary: scratch_root.join("temp"),
             pycache: scratch_root.join("pycache"),
             codex_state: scratch_root.join("codex-state"),
+            transitions: scratch_root.join("transitions"),
             worker_allowed_canary: scratch_root.join("scans").join(WORKER_ALLOWED_CANARY_NAME),
             worker_denied_canary: scratch_root.join(WORKER_DENIED_CANARY_NAME),
             root: scratch_root,

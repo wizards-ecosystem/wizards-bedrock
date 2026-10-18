@@ -290,11 +290,66 @@ fn initialize_result(mode: &str) -> JsonValue {
 fn expected_metadata(repository: &Path, source: &SourceIdentity) -> JsonValue {
     let live_auth = live_auth_path(repository);
     let projected_auth = projected_auth_path(repository);
-    call_metadata(
-        &test_worker_policy(repository, &live_auth, &projected_auth),
-        source,
-    )
-    .unwrap()
+    let mut entries = vec![object([
+        ("access", text_value("read")),
+        (
+            "path",
+            object([
+                ("type", text_value("special")),
+                ("value", object([("kind", text_value("root"))])),
+            ]),
+        ),
+    ])];
+    entries.extend(
+        [repository.join(".git"), live_auth, projected_auth]
+            .into_iter()
+            .map(|path| {
+                object([
+                    ("access", text_value("deny")),
+                    (
+                        "path",
+                        object([("path", path_value(&path)), ("type", text_value("path"))]),
+                    ),
+                ])
+            }),
+    );
+    object([
+        (
+            "codex/sandbox-state-meta",
+            object([
+                (
+                    "permissionProfile",
+                    object([
+                        (
+                            "file_system",
+                            object([
+                                ("entries", JsonValue::Array(entries)),
+                                ("type", text_value("restricted")),
+                            ]),
+                        ),
+                        ("network", text_value("restricted")),
+                        ("type", text_value("managed")),
+                    ]),
+                ),
+                (
+                    "sandboxCwd",
+                    text_value(&windows_file_url(repository).unwrap()),
+                ),
+                ("useMxc", JsonValue::Bool(true)),
+            ]),
+        ),
+        (
+            "openai/threadId",
+            text_value(&format!("wizard-bedrock-deep-{}", source.commit)),
+        ),
+        (
+            "x-codex-turn-metadata",
+            object([
+                ("model", text_value(MODEL)),
+                ("reasoning_effort", text_value(REASONING)),
+            ]),
+        ),
+    ])
 }
 
 fn expected_initialize_request() -> JsonValue {
@@ -862,7 +917,13 @@ fn complete_result(mode: &str, paths: &FakePaths, source: &SourceIdentity) -> Js
         ("diffTarget".to_string(), JsonValue::Null),
         (
             "executionThreadIds".to_string(),
-            JsonValue::Array(vec![text_value("thread-1")]),
+            JsonValue::Array(vec![text_value(
+                if mode == "complete-execution-thread-unreported" {
+                    "thread-3"
+                } else {
+                    "thread-1"
+                },
+            )]),
         ),
         ("failureMessage".to_string(), JsonValue::Null),
         (
@@ -942,7 +1003,7 @@ fn complete_result(mode: &str, paths: &FakePaths, source: &SourceIdentity) -> Js
         ("targetSummary".to_string(), JsonValue::Null),
         (
             "threadIds".to_string(),
-            JsonValue::Array(vec![text_value("thread-1")]),
+            JsonValue::Array(vec![text_value("thread-1"), text_value("thread-2")]),
         ),
         (
             "severityCounts".to_string(),
@@ -1662,6 +1723,14 @@ fn owned_mcp_exchange_emits_the_exact_five_step_protocol_and_handles_server_mess
     let (outcome, expected_directory) = run.result.unwrap();
     assert_eq!(outcome.scan_id, SCAN_ID);
     assert_eq!(outcome.scan_directory, expected_directory);
+    assert_eq!(
+        outcome.thread_ids,
+        BTreeSet::from(["thread-1".to_string(), "thread-2".to_string()])
+    );
+    assert_eq!(
+        outcome.execution_threads,
+        BTreeSet::from(["thread-1".to_string()])
+    );
 }
 
 #[test]
@@ -2002,6 +2071,10 @@ fn owned_mcp_completion_is_exact_source_bound_and_clean() {
         (
             "complete-progress-extra",
             "completion progress schema differs",
+        ),
+        (
+            "complete-execution-thread-unreported",
+            "execution threads differ from its thread set",
         ),
         ("complete-other-scan", "returned another scan"),
         ("complete-changed-directory", "directory changed"),

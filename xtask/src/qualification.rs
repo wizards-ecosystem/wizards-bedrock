@@ -72,6 +72,7 @@ const MAX_SECURITY_FINDINGS_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SECURITY_COVERAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SECURITY_REPORT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SECURITY_REQUEST_BYTES: u64 = 256 * 1024;
+const MAX_SECURITY_TRANSITIONS_BYTES: u64 = 1024 * 1024;
 const MAX_VMWARE_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_VMWARE_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_GIT_IDENTITY_BYTES: usize = 4096;
@@ -410,6 +411,7 @@ pub(crate) struct ObservedDeepArtifacts {
     pub(crate) findings: Vec<u8>,
     pub(crate) coverage: Vec<u8>,
     pub(crate) report: Vec<u8>,
+    pub(crate) worker_transitions: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -495,6 +497,11 @@ impl OwnedDeepAttempt {
                 artifacts.coverage.as_slice(),
             ),
             ("artifact.report", "report.md", artifacts.report.as_slice()),
+            (
+                "artifact.worker-transitions",
+                "worker-transitions",
+                artifacts.worker_transitions.as_slice(),
+            ),
         ] {
             let (maximum, exact) = artifact_size_policy(Kind::CodexSecurityDeep, name)?;
             ensure!(
@@ -659,6 +666,10 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     BundleFile {
         prefix: "qualification.codex-security-deep.report",
         relative: "qualification/codex-security-deep/report.md",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.worker-transitions",
+        relative: "qualification/codex-security-deep/worker-transitions",
     },
     BundleFile {
         prefix: "qualification.advisory.record",
@@ -1648,6 +1659,7 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
             ("artifact.findings", "findings.json"),
             ("artifact.coverage", "coverage.json"),
             ("artifact.report", "report.md"),
+            ("artifact.worker-transitions", "worker-transitions"),
         ],
         Kind::Model => crate::model::TRANSCRIPT_ARTIFACTS
             .iter()
@@ -2640,6 +2652,20 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "execution.tools.count".to_string(),
                 "execution.tools.sha256".to_string(),
                 "execution.worker-permission".to_string(),
+                "execution.worker-effective-profile.sha256".to_string(),
+                "execution.worker-effective-state.sha256".to_string(),
+                "execution.worker-parent-state.sha256".to_string(),
+                "execution.worker-provider-profile.sha256".to_string(),
+                "execution.worker-preflight.allowed-reads".to_string(),
+                "execution.worker-preflight.denied-reads".to_string(),
+                "execution.worker-preflight.denied-write-creates".to_string(),
+                "execution.worker-preflight.denied-write-mutations".to_string(),
+                "execution.worker-preflight.denied-network-listeners".to_string(),
+                "execution.worker-preflight.denied-network-connections".to_string(),
+                "execution.worker-preflight.denied-descendants".to_string(),
+                "execution.worker-transitions.app-server".to_string(),
+                "execution.worker-transitions.exec-initial".to_string(),
+                "execution.worker-transitions.exec-resumed".to_string(),
                 "findings.critical".to_string(),
                 "findings.high".to_string(),
                 "findings.informational".to_string(),
@@ -2672,6 +2698,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "artifact.findings",
                 "artifact.coverage",
                 "artifact.report",
+                "artifact.worker-transitions",
             ] {
                 add_artifact_keys(&mut expected, prefix);
             }
@@ -3102,6 +3129,7 @@ fn artifact_size_policy(kind: Kind, name: &str) -> Result<(u64, bool)> {
             "findings.json" => (MAX_SECURITY_FINDINGS_BYTES, false),
             "coverage.json" => (MAX_SECURITY_COVERAGE_BYTES, false),
             "report.md" => (MAX_SECURITY_REPORT_BYTES, false),
+            "worker-transitions" => (MAX_SECURITY_TRANSITIONS_BYTES, false),
             _ => bail!("unregistered Codex Security artifact `{name}`"),
         },
         Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES, false),
@@ -4220,9 +4248,9 @@ mod tests {
                     ("authentication.channel", "codex-home-chatgpt"),
                     (
                         "environment.policy",
-                        "xtask-owned-codex-security-hermetic-v6",
+                        "xtask-owned-codex-security-hermetic-v9",
                     ),
-                    ("execution.authority", "xtask-mcp-wrapper-windows-job-v5"),
+                    ("execution.authority", "xtask-mcp-wrapper-windows-job-v8"),
                     ("execution.complete-tool", "complete_codex_security_scan"),
                     ("execution.model", "gpt-6.1-sol"),
                     ("execution.protocol", "2025-06-18"),
@@ -4238,8 +4266,34 @@ mod tests {
                     ),
                     (
                         "execution.worker-permission",
-                        "backend=mxc;root=deny;minimal+owned-repository+scan+plugin+qualified-runtime=read;repository-metadata+credential=deny;outside-canary=default-deny-probed;network=false",
+                        "provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,outside-canary=default-deny-probed,network=false",
                     ),
+                    (
+                        "execution.worker-effective-profile.sha256",
+                        "3333333333333333333333333333333333333333333333333333333333333333",
+                    ),
+                    (
+                        "execution.worker-effective-state.sha256",
+                        "4444444444444444444444444444444444444444444444444444444444444444",
+                    ),
+                    (
+                        "execution.worker-parent-state.sha256",
+                        "1111111111111111111111111111111111111111111111111111111111111111",
+                    ),
+                    (
+                        "execution.worker-provider-profile.sha256",
+                        "2222222222222222222222222222222222222222222222222222222222222222",
+                    ),
+                    ("execution.worker-preflight.allowed-reads", "7"),
+                    ("execution.worker-preflight.denied-reads", "4"),
+                    ("execution.worker-preflight.denied-write-creates", "2"),
+                    ("execution.worker-preflight.denied-write-mutations", "3"),
+                    ("execution.worker-preflight.denied-network-listeners", "1"),
+                    ("execution.worker-preflight.denied-network-connections", "1"),
+                    ("execution.worker-preflight.denied-descendants", "1"),
+                    ("execution.worker-transitions.app-server", "1"),
+                    ("execution.worker-transitions.exec-initial", "2"),
+                    ("execution.worker-transitions.exec-resumed", "3"),
                     ("findings.critical", "0"),
                     ("findings.high", "0"),
                     ("findings.informational", "0"),
@@ -4262,7 +4316,7 @@ mod tests {
                     ("tool.codex.runtime.root", "parent-of-tool.codex"),
                     (
                         "tool.codex.runtime.sha256",
-                        "5e5c505d977265593a37faee54e5952fc6cbf4ff00c0de05db0f614c9a1e0094",
+                        "72dd0efdd65e34488bc013f88166a8f549cf1f7441d0d23ad7116bc5758de1d5",
                     ),
                     ("tool.python.runtime.bytes", "1"),
                     ("tool.python.runtime.files", "1"),
@@ -4283,6 +4337,7 @@ mod tests {
                     ("artifact.findings", "findings.json"),
                     ("artifact.coverage", "coverage.json"),
                     ("artifact.report", "report.md"),
+                    ("artifact.worker-transitions", "worker-transitions"),
                 ] {
                     fixture_artifact(&mut record, prefix, name);
                 }
@@ -4687,6 +4742,16 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(body.matches("\"artifact.worker-transitions\"").count(), 1);
+        let support = implementation.find("fn verify_support(").unwrap();
+        let support_end = implementation[support..]
+            .find("fn require_external_fields")
+            .unwrap()
+            + support;
+        assert!(
+            implementation[support..support_end]
+                .contains("(\"artifact.worker-transitions\", \"worker-transitions\")")
+        );
     }
 
     #[test]
@@ -4738,6 +4803,32 @@ mod tests {
             );
         }
 
+        let complete = complete_record(Kind::CodexSecurityDeep);
+        validate_record(&complete, Kind::CodexSecurityDeep).unwrap();
+        for field in [
+            "execution.worker-effective-profile.sha256",
+            "execution.worker-effective-state.sha256",
+            "execution.worker-parent-state.sha256",
+            "execution.worker-provider-profile.sha256",
+            "execution.worker-preflight.allowed-reads",
+            "execution.worker-preflight.denied-reads",
+            "execution.worker-preflight.denied-write-creates",
+            "execution.worker-preflight.denied-write-mutations",
+            "execution.worker-preflight.denied-network-listeners",
+            "execution.worker-preflight.denied-network-connections",
+            "execution.worker-preflight.denied-descendants",
+            "execution.worker-transitions.app-server",
+            "execution.worker-transitions.exec-initial",
+            "execution.worker-transitions.exec-resumed",
+        ] {
+            let mut record = complete.clone();
+            record.fields.remove(field);
+            assert!(
+                validate_record(&record, Kind::CodexSecurityDeep).is_err(),
+                "missing worker authority field {field} was accepted"
+            );
+        }
+
         let mut record = complete_record(Kind::CodexSecurityDeep);
         record
             .insert("execution.claimed-by-provider", PASS)
@@ -4765,7 +4856,7 @@ mod tests {
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        assert_eq!(expected.len(), 45);
+        assert_eq!(expected.len(), 59);
         require_external_fields(&record, &expected).unwrap();
 
         for (key, _) in &expected {
@@ -5638,6 +5729,14 @@ mod tests {
                 "report",
                 "report.md",
                 33_554_432,
+                false,
+            ),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "worker-transitions",
+                "worker-transitions",
+                1_048_576,
                 false,
             ),
             record("advisory"),
