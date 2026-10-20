@@ -9,7 +9,9 @@
 //! costs a boot.
 
 use anyhow::{Context, Result, bail, ensure};
+use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::mutation_workspace::{Outcome, Session};
@@ -77,7 +79,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2261;
+pub const NEXT_MUTATION_ID: u16 = 2272;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -19572,8 +19574,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1744,
         file: "xtask/src/qualification.rs",
-        find: "    require_authenticated_deep_qualification(paths, root, source)?;\n    verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)",
-        replace: "    let _unchecked_deep_authority = (paths, root, source);\n    verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)",
+        find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;\n    }\n    verify_records_after_authority(",
+        replace: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        let _unchecked_deep_authority = (paths, root, source);\n    }\n    verify_records_after_authority(",
         breaks: "offline release-bundle replay bypasses the owned Deep authority verifier",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -21343,8 +21345,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1907,
         file: "xtask/src/qualification.rs",
-        find: "    };\n    require_authenticated_deep_qualification(paths, &root, &source)?;\n    recorded_source_after_authority(paths)",
-        replace: "    };\n    let _unchecked_deep_authority = (&root, &source);\n    recorded_source_after_authority(paths)",
+        find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;\n    }\n    recorded_source_after_authority(paths, &campaigns)",
+        replace: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        let _unchecked_deep_authority = (&root, &source);\n    }\n    recorded_source_after_authority(paths, &campaigns)",
         breaks: "online evidence construction bypasses the owned Deep authority verifier",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -24287,7 +24289,7 @@ fn mint_stopped<'controller>(
         id: 2202,
         file: "xtask/src/security_deep.rs",
         find: "        render_worker_transition_receipt(&receipt)? == bytes,\n        \"private Codex transition receipt is noncanonical\"",
-        replace: "        render_worker_transition_receipt(&receipt)?.len() == bytes.len(),\n        \"private Codex transition receipt is noncanonical\"",
+        replace: "        render_worker_transition_receipt(&receipt).is_ok(),\n        \"private Codex transition receipt is noncanonical\"",
         breaks: "a checksum-valid transition receipt can retain a noncanonical process identity",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -24932,6 +24934,127 @@ fn mint_stopped<'controller>(
             name: "security_deep::tests::worker_transition_ledger_requires_coverage_ancestry_and_lifecycle_pairing",
         },
     },
+    Mutation {
+        id: 2261,
+        file: "xtask/src/mutate.rs",
+        find: "        .env(\"TEMP\", &temporary)\n        .env(\"TMP\", &temporary)\n        .env(\"TMPDIR\", &temporary)\n",
+        replace: "",
+        breaks: "host mutation witnesses share the inherited temporary directory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::each_host_mutation_witness_gets_a_new_empty_temporary_directory",
+        },
+    },
+    Mutation {
+        id: 2262,
+        file: "xtask/src/qualification.rs",
+        find: "        if campaigns.deferred(kind) {\n            require_deferred(root, kind)?;\n        }",
+        replace: "        if campaigns.deferred(kind) {\n            let _unchecked_deferral = (root, kind);\n        }",
+        breaks: "a deferred continuous campaign can carry a stale qualification record",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::a_deferred_campaign_carrying_a_record_is_refused",
+        },
+    },
+    Mutation {
+        id: 2263,
+        file: "xtask/src/qualification.rs",
+        find: "        !record_present(root, kind)?,\n        \"deferred {} campaign carries a qualification record\"",
+        replace: "        record_present(root, kind).is_ok(),\n        \"deferred {} campaign carries a qualification record\"",
+        breaks: "a deferral check accepts the record it observed",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::a_deferred_campaign_carrying_a_record_is_refused",
+        },
+    },
+    Mutation {
+        id: 2264,
+        file: "xtask/src/qualification.rs",
+        find: "                *state = CampaignState::Pass;\n",
+        replace: "                let _unobserved_record = &state;\n",
+        breaks: "campaign observation reports a present record as deferred",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::a_deferred_campaign_carrying_a_record_is_refused",
+        },
+    },
+    Mutation {
+        id: 2265,
+        file: "xtask/src/qualification.rs",
+        find: "                    self.deferred(*kind)\n                        && spec\n",
+        replace: "                    spec\n",
+        breaks: "a passing campaign's files leave the release bundle",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::only_a_deferred_campaigns_files_leave_the_bundle",
+        },
+    },
+    Mutation {
+        id: 2266,
+        file: "xtask/src/qualification.rs",
+        find: "            .any(|(candidate, state)| *candidate == kind && state == CampaignState::Deferred)",
+        replace: "            .any(|(candidate, _state)| *candidate == kind)",
+        breaks: "a passing continuous campaign is treated as deferred",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::only_the_grade_and_deep_campaigns_are_deferrable",
+        },
+    },
+    Mutation {
+        id: 2267,
+        file: "xtask/src/qualification.rs",
+        find: "const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep];",
+        replace: "const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::Model];",
+        breaks: "a required release qualification becomes deferrable",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::only_the_grade_and_deep_campaigns_are_deferrable",
+        },
+    },
+    Mutation {
+        id: 2268,
+        file: "xtask/src/qualification.rs",
+        find: "                DEFERRED => CampaignState::Deferred,\n                other => bail!(\n                    \"{} campaign status `{other}` is neither pass nor deferred\",\n                    kind.slug()\n                ),\n",
+        replace: "                _ => CampaignState::Deferred,\n",
+        breaks: "a campaign status other than pass or deferred is read as deferred",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::campaign_status_is_exactly_pass_or_deferred",
+        },
+    },
+    Mutation {
+        id: 2269,
+        file: "xtask/src/evidence.rs",
+        find: "[record.get(&grade)?, record.get(&deep)?]",
+        replace: "[record.get(&grade).unwrap_or(\"deferred\"), record.get(&deep).unwrap_or(\"deferred\")]",
+        breaks: "an omitted manifest campaign status defaults to deferred",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::an_omitted_campaign_status_is_refused_not_defaulted",
+        },
+    },
+    Mutation {
+        id: 2270,
+        file: "xtask/src/qualification.rs",
+        find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;",
+        replace: "    if campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;",
+        breaks: "online evidence construction skips the owned Deep verifier for a passing Deep record",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::online_and_offline_release_paths_share_the_owned_deep_verifier",
+        },
+    },
+    Mutation {
+        id: 2271,
+        file: "xtask/src/qualification.rs",
+        find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;",
+        replace: "    if campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;",
+        breaks: "offline release-bundle replay skips the owned Deep verifier for a passing Deep record",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::online_and_offline_release_paths_share_the_owned_deep_verifier",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -25396,6 +25519,38 @@ fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bo
 
 const HOST_TEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+static HOST_TEST_TEMPORARIES: AtomicU64 = AtomicU64::new(0);
+
+/// A caught mutation can strand fixed-name scratch below the temporary
+/// directory, which would redden every later witness that reserves it, so each
+/// host witness gets a new empty temporary directory of its own.
+fn fresh_host_test_temporary(paths: &Paths) -> Result<PathBuf> {
+    let target = paths.target_dir();
+    let parent = target.join("host-temp");
+    let parent = crate::mutation_workspace::prepare_real_child(
+        target,
+        &parent,
+        "host mutation temporary parent",
+    )?;
+    loop {
+        let ordinal = HOST_TEST_TEMPORARIES.fetch_add(1, Ordering::Relaxed);
+        let child = parent.join(format!("{}-{ordinal}", std::process::id()));
+        match std::fs::create_dir(&child) {
+            Ok(()) => {
+                return crate::mutation_workspace::prepare_real_child(
+                    &parent,
+                    &child,
+                    "host mutation temporary directory",
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", child.display()));
+            }
+        }
+    }
+}
+
 fn host_test_reports(paths: &Paths, package: &str, name: &str) -> Result<bool> {
     host_test_reports_with(paths, package, name, |command, timeout, label| {
         crate::bounded_process::output(command, timeout, label)
@@ -25406,6 +25561,7 @@ fn host_test_reports_with<F>(paths: &Paths, package: &str, name: &str, run: F) -
 where
     F: FnOnce(Command, Duration, &str) -> Result<Output>,
 {
+    let temporary = crate::cargo::child_process_path(&fresh_host_test_temporary(paths)?);
     let mut command = Command::new(env!("CARGO"));
     command
         .current_dir(paths.root())
@@ -25413,6 +25569,9 @@ where
             "CARGO_TARGET_DIR",
             crate::cargo::child_process_path(paths.target_dir()),
         )
+        .env("TEMP", &temporary)
+        .env("TMP", &temporary)
+        .env("TMPDIR", &temporary)
         .args(["test", "--package", package, name, "--", "--exact"]);
     let label = format!("host mutation test {package}::{name}");
     let output = run(command, HOST_TEST_TIMEOUT, &label)?;
@@ -25517,12 +25676,45 @@ mod tests {
     }
 
     #[test]
+    fn each_host_mutation_witness_gets_a_new_empty_temporary_directory() {
+        let root = std::env::current_dir().expect("current directory");
+        let target = root.join("target/mutation-temporary-fixture");
+        std::fs::create_dir_all(&target).expect("temporary fixture target");
+        let target = std::fs::canonicalize(&target).expect("canonical fixture target");
+        let paths = Paths::new(root.clone(), Some(&target));
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let error = host_test_reports_with(&paths, "xtask", "unused", |command, _, _| {
+                let envs = command.get_envs().collect::<BTreeMap<_, _>>();
+                let temporary = envs[std::ffi::OsStr::new("TEMP")].expect("TEMP is set");
+                for name in ["TMP", "TMPDIR"] {
+                    assert_eq!(envs[std::ffi::OsStr::new(name)], Some(temporary));
+                }
+                let temporary = std::fs::canonicalize(temporary).expect("temporary exists");
+                assert!(temporary.starts_with(&target));
+                assert!(
+                    std::fs::read_dir(&temporary)
+                        .expect("temporary is a directory")
+                        .next()
+                        .is_none()
+                );
+                seen.push(temporary);
+                Err(anyhow::anyhow!("stopped before Cargo"))
+            })
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("stopped before Cargo"));
+        }
+        assert_ne!(seen[0], seen[1]);
+    }
+
+    #[test]
     fn a_parked_host_mutation_is_inconclusive_not_caught() {
         let root = std::env::current_dir().expect("current directory");
         let paths = Paths::new(
             root.clone(),
             Some(&root.join("target/mutation-timeout-fixture")),
         );
+        std::fs::create_dir_all(paths.target_dir()).expect("timeout fixture target");
         let executable = std::env::current_exe().expect("current test executable");
         let started = std::time::Instant::now();
         let error = host_test_reports_with(

@@ -13,7 +13,7 @@ use crate::cargo::Profile;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v10";
+const FORMAT: &str = "wizard-evidence-v11";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -302,8 +302,15 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
         "source, tools, firmware or boot inputs changed during artifact reproduction"
     );
     qualifications.install(&root)?;
+    let campaigns = qualifications.campaigns();
     add_artifacts(&mut record, &root)?;
-    add_qualification_files(&mut record, &root)?;
+    add_qualification_files(&mut record, &root, &campaigns)?;
+    for (key, label) in qualification::CampaignStates::status_keys()
+        .into_iter()
+        .zip(campaigns.labels())
+    {
+        record.insert(key, label)?;
+    }
     verify_qualification_artifact_identity(paths, &root)?;
     for step in gate::REGISTRY.steps() {
         record.insert(step.evidence_key(), PASS)?;
@@ -616,6 +623,7 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
         commit: record.get("qualification.source.commit")?.to_string(),
         tree: record.get("qualification.source.tree")?.to_string(),
     };
+    let campaigns = declared_campaigns(record)?;
     let observed = input_record_with_relation(paths, &qualified_source)?;
     let mut expected_keys: BTreeSet<String> = observed.fields.keys().cloned().collect();
     for spec in ARTIFACTS {
@@ -623,7 +631,8 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
         expected_keys.insert(format!("{}.bytes", spec.prefix));
         expected_keys.insert(format!("{}.sha256", spec.prefix));
     }
-    for spec in qualification::BUNDLE_FILES {
+    expected_keys.extend(qualification::CampaignStates::status_keys());
+    for spec in campaigns.bundle_files() {
         expected_keys.insert(format!("{}.path", spec.prefix));
         expected_keys.insert(format!("{}.bytes", spec.prefix));
         expected_keys.insert(format!("{}.sha256", spec.prefix));
@@ -637,7 +646,7 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
 
     require_inputs_match(record, &observed)?;
     verify_artifacts(record, root)?;
-    verify_qualification_files(record, root)?;
+    verify_qualification_files(record, root, &campaigns)?;
     verify_qualification_artifact_identity(paths, root)?;
     qualification::verify_bundle(
         paths,
@@ -645,9 +654,15 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
         &qualified_source,
         &mutate::registry_fingerprint(),
         mutate::MUTATIONS.len(),
+        &campaigns,
     )?;
     require_pass_results(record)?;
     Ok(())
+}
+
+fn declared_campaigns(record: &Record) -> Result<qualification::CampaignStates> {
+    let [grade, deep] = qualification::CampaignStates::status_keys();
+    qualification::CampaignStates::from_labels([record.get(&grade)?, record.get(&deep)?])
 }
 
 fn input_record_with_relation(
@@ -860,8 +875,12 @@ fn add_artifacts_with_image_bytes(
     Ok(())
 }
 
-fn add_qualification_files(record: &mut Record, root: &Path) -> Result<()> {
-    for spec in qualification::BUNDLE_FILES {
+fn add_qualification_files(
+    record: &mut Record,
+    root: &Path,
+    campaigns: &qualification::CampaignStates,
+) -> Result<()> {
+    for spec in campaigns.bundle_files() {
         record.insert(format!("{}.path", spec.prefix), spec.relative)?;
         let digest = verified_qualification_digest(root, spec)?;
         add_known_digest(record, spec.prefix, digest)?;
@@ -913,8 +932,12 @@ fn verify_artifacts_with_image_bytes(
     Ok(())
 }
 
-fn verify_qualification_files(record: &Record, root: &Path) -> Result<()> {
-    for spec in qualification::BUNDLE_FILES {
+fn verify_qualification_files(
+    record: &Record,
+    root: &Path,
+    campaigns: &qualification::CampaignStates,
+) -> Result<()> {
+    for spec in campaigns.bundle_files() {
         ensure!(
             record.get(&format!("{}.path", spec.prefix))? == spec.relative,
             "{} names an unexpected bundle path",
@@ -2143,6 +2166,29 @@ mod tests {
 
         let error = parse_manifest(&old).unwrap_err().to_string();
         assert!(error.contains("no supported format header"), "{error}");
+        let previous = record.render().replacen(FORMAT, "wizard-evidence-v10", 1);
+        let error = parse_manifest(&previous).unwrap_err().to_string();
+        assert!(error.contains("no supported format header"), "{error}");
+    }
+
+    #[test]
+    fn an_omitted_campaign_status_is_refused_not_defaulted() {
+        let [grade, deep] = qualification::CampaignStates::status_keys();
+        assert!(declared_campaigns(&Record::default()).is_err());
+        let mut only_grade = Record::default();
+        only_grade.insert(grade.clone(), "deferred").unwrap();
+        assert!(declared_campaigns(&only_grade).is_err());
+        let mut only_deep = Record::default();
+        only_deep.insert(deep.clone(), "deferred").unwrap();
+        assert!(declared_campaigns(&only_deep).is_err());
+
+        let mut record = Record::default();
+        record.insert(grade, "deferred").unwrap();
+        record.insert(deep, PASS).unwrap();
+        assert_eq!(
+            declared_campaigns(&record).unwrap(),
+            qualification::CampaignStates::from_labels(["deferred", PASS]).unwrap()
+        );
     }
 
     #[test]
@@ -2349,19 +2395,20 @@ mod tests {
         );
         let root = reserve_temp_directory("wizard-evidence-qualification-fixture");
         write_qualification_bundle_fixture(&root);
+        let campaigns = qualification::CampaignStates::from_labels([PASS, PASS]).unwrap();
         let mut record = Record::default();
-        add_qualification_files(&mut record, &root).unwrap();
+        add_qualification_files(&mut record, &root, &campaigns).unwrap();
         let expected: BTreeSet<String> = record.fields.keys().cloned().collect();
 
         record.fields.remove("qualification.model.record.sha256");
         assert!(require_exact_keys(&record, &expected).is_err());
 
         let mut record = Record::default();
-        add_qualification_files(&mut record, &root).unwrap();
+        add_qualification_files(&mut record, &root, &campaigns).unwrap();
         let model_record = root.join("qualification/model/record");
         let bytes = std::fs::read(&model_record).unwrap();
         std::fs::write(&model_record, vec![b'x'; bytes.len()]).unwrap();
-        let error = verify_qualification_files(&record, &root)
+        let error = verify_qualification_files(&record, &root, &campaigns)
             .unwrap_err()
             .to_string();
         assert!(error.contains("qualification.model.record"), "{error}");

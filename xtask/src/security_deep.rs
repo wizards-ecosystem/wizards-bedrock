@@ -12007,6 +12007,20 @@ mod tests {
         let mut wrong_applied = receipt.clone();
         wrong_applied.kind = WorkerTransitionKind::AppServerPassThrough;
         assert!(require_worker_transition_receipt(&wrong_applied, &source, &permissions).is_err());
+        require_worker_transition_receipt(&receipt, &source, &permissions).unwrap();
+        let mut wrong_profile = receipt.clone();
+        wrong_profile.applied_profile = permissions.provider_profile.clone();
+        assert!(require_worker_transition_receipt(&wrong_profile, &source, &permissions).is_err());
+        assert_eq!(
+            WorkerTransitionKind::AppServerPassThrough.applied_digest("provider", "effective"),
+            "provider"
+        );
+        for kind in [
+            WorkerTransitionKind::ExecInitialAttenuated,
+            WorkerTransitionKind::ExecResumedAttenuated,
+        ] {
+            assert_eq!(kind.applied_digest("provider", "effective"), "effective");
+        }
         let mut malformed = receipt.clone();
         malformed.stage = WorkerTransitionStage::Launched;
         assert!(render_worker_transition_receipt(&malformed).is_err());
@@ -13067,6 +13081,9 @@ mod tests {
         assert!(body.contains("scratch.codex_home().join(\"auth.json\")"));
         assert!(body.contains("require_worker_probe_positive_controls(scratch)?"));
         assert!(body.contains("for (probe_target, decision) in worker_read_probe_plan(policy)"));
+        let write_loop = "for probe_target in &policy.denied_write_probes";
+        let write_loop = body.find(write_loop).unwrap() + write_loop.len();
+        assert!(body[write_loop..].starts_with(" {"));
         for required in [
             "PRIVATE_WRITE_PROBE_ARGUMENT",
             "PRIVATE_WRITE_APPEND_PROBE_ARGUMENT",
@@ -13075,7 +13092,6 @@ mod tests {
             "PRIVATE_NETWORK_PROBE_ARGUMENT",
             "PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT",
             "PRIVATE_DESCENDANT_PROBE_ARGUMENT",
-            "for probe_target in &policy.denied_write_probes",
             "for probe_argument in [",
             "WorkerReadDecision::Deny => summary.denied_reads += 1",
             "WorkerReadDecision::Allow => summary.allowed_reads += 1",
@@ -13380,6 +13396,12 @@ mod tests {
                 && dynamic_denies < credential_denies
         );
         assert!(!state.contains("path_value(&policy.denied_canary)"));
+        assert_eq!(
+            state
+                .matches("(\"network\", text_value(\"restricted\")),")
+                .count(),
+            2
+        );
 
         let wrapper_start = implementation
             .find("fn inject_wrapper_overrides_for_scan_root(")

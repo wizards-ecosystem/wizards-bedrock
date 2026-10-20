@@ -164,6 +164,10 @@ defect, `baseline` needs six QEMU boots for descriptive measurements, and
 campaign. `qualify-security-deep --run` owns the pinned Codex Security MCP
 server, its complete Windows process tree, exact tool dialogue and private
 scratch; `--begin` and `--verify=RESULT_DIR` remain diagnostic-only (D-406).
+The grade and Deep runs are continuous campaigns against `main` rather than
+release prerequisites (D-425): a release bundle carries each one's record only
+when it names the release's exact source, and otherwise records that campaign
+as `deferred`.
 A gate step that
 fails for want of an exceptional tool or a long qualification teaches people
 to skip the gate.
@@ -205,18 +209,31 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v10 requires
-source-bound records for the current mutation sweep, the independent
-`cargo-mutants` grade, the canonical Codex Security Deep artifacts, the fresh
-RustSec review, all model runs and both generated-and-booted VMware selectors,
-plus fixed-shape Java and VMware tool identities. It accepts either one exact
-source commit or a direct child which modifies only the five closure documents
-named by D-330 while retaining the locked newest passing parent mutation
-report. Verification therefore rejects an
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v11 requires
+source-bound records for the current mutation sweep, the fresh RustSec review,
+all model runs and both generated-and-booted VMware selectors, plus fixed-shape
+Java and VMware tool identities. It always declares
+`qualification.cargo-mutants-grade.status` and
+`qualification.codex-security-deep.status` as exactly `pass` or `deferred`
+(D-425). A passing campaign's record and canonical artifacts are verified
+exactly, including Deep's owned authority; a deferred campaign carries no
+record or file, and a missing or other status is refused. It accepts either one
+exact source commit or a direct child which modifies only the five closure
+documents named by D-330 while retaining the locked newest passing parent
+mutation report. Verification therefore rejects an
 unavailable, stale, omitted or changed phase-close qualification rather than
 changing schema (D-218, D-244, D-330, D-373). D-406 advances qualification
 to v6: only an owned, pinned live Deep MCP session can create the Deep PASS,
 and every earlier record or bundle is invalid.
+
+Releases follow Linux-kernel practice (D-425). The v0.1.0 gate is `cargo xtask
+ci`, a complete curated `cargo xtask mutate` sweep, `cargo xtask model-check`,
+`cargo xtask qualify-advisory`, both human VMware qualifications, and `cargo
+xtask evidence` plus `cargo xtask verify-evidence` on the exact qualified
+commit, which is then tagged directly. A release is not a foundation close:
+register rows its gate proves close in the commit after the tag, and the rest
+ship as known open items. D-330's documentation-only child remains supported,
+but no release plans on it.
 
 `qualify-mutants-grade --run` resolves the pinned grader and nextest, publishes
 the exact source/tool/environment request, and starts the full campaign in an

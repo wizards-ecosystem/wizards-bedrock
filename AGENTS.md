@@ -84,9 +84,12 @@ Nine supported tasks are deliberately **not** in ordinary `ci`: `debug`,
 owned `qualify-security-deep --run` workflow (with diagnostic-only
 `--begin`/`--verify`). `vmware` generates each selected machine;
 `qualify-vmware` validates its fresh serial transcript after the human boot.
-VMware, model checking, the complete mutation sweep, the independently owned
-mutation grade, an owned authenticated Deep security scan and the fresh RustSec
-review are phase-close qualifications whose records enter offline evidence.
+VMware, model checking, the complete mutation sweep and the fresh RustSec
+review are release qualifications whose records enter offline evidence. The
+independently owned mutation grade and the owned authenticated Deep security
+scan are continuous campaigns against `main` (D-425): their records enter a
+release bundle only when present for its exact source, and otherwise the
+bundle declares each one `deferred`.
 Deep's `--begin` and imported `--verify` actions create no record; only the
 pinned live MCP session can create PASS (D-406). These tasks need
 interactive/external tools, current network data or much longer machine runs,

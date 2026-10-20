@@ -805,10 +805,126 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
 ];
 
+const DEFERRED: &str = "deferred";
+
+/// The grade and Deep run continuously against `main`, so a release bundle
+/// carries either their exact-source record or an explicit deferral (D-425).
+const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CampaignState {
+    Pass,
+    Deferred,
+}
+
+impl CampaignState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pass => PASS,
+            Self::Deferred => DEFERRED,
+        }
+    }
+}
+
+/// Whether each continuous campaign passed for a bundle's source or was deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CampaignStates {
+    states: [CampaignState; 2],
+}
+
+impl CampaignStates {
+    /// Observe which continuous campaigns carry a record below `root`.
+    pub(crate) fn observe(root: &Path) -> Result<Self> {
+        let mut states = [CampaignState::Deferred; 2];
+        for (state, kind) in states.iter_mut().zip(DEFERRABLE) {
+            if record_present(root, kind)? {
+                *state = CampaignState::Pass;
+            }
+        }
+        Ok(Self { states })
+    }
+
+    /// The manifest keys declaring each campaign's state, in campaign order.
+    pub(crate) fn status_keys() -> [String; 2] {
+        DEFERRABLE.map(|kind| format!("qualification.{}.status", kind.slug()))
+    }
+
+    /// The manifest value of each campaign's state, in campaign order.
+    pub(crate) fn labels(&self) -> [&'static str; 2] {
+        self.states.map(CampaignState::label)
+    }
+
+    /// Parse declared manifest values, which are exactly `pass` or `deferred`.
+    pub(crate) fn from_labels(labels: [&str; 2]) -> Result<Self> {
+        let mut states = [CampaignState::Deferred; 2];
+        for ((state, label), kind) in states.iter_mut().zip(labels).zip(DEFERRABLE) {
+            *state = match label {
+                PASS => CampaignState::Pass,
+                DEFERRED => CampaignState::Deferred,
+                other => bail!(
+                    "{} campaign status `{other}` is neither pass nor deferred",
+                    kind.slug()
+                ),
+            };
+        }
+        Ok(Self { states })
+    }
+
+    /// Whether `kind` is a continuous campaign this bundle deferred.
+    pub(crate) fn deferred(&self, kind: Kind) -> bool {
+        DEFERRABLE
+            .iter()
+            .zip(self.states)
+            .any(|(candidate, state)| *candidate == kind && state == CampaignState::Deferred)
+    }
+
+    /// The bundle files this state set carries: every file but a deferred campaign's.
+    pub(crate) fn bundle_files(&self) -> Vec<&'static BundleFile> {
+        BUNDLE_FILES
+            .iter()
+            .filter(|spec| {
+                !DEFERRABLE.iter().any(|kind| {
+                    self.deferred(*kind)
+                        && spec
+                            .prefix
+                            .starts_with(&format!("qualification.{}.", kind.slug()))
+                })
+            })
+            .collect()
+    }
+}
+
+fn record_present(root: &Path, kind: Kind) -> Result<bool> {
+    let directory = checked_kind_directory(root, kind)?;
+    match std::fs::symlink_metadata(&directory) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", directory.display()));
+        }
+    }
+    require_contained_real_directory(root, &directory, "qualification kind directory")?;
+    crate::mutation_workspace::require_direct_file_if_present(
+        &directory,
+        &directory.join(RECORD),
+        "qualification record",
+    )
+}
+
+fn require_deferred(root: &Path, kind: Kind) -> Result<()> {
+    ensure!(
+        !record_present(root, kind)?,
+        "deferred {} campaign carries a qualification record",
+        kind.slug()
+    );
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct Snapshot {
     root: PathBuf,
     digests: Vec<Digest>,
+    campaigns: CampaignStates,
     _mutation: RetainedMutationPass,
 }
 
@@ -832,9 +948,14 @@ impl RetainedMutationPass {
 }
 
 impl Snapshot {
+    /// The campaign states this snapshot observed and digested.
+    pub(crate) fn campaigns(&self) -> CampaignStates {
+        self.campaigns
+    }
+
     pub(crate) fn install(&self, evidence_root: &Path) -> Result<()> {
         self.verify_unchanged()?;
-        for (spec, expected) in BUNDLE_FILES.iter().zip(&self.digests) {
+        for (spec, expected) in self.campaigns.bundle_files().into_iter().zip(&self.digests) {
             let source = self.root.join(bundle_tail(spec)?);
             require_bundle_file_size(spec, &source)?;
             let destination = evidence_root.join(spec.relative);
@@ -857,7 +978,7 @@ impl Snapshot {
     }
 
     fn verify_unchanged(&self) -> Result<()> {
-        for (spec, expected) in BUNDLE_FILES.iter().zip(&self.digests) {
+        for (spec, expected) in self.campaigns.bundle_files().into_iter().zip(&self.digests) {
             let path = self.root.join(bundle_tail(spec)?);
             require_contained_regular_file(&self.root, &path, "qualification snapshot artifact")?;
             require_bundle_file_size(spec, &path)?;
@@ -1379,19 +1500,25 @@ pub(crate) fn invalidate_vmware(paths: &Paths, kernel: Kernel) -> Result<()> {
 pub(crate) fn recorded_source(paths: &Paths) -> Result<SourceIdentity> {
     let root = qualification_root(paths);
     require_real_root(&root, "qualification root")?;
-    let deep = read_record(
-        &checked_kind_directory(&root, Kind::CodexSecurityDeep)?.join(RECORD),
-        Kind::CodexSecurityDeep,
+    let mutation = read_record(
+        &checked_kind_directory(&root, Kind::Mutation)?.join(RECORD),
+        Kind::Mutation,
     )?;
     let source = SourceIdentity {
-        commit: deep.get("source.commit")?.to_string(),
-        tree: deep.get("source.tree")?.to_string(),
+        commit: mutation.get("source.commit")?.to_string(),
+        tree: mutation.get("source.tree")?.to_string(),
     };
-    require_authenticated_deep_qualification(paths, &root, &source)?;
-    recorded_source_after_authority(paths)
+    let campaigns = CampaignStates::observe(&root)?;
+    if !campaigns.deferred(Kind::CodexSecurityDeep) {
+        require_authenticated_deep_qualification(paths, &root, &source)?;
+    }
+    recorded_source_after_authority(paths, &campaigns)
 }
 
-fn recorded_source_after_authority(paths: &Paths) -> Result<SourceIdentity> {
+fn recorded_source_after_authority(
+    paths: &Paths,
+    campaigns: &CampaignStates,
+) -> Result<SourceIdentity> {
     let root = qualification_root(paths);
     require_real_root(&root, "qualification root")?;
     let mut source = None;
@@ -1404,6 +1531,9 @@ fn recorded_source_after_authority(paths: &Paths) -> Result<SourceIdentity> {
         Kind::VmwareSelfTest,
         Kind::VmwareShipped,
     ] {
+        if campaigns.deferred(kind) {
+            continue;
+        }
         let record = read_record(&checked_kind_directory(&root, kind)?.join(RECORD), kind)?;
         let observed = SourceIdentity {
             commit: record.get("source.commit")?.to_string(),
@@ -1446,6 +1576,7 @@ pub(crate) fn snapshot(
         )?
     };
     let mutation = RetainedMutationPass::new(mutation);
+    let campaigns = CampaignStates::observe(&root)?;
     verify_records(
         paths,
         &root,
@@ -1453,9 +1584,11 @@ pub(crate) fn snapshot(
         registry,
         mutation_count,
         Some(mutation.evidence()),
+        &campaigns,
     )?;
-    let mut digests = Vec::with_capacity(BUNDLE_FILES.len());
-    for spec in BUNDLE_FILES {
+    let bundle = campaigns.bundle_files();
+    let mut digests = Vec::with_capacity(bundle.len());
+    for spec in bundle {
         let path = root.join(bundle_tail(spec)?);
         require_bundle_file_size(spec, &path)?;
         let (maximum, _) = bundle_file_size_policy(spec)?;
@@ -1464,6 +1597,7 @@ pub(crate) fn snapshot(
     Ok(Snapshot {
         root,
         digests,
+        campaigns,
         _mutation: mutation,
     })
 }
@@ -1474,6 +1608,7 @@ pub(crate) fn verify_bundle(
     source: &SourceIdentity,
     registry: &str,
     mutation_count: usize,
+    campaigns: &CampaignStates,
 ) -> Result<()> {
     verify_records(
         paths,
@@ -1482,6 +1617,7 @@ pub(crate) fn verify_bundle(
         registry,
         mutation_count,
         None,
+        campaigns,
     )
 }
 
@@ -1492,9 +1628,20 @@ fn verify_records(
     registry: &str,
     mutation_count: usize,
     mutation: Option<&PassEvidence>,
+    campaigns: &CampaignStates,
 ) -> Result<()> {
-    require_authenticated_deep_qualification(paths, root, source)?;
-    verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)
+    if !campaigns.deferred(Kind::CodexSecurityDeep) {
+        require_authenticated_deep_qualification(paths, root, source)?;
+    }
+    verify_records_after_authority(
+        paths,
+        root,
+        source,
+        registry,
+        mutation_count,
+        mutation,
+        campaigns,
+    )
 }
 
 fn verify_records_after_authority(
@@ -1504,8 +1651,14 @@ fn verify_records_after_authority(
     registry: &str,
     mutation_count: usize,
     mutation: Option<&PassEvidence>,
+    campaigns: &CampaignStates,
 ) -> Result<()> {
     require_real_root(root, "qualification root")?;
+    for kind in DEFERRABLE {
+        if campaigns.deferred(kind) {
+            require_deferred(root, kind)?;
+        }
+    }
     verify_advisory_qualification(paths, root, source)?;
     for kind in [
         Kind::Mutation,
@@ -1515,6 +1668,9 @@ fn verify_records_after_authority(
         Kind::VmwareSelfTest,
         Kind::VmwareShipped,
     ] {
+        if campaigns.deferred(kind) {
+            continue;
+        }
         let directory = checked_kind_directory(root, kind)?;
         require_contained_real_directory(root, &directory, "qualification kind directory")?;
         let record = read_record(&directory.join(RECORD), kind)?;
@@ -4630,13 +4786,20 @@ mod tests {
         let implementation_end = implementation
             .find("fn verify_advisory_qualification(")
             .unwrap();
+        let guard = "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        ";
+        assert!(implementation[online..offline].contains(&format!(
+            "{guard}require_authenticated_deep_qualification(paths, &root, &source)?;\n    }}\n"
+        )));
         assert!(
-            implementation[online..offline]
-                .contains("require_authenticated_deep_qualification(paths, &root, &source)?;")
+            implementation[offline..implementation_end].contains(&format!(
+                "{guard}require_authenticated_deep_qualification(paths, root, source)?;\n    }}\n"
+            ))
         );
-        assert!(
-            implementation[offline..implementation_end]
-                .contains("require_authenticated_deep_qualification(paths, root, source)?;")
+        assert_eq!(
+            production
+                .matches("require_authenticated_deep_qualification(")
+                .count(),
+            3
         );
         assert_eq!(
             production
@@ -4644,6 +4807,129 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_deferred_campaign_carrying_a_record_is_refused() {
+        let root =
+            crate::test_support::reserve_temp_directory("wizard-qualification-deferred-record");
+        let paths = Paths::new(root.clone(), None);
+        let source = SourceIdentity {
+            commit: "a".repeat(40),
+            tree: "b".repeat(40),
+        };
+        let deferred = CampaignStates::from_labels([DEFERRED, DEFERRED]).unwrap();
+        let grade = root.join(Kind::CargoMutantsGrade.slug());
+        std::fs::create_dir_all(&grade).unwrap();
+        assert_eq!(CampaignStates::observe(&root).unwrap(), deferred);
+        require_deferred(&root, Kind::CargoMutantsGrade).unwrap();
+
+        std::fs::write(grade.join(RECORD), "stale grade record\n").unwrap();
+        assert_eq!(
+            CampaignStates::observe(&root).unwrap(),
+            CampaignStates::from_labels([PASS, DEFERRED]).unwrap()
+        );
+        let error = verify_records_after_authority(
+            &paths,
+            &root,
+            &source,
+            &"c".repeat(64),
+            1,
+            None,
+            &deferred,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("deferred cargo-mutants-grade campaign carries"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_a_deferred_campaigns_files_leave_the_bundle() {
+        let relatives = |labels| {
+            CampaignStates::from_labels(labels)
+                .unwrap()
+                .bundle_files()
+                .iter()
+                .map(|spec| spec.relative)
+                .collect::<Vec<_>>()
+        };
+        let without = |slugs: &[&str]| {
+            BUNDLE_FILES
+                .iter()
+                .map(|spec| spec.relative)
+                .filter(|relative| {
+                    !slugs
+                        .iter()
+                        .any(|slug| relative.starts_with(&format!("qualification/{slug}/")))
+                })
+                .collect::<Vec<_>>()
+        };
+        let grade = "cargo-mutants-grade";
+        let deep = "codex-security-deep";
+        assert_eq!(relatives([PASS, PASS]), without(&[]));
+        assert_eq!(relatives([PASS, PASS]).len(), BUNDLE_FILES.len());
+        assert_eq!(relatives([DEFERRED, PASS]), without(&[grade]));
+        assert_eq!(relatives([PASS, DEFERRED]), without(&[deep]));
+        assert_eq!(relatives([DEFERRED, DEFERRED]), without(&[grade, deep]));
+        assert_eq!(
+            relatives([DEFERRED, DEFERRED]).len(),
+            BUNDLE_FILES.len() - 14
+        );
+    }
+
+    #[test]
+    fn only_the_grade_and_deep_campaigns_are_deferrable() {
+        assert_eq!(
+            CampaignStates::status_keys(),
+            [
+                "qualification.cargo-mutants-grade.status".to_string(),
+                "qualification.codex-security-deep.status".to_string(),
+            ]
+        );
+        let passed = CampaignStates::from_labels([PASS, PASS]).unwrap();
+        let deferred = CampaignStates::from_labels([DEFERRED, DEFERRED]).unwrap();
+        for kind in [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep] {
+            assert!(deferred.deferred(kind));
+            assert!(!passed.deferred(kind));
+        }
+        for kind in [
+            Kind::Mutation,
+            Kind::Advisory,
+            Kind::Model,
+            Kind::VmwareSelfTest,
+            Kind::VmwareShipped,
+        ] {
+            assert!(!deferred.deferred(kind));
+        }
+    }
+
+    #[test]
+    fn campaign_status_is_exactly_pass_or_deferred() {
+        for labels in [
+            [PASS, PASS],
+            [PASS, DEFERRED],
+            [DEFERRED, PASS],
+            [DEFERRED, DEFERRED],
+        ] {
+            assert_eq!(
+                CampaignStates::from_labels(labels).unwrap().labels(),
+                labels
+            );
+        }
+        for invalid in ["", "fail", "Pass", "DEFERRED", "pass ", "skipped"] {
+            assert!(
+                CampaignStates::from_labels([invalid, PASS]).is_err(),
+                "{invalid:?}"
+            );
+            assert!(
+                CampaignStates::from_labels([DEFERRED, invalid]).is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]
@@ -6083,6 +6369,7 @@ mod tests {
         let snapshot = Snapshot {
             root: root.clone(),
             digests,
+            campaigns: CampaignStates::from_labels([PASS, PASS]).unwrap(),
             _mutation: RetainedMutationPass::new(
                 CurrentPass::fixture(&root.join("mutation.lock")).unwrap(),
             ),
@@ -6116,6 +6403,7 @@ mod tests {
         let snapshot = Snapshot {
             root: source.clone(),
             digests,
+            campaigns: CampaignStates::from_labels([PASS, PASS]).unwrap(),
             _mutation: RetainedMutationPass::new(CurrentPass::fixture(&mutation_lock).unwrap()),
         };
         assert!(CurrentPass::fixture(&mutation_lock).is_err());
@@ -6149,6 +6437,7 @@ mod tests {
         let snapshot = Snapshot {
             root: source,
             digests,
+            campaigns: CampaignStates::from_labels([PASS, PASS]).unwrap(),
             _mutation: RetainedMutationPass::new(CurrentPass::fixture(&mutation_lock).unwrap()),
         };
 
