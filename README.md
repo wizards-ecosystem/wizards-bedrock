@@ -190,6 +190,28 @@ output rather than qualification evidence. The receipt binds the source-rendered
 configuration, while qualification preserves exact runtime VMX and serial
 bytes and admits only the reviewed Workstation additions (D-365).
 
+For authorized host console automation, Workstation's built-in VNC can
+deliver the same prompt-directed input without guest software (D-431).
+While the generated machine is stopped, add only this optional complete
+group to its runtime `.vmx`:
+
+```text
+RemoteDisplay.vnc.enabled = "TRUE"
+RemoteDisplay.vnc.ip = "127.0.0.1"
+RemoteDisplay.vnc.port = "5997"
+```
+
+Keep the source template and generation receipt unchanged. After starting,
+verify that the exact generated machine is the sole `vmrun` listing and that
+its VMware process owns a listener bound only to `127.0.0.1:5997` before
+connecting to that local endpoint. If either identity or binding cannot be
+established, stop the attempt. This console has no VNC authentication and
+does not isolate input from other local host processes. Do not add other
+`RemoteDisplay` settings or substitute addresses or ports: qualification
+refuses them and every incomplete group. Follow the actual on-screen input
+rounds and preserve the emitted serial bytes. Qualify while the machine is
+running, then stop it and verify that the listener is gone.
+
 `cargo xtask baseline` builds the fixed-QEMU self-test image once in release
 and debug modes, then boots each three times. It requires a clean ordinary
 self-test verdict while enforcing reviewed bands for image size, unsafe count,

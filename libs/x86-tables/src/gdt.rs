@@ -5,10 +5,17 @@
 //! descriptors — the task-state segment is the only one this kernel uses — are
 //! twice as wide and do carry a base address.
 
-/// The bits this crate sets. Ones it deliberately leaves clear — the accessed
-/// bit, the privilege level, granularity — are named in the tests that assert
+/// The bits this crate sets. Ones it deliberately leaves clear — the privilege
+/// level of the kernel pair, granularity — are named in the tests that assert
 /// they stay clear.
 mod bit {
+    /// Accessed, written already set (D-426).
+    ///
+    /// The processor sets it on the first load of a selector, which is a write
+    /// to the table. The first load of the user pair is the `iretq` inside the
+    /// paired-root exit, where the table is mapped read-only, so a clear bit
+    /// is a supervisor write fault there on hardware that enforces it.
+    pub(super) const ACCESSED: u64 = 1 << 40;
     /// Readable for a code segment, writable for a data segment.
     pub(super) const ACCESS: u64 = 1 << 41;
     /// Executable — the bit that makes a descriptor a code segment.
@@ -39,17 +46,24 @@ impl Descriptor {
     /// The mandatory unusable entry zero.
     pub const NULL: Self = Self(0);
 
-    /// Ring 0 code: present, executable, readable, 64-bit.
-    pub const KERNEL_CODE: Self =
-        Self(bit::PRESENT | bit::CODE_OR_DATA | bit::EXECUTABLE | bit::ACCESS | bit::LONG_MODE);
+    /// Ring 0 code: present, executable, readable, 64-bit, accessed.
+    pub const KERNEL_CODE: Self = Self(
+        bit::PRESENT
+            | bit::CODE_OR_DATA
+            | bit::EXECUTABLE
+            | bit::ACCESS
+            | bit::LONG_MODE
+            | bit::ACCESSED,
+    );
 
-    /// Ring 0 data: present, writable.
+    /// Ring 0 data: present, writable, accessed.
     ///
     /// `SS` must name one of these even in 64-bit mode, where `iretq` reloads it
     /// on every return from an exception.
-    pub const KERNEL_DATA: Self = Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS);
+    pub const KERNEL_DATA: Self =
+        Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::ACCESSED);
 
-    /// Ring 3 code: present, executable, readable, 64-bit, DPL 3.
+    /// Ring 3 code: present, executable, readable, 64-bit, DPL 3, accessed.
     ///
     /// `sysret` and `iretq` both require the user descriptors to sit at
     /// specific indices relative to each other, which is why the order in the
@@ -60,12 +74,13 @@ impl Descriptor {
             | bit::EXECUTABLE
             | bit::ACCESS
             | bit::LONG_MODE
-            | bit::RING_THREE,
+            | bit::RING_THREE
+            | bit::ACCESSED,
     );
 
-    /// Ring 3 data: present, writable, DPL 3.
+    /// Ring 3 data: present, writable, DPL 3, accessed.
     pub const USER_DATA: Self =
-        Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::RING_THREE);
+        Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::RING_THREE | bit::ACCESSED);
 
     /// The eight bytes the CPU reads.
     pub const fn bits(self) -> u64 {
@@ -115,7 +130,7 @@ impl SystemDescriptor {
 mod tests {
     use super::*;
 
-    /// Set by the CPU on first use; a descriptor is written with it clear.
+    /// Set by the CPU on first use unless the descriptor already carries it.
     const ACCESSED: u64 = 1 << 40;
 
     /// The two-bit descriptor privilege level, zero for every ring 0 entry.
@@ -168,14 +183,27 @@ mod tests {
 
     #[test]
     fn ring_zero_descriptors_match_the_known_encoding() {
-        assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9A00_0000_0000);
-        assert_eq!(Descriptor::KERNEL_DATA.bits(), 0x0000_9200_0000_0000);
+        assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9B00_0000_0000);
+        assert_eq!(Descriptor::KERNEL_DATA.bits(), 0x0000_9300_0000_0000);
         assert_eq!(Descriptor::NULL.bits(), 0);
     }
 
+    /// The paired-root exit loads the user selectors from a read-only table,
+    /// so the processor must never need to write a descriptor's accessed bit.
+    /// QEMU's TCG does not enforce that write; VMware's hardware did, and the
+    /// first `iretq` to ring 3 faulted inside the exit trampoline (D-426).
     #[test]
-    fn a_code_descriptor_is_not_marked_accessed() {
-        assert_eq!(Descriptor::KERNEL_CODE.bits() & ACCESSED, 0);
+    fn every_code_and_data_descriptor_is_already_accessed() {
+        for descriptor in [
+            Descriptor::KERNEL_CODE,
+            Descriptor::KERNEL_DATA,
+            Descriptor::USER_CODE,
+            Descriptor::USER_DATA,
+        ] {
+            assert_ne!(descriptor.bits() & ACCESSED, 0, "{descriptor:?}");
+        }
+        assert_eq!(Descriptor::USER_DATA.bits(), 0x0000_F300_0000_0000);
+        assert_eq!(Descriptor::USER_CODE.bits(), 0x0020_FB00_0000_0000);
     }
 
     #[test]

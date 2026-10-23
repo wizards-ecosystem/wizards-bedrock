@@ -18,9 +18,10 @@
 //! // Entry one at ring zero: the index sits above the three low bits.
 //! assert_eq!(Selector::new(1, 0).bits(), 0x08);
 //!
-//! // The two values every x86_64 kernel arrives at.
-//! assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9a00_0000_0000);
-//! assert_eq!(Descriptor::KERNEL_DATA.bits(), 0x0000_9200_0000_0000);
+//! // The two values every x86_64 kernel arrives at, already accessed so the
+//! // processor never writes the table.
+//! assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9b00_0000_0000);
+//! assert_eq!(Descriptor::KERNEL_DATA.bits(), 0x0000_9300_0000_0000);
 //! ```
 
 #![cfg_attr(not(test), no_std)]

@@ -610,15 +610,31 @@ pub enum HandoffAccess {
     ReadCommand,
     /// Write command bits with a zero status half.
     WriteCommand(u16),
+    /// Master-clear and mask every channel of both legacy 8237 controllers,
+    /// then read their status registers: DMA1 in bits 0..8, DMA2 in 8..16.
+    QuiesceIsaDma,
 }
+
+/// Request bits of both 8237 status registers in a [`HandoffAccess::QuiesceIsaDma`]
+/// word; the terminal-count bits beside them clear on read and prove nothing.
+pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xf0f0;
+
+/// Function authorities the platform PCI registry and kernel can hold at once.
+///
+/// A unit-wide VT-d fence claims every live requester the unit governs. The
+/// default VMware machine alone presents 42, 32 of them root ports, so the
+/// bound is sized by the qualified platform rather than by the test machine.
+pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;
 
 /// Platform-bound policy for the entry-time DMA fence.
 ///
 /// The VMware profile recognizes one exact emulated 440BX host bridge whose
 /// command bit 2 is a read-only chipset control rather than a PCI requester
-/// bus-master enable. The caller must select that profile only from
-/// requester-inaccessible VMware CPU evidence; every other function and every
-/// near miss remains under the strict BME-off rule.
+/// bus-master enable, and one exact PIIX4 ISA bridge whose read-only bit 2 does
+/// govern a requester: its 8237 controllers. That requester stays in every
+/// inventory and is quiesced at the controllers instead. The caller must select
+/// the profile only from requester-inaccessible VMware CPU evidence; every
+/// other function and every near miss remains under the strict BME-off rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffFencePolicy {
     kind: HandoffFencePolicyKind,
@@ -635,6 +651,53 @@ pub struct QualifiedNonRequester {
     identity: u32,
     class: u32,
     command: u16,
+}
+
+/// Exact platform evidence that one requester's bus mastering is held off at
+/// its DMA engines because its command bit 2 cannot be cleared.
+///
+/// Construction is private to the entry fence, after the exact VMware PIIX4
+/// profile matched and both 8237 controllers were masked with no request
+/// pending. The function remains a requester in every inventory.
+#[derive(Debug)]
+#[must_use = "quiesced requester evidence must reach the topology snapshot"]
+pub struct QuiescedIsaRequester {
+    at: Address,
+    identity: u32,
+    class: u32,
+    command: u16,
+}
+
+impl QuiescedIsaRequester {
+    /// Exact function whose entry-time quiesce minted this authority.
+    pub const fn address(&self) -> Address {
+        self.at
+    }
+}
+
+/// The sealed snapshot's record of the one entry-quiesced ISA requester.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuiescedRequester {
+    at: Address,
+    identity: u32,
+    command: u16,
+}
+
+impl QuiescedRequester {
+    /// Exact function the entry fence quiesced.
+    pub const fn address(&self) -> Address {
+        self.at
+    }
+
+    /// Identity a later fence must still read.
+    pub const fn identity(&self) -> u32 {
+        self.identity
+    }
+
+    /// Command word a later fence must still read.
+    pub const fn command(&self) -> u16 {
+        self.command
+    }
 }
 
 /// One untrusted later observation checked against non-requester authority.
@@ -726,6 +789,34 @@ impl HandoffFencePolicy {
                 command: found,
             })
     }
+
+    /// Whether this policy may quiesce an ISA requester at its 8237 controllers.
+    pub const fn quiesces_isa_dma(self) -> bool {
+        matches!(self.kind, HandoffFencePolicyKind::Vmware440Bx)
+    }
+
+    /// Whether `at` is VMware's exact PIIX4 ISA bridge with read-only BME.
+    fn classify_isa_requester(
+        self,
+        at: Address,
+        identity: u32,
+        class: u32,
+        before: u16,
+        found: u16,
+    ) -> bool {
+        const VMWARE_PIIX4_ISA_IDENTITY: u32 = 0x7110_8086;
+        const ISA_BRIDGE_CLASS: u32 = 0x06_01_00_00;
+        const ISA_CLASS_MASK: u32 = 0xffff_ff00;
+        const VMWARE_ISA_COMMAND: u16 =
+            command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER;
+
+        self.quiesces_isa_dma()
+            && (at.bus(), at.device(), at.function()) == (0, 7, 0)
+            && identity == VMWARE_PIIX4_ISA_IDENTITY
+            && class & ISA_CLASS_MASK == ISA_BRIDGE_CLASS
+            && before == VMWARE_ISA_COMMAND
+            && found == VMWARE_ISA_COMMAND
+    }
 }
 
 impl QualifiedNonRequester {
@@ -742,9 +833,21 @@ pub struct HandoffFenceReport {
     disabled: u32,
     retained_non_requesters: u32,
     retained_non_requester: Option<QualifiedNonRequester>,
+    quiesced_requesters: u32,
+    quiesced_requester: Option<QuiescedIsaRequester>,
 }
 
 impl HandoffFenceReport {
+    /// Requesters held off at their 8237 controllers because BME is read-only.
+    pub const fn quiesced_requesters(&self) -> u32 {
+        self.quiesced_requesters
+    }
+
+    /// Remove the exact entry-quiesce authority for the later topology snapshot.
+    pub fn take_quiesced_requester(&mut self) -> Option<QuiescedIsaRequester> {
+        self.quiesced_requester.take()
+    }
+
     /// Present functions safely classified by the platform-bound fence.
     pub const fn functions(&self) -> u32 {
         self.functions
@@ -790,6 +893,13 @@ pub enum HandoffFenceError {
         /// Word returned by the readback.
         found: u16,
     },
+    /// The quiesced ISA requester still showed a DMA request after masking.
+    IsaDmaPending {
+        /// Function whose 8237 controllers were masked.
+        at: Address,
+        /// Combined status word: DMA1 in bits 0..8, DMA2 in 8..16.
+        status: u32,
+    },
     /// A present function changed identity during its fence.
     IdentityChanged {
         /// Function whose identity changed.
@@ -829,6 +939,13 @@ impl core::fmt::Display for HandoffFenceError {
             } => write!(
                 f,
                 "{:02x}:{:02x}.{} identity {identity:#010x} class {class:#010x} command read back as {found:#06x}, expected {expected:#06x}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::IsaDmaPending { at, status } => write!(
+                f,
+                "{:02x}:{:02x}.{} 8237 status {status:#06x} still requests DMA after masking",
                 at.bus(),
                 at.device(),
                 at.function()
@@ -881,6 +998,8 @@ pub fn fence_dma_handoff(
     let mut disabled = 0u32;
     let mut retained_non_requesters = 0u32;
     let mut retained_non_requester = None;
+    let mut quiesced_requesters = 0u32;
+    let mut quiesced_requester = None;
     for bus in 0..=u8::MAX {
         for device in 0..DEVICES {
             for function in 0..FUNCTIONS {
@@ -932,7 +1051,24 @@ pub fn fence_dma_handoff(
                     if let Some(authority) =
                         policy.classify_non_requester(at, identity, class, before, found)
                     {
-                        Some((class_at, class, authority))
+                        Some((class_at, class, Retained::NonRequester(authority)))
+                    } else if policy.classify_isa_requester(at, identity, class, before, found) {
+                        let status = access(at, HandoffAccess::QuiesceIsaDma).ok_or(
+                            HandoffFenceError::Access {
+                                at,
+                                operation: HandoffAccess::QuiesceIsaDma,
+                            },
+                        )?;
+                        if status & ISA_DMA_PENDING_REQUESTS != 0 {
+                            return Err(HandoffFenceError::IsaDmaPending { at, status });
+                        }
+                        let authority = QuiescedIsaRequester {
+                            at: at.function_base(),
+                            identity,
+                            class,
+                            command: found,
+                        };
+                        Some((class_at, class, Retained::Quiesced(authority)))
                     } else {
                         return Err(HandoffFenceError::CommandRefused {
                             at,
@@ -960,7 +1096,7 @@ pub fn fence_dma_handoff(
                         found: current,
                     });
                 }
-                if let Some((class_at, class, authority)) = retained_class {
+                if let Some((class_at, class, retained)) = retained_class {
                     let current_class = access(class_at, HandoffAccess::ReadClass).ok_or(
                         HandoffFenceError::Access {
                             at,
@@ -974,8 +1110,16 @@ pub fn fence_dma_handoff(
                             found: current_class,
                         });
                     }
-                    retained_non_requesters += 1;
-                    retained_non_requester = Some(authority);
+                    match retained {
+                        Retained::NonRequester(authority) => {
+                            retained_non_requesters += 1;
+                            retained_non_requester = Some(authority);
+                        }
+                        Retained::Quiesced(authority) => {
+                            quiesced_requesters += 1;
+                            quiesced_requester = Some(authority);
+                        }
+                    }
                 }
                 functions += 1;
             }
@@ -986,7 +1130,15 @@ pub fn fence_dma_handoff(
         disabled,
         retained_non_requesters,
         retained_non_requester,
+        quiesced_requesters,
+        quiesced_requester,
     })
+}
+
+/// The exact authority a refused BME clear can still mint at entry.
+enum Retained {
+    NonRequester(QualifiedNonRequester),
+    Quiesced(QuiescedIsaRequester),
 }
 
 /// The exclusive right to finish one function's command-register transition.
@@ -2833,6 +2985,16 @@ pub enum TopologyError {
         /// Exact function whose identity, class or command changed.
         at: Address,
     },
+    /// The requester quiesced at entry was absent from the later snapshot.
+    QuiescedRequesterMissing {
+        /// Exact function which had been quiesced at entry.
+        at: Address,
+    },
+    /// The requester quiesced at entry changed before the snapshot.
+    QuiescedRequesterChanged {
+        /// Exact function whose identity, class or command changed.
+        at: Address,
+    },
     /// The class and header layout disagree about whether a function is a bridge.
     BridgeIdentity {
         /// Function with contradictory bridge identity.
@@ -2897,6 +3059,20 @@ impl core::fmt::Display for TopologyError {
             Self::QualifiedNonRequesterChanged { at } => write!(
                 f,
                 "entry-qualified PCI non-requester {:02x}:{:02x}.{} changed before the sealed snapshot",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::QuiescedRequesterMissing { at } => write!(
+                f,
+                "entry-quiesced PCI requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::QuiescedRequesterChanged { at } => write!(
+                f,
+                "entry-quiesced PCI requester {:02x}:{:02x}.{} changed before the sealed snapshot",
                 at.bus(),
                 at.device(),
                 at.function()
@@ -2982,6 +3158,7 @@ pub struct PciTopology {
     subordinate: [u8; BUSES],
     present: [u64; PRESENCE_WORDS],
     requesters: [u64; PRESENCE_WORDS],
+    quiesced: Option<QuiescedRequester>,
     sealed: bool,
 }
 
@@ -2993,6 +3170,7 @@ impl PciTopology {
             subordinate: [0; BUSES],
             present: [0; PRESENCE_WORDS],
             requesters: [0; PRESENCE_WORDS],
+            quiesced: None,
             sealed: false,
         }
     }
@@ -3003,6 +3181,7 @@ impl PciTopology {
         self.subordinate.fill(0);
         self.present.fill(0);
         self.requesters.fill(0);
+        self.quiesced = None;
         self.sealed = false;
     }
 
@@ -3091,6 +3270,57 @@ impl PciTopology {
         let index = function_index(at);
         self.requesters[index / u64::BITS as usize] &= !(1 << (index % u64::BITS as usize));
         Ok(())
+    }
+
+    /// Record the exact entry-quiesced ISA requester, which stays a requester.
+    ///
+    /// # Errors
+    ///
+    /// The same topology errors as [`Self::observe`], or
+    /// [`TopologyError::QuiescedRequesterChanged`] when any field the entry
+    /// fence bound differs.
+    pub fn observe_quiesced_requester(
+        &mut self,
+        authority: QuiescedIsaRequester,
+        observation: FunctionObservation,
+    ) -> Result<(), TopologyError> {
+        let at = observation.at.function_base();
+        let observed = (
+            at,
+            observation.identity,
+            observation.class_bits,
+            observation.command,
+        );
+        let bound = (
+            authority.at,
+            authority.identity,
+            authority.class,
+            authority.command,
+        );
+        if observed != bound {
+            return Err(TopologyError::QuiescedRequesterChanged { at });
+        }
+        self.observe(
+            at,
+            observation.class,
+            observation.header,
+            observation.bus_numbers,
+        )?;
+        self.quiesced = Some(QuiescedRequester {
+            at,
+            identity: authority.identity,
+            command: authority.command,
+        });
+        Ok(())
+    }
+
+    /// The entry-quiesced requester at `at`, once the snapshot is sealed.
+    pub fn quiesced_requester(&self, at: Address) -> Option<QuiescedRequester> {
+        if !self.sealed {
+            return None;
+        }
+        self.quiesced
+            .filter(|record| record.at == at.function_base())
     }
 
     /// Seal the snapshot after validating its complete rooted interval tree.
@@ -3428,6 +3658,7 @@ mod tests {
                 HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => None,
                 HandoffAccess::WriteCommand(_) => Some(0),
+                HandoffAccess::QuiesceIsaDma => None,
             }
         });
         assert!(matches!(
@@ -3447,6 +3678,7 @@ mod tests {
                 HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => Some(u32::from(command::BUS_MASTER)),
                 HandoffAccess::WriteCommand(_) => Some(0),
+                HandoffAccess::QuiesceIsaDma => None,
             }
         });
         assert!(matches!(
@@ -3477,6 +3709,7 @@ mod tests {
                 HandoffAccess::ReadClass => Some(0),
                 HandoffAccess::ReadCommand => Some(0),
                 HandoffAccess::WriteCommand(_) => Some(0),
+                HandoffAccess::QuiesceIsaDma => None,
             }
         });
         assert!(matches!(
@@ -3487,6 +3720,375 @@ mod tests {
                 found,
             }) if at == target && expected == identity && found == identity ^ 1
         ));
+    }
+
+    /// VMware Workstation 17.6's default segment as its entry fence saw it on
+    /// 2026-10-20: BDF, identity, class dword, command before, command after
+    /// a BME-clear write. `00:00.0` and `00:07.0` hard-wire bit 2.
+    type CapturedFunction = ((u8, u8, u8), u32, u32, u16, u16);
+
+    const VMWARE_SEGMENT: &[CapturedFunction] = &[
+        ((0x00, 0x00, 0), 0x7190_8086, 0x0600_0001, 0x0006, 0x0006),
+        ((0x00, 0x01, 0), 0x7191_8086, 0x0604_0001, 0x0017, 0x0013),
+        ((0x00, 0x07, 0), 0x7110_8086, 0x0601_0008, 0x0007, 0x0007),
+        ((0x00, 0x07, 1), 0x7111_8086, 0x0101_8a01, 0x0005, 0x0001),
+        ((0x00, 0x07, 3), 0x7113_8086, 0x0680_0008, 0x0000, 0x0000),
+        ((0x00, 0x0f, 0), 0x0405_15ad, 0x0300_0000, 0x0007, 0x0003),
+        ((0x00, 0x11, 0), 0x0790_15ad, 0x0604_0102, 0x0007, 0x0003),
+        ((0x02, 0x00, 0), 0x0774_15ad, 0x0c03_0000, 0x0005, 0x0001),
+        ((0x02, 0x01, 0), 0x07e0_15ad, 0x0106_0100, 0x0006, 0x0002),
+        ((0x03, 0x00, 0), 0x07f0_15ad, 0x0108_0200, 0x0007, 0x0003),
+        ((0x0b, 0x00, 0), 0x07f0_15ad, 0x0108_0200, 0x0007, 0x0003),
+    ];
+
+    /// The thirty-two VMware PCIe root ports at `00:15.0` through `00:18.7`.
+    const VMWARE_ROOT_PORT: (u32, u32, u16, u16) = (0x07a0_15ad, 0x0604_0001, 0x0007, 0x0003);
+
+    fn vmware_function(at: Address) -> Option<(u32, u32, u16, bool)> {
+        let (bus, device, function) = (at.bus(), at.device(), at.function());
+        if bus == 0 && (0x15..=0x18).contains(&device) {
+            let (identity, class, before, _) = VMWARE_ROOT_PORT;
+            return Some((identity, class, before, false));
+        }
+        VMWARE_SEGMENT
+            .iter()
+            .find(|(bdf, ..)| *bdf == (bus, device, function))
+            .map(|&(_, identity, class, before, found)| {
+                (
+                    identity,
+                    class,
+                    before,
+                    found == before && before & command::BUS_MASTER != 0,
+                )
+            })
+    }
+
+    #[test]
+    fn the_captured_vmware_segment_fences_and_fits_the_function_authority_limit() {
+        let mut commands = [[[None::<u16>; FUNCTIONS as usize]; DEVICES as usize]; 256];
+        let mut quiesces = 0;
+        let mut report = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+            let Some((identity, class, before, read_only)) = vmware_function(at) else {
+                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            };
+            let slot = &mut commands[usize::from(at.bus())][usize::from(at.device())]
+                [usize::from(at.function())];
+            match operation {
+                HandoffAccess::ReadIdentity => Some(identity),
+                HandoffAccess::ReadClass => Some(class),
+                HandoffAccess::ReadCommand => Some(u32::from(slot.unwrap_or(before))),
+                HandoffAccess::WriteCommand(value) => {
+                    if !read_only {
+                        *slot = Some(value);
+                    }
+                    Some(0)
+                }
+                HandoffAccess::QuiesceIsaDma => {
+                    quiesces += 1;
+                    Some(0)
+                }
+            }
+        })
+        .expect("the captured VMware segment admits its exact policy");
+
+        assert_eq!(report.functions(), 43);
+        assert_eq!(report.disabled(), 40);
+        assert_eq!(report.retained_non_requesters(), 1);
+        assert_eq!(report.quiesced_requesters(), 1);
+        assert_eq!(quiesces, 1);
+        assert!(report.take_non_requester().is_some());
+        assert!(report.take_quiesced_requester().is_some());
+        let requesters = report.functions() - report.retained_non_requesters();
+        assert_eq!(requesters, 42);
+        assert!(
+            requesters as usize <= FUNCTION_AUTHORITY_LIMIT,
+            "VMware's unit governs {requesters} requesters but only {FUNCTION_AUTHORITY_LIMIT} function authorities exist"
+        );
+    }
+
+    #[test]
+    fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
+        let isa = Address::new(0, 7, 0, 0).expect("VMware ISA bridge");
+        let identity = 0x7110_8086;
+        let class = 0x06_01_00_00;
+        let command = command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER;
+
+        let fence = |policy: HandoffFencePolicy,
+                     at: Address,
+                     identity: u32,
+                     class: u32,
+                     command: u16,
+                     status: Option<u32>,
+                     quiesces: &mut u32,
+                     written: &mut Option<u16>| {
+            fence_dma_handoff(policy, |candidate, operation| {
+                if candidate.function_base() != at {
+                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                }
+                match operation {
+                    HandoffAccess::ReadIdentity => Some(identity),
+                    HandoffAccess::ReadClass => Some(class),
+                    HandoffAccess::ReadCommand => Some(u32::from(command)),
+                    HandoffAccess::WriteCommand(value) => {
+                        *written = Some(value);
+                        Some(0)
+                    }
+                    HandoffAccess::QuiesceIsaDma => {
+                        *quiesces += 1;
+                        status
+                    }
+                }
+            })
+        };
+
+        let (mut quiesces, mut written) = (0, None);
+        let mut report = fence(
+            HandoffFencePolicy::vmware_440bx(),
+            isa,
+            identity,
+            class,
+            command,
+            Some(0x0f0f),
+            &mut quiesces,
+            &mut written,
+        )
+        .expect("the exact ISA bridge is quiesced at its 8237 controllers");
+        assert_eq!(report.functions(), 1);
+        assert_eq!(report.disabled(), 0);
+        assert_eq!(report.retained_non_requesters(), 0);
+        assert_eq!(report.quiesced_requesters(), 1);
+        assert_eq!(quiesces, 1);
+        assert_eq!(written, Some(command::IO_SPACE | command::MEMORY_SPACE));
+
+        let authority = report
+            .take_quiesced_requester()
+            .expect("entry fence retained its exact quiesce authority");
+        assert_eq!(authority.address(), isa);
+        let mut topology = PciTopology::new();
+        topology
+            .observe_quiesced_requester(
+                authority,
+                FunctionObservation::new(
+                    isa,
+                    identity,
+                    class,
+                    command,
+                    Class::from_bits(class),
+                    HeaderType::from_bits(0),
+                    None,
+                ),
+            )
+            .expect("quiesced requester topology observation");
+        assert_eq!(topology.quiesced_requester(isa), None);
+        topology.seal().expect("root-bus topology");
+        assert!(topology.contains_function(isa));
+        assert!(topology.contains_requester(isa));
+        let record = topology
+            .quiesced_requester(isa)
+            .expect("the sealed snapshot names the quiesced requester");
+        assert_eq!(
+            (record.address(), record.identity(), record.command()),
+            (isa, identity, command)
+        );
+        let other = Address::new(0, 7, 1, 0).expect("IDE function");
+        assert_eq!(topology.quiesced_requester(other), None);
+
+        for (at, later_identity, later_class, later_command) in [
+            (other, identity, class, command),
+            (isa, identity ^ 1, class, command),
+            (isa, identity, class ^ 1, command),
+            (isa, identity, class, command & !command::IO_SPACE),
+        ] {
+            let (mut quiesces, mut written) = (0, None);
+            let changed = fence(
+                HandoffFencePolicy::vmware_440bx(),
+                isa,
+                identity,
+                class,
+                command,
+                Some(0),
+                &mut quiesces,
+                &mut written,
+            )
+            .expect("exact ISA bridge")
+            .take_quiesced_requester()
+            .expect("exact quiesce authority");
+            assert_eq!(
+                PciTopology::new().observe_quiesced_requester(
+                    changed,
+                    FunctionObservation::new(
+                        at,
+                        later_identity,
+                        later_class,
+                        later_command,
+                        Class::from_bits(later_class),
+                        HeaderType::from_bits(0),
+                        None,
+                    ),
+                ),
+                Err(TopologyError::QuiescedRequesterChanged {
+                    at: at.function_base(),
+                })
+            );
+        }
+
+        for revision in [0u32, 1, u32::from(u8::MAX)] {
+            let (mut quiesces, mut written) = (0, None);
+            let report = fence(
+                HandoffFencePolicy::vmware_440bx(),
+                isa,
+                identity,
+                class | revision,
+                command,
+                Some(0),
+                &mut quiesces,
+                &mut written,
+            )
+            .expect("every PIIX4 revision is the same ISA bridge");
+            assert_eq!(report.quiesced_requesters(), 1);
+        }
+
+        for (at, identity, class, command) in [
+            (isa, identity ^ 1, class, command),
+            (isa, identity ^ (1 << 16), class, command),
+            (isa, identity, class ^ (1 << 24), command),
+            (isa, identity, class ^ (1 << 16), command),
+            (isa, identity, class ^ (1 << 8), command),
+            (isa, identity, class, command & !command::IO_SPACE),
+            (isa, identity, class, command & !command::MEMORY_SPACE),
+            (
+                Address::new(1, 7, 0, 0).expect("nearby bus"),
+                identity,
+                class,
+                command,
+            ),
+            (
+                Address::new(0, 6, 0, 0).expect("nearby device"),
+                identity,
+                class,
+                command,
+            ),
+            (other, identity, class, command),
+        ] {
+            let (mut quiesces, mut written) = (0, None);
+            let refused = fence(
+                HandoffFencePolicy::vmware_440bx(),
+                at,
+                identity,
+                class,
+                command,
+                Some(0),
+                &mut quiesces,
+                &mut written,
+            );
+            assert!(matches!(
+                refused,
+                Err(HandoffFenceError::CommandRefused { .. })
+            ));
+            assert_eq!(
+                quiesces, 0,
+                "a near miss never touches the 8237 controllers"
+            );
+        }
+
+        let (mut quiesces, mut written) = (0, None);
+        let strict = fence(
+            HandoffFencePolicy::strict(),
+            isa,
+            identity,
+            class,
+            command,
+            Some(0),
+            &mut quiesces,
+            &mut written,
+        );
+        assert!(matches!(
+            strict,
+            Err(HandoffFenceError::CommandRefused { .. })
+        ));
+        assert_eq!(quiesces, 0);
+        assert!(!HandoffFencePolicy::strict().quiesces_isa_dma());
+
+        // The word before the clear and the word read back are each exact:
+        // one may not stand in for the other.
+        for (first, second) in [
+            (command & !command::IO_SPACE, command),
+            (command, command & !command::IO_SPACE),
+        ] {
+            let mut reads = 0;
+            let mut quiesces = 0;
+            let refused = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
+                if at.function_base() != isa {
+                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                }
+                match operation {
+                    HandoffAccess::ReadIdentity => Some(identity),
+                    HandoffAccess::ReadClass => Some(class),
+                    HandoffAccess::ReadCommand => {
+                        reads += 1;
+                        Some(u32::from(if reads == 1 { first } else { second }))
+                    }
+                    HandoffAccess::WriteCommand(_) => Some(0),
+                    HandoffAccess::QuiesceIsaDma => {
+                        quiesces += 1;
+                        Some(0)
+                    }
+                }
+            });
+            assert!(matches!(
+                refused,
+                Err(HandoffFenceError::CommandRefused { .. })
+            ));
+            assert_eq!(quiesces, 0);
+        }
+
+        for pending in [0x0010, 0x0080, 0x1000, 0x8000, 0xf0f0] {
+            let (mut quiesces, mut written) = (0, None);
+            let refused = fence(
+                HandoffFencePolicy::vmware_440bx(),
+                isa,
+                identity,
+                class,
+                command,
+                Some(pending),
+                &mut quiesces,
+                &mut written,
+            );
+            assert_eq!(
+                refused.err(),
+                Some(HandoffFenceError::IsaDmaPending {
+                    at: isa,
+                    status: pending,
+                })
+            );
+        }
+
+        let (mut quiesces, mut written) = (0, None);
+        let unavailable = fence(
+            HandoffFencePolicy::vmware_440bx(),
+            isa,
+            identity,
+            class,
+            command,
+            None,
+            &mut quiesces,
+            &mut written,
+        );
+        assert_eq!(
+            unavailable.err(),
+            Some(HandoffFenceError::Access {
+                at: isa,
+                operation: HandoffAccess::QuiesceIsaDma,
+            })
+        );
+        assert_eq!(
+            HandoffFenceError::IsaDmaPending {
+                at: isa,
+                status: 0x0010,
+            }
+            .to_string(),
+            "00:07.0 8237 status 0x0010 still requests DMA after masking"
+        );
     }
 
     #[test]
@@ -3509,6 +4111,7 @@ mod tests {
                     written = Some(value);
                     Some(0)
                 }
+                HandoffAccess::QuiesceIsaDma => None,
             }
         })
         .expect("the qualified host bridge is not a PCI DMA requester");
@@ -3621,6 +4224,7 @@ mod tests {
                         HandoffAccess::ReadClass => Some(class),
                         HandoffAccess::ReadCommand => Some(u32::from(command)),
                         HandoffAccess::WriteCommand(_) => Some(0),
+                        HandoffAccess::QuiesceIsaDma => None,
                     }
                 },
             );
@@ -3639,6 +4243,7 @@ mod tests {
                 HandoffAccess::ReadClass => Some(class),
                 HandoffAccess::ReadCommand => Some(u32::from(command)),
                 HandoffAccess::WriteCommand(_) => Some(0),
+                HandoffAccess::QuiesceIsaDma => None,
             }
         });
         assert!(matches!(
@@ -3664,6 +4269,7 @@ mod tests {
                         }))
                     }
                     HandoffAccess::WriteCommand(_) => Some(0),
+                    HandoffAccess::QuiesceIsaDma => None,
                 }
             });
         assert!(matches!(
@@ -3689,6 +4295,7 @@ mod tests {
                         }))
                     }
                     HandoffAccess::WriteCommand(_) => Some(0),
+                    HandoffAccess::QuiesceIsaDma => None,
                 }
             });
         assert!(matches!(
@@ -3710,6 +4317,7 @@ mod tests {
                     }
                     HandoffAccess::ReadCommand => Some(u32::from(command)),
                     HandoffAccess::WriteCommand(_) => Some(0),
+                    HandoffAccess::QuiesceIsaDma => None,
                 }
             });
         assert!(matches!(

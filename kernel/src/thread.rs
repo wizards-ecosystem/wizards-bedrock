@@ -647,7 +647,7 @@ fn idle_loop() {
         }
         // Syscall handlers defer reporting because they cannot take the console
         // lock (D-122).
-        if crate::user::report_refusals() {
+        if crate::user::report_execution() || crate::user::report_refusals() {
             continue;
         }
         #[cfg(feature = "selftest")]

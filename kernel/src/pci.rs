@@ -26,7 +26,7 @@
 use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, FunctionObservation,
     HeaderType, PciTopology, ProbeError, ProbeRetry, ProbedBars, QualifiedNonRequester,
-    TopologyError, Window, header,
+    QuiescedIsaRequester, QuiescedRequester, TopologyError, Window, header,
 };
 use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
@@ -41,7 +41,7 @@ use crate::thread::ThreadContext;
 pub(crate) const BARS: usize = pci_config::BARS;
 
 /// Function authorities the platform PCI registry can hold concurrently.
-pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = 12;
+pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
 /// Buses the walk will visit before giving up.
 ///
@@ -203,6 +203,7 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 /// unambiguous tree rooted at bus zero.
 pub(crate) fn snapshot_topology(
     mut non_requester: Option<QualifiedNonRequester>,
+    mut quiesced: Option<QuiescedIsaRequester>,
 ) -> Result<(), TopologyError> {
     TOPOLOGY.lock_leaf().reset();
     for bus in 0..=u8::MAX {
@@ -232,6 +233,21 @@ pub(crate) fn snapshot_topology(
                             bus_numbers,
                         ),
                     )?;
+                } else if let Some(authority) =
+                    quiesced.take_if(|authority| authority.address() == entry.at)
+                {
+                    topology.observe_quiesced_requester(
+                        authority,
+                        FunctionObservation::new(
+                            entry.at,
+                            entry.identity,
+                            entry.class_bits,
+                            entry.command,
+                            entry.class,
+                            entry.header,
+                            bus_numbers,
+                        ),
+                    )?;
                 } else {
                     topology.observe(entry.at, entry.class, entry.header, bus_numbers)?;
                 }
@@ -240,6 +256,11 @@ pub(crate) fn snapshot_topology(
     }
     if let Some(authority) = non_requester {
         return Err(TopologyError::QualifiedNonRequesterMissing {
+            at: authority.address(),
+        });
+    }
+    if let Some(authority) = quiesced {
+        return Err(TopologyError::QuiescedRequesterMissing {
             at: authority.address(),
         });
     }
@@ -378,6 +399,7 @@ pub(crate) struct DmaFence {
 pub(crate) enum DmaFenceError {
     Claim(pci::ClaimError),
     Command(EnableError),
+    Quiesce,
     Function,
 }
 
@@ -386,6 +408,10 @@ impl core::fmt::Display for DmaFenceError {
         match self {
             Self::Claim(reason) => write!(formatter, "function claim: {reason}"),
             Self::Command(reason) => write!(formatter, "command fence: {reason}"),
+            Self::Quiesce => core::fmt::Write::write_str(
+                formatter,
+                "the entry-quiesced ISA requester changed or its 8237 controllers are not quiet",
+            ),
             Self::Function => {
                 core::fmt::Write::write_str(formatter, "function authority could not be returned")
             }
@@ -442,11 +468,19 @@ impl DmaFence {
 }
 
 /// Claim one declared sibling requester and verify BME clear.
+///
+/// The one entry-quiesced ISA requester cannot clear BME; it is held instead
+/// by its exclusive claim, its unchanged identity and command, and a fresh
+/// remask of its 8237 controllers with no request pending (D-426).
 pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
     let function = match pci::claim_function(at) {
         Ok(function) => function,
         Err(reason) => return DmaFenceOutcome::Refused(DmaFenceError::Claim(reason)),
     };
+    let quiesced = TOPOLOGY.lock_leaf().quiesced_requester(at);
+    if let Some(record) = quiesced {
+        return fence_quiesced_requester(function, record);
+    }
     match pci::fence_bus_master(&function) {
         Ok(command_state) => DmaFenceOutcome::Fenced(DmaFence {
             function: Some(function),
@@ -474,6 +508,37 @@ pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
                 },
             }
         }
+    }
+}
+
+fn fence_quiesced_requester(
+    function: pci::FunctionClaim,
+    record: QuiescedRequester,
+) -> DmaFenceOutcome {
+    let at = record.address();
+    let identity = at.at(header::VENDOR).and_then(pci::read);
+    let command = at
+        .at(header::COMMAND)
+        .and_then(pci::read)
+        .map(|bits| bits as u16);
+    if identity == Some(record.identity())
+        && command == Some(record.command())
+        && pci::isa_dma_quiet()
+    {
+        return DmaFenceOutcome::Fenced(DmaFence {
+            function: Some(function),
+            command_state: None,
+        });
+    }
+    match pci::release_function(function) {
+        Ok(()) => DmaFenceOutcome::Refused(DmaFenceError::Quiesce),
+        Err(failure) => DmaFenceOutcome::Retained {
+            reason: DmaFenceError::Function,
+            fence: DmaFence {
+                function: Some(failure.into_function()),
+                command_state: None,
+            },
+        },
     }
 }
 

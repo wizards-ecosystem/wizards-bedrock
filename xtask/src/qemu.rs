@@ -993,6 +993,9 @@ const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 /// the one thing it does. Kept in step with `kernel/src/main.rs`.
 const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 
+/// Evidence emitted only after the shipped program calls from saved CPL 3.
+pub(crate) const SHIPPED_USER_EXECUTION_MARKER: &str = "user: ring 3 call observed";
+
 /// Proof that the shipped selector retired QEMU's first storage candidate.
 pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
@@ -1004,6 +1007,7 @@ const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
         "keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
     ),
     RequiredLogRecord::info("keyboard: polled every 10 ms"),
+    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),
 ];
 
 /// A shipped kernel must accept this input without unmasking legacy IRQ1.
@@ -2309,8 +2313,8 @@ fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
 /// Boot the image the kernel ships and require it to reach its steady state.
 ///
 /// The self-test build exits at the debug-exit device, so nothing it does
-/// covers what the shipped kernel does afterwards. The verdict here is what
-/// the serial log says: the settled marker, and no panic.
+/// covers what the shipped kernel does afterwards. The serial verdict requires
+/// the settled marker, a call from ring 3 and every platform marker, with no panic.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -3509,6 +3513,55 @@ mod tests {
     }
 
     #[test]
+    fn shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let user = std::fs::read_to_string(root.join("kernel/src/user.rs")).unwrap();
+        let thread = std::fs::read_to_string(root.join("kernel/src/thread.rs")).unwrap();
+        let active = compact_cpp(&rust_without_comments(&user));
+        for declaration in [
+            "staticEXECUTED:AtomicBool=AtomicBool::new(false);",
+            "staticEXECUTION_REPORTED:AtomicBool=AtomicBool::new(false);",
+        ] {
+            assert!(
+                active.contains(declaration),
+                "observation begins unearned: {declaration}"
+            );
+        }
+        assert_eq!(active.matches("EXECUTED.store(").count(), 1);
+        let call = compact_cpp(&rust_function_body(
+            &user,
+            "pub(crate) fn call(frame: &TrapFrame) {",
+        ));
+        assert!(call.starts_with(
+            "letslot=task::current();ifframe.code_selector()&0b11==3{EXECUTED.store(true,Ordering::Release);}"
+        ));
+        assert!(
+            !call.contains("info!"),
+            "trap reporting must not acquire the console lock"
+        );
+        let reporter = compact_cpp(&rust_function_body(
+            &user,
+            "pub(crate) fn report_execution() -> bool {",
+        ));
+        assert_eq!(
+            reporter,
+            "if!EXECUTED.load(Ordering::Acquire)||EXECUTION_REPORTED.swap(true,Ordering::AcqRel){returnfalse;}info!();true"
+        );
+        let idle = compact_cpp(&rust_function_body(&thread, "fn idle_loop() {"));
+        assert!(idle.contains(
+            "ifcrate::user::report_execution()||crate::user::report_refusals(){continue;}"
+        ));
+        assert_eq!(SHIPPED_USER_EXECUTION_MARKER, "user: ring 3 call observed");
+        assert_eq!(
+            user.matches("info!(\"user: ring 3 call observed\");")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn automated_boots_require_the_exact_producer_records() {
         assert_eq!(
             INTERACTIVE_MARKERS,
@@ -3528,6 +3581,7 @@ mod tests {
                     "keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
                 ),
                 RequiredLogRecord::info("keyboard: polled every 10 ms"),
+                RequiredLogRecord::info("user: ring 3 call observed"),
             ]
         );
         assert_eq!(

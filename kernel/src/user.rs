@@ -6,9 +6,7 @@
 //! all agree — before a loader makes disagreement harder to diagnose (D-96).
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use elf64::{Elf, ElfError, SegmentKind};
 use handle_space::Rights;
@@ -1849,6 +1847,18 @@ static RING_ENTER_ARMS: AtomicUsize = AtomicUsize::new(0);
 /// Whether the one deferred refusal warning has already been emitted.
 static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
+static EXECUTED: AtomicBool = AtomicBool::new(false);
+static EXECUTION_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Report one observed user call from ordinary thread context (D-427).
+pub(crate) fn report_execution() -> bool {
+    if !EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap(true, Ordering::AcqRel) {
+        return false;
+    }
+    info!("user: ring 3 call observed");
+    true
+}
+
 /// Say what the syscall handler could not, if there is anything new.
 ///
 /// Called from the idle thread because a kernel thread may take the console's
@@ -1918,6 +1928,9 @@ fn answer_call(frame: &TrapFrame, value: u64) {
 /// act on the result (D-116).
 pub(crate) fn call(frame: &TrapFrame) {
     let slot = task::current();
+    if frame.code_selector() & 0b11 == 3 {
+        EXECUTED.store(true, Ordering::Release);
+    }
     match Call::decode(frame.rax()) {
         Call::Exit => {
             if !thread::retire_from_trap(frame) {

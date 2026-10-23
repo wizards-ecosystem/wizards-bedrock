@@ -198,7 +198,6 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     );
     let command = campaign_command(&tools, paths, &root, &private_temp)?;
     let result = execute_campaign(command)?;
-    require_campaign_success(result.status, &root)?;
     let output = canonical_directory(&output_directory(&root), "cargo-mutants output directory")?;
     let mutants = read(
         &output.join(MUTANTS),
@@ -226,6 +225,7 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     require_same_inventory(&candidates, &independent)?;
     let (mut grade, noncaught) = parse_outcomes(&outcomes, &candidates)?;
     grade.adjudicated = verify_adjudications(&adjudications, &noncaught)?;
+    require_campaign_success(result.status, &grade, &root)?;
     // Inventory is another grader invocation and doctests exercise the pinned
     // Cargo toolchain. Rebind source and both external tools after their final
     // use, immediately before any PASS-producing call.
@@ -1420,10 +1420,21 @@ fn execute_campaign(command: Command) -> Result<std::process::Output> {
     )
 }
 
-fn require_campaign_success(status: ExitStatus, root: &Path) -> Result<()> {
+fn require_campaign_success(status: ExitStatus, grade: &Grade, root: &Path) -> Result<()> {
     ensure!(
-        status.success(),
-        "the complete cargo-mutants campaign exited {status}; scratch output is retained at {}",
+        grade.caught.checked_add(grade.adjudicated) == Some(grade.total),
+        "cargo-mutants campaign has outcomes without an exact adjudication"
+    );
+    let expected_code = if grade.timeout > 0 {
+        3
+    } else if grade.missed > 0 {
+        2
+    } else {
+        0
+    };
+    ensure!(
+        status.code() == Some(expected_code),
+        "the complete cargo-mutants campaign exited {status}, expected {expected_code} from its adjudicated outcomes; scratch output is retained at {}",
         root.display()
     );
     Ok(())
@@ -1710,15 +1721,15 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn failure_status() -> ExitStatus {
+    fn exit_status(code: u8) -> ExitStatus {
         use std::os::unix::process::ExitStatusExt;
-        ExitStatus::from_raw(1)
+        ExitStatus::from_raw(i32::from(code) << 8)
     }
 
     #[cfg(windows)]
-    fn failure_status() -> ExitStatus {
+    fn exit_status(code: u8) -> ExitStatus {
         use std::os::windows::process::ExitStatusExt;
-        ExitStatus::from_raw(1)
+        ExitStatus::from_raw(u32::from(code))
     }
 
     #[test]
@@ -2218,6 +2229,9 @@ mod tests {
         let body = &implementation[start..end];
         let inventory = body.find("capture_inventory(").unwrap();
         let doctest = body.find("capture_doctest(").unwrap();
+        let outcomes = body.find("parse_outcomes(").unwrap();
+        let adjudications = body.find("verify_adjudications(").unwrap();
+        let exit = body.find("require_campaign_success(").unwrap();
         let identity = body.find("require_campaign_identity(").unwrap();
         let remeasure = body[identity..]
             .find("discover_tools(paths, &private_temp)?")
@@ -2226,13 +2240,91 @@ mod tests {
         let pass = body.find("attempt.pass_observed_mutants(").unwrap();
         assert!(inventory < identity);
         assert!(doctest < identity);
+        assert!(outcomes < adjudications);
+        assert!(adjudications < exit);
+        assert!(exit < identity);
         assert!(identity < remeasure);
         assert!(remeasure < pass);
     }
 
+    fn campaign_grade(missed: u64, timeout: u64, unviable: u64) -> Grade {
+        let adjudicated = missed + timeout + unviable;
+        Grade {
+            total: 1 + adjudicated,
+            caught: 1,
+            missed,
+            timeout,
+            unviable,
+            adjudicated,
+        }
+    }
+
+    #[test]
+    fn campaign_exit_codes_match_adjudicated_outcomes() {
+        for (missed, timeout, unviable, expected) in [
+            (0, 0, 0, 0),
+            (0, 0, 2, 0),
+            (2, 0, 0, 2),
+            (2, 0, 1, 2),
+            (0, 2, 0, 3),
+            (0, 2, 1, 3),
+            (2, 1, 0, 3),
+            (2, 1, 1, 3),
+        ] {
+            let grade = campaign_grade(missed, timeout, unviable);
+            for code in [0, 1, 2, 3, 4, 5, 6, 70, 255] {
+                assert_eq!(
+                    require_campaign_success(exit_status(code), &grade, Path::new("scratch"))
+                        .is_ok(),
+                    code == expected,
+                    "exit {code} with {grade:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn campaign_exit_does_not_substitute_for_complete_adjudication() {
+        for (missed, timeout, unviable, code) in [(1, 0, 0, 2), (0, 1, 0, 3), (0, 0, 1, 0)] {
+            let mut grade = campaign_grade(missed, timeout, unviable);
+            grade.adjudicated = 0;
+            assert!(
+                require_campaign_success(exit_status(code), &grade, Path::new("scratch")).is_err()
+            );
+            grade.adjudicated = 2;
+            assert!(
+                require_campaign_success(exit_status(code), &grade, Path::new("scratch")).is_err()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signaled_campaign_has_no_qualifying_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+
+        for grade in [
+            campaign_grade(0, 0, 0),
+            campaign_grade(1, 0, 0),
+            campaign_grade(0, 1, 0),
+        ] {
+            assert!(
+                require_campaign_success(ExitStatus::from_raw(9), &grade, Path::new("scratch"))
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn only_a_successful_unchanged_campaign_and_tracked_policy_can_pass() {
-        assert!(require_campaign_success(failure_status(), Path::new("scratch")).is_err());
+        assert!(
+            require_campaign_success(
+                exit_status(1),
+                &campaign_grade(0, 0, 0),
+                Path::new("scratch")
+            )
+            .is_err()
+        );
         let source = SourceIdentity {
             commit: "a".repeat(40),
             tree: "b".repeat(40),

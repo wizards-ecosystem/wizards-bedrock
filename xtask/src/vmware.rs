@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::image::Kernel;
 use crate::paths::{self, Paths};
-use crate::qemu::canonical_decimal;
+use crate::qemu::{SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
 use crate::qualification;
 use crate::sha256;
 
@@ -46,6 +46,7 @@ const SHIPPED_ISOLATION_MARKERS: &[&str] = &[
 ];
 const VMWARE_DMA_HANDOFF_MARKER: &str =
     "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
+const VMWARE_ISA_DMA_MARKER: &str = "iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester";
 const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -381,10 +382,11 @@ impl TranscriptMarker {
 
 const SELFTEST_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
+    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),
     TranscriptMarker::Exact("cpu: protections wp smep smap umip nx"),
     TranscriptMarker::ExtendedState,
-    TranscriptMarker::LocalApic,
     TranscriptMarker::Isolation(Kernel::SelfTest),
+    TranscriptMarker::LocalApic,
     TranscriptMarker::Exact("selftest: a thread crosses into ring three and calls back"),
     TranscriptMarker::Exact("selftest: awaiting storage-delay keystroke"),
     TranscriptMarker::Exact(SELFTEST_DELAYED_READ_MARKER),
@@ -398,12 +400,13 @@ const SELFTEST_MARKERS: &[TranscriptMarker] = &[
 
 const SHIPPED_MARKERS: &[TranscriptMarker] = &[
     TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
-    TranscriptMarker::Isolation(Kernel::Shipped),
+    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),
     TranscriptMarker::Nvme,
     TranscriptMarker::Fat32,
     TranscriptMarker::Tmpfs,
     TranscriptMarker::Exact("devfs: storage is a block device"),
     TranscriptMarker::Exact("devfs: console is a character device"),
+    TranscriptMarker::Isolation(Kernel::Shipped),
     TranscriptMarker::UserSlot,
     TranscriptMarker::KeyboardUptime,
 ];
@@ -597,6 +600,10 @@ fn verify_shipped_transcript(text: &str) -> Result<()> {
         "the shipped VMware image did not launch its program"
     );
     require_once_in_order(text, SHIPPED_MARKERS)?;
+    require_once_in_order(
+        text,
+        &[TranscriptMarker::Exact(SHIPPED_USER_EXECUTION_MARKER)],
+    )?;
     Ok(())
 }
 
@@ -966,20 +973,23 @@ mod tests {
     fn selftest_transcript_with_isolation(isolation: &str) -> String {
         let expected = expected_selftest_checks(&repository_root()).expect("current check count");
         let mut transcript = String::new();
+        // The order the 2026-10-20 VMware self-test boot emitted: storage is
+        // selected before user isolation, and isolation before the APIC.
         for marker in [
             "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester",
+            VMWARE_ISA_DMA_MARKER,
             "cpu: protections wp smep smap umip nx",
             "cpu: extended state 832 bytes, xcr0 0x7, compacted",
-            "apic: x2apic id 0 version 0x14 (bootstrap)",
         ] {
             transcript.push_str("[info ] ");
             transcript.push_str(marker);
             transcript.push('\n');
         }
+        transcript.push_str(&storage_records());
         transcript.push_str("[info ] ");
         transcript.push_str(isolation);
         transcript.push('\n');
-        transcript.push_str(&storage_records());
+        transcript.push_str("[info ] apic: x2apic id 0 version 0x14 (bootstrap)\n");
         for marker in [
             "selftest: a thread crosses into ring three and calls back",
             "selftest: awaiting storage-delay keystroke",
@@ -1035,8 +1045,10 @@ mod tests {
     }
 
     fn shipped_transcript_with_isolation(isolation: &str) -> String {
+        // The order the 2026-10-20 VMware shipped boot emitted: the namespace
+        // survey precedes user isolation.
         let mut transcript = format!(
-            "[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester\n[info ] {isolation}\n"
+            "[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester\n[info ] {VMWARE_ISA_DMA_MARKER}\n"
         );
         transcript.push_str(&storage_records());
         for marker in [
@@ -1044,8 +1056,10 @@ mod tests {
             "tmpfs: 1 file(s) and 1 directory(ies) at the root",
             "devfs: storage is a block device",
             "devfs: console is a character device",
+            isolation,
             "user: program running in slot 0",
             "kernel: reading the keyboard, uptime 1 ms",
+            "user: ring 3 call observed",
         ] {
             transcript.push_str("[info ] ");
             transcript.push_str(marker);
@@ -1094,6 +1108,45 @@ mod tests {
             assert!(
                 verify_transcript(&root, selector, omitted.as_bytes()).is_err(),
                 "selector accepted a transcript without its VMware DMA witness"
+            );
+        }
+    }
+
+    #[test]
+    fn the_vmware_isa_dma_marker_is_required_by_both_selectors() {
+        for markers in [SELFTEST_MARKERS, SHIPPED_MARKERS] {
+            assert_eq!(
+                markers
+                    .iter()
+                    .filter(|marker| matches!(
+                        marker,
+                        TranscriptMarker::Exact(message) if *message == VMWARE_ISA_DMA_MARKER
+                    ))
+                    .count(),
+                1,
+                "each VMware selector must require exactly one quiesced-requester witness"
+            );
+        }
+
+        let kernel = std::fs::read_to_string(repository_root().join("kernel/src/main.rs"))
+            .expect("reading kernel entry source");
+        assert!(
+            kernel.contains(VMWARE_ISA_DMA_MARKER),
+            "the verifier marker must remain the kernel's exact emitted record"
+        );
+
+        let root = repository_root();
+        let record = format!("[info ] {VMWARE_ISA_DMA_MARKER}\n");
+        for (selector, transcript) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            verify_transcript(&root, selector, transcript.as_bytes())
+                .expect("canonical VMware quiesce witness");
+            let omitted = transcript.replacen(&record, "", 1);
+            assert!(
+                verify_transcript(&root, selector, omitted.as_bytes()).is_err(),
+                "selector accepted a transcript without its VMware quiesce witness"
             );
         }
     }
@@ -1400,6 +1453,30 @@ mod tests {
         assert!(verify_transcript(&root, Kernel::Shipped, selftest.as_bytes()).is_err());
         let refusal = format!("{valid}user: no program: refused\n");
         assert!(verify_transcript(&root, Kernel::Shipped, refusal.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn shipped_vmware_requires_execution_after_entry_not_launch_announcements() {
+        let root = repository_root();
+        let valid = shipped_transcript();
+        let record = "[info ] user: ring 3 call observed\n";
+        for replacement in [
+            "",
+            "[warn ] user: ring 3 call observed\n",
+            "[info ] user: ring 3 call observed trailing\n",
+            "[info ] prefix user: ring 3 call observed\n",
+            "[info ] user 0: entering ring 3 at 0x400000000000 with 0 on 0x1000\n",
+            "[info ] user: ring 3 call observed\n[info ] user: ring 3 call observed\n",
+        ] {
+            let forged = valid.replacen(record, replacement, 1);
+            assert!(
+                verify_transcript(&root, Kernel::Shipped, forged.as_bytes()).is_err(),
+                "accepted {replacement:?}"
+            );
+        }
+        assert!(verify_transcript(&root, Kernel::Shipped, valid.as_bytes()).is_ok());
+        let rescheduled = format!("{record}{}", valid.replacen(record, "", 1));
+        assert!(verify_transcript(&root, Kernel::Shipped, rescheduled.as_bytes()).is_ok());
     }
 
     #[test]

@@ -19,10 +19,10 @@ use crate::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use crate::mmio::MmioError;
 use crate::sync::SpinLock;
 
-use super::port::{self, Port};
+use super::port::{self, Port, PortBlock};
 
 /// Functions that may be held by drivers at once.
-const FUNCTION_CLAIMS: usize = 12;
+const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
 struct Configuration {
     ports: Option<(Port<u32>, Port<u32>)>,
@@ -44,6 +44,7 @@ static CONFIGURATION: SpinLock<Configuration> = SpinLock::new(Configuration::new
 /// Reclaim the configuration registry on the terminal panic path.
 pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     CONFIGURATION.force_unlock(panic);
+    ISA_DMA.force_unlock(panic);
 }
 
 /// Claim the two ports, or report that something else already has them.
@@ -116,26 +117,79 @@ impl core::error::Error for DmaHandoffFenceError {}
 pub fn fence_dma_handoff(
     policy: HandoffFencePolicy,
 ) -> Result<HandoffFenceReport, DmaHandoffFenceError> {
-    let mut configuration = CONFIGURATION.lock_leaf();
-    if configuration.functions.len() != 0 {
-        return Err(DmaHandoffFenceError::Busy);
-    }
-    let Some((address, data)) = configuration.ports.as_mut() else {
-        return Err(DmaHandoffFenceError::Unavailable);
+    // Claim before taking this module's leaf guard to preserve lock order. A
+    // refused claim leaves the controllers unowned, so a quiesce refuses.
+    let mut isa_dma = if policy.quiesces_isa_dma() {
+        port::isa_dma_controllers().map(|(first, second)| IsaDma { first, second })
+    } else {
+        None
     };
-    pci_config::fence_dma_handoff(policy, |at, operation| {
-        Port::write(address, at.bits());
-        match operation {
-            HandoffAccess::ReadIdentity | HandoffAccess::ReadClass | HandoffAccess::ReadCommand => {
-                Some(Port::read(data))
-            }
-            HandoffAccess::WriteCommand(value) => {
-                Port::write(data, u32::from(value));
-                Some(0)
-            }
+    let fenced = {
+        let mut configuration = CONFIGURATION.lock_leaf();
+        if configuration.functions.len() != 0 {
+            Err(DmaHandoffFenceError::Busy)
+        } else if let Some((address, data)) = configuration.ports.as_mut() {
+            pci_config::fence_dma_handoff(policy, |at, operation| {
+                Port::write(address, at.bits());
+                match operation {
+                    HandoffAccess::ReadIdentity
+                    | HandoffAccess::ReadClass
+                    | HandoffAccess::ReadCommand => Some(Port::read(data)),
+                    HandoffAccess::WriteCommand(value) => {
+                        Port::write(data, u32::from(value));
+                        Some(0)
+                    }
+                    HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),
+                }
+            })
+            .map_err(DmaHandoffFenceError::Fence)
+        } else {
+            Err(DmaHandoffFenceError::Unavailable)
         }
+    };
+    if let Some(controllers) = isa_dma {
+        *ISA_DMA.lock_leaf() = Some(controllers);
+    }
+    fenced
+}
+
+/// Both 8237 controllers, owned for the rest of the boot once claimed, so no
+/// later port owner can unmask a channel behind a quiesced ISA requester.
+static ISA_DMA: SpinLock<Option<IsaDma>> = SpinLock::new(None);
+
+/// The permanent claim on DMA1 (`0x00..0x10`) and DMA2 (`0xC0..0xE0`).
+struct IsaDma {
+    first: PortBlock<16>,
+    second: PortBlock<32>,
+}
+
+impl IsaDma {
+    /// Master-clear and mask both controllers, then read both status words.
+    ///
+    /// A master clear masks every channel by definition; the explicit
+    /// all-mask write follows because the mask registers cannot be read back.
+    fn quiesce(&mut self) -> u32 {
+        self.first.write::<u8>(0x0D, 0);
+        self.second.write::<u8>(0x1A, 0);
+        self.reassert()
+    }
+
+    /// Mask every channel again and read both status registers.
+    fn reassert(&mut self) -> u32 {
+        self.first.write::<u8>(0x0F, 0x0F);
+        self.second.write::<u8>(0x1E, 0x0F);
+        let first = self.first.read::<u8>(0x08);
+        let second = self.second.read::<u8>(0x10);
+        u32::from(first) | u32::from(second) << 8
+    }
+}
+
+/// Whether the entry quiesce still holds: both 8237 controllers are owned,
+/// remasked, and report no pending request. `false` if none was ever claimed.
+pub fn isa_dma_quiet() -> bool {
+    ISA_DMA.lock_leaf().as_mut().is_some_and(|controllers| {
+        controllers.reassert() & pci_config::ISA_DMA_PENDING_REQUESTS == 0
     })
-    .map_err(DmaHandoffFenceError::Fence)
 }
 
 /// Read the dword at `at`.

@@ -211,6 +211,12 @@ pub fn debug_exit() -> Option<Port<u32>> {
     claim(0xF4)
 }
 
+/// Both legacy 8237 DMA controllers: DMA1 at `0x00..0x10` and DMA2 at
+/// `0xC0..0xE0`, as one permanent claim (D-426).
+pub fn isa_dma_controllers() -> Option<(PortBlock<16>, PortBlock<32>)> {
+    claim_block_pair(0x00, 0xC0)
+}
+
 /// The 8042 keyboard controller's data and command ports (0x60 and 0x64).
 ///
 /// One transaction, because a driver that took the data port and then failed

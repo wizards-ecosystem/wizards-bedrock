@@ -24900,3 +24900,340 @@ older `main` commit was rejected because it would qualify a source the release
 does not ship. Keeping the documentation-only child as the planned close was
 rejected because a direct tag of the qualified commit needs no relation beyond
 the identity evidence already verifies.
+
+## D-426 The first real VMware boots set the platform's ISA, capacity, descriptor and transcript facts - Status: Accepted (2026-10-20), implemented with qualification OPEN; amends D-392 and D-421; advances PW-003, PW-004, PW-596, PW-597, PW-598 and PW-599
+
+**Context.** The first source-bound VMware self-test boot of candidate
+`65f0f89` failed closed before memory initialization:
+`00:07.0 identity 0x71108086 class 0x06010008 command read back as 0x0007,
+expected 0x0003`. VMware's emulated Intel PIIX4 ISA bridge, like D-392's 440BX
+host bridge, hard-wires command bit 2. Because the entry fence stops at the
+first refusal, an uncommitted diagnostic kernel then recorded every function
+on that machine without refusing. Of 43 present functions, only `00:00.0` and
+`00:07.0` kept bit 2; the other 40 cleared it. Further diagnostic boots on
+2026-10-20 then found three more VMware-only defects hidden behind the first:
+
+- `FUNCTION_AUTHORITY_LIMIT` and `wost`'s `FUNCTION_CLAIMS` were both 12, but
+  VMware's single remapping unit governs 42 live requesters, 32 of them
+  virtual PCIe root ports. Storage therefore reported `the remapping unit has
+  more than 12 live requesters`, no device was isolated, interrupts stayed off
+  and about forty self-tests failed.
+- With capacity raised, the first `iretq` into ring 3 stopped silently. A
+  `vmss2core` dump of the suspended guest placed vCPU 0 at `wost_kpti_stop`
+  with interrupts off; the saved frame was vector 14, error code 3 (a
+  supervisor write to a present page) at `wost_kpti_exit_iret` on the
+  stripped root. The live GDT held user data `0x00f2` and user code `0x00fa`
+  with the accessed bit clear. Loading CS and SS sets that bit, which is a
+  write to a table the stripped root maps read-only. QEMU's TCG does not
+  enforce that write, so no earlier boot could observe it.
+- The VMware transcript verifier rejected genuine boots: its shipped list
+  required user isolation before `nvme: up`, and its self-test list required
+  the local APIC before user isolation. The kernel emits both in the opposite
+  order. Like D-421's drifted field, the order had been taken from duplicated
+  fixtures rather than from any kernel transcript.
+
+Unlike the 440BX, PIIX4 function 0 is a DMA requester: its two 8237
+controllers master ISA DMA. Treating it as D-392's "present but not a
+requester" would remove a real requester from VT-d inventory and coverage.
+
+**Decision.** The VMware policy adds exactly one quiesced requester. When the
+VMware CPU identity, BDF `00:07.0`, identity `0x7110_8086`, ISA-bridge class
+`06:01:00` with revision ignored, command before exactly `0x0007` and readback
+exactly `0x0007` all agree, the pure fence asks the platform to master-clear
+both 8237 controllers, mask every channel, and return both status registers.
+Any request bit (`0xf0f0`) refuses the boundary; terminal-count bits clear on
+read and prove nothing. The mask registers are write-only: on VMware they read
+`0xff` before and after every write, so the proof is the defined master-clear
+state plus the explicit all-mask write and a quiet status, not a mask readback.
+`wost` claims both controller port blocks (`0x00..0x10` and `0xC0..0xE0`) as
+one permanent claim before it takes the configuration guard, so no later port
+owner can unmask a channel. The fence mints a private non-copyable
+`QuiescedIsaRequester`. The later topology snapshot consumes it, compares the
+exact BDF, identity, class and command, and keeps the function in both the
+present and the requester inventory. A unit-wide VT-d fence then holds that one
+function by its exclusive claim, an unchanged identity and command, and a fresh
+remask with no pending request, instead of by a BME clear it cannot perform.
+The kernel records `iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its
+masked 8237 controllers; it remains a requester`, and both VMware selectors
+require that record exactly once. QEMU's strict policy never quiesces.
+
+Function authority capacity becomes one shared constant,
+`pci_config::FUNCTION_AUTHORITY_LIMIT = 64`, used by both the kernel and
+`wost`. A host test replays the captured 43-function VMware segment through
+the real fence and requires its 42 requesters to fit.
+
+Every code and data descriptor is written with the accessed bit already set,
+as Linux does, so the processor never needs to write the descriptor table.
+
+Both VMware marker lists follow the kernel's emitted order. The shipped list is
+DMA, ISA quiesce, storage, FAT32, tmpfs, both devfs records, isolation, the
+user slot and keyboard liveness. The self-test list places isolation before the
+APIC. Their fixtures now reproduce the order the 2026-10-20 boots emitted. With
+all four repairs, the uncommitted diagnostic kernel passed 290 of 290 self-test
+checks on VMware, and both real transcripts passed the corrected verifier.
+
+**Consequences.** The shipped image's liveness markers prove only that the
+kernel reached its user boundary. Before the descriptor repair, the shipped
+diagnostic printed the same markers and then halted inside the exit
+trampoline. Ring-3 execution on VMware is proved by the self-test image's ring
+three checks; a post-entry shipped marker remains open under PW-004.
+
+Permanent mutations 2,272 through 2,297 cover the new checks. Mutations 324,
+631, 632, 1,007, 1,701, 1,804 and 1,848 keep their identities while targeting
+the edited source. On 2026-10-20 each new named witness passed on the pristine
+source and failed under its mutation. Mutations 2,272 through 2,282, which
+widen the PIIX4 BDF, identity, class or either command word, skip the 8237
+quiesce, ignore a pending request, accept a changed later function, drop the
+function from requester inventory, or answer for another function or an
+unsealed snapshot, red
+`only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester`.
+Mutation 2,283, which restores the old capacity, reds
+`the_captured_vmware_segment_fences_and_fits_the_function_authority_limit`.
+Mutations 2,284 through 2,288, which drop the sibling-fence branch, its
+identity, command or 8237 recheck, or report a quiet pair without masking it,
+red `memory_initialization_requires_the_exhaustive_entry_dma_boundary`.
+Mutations 2,289 through 2,292, which leave one descriptor's accessed bit for
+the processor to write, red `every_code_and_data_descriptor_is_already_accessed`.
+Mutations 2,293 through 2,295, which drop the ISA marker from a selector or let
+the kernel record drift, red
+`the_vmware_isa_dma_marker_is_required_by_both_selectors`, and mutations 2,296
+and 2,297, which restore either fixture-only order, red
+`the_vmware_dma_handoff_marker_is_required_by_both_selectors`. These are
+implementation checks. Only fresh source-bound VMware self-test and shipped
+qualifications and the complete current-registry sweep qualify them.
+
+**Alternatives.** Extending D-392's non-requester exception to `00:07.0` was
+rejected because it would remove a real DMA requester from VT-d inventory and
+coverage. Refusing VMware entirely was rejected for the same reason as in
+D-392. A mask readback was rejected as unobservable on the target. Relying on
+the WZDH contract's quiescence claim alone was rejected because the platform
+control exists and costs a few port writes. Raising capacity only for VMware
+was rejected because the bound is a property of the qualified platform, not
+the selector. Making the GDT writable in the stripped root was rejected because
+it widens the user-visible enclave to protect a bit the kernel can set itself.
+Loosening the verifier to accept either order was rejected; the kernel has one
+order, and the verifier states it.
+
+## D-427 Shipped liveness requires a call from ring 3 - Status: Accepted (2026-10-23), qualification OPEN; amends D-116 and D-426; advances PW-004
+
+**Context.** D-426's VMware diagnosis showed that the shipped image could
+print its launch and keyboard markers before halting on its first `iretq`.
+Neither scheduling a user thread nor announcing the crossing proves that a
+user instruction executed. The self-test image's successful calls cannot
+substitute for the separately built shipped image.
+
+**Decision.** A call whose saved code selector has CPL 3 sets a boot-lifetime
+atomic observation in `user::call`. The idle thread emits exactly one
+`user: ring 3 call observed` info record after that observation. It takes no
+console lock in trap context and adds no user ABI or target program. The
+existing launch records remain diagnostics. Both shipped QEMU and VMware
+qualification require the new exact record; VMware admits it independently
+of the boot-banner order because scheduling is not a transcript contract.
+
+**Proof.** Host contracts bind the sole producer to the saved-privilege guard,
+the one-shot idle reporter and both consumers. Transcript fixtures refuse a
+missing, warning, duplicate or forged VMware record. Persistent mutations
+remove the privilege guard, observation, idle call, one-shot latch and each
+consumer requirement. On 2026-10-23 mutations 2,298 through 2,306 each failed
+their exact host witness, followed by byte-exact restoration and passing
+source/producer contracts plus all 32 VMware host tests. The latter need the
+normal Windows token for their symlink fixtures. Fresh shipped QEMU and VMware
+boots and the complete current mutation sweep remain required; no runtime
+result is claimed here.
+
+**Alternatives.** Reusing the pre-entry announcement was rejected because the
+observed VMware failure printed it. Logging directly from the trap was
+rejected under D-122's lock discipline. Requiring the self-test verdict in a
+shipped transcript would qualify another image and was rejected.
+
+## D-428 The ISA DMA proof checks the adapter operations as well as their caller - Status: Accepted (2026-10-23), qualification OPEN; strengthens D-426 and PW-597
+
+**Context.** D-426's pure entry-fence tests correctly required an ISA quiesce
+operation, but its platform contract checked only that the operation called
+`IsaDma::quiesce`. Neither that contract nor a machine self-test checked the
+method's master-clear, all-mask, status-read, or later remask instructions.
+Deleting the reset and mask writes while retaining the call and quiet status
+reads therefore left the existing contract satisfied. A firmware handoff that
+was already quiet could also make a live VMware boot pass without testing the
+missing work. A call to a function is not evidence of the hardware actions that
+function must perform.
+
+**Decision.** A dedicated host source contract checks the parsed executable
+statements at the ISA adapter. The entry sequence must issue byte-wide master
+clears at DMA1 offset `0x0d` and DMA2 offset `0x1a`, then run the shared remask.
+The remask must write `0x0f` to DMA1 offset `0x0f` and DMA2 offset `0x1e` before
+reading status at offsets `0x08` and `0x10`. Each controller's byte occupies its
+own half of the combined word, and the pending-request mask is exactly
+`0xf0f0`. A later quiet check must hold the permanent controller owner, refuse
+an absent owner, issue a fresh remask, and test that exact mask. The entry path
+must move both capabilities into permanent storage before returning either
+success or refusal. The paired claim must reserve both complete fixed windows
+in one transaction.
+
+Permanent mutations 2,307 through 2,321 independently remove each controller's clear and mask,
+misdirect each status read, alias or shift the returned status bytes, drop a
+pending-request bit, bypass the later remask or missing-owner refusal, discard
+ownership on success or refusal, and move the paired claim to the wrong base.
+On 2026-10-23 the pristine adapter contract passed, all fifteen mutations failed
+its exact named witness, and the restored pristine contract passed again. Each
+of the three transiently changed source files was restored byte-for-byte and
+checked by SHA-256. Full qualification remains the current ordinary gate,
+complete curated mutation sweep, and fresh source-bound VMware records.
+
+**Alternatives.** Checking only for function-name text was rejected because it
+was the gap this review found. Requiring mask-register readback was rejected
+because VMware does not expose one. A new generic runtime I/O interpreter was
+unnecessary for this small fixed platform adapter; the parsed ordered contract
+checks the actual operations while leaving the production instruction path
+unchanged.
+
+## D-429 A complete independent grade matches its exit to adjudicated outcomes - Status: Accepted (2026-10-23), qualification OPEN; amends D-373; advances the PW-025 continuous campaign
+
+**Context.** The owned cargo-mutants grade rejected every nonzero process exit
+before reading its outcomes. The pinned 27.1.0 grader reports 2 for missed
+mutants and 3 for timeouts, including outcomes the tracked policy explicitly
+permits as equivalent or bounded nontermination. Its timeout exit takes
+precedence when both kinds occur. Requiring zero made those reviewed
+dispositions unreachable and confused a complete campaign result with a tool
+failure.
+
+**Decision.** After the complete candidate/outcome bijection, passing pristine
+baseline, phase replay and exact tracked adjudications have been verified,
+the owned campaign requires exit 3 when the parsed timeout count is nonzero,
+otherwise 2 when the parsed missed count is nonzero, otherwise 0. Unviable
+mutants alone do not change that required zero. The boundary also requires
+caught plus adjudicated to equal the complete parsed total. Any mismatch,
+signal or other exit remains a refusal. This amends D-373's blanket nonzero
+refusal; it does not admit incomplete runs, unreviewed survivors or a failed
+baseline. Final source and executable remeasurement still follows inventory
+and doctests and immediately precedes the sole owned PASS door.
+
+**Proof required.** A focused witness exercises the complete counter/exit
+truth table, including timeout precedence over missed mutants and unviable-only
+success, and rejects usage, baseline and internal errors. Another refuses
+missing or surplus adjudications despite an otherwise matching exit. The
+ordering witness requires parsing, exact adjudications and the exit boundary
+before final identity verification. Retained mutation 1,748 continues to
+remove the exit predicate; mutations 2,322 through 2,326 name the adjudication
+total, exit precedence, missed classification, unviable classification and
+owned-call boundary. Each must be observed red before it is credited.
+
+**Evidence.** On 2026-10-23 all 24 Windows mutation-grade host tests passed.
+Mutation 1,748 and mutations 2,322 through 2,326 each produced their exact
+one-test FAILED verdict; the source was restored byte-for-byte after every
+check. The restored 24-test suite and the complete registry's source-match,
+permanent-identity and unique-property checks then passed. The separate Unix
+signal witness was not executed on this Windows host. Ordinary CI and a
+complete current-source cargo-mutants campaign remain required. The tracked
+adjudication policy is still empty because no observed independent campaign
+is available to adjudicate. D-425 continues to permit an explicitly deferred
+grade in a release bundle; this implementation does not claim a passing grade.
+
+**Alternatives.** Accepting any of 0, 2 or 3 without checking the counters
+would accept a contradictory process result. Suppressing all nonzero exits
+would also accept tool failures. Treating an unobserved survivor as equivalent
+would replace the required review with an assumption.
+
+## D-430 Leaf callback review follows authority, not a stale static count - Status: Accepted (2026-10-23); clarifies D-121, D-126 and D-200; preserves PW-707
+
+**Context.** PW-707 still described three leaf-lock statics and a future fourth
+as the trigger for enforcement. D-126 had already found four and replaced
+that counting proposal with an observed lock-order witness. The current tree
+also contains D-200's bounded atomic readiness predicate, so a claim that no
+callback-shaped leaf API exists would misdescribe the implementation.
+
+**Decision.** D-121's prohibition remains on exposing protected contents to
+caller-supplied general work while a leaf guard is held. Copy owned results
+out and drop the guard before that work. The existing crate-private
+`WaitQueue::wait_from_trap_until` is the audited readiness exception: its only
+production caller is `Queue::wait_from_trap` in `kernel/src/queue.rs`, whose
+predicate compares `self.served_count()` with the sampled generation.
+`served_count` performs one `AtomicUsize::load(Ordering::Acquire)`; it takes no
+lock, exposes no guarded contents and performs no general callback work.
+`kernel/src/wait.rs` checks this predicate while holding the waiter guard,
+then drops that guard before `thread::wait_from_trap` can switch. This keeps
+D-200's registration/recheck boundary intact.
+
+The private closure inside `wost::pci::isa_dma_quiet` likewise supplies no
+caller callback authority: it invokes only the fixed adapter's `reassert`
+under its permanent controller guard. D-428 checks those remask and status
+operations. A new static alone is not a callback defect. PW-707 stays stopped
+until a proposed API exposes new caller-supplied work or protected contents
+under a leaf guard, or expands the existing atomic-only readiness predicate.
+Before admitting that change, remove the exposure or add the bounded
+source/semantic contract for its exact authority and a deliberate failing
+witness. This clarification does not authorize a generic callback lint or
+new runtime infrastructure.
+
+**Existing evidence and limits.** `SpinLock::lock_leaf` reaches `acquire` in
+`wost/src/sync.rs`, which reports acquisitions to `PerCpu::took_lock` in
+`wost/src/arch/x86_64/percpu.rs`. In self-test builds, an acquisition while
+`leaves_held` is nonzero records the outer and inner sites. The existing
+`a_leaf_guard_is_the_last_lock` machine witness reports those sites through
+`no lock is taken while a leaf guard is held`. That checks exercised lock
+nesting; it neither proves every unexecuted path nor statically enforces the
+atomic-only predicate. The inspected call chain supplies the latter's present
+review evidence. No new machine result or foundation closure is claimed.
+
+**Alternatives.** Retaining the fourth-static threshold would reopen a
+condition D-126 already resolved while overlooking the actual callback
+authority. Banning the existing readiness recheck would undo D-200's wait
+protocol without a demonstrated defect. Treating the observed nesting check
+as a whole-program callback proof would overstate its coverage.
+
+## D-431 VMware console automation admits one complete loopback runtime group - Status: Accepted (2026-10-23); amends D-365; advances PW-579
+
+**Context.** The authorized VMware input rounds need a host console path
+without guest software. On this host, `vmrun` guest typing refuses and the
+Workstation MKS commands do not change the observed firmware menu. An
+isolated diagnostic boot with Workstation's built-in VNC console accepts an
+RFB 3.8 Down key and visibly moves that menu. The observed listener belongs
+to the sole `vmware-vmx` process and binds only `127.0.0.1:5997`; the exact
+one-machine `vmrun` list identifies the probe, and stopping it removes the
+listener. This establishes a console transport, not a kernel qualification.
+
+**Decision.** The runtime VMX may omit VNC entirely or carry exactly this
+complete group, with the original spelling and values:
+
+```text
+RemoteDisplay.vnc.enabled = "TRUE"
+RemoteDisplay.vnc.ip = "127.0.0.1"
+RemoteDisplay.vnc.port = "5997"
+```
+
+Partial groups cannot inherit an unreviewed default. Disabled or alternate
+enable values, wildcard or other addresses, hostnames, different ports and
+alternate decimal spellings refuse. Every other `RemoteDisplay` addition
+continues to refuse, including password and key-map settings. The source
+template and generation receipt do not change: every generated assignment
+must still be present unchanged, while the captured runtime VMX and serial
+transcript remain exact evidence. No assignment is removed before hashing,
+and VNC grants no CPU-mask, device, transcript or receipt exception.
+
+The operator adds the group only to the stopped generated runtime machine,
+then verifies the exact one-machine identity and actual loopback listener
+ownership before connecting locally. The console has no VNC authentication;
+it is bounded to the existing host authority, not isolated from other local
+processes. Input follows the real prompts, qualification still observes the
+running machine, and stopping it must remove the listener. This is an
+optional input transport, not a background service or a new qualification
+verdict. Fresh self-test and shipped machine evidence remain required.
+
+**Proof.** The focused config witness accepts the absent group and the exact
+complete group alongside ordinary Workstation identity additions. It
+rejects all six partial subsets, alternate values, unreviewed keys,
+case-colliding duplicates and source-setting changes with VNC enabled.
+Retained mutations 2,327 through 2,337 weaken completeness, optionality,
+canonical enable values, address and port constraints, the unknown-key
+boundary and generated-assignment binding. On 2026-10-23 all six config
+tests passed, each of those eleven mutations returned exit 101 with the
+exact witness marked FAILED, and the pristine witness passed before and
+after the series. Every mutated source was restored byte for byte and its
+SHA-256 rechecked. Ordinary CI and current-source machine qualification
+remain separate requirements.
+
+**Alternatives.** An unrestricted VNC port range or address exception would
+admit configurations the probe did not establish. Putting the console in the
+source template would require it for every generated machine. Rewriting the
+receipt or filtering VNC keys from captured evidence would hide execution
+inputs. Requiring guest-agent typing cannot serve this freestanding kernel.

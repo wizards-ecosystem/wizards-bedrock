@@ -79,7 +79,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2272;
+pub const NEXT_MUTATION_ID: u16 = 2338;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -3842,8 +3842,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 324,
         file: "kernel/src/main.rs",
-        find: "    survey_the_bus(dma_non_requester);\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
-        replace: "    survey_the_bus(dma_non_requester);\n    start_interrupts(routing.as_ref());",
+        find: "    survey_the_bus(dma_non_requester, dma_quiesced);\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
+        replace: "    survey_the_bus(dma_non_requester, dma_quiesced);\n    start_interrupts(routing.as_ref());",
         breaks: "every admitted boot publishes its hardware-free namespaces",
         reddens: Caught::BootMarker(qemu::DEGRADED_FILESYSTEM_MARKER),
     },
@@ -6318,8 +6318,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 553,
         file: "docs/016-pre-wizzy-foundation.md",
-        find: "| D-121 | TRIGGER | PW-707 fires at the fourth leaf-lock static or a public callback-shaped leaf guard. |",
-        replace: "| D-121 | TRIGGER | PW-999 fires at the fourth leaf-lock static or a public callback-shaped leaf guard. |",
+        find: "| D-121 | TRIGGER | D-126 supplies the exercised lock-nesting witness; D-430 records the existing atomic-only readiness exception. PW-707 fires on new caller-supplied work or protected-content exposure under a leaf guard, or expansion of that predicate. |",
+        replace: "| D-121 | TRIGGER | D-126 supplies the exercised lock-nesting witness; D-430 records the existing atomic-only readiness exception. PW-999 fires on new caller-supplied work or protected-content exposure under a leaf guard, or expansion of that predicate. |",
         breaks: "a historical handoff can cite a register owner that does not exist",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7068,8 +7068,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 625,
         file: "xtask/src/qemu.rs",
-        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
-        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
+        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),\n];",
+        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),\n];",
         breaks: "a shipped boot can pass without consuming the TCG isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7134,7 +7134,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 631,
         file: "xtask/src/vmware.rs",
-        find: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Isolation(Kernel::SelfTest),\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
+        find: "    TranscriptMarker::Isolation(Kernel::SelfTest),\n    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
         replace: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
         breaks: "the VMware self-test selector omits the consumed native isolation policy",
         reddens: Caught::HostTest {
@@ -7145,8 +7145,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 632,
         file: "xtask/src/vmware.rs",
-        find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Isolation(Kernel::Shipped),\n    TranscriptMarker::Nvme,",
-        replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),\n    TranscriptMarker::Nvme,",
+        find: "    TranscriptMarker::Exact(\"devfs: console is a character device\"),\n    TranscriptMarker::Isolation(Kernel::Shipped),\n    TranscriptMarker::UserSlot,",
+        replace: "    TranscriptMarker::Exact(\"devfs: console is a character device\"),\n    TranscriptMarker::UserSlot,",
         breaks: "the shipped VMware selector omits the consumed native isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -11460,8 +11460,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1007,
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "const FUNCTION_CLAIMS: usize = 12;",
-        replace: "const FUNCTION_CLAIMS: usize = 12;\n\nfn write_command() {}",
+        find: "const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;",
+        replace: "const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;\n\nfn write_command() {}",
         breaks: "the PCI adapter regrows an unchecked command-register write helper",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19104,8 +19104,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1701,
         file: "kernel/src/pci.rs",
-        find: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n) -> Result<(), TopologyError> {\n    TOPOLOGY.lock_leaf().reset();",
-        replace: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n) -> Result<(), TopologyError> {\n    let stack_topology = PciTopology::new();\n    core::hint::black_box(&stack_topology);\n    TOPOLOGY.lock_leaf().reset();",
+        find: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n    mut quiesced: Option<QuiescedIsaRequester>,\n) -> Result<(), TopologyError> {\n    TOPOLOGY.lock_leaf().reset();",
+        replace: "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n    mut quiesced: Option<QuiescedIsaRequester>,\n) -> Result<(), TopologyError> {\n    let stack_topology = PciTopology::new();\n    core::hint::black_box(&stack_topology);\n    TOPOLOGY.lock_leaf().reset();",
         breaks: "the complete PCI topology consumes a large fixed boot-stack frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19390,8 +19390,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1727,
         file: "xtask/src/qemu.rs",
-        find: "    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
-        replace: "];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
+        find: "    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),\n];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
+        replace: "    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),\n];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
         breaks: "the shipped boot can pass without observing its live keyboard poller",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19618,12 +19618,12 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1748,
         file: "xtask/src/mutants_grade.rs",
-        find: "        status.success(),\n        \"the complete cargo-mutants campaign exited {status}; scratch output is retained at {}\",",
-        replace: "        true,\n        \"the complete cargo-mutants campaign exited {status}; scratch output is retained at {}\",",
-        breaks: "a failed cargo-mutants campaign is accepted as qualification evidence",
+        find: "        status.code() == Some(expected_code),",
+        replace: "        true,",
+        breaks: "a cargo-mutants campaign exit can contradict its adjudicated outcome counters",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutants_grade::tests::only_a_successful_unchanged_campaign_and_tracked_policy_can_pass",
+            name: "mutants_grade::tests::campaign_exit_codes_match_adjudicated_outcomes",
         },
     },
     Mutation {
@@ -20215,8 +20215,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1804,
         file: "kernel/src/main.rs",
-        find: "    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester) {",
-        replace: "    match pci::snapshot_topology(dma_non_requester) {\n        Ok(()) => info!(\"pci: complete segment-zero topology sealed\"),\n        Err(reason) => warn!(\"pci: DMA topology refused: {reason}\"),\n    }\n\n    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester) {",
+        find: "    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester, dma_quiesced) {",
+        replace: "    match pci::snapshot_topology(dma_non_requester, dma_quiesced) {\n        Ok(()) => info!(\"pci: complete segment-zero topology sealed\"),\n        Err(reason) => warn!(\"pci: DMA topology refused: {reason}\"),\n    }\n\n    let early_boundary = thread::ThreadContext::claim()\n        .is_some_and(|mut context| iommu::establish_fabric_boundary(&mut context));\n    if !early_boundary {\n        warn!(\"iommu: no early default-deny PCI boundary; storage and interrupts stay closed\");\n    }\n\n    match pci::snapshot_topology(dma_non_requester, dma_quiesced) {",
         breaks: "PCI topology is observed before the default-deny DMA owner exists",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20696,8 +20696,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1848,
         file: "libs/pci-config/src/lib.rs",
-        find: "                    retained_non_requesters += 1;\n                    retained_non_requester = Some(authority);",
-        replace: "                    disabled += 1;\n                    retained_non_requesters += 1;\n                    retained_non_requester = Some(authority);",
+        find: "                            retained_non_requesters += 1;\n                            retained_non_requester = Some(authority);",
+        replace: "                            disabled += 1;\n                            retained_non_requesters += 1;\n                            retained_non_requester = Some(authority);",
         breaks: "an attempted but refused VMware host-bridge clear is counted as a disabled requester",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -25053,6 +25053,732 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qualification::tests::online_and_offline_release_paths_share_the_owned_deep_verifier",
+        },
+    },
+    Mutation {
+        id: 2272,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && (at.bus(), at.device(), at.function()) == (0, 7, 0)",
+        replace: "            && at.device() == 7",
+        breaks: "another VMware function number can impersonate the quiesced PIIX4 ISA bridge",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2273,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && identity == VMWARE_PIIX4_ISA_IDENTITY",
+        replace: "            && identity != 0",
+        breaks: "a foreign identity at the ISA bridge address is quiesced instead of refused",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2274,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && class & ISA_CLASS_MASK == ISA_BRIDGE_CLASS",
+        replace: "            && class & ISA_CLASS_MASK != 0",
+        breaks: "a non-ISA-bridge class at the PIIX4 address enters the quiesce exception",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2275,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && before == VMWARE_ISA_COMMAND",
+        replace: "            && before & command::BUS_MASTER != 0",
+        breaks: "an unexpected PIIX4 command before the clear is accepted for quiesce",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2276,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            && found == VMWARE_ISA_COMMAND",
+        replace: "            && found & command::BUS_MASTER != 0",
+        breaks: "an unexpected PIIX4 command readback is accepted for quiesce",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2277,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                        let status = access(at, HandoffAccess::QuiesceIsaDma).ok_or(",
+        replace: "                        let status = Some(0u32).ok_or(",
+        breaks: "the ISA bridge is admitted without ever masking its 8237 controllers",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2278,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                        if status & ISA_DMA_PENDING_REQUESTS != 0 {",
+        replace: "                        if false && status & ISA_DMA_PENDING_REQUESTS != 0 {",
+        breaks: "a pending 8237 request after masking still mints quiesce authority",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2279,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if observed != bound {",
+        replace: "        if false && observed != bound {",
+        breaks: "the later snapshot accepts a changed function for the quiesce authority",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2280,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        self.quiesced = Some(QuiescedRequester {",
+        replace: "        let index = function_index(at);\n        self.requesters[index / u64::BITS as usize] &= !(1 << (index % u64::BITS as usize));\n        self.quiesced = Some(QuiescedRequester {",
+        breaks: "the quiesced ISA requester silently leaves the VT-d requester inventory",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2281,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        self.quiesced\n            .filter(|record| record.at == at.function_base())",
+        replace: "        self.quiesced",
+        breaks: "every function inherits the quiesced requester's fence exemption",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2282,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    pub fn quiesced_requester(&self, at: Address) -> Option<QuiescedRequester> {\n        if !self.sealed {\n            return None;\n        }",
+        replace: "    pub fn quiesced_requester(&self, at: Address) -> Option<QuiescedRequester> {",
+        breaks: "an unsealed snapshot answers the quiesced-requester query",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester",
+        },
+    },
+    Mutation {
+        id: 2283,
+        file: "libs/pci-config/src/lib.rs",
+        find: "pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;",
+        replace: "pub const FUNCTION_AUTHORITY_LIMIT: usize = 12;",
+        breaks: "function authority capacity falls below VMware's 42 live requesters",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::the_captured_vmware_segment_fences_and_fits_the_function_authority_limit",
+        },
+    },
+    Mutation {
+        id: 2284,
+        file: "kernel/src/pci.rs",
+        find: "    if let Some(record) = quiesced {\n        return fence_quiesced_requester(function, record);\n    }",
+        replace: "    let _ = quiesced;",
+        breaks: "a unit-wide fence tries to clear the quiesced requester's read-only BME",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 2285,
+        file: "kernel/src/pci.rs",
+        find: "    if identity == Some(record.identity())",
+        replace: "    if identity.is_some()",
+        breaks: "the unit-wide fence holds a different function at the quiesced address",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 2286,
+        file: "kernel/src/pci.rs",
+        find: "        && command == Some(record.command())",
+        replace: "        && command.is_some()",
+        breaks: "the unit-wide fence holds the quiesced requester after its command changed",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 2287,
+        file: "kernel/src/pci.rs",
+        find: "        && pci::isa_dma_quiet()\n",
+        replace: "        && true\n",
+        breaks: "the unit-wide fence holds the quiesced requester without rechecking its 8237s",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 2288,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),",
+        replace: "HandoffAccess::QuiesceIsaDma => Some(0),",
+        breaks: "the platform reports a quiet 8237 pair without masking it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+        },
+    },
+    Mutation {
+        id: 2289,
+        file: "libs/x86-tables/src/gdt.rs",
+        find: "            | bit::RING_THREE\n            | bit::ACCESSED,\n    );",
+        replace: "            | bit::RING_THREE,\n    );",
+        breaks: "the first iretq to ring 3 must write the user code descriptor's accessed bit",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "gdt::tests::every_code_and_data_descriptor_is_already_accessed",
+        },
+    },
+    Mutation {
+        id: 2290,
+        file: "libs/x86-tables/src/gdt.rs",
+        find: "bit::RING_THREE | bit::ACCESSED);",
+        replace: "bit::RING_THREE);",
+        breaks: "the first iretq to ring 3 must write the user data descriptor's accessed bit",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "gdt::tests::every_code_and_data_descriptor_is_already_accessed",
+        },
+    },
+    Mutation {
+        id: 2291,
+        file: "libs/x86-tables/src/gdt.rs",
+        find: "            | bit::LONG_MODE\n            | bit::ACCESSED,\n    );\n\n    /// Ring 0 data",
+        replace: "            | bit::LONG_MODE,\n    );\n\n    /// Ring 0 data",
+        breaks: "loading the kernel code selector writes the descriptor table",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "gdt::tests::every_code_and_data_descriptor_is_already_accessed",
+        },
+    },
+    Mutation {
+        id: 2292,
+        file: "libs/x86-tables/src/gdt.rs",
+        find: "Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::ACCESSED);",
+        replace: "Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS);",
+        breaks: "loading the kernel data selector writes the descriptor table",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "gdt::tests::every_code_and_data_descriptor_is_already_accessed",
+        },
+    },
+    Mutation {
+        id: 2293,
+        file: "xtask/src/vmware.rs",
+        find: "    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),\n    TranscriptMarker::Exact(\"cpu: protections wp smep smap umip nx\"),",
+        replace: "    TranscriptMarker::Exact(\"cpu: protections wp smep smap umip nx\"),",
+        breaks: "the VMware self-test selector omits the consumed ISA quiesce witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_isa_dma_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 2294,
+        file: "xtask/src/vmware.rs",
+        find: "    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),\n    TranscriptMarker::Nvme,",
+        replace: "    TranscriptMarker::Nvme,",
+        breaks: "the shipped VMware selector omits the consumed ISA quiesce witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_isa_dma_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 2295,
+        file: "kernel/src/main.rs",
+        find: "at its masked 8237 controllers; it remains a requester\"",
+        replace: "at its masked 8237 controllers\"",
+        breaks: "the kernel's ISA quiesce record drifts from the VMware verifier marker",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_isa_dma_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 2296,
+        file: "xtask/src/vmware.rs",
+        find: "    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),\n    TranscriptMarker::Nvme,\n    TranscriptMarker::Fat32,\n    TranscriptMarker::Tmpfs,\n    TranscriptMarker::Exact(\"devfs: storage is a block device\"),\n    TranscriptMarker::Exact(\"devfs: console is a character device\"),\n    TranscriptMarker::Isolation(Kernel::Shipped),\n",
+        replace: "    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),\n    TranscriptMarker::Isolation(Kernel::Shipped),\n    TranscriptMarker::Nvme,\n    TranscriptMarker::Fat32,\n    TranscriptMarker::Tmpfs,\n    TranscriptMarker::Exact(\"devfs: storage is a block device\"),\n    TranscriptMarker::Exact(\"devfs: console is a character device\"),\n",
+        breaks: "the shipped VMware verifier expects isolation before storage, which the kernel never emits",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_dma_handoff_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 2297,
+        file: "xtask/src/vmware.rs",
+        find: "    TranscriptMarker::Isolation(Kernel::SelfTest),\n    TranscriptMarker::LocalApic,",
+        replace: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Isolation(Kernel::SelfTest),",
+        breaks: "the VMware self-test verifier expects the APIC before isolation, which the kernel never emits",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmware_dma_handoff_marker_is_required_by_both_selectors",
+        },
+    },
+    Mutation {
+        id: 2298,
+        file: "kernel/src/user.rs",
+        find: "        EXECUTED.store(true, Ordering::Release);",
+        replace: "        let _ = &EXECUTED;",
+        breaks: "the shipped image reports no observation after a real user call",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2299,
+        file: "kernel/src/user.rs",
+        find: "    if frame.code_selector() & 0b11 == 3 {\n        EXECUTED.store",
+        replace: "    if true {\n        EXECUTED.store",
+        breaks: "a call without saved CPL 3 can earn the shipped execution marker",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2300,
+        file: "kernel/src/thread.rs",
+        find: "crate::user::report_execution() || crate::user::report_refusals()",
+        replace: "crate::user::report_refusals()",
+        breaks: "the idle thread never publishes the shipped user execution observation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2301,
+        file: "kernel/src/user.rs",
+        find: " || EXECUTION_REPORTED.swap(true, Ordering::AcqRel)",
+        replace: " || false",
+        breaks: "the shipped user execution marker is repeated on every idle pass",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2302,
+        file: "kernel/src/user.rs",
+        find: "!EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap",
+        replace: "EXECUTION_REPORTED.swap",
+        breaks: "the idle thread publishes shipped execution without any user call",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2303,
+        file: "xtask/src/qemu.rs",
+        find: "    RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),\n",
+        replace: "",
+        breaks: "a shipped QEMU boot qualifies without observing a user call",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_boots_require_the_exact_producer_records",
+        },
+    },
+    Mutation {
+        id: 2304,
+        file: "xtask/src/vmware.rs",
+        find: "    require_once_in_order(\n        text,\n        &[TranscriptMarker::Exact(SHIPPED_USER_EXECUTION_MARKER)],\n    )?;\n",
+        replace: "",
+        breaks: "shipped VMware launch announcements substitute for executed user code",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::shipped_vmware_requires_execution_after_entry_not_launch_announcements",
+        },
+    },
+    Mutation {
+        id: 2305,
+        file: "kernel/src/user.rs",
+        find: "info!(\"user: ring 3 call observed\");",
+        replace: "info!(\"user: ring 3 call expected\");",
+        breaks: "the sole shipped user execution producer drifts from both consumers",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2306,
+        file: "kernel/src/user.rs",
+        find: "static EXECUTED: AtomicBool = AtomicBool::new(false);",
+        replace: "static EXECUTED: AtomicBool = AtomicBool::new(true);",
+        breaks: "the shipped execution observation starts earned before the first instruction",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+        },
+    },
+    Mutation {
+        id: 2307,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        self.first.write::<u8>(0x0D, 0);\n",
+        replace: "",
+        breaks: "the entry ISA fence leaves the first controller's inherited DMA command state intact",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2308,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        self.second.write::<u8>(0x1A, 0);\n",
+        replace: "",
+        breaks: "the entry ISA fence leaves the second controller's inherited DMA command state intact",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2309,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        self.first.write::<u8>(0x0F, 0x0F);\n",
+        replace: "",
+        breaks: "the ISA requester is accepted without masking the first controller's channels",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2310,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        self.second.write::<u8>(0x1E, 0x0F);\n",
+        replace: "",
+        breaks: "the ISA requester is accepted without masking the second controller's channels",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2311,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        let first = self.first.read::<u8>(0x08);",
+        replace: "        let first = self.first.read::<u8>(0x00);",
+        breaks: "the ISA fence reads an address register instead of the first controller's status",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2312,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        let second = self.second.read::<u8>(0x10);",
+        replace: "        let second = self.second.read::<u8>(0x00);",
+        breaks: "the ISA fence reads an address register instead of the second controller's status",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2313,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        u32::from(first) | u32::from(second) << 8",
+        replace: "        u32::from(first) | u32::from(first) << 8",
+        breaks: "the second controller's pending requests are replaced by the first controller's status",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2314,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        u32::from(first) | u32::from(second) << 8",
+        replace: "        u32::from(first) | u32::from(second) << 4",
+        breaks: "the second controller's request bits miss the combined pending-request mask",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2315,
+        file: "libs/pci-config/src/lib.rs",
+        find: "pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xf0f0;",
+        replace: "pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xd0d0;",
+        breaks: "one request bit in each ISA DMA status word escapes the quiet predicate",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2316,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        controllers.reassert() & pci_config::ISA_DMA_PENDING_REQUESTS == 0",
+        replace: "        0u32 & pci_config::ISA_DMA_PENDING_REQUESTS == 0",
+        breaks: "a later unit-wide ISA fence accepts a stale quiet result without remasking",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2317,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "    ISA_DMA.lock_leaf().as_mut().is_some_and(|controllers| {",
+        replace: "    ISA_DMA.lock_leaf().as_mut().is_none_or(|controllers| {",
+        breaks: "the ISA quiet predicate accepts missing permanent controller ownership",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2318,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        *ISA_DMA.lock_leaf() = Some(controllers);",
+        replace: "        *ISA_DMA.lock_leaf() = None;",
+        breaks: "the entry ISA fence discards the controller capabilities instead of retaining them",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2319,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "    if let Some(controllers) = isa_dma {\n        *ISA_DMA.lock_leaf() = Some(controllers);\n    }",
+        replace: "    if fenced.is_ok() {\n        if let Some(controllers) = isa_dma {\n            *ISA_DMA.lock_leaf() = Some(controllers);\n        }\n    }",
+        breaks: "an uncertain entry fence loses its permanent ISA controller owner on refusal",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2320,
+        file: "wost/src/arch/x86_64/port.rs",
+        find: "    claim_block_pair(0x00, 0xC0)",
+        replace: "    claim_block_pair(0x10, 0xC0)",
+        breaks: "the permanent paired ISA claim reserves the wrong first-controller port window",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2321,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "        self.first.write::<u8>(0x0F, 0x0F);\n        self.second.write::<u8>(0x1E, 0x0F);\n        let first = self.first.read::<u8>(0x08);\n        let second = self.second.read::<u8>(0x10);",
+        replace: "        let first = self.first.read::<u8>(0x08);\n        let second = self.second.read::<u8>(0x10);\n        self.first.write::<u8>(0x0F, 0x0F);\n        self.second.write::<u8>(0x1E, 0x0F);",
+        breaks: "the ISA quiet predicate uses status sampled before both channel masks were written",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+        },
+    },
+    Mutation {
+        id: 2322,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        grade.caught.checked_add(grade.adjudicated) == Some(grade.total),",
+        replace: "        true,",
+        breaks: "the campaign exit accepts missing or surplus non-caught adjudications",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::campaign_exit_does_not_substitute_for_complete_adjudication",
+        },
+    },
+    Mutation {
+        id: 2323,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    let expected_code = if grade.timeout > 0 {\n        3\n    } else if grade.missed > 0 {\n        2",
+        replace: "    let expected_code = if grade.missed > 0 {\n        2\n    } else if grade.timeout > 0 {\n        3",
+        breaks: "missed mutants take exit precedence over the pinned grader's timeouts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::campaign_exit_codes_match_adjudicated_outcomes",
+        },
+    },
+    Mutation {
+        id: 2324,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    } else if grade.missed > 0 {\n        2",
+        replace: "    } else if grade.missed > 0 {\n        0",
+        breaks: "a missed-mutant campaign is accepted with the all-caught exit code",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::campaign_exit_codes_match_adjudicated_outcomes",
+        },
+    },
+    Mutation {
+        id: 2325,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    } else if grade.missed > 0 {",
+        replace: "    } else if grade.missed > 0 || grade.unviable > 0 {",
+        breaks: "unviable mutants incorrectly require the missed-mutant exit code",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::campaign_exit_codes_match_adjudicated_outcomes",
+        },
+    },
+    Mutation {
+        id: 2326,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    require_campaign_success(result.status, &grade, &root)?;",
+        replace: "    let _ = result.status;",
+        breaks: "the owned campaign can reach final identity verification without its exit boundary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::final_identity_check_follows_every_authoritative_tool_use_and_precedes_pass",
+        },
+    },
+    Mutation {
+        id: 2327,
+        file: "xtask/src/vmware/config.rs",
+        find: "|| vnc_keys.iter().all(|key| runtime.contains_key(*key)),",
+        replace: "|| vnc_keys.iter().any(|key| runtime.contains_key(*key)),",
+        breaks: "an incomplete VNC runtime group can inherit Workstation listener defaults",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2328,
+        file: "xtask/src/vmware/config.rs",
+        find: "vnc_keys.iter().all(|key| !runtime.contains_key(*key))",
+        replace: "false",
+        breaks: "qualification requires a VNC console even when no console settings are present",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2329,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.enabled\" => value == \"TRUE\",",
+        replace: "\"RemoteDisplay.vnc.enabled\" => matches!(value, \"TRUE\" | \"FALSE\"),",
+        breaks: "a disabled VNC setting is accepted as the reviewed enabled runtime group",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2330,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.enabled\" => value == \"TRUE\",",
+        replace: "\"RemoteDisplay.vnc.enabled\" => value.eq_ignore_ascii_case(\"TRUE\"),",
+        breaks: "noncanonical VNC enable values are admitted to runtime evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2331,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.ip\" => value == \"127.0.0.1\",",
+        replace: "\"RemoteDisplay.vnc.ip\" => matches!(value, \"127.0.0.1\" | \"0.0.0.0\"),",
+        breaks: "a wildcard VNC listener is accepted as the fixed loopback console",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2332,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.ip\" => value == \"127.0.0.1\",",
+        replace: "\"RemoteDisplay.vnc.ip\" => value.starts_with(\"127.\"),",
+        breaks: "VNC accepts arbitrary loopback addresses instead of the single observed address",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2333,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.ip\" => value == \"127.0.0.1\",",
+        replace: "\"RemoteDisplay.vnc.ip\" => matches!(value, \"127.0.0.1\" | \"localhost\"),",
+        breaks: "VNC runtime evidence accepts hostname resolution instead of the literal loopback address",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2334,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.port\" => value == \"5997\",",
+        replace: "\"RemoteDisplay.vnc.port\" => matches!(value, \"5997\" | \"5998\"),",
+        breaks: "VNC runtime evidence admits an unreviewed listener port",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2335,
+        file: "xtask/src/vmware/config.rs",
+        find: "\"RemoteDisplay.vnc.port\" => value == \"5997\",",
+        replace: "\"RemoteDisplay.vnc.port\" => value.parse::<u16>() == Ok(5997),",
+        breaks: "VNC runtime evidence normalizes alternate decimal spellings of its fixed port",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2336,
+        file: "xtask/src/vmware/config.rs",
+        find: "        _ => false,\n    }\n}\n\nfn uuid_is_valid",
+        replace: "        _ => key.starts_with(\"RemoteDisplay.\"),\n    }\n}\n\nfn uuid_is_valid",
+        breaks: "unreviewed RemoteDisplay assignments enter the VNC runtime exception",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
+        },
+    },
+    Mutation {
+        id: 2337,
+        file: "xtask/src/vmware/config.rs",
+        find: "runtime.get(key) == Some(value),",
+        replace: "runtime.contains_key(\"RemoteDisplay.vnc.enabled\") || runtime.get(key) == Some(value),",
+        breaks: "enabling the VNC console bypasses the generated VMX assignment binding",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::loopback_vnc_additions_are_complete_and_exact",
         },
     },
 ];

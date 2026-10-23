@@ -6,10 +6,20 @@ use anyhow::{Context, Result, ensure};
 
 use crate::qemu::canonical_decimal;
 
-/// Validate execution settings while allowing reviewed runtime identity fields.
+/// Validate execution settings while allowing reviewed runtime identity and console fields.
 pub(super) fn verify(generated: &[u8], runtime: &[u8]) -> Result<()> {
     let generated = assignments(generated)?;
     let runtime = assignments(runtime)?;
+    let vnc_keys = [
+        "RemoteDisplay.vnc.enabled",
+        "RemoteDisplay.vnc.ip",
+        "RemoteDisplay.vnc.port",
+    ];
+    ensure!(
+        vnc_keys.iter().all(|key| !runtime.contains_key(*key))
+            || vnc_keys.iter().all(|key| runtime.contains_key(*key)),
+        "runtime VNC console settings must be absent or a complete loopback group"
+    );
     for (key, value) in &generated {
         ensure!(
             runtime.get(key) == Some(value),
@@ -85,6 +95,9 @@ fn runtime_value_is_valid(key: &str, value: &str) -> bool {
             canonical_decimal(value).is_some_and(|bits| (32..=52).contains(&bits))
         }
         "cleanShutdown" | "softPowerOff" => matches!(value, "TRUE" | "FALSE"),
+        "RemoteDisplay.vnc.enabled" => value == "TRUE",
+        "RemoteDisplay.vnc.ip" => value == "127.0.0.1",
+        "RemoteDisplay.vnc.port" => value == "5997",
         _ => false,
     }
 }
@@ -133,6 +146,85 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn loopback_vnc_additions_are_complete_and_exact() {
+        let generated = generated();
+        let vnc = [
+            ("RemoteDisplay.vnc.enabled", "TRUE"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1"),
+            ("RemoteDisplay.vnc.port", "5997"),
+        ];
+        let additions = vnc
+            .iter()
+            .map(|(key, value)| format!("{key} = \"{value}\"\n"))
+            .collect::<String>();
+        let runtime = format!("{generated}{additions}");
+        verify(generated.as_bytes(), runtime.as_bytes()).unwrap();
+        let with_identity = format!("{runtime}uuid.bios = \"{UUID}\"\n").replace('\n', "\r\n");
+        verify(generated.as_bytes(), with_identity.as_bytes()).unwrap();
+        for subset in 0..(1 << vnc.len()) {
+            let mut partial = generated.clone();
+            for (index, (key, value)) in vnc.iter().enumerate() {
+                if subset & (1 << index) != 0 {
+                    partial.push_str(&format!("{key} = \"{value}\"\n"));
+                }
+            }
+            assert_eq!(
+                verify(generated.as_bytes(), partial.as_bytes()).is_ok(),
+                matches!(subset, 0 | 7),
+                "VNC subset {subset}"
+            );
+        }
+        for (key, valid, invalid) in [
+            ("RemoteDisplay.vnc.enabled", "TRUE", "FALSE"),
+            ("RemoteDisplay.vnc.enabled", "TRUE", "true"),
+            ("RemoteDisplay.vnc.enabled", "TRUE", "1"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", "0.0.0.0"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", "127.0.0.2"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", "localhost"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", "::1"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", "192.0.2.1"),
+            ("RemoteDisplay.vnc.ip", "127.0.0.1", ""),
+            ("RemoteDisplay.vnc.port", "5997", "5996"),
+            ("RemoteDisplay.vnc.port", "5997", "5998"),
+            ("RemoteDisplay.vnc.port", "5997", "05997"),
+            ("RemoteDisplay.vnc.port", "5997", "+5997"),
+            ("RemoteDisplay.vnc.port", "5997", "5997.0"),
+        ] {
+            let changed = runtime.replace(
+                &format!("{key} = \"{valid}\""),
+                &format!("{key} = \"{invalid}\""),
+            );
+            assert!(
+                verify(generated.as_bytes(), changed.as_bytes()).is_err(),
+                "{key} = {invalid:?}"
+            );
+        }
+        for addition in [
+            "RemoteDisplay.vnc.password = \"password\"\n",
+            "RemoteDisplay.vnc.keyMap = \"us\"\n",
+            "RemoteDisplay.vnc.foo = \"TRUE\"\n",
+            "RemoteDisplay.foo = \"TRUE\"\n",
+            "cpuid.7.edx = \"0\"\n",
+        ] {
+            let changed = format!("{runtime}{addition}");
+            assert!(
+                verify(generated.as_bytes(), changed.as_bytes()).is_err(),
+                "{addition}"
+            );
+        }
+        for (key, value) in vnc {
+            for duplicate in [key.to_string(), key.to_ascii_uppercase()] {
+                let changed = format!("{runtime}{duplicate} = \"{value}\"\n");
+                assert!(verify(generated.as_bytes(), changed.as_bytes()).is_err());
+            }
+            let changed = runtime.replace(key, &key.to_ascii_lowercase());
+            assert!(verify(generated.as_bytes(), changed.as_bytes()).is_err());
+        }
+        let changed = runtime.replace("firmware = \"efi\"", "firmware = \"bios\"");
+        assert!(verify(generated.as_bytes(), changed.as_bytes()).is_err());
     }
 
     #[test]

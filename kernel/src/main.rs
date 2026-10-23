@@ -93,6 +93,13 @@ fn kernel_main(boot: BootInfo) -> ! {
         ),
         count => panic!("DMA-safe boot handoff classified {count} non-requesters"),
     }
+    match early_dma.quiesced_requesters() {
+        0 => {}
+        1 => info!(
+            "iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester"
+        ),
+        count => panic!("DMA-safe boot handoff quiesced {count} ISA requesters"),
+    }
 
     // The fault path exists before anything that can fault, so a wrong
     // assumption prints a report instead of resetting (`006`).
@@ -125,6 +132,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     }
 
     let dma_non_requester = early_dma.take_non_requester();
+    let dma_quiesced = early_dma.take_quiesced_requester();
 
     // After the fault path, because this is the first write through an
     // address the bootloader chose; before everything else, which may want a frame.
@@ -141,6 +149,7 @@ fn kernel_main(boot: BootInfo) -> ! {
         interrupts,
         module: boot.module,
         dma_non_requester,
+        dma_quiesced,
     });
     match mem::map_boot_stack() {
         Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
@@ -164,6 +173,7 @@ struct Handoff {
     /// the loader reads long after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
+    dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
 }
 
 static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
@@ -262,6 +272,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
         interrupts,
         module,
         dma_non_requester,
+        dma_quiesced,
     }) = HANDOFF.lock_leaf().take()
     else {
         panic!("the boot handoff is gone; boot_continue ran twice");
@@ -272,7 +283,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     dev::attach_back_buffer();
     let routing = prepare_keyboard_routing(interrupts).into_masked();
 
-    survey_the_bus(dma_non_requester);
+    survey_the_bus(dma_non_requester, dma_quiesced);
     survey_the_filesystems();
     start_interrupts(routing.as_ref());
     input::init();
@@ -510,7 +521,10 @@ fn refuse_pci_for_degraded_boot() {
 /// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
 /// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
 /// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
-fn survey_the_bus(dma_non_requester: Option<pci_config::QualifiedNonRequester>) {
+fn survey_the_bus(
+    dma_non_requester: Option<pci_config::QualifiedNonRequester>,
+    dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
+) {
     if !wost::arch::current::pci::init() {
         warn!("pci: the configuration ports are already claimed; no bus");
         return;
@@ -522,7 +536,7 @@ fn survey_the_bus(dma_non_requester: Option<pci_config::QualifiedNonRequester>) 
         warn!("iommu: no early default-deny PCI boundary; storage and interrupts stay closed");
     }
 
-    match pci::snapshot_topology(dma_non_requester) {
+    match pci::snapshot_topology(dma_non_requester, dma_quiesced) {
         Ok(()) => info!("pci: complete segment-zero topology sealed"),
         Err(reason) => warn!("pci: DMA topology refused: {reason}"),
     }

@@ -29,7 +29,7 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{Ordering, compiler_fence};
-use pci_config::{Address, HandoffFencePolicy, QualifiedNonRequester};
+use pci_config::{Address, HandoffFencePolicy, QualifiedNonRequester, QuiescedIsaRequester};
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::pci as platform_pci;
@@ -54,9 +54,18 @@ pub(crate) struct EarlyDmaBoundary {
     functions: u32,
     disabled: u32,
     non_requester: Option<QualifiedNonRequester>,
+    quiesced: Option<QuiescedIsaRequester>,
 }
 
 impl EarlyDmaBoundary {
+    pub(crate) const fn quiesced_requesters(&self) -> u32 {
+        if self.quiesced.is_some() { 1 } else { 0 }
+    }
+
+    pub(crate) fn take_quiesced_requester(&mut self) -> Option<QuiescedIsaRequester> {
+        self.quiesced.take()
+    }
+
     pub(crate) const fn functions(&self) -> u32 {
         self.functions
     }
@@ -152,6 +161,7 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
         functions: report.functions(),
         disabled: report.disabled(),
         non_requester: report.take_non_requester(),
+        quiesced: report.take_quiesced_requester(),
     })
 }
 
