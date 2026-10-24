@@ -966,7 +966,7 @@ const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 290;
+const EXPECTED_SELFTEST_CHECKS: usize = 294;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -1931,13 +1931,10 @@ const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// A kernel that neither passes nor fails within `timeout` is a hang, which is
 /// itself a failure — so the emulator is killed rather than left running.
 ///
-/// The boot carries a QMP control socket so the harness can press a key when
-/// the kernel says it is listening: the harness listens first and QEMU dials
-/// out, so there is no port to guess and no connect to race. Serial output is
-/// piped and forwarded line by line — both to keep it visible and to watch
-/// for the marker. QMP misbehaviour is reported and abandoned, never fatal
-/// here: the missing keystroke turns the kernel's own bounded check red, so
-/// the verdict stays the kernel's.
+/// QMP uses the owned child's standard streams; serial uses a private named
+/// pipe on Windows or a private Unix socket. The injector presses keys after
+/// their serial markers. The owner cancels, stops QEMU and bounds worker joins
+/// on every result path, including when a control write stops making progress.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
     let (outcome, _) =
         observe_selftest_run(paths, image, timeout, true, InteractiveMarkerOrder::Strict)?;
@@ -1984,7 +1981,7 @@ fn observe_selftest_run(
 
     println!("[xtask] booting the self-test kernel");
 
-    let mut child = Command::new(&installation.emulator)
+    let child = Command::new(&installation.emulator)
         .current_dir(vars.directory())
         .args(machine_args(Remapping::Present))
         .args(coverage.arguments())
@@ -2004,75 +2001,183 @@ fn observe_selftest_run(
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
-    let serial_reader = match serial.connect(&mut child, Instant::now() + QMP_NEGOTIATION_TIMEOUT) {
-        Ok(reader) => reader,
-        Err(error) => {
-            stop_qemu(&mut child).context("stopping QEMU after serial connection failed")?;
-            return Err(error);
+    let mut machine = QemuLifetime::new(child, stop_qemu);
+    let injection_cancelled = Arc::clone(&machine.cancelled);
+    let mut forwarder = None;
+    let mut injector = None;
+    let observed = (|| -> Result<SelftestTermination> {
+        let child = &mut machine.child;
+        let reader = serial.connect(child, Instant::now() + QMP_NEGOTIATION_TIMEOUT)?;
+        let markers_seen = Arc::new(AtomicUsize::new(0));
+        let panicked = Arc::new(AtomicBool::new(false));
+        let serial_failed = Arc::new(AtomicBool::new(false));
+        forwarder = Some(forward_serial(
+            reader,
+            Arc::clone(&markers_seen),
+            Arc::clone(&panicked),
+            Arc::clone(&serial_failed),
+            echo_serial,
+            marker_order,
+        ));
+        let deadline = Instant::now() + timeout;
+        injector = Some(inject_on_marker(
+            child,
+            markers_seen,
+            deadline,
+            Arc::clone(&injection_cancelled),
+        )?);
+        loop {
+            if let Some(status) = child.try_wait().context("waiting for QEMU")? {
+                return Ok(SelftestTermination::Exited(status.code()));
+            }
+            if panicked.load(Ordering::Acquire) {
+                return Ok(SelftestTermination::Panicked);
+            }
+            if serial_failed.load(Ordering::Acquire) {
+                return Ok(SelftestTermination::SerialFailed);
+            }
+            if Instant::now() >= deadline {
+                return Ok(SelftestTermination::TimedOut);
+            }
+            std::thread::sleep(POLL_INTERVAL);
         }
-    };
+    })();
 
-    let markers_seen = Arc::new(AtomicUsize::new(0));
-    let panicked = Arc::new(AtomicBool::new(false));
-    let serial_failed = Arc::new(AtomicBool::new(false));
-    let forwarder = forward_serial(
-        serial_reader,
-        Arc::clone(&markers_seen),
-        Arc::clone(&panicked),
-        Arc::clone(&serial_failed),
-        echo_serial,
-        marker_order,
-    );
-    let deadline = Instant::now() + timeout;
-    let injection_cancelled = Arc::new(AtomicBool::new(false));
-    let injector = inject_on_marker(
-        &mut child,
-        markers_seen,
-        deadline,
-        Arc::clone(&injection_cancelled),
-    )?;
-    let status = loop {
-        if let Some(status) = child.try_wait().context("waiting for QEMU")? {
-            break status;
-        }
-        // A panicking kernel halts rather than reporting, so the timeout
-        // would otherwise be the only way it ever ends.
-        if panicked.load(Ordering::Acquire) {
-            stop_qemu(&mut child)?;
-            serial.close();
-            let observation = finish_selftest_serial(forwarder)?;
-            finish_injector(injector, &injection_cancelled)?;
-            let baseline = observation.baseline;
-            return correlate_selftest(None, observation).map(|outcome| (outcome, baseline));
-        }
-        if serial_failed.load(Ordering::Acquire) {
-            stop_qemu(&mut child)?;
-            serial.close();
-            finish_selftest_serial(forwarder)?;
-            finish_injector(injector, &injection_cancelled)?;
-            unreachable!("a flagged serial failure returned success");
-        }
-        if Instant::now() >= deadline {
-            let mut qmp = finish_injector(injector, &injection_cancelled)?;
-            report_hang(qmp.as_mut());
-            stop_qemu(&mut child)?;
-            serial.close();
-            finish_selftest_serial(forwarder)?;
-            bail!(
-                "self-test did not finish within {} seconds",
-                timeout.as_secs()
-            );
-        }
-        std::thread::sleep(POLL_INTERVAL);
+    machine.cancel();
+    let mut injection_result = Ok(());
+    let mut reporter = None;
+    let finished_injector = if matches!(observed, Ok(SelftestTermination::TimedOut))
+        && injector.as_ref().is_some_and(JoinHandle::is_finished)
+    {
+        injector.take()
+    } else {
+        None
     };
+    if let Some(finished) = finished_injector {
+        match finish_injector(finished, &injection_cancelled, Instant::now()) {
+            Ok(mut qmp) => {
+                let worker = std::thread::spawn(move || report_hang(qmp.as_mut()));
+                worker_finished_by(&worker, Instant::now() + MONITOR_TIMEOUT);
+                reporter = Some(worker);
+            }
+            Err(error) => injection_result = Err(error),
+        }
+    }
 
-    // Drain serial before correlation so late failure lines are not lost.
+    let stopped = machine.stop();
     serial.close();
-    let observation = finish_selftest_serial(forwarder)?;
-    finish_injector(injector, &injection_cancelled)?;
+    let join_deadline = Instant::now() + QEMU_WORKER_STOP_TIMEOUT;
+    if let Some(worker) = injector {
+        injection_result = finish_injector(worker, &injection_cancelled, join_deadline).map(drop);
+    }
+    let report_result = reporter.map_or(Ok(()), |worker| {
+        join_qemu_worker(worker, join_deadline, "hang reporter")
+    });
+    let serial_result = forwarder
+        .map(|worker| finish_selftest_serial(worker, join_deadline))
+        .transpose();
+    let cleanup = combine_qemu_cleanup(stopped, injection_result);
+    let cleanup = combine_qemu_cleanup(cleanup, report_result);
+    let outcome = observed.and_then(|termination| selftest_exit(termination, timeout));
+    let outcome =
+        combine_qemu_observation(outcome, serial_result).and_then(|(code, observation)| {
+            let observation = observation.context("self-test has no serial observation")?;
+            let baseline = observation.baseline;
+            correlate_selftest(code, observation).map(|outcome| (outcome, baseline))
+        });
+    combine_qemu_cleanup(outcome, cleanup)
+}
 
-    let baseline = observation.baseline;
-    correlate_selftest(status.code(), observation).map(|outcome| (outcome, baseline))
+enum SelftestTermination {
+    Exited(Option<i32>),
+    Panicked,
+    SerialFailed,
+    TimedOut,
+}
+
+fn selftest_exit(termination: SelftestTermination, timeout: Duration) -> Result<Option<i32>> {
+    match termination {
+        SelftestTermination::Exited(code) => Ok(code),
+        SelftestTermination::Panicked => Ok(None),
+        SelftestTermination::SerialFailed => bail!("the self-test serial reader failed"),
+        SelftestTermination::TimedOut => bail!(
+            "self-test did not finish within {} seconds",
+            timeout.as_secs()
+        ),
+    }
+}
+
+struct QemuLifetime<C> {
+    child: C,
+    stop: fn(&mut C) -> Result<()>,
+    cancelled: Arc<AtomicBool>,
+    stop_attempted: bool,
+}
+
+impl<C> QemuLifetime<C> {
+    fn new(child: C, stop: fn(&mut C) -> Result<()>) -> Self {
+        Self {
+            child,
+            stop,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            stop_attempted: false,
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        self.cancel();
+        self.stop_attempted = true;
+        (self.stop)(&mut self.child)
+    }
+}
+
+impl<C> Drop for QemuLifetime<C> {
+    fn drop(&mut self) {
+        if !self.stop_attempted {
+            let _ = self.stop();
+        }
+    }
+}
+
+fn combine_qemu_cleanup<T>(outcome: Result<T>, cleanup: Result<()>) -> Result<T> {
+    combine_qemu_observation(outcome, cleanup).map(|(value, ())| value)
+}
+
+fn combine_qemu_observation<T, U>(outcome: Result<T>, cleanup: Result<U>) -> Result<(T, U)> {
+    match (outcome, cleanup) {
+        (Ok(value), Ok(evidence)) => Ok((value, evidence)),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(anyhow!("{error:#}; QEMU cleanup also failed: {cleanup:#}"))
+        }
+    }
+}
+
+const QEMU_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn worker_finished_by<T>(worker: &JoinHandle<T>, deadline: Instant) -> bool {
+    while !worker.is_finished() {
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
+    }
+    true
+}
+
+fn join_qemu_worker<T>(worker: JoinHandle<T>, deadline: Instant, name: &str) -> Result<T> {
+    ensure!(
+        worker_finished_by(&worker, deadline),
+        "QEMU {name} did not stop before its join deadline"
+    );
+    worker
+        .join()
+        .map_err(|_| anyhow!("the QEMU {name} panicked"))
 }
 
 fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
@@ -2153,15 +2258,14 @@ fn forward_serial(
 
 fn finish_selftest_serial(
     forwarder: JoinHandle<Result<SerialObservation>>,
+    deadline: Instant,
 ) -> Result<SerialObservation> {
-    forwarder
-        .join()
-        .map_err(|_| anyhow!("the self-test serial reader panicked"))?
+    join_qemu_worker(forwarder, deadline, "self-test serial reader")?
 }
 
 /// Inject each key after its marker without letting a QMP stall delay the boot
-/// deadline; every exit path cancels and joins this dedicated thread, which
-/// hands its negotiated session back for any later hang report.
+/// deadline. The owner stops QEMU before bounded joins so a blocked control
+/// write cannot hold cleanup; a finished thread can supply hang diagnostics.
 fn inject_on_marker(
     child: &mut Child,
     markers_seen: Arc<AtomicUsize>,
@@ -2218,11 +2322,10 @@ fn inject_on_marker(
 fn finish_injector(
     injector: JoinHandle<Option<Qmp>>,
     cancelled: &AtomicBool,
+    deadline: Instant,
 ) -> Result<Option<Qmp>> {
     cancelled.store(true, Ordering::Release);
-    injector
-        .join()
-        .map_err(|_| anyhow!("the QMP injector panicked"))
+    join_qemu_worker(injector, deadline, "QMP injector")
 }
 
 /// How often to check whether QEMU has exited. Short enough that a passing run
@@ -2248,14 +2351,27 @@ fn stop_qemu_with<C>(
     terminate: fn(&mut C) -> std::io::Result<()>,
     timeout: Duration,
 ) -> Result<()> {
-    if exited(child).context("checking whether QEMU exited")? {
+    let initial = exited(child).context("checking whether QEMU exited");
+    if matches!(initial, Ok(true)) {
         return Ok(());
     }
-    if let Err(error) = terminate(child) {
-        if exited(child).context("checking QEMU after termination failed")? {
-            return Ok(());
+    let stopped = terminate_qemu_with(child, exited, terminate, timeout);
+    combine_qemu_cleanup(initial.map(drop), stopped)
+}
+
+fn terminate_qemu_with<C>(
+    child: &mut C,
+    exited: fn(&mut C) -> std::io::Result<bool>,
+    terminate: fn(&mut C) -> std::io::Result<()>,
+    timeout: Duration,
+) -> Result<()> {
+    let termination = terminate(child).context("terminating QEMU");
+    if termination.is_err() {
+        match exited(child).context("checking QEMU after termination failed") {
+            Ok(true) => return Ok(()),
+            Ok(false) => return termination,
+            Err(error) => return combine_qemu_cleanup(termination, Err(error)),
         }
-        return Err(error).context("terminating QEMU");
     }
 
     let deadline = Instant::now()
@@ -2404,16 +2520,18 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 
     let stop_outcome = stop_qemu(&mut child);
     serial.close();
-    let serial_outcome = finish_boot_serial(forwarder);
+    let serial_outcome = finish_boot_serial(forwarder, Instant::now() + QEMU_WORKER_STOP_TIMEOUT)
+        .and_then(|serial_observation| {
+            if let Some(transcript) =
+                completed_panic(serial_observation.panic, serial_observation.panic_complete)?
+            {
+                bail!("the shipped kernel panicked during the settle window: {transcript}");
+            }
+            Ok(())
+        });
 
-    stop_outcome?;
-    let serial_observation = serial_outcome?;
-    if let Some(transcript) =
-        completed_panic(serial_observation.panic, serial_observation.panic_complete)?
-    {
-        bail!("the shipped kernel panicked during the settle window: {transcript}");
-    }
-    outcome?;
+    let outcome = combine_qemu_cleanup(outcome, serial_outcome);
+    combine_qemu_cleanup(outcome, stop_outcome)?;
     for (record, seen) in required {
         if !seen.load(Ordering::Acquire) {
             bail!(
@@ -2610,17 +2728,21 @@ fn observe_profile(
     let outcome = watch_degraded(&mut child, &panicked, &serial_failed, &settled, settle);
 
     let stop_outcome = stop_qemu(&mut child);
-    let serial_outcome = finish_boot_serial(forwarder);
+    let serial_outcome = finish_boot_serial(forwarder, Instant::now() + QEMU_WORKER_STOP_TIMEOUT)
+        .and_then(|serial_observation| {
+            let panic =
+                completed_panic(serial_observation.panic, serial_observation.panic_complete)?;
+            Ok((panic, serial_observation.no_x2apic_before_panic))
+        });
 
-    stop_outcome?;
-    outcome?;
-    let serial_observation = serial_outcome?;
-    if let Some(transcript) =
-        completed_panic(serial_observation.panic, serial_observation.panic_complete)?
-    {
+    let (_, (panic, no_x2apic_diagnosed)) = combine_qemu_cleanup(
+        combine_qemu_observation(outcome, serial_outcome),
+        stop_outcome,
+    )?;
+    if let Some(transcript) = panic {
         return Ok(DegradedOutcome::Panicked {
             transcript,
-            no_x2apic_diagnosed: serial_observation.no_x2apic_before_panic,
+            no_x2apic_diagnosed,
         });
     }
     for (record, seen) in required {
@@ -2766,10 +2888,9 @@ fn watch_serial(
 
 fn finish_boot_serial(
     forwarder: JoinHandle<Result<BootSerialObservation>>,
+    deadline: Instant,
 ) -> Result<BootSerialObservation> {
-    forwarder
-        .join()
-        .map_err(|_| anyhow!("the shipped-kernel serial reader panicked"))?
+    join_qemu_worker(forwarder, deadline, "boot serial reader")?
 }
 #[cfg(test)]
 mod tests {
@@ -4087,6 +4208,388 @@ mod tests {
         )
         .unwrap();
         assert!(!exited.killed);
+    }
+
+    struct LifetimeProbe {
+        cancelled: Option<Arc<AtomicBool>>,
+        stops: usize,
+        refuse: bool,
+        observed_cancelled: bool,
+    }
+
+    fn stop_lifetime_probe(probe: &mut &mut LifetimeProbe) -> Result<()> {
+        probe.observed_cancelled = probe
+            .cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire));
+        probe.stops += 1;
+        ensure!(!probe.refuse, "fixture stop refusal");
+        Ok(())
+    }
+
+    #[test]
+    fn selftest_lifetime_cancels_and_stops_on_return_error_and_unwind() {
+        for early_error in [false, true] {
+            let mut probe = LifetimeProbe {
+                cancelled: None,
+                stops: 0,
+                refuse: false,
+                observed_cancelled: false,
+            };
+            let outcome: Result<()> = (|| {
+                let owner = QemuLifetime::new(&mut probe, stop_lifetime_probe);
+                owner.child.cancelled = Some(Arc::clone(&owner.cancelled));
+                if early_error {
+                    bail!("fixture poll or injector failure");
+                }
+                Ok(())
+            })();
+            assert_eq!(outcome.is_err(), early_error);
+            assert_eq!(probe.stops, 1);
+            assert!(probe.observed_cancelled);
+        }
+        let mut probe = LifetimeProbe {
+            cancelled: None,
+            stops: 0,
+            refuse: false,
+            observed_cancelled: false,
+        };
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let owner = QemuLifetime::new(&mut probe, stop_lifetime_probe);
+            owner.child.cancelled = Some(Arc::clone(&owner.cancelled));
+            panic!("fixture unwind");
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(probe.stops, 1);
+        assert!(probe.observed_cancelled);
+    }
+
+    #[test]
+    fn selftest_lifetime_reports_stop_refusal_and_preserves_both_errors() {
+        let mut probe = LifetimeProbe {
+            cancelled: None,
+            stops: 0,
+            refuse: true,
+            observed_cancelled: false,
+        };
+        let cleanup = {
+            let mut owner = QemuLifetime::new(&mut probe, stop_lifetime_probe);
+            owner.child.cancelled = Some(Arc::clone(&owner.cancelled));
+            owner.stop()
+        };
+        assert_eq!(
+            probe.stops, 1,
+            "a refused stop was retried without a new bound"
+        );
+        let error =
+            combine_qemu_cleanup::<()>(Err(anyhow!("fixture observation failure")), cleanup)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("fixture observation failure"));
+        assert!(error.contains("fixture stop refusal"));
+        assert!(combine_qemu_cleanup(Ok(()), Err(anyhow!("cleanup"))).is_err());
+        assert!(combine_qemu_cleanup::<()>(Err(anyhow!("observation")), Ok(())).is_err());
+        assert_eq!(combine_qemu_cleanup(Ok(17), Ok(())).unwrap(), 17);
+    }
+
+    // The worker cannot self-release before the parent is ready to exercise the
+    // join. A separate watchdog bounds a broken join without the old 150 ms race.
+    fn with_blocked_worker<T: Send + 'static, R>(
+        value: T,
+        join: impl FnOnce(JoinHandle<T>) -> R,
+    ) -> R {
+        let (release, parked) = std::sync::mpsc::channel();
+        let (entered, ready) = std::sync::mpsc::channel();
+        let (acknowledge, done) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            parked.recv().unwrap();
+            acknowledge.send(()).unwrap();
+            value
+        });
+        ready.recv_timeout(Duration::from_secs(20)).unwrap();
+        let (finished, watching) = std::sync::mpsc::channel();
+        let failsafe_release = release.clone();
+        let watchdog = std::thread::spawn(move || {
+            if watching.recv_timeout(Duration::from_secs(10)).is_err() {
+                let _ = failsafe_release.send(());
+            }
+        });
+        let result = join(worker);
+        let _ = release.send(());
+        let _ = finished.send(());
+        done.recv_timeout(Duration::from_secs(20)).unwrap();
+        watchdog.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn selftest_worker_joins_refuse_unfinished_and_panicked_workers() {
+        let refused = with_blocked_worker((), |worker| {
+            join_qemu_worker(worker, Instant::now(), "blocked fixture")
+        });
+        assert!(refused.unwrap_err().to_string().contains("join deadline"));
+        let worker = std::thread::spawn(|| panic!("fixture worker panic"));
+        let error = join_qemu_worker(
+            worker,
+            Instant::now() + Duration::from_secs(20),
+            "panic fixture",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("panicked"));
+        let worker = std::thread::spawn(|| 23);
+        assert_eq!(
+            join_qemu_worker(
+                worker,
+                Instant::now() + Duration::from_secs(20),
+                "complete fixture"
+            )
+            .unwrap(),
+            23
+        );
+    }
+
+    #[test]
+    fn boot_serial_join_refuses_an_unfinished_reader() {
+        let result = with_blocked_worker(Ok(BootSerialObservation::default()), |worker| {
+            finish_boot_serial(worker, Instant::now())
+        });
+        let error = result.expect_err("an unfinished boot reader must be refused");
+        assert!(error.to_string().contains("join deadline"));
+    }
+
+    #[test]
+    fn selftest_timeout_classification_survives_serial_and_stop_failures() {
+        let timeout = Duration::from_secs(17);
+        let exact = "self-test did not finish within 17 seconds";
+        let clean = combine_qemu_observation(
+            selftest_exit(SelftestTermination::TimedOut, timeout),
+            Ok(()),
+        );
+        assert_eq!(clean.unwrap_err().to_string(), exact);
+        let dirty = combine_qemu_observation(
+            selftest_exit(SelftestTermination::TimedOut, timeout),
+            Err::<(), _>(anyhow!("fixture serial join failure")),
+        );
+        let dirty = combine_qemu_cleanup(dirty, Err(anyhow!("fixture stop failure")))
+            .unwrap_err()
+            .to_string();
+        assert!(dirty.contains(exact));
+        assert!(dirty.contains("fixture serial join failure"));
+        assert!(dirty.contains("fixture stop failure"));
+        assert_ne!(
+            dirty, exact,
+            "a cleanup failure must not earn mutation timeout credit"
+        );
+        assert_eq!(
+            selftest_exit(SelftestTermination::Exited(Some(33)), timeout).unwrap(),
+            Some(33)
+        );
+        assert_eq!(
+            selftest_exit(SelftestTermination::Panicked, timeout).unwrap(),
+            None
+        );
+        assert!(selftest_exit(SelftestTermination::SerialFailed, timeout).is_err());
+    }
+
+    #[test]
+    fn qemu_stop_attempts_termination_after_a_poll_failure_and_retains_every_error() {
+        struct FailedPoll {
+            polls: std::collections::VecDeque<std::result::Result<bool, &'static str>>,
+            killed: bool,
+            reject_kill: bool,
+        }
+        fn poll(child: &mut FailedPoll) -> std::io::Result<bool> {
+            child
+                .polls
+                .pop_front()
+                .expect("unexpected poll")
+                .map_err(std::io::Error::other)
+        }
+        fn kill(child: &mut FailedPoll) -> std::io::Result<()> {
+            child.killed = true;
+            if child.reject_kill {
+                Err(std::io::Error::other("fixture kill failure"))
+            } else {
+                Ok(())
+            }
+        }
+        for (reject_kill, after, evidence) in [
+            (false, Ok(true), None),
+            (
+                false,
+                Err("fixture reap failure"),
+                Some("fixture reap failure"),
+            ),
+            (
+                true,
+                Err("fixture recheck failure"),
+                Some("fixture recheck failure"),
+            ),
+            (true, Ok(false), Some("fixture kill failure")),
+            (false, Ok(false), Some("did not exit")),
+        ] {
+            let mut child = FailedPoll {
+                polls: [Err("fixture initial poll failure"), after].into(),
+                killed: false,
+                reject_kill,
+            };
+            let error = stop_qemu_with(&mut child, poll, kill, Duration::ZERO)
+                .expect_err("the initial polling failure must remain visible");
+            let text = format!("{error:#}");
+            assert!(child.killed, "poll failure skipped termination: {text}");
+            assert!(
+                child.polls.is_empty(),
+                "termination was not followed by a poll"
+            );
+            assert!(text.contains("fixture initial poll failure"), "{text}");
+            if reject_kill {
+                assert!(text.contains("fixture kill failure"), "{text}");
+            }
+            if let Some(evidence) = evidence {
+                assert!(text.contains(evidence), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn selftest_owner_precedes_setup_and_stop_precedes_worker_joins() {
+        let source = include_str!("qemu.rs");
+        let signature = "fn observe_selftest_run(\n    paths: &Paths,\n    image: &Path,\n    timeout: Duration,\n    echo_serial: bool,\n    marker_order: InteractiveMarkerOrder,\n) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {";
+        let body = compact_cpp(&rust_function_body(source, signature));
+        let after_spawn = body
+            .split_once(".spawn()")
+            .unwrap()
+            .1
+            .split_once("?;")
+            .unwrap()
+            .1;
+        assert!(after_spawn.starts_with("letmutmachine=QemuLifetime::new(child,stop_qemu);"));
+        let cancellation = body.find("machine.cancel();").unwrap();
+        let stop = body.find("letstopped=machine.stop();").unwrap();
+        let close = body.find("serial.close();").unwrap();
+        let joins = body
+            .find("letjoin_deadline=Instant::now()+QEMU_WORKER_STOP_TIMEOUT;")
+            .unwrap();
+        assert!(cancellation < stop && stop < close && close < joins);
+        assert!(
+            body[joins..].contains("finish_injector(worker,&injection_cancelled,join_deadline)")
+        );
+        assert!(body[joins..].contains("finish_selftest_serial(worker,join_deadline)"));
+        assert!(body.contains("injector.as_ref().is_some_and(JoinHandle::is_finished)"));
+        assert!(body.contains("std::thread::spawn(move||report_hang(qmp.as_mut()))"));
+        assert!(body.contains("worker_finished_by(&worker,Instant::now()+MONITOR_TIMEOUT);"));
+        assert!(body.contains(
+            "letoutcome=observed.and_then(|termination|selftest_exit(termination,timeout));"
+        ));
+        assert!(body.contains("combine_qemu_observation(outcome,serial_result)"));
+        assert!(body.ends_with("combine_qemu_cleanup(outcome,cleanup)"));
+        for signature in [
+            "pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {",
+            "fn observe_profile(\n    paths: &Paths,\n    image: &Path,\n    settle: Duration,\n    profile: DegradedProfile,\n) -> Result<DegradedOutcome> {",
+        ] {
+            let body = compact_cpp(&rust_function_body(source, signature));
+            let stop = body.find("letstop_outcome=stop_qemu(&mutchild);").unwrap();
+            let join = body
+                .find("finish_boot_serial(forwarder,Instant::now()+QEMU_WORKER_STOP_TIMEOUT)")
+                .or_else(|| {
+                    body.find(
+                        "finish_boot_serial(forwarder,Instant::now()+QEMU_WORKER_STOP_TIMEOUT,)",
+                    )
+                })
+                .expect("the boot serial reader has the exact bounded join arguments");
+            assert!(stop < join);
+            assert!(
+                body.contains("combine_qemu_cleanup(outcome,stop_outcome)?")
+                    || body
+                        .contains("combine_qemu_observation(outcome,serial_outcome),stop_outcome,")
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_the_owner_releases_a_qmp_writer_before_join() {
+        struct BlockedWrite {
+            entered: std::sync::mpsc::Sender<()>,
+            stopped: std::sync::mpsc::Receiver<bool>,
+            received_stop: std::sync::mpsc::Sender<bool>,
+            completed: std::sync::mpsc::Sender<()>,
+        }
+        impl std::io::Write for BlockedWrite {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.entered.send(()).unwrap();
+                let stopped = self.stopped.recv().unwrap();
+                self.received_stop.send(stopped).unwrap();
+                let error = std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    if stopped {
+                        "fixture peer stopped"
+                    } else {
+                        "fixture stop missing"
+                    },
+                );
+                self.completed.send(()).unwrap();
+                Err(error)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (entered, writing) = std::sync::mpsc::channel();
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let (received_stop, stop_observed) = std::sync::mpsc::channel();
+        let (completed, write_completed) = std::sync::mpsc::channel();
+        let fallback_stop = stop.clone();
+        let failsafe_stop = stop.clone();
+        let mut owner = QemuLifetime::new(stop, |stop| {
+            stop.send(true).context("stopping fixture control peer")
+        });
+        let cancelled = Arc::clone(&owner.cancelled);
+        let worker = std::thread::spawn(move || {
+            Qmp::negotiate(
+                BlockedWrite {
+                    entered,
+                    stopped,
+                    received_stop,
+                    completed,
+                },
+                std::io::Cursor::new(b"{\"QMP\":{}}\n"),
+                Instant::now() + Duration::from_secs(20),
+                &cancelled,
+            )
+        });
+        writing.recv_timeout(Duration::from_secs(20)).unwrap();
+        let (finished, watching) = std::sync::mpsc::channel();
+        let watchdog = std::thread::spawn(move || {
+            if watching.recv_timeout(Duration::from_secs(10)).is_err() {
+                let _ = failsafe_stop.send(false);
+            }
+        });
+        let stopped = owner.stop();
+        let result = join_qemu_worker(
+            worker,
+            Instant::now() + Duration::from_secs(20),
+            "blocked QMP writer",
+        );
+        // A cancellation-aware QMP caller may finish before the writer. Always
+        // release the fake peer, even for the missing-stop mutant, then collect
+        // independent stop and completion evidence before any assertion.
+        let _ = fallback_stop.send(false);
+        let stop_seen = stop_observed.recv_timeout(Duration::from_secs(20));
+        let completed = write_completed.recv_timeout(Duration::from_secs(20));
+        let _ = finished.send(());
+        watchdog.join().unwrap();
+        stopped.unwrap();
+        assert!(
+            result.unwrap().is_err(),
+            "a stopped writer negotiated successfully"
+        );
+        completed.expect("the fake control write must finish on every path");
+        assert!(
+            stop_seen.expect("the fake writer must report its release reason"),
+            "owner stop did not release the control writer; only the fixture fail-safe did"
+        );
     }
 
     #[test]

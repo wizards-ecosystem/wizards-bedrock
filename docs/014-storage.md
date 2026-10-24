@@ -217,9 +217,13 @@ dead boot stack when each storage candidate starts and scans it when the
 candidate settles, so frames that never reach a register access count as well,
 and it refuses a scan that saw less than the deepest live register-access
 pointer. Across both candidates the painted high-water mark must leave two
-pages of the guarded 32 KiB boot stack free: debug uses 23,792 bytes and
-release 13,240 (D-287, D-326, D-359, D-361). A frame below preparation's
-register accesses, which the leaf alone never saw, fails only the named machine
+pages of the guarded 32 KiB boot stack free. Historical measurements used
+23,792 bytes in debug and 13,240 in release (D-287, D-326, D-359, D-361);
+they do not qualify the changed DMA-owner layout. Its first debug measurement
+used 25,072 bytes and failed the unchanged bound. D-433's compact mapping
+identity reduced the next debug run to 24,432 bytes, leaving 8,336 free;
+release and integrated qualification remain required. A frame below
+preparation's register accesses, which the leaf alone never saw, fails only the named machine
 check, as do the calibrated live-frame defects. An individual function-frame
 ceiling could not have detected the original nested overflow.
 
@@ -980,10 +984,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 290 |
-| Mutations | 2305 registered; complete-sweep verdicts live in source-bound qualification records |
+| Machine checks | 294 |
+| Mutations | 2405 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-431 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-439 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1066,6 +1070,12 @@ for the controller so this cannot revert quietly.
 About forty checks stand on a running clock, which is most of the remaining
 failures. The warning now names the guard and prints the two rates the window
 measured, believed or not.
+
+D-438 corrects a later diagnostic overstatement: failure to admit an agreeing
+believable pair does not prove that every window was individually believable
+or that two usable windows disagreed. A refused clock also makes the delayed
+storage-input self-test fail without blocking on missing keyboard events; its
+command hold is released before completion cleanup on every result.
 
 **Then four more, and they had never run.** With the controller in place the
 same machine reported `passed=172 failed=9`, and four of the nine named
@@ -1278,6 +1288,11 @@ remains masked too; the keyboard is drained by a poller, and a clockless or
 interrupt-disabled poller yields rather than sleeping for a timer that cannot
 wake it.
 
+D-439 retains decoded event order across competing polling callers by keeping
+each bounded drain-and-delivery batch under one interrupt exclusion, with
+sequential locks and reader wakeup after restoration. The self-test arrival
+watch observes only events admitted to the queue; it does not reserve them.
+
 The IRR audit is defense in depth, not an architected fabric drain. Firmware,
 SMM, devices and remapping-hardware event sources are trusted to remain
 quiescent for compatibility-format interrupt traffic until the first successful
@@ -1295,8 +1310,25 @@ owner-transfer protocol.
 The tables the IOMMU walks (the root table, the per-function context table, and
 the second-level page tables) are ordinary kernel-owned frames written through
 the existing memory abstractions, and their physical addresses are programmed
-into the unit's registers. They are never themselves mapped into any device's
-second-level tables, so the device cannot reach the structures that constrain it.
+into the unit's registers. Before any unit write, all five table allocations
+move into owners whose Drop permanently retains their frames, including the
+deny-all interrupt table and private invalidation queue. Read-only preflight
+failures still reclaim unpublished allocations. They are never themselves
+mapped into any device's second-level tables, so the device cannot reach the
+structures that constrain it.
+
+Each DMA segment carries one private mapping-owner identity, derived from the
+never-recycled root allocation. Its host-tested frame-number-plus-one encoding
+preserves physical frame zero and every aligned address while keeping the
+optional owner to one word; unaligned inputs are refused. Mapping records that
+identity before publishing
+the first leaf and refuses any second mapping. Drop withholds a still-mapped
+allocation. Clean refusal before any leaf is published releases the tag without
+a drain. After possible publication, only proved rollback or exact-owner
+revocation with every leaf cleared and the required DMA drain releases it;
+uncertain outcomes permanently retain the allocation (D-433). No heap allocation is
+added to the candidate window. Both PCI admission proofs borrow the live VT-d
+unit, preventing owner drop or mutation before their last use.
 Every live table entry is published by one checked, naturally aligned volatile
 qword store. Permission bits occupy the first little-endian byte, so publishing
 that byte before the address would transiently authorize a page walk to an

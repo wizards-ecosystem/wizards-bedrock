@@ -434,8 +434,7 @@ fn read_bounded_bytes_with<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    let mut file =
-        File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let mut file = open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1649,7 +1648,7 @@ fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
     let mut hasher = sha256::Hasher::new();
     for (name, path, length) in measured {
         require_confined_file(root, name, "tracked mutation source")?;
-        let mut file = File::open(&path).with_context(|| format!("opening tracked file {name}"))?;
+        let mut file = open_real_file(&path, "tracked mutation source")?;
         ensure!(
             file.metadata()
                 .with_context(|| format!("remeasuring tracked file {name}"))?
@@ -1708,8 +1707,7 @@ fn digest_file_with<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    let mut file =
-        File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let mut file = open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -2685,6 +2683,73 @@ mod tests {
             format!("{error:#}").contains("changed while selecting the current pass"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn bounded_mutation_reader_refuses_a_final_component_link() {
+        let temp = TempTree::new("bounded-reader-link");
+        let target = temp.0.join("target");
+        let link = temp.0.join("report");
+        let payload = b"bounded report bytes";
+        std::fs::write(&target, payload).unwrap();
+        assert_eq!(read_bounded_bytes(&target, 64, "report").unwrap(), payload);
+        create_file_symlink(&target, &link);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let measured = std::cell::Cell::new(false);
+        let result = read_bounded_bytes_with(&link, 64, "report", || {
+            measured.set(true);
+            Ok(())
+        });
+        assert!(
+            result.is_err(),
+            "the reader followed a final-component link"
+        );
+        assert!(
+            !measured.get(),
+            "a link was admitted before bounded reading"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), payload);
+        std::fs::remove_file(link).unwrap();
+    }
+
+    #[test]
+    fn mutation_file_digest_refuses_a_final_component_link() {
+        let temp = TempTree::new("file-digest-link");
+        let target = temp.0.join("target");
+        let link = temp.0.join("index");
+        let payload = b"bounded index bytes";
+        std::fs::write(&target, payload).unwrap();
+        assert_eq!(
+            digest_file(&target, 64, "index").unwrap(),
+            sha256::hex(&sha256::digest(payload))
+        );
+        create_file_symlink(&target, &link);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let measured = std::cell::Cell::new(false);
+        let result = digest_file_with(&link, 64, "index", || {
+            measured.set(true);
+            Ok(())
+        });
+        assert!(
+            result.is_err(),
+            "the digest followed a final-component link"
+        );
+        assert!(
+            !measured.get(),
+            "a link was admitted before bounded hashing"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), payload);
+        std::fs::remove_file(link).unwrap();
     }
 
     #[test]

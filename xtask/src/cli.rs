@@ -68,6 +68,7 @@ HOUSEKEEPING:
 OPTIONS:
     --release         build optimised (default)
     --debug           build unoptimised
+                      build/image/run/vmware/test-boot/boot-check/degraded-check only
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
     --shipped         vmware tasks: select the image users boot, not self-test
@@ -231,6 +232,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     }
 
     let mut profile = Profile::default();
+    let mut profile_option = false;
     let mut message_format = None;
     let mut check = false;
     let mut all = false;
@@ -239,13 +241,20 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut begin = false;
     let mut verify = None;
     let mut passthrough = Vec::new();
+    let mut passthrough_option = false;
 
     let mut rest = args;
     while let Some(arg) = core::iter::Iterator::next(&mut rest) {
         let flag = arg.to_string_lossy().into_owned();
         match flag.as_str() {
-            "--release" => profile = Profile::Release,
-            "--debug" => profile = Profile::Dev,
+            "--release" => {
+                profile = Profile::Release;
+                profile_option = true;
+            }
+            "--debug" => {
+                profile = Profile::Dev;
+                profile_option = true;
+            }
             "--check" => check = true,
             "--all" => all = true,
             "--shipped" => shipped = true,
@@ -263,6 +272,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             }
             "-h" | "--help" => return Ok(Task::Help),
             "--" => {
+                passthrough_option = true;
                 passthrough.extend(rest.by_ref());
                 break;
             }
@@ -288,6 +298,30 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     ) && (run || begin || verify.is_some())
     {
         bail!("external qualification options do not apply to `{name}`");
+    }
+
+    if profile_option
+        && !matches!(
+            name.as_str(),
+            "build" | "image" | "run" | "vmware" | "test-boot" | "boot-check" | "degraded-check"
+        )
+    {
+        bail!("build profile options do not apply to `{name}`");
+    }
+    if check && !matches!(name.as_str(), "fmt" | "debug") {
+        bail!("`--check` does not apply to `{name}`");
+    }
+    if all && name != "clean" {
+        bail!("`--all` does not apply to `{name}`");
+    }
+    if shipped && !matches!(name.as_str(), "vmware" | "qualify-vmware") {
+        bail!("`--shipped` does not apply to `{name}`");
+    }
+    if message_format.is_some() && name != "check" {
+        bail!("`--message-format` does not apply to `{name}`");
+    }
+    if passthrough_option && name != "run" {
+        bail!("`--` passthrough does not apply to `{name}`");
     }
 
     match name.as_str() {
@@ -503,6 +537,218 @@ mod tests {
     fn unknown_tasks_and_options_are_rejected() {
         assert!(parse_args(&["bulid"]).is_err());
         assert!(parse_args(&["build", "--fast"]).is_err());
+    }
+
+    fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
+        for task in [
+            "build",
+            "image",
+            "run",
+            "vmware",
+            "check",
+            "api-audit",
+            "clippy",
+            "doc",
+            "fmt",
+            "test",
+            "test-boot",
+            "boot-check",
+            "degraded-check",
+            "supply-chain",
+            "verify-vendor",
+            "update-sbom",
+            "model-check",
+            "baseline",
+            "debug",
+            "mutate",
+            "ci",
+            "evidence",
+            "verify-evidence",
+            "qualify-advisory",
+            "qualify-mutants-grade",
+            "qualify-security-deep",
+            "qualify-vmware",
+            "clean",
+        ] {
+            if consumers.contains(&task) {
+                continue;
+            }
+            let mut arguments = vec![task];
+            if matches!(task, "qualify-mutants-grade" | "qualify-security-deep") {
+                arguments.push("--run");
+            }
+            assert!(
+                parse_args(&arguments).is_ok(),
+                "invalid fixture: {arguments:?}"
+            );
+            arguments.extend_from_slice(options);
+            assert!(
+                parse_args(&arguments).is_err(),
+                "accepted misplaced option: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_options_only_reach_tasks_with_a_build_profile() {
+        for (option, profile) in [("--release", Profile::Release), ("--debug", Profile::Dev)] {
+            for (task, expected) in [
+                ("build", Task::Build(profile)),
+                ("image", Task::Image(profile)),
+                (
+                    "run",
+                    Task::Run {
+                        profile,
+                        qemu_args: Vec::new(),
+                    },
+                ),
+                (
+                    "vmware",
+                    Task::Vmware {
+                        profile,
+                        kernel: crate::image::Kernel::SelfTest,
+                    },
+                ),
+                ("test-boot", Task::TestBoot(profile)),
+                ("boot-check", Task::BootCheck(profile)),
+                ("degraded-check", Task::DegradedCheck(profile)),
+            ] {
+                assert_eq!(parse_args(&[task, option]).unwrap(), expected);
+            }
+            assert_refused_elsewhere(
+                &[option],
+                &[
+                    "build",
+                    "image",
+                    "run",
+                    "vmware",
+                    "test-boot",
+                    "boot-check",
+                    "degraded-check",
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn check_options_cannot_dispatch_cleanup_or_another_unrelated_task() {
+        assert_eq!(
+            parse_args(&["fmt", "--check"]).unwrap(),
+            Task::Fmt(FmtMode::Check)
+        );
+        assert_eq!(
+            parse_args(&["debug", "--check"]).unwrap(),
+            Task::Debug(DebugMode::Check)
+        );
+        let error = parse_args(&["clean", "--check"]).unwrap_err().to_string();
+        assert_eq!(error, "`--check` does not apply to `clean`");
+        assert_refused_elsewhere(&["--check"], &["fmt", "debug"]);
+    }
+
+    #[test]
+    fn all_options_only_expand_the_clean_task() {
+        assert_eq!(
+            parse_args(&["clean", "--all"]).unwrap(),
+            Task::Clean(CleanScope::Everything)
+        );
+        assert_refused_elsewhere(&["--all"], &["clean"]);
+    }
+
+    #[test]
+    fn shipped_options_only_select_vmware_images() {
+        assert_eq!(
+            parse_args(&["vmware", "--shipped"]).unwrap(),
+            Task::Vmware {
+                profile: Profile::Release,
+                kernel: crate::image::Kernel::Shipped,
+            }
+        );
+        assert_eq!(
+            parse_args(&["qualify-vmware", "--shipped"]).unwrap(),
+            Task::QualifyVmware {
+                kernel: crate::image::Kernel::Shipped,
+            }
+        );
+        assert_refused_elsewhere(&["--shipped"], &["vmware", "qualify-vmware"]);
+    }
+
+    #[test]
+    fn message_format_options_only_reach_check_even_when_empty() {
+        for (option, value) in [("--message-format=json", "json"), ("--message-format=", "")] {
+            assert_eq!(
+                parse_args(&["check", option]).unwrap(),
+                Task::Check {
+                    message_format: Some(value.to_string()),
+                }
+            );
+            assert_refused_elsewhere(&[option], &["check"]);
+        }
+    }
+
+    #[test]
+    fn passthrough_is_run_only_even_when_the_separator_has_no_tail() {
+        assert_eq!(
+            parse_args(&["run", "--"]).unwrap(),
+            Task::Run {
+                profile: Profile::Release,
+                qemu_args: Vec::new(),
+            }
+        );
+        assert_refused_elsewhere(&["--"], &["run"]);
+        assert_refused_elsewhere(&["--", "-display", "none"], &["run"]);
+    }
+
+    #[test]
+    fn help_and_repeated_ordinary_options_keep_their_existing_precedence() {
+        for option in [
+            "--release",
+            "--debug",
+            "--check",
+            "--all",
+            "--shipped",
+            "--message-format=json",
+        ] {
+            assert_eq!(
+                parse_args(&["clean", option, "--help"]).unwrap(),
+                Task::Help
+            );
+        }
+        assert_eq!(
+            parse_args(&["build", "--debug", "--release"]).unwrap(),
+            Task::Build(Profile::Release)
+        );
+        assert_eq!(
+            parse_args(&["build", "--release", "--debug"]).unwrap(),
+            Task::Build(Profile::Dev)
+        );
+        assert_eq!(
+            parse_args(&["fmt", "--check", "--check"]).unwrap(),
+            Task::Fmt(FmtMode::Check)
+        );
+        assert_eq!(
+            parse_args(&["clean", "--all", "--all"]).unwrap(),
+            Task::Clean(CleanScope::Everything)
+        );
+        assert_eq!(
+            parse_args(&["vmware", "--shipped", "--shipped"]).unwrap(),
+            Task::Vmware {
+                profile: Profile::Release,
+                kernel: crate::image::Kernel::Shipped,
+            }
+        );
+        assert_eq!(
+            parse_args(&["check", "--message-format=short", "--message-format=json"]).unwrap(),
+            Task::Check {
+                message_format: Some("json".to_string()),
+            }
+        );
+        assert_eq!(
+            parse_args(&["run", "--", "--help"]).unwrap(),
+            Task::Run {
+                profile: Profile::Release,
+                qemu_args: vec![OsString::from("--help")],
+            }
+        );
     }
 
     /// A task the parser accepts but the help text never mentions is a task

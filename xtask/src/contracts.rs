@@ -1004,8 +1004,8 @@ fn pci_configuration_writes_require_function_authority() {
 
     // The domain proof is minted only by a programmed unit (D-357).
     let forged_domain = "#![no_std]\n\
-        fn forge(function: pci_config::Address) -> wost::arch::current::vtd::DmaDomain {\n\
-            wost::arch::current::vtd::DmaDomain { function }\n\
+        fn forge(function: pci_config::Address) -> wost::arch::current::vtd::DmaDomain<'static> {\n\
+            wost::arch::current::vtd::DmaDomain { function, _unit: core::marker::PhantomData }\n\
         }\n";
     require_error(&paths, "dma-domain-forgery", forged_domain, "E0451").unwrap_or_else(
         |diagnostics| panic!("the DMA domain proof became forgeable:\n{diagnostics}"),
@@ -1960,8 +1960,10 @@ fn the_pci_authority_inventory_counts_every_door_and_channel() {
 }
 
 /// Checks that refuse a link or non-file at a path (D-344).
-const PATH_CHECKS: [&str; 5] = [
+const PATH_CHECKS: [&str; 7] = [
     "canonical_existing_real_directory",
+    "require_confined_file",
+    "require_confined_absolute_file",
     "require_contained_regular_file",
     "require_direct_file",
     "require_direct_file_if_present",
@@ -2229,6 +2231,21 @@ fn a_checked_path_is_opened_only_without_following_links() {
         checked_reopens("fixture.rs", fixture),
         ["fixture.rs: `checked` checks a path, then follows it"]
     );
+    for check in ["require_confined_file", "require_confined_absolute_file"] {
+        let fixture = format!(
+            "fn checked(root: &Path) {{\n\
+                let path = {check}(root, \"input\", \"fixture\").unwrap();\n\
+                let _ = File::open(path);\n\
+            }}\n"
+        );
+        assert_eq!(
+            checked_reopens("fixture.rs", &fixture),
+            ["fixture.rs: `checked` checks a path, then follows it"],
+            "the {check} confinement door escaped the reopen check"
+        );
+        let checked_open = fixture.replace("File::open(path)", "open_real_file(path, \"fixture\")");
+        assert!(checked_reopens("fixture.rs", &checked_open).is_empty());
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3564,6 +3581,16 @@ fn machine_probes_are_absent_from_the_shipped_wost_graph() {
     let paths = Paths::discover().expect("workspace paths");
     let probes = [
         (
+            "dma-owner-drop-driver",
+            "#![no_std]\nfn probe() { let _ = wost::mm::dma_mapping_owner_drop_retains_for_test; }\n",
+            "E0425",
+        ),
+        (
+            "published-table-drop-driver",
+            "#![no_std]\nfn probe() { let _ = wost::mm::published_iommu_table_drop_retains_for_test; }\n",
+            "E0425",
+        ),
+        (
             "write-protection-driver",
             "#![no_std]\nfn probe() { let _ = wost::arch::current::cpu::drive_write_protection_for_test; }\n",
             "E0425",
@@ -4344,7 +4371,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             "kernel/src/input.rs",
             &[
                 ("evidence", 7),
-                ("dropped", 8),
+                ("dropped", 10),
                 ("POLLER_ROUNDS", 4),
                 ("FOREVER", 5),
                 ("POLLER_PASSES", 3),
@@ -6371,4 +6398,71 @@ fn every_static_lock_in_wost_is_reclaimed_by_the_panic_path() {
         "panic::reclaim names modules without static locks: {reclaimed:?} vs {:?}",
         locks.keys().collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn vtd_admission_proofs_borrow_the_exact_live_unit() {
+    let paths = Paths::discover().expect("workspace paths");
+    for (label, proof, mint) in [
+        ("dma", "DmaDomain", "domain"),
+        ("interrupt", "InterruptIsolation", "interrupt_isolation"),
+    ] {
+        let header = format!("#![no_std]\nuse wost::arch::current::vtd::{{Vtd, {proof}}};\n");
+        if proof == "InterruptIsolation" {
+            let forged = format!(
+                "{header}fn forge(function: pci_config::Address) -> {proof}<'static> {{ {proof} {{ function, _unit: core::marker::PhantomData }} }}"
+            );
+            require_error(
+                &paths,
+                &format!("vtd-{label}-forged-owner"),
+                &forged,
+                "E0451",
+            )
+            .expect("a unit-free interrupt admission proof could be constructed");
+        }
+        let dropped = format!(
+            "{header}fn probe(unit: Vtd) {{ let proof = unit.{mint}().unwrap(); drop(unit); let _ = proof.function(); }}"
+        );
+        require_error(
+            &paths,
+            &format!("vtd-{label}-dropped-owner"),
+            &dropped,
+            "E0505",
+        )
+        .expect("admission proof did not borrow its exact owner through its last use");
+        let mutated = format!(
+            "{header}fn probe(unit: &mut Vtd) {{ let proof = unit.{mint}().unwrap(); let _ = unit.park(); let _ = proof.function(); }}"
+        );
+        require_error(
+            &paths,
+            &format!("vtd-{label}-mutated-owner"),
+            &mutated,
+            "E0502",
+        )
+        .expect("admission proof allowed mutable access to its live owner");
+        let escaped =
+            format!("{header}fn probe<'a>(unit: Vtd) -> {proof}<'a> {{ unit.{mint}().unwrap() }}");
+        require_error(
+            &paths,
+            &format!("vtd-{label}-escaped-owner"),
+            &escaped,
+            "E0515",
+        )
+        .expect("admission proof escaped the lifetime of its owner");
+        let live = format!(
+            "{header}fn probe(unit: &mut Vtd) {{ let proof = unit.{mint}().unwrap(); let _ = proof.function(); drop(proof); let _ = unit.park(); }}"
+        );
+        require_success(&paths, &format!("vtd-{label}-live-owner"), &live)
+            .expect("spending a proof did not release its unit borrow");
+    }
+    const LIVE_ADMISSION: &str = r"#![no_std]
+use wost::arch::current::{pci, vtd::Vtd};
+fn probe(unit: &Vtd, authority: pci::NvmeBusMasterAuthority<'_>, state: &mut pci_config::CommandState) {
+    let domain = unit.domain().unwrap();
+    let interrupts = unit.interrupt_isolation().unwrap();
+    let _ = pci::admit_bus_master(authority, domain, interrupts, state);
+}
+";
+    require_success(&paths, "vtd-live-paired-admission", LIVE_ADMISSION)
+        .expect("both borrowed proofs must authorize one live PCI admission");
 }

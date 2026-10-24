@@ -31,9 +31,21 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
+use core::num::NonZeroU64;
 
 /// Bytes in one page frame.
 pub const FRAME_SIZE: u64 = 4096;
+
+/// An aligned frame's distinct nonzero identity, including physical frame zero.
+///
+/// Unaligned addresses are refused. Even the highest `u64` frame number leaves
+/// room for the nonzero bias, so an optional identity still occupies one word.
+pub const fn frame_identity(address: u64) -> Option<NonZeroU64> {
+    if !address.is_multiple_of(FRAME_SIZE) {
+        return None;
+    }
+    NonZeroU64::new(address / FRAME_SIZE + 1)
+}
 
 /// Frames one word of a bitmap accounts for.
 const FRAMES_PER_WORD: usize = u64::BITS as usize;
@@ -332,6 +344,39 @@ impl<const WORDS: usize> fmt::Debug for FrameSpace<WORDS> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_identity_is_exact_at_zero_high_and_misaligned_boundaries() {
+        let cases = [
+            (0, 1),
+            (0x1000, 2),
+            (0x2000, 3),
+            (0x0000_1000_0000_0000, 0x0000_0001_0000_0001),
+            (0xffff_ffff_ffff_e000, 0x000f_ffff_ffff_ffff),
+            (0xffff_ffff_ffff_f000, 0x0010_0000_0000_0000),
+        ];
+        let identities = cases.map(|(address, expected)| {
+            let identity = frame_identity(address).expect("an aligned frame has an identity");
+            assert_eq!(identity.get(), expected, "frame {address:#x}");
+            identity
+        });
+        for (index, identity) in identities.iter().enumerate() {
+            assert!(
+                !identities[..index].contains(identity),
+                "distinct physical frames share one identity"
+            );
+        }
+        for base in [0, 0x1000, 0xffff_ffff_ffff_f000] {
+            for offset in 1..0x1000 {
+                let address = base + offset;
+                assert_eq!(
+                    frame_identity(address),
+                    None,
+                    "unaligned address {address:#x}"
+                );
+            }
+        }
+    }
 
     /// Sixty-four frames: enough to exercise every path, small enough that a
     /// test can hold several on the stack.

@@ -13,9 +13,10 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
+use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use frame_space::{FRAME_SIZE, FrameSpace, words_for};
+use frame_space::{FRAME_SIZE, FrameSpace, frame_identity, words_for};
 use mmio_range::AccessRange;
 use ring_proto::SharedLayout;
 
@@ -682,14 +683,58 @@ impl<'authority> DirectSpan<'authority> {
 ///
 /// A command whose completion is uncertain cannot return its frames to the
 /// allocator: the device may still write through the physical address it was
-/// given. [`retain`](Self::retain) makes that failure mode safe by permanently
-/// withholding the allocation and removing every safe way to access it.
+/// given. A live mapping prevents recycling even if its owner is dropped.
+/// [`retain`](Self::retain) additionally removes every safe way to access the
+/// allocation when completion or revocation is uncertain.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DmaSegment {
     segment: Option<Segment>,
+    mapping_owner: Option<DmaMappingOwner>,
+}
+
+/// Stable identity of a VT-d root whose published frames cannot be recycled.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DmaMappingOwner(NonZeroU64);
+
+impl DmaMappingOwner {
+    /// Name a root whose published owner permanently withholds its allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the root is not frame aligned.
+    pub(crate) const fn new(root: Paddr) -> Self {
+        let Some(identity) = frame_identity(root) else {
+            panic!("a DMA mapping owner root is not frame aligned");
+        };
+        Self(identity)
+    }
 }
 
 impl DmaSegment {
+    /// Reserve the single mapping lease before its first hardware publication.
+    pub(crate) fn begin_mapping(&mut self, owner: DmaMappingOwner) -> bool {
+        if self.segment.is_none() || self.mapping_owner.is_some() {
+            return false;
+        }
+        self.mapping_owner = Some(owner);
+        true
+    }
+
+    /// Whether this exact never-recycled root owns the live mapping lease.
+    pub(crate) fn is_mapped_by(&self, owner: DmaMappingOwner) -> bool {
+        self.mapping_owner == Some(owner)
+    }
+
+    /// End the exact owner's lease after proved rollback or DMA revocation.
+    pub(crate) fn release_mapping(&mut self, owner: DmaMappingOwner) -> bool {
+        if !self.is_mapped_by(owner) {
+            return false;
+        }
+        self.mapping_owner = None;
+        true
+    }
+
     /// Where the run begins, unless an uncertain device still owns it.
     pub const fn address(&self) -> Option<Paddr> {
         match &self.segment {
@@ -778,10 +823,19 @@ impl DmaSegment {
     }
 }
 
+impl Drop for DmaSegment {
+    fn drop(&mut self) {
+        if self.mapping_owner.is_some() {
+            self.retain();
+        }
+    }
+}
+
 impl From<Segment> for DmaSegment {
     fn from(segment: Segment) -> Self {
         Self {
             segment: Some(segment),
+            mapping_owner: None,
         }
     }
 }
@@ -808,8 +862,9 @@ pub enum TableWalks {
 ///
 /// The CPU writes it through the direct map and the unit reads it at the
 /// physical address, so it is never mapped into any device's translation and
-/// a device cannot reach the structure that constrains it. Its frames free on
-/// drop with the rest of the domain (D-357).
+/// a device cannot reach the structure that constrains it. Unpublished tables
+/// free their frames on drop; PublishedIommuTable retains every allocation a
+/// unit may have observed (D-357).
 #[derive(Debug)]
 pub(crate) struct IommuTable {
     frames: Segment,
@@ -872,6 +927,107 @@ impl IommuTable {
         span.read_volatile_at(index * 8, &mut bytes)
             .then(|| u64::from_le_bytes(bytes))
     }
+}
+
+/// A table that a unit may have observed, retained even when its owner drops.
+#[derive(Debug)]
+pub(crate) struct PublishedIommuTable {
+    table: Option<IommuTable>,
+}
+
+impl PublishedIommuTable {
+    /// Convert unpublished frames before a unit can first observe them.
+    pub(crate) const fn new(table: IommuTable) -> Self {
+        Self { table: Some(table) }
+    }
+
+    /// The stable physical address programmed into hardware.
+    pub(crate) const fn address(&self) -> Paddr {
+        match &self.table {
+            Some(table) => table.address(),
+            None => panic!("published table has no frame owner"),
+        }
+    }
+
+    /// Publish one checked qword through the retained table's original writer.
+    pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
+        self.table
+            .as_mut()
+            .is_some_and(|table| table.write_u64(index, value))
+    }
+
+    /// Read one checked qword from the retained allocation.
+    pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
+        self.table.as_ref()?.read_u64(index)
+    }
+}
+
+impl Drop for PublishedIommuTable {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.take() {
+            core::mem::forget(table);
+        }
+    }
+}
+
+/// Exercise the actual DMA owner and destructor without publishing a leaf.
+#[cfg(feature = "selftest")]
+pub fn dma_mapping_owner_drop_retains_for_test() -> bool {
+    let compact = size_of::<Option<DmaMappingOwner>>() == size_of::<Paddr>();
+    let before = free_frames();
+    let (Some(mapped), Some(revoked)) = (allocate_contiguous(1, 1), allocate_contiguous(2, 1))
+    else {
+        return false;
+    };
+    let owner = DmaMappingOwner::new(mapped.address());
+    let foreign = DmaMappingOwner::new(revoked.address());
+    let mut mapped = DmaSegment::from(mapped);
+    let mut revoked = DmaSegment::from(revoked);
+    let mapped_ok = mapped.begin_mapping(owner);
+    let refused = !mapped.begin_mapping(owner)
+        && !mapped.begin_mapping(foreign)
+        && !mapped.release_mapping(foreign)
+        && mapped.is_mapped_by(owner);
+    let released = !revoked.release_mapping(owner)
+        && revoked.begin_mapping(owner)
+        && revoked.release_mapping(owner)
+        && !revoked.is_mapped_by(owner)
+        && !revoked.release_mapping(owner);
+    drop(revoked);
+    let reclaimed = free_frames() == before - 1;
+    drop(mapped);
+    compact && mapped_ok && refused && released && reclaimed && free_frames() == before - 1
+}
+
+/// Compare ordinary pre-publication cleanup with actual published-owner Drop.
+#[cfg(feature = "selftest")]
+pub fn published_iommu_table_drop_retains_for_test() -> bool {
+    let before = free_frames();
+    let Some(unpublished) = IommuTable::new(1, TableWalks::Coherent) else {
+        return false;
+    };
+    let allocated = free_frames() == before - 1;
+    drop(unpublished);
+    if !allocated || free_frames() != before {
+        return false;
+    }
+    let mut retained = 0;
+    for frames in [1, 2, 3, 4, 5] {
+        let Some(table) = IommuTable::new(frames, TableWalks::Coherent) else {
+            return false;
+        };
+        let address = table.address();
+        let mut published = PublishedIommuTable::new(table);
+        let exact = published.address() == address
+            && published.write_u64(0, address)
+            && published.read_u64(0) == Some(address);
+        retained += frames;
+        drop(published);
+        if !exact || free_frames() != before - retained {
+            return false;
+        }
+    }
+    true
 }
 
 /// A run of frames whose bytes are ring 3's.

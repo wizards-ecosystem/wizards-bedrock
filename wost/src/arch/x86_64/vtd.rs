@@ -24,6 +24,7 @@
 #[cfg(feature = "selftest")]
 use alloc::vec::Vec;
 use core::fmt;
+use core::marker::PhantomData;
 
 use pci_config::Address;
 use vtd::{
@@ -37,7 +38,7 @@ use vtd::{
 };
 
 use crate::arch::x86_64::paging::ReleasableDevice;
-use crate::mm::{DmaSegment, IommuTable, TableWalks};
+use crate::mm::{DmaMappingOwner, DmaSegment, IommuTable, PublishedIommuTable, TableWalks};
 
 /// The single domain identifier this unit programs.
 const DOMAIN_ID: u16 = 1;
@@ -288,15 +289,15 @@ pub struct Vtd {
     fault_registers: u16,
     /// The command word every write to `GCMD` is built from (D-358).
     gcmd: u32,
-    root: IommuTable,
-    context: IommuTable,
+    root: PublishedIommuTable,
+    context: PublishedIommuTable,
     /// A two-entry interrupt table. Both entries remain not-present.
-    interrupts: IommuTable,
+    interrupts: PublishedIommuTable,
     /// One-page queue used only while globally invalidating the IEC.
-    invalidation_queue: IommuTable,
+    invalidation_queue: PublishedIommuTable,
     /// The second-level tables, one frame each; table 0 is the top level the
     /// context points at, and the first `table_count` are carved.
-    tables: IommuTable,
+    tables: PublishedIommuTable,
     table_count: usize,
     #[cfg(feature = "selftest")]
     forced_invalidation_failures: u8,
@@ -309,33 +310,36 @@ pub struct Vtd {
 /// Minted only by [`Vtd::domain`] after translation is confirmed on and the
 /// function's context entry names the domain's own tables, and consumed by
 /// `wost::pci::admit_bus_master`, so no path enables bus mastering without the
-/// fence in place (D-357). Neither `Clone` nor `Copy`, so no proof outlives the
-/// admission that spends it.
+/// fence in place (D-357). The proof borrows the unit, so dropping or mutating
+/// its tables is impossible while that admission authority remains usable.
 #[derive(Debug)]
 #[must_use = "a DMA domain proof is required to admit bus mastering"]
-pub struct DmaDomain {
+pub struct DmaDomain<'unit> {
     function: Address,
+    _unit: PhantomData<&'unit Vtd>,
 }
 
 /// Linear proof that this unit blocks every interrupt from its exact function.
 ///
 /// Minted only after IRE, EIME and the compatibility-format block read back,
 /// IRTA names the owner's empty table, and queued invalidation is off. It is
-/// consumed beside [`DmaDomain`] when PCI admits BME (D-372).
+/// consumed beside [`DmaDomain`] when PCI admits BME (D-372), and keeps the
+/// minting unit borrowed until that use completes.
 #[derive(Debug)]
 #[must_use = "interrupt isolation proof is required to admit bus mastering"]
-pub struct InterruptIsolation {
+pub struct InterruptIsolation<'unit> {
     function: Address,
+    _unit: PhantomData<&'unit Vtd>,
 }
 
-impl InterruptIsolation {
+impl InterruptIsolation<'_> {
     /// The function whose unit-wide interrupt boundary minted this proof.
     pub const fn function(&self) -> Address {
         self.function
     }
 }
 
-impl DmaDomain {
+impl DmaDomain<'_> {
     /// The function this domain isolates.
     pub const fn function(&self) -> Address {
         self.function
@@ -458,11 +462,11 @@ impl Vtd {
             fault_offset: plan.capability.fault_recording_offset_bytes() as usize,
             fault_registers: plan.capability.number_of_fault_recording_registers(),
             gcmd: 0,
-            root,
-            context,
-            interrupts,
-            invalidation_queue,
-            tables,
+            root: PublishedIommuTable::new(root),
+            context: PublishedIommuTable::new(context),
+            interrupts: PublishedIommuTable::new(interrupts),
+            invalidation_queue: PublishedIommuTable::new(invalidation_queue),
+            tables: PublishedIommuTable::new(tables),
             table_count: 1,
             #[cfg(feature = "selftest")]
             forced_invalidation_failures: 0,
@@ -581,12 +585,23 @@ impl Vtd {
         let Some((paddr, len)) = segment.address().zip(segment.len()) else {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
+        let owner = DmaMappingOwner::new(self.root.address());
+        if !segment.begin_mapping(owner) {
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        }
         match self.map_range::<DEVICE_READS, DEVICE_WRITES>(paddr, len) {
             Err(error @ SegmentChangeError::Retained(_)) => {
                 segment.retain();
                 Err(error)
             }
-            outcome => outcome,
+            Err(error @ SegmentChangeError::Refused(_)) => {
+                assert!(
+                    segment.release_mapping(owner),
+                    "mapping owner changed during rollback"
+                );
+                Err(error)
+            }
+            Ok(()) => Ok(()),
         }
     }
 
@@ -628,6 +643,10 @@ impl Vtd {
     /// returning. Any uncertain failure retains the segment before returning.
     #[must_use = "a still-mapped segment is still reachable by the device"]
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
+        let owner = DmaMappingOwner::new(self.root.address());
+        if !segment.is_mapped_by(owner) {
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        }
         let Some((paddr, len)) = segment.address().zip(segment.len()) else {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
@@ -649,6 +668,10 @@ impl Vtd {
             segment.retain();
             Err(SegmentChangeError::Retained(reason))
         } else {
+            assert!(
+                segment.release_mapping(owner),
+                "mapping owner changed during revocation"
+            );
             Ok(())
         }
     }
@@ -687,7 +710,7 @@ impl Vtd {
     /// for: translation is on, the root entry for the bus names the context
     /// table, and the function's context entry names this domain's own tree.
     #[must_use]
-    pub fn domain(&self) -> Option<DmaDomain> {
+    pub fn domain(&self) -> Option<DmaDomain<'_>> {
         let function = self.function?;
         let status = read_u32(&self.registers, vtd::GSTS as usize).ok()?;
         if !translation_enabled(status) {
@@ -713,15 +736,20 @@ impl Vtd {
             && entry.second_level_address() == self.table_address(0)
             && entry.address_width_encoding() == self.width.context_encoding()
             && entry.domain_id() == DOMAIN_ID;
-        names_this_domain.then_some(DmaDomain { function })
+        names_this_domain.then_some(DmaDomain {
+            function,
+            _unit: PhantomData,
+        })
     }
 
     /// Mint proof that this unit's interrupt path is kernel-owned and deny-all.
     #[must_use]
-    pub fn interrupt_isolation(&self) -> Option<InterruptIsolation> {
+    pub fn interrupt_isolation(&self) -> Option<InterruptIsolation<'_>> {
         let function = self.function?;
-        self.boundary_active()
-            .then_some(InterruptIsolation { function })
+        self.boundary_active().then_some(InterruptIsolation {
+            function,
+            _unit: PhantomData,
+        })
     }
 
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
@@ -1281,7 +1309,12 @@ fn write_u32(registers: &mut ReleasableDevice, offset: usize, value: u32) -> Res
 }
 
 /// Write one sixteen-byte table entry as its low and high eight-byte halves.
-fn write_entry(table: &mut IommuTable, index: u8, lo: u64, hi: u64) -> Result<(), VtdError> {
+fn write_entry(
+    table: &mut PublishedIommuTable,
+    index: u8,
+    lo: u64,
+    hi: u64,
+) -> Result<(), VtdError> {
     if table.write_u64(usize::from(index) * 2, lo)
         && table.write_u64(usize::from(index) * 2 + 1, hi)
     {

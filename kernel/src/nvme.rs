@@ -688,6 +688,13 @@ pub(crate) struct ControllerQuarantine {
 }
 
 /// Result of preparing a mapped controller before bus-master admission.
+#[cfg_attr(
+    feature = "selftest",
+    expect(
+        clippy::large_enum_variant,
+        reason = "self-test observations enlarge the inline owner; candidate stack use is machine-checked (D-287)"
+    )
+)]
 #[derive(Debug)]
 #[must_use = "controller preparation returns ownership in both outcomes"]
 pub(crate) enum PrepareOutcome {
@@ -1996,22 +2003,19 @@ impl DisabledController {
     /// refusal builds a small value rather than a whole admission result: the
     /// debug build gives every such temporary its own stack slot (D-287).
     fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
-        let (domain, interrupts) = {
-            let mut installed = crate::iommu::installed();
-            let Some(isolation) = installed.as_mut() else {
-                return Err(BusMasterAdmissionError::Unisolated);
-            };
-            if !self.controller.admin.map_into(isolation) {
-                return Err(BusMasterAdmissionError::QueuesUnreachable);
-            }
-            let domain = isolation
-                .domain()
-                .ok_or(BusMasterAdmissionError::Unisolated)?;
-            let interrupts = isolation
-                .interrupt_isolation()
-                .ok_or(BusMasterAdmissionError::Unisolated)?;
-            (domain, interrupts)
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            return Err(BusMasterAdmissionError::Unisolated);
         };
+        if !self.controller.admin.map_into(isolation) {
+            return Err(BusMasterAdmissionError::QueuesUnreachable);
+        }
+        let domain = isolation
+            .domain()
+            .ok_or(BusMasterAdmissionError::Unisolated)?;
+        let interrupts = isolation
+            .interrupt_isolation()
+            .ok_or(BusMasterAdmissionError::Unisolated)?;
         let Some(registers) = self.controller.registers.as_ref() else {
             return Err(BusMasterAdmissionError::NotMapped);
         };
@@ -2402,6 +2406,12 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
 #[cfg(feature = "selftest")]
 pub(crate) fn hold_command_for_test(held: bool) {
     HOLD_COMMAND.store(held, Ordering::Release);
+}
+
+/// Whether the test hook still asks a submitted command to remain held.
+#[cfg(feature = "selftest")]
+pub(crate) fn hold_requested_for_test() -> bool {
+    HOLD_COMMAND.load(Ordering::Acquire)
 }
 
 /// Whether a submitted command is currently stopped by the test hook.

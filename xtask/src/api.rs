@@ -128,7 +128,9 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
         "wost/src/arch/x86_64/usercopy.rs",
         "arch::x86_64::usercopy::Window",
     ),
+    ("wost/src/mm/mod.rs", "mm::DmaSegment"),
     ("wost/src/mm/mod.rs", "mm::ExternalZeroRefusal"),
+    ("wost/src/mm/mod.rs", "mm::PublishedIommuTable"),
     ("wost/src/mm/mod.rs", "mm::Frame"),
     ("wost/src/mm/mod.rs", "mm::Segment"),
     ("wost/src/mm/mod.rs", "mm::USegment"),
@@ -148,10 +150,13 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
         "mutation_workspace::tests::TempTree",
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
+    ("xtask/src/qemu.rs", "qemu::QemuLifetime"),
     ("xtask/src/qemu.rs", "qemu::RunDmaCoverage"),
     ("xtask/src/qemu.rs", "qemu::RunVars"),
     ("xtask/src/qemu.rs", "qemu::SerialChannel"),
     ("xtask/src/qemu.rs", "qemu::tests::QemuFixture"),
+    ("xtask/src/qmp.rs", "qmp::tests::ControlledWriter"),
+    ("xtask/src/qmp.rs", "qmp::tests::CountedWriter"),
     (
         "xtask/src/security_deep.rs",
         "security_deep::PrivateCodexCredential",
@@ -179,6 +184,20 @@ struct ReviewedDropProducer {
 }
 
 const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
+    ReviewedDropProducer {
+        relative: "wost/src/mm/mod.rs",
+        owner: "mm::DmaSegment",
+        member: "from",
+        implemented_trait: Some("From"),
+        produced: "mm::DmaSegment",
+    },
+    ReviewedDropProducer {
+        relative: "wost/src/mm/mod.rs",
+        owner: "mm::PublishedIommuTable",
+        member: "new",
+        implemented_trait: None,
+        produced: "mm::PublishedIommuTable",
+    },
     ReviewedDropProducer {
         relative: "kernel/src/handle.rs",
         owner: "handle::HandleTable",
@@ -318,6 +337,13 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "start",
         implemented_trait: None,
         produced: "qemu::DebugMachine",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/qemu.rs",
+        owner: "qemu::QemuLifetime",
+        member: "new",
+        implemented_trait: None,
+        produced: "qemu::QemuLifetime",
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",
@@ -13716,6 +13742,73 @@ pub fn construct() { let _ = <USegment as From<Segment>>::from(Segment); }
     }
 
     #[test]
+    fn reviewed_dma_owners_activate_drop_only_from_exact_owned_producers() {
+        for (owner, definition, construction) in [
+            (
+                "DmaSegment",
+                "pub struct Segment; pub struct DmaSegment; impl From<Segment> for DmaSegment { fn from(_: Segment) -> Self { Self } }",
+                "let _owner = <DmaSegment as From<Segment>>::from(Segment);",
+            ),
+            (
+                "PublishedIommuTable",
+                "pub struct IommuTable; pub(crate) struct PublishedIommuTable; impl PublishedIommuTable { pub(crate) fn new(_: IommuTable) -> Self { Self } }",
+                "let _owner = PublishedIommuTable::new(IommuTable);",
+            ),
+        ] {
+            for constructed in [true, false] {
+                let root = fixture("pub fn foundation() {}\nfn main() {}\n");
+                std::fs::create_dir_all(root.join("wost/src/mm"))
+                    .expect("DMA Drop fixture directory");
+                std::fs::write(
+                    root.join("wost/src/lib.rs"),
+                    r#"#![warn(deprecated)]
+pub mod mm;
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime() { mm::exercise(); }
+"#,
+                )
+                .expect("DMA Drop fixture root");
+                let body = if constructed {
+                    construction.to_string()
+                } else {
+                    format!("let _ = core::mem::size_of::<{owner}>();")
+                };
+                std::fs::write(
+                    root.join("wost/src/mm/mod.rs"),
+                    format!("pub fn drop_body_api() {{}}\n{definition}\nimpl core::ops::Drop for {owner} {{ fn drop(&mut self) {{ drop_body_api(); }} }}\npub fn exercise() {{ {body} }}\n"),
+                ).expect("DMA Drop fixture source");
+                let inventory = Inventory::discover(&root).expect("reviewed DMA Drop inventory");
+                let mut uses = Uses::default();
+                for round in 0..inventory.rounds {
+                    let instrumentation = inventory
+                        .instrument(&root, round)
+                        .expect("instrument DMA Drop fixture");
+                    let output = compile_wost_fixture(&root);
+                    uses.observe(
+                        RootKind::Production,
+                        &inventory,
+                        &root,
+                        &output,
+                        &instrumentation,
+                    )
+                    .expect("read DMA Drop diagnostics");
+                }
+                uses.validate_dispatches(&inventory)
+                    .expect("exact DMA producer dispatch");
+                assert_eq!(
+                    !uses
+                        .dead(&inventory)
+                        .iter()
+                        .any(|node| node.symbol == "mm::drop_body_api"),
+                    constructed,
+                    "{owner} Drop activation must follow an owned construction, not a type mention",
+                );
+                std::fs::remove_dir_all(root).expect("remove DMA Drop fixture");
+            }
+        }
+    }
+
+    #[test]
     fn a_new_owned_self_drop_producer_is_refused_until_reviewed() {
         let root = fixture("pub fn foundation() {}\nfn main() {}\n");
         std::fs::create_dir_all(root.join("wost/src/arch/x86_64"))
@@ -13783,6 +13876,57 @@ impl core::ops::Drop for Window { fn drop(&mut self) {} }
             "{error}"
         );
         std::fs::remove_dir_all(root).expect("remove cross-file producer fixture");
+    }
+
+    #[test]
+    fn a_private_generic_qemu_lifetime_has_one_reviewed_drop_producer() {
+        let root = fixture("pub fn foundation() {}\nfn main() {}\n");
+        std::fs::create_dir_all(root.join("xtask/src")).unwrap();
+        std::fs::write(root.join("xtask/src/lib.rs"), "mod qemu;\n").unwrap();
+        let source = r#"struct QemuLifetime<C> { child: C }
+impl<C> QemuLifetime<C> { fn new(child: C) -> Self { Self { child } } }
+impl<C> Drop for QemuLifetime<C> { fn drop(&mut self) {} }
+"#;
+        std::fs::write(root.join("xtask/src/qemu.rs"), source).unwrap();
+        let inventory = Inventory::discover(&root).expect("reviewed private generic owner");
+        let producers = inventory
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.reviewed_drop_producer.is_some_and(|index| {
+                    let producer = &REVIEWED_IMPLICIT_DROP_PRODUCERS[index];
+                    producer.relative == "xtask/src/qemu.rs"
+                        && producer.owner == "qemu::QemuLifetime"
+                        && producer.member == "new"
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(producers.len(), 1);
+        assert!(producers[0].direct_self_construction);
+        let drops = inventory
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.trait_route, Some(TraitRoute::Implementation {
+                key, implicit: Some(ImplicitTrait::Drop), ..
+            }) if key.member == "drop")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(drops.len(), 1);
+        assert!(inventory.implicit_trait_activations.iter().any(|activation| {
+            matches!(activation.trigger, ImplicitTraitTrigger::LiveNode(node) if node == producers[0].id)
+                && activation.implementation == drops[0].id
+        }));
+        std::fs::write(root.join("xtask/src/qemu.rs"), format!(
+            "{source}impl<C> QemuLifetime<C> {{ fn alternate(child: C) -> Self {{ Self {{ child }} }} }}\n"
+        )).unwrap();
+        let error = Inventory::discover(&root).expect_err("alternate constructor is not reviewed");
+        assert!(
+            error
+                .to_string()
+                .contains("unreviewed implicit Drop producer")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

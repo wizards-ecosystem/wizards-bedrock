@@ -2083,6 +2083,10 @@ fn file_work_pressure_is_bounded_at_admission() -> bool {
 }
 
 fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() -> bool {
+    if !the_clock_is_running() {
+        return false;
+    }
+    let refused_input_releases_hold = refused_delayed_input_releases_the_hold();
     let Some((table, handle)) = small_file_authority() else {
         return false;
     };
@@ -2112,22 +2116,17 @@ fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() -> bool {
     // checks below retain their tickless baseline. Drain explicitly while the
     // storage worker is held, proving polling and unrelated IRQ admission can
     // progress together.
-    let progressed = runs_until(input::HUMAN_WAIT_MS, || {
-        input::poll();
-        key.is_some_and(input::armed_key_arrived)
-    });
-    let mut context = context();
-    let pressed = input::read_key(&mut context);
-    let released = input::read_key(&mut context);
-    let input_progress = progressed
-        && interrupt_admission
-        && interrupt::are_enabled()
-        && pressed.event.key == ps2_keys::Key::C
-        && pressed.event.state == ps2_keys::KeyState::Pressed
-        && released.event.key == ps2_keys::Key::C
-        && released.event.state == ps2_keys::KeyState::Released;
+    let arrived = finish_delayed_read_input(
+        || {
+            runs_until(input::HUMAN_WAIT_MS, || {
+                input::poll();
+                key.is_some_and(input::armed_key_arrived)
+            })
+        },
+        input::try_read_key_for_test,
+    );
+    let input_progress = arrived && interrupt_admission && interrupt::are_enabled();
 
-    nvme::hold_command_for_test(false);
     let completed = runs_until(5_000, || ring.is_quiet());
     let completion = ring.read_completion(0);
     let mut bytes = [0u8; 16];
@@ -2144,7 +2143,79 @@ fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() -> bool {
         "selftest: delayed read evidence deferred={deferred} device={reached_device} retained={retained} polled={input_progress} completed={completed} exact={exact}"
     );
 
-    deferred && reached_device && retained && input_progress && completed && exact
+    refused_input_releases_hold
+        && deferred
+        && reached_device
+        && retained
+        && input_progress
+        && completed
+        && exact
+}
+
+fn finish_delayed_read_input(
+    wait: impl FnOnce() -> bool,
+    mut read: impl FnMut() -> Option<input::Keystroke>,
+) -> bool {
+    let progressed = wait();
+    let exact_pair = progressed
+        && read().is_some_and(|pressed| {
+            pressed.event.key == ps2_keys::Key::C
+                && pressed.event.state == ps2_keys::KeyState::Pressed
+        })
+        && read().is_some_and(|released| {
+            released.event.key == ps2_keys::Key::C
+                && released.event.state == ps2_keys::KeyState::Released
+        });
+    nvme::hold_command_for_test(false);
+    exact_pair
+}
+
+fn refused_delayed_input_releases_the_hold() -> bool {
+    let pair = [
+        input::Keystroke {
+            event: ps2_keys::KeyEvent {
+                key: ps2_keys::Key::C,
+                state: ps2_keys::KeyState::Pressed,
+            },
+            character: Some('c'),
+        },
+        input::Keystroke {
+            event: ps2_keys::KeyEvent {
+                key: ps2_keys::Key::C,
+                state: ps2_keys::KeyState::Released,
+            },
+            character: None,
+        },
+    ];
+    let clock_running = the_clock_is_running();
+    let clockless = time::without_calibration_for_test(|| {
+        refused_delayed_input_round(|| runs_until(0, || true), &pair, 0)
+    });
+    let expired = refused_delayed_input_round(|| runs_until(0, || false), &pair, 0);
+    let missing_press = refused_delayed_input_round(|| true, &[], 1);
+    let missing_release = refused_delayed_input_round(|| true, &pair[..1], 2);
+
+    clock_running && clockless && expired && missing_press && missing_release
+}
+
+fn refused_delayed_input_round(
+    wait: impl FnOnce() -> bool,
+    events: &[input::Keystroke],
+    expected_reads: usize,
+) -> bool {
+    let mut events = events.iter().copied();
+    let mut reads = 0;
+    nvme::hold_command_for_test(true);
+    let armed = nvme::hold_requested_for_test();
+    let accepted = finish_delayed_read_input(wait, || {
+        reads += 1;
+        events.next()
+    });
+    let released = !nvme::hold_requested_for_test();
+    // A missing-release mutation must fail this check without holding later I/O.
+    nvme::hold_command_for_test(false);
+
+    armed && !accepted && released && reads == expected_reads
 }
 
 fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
@@ -2881,6 +2952,72 @@ fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
     })
 }
 
+fn a_proven_vtd_revocation_releases_only_its_mapping_owner() -> bool {
+    use wost::arch::current::vtd::SegmentChangeError;
+
+    let before = mm::free_frames();
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let checked = {
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            return false;
+        };
+        let drained = isolation.completed_dma_drains_for_test();
+        let initially_unmapped = matches!(
+            isolation.unmap_segment(&mut dma),
+            Err(SegmentChangeError::Refused(_))
+        ) && isolation.completed_dma_drains_for_test() == drained;
+        if isolation.map_segment(&mut dma).is_err() {
+            return false;
+        }
+        let duplicate = matches!(
+            isolation.map_segment(&mut dma),
+            Err(SegmentChangeError::Refused(_))
+        );
+        let revoked = isolation.unmap_segment(&mut dma).is_ok();
+        let once = isolation.completed_dma_drains_for_test() == drained + 1;
+        let again = matches!(
+            isolation.unmap_segment(&mut dma),
+            Err(SegmentChangeError::Refused(_))
+        ) && isolation.completed_dma_drains_for_test() == drained + 1;
+        initially_unmapped && duplicate && revoked && once && again
+    };
+    drop(dma);
+    checked && mm::free_frames() == before
+}
+
+fn a_rolled_back_vtd_mapping_releases_its_mapping_owner() -> bool {
+    use wost::arch::current::vtd::SegmentChangeError;
+
+    let before = mm::free_frames();
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let checked = {
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            return false;
+        };
+        let drained = isolation.completed_dma_drains_for_test();
+        isolation.force_invalidation_failures_for_test(1);
+        let refused = matches!(
+            isolation.map_segment(&mut dma),
+            Err(SegmentChangeError::Refused(_))
+        ) && !dma.is_retained()
+            && isolation.completed_dma_drains_for_test() == drained + 1;
+        isolation.force_invalidation_failures_for_test(0);
+        let remapped = isolation.map_segment(&mut dma).is_ok();
+        let revoked = isolation.unmap_segment(&mut dma).is_ok();
+        refused && remapped && revoked
+    };
+    drop(dma);
+    checked && mm::free_frames() == before
+}
+
 fn an_uncertain_vtd_mapping_never_recycles_its_frames() -> bool {
     let before = mm::free_frames();
     let Some(segment) = mm::allocate_contiguous(1, 1) else {
@@ -3611,6 +3748,7 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     };
     let duplicable = crate::object::bootstrap_identity();
     let sealed = crate::object::bootstrap_identity();
+    let attenuated = crate::object::bootstrap_identity();
 
     // Room to spare: a refusal must be reached *after* a promise is taken, and
     // a full table refuses before there is one.
@@ -3624,6 +3762,11 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     let Ok(undupable) = table.insert(sealed, Rights::INSPECT) else {
         return false;
     };
+    let narrow = Rights::DUPLICATE.union(Rights::INSPECT);
+    let Ok(attenuation_source) = table.insert(attenuated, narrow) else {
+        return false;
+    };
+    let attenuation_request = narrow.union(Rights::WAIT);
 
     let asked = [
         // Refused at the lookup: a well-formed value naming nothing of ours.
@@ -3643,11 +3786,32 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
         // Refused at the attenuation: asking for more than is held.
         (
             0xF003,
-            undupable,
-            u64::from(Rights::INSPECT.union(Rights::WAIT).bits()),
+            attenuation_source,
+            u64::from(attenuation_request.bits()),
             queue::STATUS_DENIED,
         ),
     ];
+
+    let (_, attenuation_handle, attenuation_bits, _) = asked[2];
+    let Ok((held, held_rights)) = table.resolve(attenuation_handle) else {
+        return false;
+    };
+    let Some(requested) = u32::try_from(attenuation_bits)
+        .ok()
+        .and_then(Rights::from_bits)
+    else {
+        return false;
+    };
+    if !held_rights.contains(Rights::DUPLICATE)
+        || held_rights.contains(Rights::WAIT)
+        || !requested.contains(Rights::WAIT)
+        || !requested.are_meaningful_for(held.kind().per_type_rights())
+        || held_rights.attenuate(requested).is_some()
+        || table.live() != 3
+        || table.promised() != 0
+    {
+        return false;
+    }
 
     for (slot, (token, handle, rights, _)) in asked.iter().enumerate() {
         queue.post_submission_for_test(
@@ -3664,12 +3828,13 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     let mut refused = true;
     for (slot, (token, _, _, status)) in asked.iter().enumerate() {
         let completion = queue.read_completion(slot);
-        refused &= completion.token == *token && completion.status == *status;
+        refused &=
+            completion.token == *token && completion.status == *status && completion.value == 0;
     }
 
     // Three promises taken, three given back: a leak is invisible in the
     // completions and shows later as a table full of nothing.
-    refused && table.live() == 2 && table.promised() == 0
+    refused && table.live() == 3 && table.promised() == 0
 }
 
 fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
@@ -8329,7 +8494,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 290;
+const EXPECTED_CHECKS: usize = 294;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8428,6 +8593,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a frame is returned when its handle drops",
         frame_round_trips(),
+    );
+    report.check(
+        "a mapped dma owner drop retains its allocation",
+        mm::dma_mapping_owner_drop_retains_for_test(),
+    );
+    report.check(
+        "published iommu table drops retain their allocations",
+        mm::published_iommu_table_drop_retains_for_test(),
     );
     report.check(
         "uncertain dma memory is never recycled",
@@ -9342,7 +9515,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the controller route and ordered interrupt witness are exact",
         keyboard_config_matches_its_routing()
             && input::watch_order_is_causal()
-            && input::queue_admission_is_exact(),
+            && input::queue_admission_is_exact()
+            && input::producer_order_is_causal(),
     );
     report.check(
         "the keyboard interrupt handoff records its ownership",
@@ -9522,6 +9696,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a device write into an unmapped frame faults and changes nothing",
         a_device_write_into_an_unmapped_frame_faults_and_changes_nothing(),
+    );
+    report.check(
+        "a proven vtd revocation releases only its mapping owner",
+        a_proven_vtd_revocation_releases_only_its_mapping_owner(),
+    );
+    report.check(
+        "a rolled back vtd mapping releases its mapping owner",
+        a_rolled_back_vtd_mapping_releases_its_mapping_owner(),
     );
     report.check(
         "uncertain vtd mapping never recycles its frames",

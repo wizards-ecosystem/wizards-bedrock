@@ -837,8 +837,8 @@ impl Device {
     pub(crate) fn admit_bus_master(
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
-        domain: DmaDomain,
-        interrupts: InterruptIsolation,
+        domain: DmaDomain<'_>,
+        interrupts: InterruptIsolation<'_>,
     ) -> Result<(), EnableError> {
         #[cfg(feature = "selftest")]
         {

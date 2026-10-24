@@ -25237,3 +25237,323 @@ admit configurations the probe did not establish. Putting the console in the
 source template would require it for every generated machine. Rewriting the
 receipt or filtering VNC keys from captured evidence would hide execution
 inputs. Requiring guest-agent typing cannot serve this freestanding kernel.
+
+## D-432 A failed PCI observation revokes its snapshot until reset - Status: Accepted (2026-10-23), qualification OPEN; amends D-371 and D-392; advances PW-713
+
+The public topology API previously forgot an observation error. A caller could
+ignore the error and seal the remaining structurally valid snapshot, or retain
+authority from a previously sealed snapshot after a failed special observation.
+The production kernel already propagates every observation error and resets
+before its complete census; the review found no current kernel bypass.
+
+Every public observation now first revokes the seal and refuses a retained
+error. The first local or delegated observation error is sticky until `reset`;
+later observations and `seal` return it, and authority queries remain closed.
+The exact-token non-requester and quiesced-requester doors use the same rule.
+Structural sealing errors keep their existing semantics. Each function is
+observed once per snapshot; successful re-observation is not replacement.
+
+Relying on every caller to remember prior errors leaves a misleading public
+contract. Making every sealing error sticky would change unrelated recovery
+semantics. One private optional error preserves the existing result type and
+requires no allocation or new public operation.
+
+Five public-behavior fixtures cover ordinary errors, both special doors,
+matching-token delegated errors, all authority queries, first-error retention
+and reset recovery. Their exact retained mutations, pristine/restored runs and
+the current complete sweep are required. Static review and registration alone
+do not close PW-713.
+
+## D-433 DMA ownership survives safe owner destruction - Status: Accepted (2026-10-23), qualification OPEN; amends D-357, D-367 and D-389; advances PW-714
+
+Ordinary `IommuTable` and `DmaSegment` ownership allowed safe destruction to
+return frames that active or uncertain hardware could still reach. NVMe's
+careful cleanup did not protect these safe abstractions against another safe
+caller. Admission proofs also did not borrow the unit that minted them.
+
+After final read-only preflight and before the first unit write, all five VT-d
+table allocations move into `PublishedIommuTable`. Its destructor permanently
+retains root, context, interrupt, invalidation-queue and second-level frames.
+Unpublished allocations still reclaim normally. Destruction does not attempt
+a fallible hardware shutdown.
+
+`DmaSegment` carries a private mapping owner keyed by the never-recycled root
+allocation. It acquires that owner before leaf publication and refuses a second
+mapping, including one by the same unit. Successful mapping keeps the owner.
+Clean refusal before any leaf is published releases it without a hardware
+drain, preserving D-367. Once publication may have occurred, only proved
+rollback or exact-owner revocation after clearing the leaves and completing
+the required DMA drain releases it. Uncertain outcomes permanently retain
+frames;
+destruction while mapped retains them too. This introduces no heap allocation
+into candidate selection.
+
+The first integrated debug boot passed 293 of 294 checks but measured 25,072
+bytes of candidate stack use, leaving 7,696 bytes instead of the required
+8,192. The initial optional raw-address owner added a separate discriminant
+to each DMA segment. The owner now wraps a nonzero frame identity: the pure,
+host-tested `frame_space::frame_identity` rejects unaligned addresses and
+encodes an aligned address as its frame number plus one. Physical frame zero
+and the highest aligned `u64` address remain distinct and representable; the
+optional identity occupies one word. The target owner-drop witness checks
+that bound on the actual wrapper. This changes neither ownership transitions
+nor the no-allocation rule. Both actual stack profiles must pass before the
+representation change is accepted as sufficient. Boxing, padding, omitting
+frame zero and widening the stack limit are rejected.
+
+The compact representation's first debug run passed all 294 checks with
+24,432 bytes used, 8,336 bytes free and a 23,280-byte deepest register-access
+leaf. That is a 640-byte reduction from the failed run; it is a focused debug
+result, not complete qualification. During the stack review, mutation 1,570
+was found to call the nested admission stage with a nonexistent `context`
+local. Its replacement now acquires the same safe thread context used by the
+sequencer, preserving the intended nested-stage defect while making it
+compilable. Its named host red and actual mutated-kernel compilation remain
+required.
+
+DMA and interrupt admission proofs borrow their exact `Vtd`. NVMe keeps the
+installed-unit guard through the existing fresh BAR observation and PCI
+admission. That path enters only the bounded PCI configuration leaf and does
+not reenter the installed-unit lock or allocate.
+
+The shipped preparation outcome passes the enum-size lint after compaction.
+The self-test-only observations still make its success variant 376 bytes
+against a 160-byte failure variant. Only that feature's `PrepareOutcome`
+expects the size lint: transferring the inline owner avoids an additional
+allocation and failure during preparation, while the existing complete
+candidate stack checks retain their unchanged bound in debug and release.
+The expectation must remain fulfilled, so a later layout reduction also
+requires removing it.
+
+Alternatives rejected: caller-only cleanup does not make the exports sound;
+unsafe mapping APIs move an existing invariant to callers; `Arc`/`Vec` pin
+storage changes the candidate allocation window; and hardware shutdown from
+Drop cannot promise safe reclamation after a refusal or uncertain transition.
+
+Four machine checks cover actual mapped-owner destruction, actual published
+table destruction, live exact-owner revocation and proved rollback/remapping.
+The inert Drop drivers publish no leaf in the installed unit. Compiler probes
+cover forgery, owner destruction, mutable reuse and escaped proof lifetimes;
+positive probes retain live paired admission. Parsed production contracts bind
+all five fields, constructors, mapping ownership and drain-before-release.
+The API audit reviews the exact `DmaSegment` and `PublishedIommuTable` Drop
+types and their `From::from` and `new` producers. Existing forgery
+mutations 1,554 and 1,728 now expose both private fields so their original
+unit-free construction defect remains reachable.
+
+Host boundary checks and retained mutations additionally cover misalignment,
+frame zero, high-address identity truncation and a coherently expanded target
+owner representation. The layout mutation remains a compiling defect so the
+machine witness, rather than a compiler error, must reject it.
+
+These checks and their retained mutations must execute. Candidate resource
+accounting, both stack profiles, current QEMU and fresh VMware remain required;
+the limits are not widened to accommodate a regression. The expected machine
+count becomes 294 on both sides of the verdict protocol.
+
+## D-434 The attenuation-refusal witness reaches attenuation - Status: Accepted (2026-10-23), qualification OPEN; strengthens D-248; advances PW-715
+
+The third request in the reservation-cleanup machine fixture used a handle
+without `DUPLICATE`. It failed an earlier permission gate, so the test did not
+establish cleanup when attenuation itself refused the request.
+
+The fixture now owns a third identity with `DUPLICATE | INSPECT` and asks for
+the meaningful additional `WAIT` right. Before posting, it resolves the actual
+third request and proves that duplication is permitted, WAIT is absent from
+the grant, the requested rights are meaningful for that object, and attenuation
+refuses them. All three refusals must return zero values and leave three live
+handles with no promised slot.
+
+Changing only the expected status would preserve the blind spot. Testing a
+separate source handle would not bind the submitted request. The retained
+mutations therefore independently restore the earlier-gate request and leak
+the reservation only from attenuation's refusal branch. Both exact machine
+reds and byte-restored passes are required before closing PW-715.
+
+## D-435 QEMU cleanup and QMP command waits have finite failure paths - Status: Accepted (2026-10-23), qualification OPEN; amends D-227 and D-346; advances PW-716
+
+The self-test observer held an ordinary child handle, whose Drop does not stop
+QEMU. Early polling/setup errors could skip termination. Timeout cleanup could
+join an injector before stopping its pipe peer, and synchronous QMP writes
+could block before reaching the reply deadline. Shipped/degraded serial joins
+also lacked a finite finish boundary; an initial status-poll error could skip
+the termination attempt.
+
+Self-test acquires a private child owner immediately after spawn. Its cleanup
+cancels injection, attempts bounded stop/reap, closes serial, then collects
+workers under one shared finite deadline. If no stop was attempted, the owner's
+Drop cancels and attempts that bounded stop after an unexpected return or unwind;
+it does not collect workers or retry an already-attempted stop. Shipped and
+degraded boots retain centralized cleanup and now bound their serial joins
+after the stop attempt. An initial poll failure still reaches termination and
+remains in the returned error. Observation, serial, worker and stop errors are
+combined rather than discarding one. An unfinished worker is reported and
+detached, never synchronously joined. OS refusal remains an error.
+
+Timeout diagnostics run only with an already-finished injector and in a
+separate worker with bounded waits for its completion. The original exact
+timeout classification is formed before cleanup results are combined. Only a
+clean observation timeout retains
+the exact text recognized by the mutation harness; cleanup failure cannot
+masquerade as the registered timeout witness.
+
+Each QMP session owns one persistent writer and capacity-one request and
+acknowledgement queues. Public command text is limited to 64 KiB and encoded
+requests to 1 MiB. Submission and acknowledgement waits check cancellation
+and the command deadline; the worker refuses expired or abandoned queued work.
+An exchange poisons the session before starting and clears that state only
+after a complete write and a matched successful reply. Any incomplete exchange
+permanently refuses reuse and closes the producer, so late replies or write
+acknowledgements cannot answer another command.
+
+A blocked OS write may outlive the caller's bounded error until the owned
+child's pipe closes. No unsafe write cancellation or pump-join guarantee is
+claimed. Termination refusal cannot produce PASS. A thread per command and
+unbounded queues were rejected because they create unbounded resident work;
+small production commands alone cannot prove an OS pipe-capacity bound.
+
+Causal fake peers cover blocked write/flush, cancellation, queue pressure,
+deadline expiry, failed writes, late completion and successful reuse. Child
+fixtures cover early error, unwind, kill/reap refusal and combined outcomes;
+source contracts bind actual production ownership and stop-before-join paths.
+API review names the exact private `QemuLifetime` Drop type and `new` producer,
+plus the `ControlledWriter` and `CountedWriter` fixture Drop types; neither
+fixture has a new reviewed producer. Existing mutation 813 retains its
+refused-kill, still-live defect by replacing `Ok(false) => return termination`
+with success in the revised termination helper, and keeps its original causal
+child-stop witness.
+Exact mutation reds, restored focused passes, full CI and current machine
+boots remain pending at this decision's implementation checkpoint.
+
+The hostile-surface census now names the actual transports: QMP on owned
+standard streams, controlled-boot serial on a private Windows named pipe or
+Unix socket with OS backpressure, degraded serial on stdout, and the current
+`nvme-stack v2` leaf record.
+
+## D-436 Mutation readers open checked real-file handles - Status: Accepted (2026-10-23), qualification OPEN; strengthens D-344; advances PW-717
+
+Three mutation-workspace readers still used ordinary `File::open` for bounded
+reading or hashing. A final-component link, including one substituted after a
+caller's path check, could feed bytes despite the documented checked-handle
+contract.
+
+`read_bounded_bytes_with`, `digest_tracked` and `digest_file_with` now use the
+existing `open_real_file` boundary. Size limits, streaming hashes, framing and
+post-use checks stay intact. The checked-path source contract includes both
+confined-path helper names so it also covers callers whose precheck would hide
+a stable link from a direct reader fixture.
+
+Repeating a path-only check would retain the open-time gap. Broadening this
+repair into directory-capability redesign is unnecessary for its stated
+final-component guarantee. Parent-directory replacement, hardlink identity and
+same-account content replacement are not newly authenticated by this change.
+
+Two causal final-link fixtures and parsed production-path witnesses have
+retained mutations. Their exact reds and restored passes, followed by current
+CI and the complete isolated sweep, are required before closing PW-717.
+
+## D-437 Known CLI options belong to the task that consumes them - Status: Accepted (2026-10-23), qualification OPEN; advances PW-718
+
+The parser accepted known options on unrelated tasks and silently discarded
+them. In particular `clean --check` dispatched cleanup, and `fmt -- --check`
+dispatched formatting. These parser outcomes were inspected without executing
+either destructive or modifying command.
+
+Track option presence separately from its value and reject misplaced options
+before task dispatch. Profile options belong to build/image/run/vmware,
+test-boot, boot-check and degraded-check; `--check` belongs to fmt/debug,
+`--all` to clean, `--shipped`
+to VMware generation/qualification, `--message-format` to check, and the `--`
+passthrough separator only to run. Explicit default profiles, empty format
+values and an empty passthrough tail still count as supplied options. Immediate
+help handling and existing repeated-option precedence remain unchanged.
+
+Silently ignoring known flags makes invocation mistakes look successful.
+Adding a universal check mode would invent behavior those tasks do not offer.
+Task-local refusal is the smallest repair and adds no execution route.
+
+Seven parser fixtures cover the consumer matrix, empty/default presence and
+existing precedence. Their retained mutations and exact pristine/red/restored
+runs are required; tests invoke the parser, never cleanup or formatting.
+
+## D-438 A refused storage-input wait releases its held command - Status: Accepted (2026-10-23), qualification OPEN; advances PW-719
+
+The source-pinned release boot in `pristine-41w5yl95` refused clock
+calibration. The delayed-read self-test then entered blocking keyboard reads
+after `runs_until` had returned false without polling. Its NVMe command remained
+held until the blocked test could resume, so no complete verdict followed.
+An ordinary expired key wait could reach the same path. The unchanged retry
+completed all 294 release checks; that does not discharge the refusal defect.
+
+The delayed round now uses one finish helper: it evaluates the bounded wait,
+consumes at most the first two queued events through a nonblocking self-test
+reader only after success, and releases the command hold on every result.
+Missing or wrong events remain a failure. The interrupt-admission conjunction
+is evaluated without bypassing cleanup. Completion and exact teardown still
+run after release. A key-arrival observation is not a reservation of queue
+entries, so successful observation alone cannot justify a blocking read.
+
+The existing machine witness also exercises the exact helper with an
+uncalibrated ready predicate, an expired calibrated predicate, and ready but
+missing input. It observes refusal, absence of reader calls where waiting
+failed, and the actual cleared hold flag before independent fallback cleanup.
+The live positive round still proves device retention, input progress and
+exact completion. Retained defects must make this same named check fail with
+a completed verdict; a timeout or compilation failure is not its red.
+An unavailable real clock refuses before I/O setup. With a running clock,
+failed negative probes still reach the live key round so the ordered host
+injection protocol can finish. The retained cleanup defect leaves failed waits
+held while preserving successful-wait release; probe fallback clears the
+observed defect before live I/O.
+
+No clock tolerance, attempt count, deadline, expected machine count or stack
+bound changes. The clock warning is corrected to describe failure to obtain
+an agreeing believable pair; the previous text incorrectly implied every
+window had been believable and mutually inconsistent. Existing logs preserve
+only the last rates, so they do not establish the original refusal's cause.
+
+Alternatives rejected: widening a deadline does not release a held command;
+skipping the check hides failed prerequisites; a new Drop owner is unnecessary
+for the helper's single exit; and scanning past wrong events would weaken the
+existing exact FIFO key witness.
+
+## D-439 Each keyboard batch retains producer order through admission - Status: Accepted (2026-10-23), qualification OPEN; advances PW-720
+
+The debug boot in `pristine-dg4d95uw` completed 293 of 294 checks and failed
+the blocked reader's expected A key, while the armed A, editing and translated
+key rounds passed. Its log does not identify the failing reader conjunct.
+Review found a concrete ordering gap: a caller released the keyboard lock
+after decoding a batch, then enqueued that batch without excluding another
+polling producer. Preemption there could enqueue later keys before the first
+batch. Both the permanent poller and the self-test's direct wait can call this
+production path. This is a supported failure path, not proof that the captured
+boot took it.
+
+One shared batch producer excludes interrupts from drain through ordered
+delivery, with all existing locks taken sequentially. Its existing limits
+remain eight events per batch and sixteen controller bytes per event.
+Exclusion is restored after each batch; reader wakeup occurs outside every
+batch's exclusion and lock. This is the current single-CPU contract, not an
+SMP synchronization claim. Holding a keyboard leaf guard while acquiring the
+event lock was rejected because leaf guards cannot nest.
+
+The self-test arrival watch also advances only after queue admission succeeds.
+Previously it observed even dropped events, contradicting the wait's claim.
+Admission and observation use one shared delivery composition, keeping its
+locks sequential. A successful watch remains historical observation, never a
+reservation against another consumer.
+
+The existing input witness exercises the exact batch producer with finite
+local batches and a competing producer at the drain-to-delivery boundary,
+conditional on the actual CPU interrupt flag. It proves that the competing
+batch cannot overtake the first and that exclusion is restored before its
+deferred delivery. This runtime interleaving fixture does not claim delivery
+of a hardware interrupt; the live injected-key and blocked-reader checks
+remain separate evidence. Shared delivery probes fill the queue and require
+refused press/release events not to advance the watch, followed by an admitted
+pair that does. Retained removal-of-exclusion and observe-refused-event
+defects must reach the exact completed machine red, then restore.
+
+No new machine check count, polling deadline or input capacity is introduced.
+Current paired QEMU, fresh VMware, ordinary CI and the complete mutation sweep
+remain required before qualification closes.

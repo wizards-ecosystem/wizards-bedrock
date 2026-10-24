@@ -190,7 +190,7 @@ pub(crate) enum TimeError {
     PitUnavailable,
     /// The local APIC timer would not enter its required state.
     LocalTimer(apic::TimerError),
-    /// Every measurement produced numbers outside the believable range.
+    /// Neither timing source produced an agreeing pair of believable windows.
     Implausible,
 }
 
@@ -207,7 +207,7 @@ impl fmt::Display for TimeError {
                 let (tsc, apic) = last_measurement();
                 write!(
                     f,
-                    "no believable rate from any measurement: {} (last window: tsc {tsc} hz, apic {apic} hz)",
+                    "no consistent believable calibration: {} (last window: tsc {tsc} hz, apic {apic} hz)",
                     Refusal::last()
                 )
             }
@@ -349,8 +349,7 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
         };
         calibration
     } else {
-        // Distinguish individually plausible but mutually inconsistent
-        // windows (D-176).
+        // A believable window need not have an adjacent usable peer.
         if measured_windows > 0 {
             LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
         }
@@ -496,7 +495,7 @@ pub(crate) enum Refusal {
     Overshot = 4,
     /// A rate outside what any real part reports.
     NotBelievable = 5,
-    /// Every window was believable and no two of them agreed.
+    /// No agreeing pair of believable windows was admitted.
     Disagreed = 6,
 }
 
@@ -520,7 +519,7 @@ impl core::fmt::Display for Refusal {
             }
             Self::Disagreed => core::fmt::Write::write_str(
                 f,
-                "believable windows that never agreed with each other",
+                "no agreeing pair of believable windows was admitted",
             ),
         }
     }

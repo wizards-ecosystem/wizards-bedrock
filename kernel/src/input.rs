@@ -214,13 +214,8 @@ pub(crate) fn poll() -> usize {
 
     let mut delivered = 0;
     for _ in 0..BATCHES {
-        let mut keystrokes = [None; BATCH];
-        let count = drain_batch(&mut keystrokes);
-        for keystroke in keystrokes.iter().flatten() {
-            if deliver(*keystroke) {
-                delivered += 1;
-            }
-        }
+        let (count, admitted) = produce_batch(drain_batch, deliver, || {});
+        delivered += admitted;
         if count < BATCH {
             break;
         }
@@ -228,6 +223,27 @@ pub(crate) fn poll() -> usize {
     // Outside every other lock, and last: a woken reader may be picked the
     // moment the handler returns, and it will want the queue this filled.
     if delivered > 0 { READERS.wake_all() } else { 0 }
+}
+
+fn produce_batch(
+    drain: impl FnOnce(&mut [Option<Keystroke>; BATCH]) -> usize,
+    mut deliver: impl FnMut(Keystroke) -> bool,
+    after_drain: impl FnOnce(),
+) -> (usize, usize) {
+    // A second polling producer must not enqueue a later batch ahead of this
+    // one. The keyboard and event guards stay sequential under this exclusion.
+    let exclusion = interrupt::disable();
+    let mut keystrokes = [None; BATCH];
+    let count = drain(&mut keystrokes);
+    after_drain();
+    let mut delivered = 0;
+    for keystroke in keystrokes.iter().flatten() {
+        if deliver(*keystroke) {
+            delivered += 1;
+        }
+    }
+    exclusion.restore();
+    (count, delivered)
 }
 
 /// Decode up to one batch under the lock, resolving each event's character
@@ -257,9 +273,28 @@ fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
 /// Touches no output device: the console lock is one a handler is now refused
 /// (D-63), and a glyph can cost a scroll.
 fn deliver(keystroke: Keystroke) -> bool {
-    #[cfg(feature = "selftest")]
-    WATCH.lock_leaf().observe(keystroke.event);
-    EVENTS.lock_leaf().push(keystroke)
+    admit_and_observe(
+        keystroke,
+        |keystroke| EVENTS.lock_leaf().push(keystroke),
+        |event| {
+            #[cfg(feature = "selftest")]
+            WATCH.lock_leaf().observe(event);
+            #[cfg(not(feature = "selftest"))]
+            let _ = event;
+        },
+    )
+}
+
+fn admit_and_observe(
+    keystroke: Keystroke,
+    enqueue: impl FnOnce(Keystroke) -> bool,
+    observe: impl FnOnce(KeyEvent),
+) -> bool {
+    let admitted = enqueue(keystroke);
+    if admitted {
+        observe(keystroke.event);
+    }
+    admitted
 }
 
 /// Decoded events waiting for a reader.
@@ -316,6 +351,12 @@ static EVENTS: SpinLock<Events> = SpinLock::new(Events::new());
 
 /// Threads waiting for a keystroke.
 static READERS: WaitQueue = WaitQueue::new();
+
+/// Take one already queued event without parking the self-test thread.
+#[cfg(feature = "selftest")]
+pub(crate) fn try_read_key_for_test() -> Option<Keystroke> {
+    EVENTS.lock_leaf().pop()
+}
 
 /// Wait for the next key event, blocking until one arrives.
 ///
@@ -877,6 +918,131 @@ pub(crate) fn watch_order_is_causal() -> bool {
     release_first && press_alone && ordered && stale && wrapped
 }
 
+/// Exercise the production batch boundary with a finite competing producer.
+#[cfg(feature = "selftest")]
+pub(crate) fn producer_order_is_causal() -> bool {
+    use core::cell::{Cell, RefCell};
+
+    if !interrupt::are_enabled() {
+        return false;
+    }
+    let events = RefCell::new(Events::new());
+    let watch = RefCell::new(Watch::EMPTY);
+    let peer_ran = Cell::new(false);
+    let excluded = Cell::new(false);
+    let pair = |keys: &mut [Option<Keystroke>; BATCH], key| {
+        for (slot, state) in keys.iter_mut().zip([KeyState::Pressed, KeyState::Released]) {
+            *slot = Some(Keystroke {
+                event: KeyEvent { key, state },
+                character: None,
+            });
+        }
+        2
+    };
+    let deliver = |keystroke| {
+        admit_and_observe(
+            keystroke,
+            |keystroke| events.borrow_mut().push(keystroke),
+            |event| watch.borrow_mut().observe(event),
+        )
+    };
+    let peer = || {
+        peer_ran.set(true);
+        produce_batch(|keys| pair(keys, Key::B), deliver, || {}) == (2, 2)
+    };
+    let peer_admitted = Cell::new(false);
+    let first = produce_batch(
+        |keys| pair(keys, Key::A),
+        deliver,
+        || {
+            excluded.set(!interrupt::are_enabled());
+            // This deterministic reentry models the producer a timer could
+            // select; it does not claim that a hardware interrupt was delivered.
+            if interrupt::are_enabled() {
+                peer_admitted.set(peer());
+            }
+        },
+    );
+    let restored = interrupt::are_enabled();
+    let deferred = !peer_ran.get();
+    if deferred {
+        peer_admitted.set(peer());
+    }
+    let mut events = events.into_inner();
+    let ordered = [
+        (Key::A, KeyState::Pressed),
+        (Key::A, KeyState::Released),
+        (Key::B, KeyState::Pressed),
+        (Key::B, KeyState::Released),
+    ]
+    .into_iter()
+    .all(|(key, state)| {
+        events
+            .pop()
+            .is_some_and(|keystroke| keystroke.event.key == key && keystroke.event.state == state)
+    });
+    let watch = watch.into_inner();
+    first == (2, 2)
+        && excluded.get()
+        && restored
+        && deferred
+        && peer_admitted.get()
+        && interrupt::are_enabled()
+        && ordered
+        && events.pop().is_none()
+        && events.dropped == 0
+        && watch.generation(Key::A) == Some(1)
+        && watch.generation(Key::B) == Some(1)
+}
+
+#[cfg(feature = "selftest")]
+fn refused_events_do_not_complete_a_watch() -> bool {
+    let keystroke = |key, state| Keystroke {
+        event: KeyEvent { key, state },
+        character: None,
+    };
+    let mut events = Events::new();
+    let mut watch = Watch::EMPTY;
+    let filled = (0..QUEUED).all(|_| events.push(keystroke(Key::B, KeyState::Pressed)));
+    let before = watch.generation(Key::A);
+    let pressed = admit_and_observe(
+        keystroke(Key::A, KeyState::Pressed),
+        |stroke| events.push(stroke),
+        |event| watch.observe(event),
+    );
+    let released = admit_and_observe(
+        keystroke(Key::A, KeyState::Released),
+        |stroke| events.push(stroke),
+        |event| watch.observe(event),
+    );
+    let unobserved =
+        !pressed && !released && events.dropped == 2 && watch.generation(Key::A) == before;
+    let drained = (0..QUEUED).all(|_| events.pop().is_some());
+    let pressed = admit_and_observe(
+        keystroke(Key::A, KeyState::Pressed),
+        |stroke| events.push(stroke),
+        |event| watch.observe(event),
+    );
+    let released = admit_and_observe(
+        keystroke(Key::A, KeyState::Released),
+        |stroke| events.push(stroke),
+        |event| watch.observe(event),
+    );
+    filled
+        && unobserved
+        && drained
+        && pressed
+        && released
+        && watch.generation(Key::A) == Some(1)
+        && events
+            .pop()
+            .is_some_and(|stroke| stroke.event.state == KeyState::Pressed)
+        && events
+            .pop()
+            .is_some_and(|stroke| stroke.event.state == KeyState::Released)
+        && events.pop().is_none()
+}
+
 #[cfg(feature = "selftest")]
 pub(crate) fn queue_admission_is_exact() -> bool {
     let keystroke = Keystroke {
@@ -892,7 +1058,7 @@ pub(crate) fn queue_admission_is_exact() -> bool {
     events.dropped = usize::MAX;
     let saturated = !events.push(keystroke) && events.dropped == usize::MAX;
 
-    filled && refused && saturated
+    filled && refused && saturated && refused_events_do_not_complete_a_watch()
 }
 
 /// Ask the controller to raise its line when a byte arrives.

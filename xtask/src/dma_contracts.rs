@@ -1896,7 +1896,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     let Fields::Named(fields) = &proof.fields else {
         panic!("InterruptIsolation must name its exact function");
     };
-    assert_eq!(fields.named.len(), 1);
+    assert_eq!(fields.named.len(), 2);
     let function = fields.named.first().expect("interrupt function field");
     assert!(matches!(function.vis, Visibility::Inherited));
     assert!(matches!(&function.ty, Type::Path(path)
@@ -4531,4 +4531,293 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
     let vtd = source("wost/src/arch/x86_64/vtd.rs");
     assert!(!vtd.contains("reserved: &[(u64, u64)]"));
     assert!(!vtd.contains("VtdError::ReservedRegion"));
+}
+
+#[test]
+fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
+    use syn::parse::Parser;
+
+    fn local_value<'a>(statement: &'a Stmt, name: &str) -> &'a Expr {
+        let Stmt::Local(local) = statement else {
+            panic!("missing {name} local");
+        };
+        assert!(matches!(&local.pat, Pat::Ident(binding) if binding.ident == name));
+        &local.init.as_ref().expect("owner initializer").expr
+    }
+    fn segment_call(expression: &Expr, name: &str) -> bool {
+        matches!(expression, Expr::MethodCall(call)
+            if call.method == name && path_expression_is(&call.receiver, &["segment"])
+                && call.args.len() == 1
+                && path_expression_is(call.args.first().expect("owner argument"), &["owner"]))
+    }
+    fn owner_is_root(statement: &Stmt) {
+        let Expr::Call(call) = local_value(statement, "owner") else {
+            panic!("mapping owner mint");
+        };
+        assert!(path_expression_is(&call.func, &["DmaMappingOwner", "new"]));
+        assert_eq!(call.args.len(), 1);
+        assert!(matches!(call.args.first(), Some(Expr::MethodCall(address))
+            if address.method == "address" && address.args.is_empty()
+                && field_chain_is(&address.receiver, "self", &["root"])));
+    }
+    fn owner_refusal(statement: &Stmt, name: &str) {
+        let Stmt::Expr(Expr::If(gate), _) = statement else {
+            panic!("mapping owner gate");
+        };
+        assert!(matches!(&*gate.cond, Expr::Unary(negative)
+            if matches!(negative.op, syn::UnOp::Not(_)) && segment_call(&negative.expr, name)));
+        assert!(gate.else_branch.is_none());
+        let [Stmt::Expr(Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice() else {
+            panic!("owner mismatch must return before any table access");
+        };
+        let reason = returned
+            .expr
+            .as_deref()
+            .and_then(|expr| call_is(expr, "Err"))
+            .and_then(|call| call.args.first())
+            .and_then(|expr| call_is(expr, "Refused"))
+            .and_then(|call| call.args.first())
+            .expect("clean owner refusal");
+        assert!(path_expression_is(reason, &["VtdError", "InvalidRange"]));
+    }
+    fn release(statement: &Stmt) {
+        let Stmt::Macro(assertion) = statement else {
+            panic!("exact mapping release assertion");
+        };
+        assert!(path_ends(&assertion.mac.path, &["assert"]));
+        let arguments = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+            .parse2(assertion.mac.tokens.clone())
+            .expect("release assertion arguments");
+        assert_eq!(arguments.len(), 2);
+        assert!(segment_call(
+            arguments.first().expect("release expression"),
+            "release_mapping"
+        ));
+    }
+    fn retains(statement: &Stmt) {
+        assert!(
+            matches!(statement, Stmt::Expr(Expr::MethodCall(call), Some(_))
+            if call.method == "retain" && call.args.is_empty()
+                && path_expression_is(&call.receiver, &["segment"]))
+        );
+    }
+    fn error_kind(arm: &syn::Arm, name: &str) -> bool {
+        let Pat::TupleStruct(error) = &arm.pat else {
+            return false;
+        };
+        if !path_ends(&error.path, &["Err"]) || error.elems.len() != 1 {
+            return false;
+        }
+        let Some(Pat::Ident(binding)) = error.elems.first() else {
+            return false;
+        };
+        let Some((_, pattern)) = &binding.subpat else {
+            return false;
+        };
+        binding.ident == "error"
+            && matches!(&**pattern, Pat::TupleStruct(kind)
+            if path_ends(&kind.path, &["SegmentChangeError", name]))
+    }
+    fn error_tail(statement: &Stmt) {
+        assert!(matches!(statement, Stmt::Expr(expression, None)
+            if call_is(expression, "Err").is_some_and(|call|
+                call.args.len() == 1 && call.args.first().is_some_and(|arg| path_expression_is(arg, &["error"])) )));
+    }
+    fn ok_tail(statement: &Stmt) {
+        assert!(matches!(statement, Stmt::Expr(expression, None)
+            if call_is(expression, "Ok").is_some_and(|call|
+                call.args.len() == 1 && matches!(call.args.first(), Some(Expr::Tuple(unit)) if unit.elems.is_empty()))));
+    }
+    fn refuses_false(gate: &syn::ExprIf) {
+        assert!(gate.else_branch.is_none());
+        assert!(
+            matches!(gate.then_branch.stmts.as_slice(), [Stmt::Expr(Expr::Return(returned), _)]
+            if returned.expr.as_deref().is_some_and(|expr| bool_literal_is(expr, false)))
+        );
+    }
+    fn owner_assignment(statement: &Stmt, present: bool) {
+        let Stmt::Expr(Expr::Assign(assignment), Some(_)) = statement else {
+            panic!("mapping lease state change");
+        };
+        assert!(field_chain_is(&assignment.left, "self", &["mapping_owner"]));
+        if present {
+            assert!(call_is(&assignment.right, "Some").is_some_and(|call| {
+                call.args.len() == 1
+                    && call
+                        .args
+                        .first()
+                        .is_some_and(|arg| path_expression_is(arg, &["owner"]))
+            }));
+        } else {
+            assert!(path_expression_is(&assignment.right, &["None"]));
+        }
+    }
+    #[derive(Default)]
+    struct TableTypes {
+        bare: usize,
+        published: usize,
+    }
+    impl<'ast> Visit<'ast> for TableTypes {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            self.bare += usize::from(path_ends(&path.path, &["IommuTable"]));
+            self.published += usize::from(path_ends(&path.path, &["PublishedIommuTable"]));
+            syn::visit::visit_type_path(self, path);
+        }
+    }
+    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let mm = parse("wost/src/mm/mod.rs");
+    let begin = method(&mm, "DmaSegment", "begin_mapping").expect("single-owner lease acquisition");
+    assert_eq!(begin.block.stmts.len(), 3);
+    let Stmt::Expr(Expr::If(gate), _) = &begin.block.stmts[0] else {
+        panic!("lease acquisition gate");
+    };
+    refuses_false(gate);
+    assert!(matches!(&*gate.cond, Expr::Binary(either)
+        if matches!(either.op, syn::BinOp::Or(_))
+            && matches!(&*either.left, Expr::MethodCall(call) if call.method == "is_none"
+                && call.args.is_empty() && field_chain_is(&call.receiver, "self", &["segment"]))
+            && matches!(&*either.right, Expr::MethodCall(call) if call.method == "is_some"
+                && call.args.is_empty() && field_chain_is(&call.receiver, "self", &["mapping_owner"]))));
+    owner_assignment(&begin.block.stmts[1], true);
+    assert!(
+        matches!(&begin.block.stmts[2], Stmt::Expr(value, None) if bool_literal_is(value, true))
+    );
+    let released = method(&mm, "DmaSegment", "release_mapping").expect("exact-owner lease release");
+    assert_eq!(released.block.stmts.len(), 3);
+    let Stmt::Expr(Expr::If(gate), _) = &released.block.stmts[0] else {
+        panic!("lease release gate");
+    };
+    refuses_false(gate);
+    assert!(matches!(&*gate.cond, Expr::Unary(negative)
+        if matches!(negative.op, syn::UnOp::Not(_)) && matches!(&*negative.expr, Expr::MethodCall(call)
+            if call.method == "is_mapped_by" && path_expression_is(&call.receiver, &["self"])
+                && call.args.len() == 1 && path_expression_is(&call.args[0], &["owner"]))));
+    owner_assignment(&released.block.stmts[1], false);
+    assert!(
+        matches!(&released.block.stmts[2], Stmt::Expr(value, None) if bool_literal_is(value, true))
+    );
+    let owner = vtd
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "Vtd" => Some(item),
+            _ => None,
+        })
+        .expect("VT-d owner");
+    let mut types = TableTypes::default();
+    types.visit_item_struct(owner);
+    assert_eq!(
+        (types.bare, types.published),
+        (0, 5),
+        "unreviewed or recyclable hardware table owner"
+    );
+    let Fields::Named(fields) = &owner.fields else {
+        panic!("VT-d fields");
+    };
+    let establishment = method(&vtd, "Vtd", "establish_deny_all").expect("VT-d establishment");
+    let construction = establishment.block.stmts.iter().find_map(|statement| match statement {
+        Stmt::Local(local) if matches!(&local.pat, Pat::Ident(binding) if binding.ident == "unit") => {
+            match &*local.init.as_ref()?.expr { Expr::Struct(value) => Some(value), _ => None }
+        }
+        _ => None,
+    }).expect("actual unit construction");
+    for name in [
+        "root",
+        "context",
+        "interrupts",
+        "invalidation_queue",
+        "tables",
+    ] {
+        let field = fields
+            .named
+            .iter()
+            .find(|field| field.ident.as_ref().is_some_and(|ident| ident == name))
+            .expect("table owner");
+        assert!(
+            matches!(&field.ty, Type::Path(path) if path_ends(&path.path, &["PublishedIommuTable"]))
+        );
+        let value = &construction
+            .fields
+            .iter()
+            .find(|field| member_is(&field.member, name))
+            .expect("published field")
+            .expr;
+        assert!(
+            matches!(value, Expr::Call(call) if path_expression_is(&call.func, &["PublishedIommuTable", "new"])
+            && call.args.len() == 1 && call.args.first().is_some_and(|arg| path_expression_is(arg, &[name])))
+        );
+    }
+    let mapping = method(&vtd, "Vtd", "map_segment_with").expect("mapping lease boundary");
+    assert_eq!(mapping.block.stmts.len(), 4);
+    owner_is_root(&mapping.block.stmts[1]);
+    owner_refusal(&mapping.block.stmts[2], "begin_mapping");
+    let Stmt::Expr(Expr::Match(outcome), None) = &mapping.block.stmts[3] else {
+        panic!("mapping outcome");
+    };
+    assert!(
+        matches!(&*outcome.expr, Expr::MethodCall(call) if call.method == "map_range"
+        && path_expression_is(&call.receiver, &["self"]) && call.args.len() == 2
+        && path_expression_is(&call.args[0], &["paddr"]) && path_expression_is(&call.args[1], &["len"]))
+    );
+    assert_eq!(outcome.arms.len(), 3);
+    for (index, kind) in [(0, "Retained"), (1, "Refused")] {
+        let arm = &outcome.arms[index];
+        assert!(arm.guard.is_none() && error_kind(arm, kind));
+        let Expr::Block(body) = &*arm.body else {
+            panic!("mapping refusal body");
+        };
+        assert_eq!(body.block.stmts.len(), 2);
+        if index == 0 {
+            retains(&body.block.stmts[0]);
+        } else {
+            release(&body.block.stmts[0]);
+        }
+        error_tail(&body.block.stmts[1]);
+    }
+    assert!(matches!(&outcome.arms[2].pat, Pat::TupleStruct(ok) if path_ends(&ok.path, &["Ok"])));
+    assert!(outcome.arms[2].guard.is_none());
+    ok_tail(&Stmt::Expr((*outcome.arms[2].body).clone(), None));
+
+    let revocation = method(&vtd, "Vtd", "unmap_segment").expect("revocation lease boundary");
+    assert_eq!(revocation.block.stmts.len(), 9);
+    owner_is_root(&revocation.block.stmts[0]);
+    owner_refusal(&revocation.block.stmts[1], "is_mapped_by");
+    assert!(matches!(
+        &revocation.block.stmts[6],
+        Stmt::Expr(Expr::While(_), _)
+    ));
+    let Stmt::Expr(Expr::If(drain), _) = &revocation.block.stmts[7] else {
+        panic!("drain outcome");
+    };
+    assert!(matches!(&*drain.cond, Expr::Let(binding)
+        if matches!(&*binding.pat, Pat::TupleStruct(error) if path_ends(&error.path, &["Err"]))
+            && matches!(&*binding.expr, Expr::MethodCall(call) if call.method == "drain_dma"
+                && path_expression_is(&call.receiver, &["self"]) && call.args.is_empty())));
+    assert!(drain.else_branch.is_none());
+    let [Stmt::Expr(Expr::MethodCall(record), Some(_))] = drain.then_branch.stmts.as_slice() else {
+        panic!("drain failure is discarded");
+    };
+    assert!(record.method == "get_or_insert" && path_expression_is(&record.receiver, &["failure"]));
+    let Stmt::Expr(Expr::If(outcome), None) = &revocation.block.stmts[8] else {
+        panic!("revocation outcome");
+    };
+    assert!(matches!(&*outcome.cond, Expr::Let(binding)
+        if matches!(&*binding.pat, Pat::TupleStruct(present) if path_ends(&present.path, &["Some"]))
+            && path_expression_is(&binding.expr, &["failure"])));
+    assert_eq!(outcome.then_branch.stmts.len(), 2);
+    retains(&outcome.then_branch.stmts[0]);
+    let (_, clean) = outcome
+        .else_branch
+        .as_ref()
+        .expect("proved revocation branch");
+    let Expr::Block(clean) = &**clean else {
+        panic!("proved revocation block");
+    };
+    assert_eq!(clean.block.stmts.len(), 2);
+    release(&clean.block.stmts[0]);
+    ok_tail(&clean.block.stmts[1]);
+    let mut calls = CallNames::default();
+    calls.visit_impl_item_fn(revocation);
+    assert!(call_position(&calls, "is_mapped_by") < call_position(&calls, "unmap_page"));
+    assert!(call_position(&calls, "unmap_page") < call_position(&calls, "drain_dma"));
 }

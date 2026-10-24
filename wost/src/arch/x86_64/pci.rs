@@ -587,8 +587,8 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
 /// command state.
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,
-    domain: DmaDomain,
-    interrupts: InterruptIsolation,
+    domain: DmaDomain<'_>,
+    interrupts: InterruptIsolation<'_>,
     state: &mut CommandState,
 ) -> Result<(), EnableError> {
     let NvmeBusMasterAuthority { bar, _observed: _ } = authority;
