@@ -1387,7 +1387,10 @@ mod tests {
         assert!(verify_transcript(&root, Kernel::SelfTest, reordered.as_bytes()).is_err());
         let split_compound = valid.replace(", compacted", "\n[info ] , compacted");
         assert!(verify_transcript(&root, Kernel::SelfTest, split_compound.as_bytes()).is_err());
-        let merged_steps = valid.replace("\n[info ] apic: x2apic", " [info ] apic: x2apic");
+        let merged_steps = valid.replace(
+            "\n[info ] selftest: a thread crosses",
+            " [info ] selftest: a thread crosses",
+        );
         assert!(verify_transcript(&root, Kernel::SelfTest, merged_steps.as_bytes()).is_err());
         let expected = expected_selftest_checks(&root).unwrap();
         let stale = valid.replace(
