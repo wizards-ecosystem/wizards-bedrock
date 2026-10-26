@@ -25734,3 +25734,77 @@ would erase their provenance. Synthetic records alone cannot expose a shared
 ordering mistake. Letting production callers choose a count would weaken the
 source binding. The private fixture seam preserves the public qualifier's
 existing authority.
+
+## D-445 Foundation resource bands follow attributed security ownership - Status: Accepted (2026-10-26); amends D-384, advances PW-722
+
+**Context.** The 294-check kernel exceeds D-384's 281-check resource bands.
+Three release and three debug observations at `43cbd56` measured ELF sizes of
+10,527,880 and 13,794,456 bytes, free-frame ranges of 113,834 to 113,847 and
+112,756 to 112,757, and heap state 18/1,002/8 in both profiles. The preceding
+checkpoint already exceeded the release ELF ceiling; post-initialization
+frame consumption is unchanged by that cleanup.
+
+Exact-source D-384 diagnostic rebuilds passed all 281 checks in both profiles.
+Post-initialization frame consumption rose from 1,236 to 1,253 in release and
+1,237 to 1,254 in debug. D-433's owner-drop witnesses intentionally retain
+sixteen frames. Read-only walks of live historical and later page tables
+account for the remaining frame: release's larger kernel image requires a
+second leaf table; debug's shifted image requires another leaf table for its
+write-xor-execute direct-map alias. D-389 retains one 48-byte WZDM table in an
+existing slab class, explaining the extra live allocation without another heap
+frame. The larger ELF reservation and loaded image also reduce the incoming
+usable-memory map; bootloader placement varies, so this is not an exact census
+of pre-initialization allocations.
+
+**Decision.** Recenter only the resource bands whose ownership changed.
+Release accepts 10,100,000 to 11,000,000 ELF bytes and 113,700 to 113,950 free
+frames. Debug accepts 13,200,000 to 14,500,000 bytes and 112,600 to 112,900 free
+frames. Both require exactly eight live heap allocations. The byte-band widths
+remain 900,000 and 1,300,000; the frame-band widths remain 250 and 300. All
+timing, heap-size, handle, storage, image, counter and unsafe-source limits,
+the three boots per profile and the complete self-test verdict remain unchanged.
+Runtime allocation capacities and stack bounds are unchanged.
+
+**Proof required.** The existing two-sided band test must pass, retained
+mutation 534 must fail it, and the restored test must pass. The complete
+six-boot baseline and ordinary gate must pass with these permanent limits.
+Historical rebuilds and paused paging observations explain the decision;
+they do not substitute for current-source qualification.
+
+**Alternatives.** Keeping historical limits rejects reviewed retained state.
+Broader bands would reduce regression sensitivity. Stripping debug information
+would change the artifact contract without explaining runtime ownership.
+Relaxing timing or accepting a failed self-test is unrelated to the measured
+resource changes and is rejected.
+
+## D-446 An admitted self-test wait stops when its clock is revoked - Status: Accepted (2026-10-26), qualification OPEN; advances PW-723
+
+**Context.** `runs_until` checks clock liveness before admitting a wait but
+then compares its deadline against public time without rechecking calibration.
+The live timer watchdog can revoke that clock after admission. Public time
+then freezes while the fallback scheduler continues. A condition that stays
+false, such as absent input during the held NVMe round, can therefore spin
+forever before D-438's command-release cleanup is reached. This defect is in
+the self-test wait, not the production scheduler's revocation handling.
+
+**Decision.** Keep the bounded admission check and share the admitted-deadline
+loop through a private helper. Check `is_calibrated` before evaluating the
+predicate on every iteration and return false immediately when authority is
+lost. Existing callers can then execute their refusal cleanup. The public
+clock still freezes on revocation, and no deadline or timing tolerance changes.
+
+Extend the existing clock-disagreement machine witness using a future deadline
+computed while the clock is live and the real watchdog-disagreement hook.
+Inside revocation, the shared loop must return false without calling its
+predicate. The predicate returns true on its second call so removing the new
+guard produces a finite, named assertion failure instead of a host timeout.
+Retained mutation 2,444 removes that guard. It must fail the existing clock
+disagreement check in both profiles, followed by restored passing boots and
+the ordinary gate. The expected machine-check count remains unchanged.
+
+**Alternatives.** Trusting the initial admission misses later revocation.
+Using fallback scheduler time would turn scheduling progress into a trusted
+public deadline. Depending on QEMU's host timeout would leave guest cleanup
+unproved. A sentinel-only synthetic clock would not exercise actual public
+clock freezing and calibration loss, so the witness uses the live revocation
+path instead.

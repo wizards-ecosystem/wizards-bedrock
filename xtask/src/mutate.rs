@@ -79,7 +79,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2444;
+pub const NEXT_MUTATION_ID: u16 = 2445;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -26892,6 +26892,16 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "vmware::tests::real_vmware_captures_satisfy_only_their_own_selector",
         },
+    },
+    Mutation {
+        id: 2444,
+        file: "kernel/src/selftest.rs",
+        find: "fn runs_until_deadline(deadline: u64, done: impl Fn() -> bool) -> bool {\n    loop {\n        if !time::is_calibrated() {\n            return false;\n        }",
+        replace: "fn runs_until_deadline(deadline: u64, done: impl Fn() -> bool) -> bool {\n    loop {",
+        breaks: "an admitted self-test deadline keeps waiting after the live clock is revoked",
+        reddens: Caught::Check(
+            "a clock disagreement revokes time without stranding timers",
+        ),
     },
 ];
 

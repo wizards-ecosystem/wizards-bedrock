@@ -5099,8 +5099,15 @@ fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
 
     let before = time::now_ns();
     let sequence = timepage::sequence();
+    let deadline = time::uptime_ms() + 10_000;
     let during = time::with_watchdog_disagreement_for_test(|| {
         let frozen = time::now_ns();
+        let predicate_calls = core::cell::Cell::new(0_u32);
+        let wait_aborted = !runs_until_deadline(deadline, || {
+            let calls = predicate_calls.get() + 1;
+            predicate_calls.set(calls);
+            calls >= 2
+        });
         let scheduler_before = time::scheduler_now_ns();
         time::advance_scheduler_for_test();
         let settled = ring.expire(frozen);
@@ -5111,6 +5118,9 @@ fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
             && !time::is_calibrated()
             && frozen >= before
             && time::now_ns() == frozen
+            && frozen / time::NANOSECONDS_PER_MS < deadline
+            && wait_aborted
+            && predicate_calls.get() == 0
             && time::scheduler_now_ns() > scheduler_before
             && settled == 1
             && completion.token == 0xC10D
@@ -8097,7 +8107,14 @@ fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
         return false;
     }
     let deadline = time::uptime_ms() + ms;
+    runs_until_deadline(deadline, done)
+}
+
+fn runs_until_deadline(deadline: u64, done: impl Fn() -> bool) -> bool {
     loop {
+        if !time::is_calibrated() {
+            return false;
+        }
         if done() {
             return true;
         }
