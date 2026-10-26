@@ -79,7 +79,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 2438;
+pub const NEXT_MUTATION_ID: u16 = 2444;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[
@@ -26832,6 +26832,66 @@ fn mint_stopped<'controller>(
         replace: "    observe(keystroke.event);",
         breaks: "A rejected full-queue press/release pair advances the self-test arrival watch even though no event was admitted.",
         reddens: Caught::Check("the controller route and ordered interrupt witness are exact"),
+    },
+    Mutation {
+        id: 2438,
+        file: "xtask/src/qemu.rs",
+        find: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator,",
+        replace: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator: directory.join(exe_name(\"qemu-system-x86_64\")),",
+        breaks: "an explicit QEMU executable is replaced by the default filename",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::installation_preserves_the_explicit_binary_and_its_firmware",
+        },
+    },
+    Mutation {
+        id: 2439,
+        file: "xtask/src/api.rs",
+        find: "for batch in shared.chunks(workers.max(1)) {",
+        replace: "for batch in shared.chunks(workers.max(shared.len()).max(1)) {",
+        breaks: "every API-audit graph in a round compiles together without the reviewed worker bound",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::concurrent_graphs_stay_bounded_ordered_and_isolate_the_alone_graph",
+        },
+    },
+    Mutation {
+        id: 2440,
+        file: "xtask/src/api.rs",
+        find: "(0..count).partition(|&index| alone(index));",
+        replace: "(0..count).partition(|&index| alone(index) && index == usize::MAX);",
+        breaks: "the memory-heavy API-audit graph shares the machine with ordinary graphs",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::concurrent_graphs_stay_bounded_ordered_and_isolate_the_alone_graph",
+        },
+    },
+    Mutation {
+        id: 2441,
+        file: "kernel/src/time.rs",
+        find: "    elapsed.convert(timestamp.wrapping_sub(ORIGIN.load(Ordering::Relaxed)))\n}",
+        replace: "    elapsed.convert(timestamp.wrapping_sub(ORIGIN.load(Ordering::Relaxed))) / 1_000 * 1_000\n}",
+        breaks: "public clock conversion rounds every adjacent counter reading to whole microseconds",
+        reddens: Caught::Check("the clock advances in steps finer than a microsecond"),
+    },
+    Mutation {
+        id: 2442,
+        file: "kernel/src/selftest.rs",
+        find: "        if sample < previous {\n            sweep.monotonic = false;\n        }",
+        replace: "        let sample = (sample, previous).1;\n        if sample < previous {\n            sweep.monotonic = false;\n        }",
+        breaks: "the public clock stays frozen while raw adjacent counter readings still advance",
+        reddens: Caught::Check("the clock advances in steps finer than a microsecond"),
+    },
+    Mutation {
+        id: 2443,
+        file: "xtask/src/vmware.rs",
+        find: "    TranscriptMarker::Isolation(Kernel::SelfTest),\n    TranscriptMarker::LocalApic,\n",
+        replace: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Isolation(Kernel::SelfTest),\n",
+        breaks: "the VMware verifier reverses the isolation and local APIC order emitted by a captured boot",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::real_vmware_captures_satisfy_only_their_own_selector",
+        },
     },
 ];
 

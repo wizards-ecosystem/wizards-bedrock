@@ -1,0 +1,61 @@
+[info ] The Wizard's Bedrock awakens.
+[info ] framebuffer: 1024x768 pitch=4096 bpp=32
+[info ] limine: base revision supported
+[info ] iommu: entry DMA fence covers 43 PCI function(s), disabled 40 inherited bus master(s), retained 1 qualified non-requester(s)
+[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester
+[info ] iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester
+[info ] cpu: descriptor tables installed
+[info ] cpu: protections wp smep smap umip nx
+[info ] cpu: extended state 832 bytes, xcr0 0x7, compacted
+[info ] memory: direct map at 0xffff800000000000
+[info ] memory: 478 MiB usable in 122623 frames
+[info ] paging: direct map covers 514 MiB at 0xffff800000000000
+[info ] paging: running on our own tables
+[info ] faults: double-fault stack guarded, top 0xfffffe0000099000
+[info ] threads: 16 guarded stacks ready
+[info ] framebuffer: write-combining
+[info ] iommu: dmar lists 1 remapping unit(s)
+[info ] console: back buffer attached; scrolling no longer reads the device
+[info ] iommu: early default-deny DMA and interrupt boundary active at 0xfec10000: 4-level walks, cap 0xff0080f02c0462, ecap 0xf0f15f
+[info ] pci: complete segment-zero topology sealed
+[info ] nvme: claimed 03:00.0 — 15ad:07f0
+[info ] nvme: bar0 is 16384 bytes of 64-bit memory at 0xfea00000
+[info ] nvme: bar0 pages 0xfea00000..0xfea04000 admitted below MAXPHYADDR 45
+[info ] nvme: memory-space decode on; bus master remains off
+[info ] iommu: 03:00.0 is one of 42 live PCI requester(s) governed by the unit at 0xfec10000
+[info ] iommu: translation on for 03:00.0 through the unit at 0xfec10000: 4-level walks, retargeted without dropping the default-deny boundary, cap 0xff0080f02c0462, ecap 0xf0f15f
+[info ] nvme: bus master on after verified controller disable
+[info ] nvme: candidate 1 retired cleanly; trying next
+[info ] nvme: claimed 0b:00.0 — 15ad:07f0
+[info ] nvme: bar0 is 16384 bytes of 64-bit memory at 0xfe200000
+[info ] nvme: bar0 pages 0xfe200000..0xfe204000 admitted below MAXPHYADDR 45
+[info ] nvme: memory-space decode on; bus master remains off
+[info ] iommu: 0b:00.0 is one of 42 live PCI requester(s) governed by the unit at 0xfec10000
+[info ] iommu: translation on for 0b:00.0 through the unit at 0xfec10000: 4-level walks, retargeted without dropping the default-deny boundary, cap 0xff0080f02c0462, ecap 0xf0f15f
+[info ] nvme: bus master on after verified controller disable
+[info ] nvme: up — 8 entries a queue, 133120 blocks of 512 bytes, doorbells 4 apart
+[info ] nvme: read block 0
+[info ] pci: 43 functions across 35 bus(es), 34 bridge(s), highest 0x22, 2 nvme
+[info ] fat32: mounted — 129046 clusters of 512 bytes
+[info ] fat32: 2 file(s) and 1 directory(ies) in the root
+[info ] fat32: HELLO.TXT — read 32 of its bytes
+[info ] tmpfs: 1 file(s) and 1 directory(ies) at the root
+[info ] devfs: storage is a block device
+[info ] devfs: console is a character device
+[info ] pic: legacy controllers remapped and masked
+[info ] cpu: capabilities 0x44 rsba
+[info ] cpu: user isolation paired roots: selected; shared mappings refused
+[info ] cpu: buffers cleared on every return to ring 3
+[info ] apic: x2apic id 0 version 0x15 (bootstrap)
+[info ] time: apic source at 65937493 hz; tickless: counter at 3413002791 hz (invariant), divided apic timer at 65937493 hz, measured against pit
+[info ] time: published at 0x100000000000, readable without a call
+[info ] cpu: accepting interrupts
+[info ] keyboard: up, set 1 until an arriving byte says otherwise
+[info ] keyboard: PCI interrupt isolation keeps every io-apic line masked; polling
+[info ] keyboard: polled every 10 ms
+[info ] kernel: service worker ready; file queue has 8 slots
+[info ] initrd: 533 bytes
+[info ] user: program running in slot 4
+[info ] kernel: reading the keyboard, uptime 7 ms
+[info ] user 0: entering ring 3 at 0x400000000000 with 0 on 0x439000
+[info ] user: ring 3 call observed

@@ -677,7 +677,23 @@ pub(crate) fn now_ns() -> u64 {
 
 fn raw_now_ns() -> u64 {
     let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
-    elapsed.convert(cpu::timestamp().wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
+    nanoseconds_at(elapsed, cpu::timestamp())
+}
+
+fn nanoseconds_at(elapsed: Timebase, timestamp: u64) -> u64 {
+    elapsed.convert(timestamp.wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
+}
+
+/// Adjacent counter readings converted through the public clock's timebase.
+#[cfg(feature = "selftest")]
+pub(crate) fn adjacent_readings_for_test() -> (u64, u64) {
+    let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
+    let first = cpu::timestamp();
+    let second = cpu::timestamp();
+    (
+        nanoseconds_at(elapsed, first),
+        nanoseconds_at(elapsed, second),
+    )
 }
 
 /// Nanoseconds used only for scheduler progress.

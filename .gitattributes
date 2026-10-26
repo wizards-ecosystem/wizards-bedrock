@@ -10,3 +10,6 @@
 *.efi binary
 *.img binary
 *.fd binary
+
+# Real VMware serial captures keep their exact CRLF bytes.
+*.serial binary

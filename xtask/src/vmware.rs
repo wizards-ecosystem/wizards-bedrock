@@ -290,17 +290,19 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
 }
 
 pub(crate) fn verify_transcript(root: &Path, kernel: Kernel, bytes: &[u8]) -> Result<()> {
-    verify_transcript_with(root, kernel, bytes, || Ok(()))
+    verify_transcript_with(kernel, bytes, || Ok(()), || expected_selftest_checks(root))
 }
 
-fn verify_transcript_with<F>(
-    root: &Path,
+// The count belongs to the transcript's own image, so retained captures outlive new checks.
+fn verify_transcript_with<F, E>(
     kernel: Kernel,
     bytes: &[u8],
     after_nul_check: F,
+    expected_checks: E,
 ) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
+    E: FnOnce() -> Result<usize>,
 {
     let text = std::str::from_utf8(bytes).context("VMware transcript is not UTF-8")?;
     ensure!(
@@ -323,7 +325,7 @@ where
     );
     require_translation_before_storage(text)?;
     match kernel {
-        Kernel::SelfTest => verify_selftest_transcript(root, text),
+        Kernel::SelfTest => verify_selftest_transcript(text, expected_checks),
         Kernel::Shipped => verify_shipped_transcript(text),
     }
 }
@@ -543,7 +545,10 @@ fn info_records(text: &str) -> impl Iterator<Item = (usize, &str)> {
     })
 }
 
-fn verify_selftest_transcript(root: &Path, text: &str) -> Result<()> {
+fn verify_selftest_transcript(
+    text: &str,
+    expected_checks: impl FnOnce() -> Result<usize>,
+) -> Result<()> {
     ensure!(
         !text.lines().any(|line| {
             line.contains("selftest: ")
@@ -566,7 +571,7 @@ fn verify_selftest_transcript(root: &Path, text: &str) -> Result<()> {
         verdicts[0].0 >= evidence_end,
         "VMware self-test verdict precedes required execution evidence"
     );
-    let expected = expected_selftest_checks(root)?;
+    let expected = expected_checks()?;
     let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split(' ');
     ensure!(
         core::iter::Iterator::next(&mut fields) == Some("v1"),
@@ -1427,13 +1432,48 @@ mod tests {
         let canonical_validation_started = std::cell::Cell::new(false);
 
         assert!(
-            verify_transcript_with(&root, Kernel::SelfTest, with_nul.as_bytes(), || {
-                canonical_validation_started.set(true);
-                Ok(())
-            })
+            verify_transcript_with(
+                Kernel::SelfTest,
+                with_nul.as_bytes(),
+                || {
+                    canonical_validation_started.set(true);
+                    Ok(())
+                },
+                || expected_selftest_checks(&root),
+            )
             .is_err()
         );
         assert!(!canonical_validation_started.get());
+    }
+
+    const CAPTURED_SELFTEST: &[u8] =
+        include_bytes!("../fixtures/vmware/2026-10-24-8f4586a-self-test.serial");
+    const CAPTURED_SHIPPED: &[u8] =
+        include_bytes!("../fixtures/vmware/2026-10-24-8f4586a-shipped.serial");
+    const CAPTURED_SELFTEST_CHECKS: usize = 294;
+
+    #[test]
+    fn real_vmware_captures_satisfy_only_their_own_selector() {
+        let captured = || Ok(CAPTURED_SELFTEST_CHECKS);
+        verify_transcript_with(Kernel::SelfTest, CAPTURED_SELFTEST, || Ok(()), captured).unwrap();
+        verify_transcript_with(Kernel::Shipped, CAPTURED_SHIPPED, || Ok(()), captured).unwrap();
+        assert!(
+            verify_transcript_with(Kernel::SelfTest, CAPTURED_SHIPPED, || Ok(()), captured)
+                .is_err()
+        );
+        assert!(
+            verify_transcript_with(Kernel::Shipped, CAPTURED_SELFTEST, || Ok(()), captured)
+                .is_err()
+        );
+        assert!(
+            verify_transcript_with(
+                Kernel::SelfTest,
+                CAPTURED_SELFTEST,
+                || Ok(()),
+                || { Ok(CAPTURED_SELFTEST_CHECKS + 1) }
+            )
+            .is_err()
+        );
     }
 
     #[test]

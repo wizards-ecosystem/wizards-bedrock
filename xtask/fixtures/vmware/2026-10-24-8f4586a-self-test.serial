@@ -1,0 +1,437 @@
+[info ] The Wizard's Bedrock awakens.
+[info ] framebuffer: 1024x768 pitch=4096 bpp=32
+[info ] limine: base revision supported
+[info ] iommu: entry DMA fence covers 43 PCI function(s), disabled 40 inherited bus master(s), retained 1 qualified non-requester(s)
+[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester
+[info ] iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester
+[info ] cpu: descriptor tables installed
+[info ] cpu: protections wp smep smap umip nx
+[info ] cpu: extended state 832 bytes, xcr0 0x7, compacted
+[info ] memory: direct map at 0xffff800000000000
+[info ] memory: 474 MiB usable in 121383 frames
+[info ] paging: direct map covers 514 MiB at 0xffff800000000000
+[info ] paging: running on our own tables
+[info ] faults: double-fault stack guarded, top 0xfffffe0000099000
+[info ] threads: 16 guarded stacks ready
+[info ] framebuffer: write-combining
+[info ] iommu: dmar lists 1 remapping unit(s)
+[info ] console: back buffer attached; scrolling no longer reads the device
+[info ] iommu: early default-deny DMA and interrupt boundary active at 0xfec10000: 4-level walks, cap 0xff0080f02c0462, ecap 0xf0f15f
+[info ] pci: complete segment-zero topology sealed
+[info ] nvme: claimed 03:00.0 — 15ad:07f0
+[info ] nvme: bar0 is 16384 bytes of 64-bit memory at 0xfea00000
+[info ] nvme: bar0 pages 0xfea00000..0xfea04000 admitted below MAXPHYADDR 45
+[info ] nvme: memory-space decode on; bus master remains off
+[info ] iommu: 03:00.0 is one of 42 live PCI requester(s) governed by the unit at 0xfec10000
+[info ] iommu: translation on for 03:00.0 through the unit at 0xfec10000: 4-level walks, retargeted without dropping the default-deny boundary, cap 0xff0080f02c0462, ecap 0xf0f15f
+[warn ] nvme: bus master refused after verified disable: PCI command: the command register read back as 0x0000
+[info ] nvme: candidate 1 retired cleanly; trying next
+[info ] nvme: claimed 0b:00.0 — 15ad:07f0
+[info ] nvme: bar0 is 16384 bytes of 64-bit memory at 0xfe200000
+[info ] nvme: bar0 pages 0xfe200000..0xfe204000 admitted below MAXPHYADDR 45
+[info ] nvme: memory-space decode on; bus master remains off
+[info ] iommu: 0b:00.0 is one of 42 live PCI requester(s) governed by the unit at 0xfec10000
+[info ] iommu: translation on for 0b:00.0 through the unit at 0xfec10000: 4-level walks, retargeted without dropping the default-deny boundary, cap 0xff0080f02c0462, ecap 0xf0f15f
+[info ] nvme: bus master on after verified controller disable
+[info ] nvme: up — 8 entries a queue, 133120 blocks of 512 bytes, doorbells 4 apart
+[info ] nvme: read block 0
+[info ] pci: 43 functions across 35 bus(es), 34 bridge(s), highest 0x22, 2 nvme
+[info ] fat32: mounted — 129046 clusters of 512 bytes
+[info ] fat32: 2 file(s) and 1 directory(ies) in the root
+[info ] fat32: HELLO.TXT — read 32 of its bytes
+[info ] tmpfs: 1 file(s) and 1 directory(ies) at the root
+[info ] devfs: storage is a block device
+[info ] devfs: console is a character device
+[info ] pic: legacy controllers remapped and masked
+[info ] cpu: capabilities 0x44 rsba
+[info ] cpu: user isolation paired roots: selected; shared mappings refused
+[info ] cpu: buffers cleared on every return to ring 3
+[info ] apic: x2apic id 0 version 0x15 (bootstrap)
+[info ] time: apic source at 65937646 hz; tickless: counter at 3413073827 hz (invariant), divided apic timer at 65937646 hz, measured against pit
+[info ] time: published at 0x100000000000, readable without a call
+[info ] cpu: accepting interrupts
+[info ] keyboard: up, set 1 until an arriving byte says otherwise
+[info ] keyboard: PCI interrupt isolation keeps every io-apic line masked; polling
+[info ] kernel: service worker ready; file queue has 8 slots
+[info ] initrd: 533 bytes
+[info ] selftest: image marker v1
+[info ] selftest: serial console came up
+[info ] selftest: framebuffer console came up
+[info ] selftest: framebuffer geometry is sane
+[info ] selftest: colour channels do not overlap
+[info ] selftest: a claimed port cannot be claimed twice
+[info ] selftest: a save stays inside its area
+[info ] selftest: filling the arena never repeats a slot
+[info ] selftest: ring three has no fast-syscall door
+[info ] selftest: a reclaimed space answers nothing
+[info ] selftest: a refused pair of claims strands neither
+[info ] selftest: a claim covers the width it drives
+[info ] selftest: a held lock excludes another holder
+[info ] selftest: forgotten lock ownership is distinct from contention
+[info ] selftest: a one-shot latch admits one caller
+[info ] selftest: the frame allocator admits only exclusively usable frames
+[info ] selftest: a frame is returned when its handle drops
+[info ] selftest: a mapped dma owner drop retains its allocation
+[info ] selftest: published iommu table drops retain their allocations
+[info ] selftest: uncertain dma memory is never recycled
+[info ] selftest: dma byte access is exact and bounded
+[info ] selftest: two live frames are different frames
+[info ] selftest: dirty memory can be zeroed, and seen to be
+[info ] selftest: allocation returns a zeroed frame
+[info ] selftest: a contiguous run is contiguous and aligned
+[info ] selftest: the loaded page table is ours
+[info ] selftest: an admitted canonical page can be invalidated
+[info ] selftest: the kernel image obeys write-xor-execute
+[info ] selftest: the entry enclave guards are absent from the full root
+[info ] selftest: supervisor writes obey read-only pages
+[info ] selftest: the direct map is writable and never executable
+[info ] selftest: a mapping added after the switch is live
+[info ] selftest: a second address space is refused
+[info ] user 9: entering ring 3 at 0x400000090000 with 0 on 0x465000
+[info ] user 4: entering ring 3 at 0x400000040000 with 2 on 0x4bb000
+[warn ] user: refused 1 call(s), last was 0xbad0bad
+[info ] user 4: entering ring 3 at 0x400000040000 with 2 on 0x512000
+[info ] selftest: an unserved call is refused without stopping the machine
+[info ] user 0: entering ring 3 at 0x400000000000 with 0 on 0x566000
+[info ] selftest: a thread crosses into ring three and calls back
+[info ] selftest: ring-three entry restores the kernel stack selector
+[info ] selftest: a program cannot bring smap down with it
+[info ] user 2: entering ring 3 at 0x400000020000 with 1 on 0x5ba000
+[info ] selftest: a faulting program dies alone
+[info ] user 10: entering ring 3 at 0x4000000a0000 with 6 on 0x60e000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x662000
+[info ] selftest: a noncanonical user return stack retires only its program
+[info ] user 11: entering ring 3 at 0x4000000b0000 with 7 on 0x6b6000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x70a000
+[info ] selftest: unsafe user return flags retire only their program
+[info ] user 5: entering ring 3 at 0x400000050000 with 18446744071562076188 on 0x75e000
+[info ] selftest: a program cannot aim at the copy window
+[info ] selftest: two spaces map one address to different memory
+[info ] selftest: every enabled state component survives a switch
+[info ] selftest: a ring announces its shape and keeps its pages
+[info ] selftest: a word that does not fit is refused rather than truncated
+[info ] selftest: a completion carries a file handle
+[info ] selftest: opening a node does not restore universal rights
+[info ] selftest: a read is a submission with its own offset
+[info ] selftest: a cancelled open releases its reserved handle before quiet
+[info ] selftest: file work pressure is bounded at admission
+[info ] selftest: awaiting storage-delay keystroke
+[info ] selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true
+[info ] selftest: a delayed read preserves interrupt admission and exact teardown
+[info ] selftest: a ring operation cannot reach past its rights or its pages
+[info ] selftest: a second backend answers the same three operations
+[info ] selftest: enumeration callbacks run without backend ownership
+[info ] selftest: a device is not a file
+[info ] selftest: no backend lets a path escape or cross
+[info ] selftest: a path resolves from a directory handle
+[info ] selftest: no path can name anything above the handle
+[info ] selftest: a file cannot be walked through
+[info ] selftest: enumeration lists what traversal would find
+[info ] selftest: the volume mounts and says what a fat32 volume says
+[info ] selftest: the kernel reads the file the host wrote
+[info ] selftest: a file longer than a cluster is read across its chain
+[info ] selftest: a path resolves through a directory
+[info ] selftest: the controller was read rather than assumed
+[info ] selftest: nvme-stack v2 used=14016 capacity=32768 headroom=18752 leaf=12888
+[info ] selftest: nvme candidates preserve two pages of boot-stack headroom
+[info ] selftest: a later nvme controller survives an earlier failure
+[info ] selftest: a live nvme bar obeys maxphyaddr
+[info ] selftest: a failed bus master admission stops before nvme start
+[info ] selftest: invalid nvme namespace stops before io queues
+[info ] selftest: invalid nvme reads stop before submission
+[info ] selftest: a block read returns the block that was asked for
+[info ] selftest: the queues wrap and the phase tag still works
+[info ] selftest: the controller's registers are uncacheable
+[info ] selftest: the bus walk descends through a bridge
+[info ] selftest: a device is claimed once and a refusal strands nothing
+[info ] selftest: a claimed device's io window is not claimable bare
+[info ] selftest: work in flight is ended before the ring is released
+[info ] user 2: entering ring 3 at 0x400000020000 with 1 on 0x7ea000
+[warn ] user: ring cleanup refused; the zombie remains owned
+[info ] selftest: a refused settlement retains every owner
+[info ] selftest: a promise outlives the program that made it
+[info ] selftest: the time page states the clock the kernel measured
+[info ] selftest: the time page and the kernel clock tell the same time
+[info ] selftest: revoking the clock sends readers to ring Uptime
+[info ] selftest: the clock's update window is never preemptible
+[info ] selftest: a program sees the time page and cannot write it
+[info ] selftest: a completion carries a handle with narrowed rights
+[info ] selftest: a completion cannot widen what was offered
+[info ] selftest: a refused handle operation returns its promise
+[info ] selftest: a full table refuses a handle operation at submission
+[info ] selftest: an operation completes after its deadline and only once
+[info ] selftest: a cancelled operation and its cancellation complete separately
+[info ] selftest: every submission gets exactly one completion
+[info ] selftest: admission refuses before the completion queue can overflow
+[info ] selftest: a full ring admits again only after userspace reaps
+[info ] selftest: a rewritten submission cannot change what was served
+[info ] selftest: kernel memory cannot be published to ring three
+[info ] selftest: external user bytes are zeroed before free
+[info ] selftest: a refused external clear withholds its run
+[info ] selftest: only a space that matches the kernel can be installed
+[info ] selftest: the loader refuses what it may not map
+[info ] user 1: entering ring 3 at 0x400000010000 with 0 on 0x896000
+[info ] selftest: a second thread crosses onto its own stack
+[info ] selftest: thread local storage follows the thread
+[info ] selftest: device window reuses arbitrary-order gaps
+[info ] selftest: late device mappings reach earlier user roots
+[info ] selftest: a stale shared root cannot authenticate a device mapping
+[info ] selftest: a device mapping checks its first leaf
+[info ] selftest: a device mapping checks its middle leaf
+[info ] selftest: a device mapping checks its last leaf
+[info ] selftest: a device mapping checks its cache policy
+[info ] selftest: a bound space is not reclaimed
+[info ] selftest: one space has one binding
+[info ] selftest: binding ignores only accessed root drift
+[info ] selftest: every refused spawn returns every resource
+[info ] selftest: a commit refusal reunites cleanup authority
+[info ] selftest: a maximum image and stack fit the cleanup ledger
+[info ] selftest: cleanup refusals retain reachable tables
+[info ] selftest: partial stack rollback is retryable
+[info ] selftest: guard rollback refusal retains the stack
+[info ] selftest: a failed boot-space build returns every table frame
+[info ] selftest: a retirement refusal is settled before slot reuse
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xd2f000
+[warn ] user: task release refused; the zombie remains owned
+[warn ] user: task release refused; the zombie remains owned
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xd83000
+[info ] selftest: a task release refusal retains the zombie for retry
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xdd7000
+[info ] selftest: one zombie has one settlement collector
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xe2b000
+[warn ] user: task release refused; the zombie remains owned
+[warn ] user: task release refused; the zombie remains owned
+[info ] selftest: an in-flight collector keeps the worker retry live
+[info ] selftest: an unguarded boot stack closes the user boundary
+[info ] user 9: entering ring 3 at 0x400000090000 with 0 on 0xe7f000
+[warn ] user 9: maskable interrupts are not admitted
+[info ] selftest: unadmitted interrupts cannot be enabled by a user transition
+[info ] selftest: shared kernel mappings without an isolation proof are refused
+[info ] selftest: no-execute protection closes the user boundary
+[info ] selftest: missing extended state closes the user boundary
+[info ] selftest: an uncalibrated clock admits no user or timer
+[info ] selftest: a clock disagreement revokes time without stranding timers
+[info ] selftest: a user page comes back cleared
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xee1000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xf35000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xf89000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0xfdd000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1031000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1085000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x10d9000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x112d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1181000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x11d5000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1229000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x127d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x12d1000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1325000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1379000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x13cd000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1421000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1475000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x14c9000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x151d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1571000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x15c5000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1619000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x166d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x16c1000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1715000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1769000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x17bd000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1811000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1865000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x18b9000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x190d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1961000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x19b5000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1a09000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1a5d000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1ab1000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1b05000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1b59000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1bad000
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1c01000
+[info ] selftest: a dead program gives its memory back
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1c55000
+[info ] selftest: a program drives its own ring
+[info ] user 8: entering ring 3 at 0x400000080000 with 5 on 0x1ca9000
+[info ] selftest: a ring enter round trip is measurable
+[info ] user 6: entering ring 3 at 0x400000060000 with 3 on 0x1cfd000
+[info ] selftest: a program duplicates its bootstrap handle
+[info ] user 7: entering ring 3 at 0x400000070000 with 4 on 0x1d51000
+[info ] selftest: a program waits through its trap frame
+[info ] user 9: entering ring 3 at 0x400000090000 with 0 on 0x1da5000
+[info ] selftest: syscall wake evidence registered=true released=true woke=true answered=true ring-arms=0->1 handler-arms=56->58 returned=1 settled=true
+[info ] selftest: a syscall wake arms the timer for what it woke
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1df9000
+[info ] selftest: a spawned program holds exactly one handle
+[info ] selftest: the return to ring three clears buffers
+[info ] selftest: a faulting user copy resumes and reports
+[info ] selftest: bytes cross the boundary only where they may
+[info ] selftest: an active unmap exposes only its replacement
+[info ] selftest: a shared kernel unmap evicts the live user root
+[info ] selftest: an inactive lower-root unmap preserves the live observer
+[info ] selftest: a waiter rereads its condition before blocking
+[info ] selftest: a meaningless right is refused
+[info ] selftest: a handle reveals no foreign occupancy
+[info ] selftest: table identities never wrap or repeat
+[info ] selftest: a table cannot exceed its quota
+[info ] selftest: the handle arena backs a table's whole quota
+[info ] selftest: an object lives exactly as long as its handles
+[info ] selftest: a dead table releases its objects
+[info ] selftest: the boot thread stands on a guarded stack
+[info ] selftest: the double-fault stack is guarded
+[info ] selftest: the double-fault stack cannot be unmapped
+[info ] selftest: the boot stack rejects a lower-leaf substitution
+[info ] selftest: a noncurrent task stack rejects a lower-leaf substitution
+[info ] selftest: the double-fault stack rejects a lower-leaf substitution
+[info ] selftest: protected stacks refuse overlapping maps
+[info ] selftest: a second space holds the kernel and nothing else
+[info ] selftest: a walk reports what the live tables grant
+[info ] selftest: a refused mapping leaves no trace
+[info ] selftest: a partial mapping failure returns its tables
+[info ] selftest: a refused remap preserves every older entry
+[info ] selftest: a shared mapping keeps its frame
+[info ] selftest: shared mappings reject cache aliases
+[info ] selftest: ram mappings keep the direct map's cache type
+[info ] selftest: a large space returns every table frame
+[info ] selftest: an unmapped range returns its frames
+[info ] selftest: unmapping refuses what it does not own
+[info ] selftest: the map offers a run to probe
+[info ] selftest: a boot mapping cannot claim ownership
+[info ] selftest: writable executable mappings leave no trace
+[info ] selftest: caller global is removed from safe mappings
+[info ] selftest: a boot mapping cannot publish kernel memory
+[info ] selftest: a paired root admits only user leaves below the split
+[info ] selftest: a user space cannot reach the kernel half
+[info ] selftest: the last canonical page is never user memory
+[info ] selftest: a user mapping cannot widen a supervisor table
+[info ] selftest: an undescribed range cannot be mapped
+[info ] selftest: a differing remap is refused
+[info ] selftest: device mappings are physically exclusive
+[info ] selftest: device mappings refuse allocatable ram
+[info ] selftest: malformed device extents are refused
+[info ] selftest: active device tables cannot be reclaimed
+[info ] selftest: active kernel topology refuses a new shared root
+[info ] selftest: shared topology rejects hostile root entries
+[info ] selftest: firmware reads are confined to acpi storage
+[info ] selftest: the heap reuses a freed slot
+[info ] selftest: a refill costs one frame and balances
+[info ] selftest: heap memory holds what it is given
+[info ] selftest: a large allocation takes and returns frames
+[info ] selftest: the console has a complete shadow to scroll from
+[info ] selftest: threads are available
+[info ] selftest: an unmapped stack is no longer installed
+[info ] selftest: a stale shared root cannot authenticate a stack
+[info ] selftest: a stack checks its first leaf
+[info ] selftest: a stack checks its middle leaf
+[info ] selftest: a stack checks its last leaf
+[info ] selftest: thread stacks are guarded below
+[info ] selftest: two threads alternate strictly through yields
+[info ] selftest: callee-saved registers survive a switch
+[info ] selftest: a thread starts aligned
+[info ] selftest: an exited slot is reused
+[info ] selftest: a new thread runs with interrupts accepted
+[info ] selftest: a spinning thread cannot starve another
+[info ] selftest: runtime divides in proportion to weight
+[info ] selftest: the policy never needed its fallback
+[info ] selftest: the code selector is the one we installed
+[info ] selftest: the task register holds our segment
+[info ] selftest: the interrupt table the CPU holds is ours
+[info ] selftest: a breakpoint is delivered and resumes
+[info ] selftest: the saved frame is the frame the CPU pushed
+[info ] selftest: interrupt entry pushes the frame the layout describes
+[info ] selftest: every protection the CPU supports is enabled
+[info ] selftest: the legacy controllers are masked
+[info ] selftest: the local apic is software enabled
+[info ] selftest: local apic initialization stayed unpublished and interrupt-excluded
+[info ] selftest: this cpu is accepting interrupts
+[info ] selftest: a lock excludes interrupts and gives them back
+[info ] selftest: the timer entry is one-shot and unmasked
+[info ] selftest: both calibrated rates are believable
+[info ] selftest: every refusal the clock can record reads back as itself
+[info ] selftest: the clock never runs backwards
+[info ] selftest: the clock advances in steps finer than a microsecond
+[info ] selftest: an idle kernel takes no timer interrupts
+[info ] selftest: the timer fires about once a slice under load
+[info ] selftest: a sleeping thread wakes on time, and quietly
+[info ] selftest: a sleeping thread hands the cpu over
+[info ] selftest: a failed idle start can be retried exactly once
+[info ] selftest: the idle thread is running
+[info ] user: ring 3 call observed
+[info ] selftest: the idle thread runs only when nothing else can
+[info ] user 3: entering ring 3 at 0x400000030000 with 0 on 0x1f2f000
+[info ] selftest: a busy machine reaps a program without another spawn
+[info ] selftest: the user root contains only the entry enclave
+[info ] selftest: every user entry reaches Rust on the full root
+[info ] selftest: every user return installs the stripped root
+[info ] selftest: the entry stack is guarded and scrubbed
+[info ] selftest: a context switch moves one complete root pair
+[info ] selftest: paired-space refusal and retirement conserve every frame
+[info ] keyboard: polled every 10 ms
+[info ] selftest: the polled keyboard fallback is bounded before it stays live
+[info ] selftest: the keyboard controller came up
+[info ] selftest: a refused controller configuration is typed and changes nothing
+[info ] selftest: a refused keyboard route restores configuration, masking and mappings
+[info ] selftest: an isolated I/O APIC route encodes its typed vector
+[info ] selftest: a window that is not an I/O APIC is never taken over
+[info ] selftest: a failed controller flush stops every following transaction
+[info ] selftest: a refused controller command is typed and consumes no reply
+[info ] selftest: the controller route and ordered interrupt witness are exact
+[info ] selftest: the keyboard interrupt handoff records its ownership
+[info ] selftest: an echo to the keyboard comes back
+[info ] selftest: the keyboard identifies as one the decoder knows
+[info ] selftest: a blocked keyboard reader waits while the poller runs
+[info ] selftest: awaiting injected keystroke
+[info ] selftest: an injected keystroke arrives, and its release follows
+[info ] selftest: the framebuffer is mapped write-combining
+[info ] selftest: default-deny interrupt remapping guards every pci requester
+[info ] selftest: the io apic owner returned after masked rollback
+[info ] selftest: keyboard input is polled without legacy interrupts
+[info ] selftest: the blocked reader woke with the injected key through polling
+[info ] selftest: the injected editing keys arrive, ending with enter
+[info ] selftest: backspace erases and enter starts a line
+[info ] selftest: the controller accepts translation being turned on
+[info ] selftest: translation updates the decoder from the controller identity
+[info ] selftest: awaiting translated keystroke
+[info ] selftest: a translated keystroke decodes to the same key
+[info ] selftest: the keyboard's numbering and the decoder's are the same
+[info ] selftest: the decoder reads the set that arrives, not the bit that was written
+[info ] selftest: a console scroll does not block interrupts
+[info ] selftest: longest console scroll 4777230 ns
+[info ] selftest: no spurious interrupt has been delivered
+[info ] selftest: the local apic has recorded no error
+[info ] selftest: no lock is taken while a leaf guard is held
+[info ] selftest: a scroll moves one visible cursor
+[info ] selftest: a full-buffer nvme read is measurable
+[info ] selftest: translation is active for the storage function
+[info ] selftest: every shared vtd requester was fenced across controller fallback
+[info ] selftest: the unit walks the kernel's root table
+[info ] selftest: the dma domain reaches exactly the live queue frames
+[info ] selftest: a device write into an unmapped frame faults and changes nothing
+[info ] selftest: a proven vtd revocation releases only its mapping owner
+[info ] selftest: a rolled back vtd mapping releases its mapping owner
+[info ] selftest: uncertain vtd mapping never recycles its frames
+[info ] selftest: uncertain vtd unmapping never recycles its frames
+[info ] selftest: a domain proof is refused while translation is off
+[info ] selftest: firmware reserved dma regions never become mapping authority
+[info ] selftest: an nvme timeout quiesces before dma memory returns
+[info ] selftest: a pending local interrupt refuses the first sti
+[info ] selftest: a self-interrupt is delivered
+[info ] selftest: the interrupt is dismissed, so the next one arrives
+[info ] selftest: one delivery mints one completion authority
+[info ] selftest: an abandoned completion can be reclaimed for the same delivery
+[info ] selftest: the interrupted code was taking interrupts
+[info ] selftest: every late or ignored-write apic refusal stays unavailable and terminal
+[info ] selftest: apic refusal defers a live interrupt until exclusion unwinds
+[info ] selftest: apic takeover masks exactly every advertised local source
+[info ] selftest: unmaskable or unknown apic source inventories poison takeover
+[info ] selftest: paging activation stays unpublished under interrupt exclusion
+[info ] selftest: paging activation publishes its root before readiness
+[info ] selftest: baseline v1 boot_ns=7861042 frames_free=120364 heap_slab=18 heap_large=770 heap_live=7 handles_committed=0 handles_live=0 trap_ticks=7407 storage_bytes=4096 storage_ticks=489085 counter_hz=3413073827
+[info ] selftest: verdict v1 PASS passed=294 failed=0 expected=294
+[info ] user: program running in slot 4
+[info ] kernel: reading the keyboard, uptime 7869 ms
+[info ] user 0: entering ring 3 at 0x400000000000 with 0 on 0x1ff7000

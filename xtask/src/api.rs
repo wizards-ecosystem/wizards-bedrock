@@ -8314,29 +8314,77 @@ fn compile_graphs(
     plan: &AuditPlan,
     pristine_build_authority: Option<&[BTreeMap<PathBuf, [u8; 32]>]>,
 ) -> Result<Vec<Compilation>> {
-    let mut compilations = Vec::new();
-    for (graph, compilation) in plan.compilations.iter().enumerate() {
-        let compiled = compile_graph(
-            workspace,
-            round,
-            graph,
-            &plan.compiler,
-            compilation,
-            expected,
-        )?;
-        if let Some(pristine) = pristine_build_authority {
-            let expected = pristine
-                .get(graph)
-                .context("a compiler graph has no pristine build-script baseline")?;
-            require_build_script_authority_unchanged(
-                &graph_build_directory(&workspace.build, graph)?,
+    run_bounded_in_order(
+        plan.compilations.len(),
+        CONCURRENT_GRAPHS,
+        |graph| compiles_alone(&plan.compilations[graph]),
+        |graph| {
+            let compilation = &plan.compilations[graph];
+            let compiled = compile_graph(
+                workspace,
+                round,
+                graph,
+                &plan.compiler,
+                compilation,
                 expected,
-                &compilation_label(compilation),
             )?;
+            if let Some(pristine) = pristine_build_authority {
+                let expected = pristine
+                    .get(graph)
+                    .context("a compiler graph has no pristine build-script baseline")?;
+                require_build_script_authority_unchanged(
+                    &graph_build_directory(&workspace.build, graph)?,
+                    expected,
+                    &compilation_label(compilation),
+                )?;
+            }
+            Ok(compiled)
+        },
+    )
+}
+
+const CONCURRENT_GRAPHS: usize = 4;
+
+fn compiles_alone(plan: &CompilationPlan) -> bool {
+    matches!(&plan.mode, CompilationMode::TestHarness(target) if target.package == "xtask")
+}
+
+fn run_bounded_in_order<T: Send>(
+    count: usize,
+    workers: usize,
+    alone: impl Fn(usize) -> bool,
+    job: impl Fn(usize) -> Result<T> + Sync,
+) -> Result<Vec<T>> {
+    let (solo, shared): (Vec<usize>, Vec<usize>) = (0..count).partition(|&index| alone(index));
+    let mut results = (0..count).map(|_| None).collect::<Vec<Option<T>>>();
+    for batch in shared.chunks(workers.max(1)) {
+        let completed = std::thread::scope(|scope| {
+            let job = &job;
+            let handles = batch
+                .iter()
+                .map(|&index| (index, scope.spawn(move || job(index))))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|(index, handle)| {
+                    let result = handle.join().unwrap_or_else(|_| {
+                        Err(anyhow::anyhow!("API-audit graph {index} worker panicked"))
+                    });
+                    (index, result)
+                })
+                .collect::<Vec<_>>()
+        });
+        for (index, outcome) in completed {
+            results[index] = Some(outcome?);
         }
-        compilations.push(compiled);
     }
-    Ok(compilations)
+    for index in solo {
+        results[index] = Some(job(index)?);
+    }
+    results
+        .into_iter()
+        .map(|result| result.context("an API-audit graph was never compiled"))
+        .collect()
 }
 
 fn compile_graph(
@@ -9694,6 +9742,108 @@ dependencies = [
                 .count(),
             1,
             "each API-audit Cargo graph must own one single-job scheduling bound"
+        );
+    }
+
+    #[test]
+    fn concurrent_graphs_stay_bounded_ordered_and_isolate_the_alone_graph() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+
+        const WORKERS: usize = 3;
+        const ALONE: usize = 5;
+        let plans = (0..12)
+            .map(|index| CompilationPlan {
+                pass: gate::CargoPass {
+                    name: "fixture",
+                    packages: &["fixture"],
+                    target: None,
+                    features: None,
+                },
+                target: "fixture-host".to_string(),
+                kind: RootKind::Verification,
+                mode: CompilationMode::TestHarness(CargoTarget {
+                    package: if index == ALONE { "xtask" } else { "fixture" }.to_string(),
+                    package_id: format!("fixture-{index}"),
+                    name: format!("harness-{index}"),
+                    relative: PathBuf::from("src/lib.rs"),
+                    kind: CargoTargetKind::Library,
+                    test: true,
+                    executable: false,
+                }),
+            })
+            .collect::<Vec<_>>();
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let arrived = AtomicUsize::new(0);
+        let finished = AtomicUsize::new(0);
+        let met = AtomicBool::new(true);
+        let alone_ran = AtomicBool::new(false);
+        let alone_shared = AtomicBool::new(false);
+        let passing = run_bounded_in_order(
+            7,
+            WORKERS,
+            |index| compiles_alone(&plans[index]),
+            |index| {
+                let now = running.fetch_add(1, SeqCst) + 1;
+                peak.fetch_max(now, SeqCst);
+                if index == ALONE {
+                    alone_ran.store(true, SeqCst);
+                    alone_shared.store(now != 1 || finished.load(SeqCst) != 6, SeqCst);
+                }
+                if index < WORKERS {
+                    arrived.fetch_add(1, SeqCst);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                    while arrived.load(SeqCst) < WORKERS {
+                        if std::time::Instant::now() >= deadline {
+                            met.store(false, SeqCst);
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                running.fetch_sub(1, SeqCst);
+                finished.fetch_add(1, SeqCst);
+                Ok(index * 10)
+            },
+        )
+        .expect("every graph passes");
+        assert_eq!(passing, vec![0, 10, 20, 30, 40, 50, 60]);
+        assert!(met.load(SeqCst), "the first graphs never ran together");
+        assert_eq!(peak.load(SeqCst), WORKERS, "the worker bound changed");
+        assert!(alone_ran.load(SeqCst), "the alone graph never ran");
+        assert!(
+            !alone_shared.load(SeqCst),
+            "the alone graph shared the machine"
+        );
+
+        let started = AtomicUsize::new(0);
+        let completed = AtomicUsize::new(0);
+        let error = run_bounded_in_order(
+            12,
+            WORKERS,
+            |index| compiles_alone(&plans[index]),
+            |index| {
+                started.fetch_add(1, SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                completed.fetch_add(1, SeqCst);
+                if index == 1 || index == 2 {
+                    bail!("graph {index} failed");
+                }
+                Ok(index)
+            },
+        )
+        .expect_err("a failed graph fails the round");
+        assert_eq!(error.to_string(), "graph 1 failed");
+        assert_eq!(
+            started.load(SeqCst),
+            WORKERS,
+            "later graphs started after failure"
+        );
+        assert_eq!(
+            completed.load(SeqCst),
+            WORKERS,
+            "admitted graphs were not joined"
         );
     }
 
@@ -14892,7 +15042,7 @@ fn main() {}
             .find("require_build_script_authority_unchanged(")
             .expect("build-script authority guard");
         let accepted = compile_graphs
-            .find("compilations.push(compiled);")
+            .find("Ok(compiled)")
             .expect("accepted compilation");
         assert!(compiler < authority && authority < accepted);
 

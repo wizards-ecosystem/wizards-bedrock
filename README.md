@@ -105,7 +105,8 @@ cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
 cargo xtask help               # every task, including the check tasks below
 ```
 
-`cargo xtask run -- <args>` passes arguments straight through to QEMU.
+`cargo xtask run -- <args>` accepts QEMU diagnostic options `-d`, `-D`,
+`-display` and `--display`, each with a value; the machine profile stays fixed.
 QEMU is found at `C:\Program Files\qemu` or on `PATH`; `QEMU_DIR` or `QEMU`
 override that.
 
@@ -362,6 +363,9 @@ variant. Caller evidence is bound to its package, target, source origin and
 compiler inputs; an unclassified source shape fails closed. Re-exports and
 documentation do not count, and fields remain outside the claim because stable
 rustc does not diagnose every live destructuring pattern (D-213, D-275).
+Each round runs up to four independent graphs together, with one Cargo job
+per graph; the large `xtask` test harness runs alone. Rounds run sequentially,
+and results retain graph order (D-442).
 
 Every Cargo-driven check runs over every graph in the registry above. A Cargo
 feature is a different crate graph, and linting only one of them is how two

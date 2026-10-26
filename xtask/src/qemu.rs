@@ -131,33 +131,30 @@ pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<P
         .find(|candidate| candidate.is_file())
 }
 
-/// Locate the QEMU installation directory.
+/// Locate the exact QEMU executable.
 ///
 /// `QEMU` names the emulator binary outright; `QEMU_DIR` names the installation
 /// it lives in. Both win over the default location and over `PATH`.
-pub fn locate() -> Result<PathBuf> {
-    if let Some(binary) = std::env::var_os("QEMU").map(PathBuf::from) {
-        return binary
-            .parent()
-            .map(Path::to_path_buf)
-            .with_context(|| format!("QEMU={} has no parent directory", binary.display()));
+fn locate(
+    binary: Option<PathBuf>,
+    directory: Option<PathBuf>,
+    search: impl IntoIterator<Item = PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(binary) = binary {
+        return Ok(binary);
     }
-    if let Some(dir) = std::env::var_os("QEMU_DIR").map(PathBuf::from) {
-        return Ok(dir);
+    let emulator = exe_name("qemu-system-x86_64");
+    if let Some(dir) = directory {
+        return Ok(dir.join(&emulator));
     }
 
-    let emulator = exe_name("qemu-system-x86_64");
     let default = PathBuf::from(WINDOWS_DEFAULT);
     if default.join(&emulator).is_file() {
-        return Ok(default);
+        return Ok(default.join(&emulator));
     }
 
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    match which_in(std::env::split_paths(&path), &emulator) {
-        Some(found) => found
-            .parent()
-            .map(Path::to_path_buf)
-            .with_context(|| format!("{} has no parent directory", found.display())),
+    match which_in(search, &emulator) {
+        Some(found) => Ok(found),
         None => bail!("QEMU not found: set QEMU_DIR, or put {emulator} on PATH"),
     }
 }
@@ -177,11 +174,28 @@ fn firmware(qemu_dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// Resolve the exact emulator and pristine firmware inputs a boot will use.
 pub(crate) fn installation() -> Result<Installation> {
-    let directory = locate()?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    installation_with(
+        std::env::var_os("QEMU").map(PathBuf::from),
+        std::env::var_os("QEMU_DIR").map(PathBuf::from),
+        std::env::split_paths(&path),
+    )
+}
+
+fn installation_with(
+    binary: Option<PathBuf>,
+    directory: Option<PathBuf>,
+    search: impl IntoIterator<Item = PathBuf>,
+) -> Result<Installation> {
+    let emulator = std::path::absolute(locate(binary, directory, search)?)
+        .context("resolving the QEMU executable path")?;
+    let directory = emulator
+        .parent()
+        .with_context(|| format!("{} has no parent directory", emulator.display()))?;
     Ok(Installation {
-        emulator: directory.join(exe_name("qemu-system-x86_64")),
-        code_firmware: firmware(&directory, CODE_FIRMWARE)?,
-        vars_firmware: firmware(&directory, VARS_FIRMWARE)?,
+        code_firmware: firmware(directory, CODE_FIRMWARE)?,
+        vars_firmware: firmware(directory, VARS_FIRMWARE)?,
+        emulator,
     })
 }
 
@@ -3762,6 +3776,23 @@ mod tests {
             .unwrap()
             .to_path_buf();
         assert_eq!(which_in([dir], "definitely-not-installed-xyz"), None);
+    }
+
+    #[test]
+    fn installation_preserves_the_explicit_binary_and_its_firmware() {
+        let fixture = QemuFixture::create();
+        let binary = fixture.root.join(exe_name("selected-qemu"));
+        let code = fixture.root.join(CODE_FIRMWARE);
+        let vars = fixture.root.join(VARS_FIRMWARE);
+        std::fs::write(&binary, b"selected emulator").unwrap();
+        std::fs::write(&code, b"code firmware").unwrap();
+        std::fs::write(&vars, b"variable firmware").unwrap();
+        let ignored = fixture.root.join("ignored installation");
+        let selected =
+            installation_with(Some(binary.clone()), Some(ignored.clone()), [ignored]).unwrap();
+        assert_eq!(selected.emulator, binary);
+        assert_eq!(selected.code_firmware, code);
+        assert_eq!(selected.vars_firmware, vars);
     }
 
     #[test]

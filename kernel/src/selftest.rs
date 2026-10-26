@@ -9416,11 +9416,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     let sweep = sweep_clock();
     report.check("the clock never runs backwards", sweep.monotonic);
-    // The smallest observed step measures resolution; interpolation alone
-    // cannot prove two events inside one tick are distinguishable.
+    // Interpolation alone cannot prove two events inside one tick are distinguishable.
     report.check(
         "the clock advances in steps finer than a microsecond",
-        sweep.finest_step.is_some_and(|step| step < 1_000),
+        sweep.advanced
+            && time::is_calibrated()
+            && sweep.finest_step.is_some_and(|step| step < 1_000),
     );
     report.check(
         "an idle kernel takes no timer interrupts",
@@ -10102,14 +10103,15 @@ fn rates_are_believable() -> bool {
 /// What a continuous read of the clock saw.
 struct ClockSweep {
     monotonic: bool,
-    /// The smallest step the clock was seen to take, or `None` if it never
-    /// took one.
+    advanced: bool,
+    /// The smallest positive step between adjacent counter readings.
     finest_step: Option<u64>,
 }
 
 fn sweep_clock() -> ClockSweep {
     const ATTEMPTS: u32 = 2_000_000;
     const SPAN_MS: u64 = 3;
+    const PAIRS: u32 = 1_000;
 
     let deadline = time::uptime_ms() + SPAN_MS;
     // Seed with a real reading so the first comparison, sampled under a lock,
@@ -10117,6 +10119,7 @@ fn sweep_clock() -> ClockSweep {
     let mut previous = time::now_ns();
     let mut sweep = ClockSweep {
         monotonic: true,
+        advanced: false,
         finest_step: None,
     };
 
@@ -10134,14 +10137,21 @@ fn sweep_clock() -> ClockSweep {
         if sample < previous {
             sweep.monotonic = false;
         }
-        if attempt > 0 && sample > previous {
-            let step = sample - previous;
-            sweep.finest_step = Some(sweep.finest_step.map_or(step, |finest| finest.min(step)));
-        }
+        sweep.advanced |= sample > previous;
         previous = sample;
 
         if sample / time::NANOSECONDS_PER_MS >= deadline {
             break;
+        }
+    }
+    for _ in 0..PAIRS {
+        let (first, second) = time::adjacent_readings_for_test();
+        match second.checked_sub(first) {
+            None => sweep.monotonic = false,
+            Some(0) => {}
+            Some(step) => {
+                sweep.finest_step = Some(sweep.finest_step.map_or(step, |finest| finest.min(step)));
+            }
         }
     }
     sweep
