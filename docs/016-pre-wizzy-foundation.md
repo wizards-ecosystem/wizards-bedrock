@@ -30,8 +30,11 @@ complete cleanly. The complete 2,228-entry sweep on `20cf580` then caught 2,222:
 mutations 1,968, 2,193, 2,203 and 2,208 survived through witness gaps, 2,202 was
 an equivalent mutant, and 556 was inconclusive after the API-audit compiler
 exhausted host memory. That report is also repair input. D-425 then made the
-next close a release rather than a foundation close: v0.1.0 is gated by CI,
-the complete curated mutation sweep, model checking, the advisory review, both
+next qualified close a release rather than a foundation close. D-441 now
+supersedes only its first-v0.1.0 assignment: that publication is an experimental
+source-only prerelease under the bounded source-preview gate, closes no rows,
+and establishes no current machine qualification. Qualified diagnostic releases
+remain gated by CI, the complete curated mutation sweep, model checking, the advisory review, both
 human VMware qualifications and evidence created and verified on the exact
 qualified commit, which is then tagged directly. The `xtask` grade and the
 owned Deep scan run continuously against `main`; a release bundle verifies
@@ -584,9 +587,11 @@ historical repair inventories, not qualification. The `0dfcb76` run caught
 2,132 of 2,133 with no inconclusive outcome but left permanent mutation 2,036
 alive; the `20cf580` run caught 2,222 of 2,228. The complete updated current
 registry must pass on the frozen qualification commit; no earlier verdict may
-be inherited. D-425 makes the next close the v0.1.0 release rather than the
-foundation close.
-The finite order is now:
+be inherited. D-425's stronger qualified-release path remains in force;
+D-441 makes only the first v0.1.0 publication a bounded experimental source
+preview. That launch is not this qualification campaign, closes no foundation
+rows and starts none of the stopped product work. A future qualified release
+needs another immutable version and the following finite order:
 
 1. Close every source, proof and manual-red gap that does not depend on final
    source-bound qualification; draft PW-006's disposition ADR without inventing
@@ -601,11 +606,11 @@ The finite order is now:
 3. If any proof requires a source change, discard the candidate evidence and
    repeat. Once the candidate is green, create and independently verify
    evidence v11 on that same commit with D-330's `same-commit` relation, then
-   tag it v0.1.0 directly.
+   tag it directly with its own new qualified-release version.
 4. In the commit after the tag, record the exact results, close the register
    rows the gate proved and list every remaining live row as a known open item
-   of v0.1.0. That commit is not part of the release evidence. D-330's
-   documentation-only child remains supported for a later close that needs it.
+   of that qualified release. That commit is not part of the release evidence.
+   D-330's documentation-only child remains supported for a later close that needs it.
 5. Stop at the handoff. WZ-001 through WZ-004 remain owned by `wizards-ink`.
    PW-601 stays stopped until its pinned draft-artifact/runtime-seam trigger;
    PW-602 and `015`'s product slices stay stopped until the gate-opening ADR.

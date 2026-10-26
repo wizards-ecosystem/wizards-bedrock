@@ -1,0 +1,58 @@
+name: Source preview checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-preview:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install the repository-pinned Windows GNU toolchain
+        run: |
+          $manifest = Get-Content rust-toolchain.toml -Raw
+          if ($manifest -notmatch '(?m)^channel = "([^"]+)"') { throw 'Missing pinned toolchain' }
+          $toolchain = "$($Matches[1])-x86_64-pc-windows-gnu"
+          rustup toolchain install $toolchain --profile minimal --component rustfmt --component clippy --target x86_64-unknown-none
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "RUSTUP_TOOLCHAIN=$toolchain" >> $env:GITHUB_ENV
+      - name: Check source formatting
+        run: |
+          cargo xtask fmt --check
+          exit $LASTEXITCODE
+      - name: Verify supply chain
+        run: |
+          cargo xtask supply-chain
+          exit $LASTEXITCODE
+      - name: Verify vendored inputs
+        run: |
+          cargo xtask verify-vendor
+          exit $LASTEXITCODE
+      - name: Compile the shipped kernel
+        run: |
+          cargo xtask build --release
+          exit $LASTEXITCODE
+      - name: Check decisions
+        run: |
+          cargo test --locked -p xtask --lib decisions::tests::
+          exit $LASTEXITCODE
+      - name: Check documentation and registries
+        run: |
+          cargo test --locked -p xtask --lib prose::tests::
+          exit $LASTEXITCODE

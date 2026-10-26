@@ -47,7 +47,8 @@ to get wrong:
 **Commit at meaningful checkpoints as you go**: a finished slice, a decision
 recorded, a subsystem that boots. Do not save everything for the end of a
 session, and do not leave a green gate uncommitted. Each commit should be a
-thing that works: `cargo xtask ci` passes at every commit.
+thing that works: `cargo xtask ci` passes at every commit, except for the
+bounded first source-preview launch exception below.
 
 Match the existing log's voice: a short declarative line saying what changed
 and what it bought, not a changelog entry. `git log --oneline` shows the
@@ -59,8 +60,21 @@ defer the merge that is coming anyway. Do not create one unless Isaac asks.
 
 ## Commands
 
-`cargo xtask ci` is the gate. Run it before claiming work is done. `cargo
-xtask help` lists every task. The README's [Development](README.md#development)
+`cargo xtask ci` remains the ordinary gate. Run it before claiming ordinary
+implementation work is done. D-441 permits only the first v0.1.0 launch's
+documentation, community infrastructure and source-preview packaging commits
+to use its bounded source-preview checks instead: disclosure/license review,
+whitespace, fmt, supply-chain, vendor, release compile and existing focused
+decision/documentation/registry tests on a clean candidate, with a 20-minute
+aggregate automated budget. This is not permission to skip checks for kernel
+changes or future qualified releases. Publish v0.1.0 only after those checks
+pass; disclose every unrun qualification and distribute no new kernel/VM image
+or evidence bundle. Its tag is immutable. D-26 permits only the lightweight
+read-only hosted Source preview checks; those do not replace local CI.
+Outside contributors use [CONTRIBUTING.md](CONTRIBUTING.md), including forks
+and PRs; the direct-to-main rule above is the owner's workflow.
+
+`cargo xtask help` lists every task. The README's [Development](README.md#development)
 section covers the two
 non-obvious rules (`cargo build --workspace` cannot work here; never set
 `RUSTFLAGS`). Read it before reaching for a bare cargo command.

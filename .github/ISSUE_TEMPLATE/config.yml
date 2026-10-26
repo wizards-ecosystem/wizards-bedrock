@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Private vulnerability report
+    url: https://github.com/wizards-ecosystem/wizards-bedrock/security/advisories/new
+    about: Keep vulnerability details out of public issues.

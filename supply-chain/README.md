@@ -29,8 +29,12 @@ cargo xtask ci
 ```
 
 Fresh vulnerability data is inherently external. At each phase close and
-before public distribution, run `cargo xtask qualify-advisory`. It resolves
-`cargo-audit-audit 0.22.2` directly and invalidates any older pass. A first
+before qualified diagnostic/binary distribution, run `cargo xtask qualify-advisory`.
+D-441's experimental source preview instead requires disclosure/license review,
+the bounded source/build checks and explicit unrun-qualification disclosures;
+it distributes no newly built image or qualification bundle and makes no fresh
+advisory-review claim. This exception changes no advisory or evidence verifier.
+The qualified advisory task resolves `cargo-audit-audit 0.22.2` directly and invalidates any older pass. A first
 bounded run populates an empty qualification-local RustSec database; its clean
 commit and tree are then frozen for a second `--no-fetch` review of the exact
 repository `Cargo.lock`. The review denies warnings and permits no ignored
@@ -45,7 +49,11 @@ database nor claims that an absent scanner passed.
 
 ## Distribution
 
-A bare `bedrock.img` is a build artifact. A public distribution must carry
+Experimental source previews retain `LICENSE`, this inventory and SPDX,
+third-party notices, upstream license texts and reviewed vendored build inputs
+in the tagged tree. First-party MIT does not relicense third-party material.
+
+A bare `bedrock.img` is a build artifact. A qualified binary distribution must carry
 `foundation.spdx`, the repository `LICENSE`, `THIRD-PARTY-NOTICES.md` and the
 `licenses/` directory beside it. The runtime rows are the shipped Rust and
 boot inputs. Development rows affect builds or verification but do not reach

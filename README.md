@@ -11,7 +11,7 @@ memory protection, scheduling, the capability-based async kernel ABI and kernel
 qualification. Handles and submission/completion queues are native; `spawn()`
 replaces `fork()`. Storage currently uses read-only FAT32 over NVMe.
 
-[The Wizard's Realm](https://github.com/wizards-ecosystem/wizards-realm) owns the
+Realm (the separate private `wizards-realm` project) owns the
 operating environment: Wizzy services, Bedrock/Linux adapters, shell, desktop,
 applications, compatibility ports and product images. Ink owns Wizzy and its
 compiler/runtime. D-366 records the separation and history-preserving rename
@@ -22,6 +22,14 @@ gate is **CLOSED**; Bedrock's admitted integration evidence is recorded in
 [the kernel handoff](docs/015-wizzy-userland.md). D-184's finite
 [foundation register](docs/016-pre-wizzy-foundation.md) is the current kernel
 backlog. The kernel diagnostic image is not a Realm distribution.
+
+**Experimental source preview:** v0.1.0 is source-only, a prerelease, and not
+a qualified diagnostic distribution (D-441). There is no complete desktop or
+userland. This launch establishes no current VMware or bare-metal support,
+production readiness, stable ABI or completed security audit. Keep experiments
+in disposable virtual machines, away from primary machines and important storage.
+See the [release scope](docs/releases/v0.1.0.md),
+[contribution guide](CONTRIBUTING.md) and [security policy](SECURITY.md).
 
 ## Status
 
@@ -65,14 +73,28 @@ annotate corrections to the earlier historical snapshots.
 
 ## Building & running
 
-Everything is self-contained on Windows: no WSL, no external imaging tools.
-Prerequisites: [rustup](https://rustup.rs) (GNU host toolchain:
+The documented host is Windows with the GNU Rust host toolchain; other hosts
+are not tested by this launch. Source builds use public inputs only: no sibling
+checkout, VMware or proprietary scanner is required. No WSL or external imaging
+tools are needed. QEMU is optional for compiling and host tests.
+Prerequisite: [rustup](https://rustup.rs) (GNU host toolchain:
 `rustup-init -y --default-host x86_64-pc-windows-gnu`, no Visual Studio
-needed) and [QEMU](https://www.qemu.org/)
+needed). For optional boots, install [QEMU](https://www.qemu.org/)
 (`winget install SoftwareFreedomConservancy.QEMU`). Open a fresh terminal
 after installing rustup so `cargo` is on PATH; the pinned toolchain and
 `x86_64-unknown-none` target install automatically on first build via
 `rust-toolchain.toml`.
+
+```powershell
+git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
+cd wizards-bedrock
+cargo fetch --locked
+cargo xtask build --release
+```
+
+The pinned GNU host also needs rustup's `rust-mingw` component (normally
+installed with that host). The build compiles the shipped kernel and checks
+its linked layout; it does not prove a boot. Optional image and machine tasks:
 
 ```
 cargo xtask build              # compile the kernel (x86_64-unknown-none)
@@ -107,8 +129,12 @@ Open a fresh terminal after the WinGet install, or set `GDB` to the exact
 cargo xtask ci       # run the complete local gate below
 ```
 
-`ci` is the ordinary local source gate; there is no hosted CI (D-26). Phase
-close additionally requires the exceptional qualifications listed below.
+`ci` is the ordinary local source gate. D-441 amends D-26 only for the
+lightweight hosted **Source preview checks**, which run fmt, supply-chain,
+vendor verification, the release compile and focused documentation tests on
+one Windows GNU runner. They do not replace local CI. The first v0.1.0 launch
+uses D-441's bounded gate; substantive kernel changes retain ordinary CI.
+Phase close additionally requires the exceptional qualifications listed below.
 `cargo xtask help` lists every task and renders this same registry. The marked
 section is checked byte for byte against the registry that execution iterates,
 so changing a Cargo graph or gate stage requires a reviewable documentation
@@ -248,14 +274,23 @@ changing schema (D-218, D-244, D-330, D-373). D-406 advances qualification
 to v6: only an owned, pinned live Deep MCP session can create the Deep PASS,
 and every earlier record or bundle is invalid.
 
-Releases follow Linux-kernel practice (D-425). The v0.1.0 gate is `cargo xtask
-ci`, a complete curated `cargo xtask mutate` sweep, `cargo xtask model-check`,
-`cargo xtask qualify-advisory`, both human VMware qualifications, and `cargo
-xtask evidence` plus `cargo xtask verify-evidence` on the exact qualified
-commit, which is then tagged directly. A release is not a foundation close:
-register rows its gate proves close in the commit after the tag, and the rest
-ship as known open items. D-330's documentation-only child remains supported,
-but no release plans on it.
+D-441 separates experimental source previews from qualified diagnostic
+releases and supersedes only D-425's first-v0.1.0 assignment. v0.1.0 publishes
+reviewed source after disclosure/license review, whitespace checks, fmt,
+supply-chain/vendor verification, a shipped release compile and focused
+decision/documentation/registry tests on its exact clean commit. Its GitHub
+release is a prerelease, not Latest, with no new kernel/VM image or qualification
+bundle. Final executed results belong in the GitHub release body. Its tag never
+moves; a later qualified release needs its own version.
+
+Qualified diagnostic releases retain `cargo xtask ci`, the complete curated
+`cargo xtask mutate` sweep, `cargo xtask model-check`, fresh
+`cargo xtask qualify-advisory`, both human VMware qualifications, reproducible
+images, and `cargo xtask evidence` plus `cargo xtask verify-evidence` on the
+exact qualified commit, which is then tagged directly. Only rows actually
+proved may close afterward; publication alone closes none. D-330's
+documentation-only child remains supported. The source preview makes no claim
+that these qualifications ran or passed.
 
 `qualify-mutants-grade --run` resolves the pinned grader and nextest, publishes
 the exact source/tool/environment request, and starts the full campaign in an
@@ -362,6 +397,16 @@ with no build error. Pass lint flags after `--` instead.
 For the same reason, `.vscode/settings.json` points rust-analyzer at
 `cargo xtask check`. Without it the editor checks the kernel for the host
 triple and reports phantom errors across every kernel file.
+
+## Contributing
+
+Outside contributions are welcome through forks and pull requests. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) for scope, focused checks and maintainer
+review; AI-assisted contributions are welcome when reviewed and explained.
+Use [issues](https://github.com/wizards-ecosystem/wizards-bedrock/issues) for
+ordinary bugs and [private reporting](SECURITY.md) for vulnerabilities. The
+[foundation register](docs/016-pre-wizzy-foundation.md) owns known-open work;
+its WZ blockers and stopped triggers remain outside launch implementation.
 
 ## Layout
 
