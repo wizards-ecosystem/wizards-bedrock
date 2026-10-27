@@ -25808,3 +25808,52 @@ public deadline. Depending on QEMU's host timeout would leave guest cleanup
 unproved. A sentinel-only synthetic clock would not exercise actual public
 clock freezing and calibration loss, so the witness uses the live revocation
 path instead.
+
+## D-447 Mutation 2,432 removes every unavailable-clock refusal - Status: Accepted (2026-10-27); amends D-438, advances PW-001
+
+**Context.** The complete 2,412-entry sweep on `62ee03a` caught 2,411 and
+mutation 2,432 survived. It disabled only `runs_until`'s entry refusal. D-446
+then made the shared admitted-deadline loop recheck calibration before every
+predicate, so the clockless delayed-read probe still refuses through the loop
+and the mutation became equivalent for its witness. The entry check's remaining
+property, a calibrated public clock that stops advancing, cannot be produced in
+software: every revocation that freezes public time also clears calibration.
+
+**Decision.** Permanent mutation 2,432 keeps its identity and defect but now
+disables both the entry refusal and the loop's calibration guard, so an
+unavailable clock again admits an otherwise-ready predicate as a successful
+wait. Its named witness is unchanged. Mutation 2,444 continues to remove the
+loop guard alone. No kernel source, check or count changes.
+
+**Proof.** The retargeted mutation applies once and the registry tests pass.
+Under it, release and debug each completed at 292/294 with `a delayed read
+preserves interrupt admission and exact teardown` among the two failures; the
+other is the clock-disagreement witness that mutation 2,444 owns. The restored
+kernel source is byte-identical to `62ee03a`. The ordinary gate and a complete
+current-registry sweep remain required.
+
+**Alternatives.** Retiring 2,432 would leave no mutation that removes the
+clockless refusal the delayed-read witness exists to prove. A test seam that
+stalls a calibrated clock would add kernel surface to exercise a state the
+clock cannot reach. Dropping the entry check would trade a bounded refusal for
+an unbounded wait if calibrated time ever stopped advancing.
+
+## D-448 The first qualified release is v0.2.0 and the SBOM follows the workspace version - Status: Accepted (2026-10-27); applies D-425 and D-441
+
+**Context.** D-441 keeps v0.1.0 an immutable source preview and requires a
+later qualified release to take another version. D-425 tags the qualified
+commit directly, so that commit must already carry the version it releases.
+The SPDX document's project package version was a literal `0.1.0` in
+`xtask`, independent of `Cargo.toml`, and would have described the next
+release as the preview.
+
+**Decision.** The workspace version becomes 0.2.0, and the first qualified
+diagnostic release is tagged `v0.2.0` on the commit that passes D-425's gate.
+The SBOM writer takes the project package version from the workspace version
+it is compiled with, so the regenerated document and `cargo xtask
+supply-chain` bind the released number without a second edit.
+
+**Alternatives.** A patch version would understate the change from an
+unqualified preview to a qualified release. Tagging without bumping the
+source would publish an archive that names the preview's version. Keeping the
+SBOM literal would require a separate edit that nothing checks.

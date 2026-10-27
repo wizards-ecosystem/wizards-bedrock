@@ -981,7 +981,7 @@ fn render_spdx(inventory: &Inventory, source: &str) -> Result<String> {
         PackageRecord {
             name: "wizards-bedrock",
             id: "SPDXRef-Package-wizards-bedrock",
-            version: "0.1.0",
+            version: env!("CARGO_PKG_VERSION"),
             digest: None,
             concluded_license: "MIT",
             declared_license: "MIT",

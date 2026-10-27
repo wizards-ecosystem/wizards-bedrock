@@ -26788,8 +26788,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2432,
         file: "kernel/src/selftest.rs",
-        find: "fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {\n    if !the_clock_is_running() {",
-        replace: "fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {\n    if false && !the_clock_is_running() {",
+        find: "fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {\n    if !the_clock_is_running() {\n        return false;\n    }\n    let deadline = time::uptime_ms() + ms;\n    runs_until_deadline(deadline, done)\n}\n\nfn runs_until_deadline(deadline: u64, done: impl Fn() -> bool) -> bool {\n    loop {\n        if !time::is_calibrated() {",
+        replace: "fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {\n    if false && !the_clock_is_running() {\n        return false;\n    }\n    let deadline = time::uptime_ms() + ms;\n    runs_until_deadline(deadline, done)\n}\n\nfn runs_until_deadline(deadline: u64, done: impl Fn() -> bool) -> bool {\n    loop {\n        if false && !time::is_calibrated() {",
         breaks: "an unavailable clock admits an otherwise-ready predicate as a successful wait",
         reddens: Caught::Check("a delayed read preserves interrupt admission and exact teardown"),
     },
