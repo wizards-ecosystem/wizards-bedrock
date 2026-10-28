@@ -1,9 +1,10 @@
 # Security policy
 
-Bedrock is experimental kernel source. v0.1.0 is a source-only preview with
-open foundation and qualification work; no version carries a production safety,
-completed-audit or current hardware-support guarantee. Reports are welcome for
-the published preview and current `main`, especially safe API/unsafe boundaries,
+Bedrock is experimental kernel source. v0.2.0 is the first qualified
+diagnostic release and v0.1.0 an earlier source-only preview; foundation work
+remains open, and no version carries a production safety, completed-audit or
+bare-metal hardware-support guarantee. Reports are welcome for the published
+releases and current `main`, especially safe API/unsafe boundaries,
 memory protection, capabilities, DMA admission and repository build tooling.
 
 Use GitHub's private [Report a vulnerability](https://github.com/wizards-ecosystem/wizards-bedrock/security/advisories/new)

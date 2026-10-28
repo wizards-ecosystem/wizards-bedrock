@@ -23,12 +23,15 @@ gate is **CLOSED**; Bedrock's admitted integration evidence is recorded in
 [foundation register](docs/016-pre-wizzy-foundation.md) is the current kernel
 backlog. The kernel diagnostic image is not a Realm distribution.
 
-**Experimental source preview:** v0.1.0 is source-only, a prerelease, and not
-a qualified diagnostic distribution (D-441). There is no complete desktop or
-userland. This launch establishes no current VMware or bare-metal support,
-production readiness, stable ABI or completed security audit. Keep experiments
-in disposable virtual machines, away from primary machines and important storage.
-See the [release scope](docs/releases/v0.1.0.md),
+**Qualified diagnostic release:** v0.2.0 is the first qualified release
+(D-449). Every D-425 gate ran on its exact commit, including the complete
+mutation sweep and fresh VMware Workstation self-test and shipped boots. Its
+GitHub release ships the boot image and a verifiable evidence bundle. v0.1.0
+remains the earlier source-only preview (D-441). There is no complete desktop
+or userland. No bare-metal hardware is qualified, and there is no production
+readiness, stable ABI or completed security audit. Keep experiments in
+disposable virtual machines, away from primary machines and important storage.
+See the [release scope](docs/releases/v0.2.0.md),
 [contribution guide](CONTRIBUTING.md) and [security policy](SECURITY.md).
 
 ## Status
