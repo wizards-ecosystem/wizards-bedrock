@@ -1,8 +1,12 @@
 # Stable-only options: `cargo fmt` must behave identically on the Windows dev
 # machine and on Linux CI, so nothing here may be nightly-gated. Import grouping
 # (std / external / crate-local) is a convention in docs/005-code-conventions.md,
-# not a setting — `group_imports` and `imports_granularity` are nightly-only and
-# stable rustfmt ignores them silently.
+# not a setting. On rustfmt 1.9 (toolchain 1.97.1) `group_imports`,
+# `imports_granularity`, `hex_literal_case`, and `format_macro_matchers` are
+# unstable: stable rustfmt warns and does not apply them. BeautifulRust follows
+# the Google style guide in wanting the last two; they stay unset until the
+# pinned toolchain can format them on every host. See
+# docs/style/BEAUTIFUL_RUST.md.
 style_edition = "2024"
 max_width = 100
 # Not "Auto": that infers from each file's first line, so a stray CRLF file would
