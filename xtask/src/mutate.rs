@@ -26836,8 +26836,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2438,
         file: "xtask/src/qemu.rs",
-        find: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator,",
-        replace: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator: directory.join(exe_name(\"qemu-system-x86_64\")),",
+        find: "        vars_firmware: firmware(&emulator, VARS_FIRMWARE)?,\n        emulator,",
+        replace: "        vars_firmware: firmware(&emulator, VARS_FIRMWARE)?,\n        emulator: emulator.with_file_name(exe_name(\"qemu-system-x86_64\")),",
         breaks: "an explicit QEMU executable is replaced by the default filename",
         reddens: Caught::HostTest {
             package: "xtask",
