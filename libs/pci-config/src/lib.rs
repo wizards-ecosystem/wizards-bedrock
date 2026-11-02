@@ -586,18 +586,16 @@ pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Opti
 /// port space it claims to describe.
 ///
 const fn io_window_size(mask: u32) -> Option<u16> {
-    let mask = mask & !0x3;
+    // Complement in the port space, not the 32-bit register. A decoder that
+    // implements only A[15:2] hardwires bits 31:16 to zero; treating those
+    // zeros as unimplemented size bits produces a window larger than the
+    // space and the probe then drops the ports.
+    let mask = (mask as u16) & !0x3;
     if mask == 0 {
         return None;
     }
     let size = (!mask).wrapping_add(1);
-    // A run that does not fit the sixteen-bit port space is a device
-    // misreporting, and claiming it would be claiming most of I/O space.
-    if size >> u16::BITS == 0 {
-        Some(size as u16)
-    } else {
-        None
-    }
+    if size == 0 { None } else { Some(size) }
 }
 
 /// One command-register access in a verified enable transaction.
@@ -6159,6 +6157,10 @@ mod tests {
             );
         }
         assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
+        // The same windows with bits 31:16 hardwired to zero. Complementing
+        // the full dword used to call these too big to be ports.
+        assert_eq!(io_window_size(0x0000_FFFC), Some(4));
+        assert_eq!(io_window_size(0x0000_FFE0), Some(32));
     }
 
     #[test]
