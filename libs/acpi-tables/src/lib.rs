@@ -722,7 +722,7 @@ impl Iterator for SdtPointers<'_> {
     fn next(&mut self) -> Option<u64> {
         let address = match self.width {
             8 => u64_at(self.body, self.offset)?,
-            _ => u32_at(self.body, self.offset)? as u64,
+            _ => u64::from(u32_at(self.body, self.offset)?),
         };
         self.offset += self.width;
         Some(address)

@@ -331,7 +331,7 @@ mod tests {
         let elapsed = Timebase::nanoseconds(1_000_000_000).unwrap();
         let countdown = Timebase::ticks(1_000_000_000).unwrap();
 
-        for ticks in [0, 1, 1_000, 1_000_000_000, u32::MAX as u64] {
+        for ticks in [0, 1, 1_000, 1_000_000_000, u64::from(u32::MAX)] {
             assert_eq!(elapsed.convert(ticks), ticks);
             assert_eq!(countdown.convert(ticks), ticks);
         }

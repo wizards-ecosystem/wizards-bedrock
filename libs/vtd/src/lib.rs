@@ -1092,7 +1092,7 @@ mod tests {
     fn sagaw_maps_each_level_to_its_own_bit() {
         // Bit (levels - 2), placed with an independent literal.
         for levels in 2u8..=5 {
-            let cap = Capability::from_bits(1 << (8 + (levels - 2) as u64));
+            let cap = Capability::from_bits(1 << (8 + u64::from(levels - 2)));
             assert!(cap.sagaw_supports(levels), "level {levels}");
             for other in 2u8..=5 {
                 if other != levels {

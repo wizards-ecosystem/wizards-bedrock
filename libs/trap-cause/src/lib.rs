@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn only_exact_supervisor_data_faults_are_admitted() {
-        for bits in 0_u64..=u16::MAX as u64 {
+        for bits in 0_u64..=u64::from(u16::MAX) {
             assert_eq!(
                 PageFault(bits).is_supervisor_data_access(),
                 bits <= 0b11,
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn user_copy_recovery_accepts_only_supervisor_data_faults() {
         let rule = user_copy_rule();
-        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+        for bits in (0_u64..=u64::from(u16::MAX)).chain((16..64).map(|bit| 1_u64 << bit)) {
             assert_eq!(
                 attempt(bits, 0x2345, 0x8001).is_admitted_by(&rule),
                 bits & !0b11 == 0,
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn write_protection_recovery_requires_the_exact_protection_write() {
         let rule = write_protection_rule();
-        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+        for bits in (0_u64..=u64::from(u16::MAX)).chain((16..64).map(|bit| 1_u64 << bit)) {
             assert_eq!(
                 attempt(bits, 0xd00d, 0x9000).is_admitted_by(&rule),
                 bits == 0b11,

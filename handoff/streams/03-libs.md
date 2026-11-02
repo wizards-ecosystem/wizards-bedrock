@@ -8,6 +8,8 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## Done
 
+- Lossless `as` casts outside `const fn` are `From` (`u64::from`). Casts
+  inside `const fn` stay, because `From` is not const-callable on 1.97.1.
 - Doc comments backtick the identifiers `doc_markdown` named (`VMware`,
   `x86_64`, `PrintScreen`, `IOTLB_REG`, and the PIT literals). Root
   `clippy.toml` was not edited, so the idents are quoted in the prose.

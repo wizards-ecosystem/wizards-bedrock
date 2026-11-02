@@ -220,7 +220,7 @@ impl FrequencyHints {
             Some((denominator, numerator, crystal_hz))
                 if denominator != 0 && numerator != 0 && crystal_hz != 0 =>
             {
-                let product = (crystal_hz as u64).checked_mul(numerator as u64);
+                let product = u64::from(crystal_hz).checked_mul(u64::from(numerator));
                 match product {
                     Some(product) => product
                         .checked_add(u64::from(denominator) / 2)
@@ -235,7 +235,7 @@ impl FrequencyHints {
         let base_hz = if base_mhz == 0 {
             None
         } else {
-            Some(base_mhz as u64 * 1_000_000)
+            Some(u64::from(base_mhz) * 1_000_000)
         };
         Self { tsc_hz, base_hz }
     }

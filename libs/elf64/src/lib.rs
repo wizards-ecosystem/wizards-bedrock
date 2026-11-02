@@ -453,7 +453,7 @@ impl<'a> Elf<'a> {
 
         // Checked without overflowing: a `p_phoff` near `u64::MAX` with a
         // plausible count is exactly what a hostile image looks like.
-        let span = (program_count as u64) * (PROGRAM_HEADER_BYTES as u64);
+        let span = u64::from(program_count) * (PROGRAM_HEADER_BYTES as u64);
         let fits = program_offset
             .checked_add(span)
             .is_some_and(|end| end <= bytes.len() as u64);

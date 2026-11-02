@@ -143,7 +143,7 @@ mod tests {
     /// ten cycles per crystal tick is ten times the crystal.
     #[test]
     fn an_exact_ratio_calibrates_exactly() {
-        assert_eq!(measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
+        assert_eq!(measured_hz(200_000, 20_000), 10 * u64::from(CRYSTAL_HZ));
     }
 
     /// `1_193_182` / 4 is `298_295.5`: nearest rounds up where floor would lose
@@ -160,14 +160,14 @@ mod tests {
     /// largest addend is `u16::MAX / 2` (D-105).
     #[test]
     fn the_product_at_the_top_of_the_space_cannot_overflow() {
-        let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
+        let largest_counted = u64::MAX / u64::from(CRYSTAL_HZ);
 
         assert!(measured_hz(largest_counted, u16::MAX) > 0);
         assert_eq!(measured_hz(largest_counted + 1, u16::MAX), 0);
 
         // The headroom the addend relies on, so a change to `CRYSTAL_HZ` that
         // removed it is visible here rather than nowhere.
-        let remainder = u64::MAX % CRYSTAL_HZ as u64;
+        let remainder = u64::MAX % u64::from(CRYSTAL_HZ);
         assert!(
             remainder >= u64::from(u16::MAX / 2),
             "the rounding addend no longer fits: {remainder} left"
