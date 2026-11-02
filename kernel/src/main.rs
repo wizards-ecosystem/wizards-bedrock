@@ -1,6 +1,6 @@
 //! The Wizard's Bedrock kernel — entry point.
 //!
-//! Booted by Limine (base revision 4, D-42) on x86_64, higher-half. Every privileged
+//! Booted by Limine (base revision 4, D-42) on `x86_64`, higher-half. Every privileged
 //! operation goes through `wost`; this crate contains no hand-written `unsafe`.
 //! `deny` rather than `forbid` because [`wost::entry!`] expands its own
 //! `#[allow(unsafe_code)]` glue here — see D-21.
@@ -151,14 +151,11 @@ fn kernel_main(boot: BootInfo) -> ! {
         dma_non_requester,
         dma_quiesced,
     });
-    match mem::map_boot_stack() {
-        Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
-        None => {
-            warn!(
-                "boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed"
-            );
-            boot_continue(0)
-        }
+    if let Some(stack) = mem::map_boot_stack() {
+        task::continue_on_stack(stack, boot_continue, 1);
+    } else {
+        warn!("boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed");
+        boot_continue(0)
     }
 }
 
@@ -358,6 +355,10 @@ fn echo_keystrokes() -> ! {
 /// unpreemptible. It arms nothing — the timer is the scheduler's to arm, and
 /// nothing has asked it for anything yet. Alone among the steps, its failure
 /// vetoes nothing: a kernel without a clock still wants its keyboard.
+#[expect(
+    clippy::too_many_lines,
+    reason = "interrupt admission is one ordered boot procedure"
+)]
 fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -369,38 +370,33 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     // is the only place a machine's speculation claims are visible.
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
-    match cpu::shared_kernel_mapping_reason(&speculation) {
-        Some(reason) => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
-            let isolation = if cfg!(feature = "selftest")
-                && wost::arch::current::kpti_entry_path_is_implemented()
-            {
-                // Qualification must execute the paired path even on QEMU,
-                // whose exact TCG tuple independently admits shared roots.
-                UserIsolation::Paired
-            } else {
-                UserIsolation::Shared
-            };
-            USER_ISOLATION.store(isolation.bits(), Ordering::Release);
-            if isolation == UserIsolation::Paired {
-                info!(
-                    "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
-                );
-            } else {
-                info!("cpu: user isolation shared kernel mappings: {reason}");
-            }
+    if let Some(reason) = cpu::shared_kernel_mapping_reason(&speculation) {
+        SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
+        let isolation = if cfg!(feature = "selftest")
+            && wost::arch::current::kpti_entry_path_is_implemented()
+        {
+            // Qualification must execute the paired path even on QEMU,
+            // whose exact TCG tuple independently admits shared roots.
+            UserIsolation::Paired
+        } else {
+            UserIsolation::Shared
+        };
+        USER_ISOLATION.store(isolation.bits(), Ordering::Release);
+        if isolation == UserIsolation::Paired {
+            info!(
+                "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
+            );
+        } else {
+            info!("cpu: user isolation shared kernel mappings: {reason}");
         }
-        None => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
-            if wost::arch::current::kpti_entry_path_is_implemented() {
-                USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
-                info!("cpu: user isolation paired roots: selected; shared mappings refused");
-            } else {
-                USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
-                warn!(
-                    "cpu: user isolation: no complete shared or paired entry path; ring 3 closed"
-                );
-            }
+    } else {
+        SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
+        if wost::arch::current::kpti_entry_path_is_implemented() {
+            USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
+            info!("cpu: user isolation paired roots: selected; shared mappings refused");
+        } else {
+            USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
+            warn!("cpu: user isolation: no complete shared or paired entry path; ring 3 closed");
         }
     }
 
@@ -519,7 +515,7 @@ fn refuse_pci_for_degraded_boot() {
 /// built so far works without it.
 ///
 /// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
-/// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
+/// at `00:1e.0` and `VMware` places functions behind `pciBridge0`–`pciBridge7`,
 /// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
 fn survey_the_bus(
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
@@ -558,16 +554,14 @@ fn survey_the_bus(
         }
     });
 
-    match surveyed {
-        Some(survey) => info!(
-            "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
-            survey.functions, survey.buses, survey.bridges, survey.highest_bus
-        ),
-        None => {
-            warn!("pci: configuration space did not answer");
-            return;
-        }
-    }
+    let Some(survey) = surveyed else {
+        warn!("pci: configuration space did not answer");
+        return;
+    };
+    info!(
+        "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
+        survey.functions, survey.buses, survey.bridges, survey.highest_bus
+    );
 
     let interrupt_boundary = iommu::ensure_interrupt_boundary();
     if !interrupt_boundary {
@@ -577,11 +571,11 @@ fn survey_the_bus(
     match selection {
         StorageSelection::Selected => mount_the_volume(),
         StorageSelection::Seeking if storage == 0 => {
-            info!("pci: no nvme controller; nothing to claim")
+            info!("pci: no nvme controller; nothing to claim");
         }
         StorageSelection::Seeking => info!("nvme: no usable controller"),
         StorageSelection::Halted => {
-            warn!("nvme: selection stopped because a candidate could not be retired")
+            warn!("nvme: selection stopped because a candidate could not be retired");
         }
     }
 }
@@ -1426,6 +1420,10 @@ pub(crate) fn keyboard_routing_rollback_is_exact() -> bool {
 ///
 /// This runs before [`start_interrupts`], so probing masks every described
 /// controller while the CPU still refuses external delivery.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the MADT inventory is consumed by the one keyboard-routing selection"
+)]
 fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> mem::RoutingPreparation {
     let Some(interrupts) = interrupts else {
         warn!("ioapic: no complete firmware controller inventory; interrupts stay off");

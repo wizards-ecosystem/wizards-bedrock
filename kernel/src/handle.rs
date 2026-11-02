@@ -275,6 +275,12 @@ impl HandleTable {
         let id = commit_table(quota)?;
         Ok(Self {
             id,
+            // The mixer is 32 bits and is not the authority boundary (D-204).
+            // Table numbers above that width keep their low half as the seed.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "mixer seeds are the low 32 bits of the table id"
+            )]
             mixer: Mixer::for_table(id.0 as u32),
             quota,
             counts: AtomicU64::new(Quota::EMPTY),
@@ -382,7 +388,10 @@ impl HandleTable {
             }
         };
 
-        let named = Slot::new(index as u32, generation)
+        let Ok(index) = u32::try_from(index) else {
+            panic!("a charged handle produced an invalid slot name");
+        };
+        let named = Slot::new(index, generation)
             .unwrap_or_else(|| panic!("a charged handle produced an invalid slot name"));
         named.encode(self.mixer)
     }

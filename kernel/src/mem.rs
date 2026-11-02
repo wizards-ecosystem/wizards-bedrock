@@ -38,6 +38,10 @@ const FRAME_SIZE: u64 = 4096;
 /// Declines rather than panics when either half of the handoff is missing: a
 /// kernel that cannot allocate is still worth booting far enough to say why,
 /// and the checks that follow report the absence rather than faulting on it.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the boot handoff moves its memory map into the allocator once"
+)]
 pub(crate) fn init(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
@@ -524,6 +528,10 @@ pub(crate) fn invalid_unmaps_are_refused(context: &mut ThreadContext) -> Option<
 /// Mapping this stack after kernel page-table activation makes its guard page
 /// genuinely absent (D-89). Pinning keeps a live hardware pointer from being
 /// unmapped (D-86).
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a pinned fault stack that is not the active one is a terminal invariant"
+)]
 fn guard_the_fault_stack() -> Result<u64, StackMapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
@@ -535,9 +543,10 @@ fn guard_the_fault_stack() -> Result<u64, StackMapError> {
         .ok_or(MapError::OutOfMemory)??;
 
     let top = stack.top();
-    if !segment::set_double_fault_stack(&stack) {
-        panic!("a newly pinned stack must belong to the active address space");
-    }
+    assert!(
+        segment::set_double_fault_stack(&stack),
+        "a newly pinned stack must belong to the active address space"
+    );
     Ok(top)
 }
 
@@ -626,6 +635,10 @@ fn unrecognised(kind: &MemoryKind) -> bool {
 ///
 /// Handoff and allocation failures keep the bootloader's tables. A cleanup
 /// contradiction is fatal because continuing would discard live ownership.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the boot handoff moves its memory map into paging once"
+)]
 pub(crate) fn init_paging(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
@@ -738,7 +751,7 @@ pub(crate) fn init_paging(
         info!("threads: {slots} guarded stacks ready");
     }
 
-    if write_combining.is_some_and(|transition| transition.commit()) {
+    if write_combining.is_some_and(wost::arch::current::cpu::WriteCombining::commit) {
         info!("framebuffer: write-combining");
     }
 
@@ -807,6 +820,10 @@ impl ExternalControllersMasked {
 /// Called before interrupts are enabled. Every controller is therefore masked
 /// before firmware state could deliver an unowned vector, while the active
 /// address space lets all temporary mappings be returned after selection.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the MADT inventory is consumed by the one routing selection"
+)]
 pub(crate) fn prepare_routing(
     context: &mut ThreadContext,
     interrupts: Interrupts,
@@ -1060,6 +1077,10 @@ fn rollback_build(mut space: AddressSpace, cause: MapError) -> BuildError {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "paging bring-up is one ordered policy list; splitting it hides the sequence"
+)]
 fn build(
     map: &MemoryMap,
     direct: DirectMap,
@@ -1138,17 +1159,16 @@ fn build(
                     let image_end = start.checked_add(*len)?;
                     (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
                 });
-                let (next, flags) = match image_range {
-                    Some((image_end, flags)) => (end.min(image_end), flags),
-                    None => {
-                        let next_image = image_ranges
-                            .iter()
-                            .map(|(start, _, _)| *start)
-                            .filter(|start| *start > cursor)
-                            .min()
-                            .unwrap_or(end);
-                        (end.min(next_image), default_flags)
-                    }
+                let (next, flags) = if let Some((image_end, flags)) = image_range {
+                    (end.min(image_end), flags)
+                } else {
+                    let next_image = image_ranges
+                        .iter()
+                        .map(|(start, _, _)| *start)
+                        .filter(|start| *start > cursor)
+                        .min()
+                        .unwrap_or(end);
+                    (end.min(next_image), default_flags)
                 };
                 let virtual_base = direct
                     .virtual_address(cursor)

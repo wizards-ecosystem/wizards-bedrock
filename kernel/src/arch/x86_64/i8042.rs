@@ -72,7 +72,7 @@ mod reply {
 
 /// An MF2 keyboard's identity as it reads behind a translating controller.
 ///
-/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. VMware
+/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. `VMware`
 /// answers this while reporting its translation bit clear, which is why the
 /// bit is not what the driver asks (D-178).
 pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);

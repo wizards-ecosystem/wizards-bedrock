@@ -18,11 +18,19 @@
 
 ## In progress
 
-- Further kernel review. Waiter registration, scheduler/zombie accounting,
-  NVMe completion matching, and loader placement were read and not changed.
-  `WaitQueue::wait_unless` checks readiness while holding the waiter lock, so
-  the classic lost-wakeup window is closed on this lock even though the prose
-  says "register first".
+- Self-test graph BeautifulRust warnings. The shipped graph is clean against
+  stream 1's clippy table (pedantic + `cast_possible_truncation` and the
+  other warns in that branch's `Cargo.toml`, with that branch's allows).
+  Checked with `CLIPPY_CONF_DIR` pointed at a copy of that branch's
+  `clippy.toml`. Root config was not edited.
+
+## Unsafe audit
+
+- `kernel/` has `#![deny(unsafe_code)]` and no hand-written `unsafe` block.
+  The only unsafe attributes are inside `wost::entry!`, which expands
+  `#[allow(unsafe_code)]`, `#[unsafe(link_section)]`, and `#[unsafe(no_mangle)]`
+  into `kernel/src/main.rs`. Those attributes and their contracts live in
+  `wost/src/boot/mod.rs` (stream 4). There is no kernel `SAFETY` comment to add.
 
 ## Next steps
 

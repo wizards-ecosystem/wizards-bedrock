@@ -46,6 +46,10 @@ const MINIMUM_LEAD_NS: u64 = 50_000;
 /// Measurement window, in crystal ticks: twenty milliseconds. Long enough
 /// that the port reads bracketing it are noise, short enough to stay well
 /// inside the 54.9 ms at which the sixteen-bit counter becomes ambiguous.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the const assertion below proves CRYSTAL_HZ / 50 fits u16"
+)]
 const WINDOW_TICKS: u16 = (CRYSTAL_HZ / 50) as u16;
 
 /// The largest believable gap between two counter observations: ten
@@ -55,6 +59,10 @@ const WINDOW_TICKS: u16 = (CRYSTAL_HZ / 50) as u16;
 /// rate inflated by a factor the believability bounds cannot see. A step
 /// past this — or backwards, which is the fold showing directly — discards
 /// the attempt instead of guessing.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the const assertion below proves CRYSTAL_HZ / 100 fits u16"
+)]
 const MAX_STEP: u16 = (CRYSTAL_HZ / 100) as u16;
 
 /// Windows to attempt before concluding the hardware is lying. Two must
@@ -85,11 +93,14 @@ const _: () = {
         CRYSTAL_HZ / 50 <= u16::MAX as u32,
         "the window must fit the counter"
     );
-    assert!(WINDOW_TICKS as u32 + MAX_STEP as u32 <= u16::MAX as u32);
+    assert!(
+        WINDOW_TICKS as u32 + MAX_STEP as u32 <= u16::MAX as u32,
+        "the window and the largest step must fit one counter reading"
+    );
 };
 
 /// Believable bounds for the APIC's divided clock: QEMU models a gigahertz,
-/// VMware tens of megahertz. A reading outside three orders of magnitude
+/// `VMware` tens of megahertz. A reading outside three orders of magnitude
 /// either way is a corrupted measurement, not a strange machine.
 const BELIEVABLE_APIC_HZ: core::ops::RangeInclusive<u64> = 1_000_000..=50_000_000_000;
 
@@ -313,6 +324,10 @@ impl fmt::Display for Calibration {
 /// [`TimeError::PitUnavailable`] if the reference is already claimed,
 /// [`TimeError::Implausible`] if neither timing source produces two agreeing,
 /// believable windows, or [`TimeError::LocalTimer`] if final timer setup fails.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a calibrated timer that then refuses to stop is a terminal invariant"
+)]
 pub(crate) fn init() -> Result<Calibration, TimeError> {
     assert!(
         !interrupt::are_enabled(),

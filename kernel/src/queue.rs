@@ -47,12 +47,24 @@ type RingPages = SharedRing<PUBLICATION_WORDS>;
 /// Ring ownership keeps completion from discovering a late-invalid user
 /// buffer and avoids a user-copy fault window (D-173). Reads pay one copy
 /// because the current ABI exposes no memory-object authority for zero-copy.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "PAGE_SIZE is 4096 and fits usize"
+)]
 const DATA_AT: usize = 2 * PAGE_SIZE as usize;
 
 /// Bytes of data area.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "PAGE_SIZE is 4096 and fits usize"
+)]
 const DATA_BYTES: usize = PAGE_SIZE as usize;
 
 /// Where the header ends and the submission entries begin.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "PAGE_SIZE is 4096 and fits usize"
+)]
 const ENTRIES_AT: usize = PAGE_SIZE as usize;
 
 /// Where the completion entries begin, after every submission entry.
@@ -76,7 +88,7 @@ const COMPLETIONS: u32 = 16;
 
 /// Byte offsets into the header page, which is the ABI.
 mod header {
-    /// Protocol version. IoRing's improvement over io_uring: a ring that
+    /// Protocol version. `IoRing`'s improvement over `io_uring`: a ring that
     /// cannot say what shape it is cannot be extended without guessing.
     pub(super) const VERSION: usize = 0;
     /// Submission entries.
@@ -137,7 +149,7 @@ pub(crate) enum Opcode {
     /// **Its own operation**, with its own reservation and its own completion.
     /// It never substitutes for the target's, which still gets exactly one —
     /// carrying [`STATUS_CANCELLED`] instead of a result. That separation is
-    /// the antidote to the double-completion class that produced two io_uring
+    /// the antidote to the double-completion class that produced two `io_uring`
     /// CVEs (`012` §8).
     Cancel,
     /// Resolve a path from a directory handle and produce a handle for what it
@@ -264,7 +276,7 @@ pub(crate) const STATUS_DENIED: u32 = 4;
 pub(crate) const STATUS_CANCELLED: u32 = 5;
 /// A cancellation named no operation in flight.
 ///
-/// Advisory, as io_uring's `-EALREADY` is: an operation that completed between
+/// Advisory, as `io_uring`'s `-EALREADY` is: an operation that completed between
 /// the submission of the cancel and its service is not an error, and reporting
 /// it as one would make a race into a failure.
 pub(crate) const STATUS_NOT_FOUND: u32 = 6;
@@ -852,14 +864,16 @@ impl Queue {
     ///
     /// `None` if the frames cannot be allocated or cleared.
     pub(crate) fn new() -> Option<Arc<Self>> {
-        let mut run = mm::allocate_contiguous((SHARED_BYTES / PAGE_SIZE) as usize, 1)?;
+        let frames = usize::try_from(SHARED_BYTES / PAGE_SIZE).ok()?;
+        let mut run = mm::allocate_contiguous(frames, 1)?;
         if !run.zero() {
             return None;
         }
         // Pinned for sharing, one-way: these frames can never be mapped as
         // owned, so no unmap returns them while the program reaches them (D-115).
+        let shared_bytes = usize::try_from(SHARED_BYTES).ok()?;
         let layout = SharedLayout::new(
-            SHARED_BYTES as usize,
+            shared_bytes,
             [
                 header::SUBMISSION_HEAD,
                 header::SUBMISSION_TAIL,
@@ -937,7 +951,7 @@ impl Queue {
         let snapshot = self.snapshot();
         let mut served = 0;
 
-        while let Some(submission) = self.take(&snapshot) {
+        while let Some(submission) = self.take(snapshot) {
             // `None` is an admitted operation that completes later; its held
             // reservation is what distinguishes deferring from dropping.
             let Some(completion) = self.admit(submission, table) else {
@@ -1005,7 +1019,7 @@ impl Queue {
                 status: STATUS_OK,
                 value: crate::time::now_ns(),
             },
-            Opcode::Duplicate => self.duplicate(submission, table),
+            Opcode::Duplicate => Self::duplicate(submission, table),
             Opcode::Timer => {
                 if !crate::time::is_calibrated() {
                     return Some(refuse(token, STATUS_UNAVAILABLE));
@@ -1029,7 +1043,7 @@ impl Queue {
     /// discovered at completion. `install` then attenuates the rights on
     /// arrival. Every refusal drops the reservation and returns the promise
     /// through the type's destructor (D-163).
-    fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+    fn duplicate(submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
         let named = submission.handle;
         let Ok(reservation) = table.reserve_slot() else {
@@ -1490,7 +1504,7 @@ impl Queue {
     /// the round normally. **No completion slot** is backpressure: the entry
     /// stays where it is and is served on a later call, which is what makes an
     /// unreportable operation impossible rather than merely unlikely.
-    fn take(&self, snapshot: &Snapshot) -> Option<Submission> {
+    fn take(&self, snapshot: Snapshot) -> Option<Submission> {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         {
             let mut ring = self.ring.lock_leaf();
@@ -2135,7 +2149,9 @@ const MAX_READ: usize = 512;
 /// caller pointer, no SMAP window and no fault to recover (D-173).
 fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
     let at = usize::try_from(offset).ok()?;
-    let len = length as usize;
+    let Ok(len) = usize::try_from(length) else {
+        return None;
+    };
     if len == 0 {
         return None;
     }
@@ -2183,9 +2199,10 @@ fn load_index(shared: &RingPages, at: usize) -> u32 {
 
 /// Release-publish one locally owned queue index.
 fn publish_index(shared: &RingPages, at: usize, value: u32) {
-    if !shared.store_release_u32(at, value) {
-        panic!("a ring index was out of bounds or misaligned");
-    }
+    assert!(
+        shared.store_release_u32(at, value),
+        "a ring index was out of bounds or misaligned"
+    );
 }
 
 fn read_entry_u32(bytes: &[u8], at: usize) -> u32 {

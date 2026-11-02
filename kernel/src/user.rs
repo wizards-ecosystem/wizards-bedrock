@@ -77,7 +77,8 @@ pub(crate) const PROGRAM: [u8; 4] = [0x59, 0x48, 0x83, 0xF9];
 /// memory exists (D-12).
 fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
-    let mut stack = mm::allocate_contiguous((USER_STACK_BYTES / PAGE_SIZE) as usize, 1)?;
+    let pages = usize::try_from(USER_STACK_BYTES / PAGE_SIZE).ok()?;
+    let mut stack = mm::allocate_contiguous(pages, 1)?;
     if !stack.zero() {
         return None;
     }
@@ -280,6 +281,10 @@ fn unmap_for_cleanup(space: &mut AddressSpace, at: u64, len: u64) -> Result<Unma
     space.unmap(at, len)
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "page accounting that overflows a counted unmap is a terminal invariant"
+)]
 fn unmap_regions(
     space: &mut AddressSpace,
     regions: impl IntoIterator<Item = (u64, u64)>,
@@ -288,9 +293,11 @@ fn unmap_regions(
     for (at, len) in regions {
         let returned =
             unmap_for_cleanup(space, at, len).map_err(|reason| UnmapRefusal { pages, reason })?;
-        pages = pages
-            .checked_add(returned.pages() as usize)
-            .unwrap_or_else(|| panic!("mapping cleanup page accounting overflowed"));
+        let returned_pages = usize::try_from(returned.pages())
+            .unwrap_or_else(|_| panic!("mapping cleanup page accounting overflowed"));
+        pages = pages.checked_add(returned_pages).unwrap_or_else(|| {
+            panic!("mapping cleanup page accounting overflowed");
+        });
         drop(returned);
     }
     Ok(pages)
@@ -350,6 +357,10 @@ struct Placement {
 ///
 /// Preflight every placement before mapping so a later refusal cannot abandon
 /// earlier user mappings and their frames (D-105).
+#[expect(
+    clippy::too_many_lines,
+    reason = "image validation and placement are one transaction"
+)]
 pub(crate) fn load_image(
     space: &mut AddressSpace,
     bytes: &[u8],
@@ -414,9 +425,12 @@ pub(crate) fn load_image(
             at,
             end,
             mapped_end,
-            pages: (mapped_len / PAGE_SIZE) as usize,
-            from: segment.offset() as usize,
-            len: segment.file_size() as usize,
+            pages: usize::try_from(mapped_len / PAGE_SIZE)
+                .map_err(|_| LoadError::NotUserMemory(at))?,
+            from: usize::try_from(segment.offset())
+                .map_err(|_| LoadError::Truncated(segment.address()))?,
+            len: usize::try_from(segment.file_size())
+                .map_err(|_| LoadError::Truncated(segment.address()))?,
             flags,
         };
 
@@ -640,7 +654,9 @@ impl Drop for ProcessConstruction {
                     #[cfg(feature = "selftest")]
                     {
                         observed_returned_pages = observed_returned_pages
-                            .checked_add(returned.pages() as usize)
+                            .checked_add(usize::try_from(returned.pages()).unwrap_or_else(|_| {
+                                panic!("failed-spawn page accounting overflowed")
+                            }))
                             .unwrap_or_else(|| panic!("failed-spawn page accounting overflowed"));
                     }
                     drop(returned);
@@ -1038,6 +1054,10 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     spawn_transaction(name, which, argument)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "process construction is one ordered transaction with one rollback"
+)]
 fn spawn_transaction(
     name: &'static str,
     which: u64,
@@ -1260,6 +1280,10 @@ struct ReclaimSuccess {
     observed_returned_pages: usize,
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "zombie page accounting that overflows is a terminal invariant"
+)]
 fn reclaim(
     bootstrap: &mut Bootstrap,
     abandoned: usize,
@@ -1293,7 +1317,8 @@ fn reclaim(
         let (at, len) = bootstrap.regions[index];
         match bootstrap.space.unmap(at, len) {
             Ok(returned) => {
-                let pages = returned.pages() as usize;
+                let pages = usize::try_from(returned.pages())
+                    .unwrap_or_else(|_| panic!("zombie returned-page accounting overflowed"));
                 drop(returned);
                 bootstrap.mapped = index;
                 bootstrap.returned_pages = bootstrap
@@ -1519,6 +1544,10 @@ pub(crate) fn orphan(slot: usize) {
 /// interrupts on is a loop that can be preempted halfway through anyway. One
 /// at a time makes that unremarkable instead of something to reason about.
 ///
+#[expect(
+    clippy::too_many_lines,
+    reason = "zombie collection is one ordered settle-then-reclaim procedure"
+)]
 pub(crate) fn collect() -> CollectOutcome {
     // The owner stays in the zombie table until its ring is quiet, so a
     // refused terminal completion retries rather than reusing live pages (D-192).
@@ -1794,7 +1823,7 @@ pub(crate) fn process_records_for_test() -> (usize, usize, usize) {
 /// serve work already posted there rather than transferring data in the trap
 /// (D-116, D-164).
 ///
-/// Four, and the surface stays small on purpose. io_uring's exploit record is
+/// Four, and the surface stays small on purpose. `io_uring`'s exploit record is
 /// a warning about surface growth, and every call added here is one a hostile
 /// program can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1937,9 +1966,10 @@ pub(crate) fn call(frame: &TrapFrame) {
     }
     match Call::decode(frame.rax()) {
         Call::Exit => {
-            if !thread::retire_from_trap(frame) {
-                panic!("a ring 3 thread called in and could not be retired");
-            }
+            assert!(
+                thread::retire_from_trap(frame),
+                "a ring 3 thread called in and could not be retired"
+            );
         }
         Call::RingEnter => {
             #[cfg(feature = "selftest")]
@@ -1972,7 +2002,8 @@ pub(crate) fn call(frame: &TrapFrame) {
             // Counted, not logged: trap context cannot take the console lock,
             // and once did (D-63, D-122); the idle thread reports these.
             REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
-            LAST_REFUSED.store(number as usize, Ordering::Relaxed);
+            let stored = usize::try_from(number).unwrap_or(usize::MAX);
+            LAST_REFUSED.store(stored, Ordering::Relaxed);
         }
     }
 }

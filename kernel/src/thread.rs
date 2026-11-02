@@ -770,6 +770,10 @@ fn finish_refused_retirement(slot: usize, first: TaskError) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "thread fabrication is one ordered reservation and rollback"
+)]
 fn spawn_prepared(
     name: &'static str,
     entry: fn(),
@@ -998,25 +1002,22 @@ fn park(
         threads.queue.park(current);
         threads.queue.slots[current].state = leaving;
 
-        match threads.queue.choose(current, CurrentEligibility::Excluded) {
-            Some(next) => {
-                // Counted here, not at the call: a thread with nobody to hand
-                // the CPU to never leaves the run queue.
-                #[cfg(feature = "selftest")]
-                if leaving == State::Blocked {
-                    BLOCKS.fetch_add(1, Ordering::Relaxed);
-                }
-                threads.queue.slots[next].state = State::Running;
-                threads.queue.slots[next].started = now;
-                (Some(next), threads.queue.next_event(next, now))
+        if let Some(next) = threads.queue.choose(current, CurrentEligibility::Excluded) {
+            // Counted here, not at the call: a thread with nobody to hand
+            // the CPU to never leaves the run queue.
+            #[cfg(feature = "selftest")]
+            if leaving == State::Blocked {
+                BLOCKS.fetch_add(1, Ordering::Relaxed);
             }
+            threads.queue.slots[next].state = State::Running;
+            threads.queue.slots[next].started = now;
+            (Some(next), threads.queue.next_event(next, now))
+        } else {
             // A sole runnable thread remains charged while it waits for an
             // event because it still owns the CPU.
-            None => {
-                threads.queue.slots[current].state = State::Running;
-                let event = threads.queue.next_event(current, now);
-                (None, earliest(event, until))
-            }
+            threads.queue.slots[current].state = State::Running;
+            let event = threads.queue.next_event(current, now);
+            (None, earliest(event, until))
         }
     };
 
@@ -1246,22 +1247,19 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
         };
         threads.queue.slots[current].state = leaving;
 
-        match threads.queue.choose(current, CurrentEligibility::Excluded) {
-            Some(next) => {
-                #[cfg(feature = "selftest")]
-                if leaving == State::Blocked {
-                    BLOCKS.fetch_add(1, Ordering::Relaxed);
-                }
-                threads.queue.slots[next].state = State::Running;
-                threads.queue.slots[next].started = now;
-                (Some(next), threads.queue.next_event(next, now))
+        if let Some(next) = threads.queue.choose(current, CurrentEligibility::Excluded) {
+            #[cfg(feature = "selftest")]
+            if leaving == State::Blocked {
+                BLOCKS.fetch_add(1, Ordering::Relaxed);
             }
+            threads.queue.slots[next].state = State::Running;
+            threads.queue.slots[next].started = now;
+            (Some(next), threads.queue.next_event(next, now))
+        } else {
             // Nobody to hand the CPU to, and a handler cannot halt on the
             // interrupted thread's stack, so the caller is told it did not sleep.
-            None => {
-                threads.queue.slots[current].state = State::Running;
-                (None, threads.queue.next_event(current, now))
-            }
+            threads.queue.slots[current].state = State::Running;
+            (None, threads.queue.next_event(current, now))
         }
     };
 

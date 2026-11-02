@@ -281,7 +281,12 @@ pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Vf
             .map_err(VfsError::from)?
             .read_file(cluster, size, offset, into)
             .map_err(VfsError::from),
-        File::Tmp { at, len } => Ok(crate::tmpfs::read(at, len, offset as usize, into)),
+        File::Tmp { at, len } => {
+            let Ok(offset) = usize::try_from(offset) else {
+                return Ok(0);
+            };
+            Ok(crate::tmpfs::read(at, len, offset, into))
+        }
     }
 }
 

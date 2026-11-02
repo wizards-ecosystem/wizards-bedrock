@@ -17,7 +17,7 @@
 //! readback is exact. The register window must be mapped **uncacheable**;
 //! write-back is a silent, hard-to-debug bug. And `CAP` is read, never assumed:
 //! the queue size, the doorbell stride, the timeout and the page-size range all
-//! come from it, and `012` §11 records that VMware's values are unmeasured.
+//! come from it, and `012` §11 records that `VMware`'s values are unmeasured.
 //!
 //! **The ring parallel is a trap.** This looks like `kernel::queue` and is not:
 //! there is no completion tail to read, entries are found by their phase tag,
@@ -380,7 +380,10 @@ impl QueuePair {
     fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
         for queue in [&self.submission, &self.completion] {
             let (address, len) = queue.address().zip(queue.len())?;
-            into.extend((address..address + len).step_by(PAGE_SIZE as usize));
+            let Ok(page) = usize::try_from(PAGE_SIZE) else {
+                return None;
+            };
+            into.extend((address..address + len).step_by(page));
         }
         Some(())
     }
@@ -393,8 +396,9 @@ impl Drop for QueuePair {
 }
 
 /// Frames enough to hold `bytes`.
-const fn frames_for(bytes: u64) -> usize {
-    bytes.div_ceil(PAGE_SIZE) as usize
+fn frames_for(bytes: u64) -> usize {
+    usize::try_from(bytes.div_ceil(PAGE_SIZE))
+        .unwrap_or_else(|_| panic!("a byte count does not fit a frame count"))
 }
 
 /// A controller brought up and ready to be asked for blocks.
@@ -984,12 +988,14 @@ fn program_admin_registers(
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
     // The controller latches ASQ and ACQ when their high half is written.
+    // Each register is one dword, so the address is split rather than checked
+    // for fitting in 32 bits.
     let writes = [
         (register::AQA, aqa),
-        (register::ASQ, submission as u32),
-        (register::ASQ + 4, (submission >> 32) as u32),
-        (register::ACQ, completion as u32),
-        (register::ACQ + 4, (completion >> 32) as u32),
+        (register::ASQ, dword_low(submission)),
+        (register::ASQ + 4, dword_high(submission)),
+        (register::ACQ, dword_low(completion)),
+        (register::ACQ + 4, dword_high(completion)),
     ];
     for (offset, value) in writes {
         disabled = match write_disabled_register(disabled, offset, value) {
@@ -1007,6 +1013,21 @@ fn program_admin_registers(
         #[cfg(feature = "selftest")]
         observed_window,
     )
+}
+
+/// Low dword of a queue address, the half an NVMe address register stores first.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NVMe address registers store one dword; the low half is the low 32 bits"
+)]
+const fn dword_low(address: u64) -> u32 {
+    address as u32
+}
+
+/// High dword of a queue address. Shifting by 32 leaves a value that fits.
+fn dword_high(address: u64) -> u32 {
+    u32::try_from(address >> 32)
+        .unwrap_or_else(|_| panic!("a shifted address does not fit a dword"))
 }
 
 fn write_disabled_register(
@@ -1480,6 +1501,14 @@ impl Controller {
     /// buffer enters the domain before the doorbell and leaves it once the
     /// completion proves the device is done with it, so the device reaches
     /// exactly the published-and-unretired set (D-357).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one admin or I/O command is one ordered DMA transaction"
+    )]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a reservation that cannot be cancelled or completed is a terminal invariant"
+    )]
     fn run_on(
         &mut self,
         which: u16,
@@ -1532,9 +1561,10 @@ impl Controller {
         let submission_tail = match prepared {
             Ok(tail) => tail,
             Err(reason) => {
-                if !self.dma.cancel_unpublished() {
-                    panic!("an unpublished DMA reservation must be cancellable");
-                }
+                assert!(
+                    self.dma.cancel_unpublished(),
+                    "an unpublished DMA reservation must be cancellable"
+                );
                 let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
                 return Err(reason);
             }
@@ -1649,9 +1679,10 @@ impl Controller {
                     queue.phase = !queue.phase;
                 }
                 queue.completion_head = completion_head;
-                if !self.dma.complete() {
-                    panic!("a matching completion must finish one published command");
-                }
+                assert!(
+                    self.dma.complete(),
+                    "a matching completion must finish one published command"
+                );
                 // The completion is the proof the device is done with the
                 // buffer; it leaves the domain before anything else happens.
                 if !unmap_data(isolation, data.as_deref_mut(), data_mapped) {
@@ -1688,6 +1719,10 @@ impl Controller {
     ///
     /// A buffer the stop proved quiescent leaves the domain; a retained one
     /// stays mapped, because the device may still reach it.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "data_mapped records whether this command published its buffer"
+    )]
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
@@ -1821,6 +1856,10 @@ impl Controller {
 }
 
 /// Take a published buffer out of the domain, or report that it is still in.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "data_mapped records whether this command published its buffer"
+)]
 fn unmap_data(isolation: &mut Vtd, data: Option<&mut DmaSegment>, data_mapped: bool) -> bool {
     !data_mapped || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
 }
@@ -2144,6 +2183,10 @@ pub(crate) fn keep_prepare_quarantine(quarantine: PrepareQuarantine, device: cra
 }
 
 /// Keep an incompletely retired controller and its PCI lease reachable.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "taking the token consumes the only proof that quarantine is held"
+)]
 pub(crate) fn keep_controller_quarantine(
     quarantine: ControllerQuarantine,
     device: crate::pci::Device,

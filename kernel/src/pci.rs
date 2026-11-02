@@ -16,7 +16,7 @@
 //! it can advance only after restoring the command word and returning every
 //! dynamic I/O span and registry slot as one retirement (D-199).
 //!
-//! **Enumeration recurses.** A scan of bus zero is not enough — VMware places
+//! **Enumeration recurses.** A scan of bus zero is not enough — `VMware` places
 //! functions behind `pciBridge0`–`pciBridge7`, and QEMU's q35 puts a
 //! DMI-to-PCI bridge at `00:1e.0` — so a controller can sit on a bus that
 //! nothing on bus zero mentions except a bridge (`012` §2). The walk is
@@ -177,6 +177,12 @@ pub(crate) struct Survey {
 fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     let at = Address::new(bus, device, function, header::VENDOR)?;
     let identity = pci::read(at)?;
+    // Vendor id is the low half of the vendor/device dword. The high half is
+    // the device id and is not part of this value.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "vendor id is the low 16 bits of the vendor/device dword"
+    )]
     let vendor = identity as u16;
     if pci_config::is_absent(vendor) {
         return None;
@@ -184,13 +190,23 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 
     let class_bits = pci::read(at.at(header::CLASS)?)?;
     let class = Class::from_bits(class_bits);
+    // Command is the low half of the command/status dword.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "command is the low 16 bits of the command/status dword"
+    )]
     let command = pci::read(at.at(header::COMMAND)?)? as u16;
-    let header = HeaderType::from_bits((pci::read(at.at(header::HEADER_TYPE)?)? >> 16) as u8);
+    let header_bits = pci::read(at.at(header::HEADER_TYPE)?)? >> 16;
+    let header = HeaderType::from_bits(
+        u8::try_from(header_bits & 0xFF)
+            .unwrap_or_else(|_| panic!("a masked header type does not fit a byte")),
+    );
 
     Some(Function {
         at,
         vendor,
-        device: (identity >> 16) as u16,
+        device: u16::try_from(identity >> 16)
+            .unwrap_or_else(|_| panic!("a device id does not fit u16")),
         identity,
         class,
         class_bits,
@@ -505,6 +521,10 @@ pub(crate) struct DmaFenceRelease {
 
 impl DmaFence {
     /// Restore the safe command word and return the exact function claim.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "losing a fence token after a successful command restore is terminal"
+    )]
     pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
         if let Some(state) = self.command_state.take() {
             let Some(function) = self.function.as_ref() else {
@@ -583,10 +603,15 @@ fn fence_quiesced_requester(
 ) -> DmaFenceOutcome {
     let at = record.address();
     let identity = at.at(header::VENDOR).and_then(pci::read);
-    let command = at
-        .at(header::COMMAND)
-        .and_then(pci::read)
-        .map(|bits| bits as u16);
+    let command = at.at(header::COMMAND).and_then(pci::read).map(|bits| {
+        // Same split as enumeration: command is the low half of the dword.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "command is the low 16 bits of the command/status dword"
+        )]
+        let command = bits as u16;
+        command
+    });
     if identity == Some(record.identity())
         && command == Some(record.command())
         && pci::isa_dma_quiet()
@@ -844,6 +869,10 @@ impl ReleaseOutcome {
 /// driver for one device with nothing to say so. A fixed claim outlives the
 /// boot; a selection lease has an explicit all-or-stop release (D-199).
 #[derive(Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "device is the PCI device id, not a repetition of the Device type"
+)]
 pub(crate) struct Device {
     address: Address,
     function: Option<pci::FunctionClaim>,
@@ -1141,7 +1170,6 @@ pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
 
 fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> {
     let function = pci::claim_function(at).map_err(|reason| match reason {
-        pci::ClaimError::Unavailable => ClaimError::NoBus,
         pci::ClaimError::Absent => ClaimError::Absent,
         pci::ClaimError::Taken => ClaimError::Taken,
         pci::ClaimError::NoRoom | pci::ClaimError::Exhausted => ClaimError::NoRoom,
