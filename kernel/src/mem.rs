@@ -118,7 +118,7 @@ pub(crate) fn map_device(
         Ok(admitted) => admitted,
         Err(reason) => return Some(Err(reason)),
     };
-    with_active_space(context, |space| space.map_device(admitted))
+    with_active_space(context, |space| space.map_device(&admitted))
 }
 
 /// Map one function-bound PCI BAR into the kernel's device window.
@@ -224,7 +224,9 @@ pub(crate) fn unmap_pci_bar_exact(
                 retain_pci_bar(PciBarQuarantine::Releasable { _bar: bar });
                 return PciBarRetirement::Quarantined;
             }
+            _ => panic!("a BAR unmap outcome has no recovery in this kernel"),
         },
+        _ => panic!("a BAR unmap outcome has no recovery in this kernel"),
     };
     drop(active);
     match platform_pci::release_memory_bar(authority) {
@@ -267,7 +269,9 @@ pub(crate) fn unmap_mapped_pci_bar_exact(
                 retain_pci_bar(PciBarQuarantine::Releasable { _bar: bar });
                 return MappedPciBarRetirement::Quarantined;
             }
+            _ => panic!("a BAR unmap outcome has no recovery in this kernel"),
         },
+        _ => panic!("a BAR unmap outcome has no recovery in this kernel"),
     };
     drop(active);
     if let Err(failure) = platform_pci::release_memory_bar(authority) {

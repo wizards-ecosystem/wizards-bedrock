@@ -422,7 +422,10 @@ impl<'state> Initialization<'state> {
             .enter(stage, interrupt_state())
             .map_err(progress_error)?;
         #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+        if core::ptr::eq(
+            core::ptr::from_ref(self.controller.state),
+            core::ptr::from_ref(&APIC_STATE),
+        ) {
             record_stage_observation(stage, &self.transaction);
         }
         Ok(())
@@ -438,7 +441,10 @@ impl<'state> Initialization<'state> {
             .complete(interrupt_state())
             .map_err(progress_error)?;
         #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+        if core::ptr::eq(
+            core::ptr::from_ref(self.controller.state),
+            core::ptr::from_ref(&APIC_STATE),
+        ) {
             record_publication_observation(&self.transaction);
         }
         self.controller.state.store(ready.bits(), Ordering::Release);
@@ -740,10 +746,7 @@ fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
 }
 
 /// Claim the exact APIC dismissal owned by the innermost live trap.
-pub fn claim_eoi<'frame>(
-    frame: &'frame TrapFrame,
-    vector: InterruptVector,
-) -> Option<EoiToken<'frame>> {
+pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<'_>> {
     if interrupt::are_enabled()
         || !interrupt::is_live_frame(frame)
         || frame.vector() != u64::from(vector.get())
@@ -778,7 +781,7 @@ pub fn claim_eoi<'frame>(
 ///
 /// Returns `token` when the in-service register no longer names its vector,
 /// so the write is skipped.
-pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<'frame>> {
+pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
     if !x86_apic::in_service::may_complete(
         interrupt_state(),
         frame_liveness(token.frame),
@@ -933,7 +936,6 @@ fn admission_error(reason: BeginError) -> ApicError {
     match reason {
         BeginError::InProgress => ApicError::InitializationInProgress,
         BeginError::Ready => ApicError::AlreadyInitialized,
-        BeginError::Poisoned => ApicError::Poisoned,
         _ => ApicError::Poisoned,
     }
 }
@@ -974,11 +976,11 @@ fn dismissal_ownership(vector: InterruptVector) -> DismissalOwnership {
 
 #[cfg(feature = "selftest")]
 fn record_stage_observation(stage: InitStage, transaction: &InitTransaction) {
-    let state = lifecycle();
-    let valid = state == Lifecycle::Initializing
+    let observed = lifecycle();
+    let valid = observed == Lifecycle::Initializing
         && transaction.lifecycle() == Lifecycle::Initializing
         && interrupt_state() == Interrupts::Excluded
-        && state.admit() == Err(BeginError::InProgress);
+        && observed.admit() == Err(BeginError::InProgress);
     INIT_OBSERVATION_FAILED.fetch_or(!valid, Ordering::Relaxed);
     INIT_OBSERVATIONS.fetch_or(1 << stage_index(stage), Ordering::Relaxed);
 }

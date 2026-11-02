@@ -144,7 +144,10 @@ const fn route_roots_are_valid(full: u64, stripped: u64) -> bool {
     full != stripped && full.is_multiple_of(PAGE_BYTES) && stripped.is_multiple_of(PAGE_BYTES)
 }
 
-const _: () = assert!(route_roots_are_valid(0, PAGE_BYTES));
+const _: () = assert!(
+    route_roots_are_valid(0, PAGE_BYTES),
+    "a zero root and a page-aligned stripped root are a valid pair"
+);
 
 /// Why a paired route could not be published.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,18 +199,54 @@ impl RoutingPage {
 }
 
 const _: () = {
-    assert!(offset_of!(RoutingPage, state) == 0);
-    assert!(offset_of!(RoutingPage, full_root) == 8);
-    assert!(offset_of!(RoutingPage, stripped_root) == 16);
-    assert!(offset_of!(RoutingPage, task_stack_top) == 24);
-    assert!(offset_of!(RoutingPage, transition_stack_top) == 32);
-    assert!(offset_of!(RoutingPage, interrupt_stack_top) == 40);
-    assert!(offset_of!(RoutingPage, enclave_text_start) == 48);
-    assert!(offset_of!(RoutingPage, enclave_text_end) == 56);
-    assert!(offset_of!(RoutingPage, abi_version) == 64);
-    assert!(offset_of!(RoutingPage, stripped_entries) == 72);
-    assert!(offset_of!(RoutingPage, prepared_returns) == 80);
-    assert!(size_of::<RoutingPage>() == 88);
+    assert!(
+        offset_of!(RoutingPage, state) == 0,
+        "route state is the first field"
+    );
+    assert!(
+        offset_of!(RoutingPage, full_root) == 8,
+        "the full root follows the state"
+    );
+    assert!(
+        offset_of!(RoutingPage, stripped_root) == 16,
+        "the stripped root follows the full root"
+    );
+    assert!(
+        offset_of!(RoutingPage, task_stack_top) == 24,
+        "the task stack follows the roots"
+    );
+    assert!(
+        offset_of!(RoutingPage, transition_stack_top) == 32,
+        "the transition stack follows the task stack"
+    );
+    assert!(
+        offset_of!(RoutingPage, interrupt_stack_top) == 40,
+        "the interrupt stack follows the transition stack"
+    );
+    assert!(
+        offset_of!(RoutingPage, enclave_text_start) == 48,
+        "the enclave start follows the stacks"
+    );
+    assert!(
+        offset_of!(RoutingPage, enclave_text_end) == 56,
+        "the enclave end follows its start"
+    );
+    assert!(
+        offset_of!(RoutingPage, abi_version) == 64,
+        "the ABI version follows the enclave"
+    );
+    assert!(
+        offset_of!(RoutingPage, stripped_entries) == 72,
+        "the stripped entries follow the version"
+    );
+    assert!(
+        offset_of!(RoutingPage, prepared_returns) == 80,
+        "the prepared returns follow the entries"
+    );
+    assert!(
+        size_of::<RoutingPage>() == 88,
+        "the routing page is 88 bytes"
+    );
 };
 
 pub(super) const ROUTE_STATE_OFFSET: usize = offset_of!(RoutingPage, state);
@@ -254,6 +293,10 @@ static LAST_FULL_ROOT: AtomicU64 = AtomicU64::new(0);
 static LAST_STRIPPED_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// Publish one inseparable pair and its ordinary kernel-stack destination.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 pub(super) fn publish_route(
     roots: &AddressSpaceRoots,
     stack: KernelStackTop<'_>,

@@ -350,13 +350,32 @@ impl DmaDomain<'_> {
     }
 }
 
+/// Whether platform firmware reported interrupt-remapping support.
+///
+/// A `bool` at [`Vtd::establish_deny_all`] read as a bare `true` in
+/// `kernel/src/iommu.rs`. The variant is the fact the call is passing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "present or absent is the whole platform fact; a third state is a new decision"
+)]
+pub enum PlatformInterruptRemapping {
+    /// Firmware reported the facility.
+    Present,
+    /// Firmware did not report it.
+    Absent,
+}
+
+impl PlatformInterruptRemapping {
+    const fn is_present(self) -> bool {
+        matches!(self, Self::Present)
+    }
+}
+
 /// Result of reusing a live interrupt owner for another DMA requester.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a retargeted VT-d owner must be installed or quarantined"]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
-)]
+#[non_exhaustive]
 pub enum Retargeting {
     /// Translation is active through the replacement requester's tables.
     Retargeted,
@@ -369,10 +388,7 @@ pub enum Retargeting {
 /// The ownership-preserving result of establishing one VT-d domain.
 #[derive(Debug)]
 #[must_use = "a post-transition VT-d owner must be installed or quarantined"]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
-)]
+#[non_exhaustive]
 pub enum Establishment {
     /// Translation is active through the complete new owner.
     Established(Vtd),
@@ -428,13 +444,9 @@ impl Vtd {
     /// an access, the unit reports no usable width or domain, firmware's state
     /// will not quiesce, a table frame is unavailable or misaligned, or the
     /// hardware does not accept the root-table pointer or translation.
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "kernel/src/iommu.rs passes the platform fact as true; an enum is a kernel edit"
-    )]
     pub fn establish_deny_all(
         registers: ReleasableDevice,
-        platform_interrupt_remapping: bool,
+        platform_interrupt_remapping: PlatformInterruptRemapping,
     ) -> Establishment {
         let plan = match Plan::read(&registers, platform_interrupt_remapping) {
             Ok(plan) => plan,
@@ -606,6 +618,10 @@ impl Vtd {
         self.map_segment_with::<false, true>(segment)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn map_segment_with<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
         &mut self,
         segment: &mut DmaSegment,
@@ -680,6 +696,10 @@ impl Vtd {
     ///
     /// Panics if this owner no longer has a root table.
     #[must_use = "a still-mapped segment is still reachable by the device"]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         let owner = DmaMappingOwner::new(self.root.address());
         if !segment.is_mapped_by(owner) {
@@ -1011,10 +1031,13 @@ impl Vtd {
             };
         }
         let slot = table * ENTRIES + usize::from(self.width.index(page, 0));
-        if self
-            .tables
-            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))
-        {
+        if self.tables.write_u64(
+            slot,
+            second_level::pte(
+                page,
+                second_level::Permission::from_directions::<DEVICE_READS, DEVICE_WRITES>(),
+            ),
+        ) {
             Ok(())
         } else {
             Err(VtdError::OutOfTables)
@@ -1343,13 +1366,9 @@ impl Plan {
     /// All firmware-owned remapping facilities must already be inactive.
     /// This read-only boundary refuses a live non-identical SRTP and avoids
     /// guessing at firmware queue or interrupt-remapping quiescence (D-389).
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "private mirror of establish_deny_all's platform fact"
-    )]
     fn read(
         registers: &ReleasableDevice,
-        platform_interrupt_remapping: bool,
+        platform_interrupt_remapping: PlatformInterruptRemapping,
     ) -> Result<Self, VtdError> {
         let version = Version::from_bits(read_u32(registers, crate::usize_from_u64(vtd::VERSION))?);
         if !version.register_invalidation_supported() {
@@ -1370,7 +1389,7 @@ impl Plan {
         if !capability.dma_draining() {
             return Err(VtdError::NoDmaDraining);
         }
-        if !platform_interrupt_remapping {
+        if !platform_interrupt_remapping.is_present() {
             return Err(VtdError::NoPlatformInterruptRemapping);
         }
         if !extended.interrupt_remapping() || !extended.queued_invalidation() {

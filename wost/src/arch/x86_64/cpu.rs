@@ -795,7 +795,7 @@ pub fn invalidate_page(address: CanonicalAddress) {
     // operand is canonical. `invlpg` dereferences no memory and only evicts
     // this CPU's cached translation.
     unsafe {
-        core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags))
+        core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags));
     };
     #[cfg(feature = "selftest")]
     PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);

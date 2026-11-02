@@ -31,7 +31,10 @@ use crate::sync::Once;
 const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
 
-const _: () = assert!(CONTEXTS == super::task::MAX_TASKS);
+const _: () = assert!(
+    CONTEXTS == super::task::MAX_TASKS,
+    "interrupt contexts and task slots are one table"
+);
 
 struct ExclusionLedger {
     depth: AtomicUsize,
@@ -96,13 +99,34 @@ struct RawTrapFrame {
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, r15) == 0);
-    assert!(core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>());
+    assert!(
+        core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>(),
+        "the trap frame is twenty-two register slots"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r15) == 0,
+        "r15 is the first saved register"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>(),
+        "r8 keeps its slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>(),
+        "rax keeps its slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>(),
+        "the vector follows the saved registers"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>(),
+        "flags keep their slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>(),
+        "the stack selector is the last saved slot"
+    );
 };
 
 /// A read-only snapshot of the registers saved on interrupt entry.
@@ -591,7 +615,11 @@ impl InterruptState {
             1,
             "an inner interrupt exclusion is still live"
         );
-        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ledger.deferred.load(Ordering::Relaxed),
+            0,
+            "dropping the outer exclusion left a deferred count"
+        );
         ledger.depth.store(0, Ordering::Relaxed);
         ledger.outer_was_enabled.store(false, Ordering::Relaxed);
         self.live = false;
@@ -710,7 +738,11 @@ pub fn disable() -> InterruptState {
         "interrupt exclusion nesting exceeds one machine word"
     );
     if depth == 0 {
-        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ledger.deferred.load(Ordering::Relaxed),
+            0,
+            "the first exclusion starts with nothing deferred"
+        );
         ledger.outer_was_enabled.store(previous, Ordering::Relaxed);
     } else {
         assert!(!previous, "interrupts became enabled inside an exclusion");

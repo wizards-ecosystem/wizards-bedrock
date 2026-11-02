@@ -197,25 +197,15 @@ already has the kernel-specific versions of several of these.
 
 ## Relationship to D-159
 
-D-159 measured `pedantic`, `nursery`, `indexing_slicing`, and the cast family,
-found no defect, and adopted none of them. That measurement is why the cast
-and indexing lints above are allow or off, and why nothing here is deny.
-Adopting the rest of the tested table at **warn** is the step D-159 did not
-take: the warnings are visible, and they are not yet a gate. The decision log
-still says the groups were not adopted. Amending that entry, or writing the
-next one, is open.
+D-159 measured `pedantic`, `nursery`, `indexing_slicing`, and the cast family
+and found no defect in that pass. The 2026-11-02 amendment keeps that
+measurement and records the warn-level rollout: `pedantic` and `all` are warn,
+`indexing_slicing` and `nursery` stay off, sign-loss and wrap stay allow, and
+`cast_possible_truncation` stays warn. Nothing in this table is a new deny.
+`cargo xtask clippy` still passes `-D warnings`.
 
 ## Open questions
 
-- Should the decision log record this warn rollout as an amendment to D-159?
-  This stream did not edit `docs/004-decision-log.md`.
-- `cargo xtask clippy` denies every warning. Should that denial wait until the
-  per-crate counts in `handoff/streams/01-lint-foundation.md` are cleared, or
-  should the streams clear them before the branches combine? Changing the
-  gate means editing `xtask`, which this stream does not own.
-- `cast_possible_truncation` is the bulk of the census. Should it join
-  `cast_sign_loss` on the allow list, or stay a warning that each site
-  answers with `expect` or `try_from`?
 - Source preview CI lints the host half and the shipped kernel, and it does
   not pass `-D warnings`. The self-test and `refuse-pci` graphs stay on the
   local gate so the job can keep its 20-minute budget (D-441). Should the

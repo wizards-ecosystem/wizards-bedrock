@@ -561,10 +561,7 @@ pub struct BarUnmapFailure {
 /// matches gain a wildcard.
 #[derive(Debug)]
 #[must_use = "a refused BAR unmap retains the only cleanup authority"]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "kernel/src/mem.rs matches both outcomes without a wildcard"
-)]
+#[non_exhaustive]
 pub enum BarUnmapOutcome {
     /// Every leaf and the device ledger entry were removed.
     Unmapped(pci_config::BarAuthority),
@@ -773,7 +770,10 @@ enum UserRootKind {
 /// an ABI constant the C header reads; the assertion binds it to the library's.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
-const _: () = assert!(USER_END == x86_paging::USER_END);
+const _: () = assert!(
+    USER_END == x86_paging::USER_END,
+    "the user-space end matches the paging crate"
+);
 
 /// Whether `address` is one ring 3 could name.
 ///
@@ -1027,9 +1027,10 @@ impl AddressSpace {
         while offset < written {
             let (virtual_address, _, level) = Self::step(range, offset, grain);
             #[cfg(feature = "selftest")]
-            if mapping_refusal(&MAPPING_UNDOS_BEFORE_REFUSAL) {
-                panic!("mapping rollback lost a written leaf: injected refusal");
-            }
+            assert!(
+                !mapping_refusal(&MAPPING_UNDOS_BEFORE_REFUSAL),
+                "mapping rollback lost a written leaf: injected refusal"
+            );
             let slot = self
                 .slot_at(virtual_address, level)
                 .unwrap_or_else(|reason| panic!("mapping rollback lost a written leaf: {reason}"));
@@ -1159,7 +1160,7 @@ impl AddressSpace {
     /// As [`map_owned`](Self::map_owned).
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "kernel/src/mem.rs passes BootRegion by value; taking a reference is a kernel edit"
+        reason = "BootRegion is not Copy so this move spends the one-shot evidence; a reference would allow a second mapping"
     )]
     pub fn map_boot(
         &mut self,
@@ -1425,6 +1426,10 @@ impl AddressSpace {
         Ok(pages)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn rollback_stack_prefix(
         &mut self,
         layout: &StackLayout,
@@ -1598,6 +1603,10 @@ impl AddressSpace {
         Self::for_user_paired(enclave)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn for_user_paired(enclave: super::kpti::EntryEnclave) -> Result<Self, MapError> {
         let mut space = Self::for_user_roots(UserRootKind::Paired)?;
         if let Err(reason) = space.install_entry_enclave(enclave) {
@@ -1611,6 +1620,10 @@ impl AddressSpace {
         Ok(space)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn for_user_roots(kind: UserRootKind) -> Result<Self, MapError> {
         if !is_active() {
             return Err(MapError::OutOfMemory);
@@ -1675,6 +1688,10 @@ impl AddressSpace {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "installing the entry enclave is one ordered mapping"
+    )]
     fn install_entry_enclave(
         &mut self,
         enclave: super::kpti::EntryEnclave,
@@ -1812,6 +1829,10 @@ impl AddressSpace {
     }
 
     /// Reserve the top-level table every later device mapping will share.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn reserve_shared_kernel_topology(&mut self) -> Result<(), MapError> {
         assert_eq!(
             Level::Pml4.index(DEVICE_WINDOW_START),
@@ -2150,14 +2171,17 @@ impl AddressSpace {
     ///
     /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if the device
     /// window is exhausted.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "kernel/src/mem.rs and selftest.rs pass AdmittedDeviceRange by value"
-    )]
-    pub fn map_device(&mut self, admitted: AdmittedDeviceRange) -> Result<DeviceMapping, MapError> {
-        self.map_device_range(&admitted)
+    pub fn map_device(
+        &mut self,
+        admitted: &AdmittedDeviceRange,
+    ) -> Result<DeviceMapping, MapError> {
+        self.map_device_range(admitted)
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn map_device_range(
         &mut self,
         admitted: &AdmittedDeviceRange,
@@ -2276,6 +2300,10 @@ impl AddressSpace {
     /// # Panics
     ///
     /// Panics if a leaf that passed preflight is absent when it is cleared.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), DeviceUnmapFailure> {
         if let Err(reason) = self.verify_device_unmap(&region) {
             return Err(DeviceUnmapFailure { reason, region });
@@ -2372,6 +2400,10 @@ impl AddressSpace {
     /// # Panics
     ///
     /// Panics if a single-stack rollback loses its cleanup authority.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, StackMapError> {
         let mut stacks = Vec::new();
         stacks
@@ -2424,7 +2456,7 @@ impl AddressSpace {
     /// returned [`StackRollback`].
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "kernel/src/mem.rs passes StackArena by value"
+        reason = "the move spends the arena: success drops the stack identities and failure returns them inside StackRollback"
     )]
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
         if arena.roots != self.roots() {
@@ -2654,6 +2686,10 @@ impl AddressSpace {
     /// # Panics
     ///
     /// Panics if a reclaimed space is asked to reclaim again.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimFailure> {
         // A bound space needs the task table's linear `Released` evidence, and
         // a repeat could mint an owner for frame zero (D-123, D-139).
@@ -2941,6 +2977,10 @@ impl EntrySlot {
     }
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 fn entry_slot(table: Paddr, index: usize) -> Result<EntrySlot, MapError> {
     assert!(index < ENTRIES, "a level's index is always below 512");
     let base = mm::direct_pointer(table, PAGE_SIZE).ok_or(MapError::Unreachable(table))?;
@@ -3025,6 +3065,10 @@ impl Activation {
         Self::begin_with(state, root, || {})
     }
 
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken invariant halts; the caller cannot repair it through Result"
+    )]
     fn begin_with(
         state: &'static AtomicU8,
         root: &'static AtomicU64,
@@ -3500,7 +3544,7 @@ fn kernel_image_gap(candidate: Paddr, current: Paddr) -> Option<u64> {
                 || flags.contains(Flags::NO_CACHE)
                 || flags.contains(Flags::WRITE_THROUGH)
                 || flags.contains(Flags::WRITABLE) != writable
-                || !flags.contains(Flags::NO_EXECUTE) != executable
+                || flags.contains(Flags::NO_EXECUTE) == executable
             {
                 return Some(address);
             }
@@ -3638,7 +3682,7 @@ fn direct_map_gap(root: Paddr, current_root: Paddr) -> Option<u64> {
                         && !flags.contains(Flags::NO_CACHE)
                         && flags.contains(Flags::WRITE_THROUGH) == write_through
                         && flags.contains(Flags::WRITABLE) == writable
-                        && !flags.contains(Flags::NO_EXECUTE) == executable =>
+                        && flags.contains(Flags::NO_EXECUTE) != executable =>
                 {
                     let Some(mapped_end) =
                         physical.checked_add(span - (virtual_address & (span - 1)))
@@ -4514,14 +4558,13 @@ impl DeviceMapping {
             };
             mapping.claim_releasable()
         });
-        match outcome {
-            Some(outcome) => (true, outcome),
-            None => {
-                let Some(mapping) = mapping else {
-                    panic!("a device mapping test lost its unconsumed token");
-                };
-                (false, Err(mapping))
-            }
+        if let Some(outcome) = outcome {
+            (true, outcome)
+        } else {
+            let Some(mapping) = mapping else {
+                panic!("a device mapping test lost its unconsumed token");
+            };
+            (false, Err(mapping))
         }
     }
 

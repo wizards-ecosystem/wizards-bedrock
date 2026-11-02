@@ -2547,8 +2547,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 218,
         file: "libs/pci-config/src/lib.rs",
-        find: "    if size >> u16::BITS == 0 {",
-        replace: "    if true {",
+        find: "    let mask = (mask as u16) & !0x3;\n    if mask == 0 {\n        return None;\n    }",
+        replace: "    let mask = (mask as u16) & !0x3;\n    if mask == 0 {\n        return Some(1);\n    }",
         breaks: "an io window must fit before it is narrowed to a port count",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -3130,12 +3130,12 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 260,
         file: "kernel/src/nvme.rs",
-        find: "                if completion_head == 0 {
-                    queue.phase = !queue.phase;
-                }",
-        replace: "                if false {
-                    queue.phase = !queue.phase;
-                }",
+        find: "        if completion_head == 0 {
+            queue.phase = !queue.phase;
+        }",
+        replace: "        if false {
+            queue.phase = !queue.phase;
+        }",
         breaks: "a completion queue wraps and stays readable",
         reddens: Caught::Check("the queues wrap and the phase tag still works"),
     },
@@ -5749,8 +5749,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 498,
         file: "libs/x86-cpuid/src/lib.rs",
-        find: "                let product = (crystal_hz as u64).checked_mul(numerator as u64);",
-        replace: "                let product = (crystal_hz as u64).checked_mul(denominator as u64);",
+        find: "                let product = u64::from(crystal_hz).checked_mul(u64::from(numerator));",
+        replace: "                let product = u64::from(crystal_hz).checked_mul(u64::from(denominator));",
         breaks: "the CPUID TSC ratio cannot exchange its numerator and denominator",
         reddens: Caught::HostTest {
             package: "x86-cpuid",
@@ -6729,7 +6729,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 592,
         file: "kernel/src/user.rs",
-        find: "            Some((process, bound)) => {\n                prepared = Some(process);\n                Err(bound)\n            }",
+        find: "            Some((process, bound)) => {\n                *prepared = Some(process);\n                Err(bound)\n            }",
         replace: "            Some((process, bound)) => {\n                core::mem::forget(process);\n                Err(bound)\n            }",
         breaks: "a commit refusal loses the still-bound process owner",
         reddens: Caught::Check("a commit refusal reunites cleanup authority"),
@@ -6816,7 +6816,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 601,
         file: "kernel/src/user.rs",
-        find: "        if !at.is_multiple_of(PAGE_SIZE) {\n            return Err(LoadError::Unaligned(at));\n        }",
+        find: "    if !at.is_multiple_of(PAGE_SIZE) {\n        return Err(LoadError::Unaligned(at));\n    }",
         replace: "",
         breaks: "the loader reaches page mapping with an unaligned segment address",
         reddens: Caught::Check("the loader refuses what it may not map"),
@@ -6892,7 +6892,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 609,
         file: "kernel/src/user.rs",
-        find: "        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),",
+        find: "        crate::UserIsolation::Closed => Err(SpawnError::NoUserIsolation),",
         replace: "        crate::UserIsolation::Closed => AddressSpace::for_user(),",
         breaks: "ring three opens without an admitted shared or paired isolation mode",
         reddens: Caught::Check(
@@ -7222,8 +7222,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 639,
         file: "libs/memory-map/src/lib.rs",
-        find: "                let overlaps = start < region.end() && region.base < end;",
-        replace: "                let overlaps = start < region.end() && region.base <= end;",
+        find: "                let overlaps = region.len != 0 && start < region.end() && region.base < end;",
+        replace: "                let overlaps = region.len != 0 && start < region.end() && region.base <= end;",
         breaks: "a device extent overlaps a RAM region beginning at its exclusive end",
         reddens: Caught::HostTest {
             package: "memory-map",
@@ -8799,7 +8799,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 785,
         file: "wost/src/arch/x86_64/cpu.rs",
-        find: "pub fn invalidate_page(address: CanonicalAddress) {\n    // SAFETY: construction of `CanonicalAddress` proves the instruction's\n    // operand is canonical. `invlpg` dereferences no memory and only evicts\n    // this CPU's cached translation.\n    unsafe {\n        core::arch::asm!(\"invlpg [{}]\", in(reg) address.get(), options(nostack, preserves_flags))\n    };\n    #[cfg(feature = \"selftest\")]\n    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);\n}",
+        find: "pub fn invalidate_page(address: CanonicalAddress) {\n    // SAFETY: construction of `CanonicalAddress` proves the instruction's\n    // operand is canonical. `invlpg` dereferences no memory and only evicts\n    // this CPU's cached translation.\n    unsafe {\n        core::arch::asm!(\"invlpg [{}]\", in(reg) address.get(), options(nostack, preserves_flags));\n    };\n    #[cfg(feature = \"selftest\")]\n    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);\n}",
         replace: "pub trait InvalidationAddress {\n    /// Expose the instruction operand.\n    fn raw(self) -> u64;\n}\n\nimpl InvalidationAddress for CanonicalAddress {\n    fn raw(self) -> u64 {\n        self.get()\n    }\n}\n\nimpl InvalidationAddress for u64 {\n    fn raw(self) -> u64 {\n        self\n    }\n}\n\n/// Drop any cached translation for an admitted address from this CPU's TLB.\npub fn invalidate_page(address: impl InvalidationAddress) {\n    let raw = address.raw();\n    // SAFETY: the weakened mutation admits this operand without validation.\n    unsafe {\n        core::arch::asm!(\"invlpg [{}]\", in(reg) raw, options(nostack, preserves_flags))\n    };\n    #[cfg(feature = \"selftest\")]\n    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);\n}",
         breaks: "the INVLPG door accepts a raw noncanonical address",
         reddens: Caught::HostTest {
@@ -9540,8 +9540,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 845,
         file: "libs/x86-apic/src/lifecycle.rs",
-        find: "/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
-        replace: "impl Interrupts {\n    pub const fn from_enabled(enabled: bool) -> Self {\n        if enabled { Self::Enabled } else { Self::Excluded }\n    }\n}\n\n/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
+        find: "/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[expect(\n    clippy::exhaustive_enums,\n    reason = \"closed encoding; a new variant is a protocol bug, not a compatible extension\"\n)]\npub enum InitStage {",
+        replace: "impl Interrupts {\n    pub const fn from_enabled(enabled: bool) -> Self {\n        if enabled { Self::Enabled } else { Self::Excluded }\n    }\n}\n\n/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[expect(\n    clippy::exhaustive_enums,\n    reason = \"closed encoding; a new variant is a protocol bug, not a compatible extension\"\n)]\npub enum InitStage {",
         breaks: "APIC interrupt-exclusion policy regains a boolean constructor",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -15185,7 +15185,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1281,
         file: "libs/nvme/src/lib.rs",
-        find: "impl<T> DisabledPreparation<T> {\n    /// Attempt one disabled-controller access with exact retirement fallback.\n    pub fn access<U, E>(\n        mut self,\n        operation: impl FnOnce(&mut T) -> Result<U, E>,\n    ) -> Result<(Self, U), PreparationFailure<Self, E>> {\n        match operation(&mut self.owner) {\n            Ok(value) => Ok((self, value)),\n            Err(reason) => Err(PreparationFailure {\n                preparation: self,\n                reason,\n            }),\n        }\n    }",
+        find: "impl<T> DisabledPreparation<T> {\n    /// Attempt one disabled-controller access with exact retirement fallback.\n    ///\n    /// # Errors\n    ///\n    /// The unchanged preparation and the operation's error, when `operation`\n    /// fails. The owner is not dropped.\n    pub fn access<U, E>(\n        mut self,\n        operation: impl FnOnce(&mut T) -> Result<U, E>,\n    ) -> Result<(Self, U), PreparationFailure<Self, E>> {\n        match operation(&mut self.owner) {\n            Ok(value) => Ok((self, value)),\n            Err(reason) => Err(PreparationFailure {\n                preparation: self,\n                reason,\n            }),\n        }\n    }",
         replace: "impl<T> DisabledPreparation<T> {\n    /// Attempt one disabled-controller access with exact retirement fallback.\n    pub fn access<U, E>(\n        mut self,\n        operation: impl FnOnce(&mut T) -> Result<U, E>,\n    ) -> Result<(Self, U), PreparationFailure<Self, E>> {\n        match operation(&mut self.owner) {\n            Ok(value) => Ok((self, value)),\n            Err(_) => panic!(\"mutant discarded disabled-controller cleanup authority\"),\n        }\n    }",
         breaks: "a disabled-controller access refusal discards exact retirement authority",
         reddens: Caught::HostTest {
@@ -17858,8 +17858,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1526,
         file: "kernel/src/user.rs",
-        find: "        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
-        replace: "        if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {",
+        find: "    if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
+        replace: "    if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {",
         breaks: "the loader places a segment on the last canonical page",
         reddens: Caught::Check("the loader refuses what it may not map"),
     },
@@ -19170,8 +19170,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1707,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
-        replace: "        if false && !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        find: "        if !platform_interrupt_remapping.is_present() {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        replace: "        if false && !platform_interrupt_remapping.is_present() {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
         breaks: "VT-d takeover accepts firmware that reports no interrupt-remapping platform support",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20193,8 +20193,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1802,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if self\n            .tables\n            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))",
-        replace: "        let _ = self.tables.write_u64(slot, second_level::pte(page, true, true));\n        if self\n            .tables\n            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))",
+        find: "        if self.tables.write_u64(\n            slot,\n            second_level::pte(\n                page,\n                second_level::Permission::from_directions::<DEVICE_READS, DEVICE_WRITES>(),\n            ),\n        )",
+        replace: "        let _ = self.tables.write_u64(\n            slot,\n            second_level::pte(page, second_level::Permission::ReadWrite),\n        );\n        if self.tables.write_u64(\n            slot,\n            second_level::pte(\n                page,\n                second_level::Permission::from_directions::<DEVICE_READS, DEVICE_WRITES>(),\n            ),\n        )",
         breaks: "a leaf is transiently published with bidirectional DMA authority",
         reddens: Caught::HostTest {
             package: "xtask",

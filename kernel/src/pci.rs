@@ -1045,6 +1045,7 @@ impl Device {
                 self.uncertain |= matches!(reason, BarEnableError::Command(EnableError::Restore));
                 BarDecodeOutcome::Refused(BarDecodeFailure { reason, bar })
             }
+            _ => panic!("a BAR enable outcome has no recovery in this kernel"),
         }
     }
 

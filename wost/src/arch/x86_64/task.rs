@@ -319,6 +319,10 @@ pub fn current() -> usize {
 /// # Panics
 ///
 /// Panics if the slot's pinned stack no longer names the frame this fabricates.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
     // Before the lock, which clears the flag: what is wanted is the caller's
     // own, not the one taking this lock leaves behind.
@@ -522,6 +526,10 @@ pub fn exit_to(slot: usize) -> TaskError {
 /// Panics if a spin lock is held. A switch would leave it locked on a
 /// context nothing can schedule, and the next taker spins with the flag
 /// clear (D-66).
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     assert!(
         crate::sync::spinlocks_held() == 0,
@@ -557,9 +565,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     // interrupt-excluded transaction; every other slot clears that route and
     // restores its ordinary RSP0 before it can run (D-407).
     let roots = table.slots[slot].page_table;
-    let wanted = roots
-        .map(AddressSpaceRoots::full_root)
-        .unwrap_or_else(paging::active_root);
+    let wanted = roots.map_or_else(paging::active_root, AddressSpaceRoots::full_root);
     let paired = roots.is_some_and(AddressSpaceRoots::is_paired);
     if paired {
         let Some(landing) = table.kernel_stack_top(slot) else {
@@ -770,7 +776,7 @@ impl Released {
 /// [`bind_address_space`].
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "kernel/src/user.rs and thread.rs pass Binding by value to spend the one-shot token"
+    reason = "Binding is neither Copy nor Clone; the move is what proves no later caller can install it"
 )]
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
@@ -998,6 +1004,10 @@ pub fn final_interrupt_admission_refusal_for_test() -> bool {
     refused && stayed_disabled && interrupt::are_enabled()
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !paging::is_active() {
         return Err(UserError::Inactive);
@@ -1030,9 +1040,7 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
             })
         }
         _ => {
-            if !final_shared_mappings_are_safe() {
-                Err(UserError::NoSharedKernelIsolation)
-            } else {
+            if final_shared_mappings_are_safe() {
                 mine.map_or(Err(UserError::NoKernelStack), |stack| {
                     if super::segment::kernel_stack() == stack.address() {
                         Ok(())
@@ -1040,6 +1048,8 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
                         Err(UserError::NoKernelStack)
                     }
                 })
+            } else {
+                Err(UserError::NoSharedKernelIsolation)
             }
         }
     };

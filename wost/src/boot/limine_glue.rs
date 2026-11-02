@@ -37,6 +37,8 @@ const SUPPORTED_BPP: u16 = 32;
 ///
 /// Panics if the kernel has already been entered.
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
+    // A second caller would mint a second framebuffer over live device memory.
+    static ENTERED: crate::sync::Once = crate::sync::Once::new();
     let Requests {
         base_revision,
         framebuffer,
@@ -46,8 +48,6 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
         rsdp,
         modules,
     } = requests;
-    // A second caller would mint a second framebuffer over live device memory.
-    static ENTERED: crate::sync::Once = crate::sync::Once::new();
     assert!(ENTERED.claim(), "the kernel has already been entered");
 
     kernel_main(BootInfo {
@@ -89,7 +89,7 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     // non-wrapping range, neither guaranteed by the handoff type (D-105).
     let len = usize::try_from(size)
         .ok()
-        .filter(|len| *len <= isize::MAX as usize)
+        .filter(|len| isize::try_from(*len).is_ok())
         .ok_or(HandoffError::Empty)?;
     if (address as usize).checked_add(len).is_none() {
         return Err(HandoffError::Empty);

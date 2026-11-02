@@ -938,7 +938,7 @@ fn only_a_space_that_matches_the_kernel_can_be_installed() -> bool {
     let device_refused = in_reclaimed_space(AddressSpace::for_user, |probe| {
         matches!(
             paging::admit_device_range(0xfee0_0000, PAGE_SIZE)
-                .and_then(|range| probe.map_device(range)),
+                .and_then(|range| probe.map_device(&range)),
             Err(MapError::NotYours(_))
         )
     });
@@ -7236,7 +7236,7 @@ fn device_mappings_refuse_allocatable_ram() -> bool {
         };
         let address = frame.address();
         matches!(
-            paging::admit_device_range(address, 4).and_then(|range| space.map_device(range)),
+            paging::admit_device_range(address, 4).and_then(|range| space.map_device(&range)),
             Err(MapError::NotDeviceMemory(found)) if found == address
         )
     })
@@ -7245,10 +7245,10 @@ fn device_mappings_refuse_allocatable_ram() -> bool {
 fn malformed_device_extents_are_refused() -> bool {
     in_reclaimed_space(AddressSpace::new, |space| {
         matches!(
-            paging::admit_device_range(0xfee0_0000, 0).and_then(|range| space.map_device(range)),
+            paging::admit_device_range(0xfee0_0000, 0).and_then(|range| space.map_device(&range)),
             Err(MapError::InvalidDeviceRange(0xfee0_0000))
         ) && matches!(
-            paging::admit_device_range(4, u64::MAX).and_then(|range| space.map_device(range)),
+            paging::admit_device_range(4, u64::MAX).and_then(|range| space.map_device(&range)),
             Err(MapError::InvalidDeviceRange(4))
         )
     })

@@ -62,7 +62,10 @@ fn exercise_production_queues() {
                     "an admitted operation was dropped"
                 );
                 state.completed += 1;
-                assert!(state.queues.is_consistent(), "worker completion broke the ring");
+                assert!(
+                    state.queues.is_consistent(),
+                    "worker completion broke the ring"
+                );
             }
             thread::yield_now();
         }

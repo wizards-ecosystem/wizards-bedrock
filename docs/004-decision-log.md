@@ -9918,7 +9918,7 @@ verifier's own parser did.
 - `libs/elf64`'s module doc said the merge had not happened. It now says it
   has, and says what deliberately stayed behind.
 
-## D-159 The lints that were measured and not adopted — Status: Accepted (2026-08-25)
+## D-159 The lints that were measured and not adopted — Status: Accepted (2026-08-25) (amended 2026-11-02)
 
 **Context.** `005` says **measure what a tool does; do not reason about it**.
 The workspace denies three clippy lints beyond the default set —
@@ -9959,6 +9959,24 @@ The cast lints are the same shape. `((address as i64) << 16 >> 16) as u64` *is*
   no `.unwrap()` in `kernel` or `wost` outside the self-test, and its sixteen
   panicking calls are all deliberate halts on a broken kernel invariant — a
   refused yield, a resumed dead thread, a second boot handoff.
+
+**Amendment (2026-11-02).** The measurement above stands. What changed is the
+adoption, and only at warn.
+
+`clippy::pedantic` and `clippy::all` are warn in the workspace lint table, at
+priority `-1`, so an individual level in that table still wins. `cargo check`,
+`cargo build`, and plain `cargo clippy` stay green. `cargo xtask clippy` still
+passes `-D warnings`, so the ordinary gate does not go green while a warning
+remains. `clippy::nursery` stays off. `indexing_slicing` stays off, for the
+reason this entry already recorded. `cast_sign_loss` and `cast_possible_wrap`
+stay allow, because the canonical-address cast is still the mechanism.
+`cast_possible_truncation` stays warn: a register-width store is
+`#[expect]` with a reason, or `TryFrom` where a value that does not fit is a
+real failure. A blanket allow for that lint was declined.
+
+`docs/style/BEAUTIFUL_RUST.md` is the contributor-facing list. The original
+"no lint added" consequence applies to the 2026-08-25 measurement, not to this
+amendment.
 
 ## D-160 A page is 4096 bytes in five places, and now something checks that — Status: Accepted (2026-08-25)
 

@@ -5,7 +5,8 @@
 //! See `docs/002-architecture.md` pillar 5 and `docs/005-code-conventions.md`.
 
 // This is the workspace's sole unsafe exception (D-67). `allow` is deliberate:
-// `expect` would make removing the final unsafe operation a build failure.
+// `expect` on `unsafe_code` would make removing the final unsafe operation a
+// build failure.
 #![allow(
     unsafe_code,
     reason = "wost is the only crate permitted unsafe; expect would fail when the last unsafe operation is removed (D-67)"

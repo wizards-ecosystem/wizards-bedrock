@@ -34,7 +34,7 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::pci::DmaHandoffFenceError;
-use wost::arch::current::vtd::{Establishment, Retargeting, Vtd};
+use wost::arch::current::vtd::{Establishment, PlatformInterruptRemapping, Retargeting, Vtd};
 use wost::boot::BootInfo;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
@@ -286,7 +286,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    let isolation = match Vtd::establish_deny_all(registers, true) {
+    let isolation = match Vtd::establish_deny_all(registers, PlatformInterruptRemapping::Present) {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
             warn!("iommu: the early default-deny takeover refused: {reason}");
@@ -306,6 +306,11 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
                 state: InstalledState::Quarantined,
             });
             return false;
+        }
+        _ => {
+            // A later variant may hold the register window. Dropping it and
+            // continuing would boot without an owner, so the unknown case halts.
+            panic!("iommu: an unrecognised establishment outcome");
         }
     };
     if !isolation.boundary_active() {
@@ -774,6 +779,12 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
         }
         Retargeting::Retained(reason) => {
             warn!("iommu: DMA retargeting state is uncertain: {reason}");
+            owner.fences = fences;
+            owner.state = InstalledState::Quarantined;
+            EstablishOutcome::Quarantined
+        }
+        _ => {
+            warn!("iommu: an unrecognised DMA retargeting outcome");
             owner.fences = fences;
             owner.state = InstalledState::Quarantined;
             EstablishOutcome::Quarantined

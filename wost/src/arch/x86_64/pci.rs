@@ -389,6 +389,10 @@ impl MappedBar {
 impl NvmeBusMasterAuthority<'_> {
     /// The live register values carried by this authority.
     #[cfg(feature = "selftest")]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "production code ignores _observed; the self-test is the reader"
+    )]
     pub fn observation_for_test(&self) -> (u32, u32) {
         self._observed.bits()
     }
@@ -428,10 +432,7 @@ pub struct BarEnableFailure {
 /// Result of exposing a mapped BAR through memory decode.
 #[derive(Debug)]
 #[must_use = "a refused decode transition retains mapping and restoration authority"]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "kernel/src/pci.rs matches both outcomes without a wildcard"
-)]
+#[non_exhaustive]
 pub enum BarEnableOutcome {
     /// The BAR is accessible and the command transition remains owned.
     Enabled(MappedBar),
@@ -621,7 +622,7 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
 /// command state.
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "kernel/src/pci.rs passes the authority, domain, and interrupt proof by value"
+    reason = "the move spends the quiescence authority and the DMA and interrupt proofs; they are not Copy"
 )]
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,

@@ -33,7 +33,10 @@
 //! assert_eq!(root.context_table_address(), 0x1000);
 //! let context = ContextEntry::try_present(0x2000, width, 7).expect("page aligned");
 //! assert_eq!(context.domain_id(), 7);
-//! assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
+//! assert_eq!(
+//!     second_level::pte(0x3000, second_level::Permission::ReadWrite),
+//!     0x3000 | 0b11
+//! );
 //!
 //! // Commands OR their bit into a preserved command word.
 //! assert_eq!(enable_translation(0) & gcmd::TE, gcmd::TE);
@@ -740,18 +743,54 @@ pub mod second_level {
     /// An all-zero, not-present entry.
     pub const NOT_PRESENT: u64 = 0;
 
-    /// A leaf entry mapping `paddr` with the given permissions.
+    /// Read and write bits of one second-level leaf.
+    ///
+    /// Closed: these four are the only combinations of the two permission bits.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+    )]
+    pub enum Permission {
+        /// Neither read nor write. The leaf is not present.
+        None,
+        /// Read, bit 0.
+        Read,
+        /// Write, bit 1.
+        Write,
+        /// Read and write, bits 1:0.
+        ReadWrite,
+    }
+
+    impl Permission {
+        /// The permission named by a mapper's directional const parameters.
+        ///
+        /// Const parameters keep the direction in the type of the caller
+        /// (`DEVICE_READS`, `DEVICE_WRITES`) instead of two `bool` arguments.
+        pub const fn from_directions<const READ: bool, const WRITE: bool>() -> Self {
+            match (READ, WRITE) {
+                (false, false) => Self::None,
+                (true, false) => Self::Read,
+                (false, true) => Self::Write,
+                (true, true) => Self::ReadWrite,
+            }
+        }
+
+        const fn bits(self) -> u64 {
+            match self {
+                Self::None => 0,
+                Self::Read => READ,
+                Self::Write => WRITE,
+                Self::ReadWrite => READ | WRITE,
+            }
+        }
+    }
+
+    /// A leaf entry mapping `paddr` with `permission`.
     ///
     /// `paddr`'s low twelve bits are masked off.
-    pub const fn pte(paddr: u64, read: bool, write: bool) -> u64 {
-        let mut bits = paddr & ADDRESS_MASK;
-        if read {
-            bits |= READ;
-        }
-        if write {
-            bits |= WRITE;
-        }
-        bits
+    pub const fn pte(paddr: u64, permission: Permission) -> u64 {
+        (paddr & ADDRESS_MASK) | permission.bits()
     }
 
     /// A non-leaf entry pointing at the next-level table at `paddr`.
@@ -1428,15 +1467,30 @@ mod tests {
 
     #[test]
     fn second_level_entries_encode_permission_and_address() {
-        assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
-        assert_eq!(second_level::pte(0x3000, true, false), 0x3000 | 0b01);
-        assert_eq!(second_level::pte(0x3000, false, true), 0x3000 | 0b10);
-        assert_eq!(second_level::pte(0x3000, false, false), 0x3000);
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::ReadWrite),
+            0x3000 | 0b11
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::Read),
+            0x3000 | 0b01
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::Write),
+            0x3000 | 0b10
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::None),
+            0x3000
+        );
         // Read is bit 0, write is bit 1.
-        assert_eq!(second_level::pte(0, true, false), 1);
-        assert_eq!(second_level::pte(0, false, true), 2);
+        assert_eq!(second_level::pte(0, second_level::Permission::Read), 1);
+        assert_eq!(second_level::pte(0, second_level::Permission::Write), 2);
         // The address is masked to 4 KiB.
-        assert_eq!(second_level::pte(0x3FFF, true, true), 0x3000 | 0b11);
+        assert_eq!(
+            second_level::pte(0x3FFF, second_level::Permission::ReadWrite),
+            0x3000 | 0b11
+        );
         // A table pointer is read | write | address.
         assert_eq!(second_level::table_pointer(0x4000), 0x4000 | 0b11);
         assert_eq!(second_level::table_pointer(0x4FFF), 0x4000 | 0b11);
@@ -1453,16 +1507,21 @@ mod tests {
             "an address with no permission is absent"
         );
         assert!(second_level::is_present(second_level::pte(
-            0x3000, true, false
+            0x3000,
+            second_level::Permission::Read
         )));
         assert!(second_level::is_present(second_level::pte(
-            0x3000, false, true
+            0x3000,
+            second_level::Permission::Write
         )));
         assert!(second_level::is_present(second_level::table_pointer(
             0x4000
         )));
         assert_eq!(
-            second_level::address(second_level::pte(0x3000, true, true)),
+            second_level::address(second_level::pte(
+                0x3000,
+                second_level::Permission::ReadWrite
+            )),
             0x3000
         );
         assert_eq!(

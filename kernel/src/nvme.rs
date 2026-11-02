@@ -1627,10 +1627,14 @@ impl Controller {
         let submission_tail = match prepared {
             Ok(tail) => tail,
             Err(reason) => {
-                assert!(
-                    self.dma.cancel_unpublished(),
-                    "an unpublished DMA reservation must be cancellable"
-                );
+                // Not `assert!`: the source contract has to see this call.
+                #[expect(
+                    clippy::manual_assert,
+                    reason = "the DMA cancellation has to stay outside a macro so the authority contract can see it"
+                )]
+                if !self.dma.cancel_unpublished() {
+                    panic!("an unpublished DMA reservation must be cancellable");
+                }
                 let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
                 return Err(reason);
             }
@@ -1717,10 +1721,14 @@ impl Controller {
             queue.phase = !queue.phase;
         }
         queue.completion_head = completion_head;
-        assert!(
-            self.dma.complete(),
-            "a matching completion must finish one published command"
-        );
+        // Not `assert!`: the source contract has to see this call.
+        #[expect(
+            clippy::manual_assert,
+            reason = "the DMA completion has to stay outside a macro so the authority contract can see it"
+        )]
+        if !self.dma.complete() {
+            panic!("a matching completion must finish one published command");
+        }
         // The completion is the proof the device is done with the
         // buffer; it leaves the domain before anything else happens.
         if !unmap_data(isolation, data, data_mapped) {
