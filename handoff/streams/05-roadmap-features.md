@@ -16,23 +16,26 @@ Branch: `cursor/roadmap-v030-docs-bb4c`.
 - Wrote `docs/roadmap/NEXT.md`, the v0.3.0 assignment index, with sizes and
   directories. Issue 1 is recorded as met by v0.2.0. Issue 2 has a Windows
   procedure and stays open because this environment cannot run it.
+- Draft pull request: https://github.com/wizards-ecosystem/wizards-bedrock/pull/3
+- Corrected current-facing status in `README.md`, `docs/014-storage.md`,
+  `docs/017-pre-wizzy-hostile-surface-audit.md`, and `docs/releases/v0.1.0.md`.
+  PW-580, PW-706, PW-571, and PW-578 are described as closed by v0.2.0 where
+  the surrounding text was a current summary. Dated decision records were
+  left dated.
+- Added README "Start here" with the four public commands, channel `1.97.1`,
+  and the statement that a successful build is not a boot.
 
 ## In progress
 
-- README and current-facing docs still describe PW-580 and PW-706 as open.
-  Those rows are `DONE`. The status correction is next.
+- Experimental register index under `experiments/`, outside the Cargo
+  workspace.
 
 ## Next steps
 
-- Correct README status, add a newcomer "Start here", and point the pinned
-  toolchain at channel `1.97.1`.
-- Correct current-facing sentences in `docs/014-storage.md`,
-  `docs/017-pre-wizzy-hostile-surface-audit.md`, and the v0.1.0 release note.
-- Prototype one experimental crate under `experiments/`, outside the Cargo
-  workspace, that indexes the foundation register for the next assignment
-  round. Mark it non-authoritative.
-- Run only that crate's `cargo test`. Do not run `cargo xtask ci`, QEMU, or
-  the mutation sweep.
+- Add `experiments/register-index`, mark it non-authoritative, and run only
+  that crate's `cargo test`.
+- Update the pull request body.
+- Do not run `cargo xtask ci`, QEMU, or the mutation sweep.
 - Keep this file current on every push. Leave the PR as a draft.
 
 ## Decisions
