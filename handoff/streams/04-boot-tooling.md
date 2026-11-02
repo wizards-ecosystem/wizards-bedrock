@@ -11,15 +11,15 @@ the root workspace config, `kernel/`, and `libs/`.
   install command. Firmware search also covers an FHS prefix (`bin/` next to
   `share/qemu/`) and lists every path it tried, including the required edk2
   image names.
+- A mistyped task within edit distance 2 names the nearest command. `run`
+  flags that look like QEMU options say they belong after `--`.
 
 ## In progress
 
-- Nothing.
+- Nothing yet committed for help text or the toolchain preflight.
 
 ## Next steps
 
-- Suggest the nearest xtask name on a typo, and tell `run` users that QEMU
-  arguments belong after `--`.
 - Document `QEMU`, `QEMU_DIR`, and `GDB` in `cargo xtask help`.
 - Preflight the pinned `rustc`/`rustdoc` before a kernel build so a missing
   toolchain is not a generic cargo spawn failure.
