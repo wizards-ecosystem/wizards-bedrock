@@ -32,6 +32,14 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
   here, so the fit check is `address > u16::MAX as u32`.
   `cargo test -p pci-config --lib --locked a_base_address_register_decodes`
   passed (1 test). Full suite not run.
+- VT-d fault reason is bits 103:96. I/O window size is the 16-bit
+  complement. A zero-length memory region and a backwards span no longer
+  count as coverage. The FAT cycle hare stops on a reserved lookahead
+  instead of failing the read, and a sector-number wrap is `Malformed`.
+  Left alone: reserved directory-attribute bits and non-zero reserved MADT
+  override flags (existing tests treat them as policy), huge-page PAT in
+  `Entry::address` (the encoder cannot set it), and `canonical_decimal("0")`
+  (the unit test rejects zero on purpose; nothing in the kernel calls it).
 
 ## In progress
 
@@ -61,6 +69,12 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 | Severity | Where | What |
 |---|---|---|
 | High | `libs/pci-config` `Bar::decode` | I/O BAR bits 31:16 were truncated. A port at `0x10000` became port 0 and could be claimed. Fixed. |
+| High | `libs/vtd` `FaultRecording::fault_reason` | FR was read at bits 111:104, which is the PASID value. QEMU places FR at bits 103:96 (`<< 32` in the high qword). Fixed. The old test restated the wrong boundary, so it agreed with the bug. |
+| Medium | `libs/pci-config` `io_window_size` | A 16-bit I/O decoder (bits 31:16 hardwired 0) was sized in 32 bits and rejected. `0x0000_FFFC` is 4 ports. Fixed by complementing in 16 bits. |
+| Medium | `libs/memory-map` `allows_device_mapping` | A zero-length region overlapped every query that strictly contained its base. Fixed by ignoring `len == 0`, as `covered_by` already does. |
+| Low | `libs/memory-map` `covered_by` | `start > end` returned covered. An empty span (`start == end`) stays vacuously covered. Fixed. |
+| Medium | `libs/fat32` cycle hare | A reserved link two steps ahead aborted the read before the cluster about to be read was returned. The hare now stops on `BadCluster`; `next_cluster` still errors when that link is followed. |
+| Low | `libs/fat32` `Volume::sector` | A base+sector wrap was `BadCluster(0)`. It is `Malformed`. |
 
 ## Decisions
 

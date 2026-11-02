@@ -676,10 +676,7 @@ impl<S: Sectors> Volume<S> {
     }
 
     fn sector(&mut self, sector: u64, into: &mut [u8; SECTOR_BYTES]) -> Result<(), FatError> {
-        let at = self
-            .base
-            .checked_add(sector)
-            .ok_or(FatError::BadCluster(0))?;
+        let at = self.base.checked_add(sector).ok_or(FatError::Malformed)?;
         <S as Sectors>::read_sector(&mut self.source, at, into).map_err(|_| FatError::Unreadable)
     }
 
@@ -719,9 +716,13 @@ impl<S: Sectors> Volume<S> {
     fn advance_cycle_hare(&mut self, mut cluster: Option<u32>) -> Result<Option<u32>, FatError> {
         for _ in 0..2 {
             cluster = match cluster {
-                Some(current) => match self.next_cluster(current)? {
-                    Next::Cluster(next) => Some(next),
-                    Next::End | Next::Bad | Next::Free => None,
+                Some(current) => match self.next_cluster(current) {
+                    Ok(Next::Cluster(next)) => Some(next),
+                    // The link after the cluster about to be read can be
+                    // reserved. That cluster's own bytes are still data; the
+                    // tortoise reports the bad link when a later read follows it.
+                    Ok(Next::End | Next::Bad | Next::Free) | Err(FatError::BadCluster(_)) => None,
+                    Err(error) => return Err(error),
                 },
                 None => None,
             };
@@ -1296,6 +1297,27 @@ mod tests {
                 Err(FatError::BadCluster(reserved))
             );
         }
+    }
+
+    #[test]
+    fn a_reserved_link_beyond_the_last_cluster_does_not_hide_it() {
+        let mut volume = image_volume(1, 4);
+        set_link(&mut volume, FIRST_DATA_CLUSTER, FIRST_DATA_CLUSTER + 1);
+        set_link(&mut volume, FIRST_DATA_CLUSTER + 1, FIRST_RESERVED_CLUSTER);
+        let last = volume
+            .bpb()
+            .sector_of(FIRST_DATA_CLUSTER + 1)
+            .expect("cluster 3 is on the volume") as usize;
+        volume.source.sectors[last].fill(0xA5);
+
+        let entry = Entry::for_contents(FIRST_DATA_CLUSTER, SECTOR_BYTES as u32 + 1);
+        let mut buf = [0u8; SECTOR_BYTES + 1];
+        assert_eq!(
+            volume.read_file(&entry, 0, &mut buf),
+            Ok(buf.len()),
+            "the hare treated the unused successor as a failed read"
+        );
+        assert_eq!(buf[SECTOR_BYTES], 0xA5);
     }
 
     #[derive(Debug)]
