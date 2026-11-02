@@ -18,16 +18,25 @@ the root workspace config, `kernel/`, and `libs/`.
 - A kernel build checks that the pinned toolchain actually contains `rustc`
   and `rustdoc` before cargo is spawned. The error names the missing file,
   `rust-toolchain.toml`, and `rustup show`.
+- A missing `debug` debugger names the pinned WinLibs identity and says a
+  different gdb is refused. A missing JVM for `model-check` says to put
+  `java` on PATH and that `tools/tla/tla2tools.jar` is not a JVM.
 
 ## In progress
 
-- Reading `wost/src/boot` for a handoff defect a host test can prove.
+- Nothing.
 
 ## Next steps
 
-- Keep looking through boot handoff and image assembly for a defect that is
-  wrong, not merely stylistic.
-- Update the PR description with the bugs, DX, cleanups, and follow-ups.
+- `wost/src/boot` handoff was read and left unchanged: the Limine glue already
+  checks module length and address wrap before `from_raw_parts`, and the
+  unsafe audit hashes every `wost` file. A later pass should only edit it
+  for a defect a host test can fail.
+- `cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract`
+  uses `C:\...` fixtures and fails on Linux inside `join_paths` because `:`
+  is the PATH separator. It is pre-existing and still the Windows witness
+  for mutation 1789; do not retarget it without a Windows run.
+- Full `cargo xtask ci`, QEMU boots, and the mutation campaign were not run.
 
 ## Bugs found
 
