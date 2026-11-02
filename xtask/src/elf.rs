@@ -993,7 +993,7 @@ mod tests {
             .find(".store(ROUTE_PUBLISHED, Ordering::Release)")
             .expect("published store");
         assert!(active_root < published);
-        assert!(kpti.contains("assert!(route_roots_are_valid(0, PAGE_BYTES));"));
+        assert!(kpti.contains("assert!(\n    route_roots_are_valid(0, PAGE_BYTES),"));
 
         for wildcard in [
             ".kpti.text.*",

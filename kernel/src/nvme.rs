@@ -17,7 +17,7 @@
 //! readback is exact. The register window must be mapped **uncacheable**;
 //! write-back is a silent, hard-to-debug bug. And `CAP` is read, never assumed:
 //! the queue size, the doorbell stride, the timeout and the page-size range all
-//! come from it, and `012` §11 records that VMware's values are unmeasured.
+//! come from it, and `012` §11 records that `VMware`'s values are unmeasured.
 //!
 //! **The ring parallel is a trap.** This looks like `kernel::queue` and is not:
 //! there is no completion tail to read, entries are found by their phase tag,
@@ -380,7 +380,10 @@ impl QueuePair {
     fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
         for queue in [&self.submission, &self.completion] {
             let (address, len) = queue.address().zip(queue.len())?;
-            into.extend((address..address + len).step_by(PAGE_SIZE as usize));
+            let Ok(page) = usize::try_from(PAGE_SIZE) else {
+                return None;
+            };
+            into.extend((address..address + len).step_by(page));
         }
         Some(())
     }
@@ -393,12 +396,20 @@ impl Drop for QueuePair {
 }
 
 /// Frames enough to hold `bytes`.
-const fn frames_for(bytes: u64) -> usize {
-    bytes.div_ceil(PAGE_SIZE) as usize
+fn frames_for(bytes: u64) -> usize {
+    usize::try_from(bytes.div_ceil(PAGE_SIZE))
+        .unwrap_or_else(|_| panic!("a byte count does not fit a frame count"))
 }
 
 /// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "selftest",
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "self-test observation flags sit beside the controller they describe"
+    )
+)]
 pub(crate) struct Controller {
     /// Where the registers are readable. Kept so a check can ask **how they
     /// were mapped**: a register file mapped write-back is a driver whose
@@ -588,6 +599,8 @@ impl core::fmt::Display for BusMasterAdmissionError {
     }
 }
 
+impl core::error::Error for BusMasterAdmissionError {}
+
 impl BusMasterAdmissionFailure {
     /// Why PCI refused bus-master admission.
     pub(crate) const fn reason(&self) -> BusMasterAdmissionError {
@@ -662,6 +675,8 @@ impl core::fmt::Display for BringUpError {
         }
     }
 }
+
+impl core::error::Error for BringUpError {}
 
 /// A bring-up failure paired with its exact cleanup disposition.
 #[derive(Debug)]
@@ -980,12 +995,14 @@ fn program_admin_registers(
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
     // The controller latches ASQ and ACQ when their high half is written.
+    // Each register is one dword, so the address is split rather than checked
+    // for fitting in 32 bits.
     let writes = [
         (register::AQA, aqa),
-        (register::ASQ, submission as u32),
-        (register::ASQ + 4, (submission >> 32) as u32),
-        (register::ACQ, completion as u32),
-        (register::ACQ + 4, (completion >> 32) as u32),
+        (register::ASQ, dword_low(submission)),
+        (register::ASQ + 4, dword_high(submission)),
+        (register::ACQ, dword_low(completion)),
+        (register::ACQ + 4, dword_high(completion)),
     ];
     for (offset, value) in writes {
         disabled = match write_disabled_register(disabled, offset, value) {
@@ -1003,6 +1020,21 @@ fn program_admin_registers(
         #[cfg(feature = "selftest")]
         observed_window,
     )
+}
+
+/// Low dword of a queue address, the half an NVMe address register stores first.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "NVMe address registers store one dword; the low half is the low 32 bits"
+)]
+const fn dword_low(address: u64) -> u32 {
+    address as u32
+}
+
+/// High dword of a queue address. Shifting by 32 leaves a value that fits.
+fn dword_high(address: u64) -> u32 {
+    u32::try_from(address >> 32)
+        .unwrap_or_else(|_| panic!("a shifted address does not fit a dword"))
 }
 
 fn write_disabled_register(
@@ -1327,7 +1359,9 @@ impl Controller {
 
         let mut valid = [0u8; NAMESPACE_IDENTIFY_BYTES];
         valid[SIZE] = 1;
-        valid[BLOCK_SHIFT] = nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros() as u8;
+        let shift = u8::try_from(nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros())
+            .unwrap_or_else(|_| panic!("the supported block shift does not fit a byte"));
+        valid[BLOCK_SHIFT] = shift;
 
         self.intercept_io_queue_creation = true;
 
@@ -1499,56 +1533,27 @@ impl Controller {
         let mut installed = crate::iommu::installed();
         let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
         #[cfg(feature = "selftest")]
-        let data_mapped = !self.leave_data_unmapped;
+        let data_mapped = if self.leave_data_unmapped {
+            DataMapping::Unmapped
+        } else {
+            DataMapping::Published
+        };
         #[cfg(not(feature = "selftest"))]
-        let data_mapped = true;
-        if data_mapped
+        let data_mapped = DataMapping::Published;
+        if data_mapped.is_published()
             && let Some(buffer) = data.as_deref_mut()
             && isolation.map_segment_for_device_write(buffer).is_err()
         {
             return Err(BringUpError::Isolation);
         }
-        if !self.dma.reserve() {
-            let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
-            return Err(BringUpError::NotReady);
-        }
-
-        // Reserve ownership first: a refused preparation cancels it, and only
-        // a rung doorbell needs controller quiescence to recover.
-        let prepared = (|| {
-            let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
-            let at = queue.tail as usize * nvme::SUBMISSION_ENTRY_BYTES;
-            if !queue.submission.write_at(at, &command.to_bytes()) {
-                return Err(BringUpError::NoMemory);
-            }
-            queue.tail =
-                Capacity::next(queue.capacity, queue.tail).ok_or(BringUpError::NotReady)?;
-            Ok(queue.tail)
-        })();
-        let submission_tail = match prepared {
-            Ok(tail) => tail,
-            Err(reason) => {
-                if !self.dma.cancel_unpublished() {
-                    panic!("an unpublished DMA reservation must be cancellable");
-                }
-                let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
-                return Err(reason);
-            }
-        };
-        let registers = &mut self.registers;
-        let Some(rung) = self.dma.publish_with(|publication| {
-            registers
-                .as_mut()
-                .ok_or(BringUpError::NotMapped)
-                .and_then(|registers| {
-                    write_submission(publication, registers, submission_doorbell, submission_tail)
-                })
-        }) else {
-            panic!("a prepared DMA reservation must publish exactly once");
-        };
-        if let Err(error) = rung {
-            return self.fail_submitted(error, data.as_deref_mut(), isolation, data_mapped);
-        }
+        self.ring_submission(
+            which,
+            &command,
+            submission_doorbell,
+            data.as_deref_mut(),
+            isolation,
+            data_mapped,
+        )?;
         #[cfg(feature = "selftest")]
         {
             self.published_commands = self.published_commands.saturating_add(1);
@@ -1571,113 +1576,184 @@ impl Controller {
             limit = PollLimit::Attempts(0);
         }
         while limit.permit(clock_ns()) {
-            let found = {
-                let Some(queue) = self.queue_mut(which) else {
-                    return self.fail_submitted(
-                        BringUpError::NotReady,
-                        data.as_deref_mut(),
-                        isolation,
-                        data_mapped,
-                    );
-                };
-                let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
-                let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
-                if !queue.completion.read_at(at, &mut bytes) {
-                    return self.fail_submitted(
-                        BringUpError::NoMemory,
-                        data.as_deref_mut(),
-                        isolation,
-                        data_mapped,
-                    );
-                }
-                if Completion::from_bytes(bytes).phase == queue.phase {
-                    DmaSegment::observe_device();
-                    if !queue.completion.read_at(at, &mut bytes) {
-                        return self.fail_submitted(
-                            BringUpError::NoMemory,
-                            data.as_deref_mut(),
-                            isolation,
-                            data_mapped,
-                        );
-                    }
-                    Some(Completion::from_bytes(bytes))
-                } else {
-                    None
-                }
-            };
-
-            if let Some(entry) = found {
-                let provenance = self.queue_mut(which).is_some_and(|queue| {
-                    entry.phase == queue.phase
-                        && entry.matches_submission(which, expected, queue.tail, queue.capacity)
-                });
-                if !provenance {
-                    return self.fail_submitted(
-                        BringUpError::UnexpectedCompletion {
-                            queue: entry.submission_queue,
-                            id: entry.id,
-                            submission_head: entry.submission_head,
-                        },
-                        data.as_deref_mut(),
-                        isolation,
-                        data_mapped,
-                    );
-                }
-                let Some(queue) = self.queue_mut(which) else {
-                    return self.fail_submitted(
-                        BringUpError::NotReady,
-                        data.as_deref_mut(),
-                        isolation,
-                        data_mapped,
-                    );
-                };
-                queue.submission_head = u32::from(entry.submission_head);
-                let Some(completion_head) = Capacity::next(queue.capacity, queue.completion_head)
-                else {
-                    return self.fail_submitted(
-                        BringUpError::NotReady,
-                        data.as_deref_mut(),
-                        isolation,
-                        data_mapped,
-                    );
-                };
-                if completion_head == 0 {
-                    queue.phase = !queue.phase;
-                }
-                queue.completion_head = completion_head;
-                if !self.dma.complete() {
-                    panic!("a matching completion must finish one published command");
-                }
-                // The completion is the proof the device is done with the
-                // buffer; it leaves the domain before anything else happens.
-                if !unmap_data(isolation, data.as_deref_mut(), data_mapped) {
-                    return self.fail_controller(BringUpError::Isolation);
-                }
-
-                let Some(doorbell) =
-                    nvme::doorbell(capabilities, which, nvme::Doorbell::Completion)
-                else {
-                    return self.fail_controller(BringUpError::NotReady);
-                };
-                let Some(head) = self.queue_mut(which).map(|queue| queue.completion_head) else {
-                    return self.fail_controller(BringUpError::NotReady);
-                };
-                let acknowledged = self
-                    .registers
-                    .as_mut()
-                    .ok_or(BringUpError::NotMapped)
-                    .and_then(|registers| write(registers, doorbell, head));
-                if let Err(error) = acknowledged {
-                    return self.fail_controller(error);
-                }
-                if !entry.is_success() {
-                    return Err(BringUpError::Command(entry.status));
-                }
-                return Ok(entry);
+            if let Some(entry) =
+                self.observe_completion(which, data.as_deref_mut(), isolation, data_mapped)?
+            {
+                return self.accept_completion(
+                    which,
+                    expected,
+                    entry,
+                    data.as_deref_mut(),
+                    isolation,
+                    data_mapped,
+                );
             }
             core::hint::spin_loop();
         }
         self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)
+    }
+
+    /// Write one submission and ring its doorbell, or roll the reservation back.
+    ///
+    /// Reserve ownership first: a refused preparation cancels it, and only a
+    /// rung doorbell needs controller quiescence to recover.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a reservation that cannot be cancelled or published is a terminal invariant"
+    )]
+    fn ring_submission(
+        &mut self,
+        which: u16,
+        command: &Command,
+        submission_doorbell: usize,
+        mut data: Option<&mut DmaSegment>,
+        isolation: &mut Vtd,
+        data_mapped: DataMapping,
+    ) -> Result<(), BringUpError> {
+        if !self.dma.reserve() {
+            let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
+            return Err(BringUpError::NotReady);
+        }
+        let prepared = (|| {
+            let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+            let at = queue.tail as usize * nvme::SUBMISSION_ENTRY_BYTES;
+            if !queue.submission.write_at(at, &command.to_bytes()) {
+                return Err(BringUpError::NoMemory);
+            }
+            queue.tail =
+                Capacity::next(queue.capacity, queue.tail).ok_or(BringUpError::NotReady)?;
+            Ok(queue.tail)
+        })();
+        let submission_tail = match prepared {
+            Ok(tail) => tail,
+            Err(reason) => {
+                // Not `assert!`: the source contract has to see this call.
+                #[expect(
+                    clippy::manual_assert,
+                    reason = "the DMA cancellation has to stay outside a macro so the authority contract can see it"
+                )]
+                if !self.dma.cancel_unpublished() {
+                    panic!("an unpublished DMA reservation must be cancellable");
+                }
+                let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
+                return Err(reason);
+            }
+        };
+        let registers = &mut self.registers;
+        let Some(rung) = self.dma.publish_with(|publication| {
+            registers
+                .as_mut()
+                .ok_or(BringUpError::NotMapped)
+                .and_then(|registers| {
+                    write_submission(publication, registers, submission_doorbell, submission_tail)
+                })
+        }) else {
+            panic!("a prepared DMA reservation must publish exactly once");
+        };
+        rung.or_else(|error| self.fail_submitted(error, data, isolation, data_mapped))
+    }
+
+    /// Read one new completion, if the phase tag says the device has posted it.
+    fn observe_completion(
+        &mut self,
+        which: u16,
+        data: Option<&mut DmaSegment>,
+        isolation: &mut Vtd,
+        data_mapped: DataMapping,
+    ) -> Result<Option<Completion>, BringUpError> {
+        let Some(queue) = self.queue_mut(which) else {
+            return self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped);
+        };
+        let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
+        let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
+        if !queue.completion.read_at(at, &mut bytes) {
+            return self.fail_submitted(BringUpError::NoMemory, data, isolation, data_mapped);
+        }
+        if Completion::from_bytes(bytes).phase == queue.phase {
+            DmaSegment::observe_device();
+            if !queue.completion.read_at(at, &mut bytes) {
+                return self.fail_submitted(BringUpError::NoMemory, data, isolation, data_mapped);
+            }
+            Ok(Some(Completion::from_bytes(bytes)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Match one completion to the command just rung, then retire its buffer.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a matching completion that cannot finish its reservation is terminal"
+    )]
+    fn accept_completion(
+        &mut self,
+        which: u16,
+        expected: u16,
+        entry: Completion,
+        data: Option<&mut DmaSegment>,
+        isolation: &mut Vtd,
+        data_mapped: DataMapping,
+    ) -> Result<Completion, BringUpError> {
+        let provenance = self.queue_mut(which).is_some_and(|queue| {
+            entry.phase == queue.phase
+                && entry.matches_submission(which, expected, queue.tail, queue.capacity)
+        });
+        if !provenance {
+            return self.fail_submitted(
+                BringUpError::UnexpectedCompletion {
+                    queue: entry.submission_queue,
+                    id: entry.id,
+                    submission_head: entry.submission_head,
+                },
+                data,
+                isolation,
+                data_mapped,
+            );
+        }
+        let Some(queue) = self.queue_mut(which) else {
+            return self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped);
+        };
+        queue.submission_head = u32::from(entry.submission_head);
+        let Some(completion_head) = Capacity::next(queue.capacity, queue.completion_head) else {
+            return self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped);
+        };
+        if completion_head == 0 {
+            queue.phase = !queue.phase;
+        }
+        queue.completion_head = completion_head;
+        // Not `assert!`: the source contract has to see this call.
+        #[expect(
+            clippy::manual_assert,
+            reason = "the DMA completion has to stay outside a macro so the authority contract can see it"
+        )]
+        if !self.dma.complete() {
+            panic!("a matching completion must finish one published command");
+        }
+        // The completion is the proof the device is done with the
+        // buffer; it leaves the domain before anything else happens.
+        if !unmap_data(isolation, data, data_mapped) {
+            return self.fail_controller(BringUpError::Isolation);
+        }
+
+        let Some(doorbell) = nvme::doorbell(self.capabilities, which, nvme::Doorbell::Completion)
+        else {
+            return self.fail_controller(BringUpError::NotReady);
+        };
+        let Some(head) = self.queue_mut(which).map(|queue| queue.completion_head) else {
+            return self.fail_controller(BringUpError::NotReady);
+        };
+        let acknowledged = self
+            .registers
+            .as_mut()
+            .ok_or(BringUpError::NotMapped)
+            .and_then(|registers| write(registers, doorbell, head));
+        if let Err(error) = acknowledged {
+            return self.fail_controller(error);
+        }
+        if !entry.is_success() {
+            return Err(BringUpError::Command(entry.status));
+        }
+        Ok(entry)
     }
 
     /// Stop uncertain DMA before exposing an error to the caller.
@@ -1689,7 +1765,7 @@ impl Controller {
         error: BringUpError,
         mut data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
-        data_mapped: bool,
+        data_mapped: DataMapping,
     ) -> Result<T, BringUpError> {
         self.stop_dma(data.as_deref_mut());
         if !self.dma.must_retain() && !unmap_data(isolation, data, data_mapped) {
@@ -1816,9 +1892,30 @@ impl Controller {
     }
 }
 
+/// Whether a command's transfer buffer was published into the DMA domain.
+#[derive(Clone, Copy)]
+enum DataMapping {
+    /// The buffer was mapped before the doorbell.
+    Published,
+    /// A self-test left the buffer unmapped on purpose.
+    #[cfg(feature = "selftest")]
+    Unmapped,
+}
+
+impl DataMapping {
+    const fn is_published(self) -> bool {
+        matches!(self, Self::Published)
+    }
+}
+
 /// Take a published buffer out of the domain, or report that it is still in.
-fn unmap_data(isolation: &mut Vtd, data: Option<&mut DmaSegment>, data_mapped: bool) -> bool {
-    !data_mapped || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
+fn unmap_data(
+    isolation: &mut Vtd,
+    data: Option<&mut DmaSegment>,
+    data_mapped: DataMapping,
+) -> bool {
+    !data_mapped.is_published()
+        || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
 }
 
 impl Drop for Controller {
@@ -2140,6 +2237,10 @@ pub(crate) fn keep_prepare_quarantine(quarantine: PrepareQuarantine, device: cra
 }
 
 /// Keep an incompletely retired controller and its PCI lease reachable.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "taking the token consumes the only proof that quarantine is held"
+)]
 pub(crate) fn keep_controller_quarantine(
     quarantine: ControllerQuarantine,
     device: crate::pci::Device,
@@ -2245,12 +2346,12 @@ pub(crate) fn read_block_probe_for_test(lba: u64) -> Option<(usize, [u8; 8], [u8
     if !buffer.fill(0) || controller.read_blocks(lba, 1, buffer).is_err() {
         return None;
     }
-    let mut head = [0u8; 8];
-    let mut beyond = [0u8; 8];
-    if !buffer.read_at(0, &mut head) || !buffer.read_at(block, &mut beyond) {
+    let mut prefix = [0u8; 8];
+    let mut past_block = [0u8; 8];
+    if !buffer.read_at(0, &mut prefix) || !buffer.read_at(block, &mut past_block) {
         return None;
     }
-    Some((block, head, beyond))
+    Some((block, prefix, past_block))
 }
 
 #[cfg(feature = "selftest")]
@@ -2336,6 +2437,10 @@ pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
 /// What a device write into a buffer the domain does not map produced.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent observation of one DMA fence"
+)]
 pub(crate) struct FenceWitness {
     /// The command completed or was refused rather than hanging.
     pub(crate) completed: bool,
@@ -2404,6 +2509,10 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
 
 /// Hold the next submitted command inside its preemptible polling owner.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test asks one command to stay published or to finish"
+)]
 pub(crate) fn hold_command_for_test(held: bool) {
     HOLD_COMMAND.store(held, Ordering::Release);
 }

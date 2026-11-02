@@ -116,6 +116,7 @@ pub struct SpinLock<T> {
 /// the operation that creates [`Self::Forgotten`].
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SpinLockWitness {
     /// No guard owns the lock.
     Free,
@@ -219,6 +220,10 @@ impl<T> SpinLock<T> {
         // Disable first: an interrupt between the exchange and the disable
         // would leave this CPU holding the lock with interrupts on.
         let interrupts = interrupt::disable();
+        #[expect(
+            clippy::single_match_else,
+            reason = "both results of the exchange are the lock protocol"
+        )]
         match self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -322,12 +327,12 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
     }
 }
 
+#[cfg(feature = "selftest")]
 impl<'a, T> SpinLockGuard<'a, T> {
     /// Deliberately forget this guard while retaining test-only recovery.
     ///
     /// Transfers interrupt state to a non-dereferencing recovery owner before
     /// using safe `core::mem::forget`; available only for D-194's self-test.
-    #[cfg(feature = "selftest")]
     pub fn forget_for_test(mut self) -> ForgottenSpinLockGuard<'a, T> {
         let interrupts = self.interrupts.take_for_transfer();
         let recovery = ForgottenSpinLockGuard {

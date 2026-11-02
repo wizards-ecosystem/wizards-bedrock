@@ -33,7 +33,10 @@
 //! assert_eq!(root.context_table_address(), 0x1000);
 //! let context = ContextEntry::try_present(0x2000, width, 7).expect("page aligned");
 //! assert_eq!(context.domain_id(), 7);
-//! assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
+//! assert_eq!(
+//!     second_level::pte(0x3000, second_level::Permission::ReadWrite),
+//!     0x3000 | 0b11
+//! );
 //!
 //! // Commands OR their bit into a preserved command word.
 //! assert_eq!(enable_translation(0) & gcmd::TE, gcmd::TE);
@@ -41,6 +44,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::verbose_bit_mask)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -321,7 +327,7 @@ impl ExtendedCapability {
 
     /// Byte offset of the IOTLB register block: IRO times sixteen.
     ///
-    /// Within that block the IOTLB Invalidate register (IOTLB_REG) sits at
+    /// Within that block the IOTLB Invalidate register (`IOTLB_REG`) sits at
     /// [`iotlb_command::COMMAND_REGISTER`].
     pub const fn iotlb_register_offset_bytes(self) -> u64 {
         ((self.0 >> Self::IRO_SHIFT) & Self::IRO_MASK) * 16
@@ -456,6 +462,10 @@ pub const fn extended_interrupt_mode_enabled(value: u64) -> bool {
 }
 
 /// Whether IRTA selects exactly the two-entry table this kernel owns.
+#[expect(
+    clippy::verbose_bit_mask,
+    reason = "the mask names the low bits of the field"
+)]
 pub const fn interrupt_table_has_two_entries(value: u64) -> bool {
     value & 0xF == 0
 }
@@ -501,6 +511,10 @@ impl InvalidationDescriptor {
 
 /// A supported adjusted guest address width and its page-table depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum AddressWidth {
     /// 39-bit addresses, a 3-level second-level page table.
     Level3,
@@ -577,6 +591,9 @@ impl AddressWidth {
     /// not depend on the width, which only bounds how many levels a walk uses,
     /// so a caller iterates `0..self.levels()`.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
+        // The shift does not depend on the width. Reading it keeps this an
+        // instance method, which is how a walk names `0..self.levels()`.
+        let _ = self.address_bits();
         let shift = 12 + 9 * (level as u32);
         ((iova >> shift) & 0x1FF) as u16
     }
@@ -726,18 +743,54 @@ pub mod second_level {
     /// An all-zero, not-present entry.
     pub const NOT_PRESENT: u64 = 0;
 
-    /// A leaf entry mapping `paddr` with the given permissions.
+    /// Read and write bits of one second-level leaf.
+    ///
+    /// Closed: these four are the only combinations of the two permission bits.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+    )]
+    pub enum Permission {
+        /// Neither read nor write. The leaf is not present.
+        None,
+        /// Read, bit 0.
+        Read,
+        /// Write, bit 1.
+        Write,
+        /// Read and write, bits 1:0.
+        ReadWrite,
+    }
+
+    impl Permission {
+        /// The permission named by a mapper's directional const parameters.
+        ///
+        /// Const parameters keep the direction in the type of the caller
+        /// (`DEVICE_READS`, `DEVICE_WRITES`) instead of two `bool` arguments.
+        pub const fn from_directions<const READ: bool, const WRITE: bool>() -> Self {
+            match (READ, WRITE) {
+                (false, false) => Self::None,
+                (true, false) => Self::Read,
+                (false, true) => Self::Write,
+                (true, true) => Self::ReadWrite,
+            }
+        }
+
+        const fn bits(self) -> u64 {
+            match self {
+                Self::None => 0,
+                Self::Read => READ,
+                Self::Write => WRITE,
+                Self::ReadWrite => READ | WRITE,
+            }
+        }
+    }
+
+    /// A leaf entry mapping `paddr` with `permission`.
     ///
     /// `paddr`'s low twelve bits are masked off.
-    pub const fn pte(paddr: u64, read: bool, write: bool) -> u64 {
-        let mut bits = paddr & ADDRESS_MASK;
-        if read {
-            bits |= READ;
-        }
-        if write {
-            bits |= WRITE;
-        }
-        bits
+    pub const fn pte(paddr: u64, permission: Permission) -> u64 {
+        (paddr & ADDRESS_MASK) | permission.bits()
     }
 
     /// A non-leaf entry pointing at the next-level table at `paddr`.
@@ -793,13 +846,13 @@ pub mod context_command {
     }
 }
 
-/// IOTLB invalidation through the IOTLB Invalidate register (IOTLB_REG).
+/// IOTLB invalidation through the IOTLB Invalidate register (`IOTLB_REG`).
 ///
 /// The register sits at [`COMMAND_REGISTER`](iotlb_command::COMMAND_REGISTER)
 /// within the IOTLB register block that
 /// [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
 pub mod iotlb_command {
-    /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
+    /// Offset of the IOTLB Invalidate register (`IOTLB_REG`) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;
 
     /// Invalidate IOTLB, bit 63 (set by software, cleared when done).
@@ -907,8 +960,12 @@ impl FaultRecording {
     const FAULT: u64 = 1 << 63;
     /// Request type, bit 126 (bit 62 of the high qword).
     const TYPE: u64 = 1 << 62;
-    /// Fault reason, bits 111:104 (bits 47:40 of the high qword).
-    const REASON_SHIFT: u32 = 40;
+    /// Fault reason, bits 103:96 (bits 39:32 of the high qword).
+    ///
+    /// Bits 123:104 are the PASID value. Reading FR from bit 104 reports that
+    /// field, which is zero on hardware without PASID, so every fault looks
+    /// like reason 0.
+    const REASON_SHIFT: u32 = 32;
     /// Eight fault-reason bits.
     const REASON_MASK: u64 = 0xFF;
     /// Source identifier, bits 79:64 (bits 15:0 of the high qword).
@@ -1092,7 +1149,7 @@ mod tests {
     fn sagaw_maps_each_level_to_its_own_bit() {
         // Bit (levels - 2), placed with an independent literal.
         for levels in 2u8..=5 {
-            let cap = Capability::from_bits(1 << (8 + (levels - 2) as u64));
+            let cap = Capability::from_bits(1 << (8 + u64::from(levels - 2)));
             assert!(cap.sagaw_supports(levels), "level {levels}");
             for other in 2u8..=5 {
                 if other != levels {
@@ -1410,15 +1467,30 @@ mod tests {
 
     #[test]
     fn second_level_entries_encode_permission_and_address() {
-        assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
-        assert_eq!(second_level::pte(0x3000, true, false), 0x3000 | 0b01);
-        assert_eq!(second_level::pte(0x3000, false, true), 0x3000 | 0b10);
-        assert_eq!(second_level::pte(0x3000, false, false), 0x3000);
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::ReadWrite),
+            0x3000 | 0b11
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::Read),
+            0x3000 | 0b01
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::Write),
+            0x3000 | 0b10
+        );
+        assert_eq!(
+            second_level::pte(0x3000, second_level::Permission::None),
+            0x3000
+        );
         // Read is bit 0, write is bit 1.
-        assert_eq!(second_level::pte(0, true, false), 1);
-        assert_eq!(second_level::pte(0, false, true), 2);
+        assert_eq!(second_level::pte(0, second_level::Permission::Read), 1);
+        assert_eq!(second_level::pte(0, second_level::Permission::Write), 2);
         // The address is masked to 4 KiB.
-        assert_eq!(second_level::pte(0x3FFF, true, true), 0x3000 | 0b11);
+        assert_eq!(
+            second_level::pte(0x3FFF, second_level::Permission::ReadWrite),
+            0x3000 | 0b11
+        );
         // A table pointer is read | write | address.
         assert_eq!(second_level::table_pointer(0x4000), 0x4000 | 0b11);
         assert_eq!(second_level::table_pointer(0x4FFF), 0x4000 | 0b11);
@@ -1435,16 +1507,21 @@ mod tests {
             "an address with no permission is absent"
         );
         assert!(second_level::is_present(second_level::pte(
-            0x3000, true, false
+            0x3000,
+            second_level::Permission::Read
         )));
         assert!(second_level::is_present(second_level::pte(
-            0x3000, false, true
+            0x3000,
+            second_level::Permission::Write
         )));
         assert!(second_level::is_present(second_level::table_pointer(
             0x4000
         )));
         assert_eq!(
-            second_level::address(second_level::pte(0x3000, true, true)),
+            second_level::address(second_level::pte(
+                0x3000,
+                second_level::Permission::ReadWrite
+            )),
             0x3000
         );
         assert_eq!(
@@ -1516,11 +1593,12 @@ mod tests {
     #[test]
     fn fault_recording_positions_match_the_spec() {
         // Positions restated relative to the 128-bit record: F bit 127, T bit
-        // 126, FR bits 111:104, SID bits 79:64, FI bits 63:12.
+        // 126, FR bits 103:96, SID bits 79:64, FI bits 63:12. Bits 111:104
+        // are the low half of the PASID value, not the reason.
         assert_eq!(FaultRecording::FAULT, 1 << (127 - 64));
         assert_eq!(FaultRecording::TYPE, 1 << (126 - 64));
-        assert_eq!(FaultRecording::REASON_SHIFT, 104 - 64);
-        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 111:104");
+        assert_eq!(FaultRecording::REASON_SHIFT, 96 - 64);
+        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 103:96");
         assert_eq!(FaultRecording::SID_MASK, 0xFFFF, "SID bits 79:64");
     }
 
@@ -1528,7 +1606,9 @@ mod tests {
     fn a_recorded_fault_decodes_its_source_reason_and_address() {
         let record = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (1 << 63) | (1 << 62) | (0x0C << 40) | 0xBEEF,
+            // Reason 0x0C at bits 103:96, and 0xA5 in the PASID bits above it.
+            // A decoder that starts at bit 104 returns the PASID instead.
+            hi: (1 << 63) | (1 << 62) | (0x0C << (96 - 64)) | (0xA5 << (104 - 64)) | 0xBEEF,
         };
         assert!(record.is_fault());
         assert_eq!(record.source_id(), 0xBEEF);
@@ -1546,10 +1626,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     fn a_register_without_the_fault_bit_records_no_fault() {
         let clean = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (0x0C << 40) | 0xBEEF, // reason and SID set, but F clear
+            hi: (0x0C << (96 - 64)) | 0xBEEF, // reason and SID set, but F clear
         };
         assert!(!clean.is_fault());
 

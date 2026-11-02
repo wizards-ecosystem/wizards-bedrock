@@ -3,6 +3,10 @@
 /// One phase of the address-space activation transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum State {
     /// No activation owns the processor's page-table transition.
     Cold = 0,

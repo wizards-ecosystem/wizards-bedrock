@@ -20,6 +20,10 @@ const FAILED: u32 = 0x11;
 /// Under QEMU with the device present this terminates the emulator and never
 /// returns. Anywhere else the write goes nowhere and the caller carries on, so
 /// a self-test kernel booted on real hardware still reaches its idle loop.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the harness verdict is one pass-or-fail bit"
+)]
 pub(crate) fn report(passed: bool) {
     if let Some(mut device) = port::debug_exit() {
         Port::write(&mut device, if passed { PASSED } else { FAILED });

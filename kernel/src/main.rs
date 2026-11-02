@@ -1,6 +1,6 @@
 //! The Wizard's Bedrock kernel — entry point.
 //!
-//! Booted by Limine (base revision 4, D-42) on x86_64, higher-half. Every privileged
+//! Booted by Limine (base revision 4, D-42) on `x86_64`, higher-half. Every privileged
 //! operation goes through `wost`; this crate contains no hand-written `unsafe`.
 //! `deny` rather than `forbid` because [`wost::entry!`] expands its own
 //! `#[allow(unsafe_code)]` glue here — see D-21.
@@ -151,14 +151,11 @@ fn kernel_main(boot: BootInfo) -> ! {
         dma_non_requester,
         dma_quiesced,
     });
-    match mem::map_boot_stack() {
-        Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
-        None => {
-            warn!(
-                "boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed"
-            );
-            boot_continue(0)
-        }
+    if let Some(stack) = mem::map_boot_stack() {
+        task::continue_on_stack(stack, boot_continue, 1);
+    } else {
+        warn!("boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed");
+        boot_continue(0)
     }
 }
 
@@ -369,44 +366,92 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     // is the only place a machine's speculation claims are visible.
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
-    match cpu::shared_kernel_mapping_reason(&speculation) {
-        Some(reason) => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
-            let isolation = if cfg!(feature = "selftest")
-                && wost::arch::current::kpti_entry_path_is_implemented()
-            {
-                // Qualification must execute the paired path even on QEMU,
-                // whose exact TCG tuple independently admits shared roots.
-                UserIsolation::Paired
-            } else {
-                UserIsolation::Shared
-            };
-            USER_ISOLATION.store(isolation.bits(), Ordering::Release);
-            if isolation == UserIsolation::Paired {
-                info!(
-                    "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
-                );
-            } else {
-                info!("cpu: user isolation shared kernel mappings: {reason}");
-            }
-        }
-        None => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
-            if wost::arch::current::kpti_entry_path_is_implemented() {
-                USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
-                info!("cpu: user isolation paired roots: selected; shared mappings refused");
-            } else {
-                USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
-                warn!(
-                    "cpu: user isolation: no complete shared or paired entry path; ring 3 closed"
-                );
-            }
+    select_user_isolation(cpu::shared_kernel_mapping_reason(&speculation));
+    let immunity = if speculation.mds_no() {
+        MdsImmunity::Reported
+    } else {
+        MdsImmunity::Absent
+    };
+    arm_return_buffer_clear(&immunity);
+
+    match apic::init(vector::LOCAL_APIC) {
+        Ok(local) => info!("apic: {local}"),
+        Err(reason) => {
+            warn!("local apic: {reason}; interrupts stay off");
+            return;
         }
     }
 
-    // Arm `verw` unless `MDS_NO` makes it pointless; an unreadable `MD_CLEAR`
-    // errs toward executing it (D-98).
-    if speculation.mds_no() {
+    report_clock(time::init());
+    publish_boot_time_page();
+
+    #[cfg(feature = "selftest")]
+    EXTERNAL_MASK_REFUSAL_PROVED.store(
+        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
+        Ordering::Release,
+    );
+    if !external_interrupts_are_admitted(external_controllers) {
+        warn!("ioapic: complete mask proof missing; interrupts stay off");
+        return;
+    }
+    if !iommu::interrupt_boundary_active() {
+        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
+        return;
+    }
+
+    if let Err(reason) = apic::enable_after_pending_audit() {
+        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
+        return;
+    }
+    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
+    info!("cpu: accepting interrupts");
+}
+
+/// Choose shared or paired user roots from the speculation controls just read.
+fn select_user_isolation(reason: Option<impl core::fmt::Display>) {
+    if let Some(reason) = reason {
+        SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
+        let isolation = if cfg!(feature = "selftest")
+            && wost::arch::current::kpti_entry_path_is_implemented()
+        {
+            // Qualification must execute the paired path even on QEMU,
+            // whose exact TCG tuple independently admits shared roots.
+            UserIsolation::Paired
+        } else {
+            UserIsolation::Shared
+        };
+        USER_ISOLATION.store(isolation.bits(), Ordering::Release);
+        if isolation == UserIsolation::Paired {
+            info!(
+                "cpu: user isolation paired roots: forced for self-test; shared proof retained: {reason}"
+            );
+        } else {
+            info!("cpu: user isolation shared kernel mappings: {reason}");
+        }
+    } else {
+        SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
+        if wost::arch::current::kpti_entry_path_is_implemented() {
+            USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
+            info!("cpu: user isolation paired roots: selected; shared mappings refused");
+        } else {
+            USER_ISOLATION.store(UserIsolation::Closed.bits(), Ordering::Release);
+            warn!("cpu: user isolation: no complete shared or paired entry path; ring 3 closed");
+        }
+    }
+}
+
+/// Whether the processor reported `MDS_NO`.
+enum MdsImmunity {
+    /// The processor reports `mds_no`, so the flush buys nothing.
+    Reported,
+    /// Flush on every return to ring 3. An unreadable `MD_CLEAR` takes this
+    /// path (D-98).
+    Absent,
+}
+
+/// Arm `verw` unless `MDS_NO` makes it pointless.
+fn arm_return_buffer_clear(immunity: &MdsImmunity) {
+    if matches!(immunity, MdsImmunity::Reported) {
         info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
     } else {
         interrupt::enable_buffer_clear();
@@ -420,16 +465,11 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
             }
         );
     }
+}
 
-    match apic::init(vector::LOCAL_APIC) {
-        Ok(local) => info!("apic: {local}"),
-        Err(reason) => {
-            warn!("local apic: {reason}; interrupts stay off");
-            return;
-        }
-    }
-
-    match time::init() {
+/// Log the clock measurement. Failure does not veto interrupts.
+fn report_clock(started: Result<time::Calibration, time::TimeError>) {
+    match started {
         Ok(report) => {
             let apic_source_hz = report.apic_source_hz();
             info!("time: apic source at {apic_source_hz} hz; {report}");
@@ -443,9 +483,13 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         }
         Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
     }
+}
 
-    // The page exists whether or not the clock does: a program reading `TIME`
-    // must find `MODE_NONE`, not a page fault (D-166).
+/// Publish the shared time page, or say that every reader must call.
+///
+/// The page exists whether or not the clock does: a program reading `TIME`
+/// must find `MODE_NONE`, not a page fault (D-166).
+fn publish_boot_time_page() {
     if timepage::init(time::counter_hz()) {
         let mode = if time::is_calibrated() {
             timepage::MODE_COUNTER
@@ -469,27 +513,6 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     } else {
         warn!("time: no page to publish the clock in; every query is ring Uptime");
     }
-
-    #[cfg(feature = "selftest")]
-    EXTERNAL_MASK_REFUSAL_PROVED.store(
-        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
-        Ordering::Release,
-    );
-    if !external_interrupts_are_admitted(external_controllers) {
-        warn!("ioapic: complete mask proof missing; interrupts stay off");
-        return;
-    }
-    if !iommu::interrupt_boundary_active() {
-        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
-        return;
-    }
-
-    if let Err(reason) = apic::enable_after_pending_audit() {
-        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
-        return;
-    }
-    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
-    info!("cpu: accepting interrupts");
 }
 
 const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllersMasked>) -> bool {
@@ -519,7 +542,7 @@ fn refuse_pci_for_degraded_boot() {
 /// built so far works without it.
 ///
 /// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
-/// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
+/// at `00:1e.0` and `VMware` places functions behind `pciBridge0`–`pciBridge7`,
 /// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
 fn survey_the_bus(
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
@@ -558,16 +581,14 @@ fn survey_the_bus(
         }
     });
 
-    match surveyed {
-        Some(survey) => info!(
-            "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
-            survey.functions, survey.buses, survey.bridges, survey.highest_bus
-        ),
-        None => {
-            warn!("pci: configuration space did not answer");
-            return;
-        }
-    }
+    let Some(survey) = surveyed else {
+        warn!("pci: configuration space did not answer");
+        return;
+    };
+    info!(
+        "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
+        survey.functions, survey.buses, survey.bridges, survey.highest_bus
+    );
 
     let interrupt_boundary = iommu::ensure_interrupt_boundary();
     if !interrupt_boundary {
@@ -577,11 +598,11 @@ fn survey_the_bus(
     match selection {
         StorageSelection::Selected => mount_the_volume(),
         StorageSelection::Seeking if storage == 0 => {
-            info!("pci: no nvme controller; nothing to claim")
+            info!("pci: no nvme controller; nothing to claim");
         }
         StorageSelection::Seeking => info!("nvme: no usable controller"),
         StorageSelection::Halted => {
-            warn!("nvme: selection stopped because a candidate could not be retired")
+            warn!("nvme: selection stopped because a candidate could not be retired");
         }
     }
 }
@@ -1011,18 +1032,18 @@ struct CandidateBaseline {
 
 #[cfg(feature = "selftest")]
 impl CandidateBaseline {
-    fn capture(_context: &mut thread::ThreadContext) -> Self {
+    fn capture(context: &mut thread::ThreadContext) -> Self {
         Self {
             frames: wost::mm::free_frames(),
             claims: pci::claims(),
-            mappings: mem::device_mappings(_context),
+            mappings: mem::device_mappings(context),
             interrupt_owner: iommu::interrupt_boundary_active(),
         }
     }
 
-    fn is_restored(self, _context: &mut thread::ThreadContext) -> bool {
+    fn is_restored(self, context: &mut thread::ThreadContext) -> bool {
         let frames = wost::mm::free_frames();
-        let mappings = mem::device_mappings(_context);
+        let mappings = mem::device_mappings(context);
         let exact = frames == self.frames && mappings == self.mappings;
         let first_interrupt_owner = !self.interrupt_owner
             && iommu::interrupt_boundary_active()
@@ -1309,6 +1330,8 @@ impl core::fmt::Display for KeyboardRouteError {
     }
 }
 
+impl core::error::Error for KeyboardRouteError {}
+
 fn configure_keyboard_route(routing: &mut mem::Routing) -> Result<u32, KeyboardRouteError> {
     let gsi = routing.interrupts.gsi_for(KEYBOARD_IRQ);
     if !routing.io_apic.handles(gsi) {
@@ -1424,6 +1447,10 @@ pub(crate) fn keyboard_routing_rollback_is_exact() -> bool {
 ///
 /// This runs before [`start_interrupts`], so probing masks every described
 /// controller while the CPU still refuses external delivery.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "the MADT inventory is consumed by the one keyboard-routing selection"
+)]
 fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> mem::RoutingPreparation {
     let Some(interrupts) = interrupts else {
         warn!("ioapic: no complete firmware controller inventory; interrupts stay off");

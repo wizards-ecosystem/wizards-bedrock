@@ -29,6 +29,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -147,6 +148,10 @@ impl SizeClass {
 
 /// Where a request of a given size and alignment is served from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Placement {
     /// A slot of this class, taken from a slab.
     Slot(SizeClass),

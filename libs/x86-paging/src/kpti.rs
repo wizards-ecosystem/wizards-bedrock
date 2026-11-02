@@ -165,6 +165,12 @@ impl PairFrameAuthority {
     /// Returning no frames preserves the complete authority for retry. An
     /// exact return releases it. Any partial count is rejected because it
     /// would describe a half-reclaimed pair.
+    ///
+    /// # Errors
+    ///
+    /// [`PairCleanupError::CountOverflow`] when the retained total does not
+    /// fit, and [`PairCleanupError::Incomplete`] when `returned_frames` is
+    /// neither zero nor that total.
     pub const fn settle(
         self,
         returned_frames: usize,
@@ -192,6 +198,10 @@ impl PairFrameAuthority {
 
 /// The only valid outcomes of a pair cleanup transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum PairCleanupState {
     /// Cleanup refused before returning a frame, so the whole pair remains.
     Retained(PairFrameAuthority),
@@ -232,6 +242,10 @@ impl core::error::Error for PairCleanupError {}
 
 /// The live state of `CR4.PCIDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum PcidState {
     /// Address-space identifiers are disabled.
     Disabled,
@@ -321,6 +335,10 @@ pub const fn shared_user_link_matches(full: Entry, stripped: Entry) -> bool {
 
 /// The only permissions an entry-enclave page may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum EnclavePermission {
     /// Read-only executable entry assembly.
     Executable,
@@ -455,6 +473,10 @@ impl core::error::Error for EnclavePageError {}
 
 /// The role of one guarded stack reachable before the full-root load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum EntryStackKind {
     /// The CPU-local stack used for ordinary privilege crossings.
     Transition,
@@ -674,6 +696,10 @@ pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> b
 
 /// One security-relevant event while entering the kernel from CPL 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum EntryEvent {
     /// Load the pair's full root.
     LoadFullRoot,
@@ -729,6 +755,10 @@ impl Default for EntryTransition {
 
 /// One security-relevant event while returning from the kernel to CPL 3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum ExitEvent {
     /// Validate every user-visible register and return-frame field.
     ValidateUserState,

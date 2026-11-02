@@ -587,6 +587,11 @@ review limit states exactly what automation still cannot decide.
 
 ## What is left
 
+v0.2.0 completed one pass of the order below on `694061f` and closed only the
+rows that pass proved (D-449). The same order is the next qualified release.
+[docs/roadmap/NEXT.md](roadmap/NEXT.md) assigns that work by directory. It does
+not change a row state.
+
 The failed `f28428a`, `44e1c89`, `0dfcb76` and `20cf580` reports are
 historical repair inventories, not qualification. The `0dfcb76` run caught
 2,132 of 2,133 with no inconclusive outcome but left permanent mutation 2,036

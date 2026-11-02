@@ -213,6 +213,10 @@ impl Framebuffer {
     ///
     /// Panics if `to_y > from_y`. Source and destination may overlap, but only
     /// upward: copying down would read rows this call had already overwritten.
+    #[expect(
+        clippy::manual_assert,
+        reason = "the refusal is a let-else; the condition is the missing plan, not a boolean assert"
+    )]
     pub fn copy_rows(&mut self, from_y: usize, to_y: usize, rows: usize) {
         let Some(plan) = self.layout.copy_rows_up(from_y, to_y, rows) else {
             panic!("copy_rows moves rows upward only");

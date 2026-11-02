@@ -40,6 +40,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::used_underscore_binding)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -187,7 +190,7 @@ impl DmaState {
 /// Byte offsets of the controller registers, from Base 2.2 §3.1.
 pub mod register {
     /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
-    /// §11 records that VMware's values are unmeasured.
+    /// §11 records that `VMware`'s values are unmeasured.
     pub const CAP: usize = 0x00;
     /// Controller configuration.
     pub const CC: usize = 0x14;
@@ -315,6 +318,11 @@ impl<T> ControllerPreparation<T> {
     }
 
     /// Attempt one register operation without losing ownership on refusal.
+    ///
+    /// # Errors
+    ///
+    /// The unchanged preparation and the operation's error, when `operation`
+    /// fails. The owner is not dropped.
     pub fn access<U, E>(
         mut self,
         operation: impl FnOnce(&mut T) -> Result<U, E>,
@@ -329,6 +337,11 @@ impl<T> ControllerPreparation<T> {
     }
 
     /// Bind the owner to freshly classified disabled register values.
+    ///
+    /// # Errors
+    ///
+    /// [`ControllerStateError`] when `cc` and `csts` are not a disabled
+    /// controller. The preparation is returned for another attempt.
     pub fn prove_disabled(
         self,
         cc: u32,
@@ -349,6 +362,11 @@ impl<T> ControllerPreparation<T> {
 
 impl<T> DisabledPreparation<T> {
     /// Attempt one disabled-controller access with exact retirement fallback.
+    ///
+    /// # Errors
+    ///
+    /// The unchanged preparation and the operation's error, when `operation`
+    /// fails. The owner is not dropped.
     pub fn access<U, E>(
         mut self,
         operation: impl FnOnce(&mut T) -> Result<U, E>,
@@ -378,7 +396,7 @@ impl<P, E> PreparationFailure<P, E> {
 /// What `CAP` says, decoded.
 ///
 /// **Read, never assumed.** Every field here changes what a correct driver
-/// does, and `012` §11 records that VMware's values have not been measured.
+/// does, and `012` §11 records that `VMware`'s values have not been measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     bits: u64,
@@ -394,6 +412,10 @@ impl Capabilities {
     ///
     /// The register holds one less than the number of entries, which is the
     /// specification's own off-by-one and the first place to get it wrong.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub const fn max_queue_entries(self) -> u32 {
         (self.bits as u32 & 0xFFFF) + 1
     }
@@ -527,6 +549,10 @@ impl Capacity {
 
 /// Which half of a queue's doorbell pair an operation addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Doorbell {
     /// Publish a new submission tail.
     Submission,
@@ -629,6 +655,10 @@ impl Command {
     }
 
     // Every transfer is one contiguous extent, so PRP2 stays the zero `empty` wrote.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     const fn with_buffer(mut self, prp1: u64) -> Self {
         self.words[6] = prp1 as u32;
         self.words[7] = (prp1 >> 32) as u32;
@@ -682,6 +712,10 @@ impl Command {
     }
 
     /// Read a validated namespace extent into one aligned controller page.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub const fn read(
         id: u16,
         namespace: u32,
@@ -743,6 +777,10 @@ pub struct Completion {
 
 impl Completion {
     /// Decode sixteen bytes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     pub const fn from_bytes(bytes: [u8; COMPLETION_ENTRY_BYTES]) -> Self {
         let result = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let dword2 = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
@@ -908,7 +946,11 @@ impl Namespace {
     }
 
     /// Bytes in each logical block.
+    ///
+    /// Every namespace this kernel admits is 512-byte blocks. The method
+    /// takes `self` so a later format can vary it without a new call shape.
     pub const fn block_bytes(self) -> u32 {
+        let _ = self.blocks;
         SUPPORTED_BLOCK_BYTES
     }
 }
@@ -1003,6 +1045,11 @@ impl ReadTransfer {
     }
 
     /// Bind this request to a byte limit proved for the controller.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::ControllerLimit`] when this transfer is longer than
+    /// `limit`.
     pub const fn within_limit(self, limit: u64) -> Result<Self, TransferError> {
         if self.bytes > limit {
             return Err(TransferError::ControllerLimit);
@@ -1021,6 +1068,10 @@ impl ReadTransfer {
     }
 
     /// Zero-based NLB encoding for command dword 12.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     pub const fn zero_based_blocks(self) -> u16 {
         (self.blocks - 1) as u16
     }
@@ -1208,6 +1259,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the field is unread outside tests, so its name stays prefixed"
+    )]
     fn publication_closes_the_unpublished_cancellation_door() {
         let mut state = DmaState::idle();
         assert!(!state.cancel_unpublished());

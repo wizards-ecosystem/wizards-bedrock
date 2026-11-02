@@ -32,7 +32,13 @@ const SUPPORTED_BPP: u16 = 32;
 /// Assemble [`BootInfo`] from the bootloader's answers and hand over control.
 ///
 /// Called only by [`entry!`](crate::entry).
+///
+/// # Panics
+///
+/// Panics if the kernel has already been entered.
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
+    // A second caller would mint a second framebuffer over live device memory.
+    static ENTERED: crate::sync::Once = crate::sync::Once::new();
     let Requests {
         base_revision,
         framebuffer,
@@ -42,8 +48,6 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
         rsdp,
         modules,
     } = requests;
-    // A second caller would mint a second framebuffer over live device memory.
-    static ENTERED: crate::sync::Once = crate::sync::Once::new();
     assert!(ENTERED.claim(), "the kernel has already been entered");
 
     kernel_main(BootInfo {
@@ -85,7 +89,7 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     // non-wrapping range, neither guaranteed by the handoff type (D-105).
     let len = usize::try_from(size)
         .ok()
-        .filter(|len| *len <= isize::MAX as usize)
+        .filter(|len| isize::try_from(*len).is_ok())
         .ok_or(HandoffError::Empty)?;
     if (address as usize).checked_add(len).is_none() {
         return Err(HandoffError::Empty);
@@ -116,7 +120,10 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
 /// request types do not implement it, and a hand-written impl here would print
 /// the addresses of static requests, which is not information anyone wants and
 /// is exactly what a KASLR ledger would rather not see in a log.
-#[expect(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "Limine request types have no Debug, and printing their addresses would leak the KASLR slide"
+)]
 #[derive(Clone, Copy)]
 pub struct Requests {
     /// The protocol revision the kernel asked for.
@@ -190,9 +197,9 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         return Err(FramebufferError::UnsupportedBpp(fb.bpp()));
     }
 
-    let pitch = fb.pitch() as usize;
-    let width = fb.width() as usize;
-    let height = fb.height() as usize;
+    let pitch = crate::usize_from_u64(fb.pitch());
+    let width = crate::usize_from_u64(fb.width());
+    let height = crate::usize_from_u64(fb.height());
     let bytes_per_pixel = usize::from(fb.bpp()) / 8;
     let layout = FramebufferLayout::new(fb.addr().addr(), width, height, pitch, bytes_per_pixel)
         .map_err(FramebufferError::InvalidGeometry)?;

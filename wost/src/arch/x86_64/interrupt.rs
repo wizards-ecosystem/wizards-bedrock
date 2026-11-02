@@ -31,7 +31,10 @@ use crate::sync::Once;
 const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
 
-const _: () = assert!(CONTEXTS == super::task::MAX_TASKS);
+const _: () = assert!(
+    CONTEXTS == super::task::MAX_TASKS,
+    "interrupt contexts and task slots are one table"
+);
 
 struct ExclusionLedger {
     depth: AtomicUsize,
@@ -96,13 +99,34 @@ struct RawTrapFrame {
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, r15) == 0);
-    assert!(core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>());
-    assert!(core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>());
+    assert!(
+        core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>(),
+        "the trap frame is twenty-two register slots"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r15) == 0,
+        "r15 is the first saved register"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>(),
+        "r8 keeps its slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>(),
+        "rax keeps its slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>(),
+        "the vector follows the saved registers"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>(),
+        "flags keep their slot in the saved frame"
+    );
+    assert!(
+        core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>(),
+        "the stack selector is the last saved slot"
+    );
 };
 
 /// A read-only snapshot of the registers saved on interrupt entry.
@@ -250,7 +274,7 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
 ///
 /// `false` if the frame is not live, having written nothing.
 #[must_use = "a refused resume changed no trap frame"]
-pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {
+pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
@@ -269,7 +293,7 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
 #[must_use = "a refused resume changed no trap frame"]
 pub(super) fn resume_write_protection(
     frame: &TrapFrame,
-    target: super::cpu::WriteProtectionRecoveryTarget,
+    target: &super::cpu::WriteProtectionRecoveryTarget,
 ) -> bool {
     if !is_live_frame(frame) {
         return false;
@@ -318,7 +342,7 @@ pub(crate) fn suspend_trap() -> TrapSuspension {
 }
 
 /// Put back the state [`suspend_trap`] took.
-pub(crate) fn resume_trap(suspended: TrapSuspension) {
+pub(crate) fn resume_trap(suspended: &TrapSuspension) {
     TRAP_DEPTH.store(suspended.depth, Ordering::Relaxed);
     LIVE_FRAME.store(suspended.frame, Ordering::Relaxed);
 }
@@ -540,6 +564,10 @@ impl InterruptState {
     }
 
     /// Wait atomically while retaining this outer exclusion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this guard was already consumed.
     pub fn wait_for_interrupt(&mut self) {
         assert!(self.live, "an interrupt exclusion was already consumed");
         assert_owner(self.owner);
@@ -587,7 +615,11 @@ impl InterruptState {
             1,
             "an inner interrupt exclusion is still live"
         );
-        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ledger.deferred.load(Ordering::Relaxed),
+            0,
+            "dropping the outer exclusion left a deferred count"
+        );
         ledger.depth.store(0, Ordering::Relaxed);
         ledger.outer_was_enabled.store(false, Ordering::Relaxed);
         self.live = false;
@@ -686,6 +718,12 @@ pub fn are_enabled() -> bool {
 /// The report is the argument for [`InterruptState::restore`]; dropping it
 /// leaves interrupts off, which is always safe and occasionally what a caller
 /// means.
+///
+/// # Panics
+///
+/// Panics if exclusion nesting exceeds one machine word, if a nested
+/// exclusion observes interrupts already enabled, or if the outer exclusion
+/// finds a deferred wake still pending.
 pub fn disable() -> InterruptState {
     let previous = are_enabled();
     // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
@@ -700,7 +738,11 @@ pub fn disable() -> InterruptState {
         "interrupt exclusion nesting exceeds one machine word"
     );
     if depth == 0 {
-        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ledger.deferred.load(Ordering::Relaxed),
+            0,
+            "the first exclusion starts with nothing deferred"
+        );
         ledger.outer_was_enabled.store(previous, Ordering::Relaxed);
     } else {
         assert!(!previous, "interrupts became enabled inside an exclusion");
@@ -833,6 +875,10 @@ fn flags() -> u64 {
 }
 
 /// Raise a breakpoint exception on this CPU.
+///
+/// # Panics
+///
+/// Panics if the interrupt table is not loaded.
 #[cfg(feature = "selftest")]
 pub fn breakpoint() {
     assert!(

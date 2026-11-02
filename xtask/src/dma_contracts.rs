@@ -73,6 +73,50 @@ fn call_is<'a>(expression: &'a Expr, name: &str) -> Option<&'a ExprCall> {
     path_expression_is(&call.func, &[name]).then_some(call)
 }
 
+/// A second-level leaf permission built from the mapper's const directions.
+///
+/// `Permission::ReadWrite` here would publish bidirectional DMA for every
+/// caller. The only accepted form names `DEVICE_READS` and `DEVICE_WRITES`.
+fn permission_from_directions(expression: &Expr) -> Result<(), &'static str> {
+    let Some(call) = call_is(expression, "from_directions") else {
+        return Err("permission is not from_directions");
+    };
+    if !call.args.is_empty() {
+        return Err("from_directions took a value argument");
+    }
+    let Expr::Path(path) = &*call.func else {
+        return Err("from_directions is not a path");
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return Err("from_directions has no path segment");
+    };
+    let syn::PathArguments::AngleBracketed(generic) = &segment.arguments else {
+        return Err("from_directions has no const directions");
+    };
+    // Syn parses a turbofish identifier as a type when it has no value
+    // context. `DEVICE_READS` and `DEVICE_WRITES` are const parameters; either
+    // spelling is the same name in the same order.
+    let names: Vec<String> = generic
+        .args
+        .iter()
+        .filter_map(|argument| {
+            let path = match argument {
+                syn::GenericArgument::Type(syn::Type::Path(path)) => &path.path,
+                syn::GenericArgument::Const(Expr::Path(path)) => &path.path,
+                _ => return None,
+            };
+            path.segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        })
+        .collect();
+    if names == ["DEVICE_READS", "DEVICE_WRITES"] {
+        Ok(())
+    } else {
+        Err("from_directions did not name DEVICE_READS then DEVICE_WRITES")
+    }
+}
+
 fn tried_call_is<'a>(statement: &'a Stmt, name: &str) -> Option<&'a ExprCall> {
     let Stmt::Expr(Expr::Try(tried), Some(_)) = statement else {
         return None;
@@ -1904,7 +1948,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert_eq!(authority_alias_count(&vtd, &["InterruptIsolation"]), 0);
 
     for requirement in [
-        "if !platform_interrupt_remapping {",
+        "if !platform_interrupt_remapping.is_present() {",
         "if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
         "if !extended.extended_interrupt_mode() {",
         "VtdError::FirmwareFacilitiesActive { status }",
@@ -1976,10 +2020,10 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("self.switch_queued_invalidation(true)?")
         .expect("QI enable");
     let queue_readback = invalidation
-        .find("let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;")
+        .find("let observed_queue = read_u64(&self.registers, crate::usize_from_u64(vtd::IQA))?;")
         .expect("IQA readback");
     let tail = invalidation
-        .find("write_u64(&mut self.registers, vtd::IQT as usize, INVALIDATION_TAIL)?;")
+        .find("crate::usize_from_u64(vtd::IQT),\n            INVALIDATION_TAIL,")
         .expect("QI tail publication");
     let queue_disable = invalidation
         .find("let disabled = self.switch_queued_invalidation(false);")
@@ -1992,7 +2036,10 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .split_once("fn switch_translation(")
         .expect("fault-event interrupt mask end")
         .0;
-    assert!(fault_mask.contains("let prior = read_u32(&self.registers, vtd::FECTL as usize)?;"));
+    assert!(
+        fault_mask
+            .contains("let prior = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL))?;")
+    );
     assert!(fault_mask.contains("prior | fault_event_control::MASK"));
     assert!(fault_mask.contains("fault_event_control::masked(observed)"));
 
@@ -2009,7 +2056,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "DmaCoverage::new(&table)",
         "dmar.sole_complete_unit_register_base(SEGMENT)",
         "dmar.sole_rmrr_free_unit_register_base(SEGMENT)",
-        "Vtd::establish_deny_all(registers, true)",
+        "Vtd::establish_deny_all(registers, PlatformInterruptRemapping::Present)",
         "pub(crate) fn ensure_interrupt_boundary() -> bool {",
         "pci::TopologyPresence::Empty | pci::TopologyPresence::Present => {}",
         ".filter(|owner| owner.state == InstalledState::Ready && owner.boundary_active())",
@@ -2570,7 +2617,8 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         );
     }
     assert!(
-        memory.contains("destination.cast::<u64>().write_volatile(value.to_le())"),
+        memory.contains("let word = destination.cast::<u64>();")
+            && memory.contains("word.write_volatile(value.to_le())"),
         "live VT-d entries must use one aligned qword publication"
     );
     let table_writer =
@@ -2693,19 +2741,23 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             && path_expression_is(&pointer.args[1], &["pointer"]),
         "map_page's intermediate pointer publication is not exact"
     );
+    assert!(
+        field_chain_is(&leaf.receiver, "self", &["tables"])
+            && leaf.args.len() == 2
+            && path_expression_is(&leaf.args[0], &["slot"]),
+        "map_page's leaf publication widened or changed identity"
+    );
     let Some(pte) = leaf.args.get(1).and_then(|entry| call_is(entry, "pte")) else {
         panic!("map_page's leaf publication does not derive one PTE");
     };
     assert!(
-        field_chain_is(&leaf.receiver, "self", &["tables"])
-            && leaf.args.len() == 2
-            && path_expression_is(&leaf.args[0], &["slot"])
-            && pte.args.len() == 3
-            && path_expression_is(&pte.args[0], &["page"])
-            && path_expression_is(&pte.args[1], &["DEVICE_READS"])
-            && path_expression_is(&pte.args[2], &["DEVICE_WRITES"]),
-        "map_page's leaf publication widened or changed identity"
+        pte.args.len() == 2 && path_expression_is(&pte.args[0], &["page"]),
+        "map_page PTE arguments changed: {}",
+        pte.args.len()
     );
+    permission_from_directions(&pte.args[1]).unwrap_or_else(|reason| {
+        panic!("map_page permission is not the const directions: {reason}")
+    });
     let nvme = source("kernel/src/nvme.rs");
     for mapping in [
         "map_segment_for_device_read(&mut self.submission)",
@@ -4473,7 +4525,8 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
                     call.args.iter().collect::<Vec<_>>().as_slice(),
                     [registers, interrupts]
                         if path_expression_is(registers, &["registers"])
-                            && bool_literal_is(interrupts, true)
+                            && matches!(interrupts, Expr::Path(path)
+                                if path_ends(&path.path, &["Present"]))
                 ));
             }
             syn::visit::visit_expr_call(self, call);

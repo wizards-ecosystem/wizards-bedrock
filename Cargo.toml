@@ -149,7 +149,15 @@ shuttle = "0.9"
 # Members opt in with `[lints] workspace = true`. Cargo rejects mixing that with
 # sibling lint tables in the same manifest, so per-crate escalation lives in
 # source attributes instead — see `#![forbid(unsafe_code)]` in every `libs/`
-# crate, and the one `#![allow(unsafe_code)]` in `wost` (D-67).
+# crate, and the one `#![allow(unsafe_code)]` in `wost` (D-67). `xtask` does
+# not opt in (D-22): missing_docs on the host tool is noise.
+#
+# BeautifulRust's tested table (docs/style/BEAUTIFUL_RUST.md) is the style
+# standard. Safety denies stay deny. Every newly adopted lint is warn, so
+# `cargo check` and `cargo build` keep succeeding while other work clears the
+# nits. `cargo xtask clippy` still passes `-D warnings` after `--`, and that
+# gate stays red until the warnings are gone. Groups use priority -1 so an
+# individual level in this table wins.
 [workspace.lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
@@ -157,6 +165,8 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
+# Bare trait objects, anonymous parameters, needless outlives bounds.
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 # Doc links rot silently: `missing_docs` notices a doc that is absent, nothing
 # notices one that points at a name which has since been renamed or made
@@ -168,13 +178,75 @@ private_intra_doc_links = "deny"
 redundant_explicit_links = "deny"
 
 [workspace.lints.clippy]
-# These three are the mechanical backstop for the framekernel discipline:
-# every unsafe operation is documented, one operation per block, and every
-# `pub unsafe fn` states its contract. `missing_docs_in_private_items` is
-# deliberately absent — it manufactures comment noise.
+# Groups first, below the individual levels. `nursery` and the blanket
+# `restriction` group stay off: nursery moves every release, and restriction
+# includes `indexing_slicing`, which D-159 measured at 118 hits behind proofs
+# the lint cannot see.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Panics: return errors. `expect("why")` stays the sanctioned form for a
+# violated invariant (BeautifulRust). Kernel runtime paths still prefer
+# `Result`; the libs that already deny `expect_used` keep that stricter
+# attribute. `unwrap` is never that form.
+unwrap_used = "warn"
+expect_used = "allow"
+panic_in_result_fn = "warn"
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+missing_assert_message = "warn"
+
+# A suppression names the lint and says why, and `expect` drops out once the
+# lint stops firing. `#[allow]` remains necessary inside macros, where an
+# unfulfilled `expect` is not checked (D-131); those sites still need a reason.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# Framekernel backstop. Stricter than BeautifulRust's warn. One unsafe
+# operation per block, a `// SAFETY:` comment on it, and `# Safety` on every
+# `pub unsafe fn`. `missing_docs_in_private_items` stays off on purpose: it
+# manufactures comment noise.
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
 missing_safety_doc = "deny"
+
+# API shape. `max-fn-params-bools = 0` in clippy.toml, so any bool parameter
+# warns. A two-variant enum is the call-site name (D-27).
+fn_params_excessive_bools = "warn"
+struct_excessive_bools = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+rc_buffer = "warn"
+exhaustive_enums = "warn"
+
+# Idiom and leftovers.
+string_add = "warn"
+wildcard_imports = "warn"
+dbg_macro = "warn"
+todo = "warn"
+# xtask does not inherit this table. Kernel and libs log; they do not print.
+print_stdout = "warn"
+print_stderr = "warn"
+
+# Casts. A blanket ban on `as` fights port-width, MMIO-width, and the
+# sign-extending canonical-address arithmetic D-159 identified as the
+# mechanism rather than a defect. Narrowing (`u64 as u32` and its kin) stays
+# a warning: that one can hide a real loss. Lossless casts stay inside
+# `pedantic` (`cast_lossless`).
+as_conversions = "allow"
+cast_possible_truncation = "warn"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+
+# Pedantic noise BeautifulRust's tested config turns off, plus one kernel
+# extra. `enum_variant_names` wants every variant prefixed with the type
+# name, which repeats the namespace the module path already carries (005,
+# Rust for Linux).
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+module_inception = "allow"
+enum_glob_use = "allow"
+enum_variant_names = "allow"
 
 [profile.release]
 panic = "abort"

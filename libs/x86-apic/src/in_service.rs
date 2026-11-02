@@ -5,6 +5,10 @@ use crate::vector::InterruptVector;
 
 /// Whether the frame behind an EOI claim remains the active trap frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum FrameLiveness {
     /// The claimed frame is still the innermost active trap.
     Live,
@@ -14,6 +18,10 @@ pub enum FrameLiveness {
 
 /// Whether live ISR state still names the claimed dismissal target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum DismissalOwnership {
     /// The claimed vector remains the highest-priority in-service vector.
     Owned,

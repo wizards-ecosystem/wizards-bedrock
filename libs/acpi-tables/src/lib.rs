@@ -32,6 +32,10 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
+#![warn(clippy::too_many_lines)]
+#![warn(clippy::trivially_copy_pass_by_ref)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -211,6 +215,10 @@ impl Rsdp {
     /// [`AcpiError::BadLength`] for an undersized extended pointer,
     /// [`AcpiError::TooLong`] above `limit`, and
     /// [`AcpiError::UnsupportedRevision`] for an unknown layout.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
         let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
             needed: Self::V1_LEN,
@@ -358,6 +366,10 @@ impl Sdt {
     /// [`AcpiError::TooShort`] if the header is incomplete,
     /// [`AcpiError::BadLength`] if the declared length is smaller than a
     /// header, and [`AcpiError::TooLong`] above `limit`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
         let head = bytes.get(..Self::LEN).ok_or(AcpiError::TooShort {
             needed: Self::LEN,
@@ -722,7 +734,7 @@ impl Iterator for SdtPointers<'_> {
     fn next(&mut self) -> Option<u64> {
         let address = match self.width {
             8 => u64_at(self.body, self.offset)?,
-            _ => u32_at(self.body, self.offset)? as u64,
+            _ => u64::from(u32_at(self.body, self.offset)?),
         };
         self.offset += self.width;
         Some(address)
@@ -1546,6 +1558,10 @@ impl Named {
 
 /// How a remapping unit's scope reaches one function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Coverage {
     /// An endpoint scope names the function itself.
     Endpoint,
@@ -2018,6 +2034,14 @@ impl<'a> Dmar<'a> {
     /// scans the complete, fixed segment requester-ID space through `present`,
     /// even when a more-specific scope names `selected`; the caller's fixed
     /// inventory capacity remains the admission bound.
+    ///
+    /// # Errors
+    ///
+    /// See [`RequesterInventoryError`]. A refusal leaves no partial inventory.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the steps are one ordered transaction; splitting them would hide that order"
+    )]
     pub fn requester_inventory<const N: usize>(
         &self,
         selected: Bdf,
@@ -2224,6 +2248,10 @@ impl<F: Fn(Bdf) -> Option<BusRange>, H: Fn(Bdf, Bdf) -> bool> Iterator
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn rsdp(revision: u8) -> Vec<u8> {
         let mut bytes = vec![0u8; Rsdp::V2_LEN];
         bytes[..8].copy_from_slice(&Rsdp::SIGNATURE);
@@ -2236,6 +2264,14 @@ mod tests {
         bytes
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the signature is the four-byte array the table builder copies"
+    )]
     fn table(signature: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0u8; Sdt::LEN];
         bytes[..4].copy_from_slice(signature);
@@ -2385,6 +2421,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the pointer index is below MAX_TABLES, which fits in a u32"
+    )]
     fn a_root_table_at_the_cap_is_walked_whole() {
         const LISTED: usize = MAX_TABLES;
 
@@ -2609,13 +2649,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_header_only_table_and_its_exact_budget_are_valid_lengths() {
         let bytes = table(&Sdt::XSDT, &[]);
         assert_eq!(Sdt::parse_length(&bytes, Sdt::LEN), Ok(Sdt::LEN));
-        assert_eq!(
-            Sdt::parse(&bytes).map(|header| header.length()),
-            Ok(Sdt::LEN as u32)
-        );
+        assert_eq!(Sdt::parse(&bytes).map(Sdt::length), Ok(Sdt::LEN as u32));
         assert!(matches!(
             Sdt::parse_length(&bytes, Sdt::LEN - 1),
             Err(AcpiError::TooLong { .. })
@@ -2712,7 +2753,7 @@ mod tests {
         let bytes = table(&Sdt::XSDT, &[0; 9]);
 
         assert_eq!(
-            SdtPointers::xsdt(&bytes).map(|pointers| pointers.count()),
+            SdtPointers::xsdt(&bytes).map(Iterator::count),
             Err(AcpiError::PartialEntry {
                 width: 8,
                 trailing: 1,
@@ -2904,11 +2945,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_madt_without_its_fixed_header_is_invalid() {
         let bytes = table(&Sdt::MADT, &[]);
 
         assert_eq!(
-            MadtEntries::new(&bytes).map(|entries| entries.count()),
+            MadtEntries::new(&bytes).map(Iterator::count),
             Err(AcpiError::BadLength(Sdt::LEN as u32))
         );
     }
@@ -2962,6 +3007,13 @@ mod tests {
         assert_eq!(4 + 4 + 1 + 1 + 6 + 8 + 4 + 4 + 4, Sdt::LEN);
     }
 
+    /// Whether a test DRHD sets the `INCLUDE_PCI_ALL` flag.
+    #[derive(Clone, Copy)]
+    enum PciAll {
+        Included,
+        Excluded,
+    }
+
     fn dmar_body(structures: &[u8]) -> Vec<u8> {
         let mut body = vec![0u8; 12]; // host address width, flags, 10 reserved
         body.extend_from_slice(structures);
@@ -2969,14 +3021,17 @@ mod tests {
     }
 
     fn drhd_bytes(
-        include_pci_all: bool,
+        include_pci_all: PciAll,
         segment: u16,
         register_base: u64,
         scopes: &[u8],
     ) -> Vec<u8> {
         let mut bytes = vec![0u8; 16];
         bytes[0..2].copy_from_slice(&0u16.to_le_bytes());
-        bytes[4] = u8::from(include_pci_all);
+        bytes[4] = match include_pci_all {
+            PciAll::Included => 1,
+            PciAll::Excluded => 0,
+        };
         bytes[6..8].copy_from_slice(&segment.to_le_bytes());
         bytes[8..16].copy_from_slice(&register_base.to_le_bytes());
         bytes.extend_from_slice(scopes);
@@ -3025,8 +3080,13 @@ mod tests {
         let scoped_target = pci_endpoint_scope(2, 3, 0);
         let rmrr_scope = pci_endpoint_scope(2, 3, 0);
         let mut structures = Vec::new();
-        structures.extend_from_slice(&drhd_bytes(true, 0, 0xfed9_0000, &[]));
-        structures.extend_from_slice(&drhd_bytes(false, 0, 0xfed9_1000, &scoped_target));
+        structures.extend_from_slice(&drhd_bytes(PciAll::Included, 0, 0xfed9_0000, &[]));
+        structures.extend_from_slice(&drhd_bytes(
+            PciAll::Excluded,
+            0,
+            0xfed9_1000,
+            &scoped_target,
+        ));
         structures.extend_from_slice(&rmrr_bytes(0, 0x1000, 0x1fff, &rmrr_scope));
         structures.extend_from_slice(&atsr_bytes(0, &[]));
         structures.extend_from_slice(&rhsa_bytes(0xfed9_1000, 1));
@@ -3228,7 +3288,7 @@ mod tests {
         for segment in [0, 7, u16::MAX] {
             let bytes = table(
                 &Sdt::DMAR,
-                &dmar_body(&drhd_bytes(true, segment, 0xfed9_0000, &[])),
+                &dmar_body(&drhd_bytes(PciAll::Included, segment, 0xfed9_0000, &[])),
             );
             let dmar = Dmar::new(&bytes).expect("one DRHD");
             assert_eq!(dmar.sole_unit_segment(), Some(segment));
@@ -3248,7 +3308,7 @@ mod tests {
 
         let scoped = table(
             &Sdt::DMAR,
-            &dmar_body(&drhd_bytes(false, 0, 0xfed9_0000, &[])),
+            &dmar_body(&drhd_bytes(PciAll::Excluded, 0, 0xfed9_0000, &[])),
         );
         let scoped = Dmar::new(&scoped).expect("one scoped DRHD");
         assert_eq!(
@@ -3257,15 +3317,15 @@ mod tests {
         );
         assert_eq!(scoped.sole_complete_unit_register_base(0), None);
 
-        let mut reserved = drhd_bytes(true, 0, 0xfed9_0000, &[]);
+        let mut reserved = drhd_bytes(PciAll::Included, 0, 0xfed9_0000, &[]);
         reserved.extend_from_slice(&rmrr_bytes(0, 0x1000, 0x1fff, &[]));
         let reserved = table(&Sdt::DMAR, &dmar_body(&reserved));
         let reserved = Dmar::new(&reserved).expect("one catch-all DRHD and one RMRR");
         assert_eq!(reserved.sole_rmrr_free_unit_register_base(0), None);
         assert_eq!(reserved.sole_complete_unit_register_base(0), None);
 
-        let mut multiple = drhd_bytes(true, 0, 0xfed9_0000, &[]);
-        multiple.extend_from_slice(&drhd_bytes(true, 9, 0xfed9_1000, &[]));
+        let mut multiple = drhd_bytes(PciAll::Included, 0, 0xfed9_0000, &[]);
+        multiple.extend_from_slice(&drhd_bytes(PciAll::Included, 9, 0xfed9_1000, &[]));
         let bytes = table(&Sdt::DMAR, &dmar_body(&multiple));
         let multiple = Dmar::new(&bytes).expect("distinct DRHDs");
         assert_eq!(multiple.sole_unit_segment(), None);
@@ -3288,10 +3348,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_dmar_without_its_fixed_preamble_is_invalid() {
         let bytes = table(&Sdt::DMAR, &[]);
         assert_eq!(
-            DmarEntries::new(&bytes).map(|entries| entries.count()),
+            DmarEntries::new(&bytes).map(Iterator::count),
             Err(AcpiError::BadLength(Sdt::LEN as u32))
         );
     }
@@ -3338,7 +3402,7 @@ mod tests {
     #[test]
     fn a_device_scope_running_past_its_structure_invalidates_the_table() {
         let short_scope = [1u8, 8, 0, 0, 0, 0]; // claims 8 bytes; only 6 are present
-        let drhd = drhd_bytes(false, 0, 0x1000, &short_scope);
+        let drhd = drhd_bytes(PciAll::Excluded, 0, 0x1000, &short_scope);
         let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
         assert!(matches!(
             DmarEntries::new(&bytes),
@@ -3353,7 +3417,7 @@ mod tests {
     #[test]
     fn an_unknown_dmar_structure_is_preserved_as_other_and_does_not_stop_the_walk() {
         let mut structures = vec![9, 0, 8, 0, 1, 2, 3, 4]; // kind 9, length 8
-        structures.extend_from_slice(&drhd_bytes(true, 0, 0x2000, &[]));
+        structures.extend_from_slice(&drhd_bytes(PciAll::Included, 0, 0x2000, &[]));
         let bytes = table(&Sdt::DMAR, &dmar_body(&structures));
 
         let parsed: Vec<_> = DmarEntries::new(&bytes)
@@ -3398,7 +3462,7 @@ mod tests {
             exact[2..4].copy_from_slice(&len.to_le_bytes());
             let bytes = table(&Sdt::DMAR, &dmar_body(&exact));
             assert_eq!(
-                DmarEntries::new(&bytes).map(|entries| entries.count()),
+                DmarEntries::new(&bytes).map(Iterator::count),
                 Ok(1),
                 "kind {kind} refused exactly {minimum} bytes"
             );
@@ -3464,8 +3528,8 @@ mod tests {
 
     #[test]
     fn two_drhds_at_the_same_register_base_are_refused_by_the_validated_view() {
-        let mut structures = drhd_bytes(true, 0, 0xfed9_0000, &[]);
-        structures.extend_from_slice(&drhd_bytes(false, 1, 0xfed9_0000, &[]));
+        let mut structures = drhd_bytes(PciAll::Included, 0, 0xfed9_0000, &[]);
+        structures.extend_from_slice(&drhd_bytes(PciAll::Excluded, 1, 0xfed9_0000, &[]));
         let bytes = table(&Sdt::DMAR, &dmar_body(&structures));
 
         assert!(DmarEntries::new(&bytes).is_ok());
@@ -3484,7 +3548,7 @@ mod tests {
                 let mut malformed = vec![kind, length, 0, 0, 0, 0, 3, 1, 0xff];
                 malformed.truncate(usize::from(length));
                 for structure in [
-                    drhd_bytes(false, 0, 0x4000, &malformed),
+                    drhd_bytes(PciAll::Excluded, 0, 0x4000, &malformed),
                     rmrr_bytes(0, 0x7000, 0x7fff, &malformed),
                     atsr_bytes(0, &malformed),
                 ] {
@@ -3528,7 +3592,7 @@ mod tests {
     #[test]
     fn a_device_scope_exposes_its_kind_start_bus_and_every_hop() {
         let scope_bytes = [1u8, 10, 0, 0, 0, 2, 3, 0, 4, 0]; // kind 1, length 10, two hops
-        let drhd = drhd_bytes(false, 0, 0x4000, &scope_bytes);
+        let drhd = drhd_bytes(PciAll::Excluded, 0, 0x4000, &scope_bytes);
         let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
 
         let structure = DmarEntries::new(&bytes)
@@ -3547,7 +3611,7 @@ mod tests {
     #[test]
     fn an_unknown_device_scope_kind_is_preserved_as_other() {
         let scope_bytes = [0x7fu8, 6, 0, 0, 0, 0]; // kind 0x7f, length 6, no path
-        let drhd = drhd_bytes(false, 0, 0x5000, &scope_bytes);
+        let drhd = drhd_bytes(PciAll::Excluded, 0, 0x5000, &scope_bytes);
         let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
 
         let structure = DmarEntries::new(&bytes)
@@ -3666,7 +3730,7 @@ mod tests {
             scope(IO_APIC, 0, &[(0x1f, 0)]).as_slice(),
         ]
         .concat();
-        let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+        let bytes = dmar_of(&[drhd_bytes(PciAll::Excluded, 0, SCOPED, &scopes)]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
         let inventory = dmar
@@ -3683,7 +3747,7 @@ mod tests {
         let selected = Bdf::new(0, 0, 4, 0);
         let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
 
-        let include_all = dmar_of(&[drhd_bytes(true, 0, SCOPED, &endpoint)]);
+        let include_all = dmar_of(&[drhd_bytes(PciAll::Included, 0, SCOPED, &endpoint)]);
         let inventory = Dmar::new(&include_all)
             .expect("valid dmar")
             .requester_inventory::<2>(selected, no_bridges, no_hierarchies, present(&[selected]))
@@ -3695,7 +3759,7 @@ mod tests {
         let downstream = Bdf::new(0, 0x20, 3, 1);
         let hierarchy_scope = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
         let shared = dmar_of(&[drhd_bytes(
-            false,
+            PciAll::Excluded,
             0,
             SCOPED,
             &[endpoint.as_slice(), hierarchy_scope.as_slice()].concat(),
@@ -3715,7 +3779,7 @@ mod tests {
         );
 
         let crowded = dmar_of(&[drhd_bytes(
-            false,
+            PciAll::Excluded,
             0,
             SCOPED,
             &[
@@ -3738,7 +3802,7 @@ mod tests {
         let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
         let unresolved = scope(ENDPOINT, 0, &[(0x1c, 0), (5, 0)]);
         let bytes = dmar_of(&[drhd_bytes(
-            false,
+            PciAll::Excluded,
             0,
             SCOPED,
             &[endpoint.as_slice(), unresolved.as_slice()].concat(),
@@ -3753,12 +3817,12 @@ mod tests {
         let sibling = scope(ENDPOINT, 0, &[(5, 0)]);
         let ambiguous = dmar_of(&[
             drhd_bytes(
-                false,
+                PciAll::Excluded,
                 0,
                 SCOPED,
                 &[endpoint.as_slice(), sibling.as_slice()].concat(),
             ),
-            drhd_bytes(false, 0, EXACT, &sibling),
+            drhd_bytes(PciAll::Excluded, 0, EXACT, &sibling),
         ]);
         assert_eq!(
             Dmar::new(&ambiguous)
@@ -3767,7 +3831,7 @@ mod tests {
             Err(RequesterInventoryError::ForeignEndpoint)
         );
 
-        let catch_all = dmar_of(&[drhd_bytes(true, 0, CATCH_ALL, &[])]);
+        let catch_all = dmar_of(&[drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[])]);
         assert_eq!(
             Dmar::new(&catch_all)
                 .expect("valid dmar")
@@ -3785,7 +3849,7 @@ mod tests {
     fn catch_all_inventory_enumerates_every_present_requester_with_a_fixed_budget() {
         let selected = Bdf::new(0, 0, 4, 0);
         let sibling = Bdf::new(0, 0x20, 3, 1);
-        let catch_all_bytes = dmar_of(&[drhd_bytes(true, 0, CATCH_ALL, &[])]);
+        let catch_all_bytes = dmar_of(&[drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[])]);
         let dmar = Dmar::new(&catch_all_bytes).expect("valid catch-all dmar");
 
         let inventory = dmar
@@ -3815,7 +3879,7 @@ mod tests {
         let selected = Bdf::new(0, 0x20, 3, 0);
         let bridges = [(bridge, buses(0x20, 0x20))];
         let bytes = dmar_of(&[drhd_bytes(
-            false,
+            PciAll::Excluded,
             0,
             SCOPED,
             &scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]),
@@ -3841,8 +3905,18 @@ mod tests {
         let target = Bdf::new(0, 0x30, 3, 0);
         let bridges = [(first, buses(0x20, 0x3f)), (second, buses(0x30, 0x4f))];
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0, &[(0x1c, 0)])),
-            drhd_bytes(false, 0, INNER, &scope(SUB_HIERARCHY, 0, &[(0x1d, 0)])),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                SCOPED,
+                &scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]),
+            ),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                INNER,
+                &scope(SUB_HIERARCHY, 0, &[(0x1d, 0)]),
+            ),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -3870,8 +3944,8 @@ mod tests {
         let bridges = [(bridge, buses(0x20, 0x3f))];
         let hierarchy_scope = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &hierarchy_scope),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &hierarchy_scope),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
             rmrr_bytes(0, 0x7000, 0x7fff, &hierarchy_scope),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
@@ -3897,7 +3971,7 @@ mod tests {
         for _ in 0..MAX_REQUESTER_SCOPES {
             scopes.extend_from_slice(&hierarchy_scope);
         }
-        let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+        let bytes = dmar_of(&[drhd_bytes(PciAll::Excluded, 0, SCOPED, &scopes)]);
         let bridges = [(bridge, buses(0x20, 0x20))];
 
         assert_eq!(
@@ -3921,7 +3995,7 @@ mod tests {
         let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
         for kind in [NAMESPACE_DEVICE, 0x7f] {
             let scopes = [endpoint.as_slice(), scope(kind, 0, &[(0x1f, 0)]).as_slice()].concat();
-            let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+            let bytes = dmar_of(&[drhd_bytes(PciAll::Excluded, 0, SCOPED, &scopes)]);
             assert_eq!(
                 Dmar::new(&bytes)
                     .expect("valid dmar")
@@ -3945,8 +4019,8 @@ mod tests {
         let ancestry = hierarchy(&bridges);
         let endpoint = scope(ENDPOINT, 0x10, &[(0x1c, 4), (0x03, 2), (0x05, 1)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 3, SCOPED, &endpoint),
-            drhd_bytes(true, 3, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 3, SCOPED, &endpoint),
+            drhd_bytes(PciAll::Included, 3, CATCH_ALL, &[]),
             rmrr_bytes(3, 0x7000, 0x7fff, &endpoint),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
@@ -3996,8 +4070,8 @@ mod tests {
         let ancestry = hierarchy(&bridges);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &hierarchy),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &hierarchy),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
             rmrr_bytes(0, 0x7000, 0x7fff, &hierarchy),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
@@ -4032,8 +4106,8 @@ mod tests {
         let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1d, 0)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &[through, hierarchy].concat()),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &[through, hierarchy].concat()),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -4063,8 +4137,8 @@ mod tests {
         let looping = scope(ENDPOINT, 0x04, &[(0x1c, 0), (0x05, 1)]);
         let backward = scope(ENDPOINT, 0x30, &[(0x1c, 0), (0x06, 1)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &[looping, backward].concat()),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &[looping, backward].concat()),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -4086,8 +4160,8 @@ mod tests {
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &[hierarchy, through].concat()),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &[hierarchy, through].concat()),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -4117,8 +4191,18 @@ mod tests {
         let mut endpoint_path = vec![(0x01, 0); HOPS - 1];
         endpoint_path.push((0x05, 1));
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, INNER, &scope(SUB_HIERARCHY, 0, &[(0x01, 0)])),
-            drhd_bytes(false, 0, EXACT, &scope(ENDPOINT, 0, &endpoint_path)),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                INNER,
+                &scope(SUB_HIERARCHY, 0, &[(0x01, 0)]),
+            ),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                EXACT,
+                &scope(ENDPOINT, 0, &endpoint_path),
+            ),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
         let target = Bdf::new(0, 8, 0x05, 1);
@@ -4140,8 +4224,8 @@ mod tests {
             .map(|kind| scope(kind, 0x00, &[(0x1f, 0)]))
             .concat();
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &foreign),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &foreign),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
             rmrr_bytes(0, 0x7000, 0x7fff, &foreign),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
@@ -4167,20 +4251,25 @@ mod tests {
         let topology = topology(&bridges);
         let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
             drhd_bytes(
-                false,
+                PciAll::Excluded,
+                0,
+                SCOPED,
+                &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]),
+            ),
+            drhd_bytes(
+                PciAll::Excluded,
                 0,
                 INNER,
                 &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0), (0x00, 0)]),
             ),
             drhd_bytes(
-                false,
+                PciAll::Excluded,
                 0,
                 EXACT,
                 &scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x00, 0), (0x00, 0)]),
             ),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -4211,10 +4300,25 @@ mod tests {
         let topology = topology(&bridges);
         let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
-            drhd_bytes(false, 0, EXACT, &pci_endpoint_scope(0x00, 0x05, 0)),
-            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
-            drhd_bytes(false, 2, INNER, &pci_endpoint_scope(0x00, 0x07, 0)),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                EXACT,
+                &pci_endpoint_scope(0x00, 0x05, 0),
+            ),
+            drhd_bytes(
+                PciAll::Excluded,
+                0,
+                SCOPED,
+                &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]),
+            ),
+            drhd_bytes(
+                PciAll::Excluded,
+                2,
+                INNER,
+                &pci_endpoint_scope(0x00, 0x07, 0),
+            ),
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
@@ -4250,7 +4354,7 @@ mod tests {
     #[test]
     fn excessive_and_ambiguous_remapping_authority_fails_closed() {
         let units = (0..=MAX_DRHD_UNITS)
-            .map(|index| drhd_bytes(false, 0, 0x1000 + index as u64 * 0x1000, &[]))
+            .map(|index| drhd_bytes(PciAll::Excluded, 0, 0x1000 + index as u64 * 0x1000, &[]))
             .collect::<Vec<_>>();
         assert_eq!(
             Dmar::new(&dmar_of(&units)),
@@ -4262,17 +4366,17 @@ mod tests {
         let target = Bdf::new(0, 0x00, 0x05, 0);
         let endpoint = pci_endpoint_scope(0x00, 0x05, 0);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, EXACT, &endpoint),
-            drhd_bytes(false, 0, SCOPED, &endpoint),
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Excluded, 0, EXACT, &endpoint),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &endpoint),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous endpoints");
         assert_eq!(dmar.unit_for(target, no_bridges, no_hierarchies), None);
 
         let elsewhere = Bdf::new(0, 0x00, 0x06, 0);
         let bytes = dmar_of(&[
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
-            drhd_bytes(true, 0, INNER, &[]),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Included, 0, INNER, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous catch-all units");
         assert_eq!(dmar.unit_for(elsewhere, no_bridges, no_hierarchies), None);
@@ -4283,8 +4387,8 @@ mod tests {
         let ancestry = hierarchy(&bridges);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let bytes = dmar_of(&[
-            drhd_bytes(false, 0, SCOPED, &hierarchy),
-            drhd_bytes(false, 0, INNER, &hierarchy),
+            drhd_bytes(PciAll::Excluded, 0, SCOPED, &hierarchy),
+            drhd_bytes(PciAll::Excluded, 0, INNER, &hierarchy),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous bridges");
         assert_eq!(
@@ -4301,7 +4405,7 @@ mod tests {
         let topology = topology(&bridges);
         let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
-            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(PciAll::Included, 0, CATCH_ALL, &[]),
             rmrr_bytes(
                 0,
                 0x7000,

@@ -2,7 +2,7 @@
 //!
 //! `pci-config` owns the encoding and decoding. This module owns the ports,
 //! claimed atomically and locked across each address/data pair. CF8/CFC is the
-//! common mechanism on the QEMU i440fx and VMware 440BX targets (D-18, D-138).
+//! common mechanism on the QEMU i440fx and `VMware` 440BX targets (D-18, D-138).
 
 use nvme::{ControllerStateError, DisabledRegisters, register};
 use pci_config::{
@@ -331,11 +331,19 @@ impl MappedBar {
     }
 
     /// Read one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`] when `offset` is misaligned or outside the BAR window.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         ReleasableDevice::read_u32(&self.region, offset)
     }
 
     /// Write one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`] when `offset` is misaligned or outside the BAR window.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         ReleasableDevice::write_u32(&mut self.region, offset, value)
     }
@@ -381,6 +389,10 @@ impl MappedBar {
 impl NvmeBusMasterAuthority<'_> {
     /// The live register values carried by this authority.
     #[cfg(feature = "selftest")]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "production code ignores _observed; the self-test is the reader"
+    )]
     pub fn observation_for_test(&self) -> (u32, u32) {
         self._observed.bits()
     }
@@ -420,6 +432,7 @@ pub struct BarEnableFailure {
 /// Result of exposing a mapped BAR through memory decode.
 #[derive(Debug)]
 #[must_use = "a refused decode transition retains mapping and restoration authority"]
+#[non_exhaustive]
 pub enum BarEnableOutcome {
     /// The BAR is accessible and the command transition remains owned.
     Enabled(MappedBar),
@@ -447,7 +460,17 @@ impl FunctionClaim {
 
     /// The vendor and device word read while the function was claimed.
     pub const fn identity(&self) -> (u16, u16) {
-        (self.identity as u16, (self.identity >> 16) as u16)
+        // The configuration dword is vendor in the low half and device in the
+        // high half. The low cast drops the device id on purpose. Shifting by
+        // 16 leaves a value that fits in `u16`.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "PCI vendor id is the low 16 bits of the identity dword"
+        )]
+        let vendor = self.identity as u16;
+        // Shifting by 16 leaves a value that fits in `u16`.
+        let device = (self.identity >> 16) as u16;
+        (vendor, device)
     }
 }
 
@@ -505,12 +528,24 @@ pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
     let at = at.function_base();
     Port::write(address, at.bits());
     let identity = Port::read(data);
-    if pci_config::is_absent(identity as u16) {
+    // Vendor id is the low half. A present device still has a device id above it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "PCI absence is decided by the low 16 bits of the identity dword"
+    )]
+    let vendor = identity as u16;
+    if pci_config::is_absent(vendor) {
         return Err(ClaimError::Absent);
     }
     let header_at = at.at(header::HEADER_TYPE).ok_or(ClaimError::Unavailable)?;
     Port::write(address, header_at.bits());
-    let header = HeaderType::from_bits((Port::read(data) >> 16) as u8);
+    // Header type is one byte at bits 16..23 of the status/command dword.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "PCI header type is the byte at bits 16..23"
+    )]
+    let header_bits = (Port::read(data) >> 16) as u8;
+    let header = HeaderType::from_bits(header_bits);
     let authority = functions.claim(at, header).map_err(|reason| match reason {
         FunctionClaimError::Taken => ClaimError::Taken,
         FunctionClaimError::NoRoom => ClaimError::NoRoom,
@@ -585,6 +620,10 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
 /// Refuses a stale BAR or command owner, a domain for another function, and
 /// every configuration access or exact-readback failure without consuming the
 /// command state.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the move spends the quiescence authority and the DMA and interrupt proofs; they are not Copy"
+)]
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,
     domain: DmaDomain<'_>,
@@ -618,6 +657,11 @@ pub fn admit_bus_master(
 
 /// Disable bus mastering for a rejected DMA lease and remove BME from its
 /// eventual restoration word only after exact readback.
+///
+/// # Errors
+///
+/// [`EnableError`] when the function is not the live claim or the command
+/// readback does not match the word just written.
 pub fn disable_bus_master_for_retirement(
     function: &FunctionClaim,
     state: &mut CommandState,
@@ -654,6 +698,11 @@ pub fn disable_bus_master_for_retirement(
 ///
 /// Successful restoration of the returned state preserves every captured
 /// command bit except BME.
+///
+/// # Errors
+///
+/// [`EnableFailure`] returns the function when the command port is busy or
+/// the captured word cannot be read back.
 pub fn fence_bus_master(function: &FunctionClaim) -> Result<CommandState, EnableFailure> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -674,6 +723,10 @@ pub fn fence_bus_master(function: &FunctionClaim) -> Result<CommandState, Enable
 }
 
 /// Re-read one exact command owner immediately before a unit-wide transition.
+///
+/// # Errors
+///
+/// [`EnableError`] when the live command word is not the fenced one.
 pub fn verify_bus_master_fence(
     function: &FunctionClaim,
     state: &CommandState,
@@ -702,6 +755,10 @@ pub fn verify_bus_master_fence(
 }
 
 /// Restore a captured command word as one verified transaction.
+///
+/// # Errors
+///
+/// [`RestoreFailure`] returns `state` when the write does not read back.
 pub fn restore_command(
     function: &FunctionClaim,
     state: CommandState,
@@ -725,6 +782,10 @@ pub fn restore_command(
 }
 
 /// Finish a permanent command transition after exact readback.
+///
+/// # Errors
+///
+/// [`RestoreFailure`] returns `state` when the committed word does not read back.
 pub fn commit_command(function: &FunctionClaim, state: CommandState) -> Result<(), RestoreFailure> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -750,6 +811,10 @@ pub fn commit_command(function: &FunctionClaim, state: CommandState) -> Result<(
 /// only performs each requested cycle. The whole algorithm runs under one
 /// hold of the pair, so nobody can see a probe value or replace CF8 between a
 /// cycle's address and data instructions.
+///
+/// # Errors
+///
+/// [`ProbeFailure`] when a sizing cycle cannot be rolled back to the saved BAR.
 pub fn probe_bars(function: &FunctionClaim) -> Result<StagedProbe, ProbeFailure<()>> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -860,6 +925,10 @@ pub fn release_admitted_bar(admitted: AdmittedBar) -> Result<(), BarAuthorityFai
 }
 
 /// Retry an uncertain BAR restoration without releasing its function lease.
+///
+/// # Errors
+///
+/// [`ProbeFailure`] when the retry write does not read back.
 pub fn retry_probe(function: &FunctionClaim, retry: ProbeRetry) -> Result<(), ProbeFailure<()>> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -895,8 +964,10 @@ fn configuration_cycle(
     let (offset, write) = match access {
         ProbeAccess::ReadCommand => (header::COMMAND, None),
         ProbeAccess::WriteCommand(value) => (header::COMMAND, Some(u32::from(value))),
-        ProbeAccess::ReadBar(index) => (header::BAR0 + index as u16 * 4, None),
-        ProbeAccess::WriteBar(index, value) => (header::BAR0 + index as u16 * 4, Some(value)),
+        ProbeAccess::ReadBar(index) => (header::BAR0 + crate::u16_from_usize(index) * 4, None),
+        ProbeAccess::WriteBar(index, value) => {
+            (header::BAR0 + crate::u16_from_usize(index) * 4, Some(value))
+        }
     };
     let register = function.at(offset).ok_or(())?;
     Port::write(address, register.bits());

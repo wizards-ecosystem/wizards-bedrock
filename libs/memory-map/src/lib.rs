@@ -20,6 +20,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::fn_params_excessive_bools)]
+#![warn(clippy::struct_excessive_bools)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -193,6 +196,10 @@ pub struct MemoryMap {
 
 /// Cache policy for one admitted direct-map run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum DirectMapCache {
     /// Ordinary cacheable memory.
     Normal,
@@ -447,7 +454,7 @@ impl MemoryMap {
     pub fn allows_device_mapping(&self, start: u64, end: u64) -> bool {
         start < end
             && self.regions().all(|region| {
-                let overlaps = start < region.end() && region.base < end;
+                let overlaps = region.len != 0 && start < region.end() && region.base < end;
                 !overlaps || region.kind.permits_device_mapping()
             })
     }
@@ -498,6 +505,11 @@ impl MemoryMap {
     }
 
     fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
+        // A backwards span is not coverage. An empty span (`start == end`)
+        // stays vacuously covered: the cursor is already at the end.
+        if start > end {
+            return false;
+        }
         // A long admitted span can jump over a nested claim, so arbitrate every
         // region intersecting the requested range before walking its union.
         if start < end
@@ -598,6 +610,10 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Copy)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "the test case lists independent properties of one memory kind"
+    )]
     struct MemoryKindCase {
         kind: MemoryKind,
         name: &'static str,
@@ -607,6 +623,10 @@ mod tests {
         device_mapping: bool,
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "each flag is an independent property of the case"
+    )]
     const fn kind_case(
         kind: MemoryKind,
         name: &'static str,
@@ -1360,6 +1380,34 @@ mod tests {
                 len: 1,
             })
         );
+    }
+
+    #[test]
+    fn a_zero_length_region_does_not_occupy_its_address() {
+        let map = MemoryMap::try_from_regions([MemoryRegion {
+            base: 0x2000,
+            len: 0,
+            kind: MemoryKind::Usable,
+        }])
+        .expect("a zero-length region is representable");
+
+        assert!(
+            map.allows_device_mapping(0x1000, 0x3000),
+            "an empty usable region blocked a range that contains no byte of it"
+        );
+    }
+
+    #[test]
+    fn an_inverted_span_is_not_covered() {
+        let map = MemoryMap::try_from_regions([MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 4,
+            kind: MemoryKind::Usable,
+        }])
+        .expect("a usable run");
+
+        assert!(!map.covers_memory(0x3000, 0x1000));
+        assert_eq!(map.direct_map_cache(0x3000, 0x1000), None);
     }
 
     #[test]

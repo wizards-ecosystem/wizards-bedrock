@@ -296,13 +296,14 @@ pub(super) unsafe fn restore(area: *const u8) {
 /// `CPUID.0DH.0` reported as available with bit 0 among them — `XSETBV` faults
 /// otherwise.
 unsafe fn set_extended_control(mask: u64) {
+    let (low, high) = crate::u32_halves(mask);
     // SAFETY: the caller's.
     unsafe {
         asm!(
             "xsetbv",
             in("ecx") 0,
-            in("eax") mask as u32,
-            in("edx") (mask >> 32) as u32,
+            in("eax") low,
+            in("edx") high,
             options(nostack, preserves_flags),
         );
     }
@@ -340,7 +341,7 @@ pub fn write_probe(probe: Probe) -> bool {
             "movq xmm0, {xmm}",
             "vmovq xmm1, {ymm}",
             "vinsertf128 ymm0, ymm0, xmm1, 1",
-            x87 = in(reg) &x87,
+            x87 = in(reg) core::ptr::from_ref(&x87),
             xmm = in(reg) probe.xmm,
             ymm = in(reg) probe.ymm,
             options(nostack, preserves_flags),
@@ -369,7 +370,7 @@ pub fn read_probe() -> Option<Probe> {
             "vextractf128 xmm1, ymm0, 1",
             "vmovq {ymm}, xmm1",
             "fistp qword ptr [{x87}]",
-            x87 = in(reg) &mut x87,
+            x87 = in(reg) core::ptr::from_mut(&mut x87),
             xmm = out(reg) xmm,
             ymm = out(reg) ymm,
             options(nostack, preserves_flags),

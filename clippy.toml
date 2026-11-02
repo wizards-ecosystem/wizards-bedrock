@@ -1,0 +1,68 @@
+# Bedrock clippy thresholds. Lint levels live in the workspace `[lints]` table
+# in `Cargo.toml`; this file only configures the lints that take a threshold.
+# Adapted from BeautifulRust's tested `lints/clippy.toml`
+# (https://github.com/morganlinton/BeautifulRust, MIT, Copyright (c) 2026
+# Morgan Linton). The kernel-specific choices are explained in
+# `docs/style/BEAUTIFUL_RUST.md`.
+#
+# The MSRV comes from `workspace.package.rust-version`. Do not repeat it here.
+
+# Any bool parameter is unreadable at the call site (`report(true)`) and cannot
+# grow a third mode. Use a two-variant enum or two methods (D-27).
+max-fn-params-bools = 0
+
+# This workspace is one product. Clippy's default suppresses pedantic findings
+# on exported items so a published crate can avoid a breaking-change nit.
+# Leaving that on would hide `exhaustive_enums` on the public error types the
+# house style already marks `#[non_exhaustive]`.
+avoid-breaking-exported-api = false
+
+# Tests assert by panicking, and may print. Const evaluation fails the compile
+# when it panics, so an `expect` there is a proof, not a runtime halt.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+allow-unwrap-in-consts = true
+allow-expect-in-consts = true
+
+# Extend clippy's default doc-ident list. `doc_markdown` otherwise flags the
+# acronyms this kernel writes in prose. `".."` keeps the defaults.
+doc-valid-idents = [
+    "..",
+    "ACPI",
+    "AHCI",
+    "APIC",
+    "CPUID",
+    "DMA",
+    "ELF",
+    "FAT32",
+    "GDT",
+    "HPET",
+    "IDT",
+    "IOAPIC",
+    "IOMMU",
+    "IRQ",
+    "ISR",
+    "LAPIC",
+    "LBA",
+    "MBR",
+    "MMIO",
+    "MSR",
+    "MSI",
+    "NVMe",
+    "PCI",
+    "PCIe",
+    "PIT",
+    "PML4",
+    "QEMU",
+    "SMAP",
+    "SMEP",
+    "TSS",
+    "UART",
+    "UEFI",
+    "UMIP",
+    "XSAVEC",
+    "x2APIC",
+]

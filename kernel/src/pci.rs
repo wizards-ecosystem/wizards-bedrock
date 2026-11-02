@@ -16,7 +16,7 @@
 //! it can advance only after restoring the command word and returning every
 //! dynamic I/O span and registry slot as one retirement (D-199).
 //!
-//! **Enumeration recurses.** A scan of bus zero is not enough — VMware places
+//! **Enumeration recurses.** A scan of bus zero is not enough — `VMware` places
 //! functions behind `pciBridge0`–`pciBridge7`, and QEMU's q35 puts a
 //! DMI-to-PCI bridge at `00:1e.0` — so a controller can sit on a bus that
 //! nothing on bus zero mentions except a bridge (`012` §2). The walk is
@@ -80,9 +80,11 @@ pub(crate) struct Function {
 
 /// Walk every bus reachable from bus zero, reporting each function found.
 ///
-/// Iterative over a worklist of buses, with each bus visited at most once: a
-/// bridge that names a bus already seen is ignored rather than followed, which
-/// is what keeps a broken topology from being a hang.
+/// Iterative over a worklist of buses. Each bus number is queued at most
+/// once and visited at most once: a bridge that names a bus already queued
+/// or already seen is ignored rather than followed. Queuing duplicates used
+/// to fill the 256-entry worklist while still scanning bus zero, so a later
+/// bridge on that bus never ran and the devices behind it were invisible.
 ///
 /// Returns what the walk covered, or `None` if configuration space cannot be
 /// reached at all.
@@ -92,9 +94,11 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     }
 
     let mut seen = [false; MAX_BUSES];
+    let mut queued_bus = [false; MAX_BUSES];
     let mut pending = [0u8; MAX_BUSES];
     let mut queued = 1;
     let mut next = 0;
+    queued_bus[0] = true;
     let mut survey = Survey::default();
 
     while next < queued {
@@ -129,11 +133,14 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
-                    && !seen[behind as usize]
-                    && queued < MAX_BUSES
                 {
-                    pending[queued] = behind;
-                    queued += 1;
+                    enqueue_secondary(
+                        &mut seen,
+                        &mut queued_bus,
+                        &mut pending,
+                        &mut queued,
+                        behind,
+                    );
                 }
 
                 // A single-function device answers every function with its own
@@ -170,6 +177,12 @@ pub(crate) struct Survey {
 fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     let at = Address::new(bus, device, function, header::VENDOR)?;
     let identity = pci::read(at)?;
+    // Vendor id is the low half of the vendor/device dword. The high half is
+    // the device id and is not part of this value.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "vendor id is the low 16 bits of the vendor/device dword"
+    )]
     let vendor = identity as u16;
     if pci_config::is_absent(vendor) {
         return None;
@@ -177,13 +190,23 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 
     let class_bits = pci::read(at.at(header::CLASS)?)?;
     let class = Class::from_bits(class_bits);
+    // Command is the low half of the command/status dword.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "command is the low 16 bits of the command/status dword"
+    )]
     let command = pci::read(at.at(header::COMMAND)?)? as u16;
-    let header = HeaderType::from_bits((pci::read(at.at(header::HEADER_TYPE)?)? >> 16) as u8);
+    let header_bits = pci::read(at.at(header::HEADER_TYPE)?)? >> 16;
+    let header = HeaderType::from_bits(
+        u8::try_from(header_bits & 0xFF)
+            .unwrap_or_else(|_| panic!("a masked header type does not fit a byte")),
+    );
 
     Some(Function {
         at,
         vendor,
-        device: (identity >> 16) as u16,
+        device: u16::try_from(identity >> 16)
+            .unwrap_or_else(|_| panic!("a device id does not fit u16")),
         identity,
         class,
         class_bits,
@@ -333,6 +356,63 @@ pub(crate) fn topology_hierarchy_contains(root: Address, target: Address) -> boo
     TOPOLOGY.lock_leaf().hierarchy_contains(root, target)
 }
 
+/// Queue `behind` unless that bus number is already queued, already visited,
+/// or the worklist has no free slot.
+///
+/// The slot check is unreachable when every bus number is queued once: there
+/// are exactly [`MAX_BUSES`] numbers and bus zero already occupies one slot.
+/// It stays so a counter bug cannot write past `pending`.
+fn enqueue_secondary(
+    seen: &mut [bool; MAX_BUSES],
+    queued_bus: &mut [bool; MAX_BUSES],
+    pending: &mut [u8; MAX_BUSES],
+    queued: &mut usize,
+    behind: u8,
+) -> bool {
+    let index = usize::from(behind);
+    if seen[index] || queued_bus[index] || *queued >= MAX_BUSES {
+        return false;
+    }
+    pending[*queued] = behind;
+    queued_bus[index] = true;
+    *queued += 1;
+    true
+}
+
+/// Repeated secondaries must not consume the worklist before a distinct bus.
+///
+/// Two hundred and fifty-five bridges that all name bus 1 used to occupy
+/// every slot after bus zero. The bridge that then named bus 5 was dropped,
+/// and enumeration never visited it.
+#[cfg(feature = "selftest")]
+pub(crate) fn duplicate_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
+    let mut seen = [false; MAX_BUSES];
+    let mut queued_bus = [false; MAX_BUSES];
+    let mut pending = [0u8; MAX_BUSES];
+    let mut queued = 1usize;
+    queued_bus[0] = true;
+
+    let mut admitted_one = false;
+    for _ in 0..255 {
+        admitted_one |= enqueue_secondary(&mut seen, &mut queued_bus, &mut pending, &mut queued, 1);
+    }
+    let admitted_five = enqueue_secondary(&mut seen, &mut queued_bus, &mut pending, &mut queued, 5);
+    let seen_bus_is_ignored = !enqueue_secondary(
+        &mut [true; MAX_BUSES],
+        &mut queued_bus,
+        &mut pending,
+        &mut queued,
+        7,
+    );
+
+    admitted_one
+        && admitted_five
+        && seen_bus_is_ignored
+        && queued == 3
+        && pending[1] == 1
+        && pending[2] == 5
+}
+
 /// The bus behind a bridge.
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
@@ -419,6 +499,8 @@ impl core::fmt::Display for DmaFenceError {
     }
 }
 
+impl core::error::Error for DmaFenceError {}
+
 /// The ownership-preserving results of acquiring a sibling DMA fence.
 #[derive(Debug)]
 pub(crate) enum DmaFenceOutcome {
@@ -439,6 +521,10 @@ pub(crate) struct DmaFenceRelease {
 
 impl DmaFence {
     /// Restore the safe command word and return the exact function claim.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "losing a fence token after a successful command restore is terminal"
+    )]
     pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
         if let Some(state) = self.command_state.take() {
             let Some(function) = self.function.as_ref() else {
@@ -517,10 +603,15 @@ fn fence_quiesced_requester(
 ) -> DmaFenceOutcome {
     let at = record.address();
     let identity = at.at(header::VENDOR).and_then(pci::read);
-    let command = at
-        .at(header::COMMAND)
-        .and_then(pci::read)
-        .map(|bits| bits as u16);
+    let command = at.at(header::COMMAND).and_then(pci::read).map(|bits| {
+        // Same split as enumeration: command is the low half of the dword.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "command is the low 16 bits of the command/status dword"
+        )]
+        let command = bits as u16;
+        command
+    });
     if identity == Some(record.identity())
         && command == Some(record.command())
         && pci::isa_dma_quiet()
@@ -657,6 +748,8 @@ impl core::fmt::Display for ClaimError {
     }
 }
 
+impl core::error::Error for ClaimError {}
+
 /// Why a probed memory BAR could not become page-table authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BarAdmissionError {
@@ -680,6 +773,8 @@ impl core::fmt::Display for BarAdmissionError {
         }
     }
 }
+
+impl core::error::Error for BarAdmissionError {}
 
 /// A refused memory-decode transition with the inaccessible mapped BAR.
 #[derive(Debug)]
@@ -742,6 +837,8 @@ impl core::fmt::Display for ReleaseError {
     }
 }
 
+impl core::error::Error for ReleaseError {}
+
 /// Result of retiring a device, retaining the complete lease on refusal.
 #[must_use = "a retained PCI lease must be retried or the kernel must stop"]
 #[derive(Debug)]
@@ -772,6 +869,10 @@ impl ReleaseOutcome {
 /// driver for one device with nothing to say so. A fixed claim outlives the
 /// boot; a selection lease has an explicit all-or-stop release (D-199).
 #[derive(Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "device is the PCI device id, not a repetition of the Device type"
+)]
 pub(crate) struct Device {
     address: Address,
     function: Option<pci::FunctionClaim>,
@@ -944,6 +1045,7 @@ impl Device {
                 self.uncertain |= matches!(reason, BarEnableError::Command(EnableError::Restore));
                 BarDecodeOutcome::Refused(BarDecodeFailure { reason, bar })
             }
+            _ => panic!("a BAR enable outcome has no recovery in this kernel"),
         }
     }
 
@@ -1069,7 +1171,6 @@ pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
 
 fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> {
     let function = pci::claim_function(at).map_err(|reason| match reason {
-        pci::ClaimError::Unavailable => ClaimError::NoBus,
         pci::ClaimError::Absent => ClaimError::Absent,
         pci::ClaimError::Taken => ClaimError::Taken,
         pci::ClaimError::NoRoom | pci::ClaimError::Exhausted => ClaimError::NoRoom,

@@ -182,6 +182,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     fn a_short_register_range_expands_to_the_complete_page() {
         let physical = PAGE_SIZE + 4;
         let len = 4;

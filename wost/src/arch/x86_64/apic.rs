@@ -81,8 +81,11 @@ impl Controller<'_> {
         let Some(registers) = self.ready_registers() else {
             return false;
         };
-        Spurious::from_bits(Registers::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR) as u32)
-            .is_enabled()
+        Spurious::from_bits(crate::u32_from_u64(Registers::read(
+            &registers,
+            register::SPURIOUS_INTERRUPT_VECTOR,
+        )))
+        .is_enabled()
     }
 
     fn published_vector(self, source: &AtomicU8) -> Option<InterruptVector> {
@@ -419,19 +422,29 @@ impl<'state> Initialization<'state> {
             .enter(stage, interrupt_state())
             .map_err(progress_error)?;
         #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+        if core::ptr::eq(
+            core::ptr::from_ref(self.controller.state),
+            core::ptr::from_ref(&APIC_STATE),
+        ) {
             record_stage_observation(stage, &self.transaction);
         }
         Ok(())
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Configured is copied into the published controller; the value is the mode token"
+    )]
     fn commit(mut self, configured: Configured) -> Result<Local, ApicError> {
         let ready = self
             .transaction
             .complete(interrupt_state())
             .map_err(progress_error)?;
         #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+        if core::ptr::eq(
+            core::ptr::from_ref(self.controller.state),
+            core::ptr::from_ref(&APIC_STATE),
+        ) {
             record_publication_observation(&self.transaction);
         }
         self.controller.state.store(ready.bits(), Ordering::Release);
@@ -546,7 +559,7 @@ fn pending_vector(access: &impl InitializationRegisters) -> Option<u8> {
 fn pending_requests(access: &impl InitializationRegisters) -> [u32; 8] {
     let mut requests = [0u32; 8];
     for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {
-        *bits = InitializationRegisters::read(access, register) as u32;
+        *bits = crate::u32_from_u64(InitializationRegisters::read(access, register));
     }
     requests
 }
@@ -637,8 +650,10 @@ fn initialize<R: InitializationRegisters>(
     )?;
 
     initialization.enter(InitStage::Version)?;
-    let version =
-        Version::from_bits(InitializationRegisters::read(&registers, register::VERSION) as u32);
+    let version = Version::from_bits(crate::u32_from_u64(InitializationRegisters::read(
+        &registers,
+        register::VERSION,
+    )));
     if !version.is_integrated() {
         return Err(ApicError::NotResponding);
     }
@@ -656,7 +671,11 @@ fn initialize<R: InitializationRegisters>(
 
     for &entry in local_sources {
         InitializationRegisters::write(&registers, entry, Entry::MASKED.bits().into());
-        if !Entry::from_bits(InitializationRegisters::read(&registers, entry) as u32).is_masked() {
+        if !Entry::from_bits(crate::u32_from_u64(InitializationRegisters::read(
+            &registers, entry,
+        )))
+        .is_masked()
+        {
             return Err(ApicError::NotResponding);
         }
     }
@@ -705,7 +724,7 @@ fn initialize<R: InitializationRegisters>(
     initialization.enter(InitStage::Identity)?;
     let configured = Configured {
         local: Local {
-            id: InitializationRegisters::read(&registers, register::ID) as u32,
+            id: crate::u32_from_u64(InitializationRegisters::read(&registers, register::ID)),
             version: version.number(),
             is_bootstrap: base.is_bootstrap(),
         },
@@ -727,10 +746,7 @@ fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
 }
 
 /// Claim the exact APIC dismissal owned by the innermost live trap.
-pub fn claim_eoi<'frame>(
-    frame: &'frame TrapFrame,
-    vector: InterruptVector,
-) -> Option<EoiToken<'frame>> {
+pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<'_>> {
     if interrupt::are_enabled()
         || !interrupt::is_live_frame(frame)
         || frame.vector() != u64::from(vector.get())
@@ -760,7 +776,12 @@ pub fn claim_eoi<'frame>(
 /// Dismiss the exact vector represented by `token`.
 ///
 /// A changed target returns the token unchanged and performs no write.
-pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<'frame>> {
+///
+/// # Errors
+///
+/// Returns `token` when the in-service register no longer names its vector,
+/// so the write is skipped.
+pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
     if !x86_apic::in_service::may_complete(
         interrupt_state(),
         frame_liveness(token.frame),
@@ -862,14 +883,14 @@ pub fn set_timer_one_shot(_disarmed: DisarmedTimer) -> Result<(), TimerError> {
 
 /// Where the timer's countdown currently stands. Zero before [`init`].
 pub fn timer_current_count() -> u32 {
-    read(register::CURRENT_COUNT) as u32
+    crate::u32_from_u64(read(register::CURRENT_COUNT))
 }
 
 /// The timer's local vector entry, read back from the hardware rather than
 /// remembered from what was written.
 #[cfg(feature = "selftest")]
 pub fn timer_entry() -> Entry {
-    Entry::from_bits(read(register::LVT_TIMER) as u32)
+    Entry::from_bits(crate::u32_from_u64(read(register::LVT_TIMER)))
 }
 
 /// Errors the local APIC has recorded since this was last called.
@@ -880,7 +901,7 @@ pub fn timer_entry() -> Entry {
 pub fn error_status() -> u32 {
     // Zero specifically: the architecture faults on any other value here.
     write(register::ERROR_STATUS, 0);
-    read(register::ERROR_STATUS) as u32
+    crate::u32_from_u64(read(register::ERROR_STATUS))
 }
 
 /// This processor's local APIC identifier.
@@ -890,7 +911,7 @@ pub fn error_status() -> u32 {
 /// the boot processor's usual identifier — so this value does not prove
 /// controller readiness.
 pub fn id() -> u32 {
-    read(register::ID) as u32
+    crate::u32_from_u64(read(register::ID))
 }
 
 /// Whether the APIC is software-enabled and therefore delivering.
@@ -915,7 +936,6 @@ fn admission_error(reason: BeginError) -> ApicError {
     match reason {
         BeginError::InProgress => ApicError::InitializationInProgress,
         BeginError::Ready => ApicError::AlreadyInitialized,
-        BeginError::Poisoned => ApicError::Poisoned,
         _ => ApicError::Poisoned,
     }
 }
@@ -956,11 +976,11 @@ fn dismissal_ownership(vector: InterruptVector) -> DismissalOwnership {
 
 #[cfg(feature = "selftest")]
 fn record_stage_observation(stage: InitStage, transaction: &InitTransaction) {
-    let state = lifecycle();
-    let valid = state == Lifecycle::Initializing
+    let observed = lifecycle();
+    let valid = observed == Lifecycle::Initializing
         && transaction.lifecycle() == Lifecycle::Initializing
         && interrupt_state() == Interrupts::Excluded
-        && state.admit() == Err(BeginError::InProgress);
+        && observed.admit() == Err(BeginError::InProgress);
     INIT_OBSERVATION_FAILED.fetch_or(!valid, Ordering::Relaxed);
     INIT_OBSERVATIONS.fetch_or(1 << stage_index(stage), Ordering::Relaxed);
 }
@@ -998,6 +1018,10 @@ pub fn initialization_was_atomic_for_test() -> bool {
 /// Results from injecting every late APIC initialization refusal.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is one independent initialization probe result"
+)]
 pub struct InitializationFailureProbe {
     unavailable_and_terminal: bool,
     ignored_spurious_write_is_terminal: bool,
@@ -1087,7 +1111,7 @@ impl InitializationRegisters for FixtureRegisters<'_> {
         self.writes.fetch_add(1, Ordering::Relaxed);
         if let Some(index) = lvt_index(register) {
             let bit = 1 << index;
-            if Entry::from_bits(value as u32).is_masked() {
+            if Entry::from_bits(crate::u32_from_u64(value)).is_masked() {
                 if !matches!(self.lvt_fault, LvtFault::IgnoreMask(fault) if fault == index) {
                     self.lvt_masked.fetch_or(bit, Ordering::Relaxed);
                     self.lvt_covered.fetch_or(bit, Ordering::Relaxed);
@@ -1099,7 +1123,8 @@ impl InitializationRegisters for FixtureRegisters<'_> {
         if register == register::SPURIOUS_INTERRUPT_VECTOR
             && matches!(self.spurious_write, SpuriousWrite::Retain)
         {
-            self.spurious.store(value as usize, Ordering::Relaxed);
+            self.spurious
+                .store(crate::usize_from_u64(value), Ordering::Relaxed);
         }
     }
 }
@@ -1490,6 +1515,10 @@ impl InitializationRegisters for Registers {
 }
 
 impl Registers {
+    #[expect(
+        clippy::unused_self,
+        reason = "x2APIC writes the named MSR; Registers is only the published-mode token"
+    )]
     fn write(&self, register: Register, value: u64) {
         // SAFETY: `Registers` is created only after x2APIC mode is read back,
         // and operations outside initialization obtain it only after the
@@ -1498,6 +1527,10 @@ impl Registers {
         unsafe { msr::write(register.msr(), value) };
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "x2APIC reads the named MSR; Registers is only the published-mode token"
+    )]
     fn read(&self, register: Register) -> u64 {
         msr::read(register.msr())
     }
@@ -1561,7 +1594,7 @@ fn owns_in_service(vector: InterruptVector) -> bool {
     };
     let mut registers = [0u32; 8];
     for (bits, register) in registers.iter_mut().zip(register::IN_SERVICE) {
-        *bits = Registers::read(&access, register) as u32;
+        *bits = crate::u32_from_u64(Registers::read(&access, register));
     }
     x86_apic::in_service::owns(&registers, vector)
 }

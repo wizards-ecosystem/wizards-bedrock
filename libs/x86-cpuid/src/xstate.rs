@@ -93,6 +93,10 @@ pub struct Component {
 
 /// Placement required by a state component's CPUID sub-leaf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Alignment {
     /// Place directly after the preceding component.
     Natural,
@@ -135,6 +139,10 @@ impl Component {
 /// Standard offsets come from `CPUID.0DH` and need not follow component index
 /// order. An absent component, one overlapping the legacy/header area, or an
 /// extent outside CPUID's 32-bit size fields is invalid.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 pub const fn standard_component_extent(component: Component, offset: u32) -> Option<usize> {
     if !component.is_present() || offset < HEADER_BYTES as u32 {
         return None;
@@ -165,6 +173,10 @@ impl Layout {
     /// Bits above [`COMPONENTS`] are ignored rather than rejected: a processor
     /// may report state this kernel has no intention of enabling, and the mask
     /// it is *given* is the one D-82 fixed.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub fn compacted(mask: u64, info: impl Fn(u32) -> Component) -> Self {
         let mut offsets = [None; COMPONENTS];
         // The legacy area is always present in a compacted save, whether or
@@ -436,6 +448,10 @@ mod tests {
     /// Checked by collecting them rather than by re-deriving the walk, so a
     /// rewritten `compacted` disagrees instead of agreeing with itself.
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn no_two_components_share_an_offset() {
         let mask = 0b111 | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 19);
         let layout = Layout::compacted(mask, avx512_and_apx);
@@ -503,6 +519,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_component_must_start_before_the_end_of_the_area() {
         let mut offsets = [None; COMPONENTS];
         offsets[2] = Some(HEADER_BYTES as u32);

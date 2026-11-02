@@ -134,42 +134,104 @@ pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<P
 /// Locate the exact QEMU executable.
 ///
 /// `QEMU` names the emulator binary outright; `QEMU_DIR` names the installation
-/// it lives in. Both win over the default location and over `PATH`.
+/// it lives in. Both win over the default location and over `PATH`. A setting
+/// that does not name a file fails here: continuing would report the absence
+/// as missing firmware, because firmware search is rooted at the emulator.
 fn locate(
     binary: Option<PathBuf>,
     directory: Option<PathBuf>,
     search: impl IntoIterator<Item = PathBuf>,
 ) -> Result<PathBuf> {
-    if let Some(binary) = binary {
-        return Ok(binary);
-    }
     let emulator = exe_name("qemu-system-x86_64");
+    if let Some(binary) = binary {
+        return require_emulator(binary, "QEMU");
+    }
     if let Some(dir) = directory {
-        return Ok(dir.join(&emulator));
+        return require_emulator(dir.join(&emulator), "QEMU_DIR");
     }
 
-    let default = PathBuf::from(WINDOWS_DEFAULT);
-    if default.join(&emulator).is_file() {
-        return Ok(default.join(&emulator));
+    let default = PathBuf::from(WINDOWS_DEFAULT).join(&emulator);
+    if default.is_file() {
+        return Ok(default);
     }
 
-    match which_in(search, &emulator) {
-        Some(found) => Ok(found),
-        None => bail!("QEMU not found: set QEMU_DIR, or put {emulator} on PATH"),
+    which_in(search, &emulator).ok_or_else(|| {
+        anyhow!(
+            "QEMU not found: looked for {emulator} in {WINDOWS_DEFAULT} and on PATH. \
+             Install QEMU (`winget install SoftwareFreedomConservancy.QEMU` on Windows), \
+             put {emulator} on PATH, or set QEMU to the executable or QEMU_DIR to its \
+             installation directory"
+        )
+    })
+}
+
+fn require_emulator(path: PathBuf, source: &str) -> Result<PathBuf> {
+    if path.is_file() {
+        return Ok(path);
+    }
+    bail!(
+        "{source} points at {} but that file is not there. Point {source} at \
+         qemu-system-x86_64{}, or unset it and install QEMU \
+         (`winget install SoftwareFreedomConservancy.QEMU` on Windows)",
+        path.display(),
+        std::env::consts::EXE_SUFFIX
+    )
+}
+
+/// Places one named edk2 image may live, relative to the emulator.
+///
+/// A Windows install keeps the executable and `share/` together. An FHS install
+/// keeps the executable in `bin/` and the firmware under the prefix's `share/`,
+/// so that prefix is searched as well.
+fn firmware_candidates(emulator: &Path, name: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let Some(directory) = emulator.parent() else {
+        return candidates;
+    };
+    push_firmware_candidates(&mut candidates, directory, name);
+    if directory
+        .file_name()
+        .is_some_and(|component| component == "bin")
+        && let Some(prefix) = directory.parent()
+    {
+        push_firmware_candidates(&mut candidates, prefix, name);
+    }
+    candidates
+}
+
+fn push_firmware_candidates(candidates: &mut Vec<PathBuf>, root: &Path, name: &str) {
+    for relative in FIRMWARE_DIRS {
+        candidates.push(root.join(relative).join(name));
     }
 }
 
-fn firmware(qemu_dir: &Path, name: &str) -> Result<PathBuf> {
-    FIRMWARE_DIRS
+fn firmware(emulator: &Path, name: &str) -> Result<PathBuf> {
+    let candidates = firmware_candidates(emulator, name);
+    candidates
         .iter()
-        .map(|dir| qemu_dir.join(dir).join(name))
         .find(|candidate| candidate.is_file())
-        .with_context(|| {
-            format!(
-                "UEFI firmware {name} not found under {}",
-                qemu_dir.display()
-            )
-        })
+        .cloned()
+        .ok_or_else(|| anyhow!(missing_firmware(name, emulator, &candidates)))
+}
+
+fn missing_firmware(name: &str, emulator: &Path, candidates: &[PathBuf]) -> String {
+    let mut message = format!(
+        "UEFI firmware {name} was not found for {}. QEMU needs the edk2 OVMF images \
+         {CODE_FIRMWARE} (read-only code) and {VARS_FIRMWARE} (variable store), under share/ \
+         in the QEMU installation. Images named only OVMF_CODE.fd or OVMF_VARS.fd are a \
+         different package and are not used. Searched:",
+        emulator.display()
+    );
+    if candidates.is_empty() {
+        message.push_str(" (the emulator path has no directory)");
+        return message;
+    }
+    for candidate in candidates {
+        message.push('\n');
+        message.push_str("  ");
+        message.push_str(&candidate.display().to_string());
+    }
+    message
 }
 
 /// Resolve the exact emulator and pristine firmware inputs a boot will use.
@@ -189,12 +251,9 @@ fn installation_with(
 ) -> Result<Installation> {
     let emulator = std::path::absolute(locate(binary, directory, search)?)
         .context("resolving the QEMU executable path")?;
-    let directory = emulator
-        .parent()
-        .with_context(|| format!("{} has no parent directory", emulator.display()))?;
     Ok(Installation {
-        code_firmware: firmware(directory, CODE_FIRMWARE)?,
-        vars_firmware: firmware(directory, VARS_FIRMWARE)?,
+        code_firmware: firmware(&emulator, CODE_FIRMWARE)?,
+        vars_firmware: firmware(&emulator, VARS_FIRMWARE)?,
         emulator,
     })
 }
@@ -3796,6 +3855,111 @@ mod tests {
     }
 
     #[test]
+    fn installation_finds_edk2_firmware_under_the_install_share() {
+        let fixture = QemuFixture::create();
+        let firmware_dir = fixture.root.join("share");
+        std::fs::create_dir(&firmware_dir).unwrap();
+        let binary = fixture.root.join(exe_name("qemu-system-x86_64"));
+        let code = firmware_dir.join(CODE_FIRMWARE);
+        let vars = firmware_dir.join(VARS_FIRMWARE);
+        std::fs::write(&binary, b"install-root emulator").unwrap();
+        std::fs::write(&code, b"code firmware").unwrap();
+        std::fs::write(&vars, b"variable firmware").unwrap();
+
+        let selected =
+            installation_with(Some(binary.clone()), None, std::iter::empty::<PathBuf>()).unwrap();
+        assert_eq!(selected.emulator, binary);
+        assert_eq!(selected.code_firmware, code);
+        assert_eq!(selected.vars_firmware, vars);
+    }
+
+    #[test]
+    fn installation_finds_edk2_firmware_next_to_an_fhs_prefix() {
+        let fixture = QemuFixture::create();
+        let binary_dir = fixture.root.join("bin");
+        let firmware_dir = fixture.root.join("share").join("qemu");
+        std::fs::create_dir_all(&binary_dir).unwrap();
+        std::fs::create_dir_all(&firmware_dir).unwrap();
+        let binary = binary_dir.join(exe_name("qemu-system-x86_64"));
+        let code = firmware_dir.join(CODE_FIRMWARE);
+        let vars = firmware_dir.join(VARS_FIRMWARE);
+        std::fs::write(&binary, b"fhs emulator").unwrap();
+        std::fs::write(&code, b"code firmware").unwrap();
+        std::fs::write(&vars, b"variable firmware").unwrap();
+
+        let selected =
+            installation_with(Some(binary.clone()), None, std::iter::empty::<PathBuf>()).unwrap();
+        assert_eq!(selected.emulator, binary);
+        assert_eq!(selected.code_firmware, code);
+        assert_eq!(selected.vars_firmware, vars);
+    }
+
+    #[test]
+    fn a_missing_qemu_setting_is_not_blamed_on_firmware() {
+        let fixture = QemuFixture::create();
+        let missing = fixture.root.join(exe_name("qemu-system-x86_64"));
+        let explicit =
+            installation_with(Some(missing.clone()), None, std::iter::empty::<PathBuf>())
+                .expect_err("a missing QEMU path must fail before firmware search");
+        let explicit = explicit.to_string();
+        assert!(explicit.contains("QEMU points at"), "{explicit}");
+        assert!(
+            explicit.contains(&missing.display().to_string()),
+            "{explicit}"
+        );
+        assert!(!explicit.contains("UEFI firmware"), "{explicit}");
+
+        let directory = installation_with(
+            None,
+            Some(fixture.root.clone()),
+            std::iter::empty::<PathBuf>(),
+        )
+        .expect_err("a QEMU_DIR without the emulator must fail before firmware search");
+        let directory = directory.to_string();
+        assert!(directory.contains("QEMU_DIR points at"), "{directory}");
+        assert!(directory.contains("qemu-system-x86_64"), "{directory}");
+        assert!(!directory.contains("UEFI firmware"), "{directory}");
+    }
+
+    #[test]
+    fn discovery_explains_where_qemu_was_sought() {
+        let fixture = QemuFixture::create();
+        let error = installation_with(None, None, [fixture.root.clone()])
+            .expect_err("an empty search must report that QEMU is missing");
+        let message = error.to_string();
+        assert!(message.contains("QEMU not found"), "{message}");
+        assert!(message.contains(WINDOWS_DEFAULT), "{message}");
+        assert!(message.contains("PATH"), "{message}");
+        assert!(message.contains("QEMU_DIR"), "{message}");
+        assert!(
+            message.contains("winget install SoftwareFreedomConservancy.QEMU"),
+            "{message}"
+        );
+        assert!(!message.contains("UEFI firmware"), "{message}");
+    }
+
+    #[test]
+    fn missing_firmware_names_the_edk2_images_and_the_paths_searched() {
+        let fixture = QemuFixture::create();
+        let binary_dir = fixture.root.join("bin");
+        std::fs::create_dir(&binary_dir).unwrap();
+        let binary = binary_dir.join(exe_name("qemu-system-x86_64"));
+        std::fs::write(&binary, b"emulator without firmware").unwrap();
+
+        let error = installation_with(Some(binary), None, std::iter::empty::<PathBuf>())
+            .expect_err("a located emulator still needs its edk2 images");
+        let message = error.to_string();
+        assert!(message.contains(CODE_FIRMWARE), "{message}");
+        assert!(message.contains(VARS_FIRMWARE), "{message}");
+        assert!(message.contains("OVMF_CODE.fd"), "{message}");
+        let searched = fixture.root.join("share").join("qemu").join(CODE_FIRMWARE);
+        assert!(
+            message.contains(&searched.display().to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn drive_paths_escape_commas_without_quoting_spaces() {
         assert_eq!(
             drive_file("format=raw", Path::new("a space/disk,name.img")),
@@ -6921,7 +7085,15 @@ mod tests {
                         .checked_sub(1)
                         .expect("opening Rust bracket before its close");
                     if depth == 0 {
-                        return bytes.get(at.wrapping_sub(1)) == Some(&b'#');
+                        if bytes.get(at.wrapping_sub(1)) != Some(&b'#') {
+                            return false;
+                        }
+                        // `expect`, `must_use`, and doc comments do not hide
+                        // the item. `cfg` does.
+                        let rest = &prefix[at + 1..];
+                        let name_end = rest.find(['(', ']', ' ', '\n']).unwrap_or(rest.len());
+                        let name = rest[..name_end].trim();
+                        return matches!(name, "cfg" | "cfg_attr");
                     }
                 }
                 _ => {}
@@ -8634,7 +8806,7 @@ const LIVE: u32 = 7;
         let rights_close = matching(handle_space.as_bytes(), rights_open, b'{', b'}');
         let rights_impl = &handle_space[rights_open + 1..rights_close];
         assert!(
-            !rights_impl.contains("#["),
+            !rights_impl.contains("#[cfg"),
             "impl Rights contains a conditionally visible item"
         );
         let compact_rights: String = rights_impl

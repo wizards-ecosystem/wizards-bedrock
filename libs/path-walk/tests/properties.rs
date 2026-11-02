@@ -124,7 +124,7 @@ proptest! {
 fn the_properties_reach_accepted_paths_and_every_refusal() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut accepted = 0usize;

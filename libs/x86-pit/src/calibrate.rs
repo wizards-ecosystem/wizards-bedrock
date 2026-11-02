@@ -30,6 +30,10 @@ pub enum WatchdogVerdict {
 /// zero. An early expiry has no such innocent explanation. TSC progress is
 /// compared only while its own elapsed count proves the PIT window could not
 /// have folded.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 pub const fn watchdog_verdict(
     apic_remaining: u32,
     tsc_ticks: u64,
@@ -143,10 +147,10 @@ mod tests {
     /// ten cycles per crystal tick is ten times the crystal.
     #[test]
     fn an_exact_ratio_calibrates_exactly() {
-        assert_eq!(measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
+        assert_eq!(measured_hz(200_000, 20_000), 10 * u64::from(CRYSTAL_HZ));
     }
 
-    /// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor would lose
+    /// `1_193_182` / 4 is `298_295.5`: nearest rounds up where floor would lose
     /// half a hertz per crystal tick.
     #[test]
     fn rounding_is_to_nearest_not_floor() {
@@ -156,18 +160,18 @@ mod tests {
     /// Inputs at the top of the space must answer, not overflow.
     ///
     /// These lines exercise the product's `checked_mul`. No input reaches a
-    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
+    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is `958_759` and the
     /// largest addend is `u16::MAX / 2` (D-105).
     #[test]
     fn the_product_at_the_top_of_the_space_cannot_overflow() {
-        let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
+        let largest_counted = u64::MAX / u64::from(CRYSTAL_HZ);
 
         assert!(measured_hz(largest_counted, u16::MAX) > 0);
         assert_eq!(measured_hz(largest_counted + 1, u16::MAX), 0);
 
         // The headroom the addend relies on, so a change to `CRYSTAL_HZ` that
         // removed it is visible here rather than nowhere.
-        let remainder = u64::MAX % CRYSTAL_HZ as u64;
+        let remainder = u64::MAX % u64::from(CRYSTAL_HZ);
         assert!(
             remainder >= u64::from(u16::MAX / 2),
             "the rounding addend no longer fits: {remainder} left"
@@ -186,7 +190,7 @@ mod tests {
 
     /// The numbers the two real machines produce, for both clocks a window is
     /// now shared by. QEMU models the APIC clock at a gigahertz and passes
-    /// the host's timestamp counter through; VMware has traditionally
+    /// the host's timestamp counter through; `VMware` has traditionally
     /// advertised a sixty-six megahertz bus. All measured over a genuine
     /// 20 ms window.
     #[test]
@@ -223,6 +227,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn the_watchdog_distinguishes_disagreement_from_delay() {
         let expected_pit_ticks = (CRYSTAL_HZ / 50) as u16;
         let tsc_hz = 3_200_000_000;

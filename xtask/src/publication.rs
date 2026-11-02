@@ -405,7 +405,7 @@ mod tests {
         );
 
         let take_start = queue
-            .find("    fn take(&self, snapshot: &Snapshot)")
+            .find("    fn take(&self, snapshot: Snapshot)")
             .expect("queue submission take");
         let take = method_at(&queue, take_start);
         let reserve = take

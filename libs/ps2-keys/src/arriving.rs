@@ -26,6 +26,10 @@
 
 /// What the bytes so far have proved about their numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Arriving {
     /// Nothing seen yet distinguishes the two.
     Undecided,
@@ -170,7 +174,7 @@ mod tests {
 
     /// A real keystroke from each set decides, and decides correctly.
     ///
-    /// The exact bytes the two machines delivered: VMware's `c` arrived as
+    /// The exact bytes the two machines delivered: `VMware`'s `c` arrived as
     /// set 2 while its identity claimed set 1, and the same key under a
     /// controller that really translates arrives as set 1.
     #[test]

@@ -209,7 +209,7 @@ proptest! {
 fn the_ledger_properties_reach_granted_allocations() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut granted = 0usize;
@@ -246,7 +246,7 @@ fn the_ledger_properties_reach_granted_allocations() {
 fn the_release_property_reaches_every_frame_class() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut managed = 0usize;

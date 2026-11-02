@@ -33,6 +33,13 @@ fn function<'a>(syntax: &'a syn::File, name: &str) -> &'a ItemFn {
         .unwrap_or_else(|| panic!("missing function `{name}`"))
 }
 
+fn type_names(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::Reference(reference) => type_is(&reference.elem, name),
+        other => type_is(other, name),
+    }
+}
+
 fn type_is(ty: &Type, name: &str) -> bool {
     let Type::Path(path) = ty else {
         return false;
@@ -1025,7 +1032,7 @@ fn every_instruction_pointer_writer_requires_its_opaque_authority() {
             .unwrap_or_else(|| panic!("missing instruction-pointer writer `{name}`"));
         assert!(is_pub_super(&writer.vis), "`{name}` escaped its module");
         assert!(
-            typed_parameter(writer, "target").is_some_and(|ty| type_is(ty, authority)),
+            typed_parameter(writer, "target").is_some_and(|ty| type_names(ty, authority)),
             "`{name}` accepts an untyped recovery target"
         );
         assert!(

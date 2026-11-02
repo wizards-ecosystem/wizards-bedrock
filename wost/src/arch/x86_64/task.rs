@@ -273,6 +273,11 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
 }
 
 /// Run the production arena validation against the active root.
+///
+/// # Errors
+///
+/// [`TaskError`] when a slot has no stack or the arena is not installed on
+/// the active root.
 #[cfg(feature = "selftest")]
 pub fn validate_arena_for_test(arena: &StackArena) -> Result<(), TaskError> {
     validate_arena(arena).map(|_| ())
@@ -310,6 +315,14 @@ pub fn current() -> usize {
 /// [`TaskError::Occupied`] if the slot's thread is live, [`TaskError::Boot`]
 /// for the boot slot, [`TaskError::OutOfRange`] past the table, and
 /// [`TaskError::NotInitialised`] before [`init`].
+///
+/// # Panics
+///
+/// Panics if the slot's pinned stack no longer names the frame this fabricates.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
     // Before the lock, which clears the flag: what is wanted is the caller's
     // own, not the one taking this lock leaves behind.
@@ -349,12 +362,13 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     };
     let base = top.address() - FRAME_BYTES;
     let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
+    let frame_slot = crate::usize_from_u64(base) as *mut [u64; FRAME_WORDS];
     // SAFETY: `init` walked this stack's top page and found it mapped
     // writable; `base` is `FRAME_BYTES` below the top, inside that page, and
     // eight-byte aligned because the top is page-aligned. Nothing else is
     // using the stack: the slot is not `Alive`, and a dead slot's thread can
     // never be resumed. The lock is held, so no other fabrication races.
-    unsafe { core::ptr::write(base as usize as *mut [u64; FRAME_WORDS], frame) };
+    unsafe { core::ptr::write(frame_slot, frame) };
 
     let word = CONTEXTS.as_mut_ptr().cast::<u64>().wrapping_add(slot);
     // SAFETY: `slot` is below `MAX_TASKS`; the lock is held, and the assembly
@@ -430,7 +444,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
         // that will ever unwind it.
         unsafe { switch(save, load) };
     });
-    interrupt::resume_trap(suspended);
+    interrupt::resume_trap(&suspended);
     saved.restore();
     result
 }
@@ -468,7 +482,7 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
             unreachable!("a task retired from a trap was resumed");
         }
         Err(error) => {
-            interrupt::resume_trap(suspended);
+            interrupt::resume_trap(&suspended);
             saved.restore();
             Err(error)
         }
@@ -512,6 +526,10 @@ pub fn exit_to(slot: usize) -> TaskError {
 /// Panics if a spin lock is held. A switch would leave it locked on a
 /// context nothing can schedule, and the next taker spins with the flag
 /// clear (D-66).
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     assert!(
         crate::sync::spinlocks_held() == 0,
@@ -547,9 +565,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     // interrupt-excluded transaction; every other slot clears that route and
     // restores its ordinary RSP0 before it can run (D-407).
     let roots = table.slots[slot].page_table;
-    let wanted = roots
-        .map(AddressSpaceRoots::full_root)
-        .unwrap_or_else(paging::active_root);
+    let wanted = roots.map_or_else(paging::active_root, AddressSpaceRoots::full_root);
     let paired = roots.is_some_and(AddressSpaceRoots::is_paired);
     if paired {
         let Some(landing) = table.kernel_stack_top(slot) else {
@@ -758,6 +774,10 @@ impl Released {
 /// Consuming the one-shot [`Binding`] proves that no later caller can install
 /// it. This is the rollback path for construction that stops before
 /// [`bind_address_space`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Binding is neither Copy nor Clone; the move is what proves no later caller can install it"
+)]
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
         roots: binding.roots(),
@@ -770,6 +790,10 @@ pub fn release_uninstalled(binding: Binding) -> Released {
 /// and hands back the evidence [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs.
 ///
 /// Returns the token unchanged if a live slot still names it.
+///
+/// # Errors
+///
+/// Returns `bound` when a live slot still runs on that address space.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     #[cfg(feature = "selftest")]
     if REFUSE_RELEASES.load(Ordering::Acquire) != 0 {
@@ -980,6 +1004,10 @@ pub fn final_interrupt_admission_refusal_for_test() -> bool {
     refused && stayed_disabled && interrupt::are_enabled()
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a broken invariant halts; the caller cannot repair it through Result"
+)]
 fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !paging::is_active() {
         return Err(UserError::Inactive);
@@ -1012,9 +1040,7 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
             })
         }
         _ => {
-            if !final_shared_mappings_are_safe() {
-                Err(UserError::NoSharedKernelIsolation)
-            } else {
+            if final_shared_mappings_are_safe() {
                 mine.map_or(Err(UserError::NoKernelStack), |stack| {
                     if super::segment::kernel_stack() == stack.address() {
                         Ok(())
@@ -1022,6 +1048,8 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
                         Err(UserError::NoKernelStack)
                     }
                 })
+            } else {
+                Err(UserError::NoSharedKernelIsolation)
             }
         }
     };
