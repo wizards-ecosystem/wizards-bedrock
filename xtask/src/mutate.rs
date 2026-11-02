@@ -20105,8 +20105,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1794,
         file: "wost/src/mm/mod.rs",
-        find: "        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
-        replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
+        find: "        unsafe { word.write_volatile(value.to_le()) };",
+        replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { word.write_volatile(value.to_le()) };",
         breaks: "a permission byte becomes visible before the atomic VT-d entry publication",
         reddens: Caught::HostTest {
             package: "xtask",

@@ -78,12 +78,12 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 ///
 /// The measurement and per-file audit records below are executable evidence;
 /// change history belongs in the decision log (D-124).
-pub const BUDGET: usize = 388;
+pub const BUDGET: usize = 386;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
 /// Kept separately because a ceiling cannot reveal drift below it.
-pub const MEASURED: usize = 388;
+pub const MEASURED: usize = 386;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -170,7 +170,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "7f61c2b4511957e8d9de6beec49f20ffa80d8d9e72b5e10b5ef0d5f79d7fa678",
+            "e1049507ed7a6c6cbff5fb05d5d215a97bd045bdde3d196e3649375c9e2eb0d1",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -188,7 +188,7 @@ mod tests {
             "wost/src/arch/x86_64/segment.rs",
             14,
             0,
-            "fa4324fcc0846225910fcab8349a1b26151b971b6fca285cf77ba7f646138f5f",
+            "59013835771cf5b851cf7b46dcc220075f2d2abd365358481980e5496a469be9",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
@@ -236,19 +236,19 @@ mod tests {
             "wost/src/mm/heap.rs",
             6,
             5,
-            "306112aa957d6bb5e374897a6fd938fcaef7e96952db942acc716c5ebfc05eff",
+            "fc3e3eda92f73a6e1c639fd458bf5e79e264b7c83d1a577c418815cf1765b674",
         ),
         (
             "wost/src/mm/mod.rs",
             17,
             3,
-            "f5c17b3eb28cac218c637584addcefc2eca8c20f04bec1c8fca1a368bde7dd0b",
+            "92694aada640f5d797e9dd33a49a0042f5fb471444ff2506ce9c2be6fc6aea34",
         ),
         (
             "wost/src/mmio.rs",
             2,
             2,
-            "05e2206a8fc27ef2bd704636e5c4a75e0bab11ba6fdc02935bd220691f5a29ad",
+            "61e84ab9ad4c68022897bf2fc8d9893884574a46ed2219e77541d3d6d82ec83f",
         ),
         (
             "wost/src/sync.rs",

@@ -2918,6 +2918,11 @@ impl EntrySlot {
 fn entry_slot(table: Paddr, index: usize) -> Result<EntrySlot, MapError> {
     assert!(index < ENTRIES, "a level's index is always below 512");
     let base = mm::direct_pointer(table, PAGE_SIZE).ok_or(MapError::Unreachable(table))?;
+    // A direct-mapped frame is page-aligned, which is stricter than `Entry`.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "direct_pointer returns a page-aligned frame and Entry is eight bytes"
+    )]
     let pointer = base.cast::<Entry>().wrapping_add(index);
     let pointer = NonNull::new(pointer).ok_or(MapError::Unreachable(table))?;
     Ok(EntrySlot { pointer })

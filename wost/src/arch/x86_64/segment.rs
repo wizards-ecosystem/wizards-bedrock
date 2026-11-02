@@ -305,6 +305,10 @@ fn write_stack(at: usize, top: u64) {
             .is_multiple_of(8),
         "the privilege-stack entry is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)
@@ -355,6 +359,10 @@ pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
             .is_multiple_of(8),
         "the interrupt-stack entry is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)
@@ -395,6 +403,10 @@ fn read_stack(at: usize) -> u64 {
             .is_multiple_of(8),
         "a stack pointer in the segment is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)

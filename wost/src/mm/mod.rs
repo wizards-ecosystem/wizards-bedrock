@@ -377,6 +377,11 @@ impl Frame {
     pub fn is_zero(&self) -> Option<bool> {
         const WORDS: usize = crate::usize_from_u64(FRAME_SIZE) / size_of::<u64>();
 
+        // The frame address is page-aligned, so the first word is `u64`-aligned.
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "a frame address is page-aligned and a u64 is eight bytes"
+        )]
         let base = direct_map_pointer(self.address())?.cast::<u64>();
         let mut zero = true;
         for index in 0..WORDS {
@@ -617,9 +622,14 @@ impl<'authority> DirectSpan<'authority> {
         if end > self.len || !(destination as usize).is_multiple_of(core::mem::align_of::<u64>()) {
             return false;
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the check above rejects a destination that is not eight-byte aligned"
+        )]
+        let word = destination.cast::<u64>();
         // SAFETY: the span's authority keeps all eight checked bytes live, and
         // the alignment check makes this one indivisible x86-64 qword store.
-        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };
+        unsafe { word.write_volatile(value.to_le()) };
         true
     }
 

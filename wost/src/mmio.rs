@@ -114,6 +114,10 @@ impl MmioRegion {
     /// [`MmioError::Overflow`] when the byte range cannot be formed.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         let offset = self.check_words(offset, 1)?.offset();
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "check_words rejects an offset that is not a multiple of 4"
+        )]
         let word = self.base.wrapping_add(offset).cast::<u32>();
         // SAFETY: `check_words` proved the word is contained and aligned in the
         // live mapping promised by `new`.
@@ -149,6 +153,10 @@ impl MmioRegion {
     ) -> Result<(), MmioError> {
         let range = self.check_words(offset, values.len())?;
         for (cursor, value) in range.offsets().zip(values) {
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "check_words rejects a cursor that is not a multiple of 4"
+            )]
             let word = self.base.wrapping_add(cursor).cast::<u32>();
             // SAFETY: `range` proves each word is aligned and contained by
             // this unique device mapping.
