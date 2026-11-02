@@ -80,9 +80,11 @@ pub(crate) struct Function {
 
 /// Walk every bus reachable from bus zero, reporting each function found.
 ///
-/// Iterative over a worklist of buses, with each bus visited at most once: a
-/// bridge that names a bus already seen is ignored rather than followed, which
-/// is what keeps a broken topology from being a hang.
+/// Iterative over a worklist of buses. Each bus number is queued at most
+/// once and visited at most once: a bridge that names a bus already queued
+/// or already seen is ignored rather than followed. Queuing duplicates used
+/// to fill the 256-entry worklist while still scanning bus zero, so a later
+/// bridge on that bus never ran and the devices behind it were invisible.
 ///
 /// Returns what the walk covered, or `None` if configuration space cannot be
 /// reached at all.
@@ -92,9 +94,11 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     }
 
     let mut seen = [false; MAX_BUSES];
+    let mut queued_bus = [false; MAX_BUSES];
     let mut pending = [0u8; MAX_BUSES];
     let mut queued = 1;
     let mut next = 0;
+    queued_bus[0] = true;
     let mut survey = Survey::default();
 
     while next < queued {
@@ -129,11 +133,14 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
-                    && !seen[behind as usize]
-                    && queued < MAX_BUSES
                 {
-                    pending[queued] = behind;
-                    queued += 1;
+                    enqueue_secondary(
+                        &mut seen,
+                        &mut queued_bus,
+                        &mut pending,
+                        &mut queued,
+                        behind,
+                    );
                 }
 
                 // A single-function device answers every function with its own
@@ -331,6 +338,63 @@ pub(crate) fn topology_presence() -> TopologyPresence {
 /// Whether `target` lies below `root` in the sealed parent chain.
 pub(crate) fn topology_hierarchy_contains(root: Address, target: Address) -> bool {
     TOPOLOGY.lock_leaf().hierarchy_contains(root, target)
+}
+
+/// Queue `behind` unless that bus number is already queued, already visited,
+/// or the worklist has no free slot.
+///
+/// The slot check is unreachable when every bus number is queued once: there
+/// are exactly [`MAX_BUSES`] numbers and bus zero already occupies one slot.
+/// It stays so a counter bug cannot write past `pending`.
+fn enqueue_secondary(
+    seen: &mut [bool; MAX_BUSES],
+    queued_bus: &mut [bool; MAX_BUSES],
+    pending: &mut [u8; MAX_BUSES],
+    queued: &mut usize,
+    behind: u8,
+) -> bool {
+    let index = usize::from(behind);
+    if seen[index] || queued_bus[index] || *queued >= MAX_BUSES {
+        return false;
+    }
+    pending[*queued] = behind;
+    queued_bus[index] = true;
+    *queued += 1;
+    true
+}
+
+/// Repeated secondaries must not consume the worklist before a distinct bus.
+///
+/// Two hundred and fifty-five bridges that all name bus 1 used to occupy
+/// every slot after bus zero. The bridge that then named bus 5 was dropped,
+/// and enumeration never visited it.
+#[cfg(feature = "selftest")]
+pub(crate) fn duplicate_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
+    let mut seen = [false; MAX_BUSES];
+    let mut queued_bus = [false; MAX_BUSES];
+    let mut pending = [0u8; MAX_BUSES];
+    let mut queued = 1usize;
+    queued_bus[0] = true;
+
+    let mut admitted_one = false;
+    for _ in 0..255 {
+        admitted_one |= enqueue_secondary(&mut seen, &mut queued_bus, &mut pending, &mut queued, 1);
+    }
+    let admitted_five = enqueue_secondary(&mut seen, &mut queued_bus, &mut pending, &mut queued, 5);
+    let seen_bus_is_ignored = !enqueue_secondary(
+        &mut [true; MAX_BUSES],
+        &mut queued_bus,
+        &mut pending,
+        &mut queued,
+        7,
+    );
+
+    admitted_one
+        && admitted_five
+        && seen_bus_is_ignored
+        && queued == 3
+        && pending[1] == 1
+        && pending[2] == 5
 }
 
 /// The bus behind a bridge.

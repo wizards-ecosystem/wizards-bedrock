@@ -3153,6 +3153,7 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
         // reporting the walk rather than a number of its own.
         && survey.functions == on_bus_zero + beyond
         && on_bus_zero >= 6
+        && pci::duplicate_secondaries_do_not_hide_a_later_bus_for_test()
 }
 
 static DEVICE_CLAIM_CHECK: AtomicUsize = AtomicUsize::new(0);
