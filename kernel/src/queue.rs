@@ -2085,6 +2085,10 @@ fn finish_work(mut running: RunningWork, status: u32, value: u64) {
 
 /// Stop or resume work before it leaves the bounded queue.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test asks the worker to pause or resume"
+)]
 pub(crate) fn pause_worker_for_test(paused: bool) {
     WORKER_IS_PAUSED.store(false, Ordering::Release);
     WORK_PAUSED.store(paused, Ordering::Release);

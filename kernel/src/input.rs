@@ -502,12 +502,11 @@ pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
     POLLER_PEER_PROGRESS.store(false, Ordering::Release);
     POLLER_SAW_PEER.store(false, Ordering::Release);
     POLLER_ROUNDS.store(rounds, Ordering::Release);
-    match crate::thread::spawn("keyboard-poll-check", poll_forever) {
-        Ok(_) => true,
-        Err(_) => {
-            POLLER_RUNNING.store(false, Ordering::Release);
-            false
-        }
+    if crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok() {
+        true
+    } else {
+        POLLER_RUNNING.store(false, Ordering::Release);
+        false
     }
 }
 

@@ -362,6 +362,10 @@ pub(crate) struct ActiveMapping {
 
 /// Divide exact removal authority without widening the represented range.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "taking the mapping retires the caller's authority to the two halves"
+)]
 pub(crate) fn split_mapping_for_test(
     mapping: ActiveMapping,
     left_len: u64,
@@ -481,6 +485,10 @@ pub(crate) fn map_stack_arena_for_test(
 
 /// Remove only the active mapping whose unforgeable value is consumed here.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "taking the mapping is what makes the unmap unforgeable"
+)]
 pub(crate) fn unmap_for_test(
     context: &mut ThreadContext,
     mapping: ActiveMapping,

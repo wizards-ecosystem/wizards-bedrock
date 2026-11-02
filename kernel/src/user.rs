@@ -718,6 +718,13 @@ impl CommitOutcome {
 }
 
 impl PreparedProcess {
+    #[cfg_attr(
+        feature = "selftest",
+        expect(
+            clippy::fn_params_excessive_bools,
+            reason = "the self-test refusal is one injected flag on an otherwise fixed commit"
+        )
+    )]
     fn commit(
         mut self,
         slot: usize,
@@ -1713,6 +1720,10 @@ pub(crate) fn collect() -> CollectOutcome {
 }
 
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test asks collection to pause or resume after the take"
+)]
 pub(crate) fn pause_collection_after_take_for_test(paused: bool) {
     PAUSE_COLLECTION_AFTER_TAKE.store(paused, Ordering::Release);
 }
@@ -1724,6 +1735,10 @@ pub(crate) fn collection_is_paused_for_test() -> bool {
 
 /// Pause one collector after it owns settlement but before it touches the ring.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test asks collection to pause or resume before settlement"
+)]
 pub(crate) fn pause_collection_before_settlement_for_test(paused: bool) {
     PAUSE_COLLECTION_BEFORE_SETTLEMENT.store(paused, Ordering::Release);
 }
@@ -1873,7 +1888,7 @@ static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 /// live one by construction.
 static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 
-/// RingEnter calls whose completion wake armed the timer in that trap.
+/// `RingEnter` calls whose completion wake armed the timer in that trap.
 #[cfg(feature = "selftest")]
 static RING_ENTER_ARMS: AtomicUsize = AtomicUsize::new(0);
 
@@ -1929,7 +1944,7 @@ pub(crate) fn refusal_report_latch_for_test() -> usize {
     REPORTED.load(Ordering::Acquire)
 }
 
-/// RingEnter completion wakes observed to arm before the handler returned.
+/// `RingEnter` completion wakes observed to arm before the handler returned.
 #[cfg(feature = "selftest")]
 pub(crate) fn ring_enter_arms_for_test() -> usize {
     RING_ENTER_ARMS.load(Ordering::Acquire)
@@ -2270,7 +2285,7 @@ const DUPLICATE: u64 = 3;
 #[cfg(feature = "selftest")]
 const WAIT: u64 = 4;
 
-/// The argument that brackets Echo's RingEnter with timestamp reads.
+/// The argument that brackets Echo's `RingEnter` with timestamp reads.
 #[cfg(feature = "selftest")]
 const MEASURE: u64 = 5;
 

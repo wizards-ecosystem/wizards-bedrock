@@ -1005,18 +1005,18 @@ struct CandidateBaseline {
 
 #[cfg(feature = "selftest")]
 impl CandidateBaseline {
-    fn capture(_context: &mut thread::ThreadContext) -> Self {
+    fn capture(context: &mut thread::ThreadContext) -> Self {
         Self {
             frames: wost::mm::free_frames(),
             claims: pci::claims(),
-            mappings: mem::device_mappings(_context),
+            mappings: mem::device_mappings(context),
             interrupt_owner: iommu::interrupt_boundary_active(),
         }
     }
 
-    fn is_restored(self, _context: &mut thread::ThreadContext) -> bool {
+    fn is_restored(self, context: &mut thread::ThreadContext) -> bool {
         let frames = wost::mm::free_frames();
-        let mappings = mem::device_mappings(_context);
+        let mappings = mem::device_mappings(context);
         let exact = frames == self.frames && mappings == self.mappings;
         let first_interrupt_owner = !self.interrupt_owner
             && iommu::interrupt_boundary_active()

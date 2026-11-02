@@ -50,7 +50,15 @@ impl Mounted {
         let bpb = self.volume.bpb();
         bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER
             && bpb.clusters() >= 65_525
-            && bpb.cluster_bytes() >= fat32::SECTOR_BYTES as u32
+            && bpb.cluster_bytes() >= {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a FAT sector is 512 bytes and fits the BPB's u32 field"
+                )]
+                {
+                    fat32::SECTOR_BYTES as u32
+                }
+            }
             && bpb.first_data_sector() > 0
     }
 

@@ -408,7 +408,7 @@ impl Controller {
     ///
     /// The self-test's only way to reach the set 1 path on a machine where the
     /// expected key is known: QEMU honours this bit, so turning it on
-    /// reproduces what VMware does unasked, with an injected keystroke whose
+    /// reproduces what `VMware` does unasked, with an injected keystroke whose
     /// identity the harness chose (D-179).
     #[cfg(feature = "selftest")]
     pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {

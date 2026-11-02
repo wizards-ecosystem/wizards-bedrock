@@ -403,6 +403,13 @@ fn frames_for(bytes: u64) -> usize {
 
 /// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "selftest",
+    expect(
+        clippy::struct_excessive_bools,
+        reason = "self-test observation flags sit beside the controller they describe"
+    )
+)]
 pub(crate) struct Controller {
     /// Where the registers are readable. Kept so a check can ask **how they
     /// were mapped**: a register file mapped write-back is a driver whose
@@ -1352,7 +1359,9 @@ impl Controller {
 
         let mut valid = [0u8; NAMESPACE_IDENTIFY_BYTES];
         valid[SIZE] = 1;
-        valid[BLOCK_SHIFT] = nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros() as u8;
+        let shift = u8::try_from(nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros())
+            .unwrap_or_else(|_| panic!("the supported block shift does not fit a byte"));
+        valid[BLOCK_SHIFT] = shift;
 
         self.intercept_io_queue_creation = true;
 
@@ -2292,12 +2301,12 @@ pub(crate) fn read_block_probe_for_test(lba: u64) -> Option<(usize, [u8; 8], [u8
     if !buffer.fill(0) || controller.read_blocks(lba, 1, buffer).is_err() {
         return None;
     }
-    let mut head = [0u8; 8];
-    let mut beyond = [0u8; 8];
-    if !buffer.read_at(0, &mut head) || !buffer.read_at(block, &mut beyond) {
+    let mut prefix = [0u8; 8];
+    let mut past_block = [0u8; 8];
+    if !buffer.read_at(0, &mut prefix) || !buffer.read_at(block, &mut past_block) {
         return None;
     }
-    Some((block, head, beyond))
+    Some((block, prefix, past_block))
 }
 
 #[cfg(feature = "selftest")]
@@ -2383,6 +2392,10 @@ pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
 /// What a device write into a buffer the domain does not map produced.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent observation of one DMA fence"
+)]
 pub(crate) struct FenceWitness {
     /// The command completed or was refused rather than hanging.
     pub(crate) completed: bool,
@@ -2451,6 +2464,10 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
 
 /// Hold the next submitted command inside its preemptible polling owner.
 #[cfg(feature = "selftest")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the test asks one command to stay published or to finish"
+)]
 pub(crate) fn hold_command_for_test(held: bool) {
     HOLD_COMMAND.store(held, Ordering::Release);
 }

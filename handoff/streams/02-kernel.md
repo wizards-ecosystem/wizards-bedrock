@@ -18,11 +18,10 @@
 
 ## In progress
 
-- Self-test graph BeautifulRust warnings. The shipped graph is clean against
-  stream 1's clippy table (pedantic + `cast_possible_truncation` and the
-  other warns in that branch's `Cargo.toml`, with that branch's allows).
-  Checked with `CLIPPY_CONF_DIR` pointed at a copy of that branch's
-  `clippy.toml`. Root config was not edited.
+- None. Shipped and `selftest` kernel graphs are clean against stream 1's
+  clippy table. Checked with `CLIPPY_CONF_DIR` pointed at a copy of
+  `origin/cursor/beautiful-rust-lints-b7b1:clippy.toml` and that branch's
+  warn/allow set passed after `--`. Root `Cargo.toml` was not edited.
 
 ## Unsafe audit
 
@@ -34,6 +33,13 @@
 
 ## Next steps
 
+- Turn `selftest.rs` module `expect`s into per-site `try_from` if the fixture
+  casts should stay visible to the lint.
+- Replace `expect(too_many_lines)` procedures (`start_interrupts`, `build`,
+  `run_on`, `load_image`, `spawn_transaction`, `collect`, `spawn_prepared`)
+  with real splits only if a reader can still see the order.
+- `data_mapped: bool` and `require_unique: bool` are still bools. The ACPI
+  one is pinned by mutation 1819.
 - `Queue::abandon` posts completions and bumps `served` but does not
   `wake_all`, unlike `expire`. Production collect runs after the user thread
   is gone; only worth changing if a live waiter can observe abandon.
@@ -53,6 +59,19 @@
   byte was the one that emptied the output buffer. Fixed in
   `kernel/src/arch/x86_64/i8042.rs`. A one-byte controller buffer never hits
   this; a backlog of exactly `FLUSH_LIMIT` bytes did.
+
+## Clippy
+
+- Shipped graph: truncating casts are `try_from` where the value must fit,
+  and `#[expect(clippy::cast_possible_truncation, reason = ...)]` where the
+  cast is a register half (PCI command/vendor, NVMe address dword, PIT window
+  that the const assertion already bounds, page-size constants).
+- Other shipped warns were fixed (docs, `assert!`, `if let`, build-script
+  `expect`) or marked with `expect` and a reason where the function is one
+  ordered procedure (`too_many_lines`, invariant `panic` inside `Result`).
+- `selftest` graph: the same, plus module-level `expect`s on
+  `kernel/src/selftest.rs` for fixture casts and harness shape. Those expects
+  are the follow-up if someone wants each fixture cast to be `try_from`.
 
 ## Cleanups
 
