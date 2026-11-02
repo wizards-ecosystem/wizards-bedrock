@@ -5,63 +5,125 @@ Owner: workspace root config only (`Cargo.toml` lints, `clippy.toml`,
 No edits under `kernel/`, `libs/`, `boot/`, `xtask/`, `tools/`, or `wost/`.
 
 Branch: `cursor/beautiful-rust-lints-b7b1`
+Draft PR: https://github.com/wizards-ecosystem/wizards-bedrock/pull/6
 
 ## Done
 
-- Read AGENTS.md, CONTRIBUTING.md, D-22 / D-159 / D-27, and BeautifulRust's
-  tested `lints/lints.toml`, `lints/clippy.toml`, and the three skills
-  (`rust-best-practices`, `rust-review`, `rust-port`).
-- Workspace `[lints]` now inherits BeautifulRust's tested table. Existing
-  safety denies stay deny. New pedantic lints are warn.
-- `clippy.toml` sets the bool-parameter threshold, test/const panic allows,
-  doc acronyms, and `avoid-breaking-exported-api = false`.
-- `docs/style/BEAUTIFUL_RUST.md` is the contributor and agent summary,
-  including `// SAFETY:` / `# Safety` and the kernel allows.
-- `rustfmt.toml` records why Google's extra knobs stay unset on rustfmt 1.9.
-- `.cargo/config.toml` notes that plain clippy exits 0 on these warns and
-  `cargo xtask clippy` does not.
+- Workspace `[lints]` inherits BeautifulRust's tested table. Safety denies
+  stay deny. New pedantic lints are warn. `clippy.toml`, `rustfmt.toml`, and
+  `.cargo/config.toml` match that.
+- `docs/style/BEAUTIFUL_RUST.md` is the rule sheet, including `// SAFETY:` /
+  `# Safety` and the kernel allows.
+- Source-preview workflow caches the Cargo registry and `target/`, and runs
+  `cargo clippy --all-targets --locked` plus `cargo kclippy --locked` without
+  `-D warnings`. No new boot or test job. Timeout stays 20 minutes.
+  Self-test and `refuse-pci` are not linted in that job.
+- `rust-toolchain.toml` unchanged (already pins 1.97.1 and installs rustfmt
+  and clippy).
+- Warning census below, from rustc 1.97.1 on Linux. Every pass exited 0, so
+  the denies still hold. `cargo metadata --no-deps` parsed the manifest.
+  Full `cargo xtask ci`, QEMU, and the host test suite were not run.
 
 ## In progress
 
-- Fast clippy, to confirm the lint names exist on 1.97.1 and to count warns
-  per crate.
-- Source-preview CI: Cargo cache and a clippy step that does not pass
-  `-D warnings`.
+Nothing. Waiting on Isaac for the open questions, and on other streams for
+the per-crate warns.
 
 ## Next steps
 
-1. Finish the per-crate warning census (host `--all-targets`, shipped kernel,
-   self-test, `refuse-pci`) and paste the counts here and in the PR.
-2. Add the CI cache and clippy step. Keep the 20-minute job budget. Do not
-   add boot tests or `-D warnings`.
-3. Leave the PR draft. Do not merge.
+1. Do not merge the draft PR.
+2. Other streams fix warns in the crates they own, using the style guide.
+   A register-width truncation is an `expect` with a reason, not a rewrite.
+3. Re-run the census after those edits. `cargo xtask clippy` stays red until
+   the warns are gone or the gate stops passing `-D warnings`.
 
 ## Decisions
 
-- New lints are warn, not deny, so `cargo check` / `cargo build` stay green
-  on other streams. `cargo xtask clippy` still denies all warnings; that
-  interaction is an open question for Isaac, because this stream does not
-  edit `xtask`.
-- Relaxed, with reasons in the style guide: `expect_used`, `as_conversions`,
-  `cast_sign_loss`, `cast_possible_wrap`, `enum_variant_names`, plus
-  BeautifulRust's own allows (`module_name_repetitions`, `must_use_candidate`,
-  `module_inception`, `enum_glob_use`). `cast_possible_truncation` stays warn.
-  `indexing_slicing`, `missing_docs_in_private_items`, and `clippy::nursery`
-  stay off (D-159, comment noise, toolchain churn).
-- Safety denies are unchanged and stricter than BeautifulRust's warn.
-- `xtask` still does not inherit workspace lints (D-22).
-- No new decision-log number. D-159 says these groups were not adopted.
-  Amending that entry is Isaac's call; this stream does not edit
-  `docs/004-decision-log.md`.
-- `rust-toolchain.toml` needs no change: the pin is already exact (D-24) and
-  already installs rustfmt and clippy.
+- New lints are warn, not deny, so `cargo check` / `cargo build` / plain
+  `cargo clippy` stay green. `cargo xtask clippy` still appends `-D warnings`.
+- Relaxed: `expect_used`, `as_conversions`, `cast_sign_loss`,
+  `cast_possible_wrap`, `enum_variant_names`, plus BeautifulRust's allows
+  (`module_name_repetitions`, `must_use_candidate`, `module_inception`,
+  `enum_glob_use`). `indexing_slicing`, `missing_docs_in_private_items`, and
+  `clippy::nursery` stay off.
+- `cast_possible_truncation` stays warn. It is the majority of the census.
+  Whether to allow it is an open question, not a silent flip.
+- `xtask` does not inherit the table (D-22).
+- No new decision-log number. D-159 still says these groups were not adopted.
+  This stream did not edit `docs/004-decision-log.md`.
 
 ## Warning counts
 
-Not run yet.
+Unique `(file, line, lint)` findings. `cargo clippy --all-targets` emits some
+host findings twice (library target and tests); the unique number is the
+number of sites. Kernel numbers are the `x86_64-unknown-none` graph. Raw
+diagnostic totals are in parentheses when they differ.
+
+Host command: `cargo clippy --all-targets --locked` (exit 0, 591 raw warns).
+Shipped kernel: `cargo kclippy --locked` (exit 0, 503 raw, libs included).
+Self-test: `cargo kclippy --locked --features wizard-kernel/selftest` (exit 0).
+`refuse-pci` added no findings beyond the shipped kernel.
+
+### Libs and xtask (host `--all-targets`)
+
+The second number is the same crate on the shipped kernel target (no tests,
+`no_std`). Fix the host sites, then recheck `cargo kclippy`, because the
+graphs are not the same.
+
+| Crate | Host unique | Kernel-target unique | What dominates on the host |
+|---|---:|---:|---|
+| acpi-tables | 19 | 6 | truncation |
+| eevdf | 5 | 4 | truncation |
+| elf64 | 6 | 2 | truncation, lossless cast |
+| fat32 | 19 | 6 | truncation, exhaustive enums |
+| frame-space | 7 | 5 | truncation, missing errors doc |
+| handle-space | 5 | 5 | `return_self_not_must_use` |
+| memory-map | 4 | 1 | exhaustive enums |
+| mmio-range | 3 | 3 | `manual_let_else` |
+| nvme | 15 | 14 | truncation, missing errors doc |
+| panic-record | 0 | 0 | |
+| path-walk | 1 | 0 | truncation |
+| pci-config | 83 | 65 | truncation (about half), doc markdown, exhaustive enums |
+| pixel | 13 | 8 | truncation |
+| port-space | 0 | 0 | |
+| ps2-keys | 14 | 8 | doc markdown, exhaustive enums |
+| ring-proto | 9 | 1 | missing assert message |
+| slab-layout | 1 | 1 | exhaustive enums |
+| stack-layout | 5 | 1 | truncation |
+| timebase | 8 | 5 | truncation |
+| trap-cause | 5 | 2 | `wrong_self_convention`, bit mask, lossless cast |
+| vtd | 9 | 7 | doc markdown |
+| wizzy-handoff | 0 | 0 | |
+| x86-apic | 17 | 17 | exhaustive enums, missing errors doc |
+| x86-cpuid | 16 | 13 | truncation, `return_self_not_must_use`, lossless cast |
+| x86-paging | 19 | 17 | exhaustive enums |
+| x86-pit | 11 | 4 | exhaustive enums, doc markdown |
+| x86-tables | 26 | 5 | lossless cast, truncation |
+| xtask | 3 | n/a | pre-existing `dead_code` only; this table does not apply |
+
+Host unique total, libs + xtask: 323 (320 of them in `libs/`).
+
+### Kernel crates (shipped, then self-test)
+
+| Crate | Shipped unique | Self-test unique | Extra sites only in self-test |
+|---|---:|---:|---:|
+| kernel | 86 | 204 | 118 |
+| wost | 211 | 234 | 24 |
+
+Shipped `kernel` is mostly truncation, doc markdown, `manual_assert`,
+`single_match_else`, `too_many_lines`. Shipped `wost` is mostly truncation,
+missing `# Errors` / `# Panics`, `panic_in_result_fn`, `needless_pass_by_value`,
+and `cast_ptr_alignment`. `refuse-pci` matched the shipped counts.
+
+`xtask` `dead_code` (Linux): `FILE_READ_DATA_ACCESS` in
+`xtask/src/security_deep.rs`, `parked_family` and `released` in
+`xtask/src/bounded_process.rs`. Not introduced by this table. This stream
+does not edit `xtask`.
 
 ## How to resume
 
-Lint levels: root `Cargo.toml` `[workspace.lints]`. Thresholds: `clippy.toml`.
-Rules: `docs/style/BEAUTIFUL_RUST.md`. Do not edit crate sources from this
-stream. Do not run `cargo xtask ci`, QEMU, or the full test suite.
+Levels: root `Cargo.toml` `[workspace.lints]`. Thresholds: `clippy.toml`.
+Rules: `docs/style/BEAUTIFUL_RUST.md`. Census JSON is not in the repo; rerun
+the four commands above with `--message-format=json` if the counts need to
+move. Do not edit crate sources from this stream. Do not run `cargo xtask ci`,
+QEMU, or the full test suite.

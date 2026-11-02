@@ -82,7 +82,7 @@ turn them back on without a decision.
 | `expect_used` | `expect("why this cannot fail")` is the sanctioned panic for a broken invariant. Recoverable failure is still `Result`. Several `libs/` crates already `deny` this on non-test code; that attribute is stricter and stays. |
 | `as_conversions` | A ban on every `as` fights port widths, MMIO widths, and page-table bit packing. Prefer `From` / `TryFrom` when the conversion can lose a value the caller could have avoided. |
 | `cast_sign_loss`, `cast_possible_wrap` | `((address as i64) << 16 >> 16) as u64` is the canonical-address arithmetic, not a defect (D-159). A warning on that pair asks someone to "fix" the mechanism. |
-| `cast_possible_truncation` is **warn**, not allow | Narrowing to a register width is often real, and it is also how a value silently loses bits. Keep the warning. On a hardware store whose width is the register, `#[expect]` with a reason, or `uN::try_from`, whichever is honest. |
+| `cast_possible_truncation` is **warn**, not allow | Narrowing to a register width is often real, and it is also how a value silently loses bits. Keep the warning. On a hardware store whose width is the register, `#[expect]` with a reason, or `uN::try_from`, whichever is honest. The first census found this lint is most of the new warnings; do not rewrite the arithmetic just to clear it. |
 | `module_name_repetitions`, `module_inception`, `enum_glob_use`, `must_use_candidate` | BeautifulRust's tested config turns these off. A leaf module named after its item is the house layout. `use Enum::*` inside the function that matches on it is fine. |
 | `enum_variant_names` | The lint wants variants prefixed with the type name (`ParseError::ParseErrorEmpty`). That repeats a namespace the path already carries. Do not "fix" it. |
 | `indexing_slicing` | Not enabled. D-159 counted 118 hits, each behind a `get` or `take` that had already proved the length. The lint cannot see the proof. |
@@ -213,7 +213,10 @@ next one, is open.
   per-crate counts in `handoff/streams/01-lint-foundation.md` are cleared, or
   should the streams clear them before the branches combine? Changing the
   gate means editing `xtask`, which this stream does not own.
-- Source preview CI lints the host half and the shipped kernel only. It does
-  not lint the self-test or `refuse-pci` graphs, and it does not pass
-  `-D warnings`, so the 20-minute preview budget (D-441) stays a preview.
-  The local gate still lints every graph.
+- `cast_possible_truncation` is the bulk of the census. Should it join
+  `cast_sign_loss` on the allow list, or stay a warning that each site
+  answers with `expect` or `try_from`?
+- Source preview CI lints the host half and the shipped kernel, and it does
+  not pass `-D warnings`. The self-test and `refuse-pci` graphs stay on the
+  local gate so the job can keep its 20-minute budget (D-441). Should the
+  preview grow those graphs anyway?
