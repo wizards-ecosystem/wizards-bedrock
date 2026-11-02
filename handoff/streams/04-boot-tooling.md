@@ -15,16 +15,19 @@ the root workspace config, `kernel/`, and `libs/`.
   flags that look like QEMU options say they belong after `--`.
 - `cargo xtask help` names `QEMU`, `QEMU_DIR`, and `GDB`, and the two-edit
   suggestion window.
+- A kernel build checks that the pinned toolchain actually contains `rustc`
+  and `rustdoc` before cargo is spawned. The error names the missing file,
+  `rust-toolchain.toml`, and `rustup show`.
 
 ## In progress
 
-- Toolchain preflight is next and not committed.
+- Reading `wost/src/boot` for a handoff defect a host test can prove.
 
 ## Next steps
 
-- Preflight the pinned `rustc`/`rustdoc` before a kernel build so a missing
-  toolchain is not a generic cargo spawn failure.
-- Re-read `wost/src/boot` for a handoff defect that host tests can prove.
+- Keep looking through boot handoff and image assembly for a defect that is
+  wrong, not merely stylistic.
+- Update the PR description with the bugs, DX, cleanups, and follow-ups.
 
 ## Bugs found
 
