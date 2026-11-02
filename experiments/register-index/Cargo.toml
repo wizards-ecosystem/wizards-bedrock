@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "register-index"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+description = "Experimental index of the Bedrock foundation register. Not part of the kernel build."
+
+[[bin]]
+name = "register-index"
+path = "src/main.rs"

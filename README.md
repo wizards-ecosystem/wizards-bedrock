@@ -34,6 +34,36 @@ disposable virtual machines, away from primary machines and important storage.
 See the [release scope](docs/releases/v0.2.0.md),
 [contribution guide](CONTRIBUTING.md) and [security policy](SECURITY.md).
 
+## Start here
+
+The documented host is Windows with the GNU Rust toolchain. The pinned
+channel is `1.97.1` (`rust-toolchain.toml`), which also installs `rustfmt`,
+`clippy`, and the `x86_64-unknown-none` target on first use. QEMU is optional
+and is not required to compile.
+
+```powershell
+git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
+cd wizards-bedrock
+cargo fetch --locked
+cargo xtask build --release
+```
+
+A successful build compiles the kernel and checks its linked layout. It does
+not prove a boot. Booting, when you want it, is `cargo xtask run` in a
+disposable virtual machine. Full local qualification is `cargo xtask ci` and
+is not the newcomer path.
+
+Then read [the architecture](docs/002-architecture.md),
+[the code conventions](docs/005-code-conventions.md), and
+[the foundation register](docs/016-pre-wizzy-foundation.md). Work after v0.2.0
+is indexed by directory in [docs/roadmap/NEXT.md](docs/roadmap/NEXT.md).
+[Contributing](CONTRIBUTING.md) covers forks, pull requests, and which checks
+a documentation change actually needs.
+
+A clean Windows report of these four commands is still open as
+[issue #2](https://github.com/wizards-ecosystem/wizards-bedrock/issues/2).
+The steps are the same ones under [Building & running](#building--running).
+
 ## Status
 
 Working, and unfinished. The kernel boots on UEFI, brings up descriptor tables,
@@ -44,19 +74,17 @@ and remain gated. The echo prompt is a kernel diagnostic.
 
 | Phases 0 to 5 | Closed, each by a dated VMware boot. Last close 2026-08-24 |
 | --- | --- |
-| Phase 6, VFS and storage | Slices landed 2026-08-25. **Not closed**: qualification evidence is still open |
+| Phase 6, VFS and storage | Slices landed 2026-08-25. v0.2.0 qualified the diagnostic image (D-449). The phase stays open on PW-006 and PW-010 |
 | Realm userland | Owned by Realm; **gated** on compiler readiness (D-183), currently CLOSED |
 
-The supported VMware target currently reads no `RDCL_NO` bit, so D-250
-correctly keeps its shared-root user path closed. D-407 accepts the replacement
-path: a user address space on that target owns paired full/stripped roots and
-crosses through an exact non-secret entry enclave on a guarded, scrubbed stack,
-with PCID still off. The implementation, host contracts, retained mutations,
-forced-paired debug/release QEMU checks and selector-specific exact VMware
-transcript verifier are present. PW-580 and PW-706 remain open for the complete
-release sweep and fresh self-test plus shipped VMware qualifications; landing
-the verifier does not supply those boots, and no Workstation log, CPU signature
-or inferred capability substitutes for the guest's architectural read.
+The supported VMware target reads no `RDCL_NO` bit, so D-250 keeps the
+shared-root user path closed on that target. D-407 is the path v0.2.0
+qualified: a user address space owns paired full/stripped roots and crosses
+through an exact non-secret entry enclave on a guarded, scrubbed stack, with
+PCID off. PW-580 and PW-706 closed on `694061f` (D-449). The fresh self-test
+and shipped VMware qualifications read capabilities `0x44` and selected paired
+roots. A Workstation log, a CPU signature, or an inferred capability still
+does not replace the guest's architectural read.
 
 [docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
 the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
@@ -76,17 +104,19 @@ annotate corrections to the earlier historical snapshots.
 
 ## Building & running
 
-The documented host is Windows with the GNU Rust host toolchain; other hosts
-are not tested by this launch. Source builds use public inputs only: no sibling
-checkout, VMware or proprietary scanner is required. No WSL or external imaging
-tools are needed. QEMU is optional for compiling and host tests.
-Prerequisite: [rustup](https://rustup.rs) (GNU host toolchain:
-`rustup-init -y --default-host x86_64-pc-windows-gnu`, no Visual Studio
-needed). For optional boots, install [QEMU](https://www.qemu.org/)
+The documented host is Windows with the GNU Rust host toolchain. Other hosts
+are outside the launch checks (PW-708). Source builds use public inputs only:
+no sibling checkout, VMware, or proprietary scanner is required. No WSL or
+external imaging tools are needed. QEMU is optional for compiling and host
+tests. Prerequisite: [rustup](https://rustup.rs) with the GNU host
+(`rustup-init -y --default-host x86_64-pc-windows-gnu`; Visual Studio is not
+required). For optional boots, install [QEMU](https://www.qemu.org/)
 (`winget install SoftwareFreedomConservancy.QEMU`). Open a fresh terminal
-after installing rustup so `cargo` is on PATH; the pinned toolchain and
-`x86_64-unknown-none` target install automatically on first build via
-`rust-toolchain.toml`.
+after installing rustup so `cargo` is on PATH. The first build installs the
+pinned `1.97.1` toolchain and the `x86_64-unknown-none` target from
+`rust-toolchain.toml`. That file lists `rustfmt` and `clippy`. It omits
+`rust-mingw` because the component does not exist on other hosts; rustup
+installs it as part of the Windows GNU host toolchain.
 
 ```powershell
 git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
@@ -426,6 +456,8 @@ xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 handoff/    synthetic route-neutral envelope/payload fixtures, not Wizzy source
 docs/       design docs (design-first: docs before code)
+docs/roadmap/  assignment index after v0.2.0; the register stays the backlog
+experiments/ optional host tools outside the workspace, the register, and CI
 models/     TLA+ ring-protocol specs, plus four deliberate mutant configs that
             must each fail, checked by `cargo xtask model-check` (D-112)
 tools/      pinned TLA+ jar and the foreign FAT32 corpus, both digest-checked
