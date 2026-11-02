@@ -2018,6 +2018,10 @@ impl<'a> Dmar<'a> {
     /// scans the complete, fixed segment requester-ID space through `present`,
     /// even when a more-specific scope names `selected`; the caller's fixed
     /// inventory capacity remains the admission bound.
+    ///
+    /// # Errors
+    ///
+    /// See [`RequesterInventoryError`]. A refusal leaves no partial inventory.
     pub fn requester_inventory<const N: usize>(
         &self,
         selected: Bdf,

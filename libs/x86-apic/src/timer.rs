@@ -26,6 +26,11 @@ impl core::fmt::Display for OneShotError {
 impl core::error::Error for OneShotError {}
 
 /// Plan the sole register write that unmasks a one-shot timer.
+///
+/// # Errors
+///
+/// [`OneShotError::Running`] when `current_count` is not zero. A count of
+/// zero is the stopped timer; any other value is still counting.
 pub const fn one_shot_entry(
     current_count: u32,
     vector: DeliverableVector,

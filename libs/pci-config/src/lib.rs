@@ -1512,6 +1512,12 @@ impl core::error::Error for EnableError {}
 ///
 /// This is the safe first stage for a memory-mapped controller whose firmware
 /// DMA state must be disabled before bus mastering is admitted.
+///
+/// # Errors
+///
+/// [`EnableFailure`] when the lease is stale, configuration access fails, or
+/// the device does not read back the requested command word. A failed
+/// restoration is part of that failure.
 pub fn enable_memory_space<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -1560,6 +1566,12 @@ pub fn fence_bus_master<const N: usize>(
 ///
 /// This is the last selected-function check before a unit-wide VT-d write.
 /// It neither changes nor consumes the command owner.
+///
+/// # Errors
+///
+/// [`EnableError::Stale`] when `authority` or `state` is not the live lease,
+/// [`EnableError::Access`] when the read fails, and [`EnableError::Changed`]
+/// when the command word is no longer the installed value.
 pub fn verify_bus_master_fence<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,

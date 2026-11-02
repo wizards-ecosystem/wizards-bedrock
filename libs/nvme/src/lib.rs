@@ -315,6 +315,11 @@ impl<T> ControllerPreparation<T> {
     }
 
     /// Attempt one register operation without losing ownership on refusal.
+    ///
+    /// # Errors
+    ///
+    /// The unchanged preparation and the operation's error, when `operation`
+    /// fails. The owner is not dropped.
     pub fn access<U, E>(
         mut self,
         operation: impl FnOnce(&mut T) -> Result<U, E>,
@@ -329,6 +334,11 @@ impl<T> ControllerPreparation<T> {
     }
 
     /// Bind the owner to freshly classified disabled register values.
+    ///
+    /// # Errors
+    ///
+    /// [`ControllerStateError`] when `cc` and `csts` are not a disabled
+    /// controller. The preparation is returned for another attempt.
     pub fn prove_disabled(
         self,
         cc: u32,
@@ -349,6 +359,11 @@ impl<T> ControllerPreparation<T> {
 
 impl<T> DisabledPreparation<T> {
     /// Attempt one disabled-controller access with exact retirement fallback.
+    ///
+    /// # Errors
+    ///
+    /// The unchanged preparation and the operation's error, when `operation`
+    /// fails. The owner is not dropped.
     pub fn access<U, E>(
         mut self,
         operation: impl FnOnce(&mut T) -> Result<U, E>,
@@ -1003,6 +1018,11 @@ impl ReadTransfer {
     }
 
     /// Bind this request to a byte limit proved for the controller.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::ControllerLimit`] when this transfer is longer than
+    /// `limit`.
     pub const fn within_limit(self, limit: u64) -> Result<Self, TransferError> {
         if self.bytes > limit {
             return Err(TransferError::ControllerLimit);

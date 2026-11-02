@@ -97,6 +97,11 @@ pub struct SharedLayout<const WORDS: usize> {
 
 impl<const WORDS: usize> SharedLayout<WORDS> {
     /// Validate the allocation length and every publication word.
+    ///
+    /// # Errors
+    ///
+    /// See [`SharedLayoutError`]. A refusal names the first word that is
+    /// empty, overflowing, out of bounds, misaligned, or overlapping.
     pub const fn new(
         bytes: usize,
         publication_words: [usize; WORDS],

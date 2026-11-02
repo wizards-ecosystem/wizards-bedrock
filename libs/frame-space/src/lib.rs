@@ -232,6 +232,12 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// A run that overflows or runs off the end reports the first frame past
     /// the space because `FRAME_COUNT` is a ceiling, not an offending frame
     /// (D-105).
+    ///
+    /// # Errors
+    ///
+    /// [`FreeError::NotManaged`] when any frame in the run is outside this
+    /// space, and [`FreeError::AlreadyFree`] when one is already free. Nothing
+    /// is released on either path.
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
         if count == 0 {
             return Ok(());
@@ -254,6 +260,11 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     }
 
     /// Hand one frame back.
+    ///
+    /// # Errors
+    ///
+    /// [`FreeError::NotManaged`] when `frame` is outside this space, and
+    /// [`FreeError::AlreadyFree`] on a double release.
     pub fn free(&mut self, frame: usize) -> Result<(), FreeError> {
         self.check_releasable(frame)?;
         self.release(frame);

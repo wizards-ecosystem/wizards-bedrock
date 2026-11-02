@@ -165,6 +165,12 @@ impl PairFrameAuthority {
     /// Returning no frames preserves the complete authority for retry. An
     /// exact return releases it. Any partial count is rejected because it
     /// would describe a half-reclaimed pair.
+    ///
+    /// # Errors
+    ///
+    /// [`PairCleanupError::CountOverflow`] when the retained total does not
+    /// fit, and [`PairCleanupError::Incomplete`] when `returned_frames` is
+    /// neither zero nor that total.
     pub const fn settle(
         self,
         returned_frames: usize,

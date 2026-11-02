@@ -23,9 +23,9 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## In progress
 
-- Clearing the host census (320 unique warns, matches stream 1). `#[must_use]`
-  is on the pure `Self`-returning builders the census named. `# Errors`,
-  register-width casts, and closed-enum `expect`s are next.
+- Clearing the host census (320 unique warns, matches stream 1). `# Errors`
+  is on the 16 `Result` functions the census named. Register-width casts and
+  closed-enum `expect`s are next.
 - Census command is local only (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`,
   stream 1's `clippy.toml`). Root config is not edited.
 
