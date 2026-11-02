@@ -49,19 +49,22 @@ impl WaitQueue {
         self.wait_unless(context, || false);
     }
 
-    /// Register, re-check `ready`, and block only if it is still false.
+    /// Re-check `ready` under this queue's lock, register if it is still false,
+    /// and only then block.
     ///
-    /// **Register first, then check.** The other order loses wakeups, and the
-    /// loss is permanent: a waiter that reads its condition, is preempted, and
-    /// is signalled before it registers, blocks on a queue nothing will wake
-    /// again (D-95).
+    /// The check comes before the bit is set, and both happen before the lock
+    /// is released. [`wake_all`](Self::wake_all) takes that same lock, so it
+    /// cannot observe "not ready, and not registered": either `ready` is
+    /// already true, or the bit is set before any wake runs. Checking outside
+    /// the lock would lose the wakeup permanently (D-95).
     ///
-    /// The whole of registration and the re-check happens with the interrupt
-    /// flag clear, which on one CPU makes them one step. Under SMP the flag
-    /// excludes nothing; full barriers on both sides must replace it (D-70).
+    /// The interrupt flag stays clear across the section, which on one CPU
+    /// means the waker cannot run until the bit is published. Under SMP the
+    /// flag excludes nothing; the lock is what orders the check with the wake
+    /// (D-70).
     ///
-    /// `ready` runs with interrupts off and a queue lock held, so it must read
-    /// state and nothing else.
+    /// `ready` runs with interrupts off and the queue lock held, so it must
+    /// read state and nothing else.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
         let slot = thread::current_slot();
         let mut saved = wost::arch::current::interrupt::disable();
@@ -88,9 +91,11 @@ impl WaitQueue {
         saved.restore();
     }
 
-    /// Register and wait through a syscall frame until an event or deadline.
+    /// Wait through a syscall frame until an event or deadline.
     ///
-    /// `ready` has the same atomic-only contract as [`wait_unless`](Self::wait_unless).
+    /// Registration uses the same lock order as [`wait_unless`](Self::wait_unless):
+    /// `ready` is sampled under the waiter lock, and the bit is set before
+    /// that lock is released. `ready` has the same atomic-only contract.
     pub(crate) fn wait_from_trap_until(
         &self,
         frame: &TrapFrame,

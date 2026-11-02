@@ -367,11 +367,12 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
     select_user_isolation(cpu::shared_kernel_mapping_reason(&speculation));
-    arm_return_buffer_clear(if speculation.mds_no() {
+    let immunity = if speculation.mds_no() {
         MdsImmunity::Reported
     } else {
         MdsImmunity::Absent
-    });
+    };
+    arm_return_buffer_clear(&immunity);
 
     match apic::init(vector::LOCAL_APIC) {
         Ok(local) => info!("apic: {local}"),
@@ -449,7 +450,7 @@ enum MdsImmunity {
 }
 
 /// Arm `verw` unless `MDS_NO` makes it pointless.
-fn arm_return_buffer_clear(immunity: MdsImmunity) {
+fn arm_return_buffer_clear(immunity: &MdsImmunity) {
     if matches!(immunity, MdsImmunity::Reported) {
         info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
     } else {

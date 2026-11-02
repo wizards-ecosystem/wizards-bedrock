@@ -1533,10 +1533,14 @@ impl Controller {
         let mut installed = crate::iommu::installed();
         let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
         #[cfg(feature = "selftest")]
-        let data_mapped = !self.leave_data_unmapped;
+        let data_mapped = if self.leave_data_unmapped {
+            DataMapping::Unmapped
+        } else {
+            DataMapping::Published
+        };
         #[cfg(not(feature = "selftest"))]
-        let data_mapped = true;
-        if data_mapped
+        let data_mapped = DataMapping::Published;
+        if data_mapped.is_published()
             && let Some(buffer) = data.as_deref_mut()
             && isolation.map_segment_for_device_write(buffer).is_err()
         {
@@ -1578,7 +1582,6 @@ impl Controller {
                 return self.accept_completion(
                     which,
                     expected,
-                    capabilities,
                     entry,
                     data.as_deref_mut(),
                     isolation,
@@ -1605,7 +1608,7 @@ impl Controller {
         submission_doorbell: usize,
         mut data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
-        data_mapped: bool,
+        data_mapped: DataMapping,
     ) -> Result<(), BringUpError> {
         if !self.dma.reserve() {
             let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
@@ -1643,9 +1646,7 @@ impl Controller {
         }) else {
             panic!("a prepared DMA reservation must publish exactly once");
         };
-        rung.or_else(|error| {
-            self.fail_submitted(error, data.as_deref_mut(), isolation, data_mapped)
-        })
+        rung.or_else(|error| self.fail_submitted(error, data, isolation, data_mapped))
     }
 
     /// Read one new completion, if the phase tag says the device has posted it.
@@ -1654,7 +1655,7 @@ impl Controller {
         which: u16,
         data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
-        data_mapped: bool,
+        data_mapped: DataMapping,
     ) -> Result<Option<Completion>, BringUpError> {
         let Some(queue) = self.queue_mut(which) else {
             return self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped);
@@ -1684,11 +1685,10 @@ impl Controller {
         &mut self,
         which: u16,
         expected: u16,
-        capabilities: Capabilities,
         entry: Completion,
         data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
-        data_mapped: bool,
+        data_mapped: DataMapping,
     ) -> Result<Completion, BringUpError> {
         let provenance = self.queue_mut(which).is_some_and(|queue| {
             entry.phase == queue.phase
@@ -1727,7 +1727,7 @@ impl Controller {
             return self.fail_controller(BringUpError::Isolation);
         }
 
-        let Some(doorbell) = nvme::doorbell(capabilities, which, nvme::Doorbell::Completion)
+        let Some(doorbell) = nvme::doorbell(self.capabilities, which, nvme::Doorbell::Completion)
         else {
             return self.fail_controller(BringUpError::NotReady);
         };
@@ -1752,16 +1752,12 @@ impl Controller {
     ///
     /// A buffer the stop proved quiescent leaves the domain; a retained one
     /// stays mapped, because the device may still reach it.
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "data_mapped records whether this command published its buffer"
-    )]
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
         mut data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
-        data_mapped: bool,
+        data_mapped: DataMapping,
     ) -> Result<T, BringUpError> {
         self.stop_dma(data.as_deref_mut());
         if !self.dma.must_retain() && !unmap_data(isolation, data, data_mapped) {
@@ -1888,13 +1884,30 @@ impl Controller {
     }
 }
 
+/// Whether a command's transfer buffer was published into the DMA domain.
+#[derive(Clone, Copy)]
+enum DataMapping {
+    /// The buffer was mapped before the doorbell.
+    Published,
+    /// A self-test left the buffer unmapped on purpose.
+    #[cfg(feature = "selftest")]
+    Unmapped,
+}
+
+impl DataMapping {
+    const fn is_published(self) -> bool {
+        matches!(self, Self::Published)
+    }
+}
+
 /// Take a published buffer out of the domain, or report that it is still in.
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "data_mapped records whether this command published its buffer"
-)]
-fn unmap_data(isolation: &mut Vtd, data: Option<&mut DmaSegment>, data_mapped: bool) -> bool {
-    !data_mapped || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
+fn unmap_data(
+    isolation: &mut Vtd,
+    data: Option<&mut DmaSegment>,
+    data_mapped: DataMapping,
+) -> bool {
+    !data_mapped.is_published()
+        || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
 }
 
 impl Drop for Controller {

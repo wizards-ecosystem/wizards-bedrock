@@ -18,10 +18,23 @@
 
 ## In progress
 
-- None. Shipped and `selftest` kernel graphs are clean against stream 1's
-  clippy table. Checked with `CLIPPY_CONF_DIR` pointed at a copy of
-  `origin/cursor/beautiful-rust-lints-b7b1:clippy.toml` and that branch's
-  warn/allow set passed after `--`. Root `Cargo.toml` was not edited.
+- None. Shipped and `selftest` graphs are still clean against stream 1's
+  clippy table after the splits below.
+
+## This round
+
+- `start_interrupts`, `build`, `run_on`, `load_image`, `spawn_transaction`,
+  `collect`, and `spawn_prepared` are split into named helpers. Behavior is
+  unchanged. `start_interrupts` still begins with `pic::silence()` so
+  mutations 929 and 952–954 keep their find strings.
+- `Queue::abandon` does not wake waiters, and that is safe on every reachable
+  path: collection runs only after the process thread has left
+  `wait_from_trap` and cleared its bit. A later waiter samples `served`
+  under the same lock before it blocks. Documented on `abandon`.
+- `data_mapped: bool` is `DataMapping::{Published, Unmapped}`. The call that
+  mutation 300 matches still passes the name `data_mapped`.
+- `WaitQueue` docs now say the readiness check and the registration both
+  happen under the waiter lock, which is the lock `wake_all` takes.
 
 ## Unsafe audit
 
@@ -35,14 +48,13 @@
 
 - Turn `selftest.rs` module `expect`s into per-site `try_from` if the fixture
   casts should stay visible to the lint.
-- Replace `expect(too_many_lines)` procedures (`start_interrupts`, `build`,
-  `run_on`, `load_image`, `spawn_transaction`, `collect`, `spawn_prepared`)
-  with real splits only if a reader can still see the order.
-- `data_mapped: bool` and `require_unique: bool` are still bools. The ACPI
-  one is pinned by mutation 1819.
-- `Queue::abandon` posts completions and bumps `served` but does not
-  `wake_all`, unlike `expire`. Production collect runs after the user thread
-  is gone; only worth changing if a live waiter can observe abandon.
+
+## Left for Isaac (mutation-pinned; do not edit in this stream)
+
+- `require_unique: bool` on `acpi::find_table_with_multiplicity`. Mutation
+  1819 matches the text `if require_unique`.
+- The non-unique duplicate-table branch in that same function looks dead in
+  production and is the fallback mutation 1819 turns on. Leave it.
 - `acpi::find_table_with_multiplicity` looks like it has a dead non-unique
   branch, but mutation 1819 in `xtask/src/mutate.rs` matches the
   `if require_unique` text exactly. Do not delete or rewrap that branch in

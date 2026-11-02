@@ -1389,6 +1389,13 @@ impl Queue {
     /// A terminal post may refuse without losing its pending entry. The caller
     /// retains the owner and retries until [`is_quiet`](Self::is_quiet) permits
     /// release.
+    ///
+    /// Does not wake ring waiters. The only production caller is zombie
+    /// collection, and that runs after the process thread has returned from
+    /// every [`wait_from_trap`](Self::wait_from_trap) and cleared its waiter
+    /// bit. The thread is not asleep on this queue. A waiter that arrives
+    /// later samples `served` under the same lock and sees these completions
+    /// before it blocks. Waking here would not find that thread.
     pub(crate) fn abandon(&self) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())

@@ -770,10 +770,6 @@ fn finish_refused_retirement(slot: usize, first: TaskError) {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "thread fabrication is one ordered reservation and rollback"
-)]
 fn spawn_prepared(
     name: &'static str,
     entry: fn(),
@@ -782,40 +778,7 @@ fn spawn_prepared(
     arrange: impl FnOnce(usize, Option<Bound>) -> Result<(), Option<Bound>>,
     mut refuse: impl FnMut(SpawnPoint) -> bool,
 ) -> Result<usize, PreparedFailure> {
-    // Before looking for a slot: a machine too busy to idle would otherwise
-    // never collect, and a spawn is what most needs a freed slot (D-117).
-    while crate::user::has_zombies() && crate::user::collect().is_some() {}
-
-    let zombie_slots = crate::user::zombie_slots_for_spawn();
-    let slot = {
-        let mut threads = THREADS.lock_leaf();
-        if threads.spawnable == 0 {
-            return Err(PreparedFailure::before_binding(
-                SpawnError::Unavailable,
-                binding,
-            ));
-        }
-        let Some(slot) = (1..=threads.spawnable)
-            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])
-        else {
-            drop(threads);
-            return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-        };
-        threads.identities[slot] = Identity {
-            name,
-            entry: Some(entry),
-        };
-        threads.queue.slots[slot] = Scheduled {
-            state: State::Reserved,
-            entity: Entity::new(weight),
-            ..Scheduled::FREE
-        };
-        slot
-    };
-    if crate::user::zombie_slots_for_spawn()[slot] {
-        THREADS.lock_leaf().release(slot);
-        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-    }
+    let (slot, binding) = reserve_spawn_slot(name, entry, weight, binding)?;
     if refuse(SpawnPoint::Reserved) {
         THREADS.lock_leaf().release(slot);
         return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
@@ -889,6 +852,57 @@ fn spawn_prepared(
 
     // A second runnable thread is when the running slice starts mattering,
     // so this arms even though nothing switches here.
+    publish_ready_slot(slot);
+    Ok(slot)
+}
+
+/// Claim one free scheduler slot, after giving zombies a chance to free one.
+///
+/// Before looking for a slot: a machine too busy to idle would otherwise
+/// never collect, and a spawn is what most needs a freed slot (D-117).
+fn reserve_spawn_slot(
+    name: &'static str,
+    entry: fn(),
+    weight: u32,
+    binding: Option<Binding>,
+) -> Result<(usize, Option<Binding>), PreparedFailure> {
+    while crate::user::has_zombies() && crate::user::collect().is_some() {}
+
+    let zombie_slots = crate::user::zombie_slots_for_spawn();
+    let slot = {
+        let mut threads = THREADS.lock_leaf();
+        if threads.spawnable == 0 {
+            return Err(PreparedFailure::before_binding(
+                SpawnError::Unavailable,
+                binding,
+            ));
+        }
+        let Some(slot) = (1..=threads.spawnable)
+            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])
+        else {
+            drop(threads);
+            return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
+        };
+        threads.identities[slot] = Identity {
+            name,
+            entry: Some(entry),
+        };
+        threads.queue.slots[slot] = Scheduled {
+            state: State::Reserved,
+            entity: Entity::new(weight),
+            ..Scheduled::FREE
+        };
+        slot
+    };
+    if crate::user::zombie_slots_for_spawn()[slot] {
+        THREADS.lock_leaf().release(slot);
+        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
+    }
+    Ok((slot, binding))
+}
+
+/// Make a reserved slot runnable and arm the timer for the new choice.
+fn publish_ready_slot(slot: usize) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
     let event = {
@@ -900,7 +914,6 @@ fn spawn_prepared(
     };
     reschedule_timer(event);
     saved.restore();
-    Ok(slot)
 }
 
 /// Let another runnable thread have the CPU, if any is owed it.

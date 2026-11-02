@@ -1201,8 +1201,8 @@ fn map_direct_runs(
             let virtual_base = direct
                 .virtual_address(cursor)
                 .ok_or(MapError::NonCanonical(cursor))?;
-            let region = BootRegion::describe(cursor, next - cursor)
-                .ok_or(MapError::Undescribed(cursor))?;
+            let region =
+                BootRegion::describe(cursor, next - cursor).ok_or(MapError::Undescribed(cursor))?;
             space.map_boot(virtual_base, region, flags)?;
             mapped += next - cursor;
             cursor = next;

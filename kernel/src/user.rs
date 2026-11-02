@@ -357,10 +357,6 @@ struct Placement {
 ///
 /// Preflight every placement before mapping so a later refusal cannot abandon
 /// earlier user mappings and their frames (D-105).
-#[expect(
-    clippy::too_many_lines,
-    reason = "image validation and placement are one transaction"
-)]
 pub(crate) fn load_image(
     space: &mut AddressSpace,
     bytes: &[u8],
@@ -374,66 +370,7 @@ pub(crate) fn load_image(
         .segments()
         .filter(|segment| segment.kind() == SegmentKind::Load)
     {
-        if !segment.contents_fit(bytes.len()) {
-            return Err(LoadError::Truncated(segment.address()));
-        }
-        if segment.is_oversized() {
-            return Err(LoadError::Malformed(segment.address()));
-        }
-        if segment.is_write_execute() {
-            return Err(LoadError::WriteExecute(segment.address()));
-        }
-        if !segment.has_valid_alignment() {
-            return Err(LoadError::InvalidAlignment {
-                at: segment.address(),
-                alignment: segment.alignment(),
-            });
-        }
-
-        // Checked: a `p_vaddr` near the top wraps past the refusal below, and
-        // a debug build would panic on bytes a program supplied (D-101).
-        let at = segment
-            .address()
-            .checked_add(shift)
-            .ok_or(LoadError::NotUserMemory(segment.address()))?;
-        if !at.is_multiple_of(PAGE_SIZE) {
-            return Err(LoadError::Unaligned(at));
-        }
-        let end = at
-            .checked_add(segment.memory_size())
-            .ok_or(LoadError::NotUserMemory(at))?;
-        let mapped_len = segment
-            .memory_size()
-            .div_ceil(PAGE_SIZE)
-            .checked_mul(PAGE_SIZE)
-            .ok_or(LoadError::NotUserMemory(at))?;
-        let mapped_end = at
-            .checked_add(mapped_len)
-            .ok_or(LoadError::NotUserMemory(at))?;
-        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
-            return Err(LoadError::NotUserMemory(at));
-        }
-
-        let mut flags = Flags::USER;
-        if segment.is_writable() {
-            flags = flags.union(Flags::WRITABLE);
-        }
-        if !segment.is_executable() {
-            flags = flags.union(Flags::NO_EXECUTE);
-        }
-        let placement = Placement {
-            at,
-            end,
-            mapped_end,
-            pages: usize::try_from(mapped_len / PAGE_SIZE)
-                .map_err(|_| LoadError::NotUserMemory(at))?,
-            from: usize::try_from(segment.offset())
-                .map_err(|_| LoadError::Truncated(segment.address()))?,
-            len: usize::try_from(segment.file_size())
-                .map_err(|_| LoadError::Truncated(segment.address()))?,
-            flags,
-        };
-
+        let placement = placement_for(segment, bytes.len(), shift)?;
         // Two segments sharing one page would collide in `map_owned` after
         // the first is mapped; caught here, before anything is taken.
         if placements
@@ -441,9 +378,8 @@ pub(crate) fn load_image(
             .flatten()
             .any(|other: &Placement| overlaps(other, &placement))
         {
-            return Err(LoadError::Overlapping(at));
+            return Err(LoadError::Overlapping(placement.at));
         }
-
         *placements
             .get_mut(loaded)
             .ok_or(LoadError::TooManySegments)? = Some(placement);
@@ -467,6 +403,87 @@ pub(crate) fn load_image(
         return Err(LoadError::InvalidEntry(entry));
     }
 
+    install_placements(space, bytes, &placements)?;
+
+    let mut regions = [None; MAX_SEGMENTS];
+    for (slot, placement) in placements.iter().flatten().enumerate() {
+        regions[slot] = Some((placement.at, placement.mapped_end - placement.at));
+    }
+    Ok(LoadedImage { entry, regions })
+}
+
+/// One load segment, checked before any page is taken.
+fn placement_for(
+    segment: elf64::Segment,
+    image_len: usize,
+    shift: u64,
+) -> Result<Placement, LoadError> {
+    if !segment.contents_fit(image_len) {
+        return Err(LoadError::Truncated(segment.address()));
+    }
+    if segment.is_oversized() {
+        return Err(LoadError::Malformed(segment.address()));
+    }
+    if segment.is_write_execute() {
+        return Err(LoadError::WriteExecute(segment.address()));
+    }
+    if !segment.has_valid_alignment() {
+        return Err(LoadError::InvalidAlignment {
+            at: segment.address(),
+            alignment: segment.alignment(),
+        });
+    }
+
+    // Checked: a `p_vaddr` near the top wraps past the refusal below, and
+    // a debug build would panic on bytes a program supplied (D-101).
+    let at = segment
+        .address()
+        .checked_add(shift)
+        .ok_or(LoadError::NotUserMemory(segment.address()))?;
+    if !at.is_multiple_of(PAGE_SIZE) {
+        return Err(LoadError::Unaligned(at));
+    }
+    let end = at
+        .checked_add(segment.memory_size())
+        .ok_or(LoadError::NotUserMemory(at))?;
+    let mapped_len = segment
+        .memory_size()
+        .div_ceil(PAGE_SIZE)
+        .checked_mul(PAGE_SIZE)
+        .ok_or(LoadError::NotUserMemory(at))?;
+    let mapped_end = at
+        .checked_add(mapped_len)
+        .ok_or(LoadError::NotUserMemory(at))?;
+    if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
+        return Err(LoadError::NotUserMemory(at));
+    }
+
+    let mut flags = Flags::USER;
+    if segment.is_writable() {
+        flags = flags.union(Flags::WRITABLE);
+    }
+    if !segment.is_executable() {
+        flags = flags.union(Flags::NO_EXECUTE);
+    }
+    Ok(Placement {
+        at,
+        end,
+        mapped_end,
+        pages: usize::try_from(mapped_len / PAGE_SIZE).map_err(|_| LoadError::NotUserMemory(at))?,
+        from: usize::try_from(segment.offset())
+            .map_err(|_| LoadError::Truncated(segment.address()))?,
+        len: usize::try_from(segment.file_size())
+            .map_err(|_| LoadError::Truncated(segment.address()))?,
+        flags,
+    })
+}
+
+/// Map every validated placement, walking back the ones already installed.
+fn install_placements(
+    space: &mut AddressSpace,
+    bytes: &[u8],
+    placements: &[Option<Placement>; MAX_SEGMENTS],
+) -> Result<(), LoadError> {
     for (done, placement) in placements.iter().flatten().enumerate() {
         match place(space, bytes, placement) {
             Ok(()) => {}
@@ -483,12 +500,7 @@ pub(crate) fn load_image(
             }
         }
     }
-
-    let mut regions = [None; MAX_SEGMENTS];
-    for (slot, placement) in placements.iter().flatten().enumerate() {
-        regions[slot] = Some((placement.at, placement.mapped_end - placement.at));
-    }
-    Ok(LoadedImage { entry, regions })
+    Ok(())
 }
 
 /// What a thread needs to find when it wakes up in a space of its own.
@@ -1054,23 +1066,8 @@ fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {
 /// # Errors
 ///
 /// [`SpawnError`], naming which of those steps refused.
-pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
-    #[cfg(feature = "selftest")]
-    return spawn_transaction(name, which, argument, SpawnFault::Never);
-    #[cfg(not(feature = "selftest"))]
-    spawn_transaction(name, which, argument)
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "process construction is one ordered transaction with one rollback"
-)]
-fn spawn_transaction(
-    name: &'static str,
-    which: u64,
-    argument: u64,
-    #[cfg(feature = "selftest")] fault: SpawnFault,
-) -> Result<Spawned, SpawnError> {
+/// Admit a user address space, or name which launch precondition refused.
+fn open_user_space() -> Result<AddressSpace, SpawnError> {
     if !crate::maskable_interrupts_are_ready() {
         return Err(SpawnError::NoInterruptAdmission);
     }
@@ -1090,16 +1087,38 @@ fn spawn_transaction(
     if !crate::queue::worker_is_ready() {
         return Err(SpawnError::NoServiceWorker);
     }
-    let space = match isolation {
-        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
-        crate::UserIsolation::Shared => AddressSpace::for_user(),
-        crate::UserIsolation::Paired => AddressSpace::for_user_isolated(),
+    match isolation {
+        crate::UserIsolation::Closed => Err(SpawnError::NoUserIsolation),
+        crate::UserIsolation::Shared => AddressSpace::for_user().map_err(SpawnError::NoSpace),
+        crate::UserIsolation::Paired => {
+            AddressSpace::for_user_isolated().map_err(SpawnError::NoSpace)
+        }
     }
-    .map_err(SpawnError::NoSpace)?;
-    let mut construction = ProcessConstruction::new(space);
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Space)?;
+}
 
+pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
+    #[cfg(feature = "selftest")]
+    return spawn_transaction(name, which, argument, SpawnFault::Never);
+    #[cfg(not(feature = "selftest"))]
+    spawn_transaction(name, which, argument)
+}
+
+struct MappedProgram {
+    image: LoadedImage,
+    stack: u64,
+    ring: alloc::sync::Arc<queue::Queue>,
+    root: Paddr,
+}
+
+/// Load the image, stack, clock page and ring into `construction`.
+///
+/// Time before the ring: a process is refused rather than launched with a
+/// hole in its ABI (D-166). Ring pages stay the ring's, not the ledger's (D-113).
+fn map_program_and_ring(
+    construction: &mut ProcessConstruction,
+    which: u64,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<MappedProgram, SpawnError> {
     let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
     for (at, len) in image.regions() {
         construction.remember(at, len)?;
@@ -1112,8 +1131,6 @@ fn spawn_transaction(
     #[cfg(feature = "selftest")]
     stop_after(fault, SpawnEdge::Stack)?;
 
-    // Time before the ring: a process is refused rather than launched with a
-    // hole in its ABI (D-166). Ring pages stay the ring's, not the ledger's (D-113).
     crate::timepage::install(construction.space()?).map_err(SpawnError::NoTimePage)?;
     #[cfg(feature = "selftest")]
     stop_after(fault, SpawnEdge::TimePage)?;
@@ -1129,7 +1146,30 @@ fn spawn_transaction(
     stop_after(fault, SpawnEdge::RingMapping)?;
 
     let root = construction.space()?.root();
+    Ok(MappedProgram {
+        image,
+        stack,
+        ring,
+        root,
+    })
+}
 
+fn spawn_transaction(
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<Spawned, SpawnError> {
+    let mut construction = ProcessConstruction::new(open_user_space()?);
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Space)?;
+
+    let mapped = map_program_and_ring(
+        &mut construction,
+        which,
+        #[cfg(feature = "selftest")]
+        fault,
+    )?;
     // Create the bootstrap identity before the thread can observe it.
     let bootstrap = object::bootstrap_identity();
     #[cfg(feature = "selftest")]
@@ -1162,16 +1202,37 @@ fn spawn_transaction(
         table: alloc::sync::Arc::new(table),
         #[cfg(feature = "selftest")]
         observed_birth_handle: handle,
-        ring,
+        ring: mapped.ring,
         launch: Launch {
-            entry: image.entry(),
-            stack,
+            entry: mapped.image.entry(),
+            stack: mapped.stack,
             argument,
             bootstrap_handle: handle,
             which,
-            root,
+            root: mapped.root,
         },
     });
+    let slot = arrange_and_spawn(
+        name,
+        binding,
+        &mut prepared,
+        #[cfg(feature = "selftest")]
+        fault,
+    )?;
+
+    Ok(Spawned {
+        slot,
+        #[cfg(feature = "selftest")]
+        observed_table_incarnation: table_identity,
+    })
+}
+
+fn arrange_and_spawn(
+    name: &'static str,
+    binding: wost::arch::current::paging::Binding,
+    prepared: &mut Option<PreparedProcess>,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<usize, SpawnError> {
     let arrange = |slot, bound| {
         if slot >= thread::CAPACITY {
             return Err(bound);
@@ -1200,7 +1261,7 @@ fn spawn_transaction(
         {
             None => Ok(()),
             Some((process, bound)) => {
-                prepared = Some(process);
+                *prepared = Some(process);
                 Err(bound)
             }
         }
@@ -1212,8 +1273,8 @@ fn spawn_transaction(
     };
     #[cfg(not(feature = "selftest"))]
     let spawned = thread::spawn_in_space(name, cross, binding, arrange);
-    let slot = match spawned {
-        Ok(slot) => slot,
+    match spawned {
+        Ok(slot) => Ok(slot),
         Err(failure) => {
             #[cfg(feature = "selftest")]
             if matches!(failure.reason, thread::SpawnError::Retirement { .. }) {
@@ -1222,15 +1283,9 @@ fn spawn_transaction(
             if let Some(process) = prepared.as_mut() {
                 process.construction.retain_authority(failure.authority);
             }
-            return Err(SpawnError::NoThread(failure.reason));
+            Err(SpawnError::NoThread(failure.reason))
         }
-    };
-
-    Ok(Spawned {
-        slot,
-        #[cfg(feature = "selftest")]
-        observed_table_incarnation: table_identity,
-    })
+    }
 }
 
 /// Whether the CPU will enforce every non-executable user mapping.
@@ -1551,10 +1606,6 @@ pub(crate) fn orphan(slot: usize) {
 /// interrupts on is a loop that can be preempted halfway through anyway. One
 /// at a time makes that unremarkable instead of something to reason about.
 ///
-#[expect(
-    clippy::too_many_lines,
-    reason = "zombie collection is one ordered settle-then-reclaim procedure"
-)]
 pub(crate) fn collect() -> CollectOutcome {
     // The owner stays in the zombie table until its ring is quiet, so a
     // refused terminal completion retries rather than reusing live pages (D-192).
@@ -1595,67 +1646,13 @@ pub(crate) fn collect() -> CollectOutcome {
     // its terminal completion while the zombie still owns them (D-167, D-192).
     let abandoned = ring.abandon();
     if !ring.is_quiet() {
-        let recorded = {
-            let mut zombies = ZOMBIES.lock_leaf();
-            let settling = zombies.settling.get(slot).copied().unwrap_or(false);
-            let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
-            let recorded = match zombies.owners.get_mut(slot).and_then(Option::as_mut) {
-                None => 0,
-                Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, &ring) => 1,
-                Some(_) if !settling || collecting => 2,
-                Some(bootstrap) => match bootstrap.abandoned.checked_add(abandoned) {
-                    Some(total) => {
-                        bootstrap.abandoned = total;
-                        4
-                    }
-                    None => 3,
-                },
-            };
-            if recorded == 4 {
-                zombies.settling[slot] = false;
-            }
-            recorded
-        };
-        match recorded {
-            4 => {}
-            0 => panic!("the unsettled zombie left its slot"),
-            1 => panic!("a zombie changed owners during settlement"),
-            2 => panic!("a zombie lost exclusive settlement ownership"),
-            3 => panic!("zombie abandonment accounting overflowed"),
-            _ => unreachable!(),
-        }
-        warn!("user: ring cleanup refused; the zombie remains owned");
-        #[cfg(feature = "selftest")]
-        REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
-        return CollectOutcome::Retained;
+        return retain_unquiet_ring(slot, &ring, abandoned);
     }
     // Taken out under the guard and reclaimed outside it: `reclaim` frees
     // frames, which reaches the allocator, and this lock is a leaf (D-85).
-    let bootstrap = {
-        let mut zombies = ZOMBIES.lock_leaf();
-        let settling = zombies.settling.get(slot).copied().unwrap_or(false);
-        let Some(room) = zombies.owners.get_mut(slot) else {
-            panic!("a selected zombie slot remains in range");
-        };
-        let Some(current) = room.as_ref() else {
-            return if zombies.collecting[slot] {
-                CollectOutcome::Retained
-            } else {
-                CollectOutcome::Empty
-            };
-        };
-        if !alloc::sync::Arc::ptr_eq(&current.ring, &ring) {
-            return CollectOutcome::Retained;
-        }
-        if !settling {
-            return CollectOutcome::Retained;
-        }
-        let Some(bootstrap) = room.take() else {
-            unreachable!("the retained zombie was checked above");
-        };
-        zombies.settling[slot] = false;
-        zombies.collecting[slot] = true;
-        bootstrap
+    let bootstrap = match take_collecting_owner(slot, &ring) {
+        Ok(bootstrap) => bootstrap,
+        Err(outcome) => return outcome,
     };
     drop(ring);
     #[cfg(feature = "selftest")]
@@ -1666,7 +1663,84 @@ pub(crate) fn collect() -> CollectOutcome {
         }
         COLLECTION_IS_PAUSED.store(false, Ordering::Release);
     }
-    let mut bootstrap = bootstrap;
+    finish_collection(slot, bootstrap, abandoned)
+}
+
+/// Keep a zombie whose ring could not be made quiet, and say why if the books disagree.
+fn retain_unquiet_ring(
+    slot: usize,
+    ring: &alloc::sync::Arc<queue::Queue>,
+    abandoned: usize,
+) -> CollectOutcome {
+    let recorded = {
+        let mut zombies = ZOMBIES.lock_leaf();
+        let settling = zombies.settling.get(slot).copied().unwrap_or(false);
+        let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
+        let recorded = match zombies.owners.get_mut(slot).and_then(Option::as_mut) {
+            None => 0,
+            Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, ring) => 1,
+            Some(_) if !settling || collecting => 2,
+            Some(bootstrap) => match bootstrap.abandoned.checked_add(abandoned) {
+                Some(total) => {
+                    bootstrap.abandoned = total;
+                    4
+                }
+                None => 3,
+            },
+        };
+        if recorded == 4 {
+            zombies.settling[slot] = false;
+        }
+        recorded
+    };
+    match recorded {
+        4 => {}
+        0 => panic!("the unsettled zombie left its slot"),
+        1 => panic!("a zombie changed owners during settlement"),
+        2 => panic!("a zombie lost exclusive settlement ownership"),
+        3 => panic!("zombie abandonment accounting overflowed"),
+        _ => unreachable!(),
+    }
+    warn!("user: ring cleanup refused; the zombie remains owned");
+    #[cfg(feature = "selftest")]
+    REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
+    CollectOutcome::Retained
+}
+
+/// Take the zombie this collector already marked settling, or report why not.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a zombie slot outside the fixed table is a terminal invariant"
+)]
+fn take_collecting_owner(
+    slot: usize,
+    ring: &alloc::sync::Arc<queue::Queue>,
+) -> Result<Bootstrap, CollectOutcome> {
+    let mut zombies = ZOMBIES.lock_leaf();
+    let settling = zombies.settling.get(slot).copied().unwrap_or(false);
+    let Some(room) = zombies.owners.get_mut(slot) else {
+        panic!("a selected zombie slot remains in range");
+    };
+    let Some(current) = room.as_ref() else {
+        return Err(if zombies.collecting[slot] {
+            CollectOutcome::Retained
+        } else {
+            CollectOutcome::Empty
+        });
+    };
+    if !alloc::sync::Arc::ptr_eq(&current.ring, ring) || !settling {
+        return Err(CollectOutcome::Retained);
+    }
+    let Some(bootstrap) = room.take() else {
+        unreachable!("the retained zombie was checked above");
+    };
+    zombies.settling[slot] = false;
+    zombies.collecting[slot] = true;
+    Ok(bootstrap)
+}
+
+/// Reclaim one taken zombie, or put it back when cleanup refuses.
+fn finish_collection(slot: usize, mut bootstrap: Bootstrap, abandoned: usize) -> CollectOutcome {
     match reclaim(&mut bootstrap, abandoned) {
         Ok(success) => {
             drop(bootstrap);
