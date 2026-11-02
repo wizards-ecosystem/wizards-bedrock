@@ -1,6 +1,6 @@
 //! 16550 UART driver — the kernel's serial console.
 //!
-//! QEMU maps COM1 to stdio (`-serial stdio`); VMware maps it to `vm/serial.log`.
+//! QEMU maps `COM1` to stdio (`-serial stdio`); `VMware` maps it to `vm/serial.log`.
 
 use core::fmt;
 

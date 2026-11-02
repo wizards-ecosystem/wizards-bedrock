@@ -4,6 +4,70 @@
 //! through [`crate::arch::current::debug_exit`]. Pure logic belongs in a host
 //! `libs/` test instead. Boot assertions are not repeated because a panic is a
 //! missing verdict, not a red check.
+//!
+//! Fixture code below uses ABI-width casts and long procedures on purpose.
+//! The expects name that; they are not a license for the shipped graph.
+
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "self-test counts, handles, and ELF fields are chosen to fit the destination width"
+)]
+#![expect(
+    clippy::cast_lossless,
+    reason = "self-test atomics store small flags in usize; the widening is the store's type"
+)]
+#![expect(
+    clippy::items_after_statements,
+    reason = "ELF fixture offsets sit next to the bytes they describe"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "each boot check is one procedure the harness names"
+)]
+#![expect(
+    clippy::manual_let_else,
+    reason = "match arms in checks name the refusal they are asserting"
+)]
+#![expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the harness passes a single pass/fail or pause flag"
+)]
+#![expect(
+    clippy::struct_excessive_bools,
+    reason = "liveness fixtures record several independent observations"
+)]
+#![expect(
+    clippy::redundant_closure_for_method_calls,
+    reason = "the closure names which test helper is applied"
+)]
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "taking a spawned program or cleanup value retires it"
+)]
+#![expect(
+    clippy::similar_names,
+    reason = "paired observations in one check are named for the two roles"
+)]
+#![expect(
+    clippy::single_match_else,
+    reason = "the other arm is the refusal the check is asserting"
+)]
+#![expect(
+    clippy::many_single_char_names,
+    reason = "the extended-state probe is five independent registers"
+)]
+#![expect(
+    clippy::map_unwrap_or,
+    reason = "the fixture's fallback is the interesting observation"
+)]
+#![expect(
+    clippy::nonminimal_bool,
+    reason = "the comparison states the flag polarity the check is about"
+)]
+#![expect(
+    clippy::needless_for_each,
+    reason = "the loop body is the mutation the check applies"
+)]
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -3153,6 +3217,7 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
         // reporting the walk rather than a number of its own.
         && survey.functions == on_bus_zero + beyond
         && on_bus_zero >= 6
+        && pci::duplicate_secondaries_do_not_hide_a_later_bus_for_test()
 }
 
 static DEVICE_CLAIM_CHECK: AtomicUsize = AtomicUsize::new(0);

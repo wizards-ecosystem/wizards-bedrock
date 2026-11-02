@@ -112,6 +112,22 @@ pub(crate) enum VfsError {
     NotFound,
 }
 
+impl core::fmt::Display for VfsError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Path(error) => write!(formatter, "{error}"),
+            Self::Backend(error) => write!(formatter, "{error}"),
+            Self::NoVolume => core::fmt::Write::write_str(formatter, "no volume is mounted"),
+            Self::NotADirectory => {
+                core::fmt::Write::write_str(formatter, "a path component is not a directory")
+            }
+            Self::NotFound => core::fmt::Write::write_str(formatter, "the name is not there"),
+        }
+    }
+}
+
+impl core::error::Error for VfsError {}
+
 impl From<PathError> for VfsError {
     fn from(error: PathError) -> Self {
         Self::Path(error)
@@ -265,7 +281,12 @@ pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Vf
             .map_err(VfsError::from)?
             .read_file(cluster, size, offset, into)
             .map_err(VfsError::from),
-        File::Tmp { at, len } => Ok(crate::tmpfs::read(at, len, offset as usize, into)),
+        File::Tmp { at, len } => {
+            let Ok(offset) = usize::try_from(offset) else {
+                return Ok(0);
+            };
+            Ok(crate::tmpfs::read(at, len, offset, into))
+        }
     }
 }
 

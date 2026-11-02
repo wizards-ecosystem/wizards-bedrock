@@ -127,7 +127,7 @@ pub(crate) fn console_has_complete_back_buffer() -> bool {
     CONSOLE
         .lock()
         .as_ref()
-        .is_some_and(|console| console.has_complete_back_buffer())
+        .is_some_and(Console::has_complete_back_buffer)
 }
 
 /// The I/O APIC, once a line has been routed through it.
@@ -170,6 +170,11 @@ pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
     let (low, high) = io_apic.entry_of(gsi).ok()?;
     Some(Routing {
         masked: low & (1 << 16) != 0,
+        // The redirection entry stores the vector in bits 7:0.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "an I/O APIC vector is the low byte of the redirection entry"
+        )]
         vector: low as u8,
         low,
         high,
@@ -199,10 +204,7 @@ pub(crate) fn io_apic_base() -> Option<u32> {
 /// Where the console's framebuffer is reachable now.
 #[cfg(feature = "selftest")]
 pub(crate) fn framebuffer_address() -> Option<u64> {
-    CONSOLE
-        .lock()
-        .as_ref()
-        .map(|console| console.framebuffer_address())
+    CONSOLE.lock().as_ref().map(Console::framebuffer_address)
 }
 
 /// Where the console's cursor is, and how big one character cell is.

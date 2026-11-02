@@ -908,7 +908,10 @@ pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
     }
     let mut installed = INSTALLED.lock();
     if let Some(unit) = installed.as_mut() {
-        assert_eq!(unit.fences.count, 0);
+        assert_eq!(
+            unit.fences.count, 0,
+            "a released fence inventory still counted live fences"
+        );
         unit.fences = fences;
     } else {
         retain_fences(fences);

@@ -54,7 +54,15 @@ fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
 fn on_trap(frame: &TrapFrame) {
     // Dispatched on the decoded cause, not the raw vector (D-81): the
     // architecture's meaning is read once, in `libs/trap-cause`, host-tested.
-    let cause = TrapCause::decode(frame.vector() as u8, frame.error_code());
+    // The entry path stores one architectural vector in a `u64` slot. A word
+    // that does not fit a vector is not a device line this kernel can decode.
+    let Ok(vector) = u8::try_from(frame.vector()) else {
+        panic!(
+            "trap vector {:#x} does not fit an architectural vector",
+            frame.vector()
+        );
+    };
+    let cause = TrapCause::decode(vector, frame.error_code());
     match cause {
         TrapCause::Fault(trap_cause::Fault::Breakpoint) => {
             #[cfg(feature = "selftest")]
@@ -150,19 +158,18 @@ fn on_trap(frame: &TrapFrame) {
         TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
             #[cfg(feature = "selftest")]
             LAST_USER_FAULT.record(frame);
-            if !crate::thread::retire_from_trap(frame) {
-                panic!("{}", Report { frame, cause });
-            }
+            assert!(
+                crate::thread::retire_from_trap(frame),
+                "{}",
+                Report { frame, cause }
+            );
         }
 
         _ => panic!("{}", Report { frame, cause }),
     }
 }
 
-fn claim_eoi<'frame>(
-    frame: &'frame TrapFrame,
-    vector: x86_apic::vector::InterruptVector,
-) -> apic::EoiToken<'frame> {
+fn claim_eoi(frame: &TrapFrame, vector: x86_apic::vector::InterruptVector) -> apic::EoiToken<'_> {
     let Some(token) = apic::claim_eoi(frame, vector) else {
         panic!(
             "vector {:#x} has no matching APIC in-service authority",
@@ -190,9 +197,10 @@ fn maybe_reclaim_ping<'frame>(
 }
 
 fn dismiss(token: apic::EoiToken<'_>) {
-    if apic::end_of_interrupt(token).is_err() {
-        panic!("APIC in-service authority changed before dismissal");
-    }
+    assert!(
+        apic::end_of_interrupt(token).is_ok(),
+        "APIC in-service authority changed before dismissal"
+    );
 }
 
 /// Faults recovered inside the user-copy window during self-test.
