@@ -273,6 +273,11 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
 }
 
 /// Run the production arena validation against the active root.
+///
+/// # Errors
+///
+/// [`TaskError`] when a slot has no stack or the arena is not installed on
+/// the active root.
 #[cfg(feature = "selftest")]
 pub fn validate_arena_for_test(arena: &StackArena) -> Result<(), TaskError> {
     validate_arena(arena).map(|_| ())
@@ -310,6 +315,10 @@ pub fn current() -> usize {
 /// [`TaskError::Occupied`] if the slot's thread is live, [`TaskError::Boot`]
 /// for the boot slot, [`TaskError::OutOfRange`] past the table, and
 /// [`TaskError::NotInitialised`] before [`init`].
+///
+/// # Panics
+///
+/// Panics if the slot's pinned stack no longer names the frame this fabricates.
 pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
     // Before the lock, which clears the flag: what is wanted is the caller's
     // own, not the one taking this lock leaves behind.
@@ -771,6 +780,10 @@ pub fn release_uninstalled(binding: Binding) -> Released {
 /// and hands back the evidence [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs.
 ///
 /// Returns the token unchanged if a live slot still names it.
+///
+/// # Errors
+///
+/// Returns `bound` when a live slot still runs on that address space.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     #[cfg(feature = "selftest")]
     if REFUSE_RELEASES.load(Ordering::Acquire) != 0 {

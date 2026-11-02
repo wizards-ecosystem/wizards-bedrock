@@ -32,6 +32,10 @@ const SUPPORTED_BPP: u16 = 32;
 /// Assemble [`BootInfo`] from the bootloader's answers and hand over control.
 ///
 /// Called only by [`entry!`](crate::entry).
+///
+/// # Panics
+///
+/// Panics if the kernel has already been entered.
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
     let Requests {
         base_revision,

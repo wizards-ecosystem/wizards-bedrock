@@ -336,6 +336,10 @@ pub(super) fn kernel_stack() -> u64 {
 /// `false` if the stack does not belong to the address space this CPU is
 /// walking, or after paired entry owns the TSS stacks. Either case leaves the
 /// current interrupt-stack entry unchanged.
+///
+/// # Panics
+///
+/// Panics if the interrupt-stack entry is not eight-byte aligned.
 #[must_use = "a refused double-fault stack install changed no TSS entry"]
 pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     if !stack.is_installed() || super::kpti::entry_is_ready() {

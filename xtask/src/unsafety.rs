@@ -140,7 +140,7 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "b26aea2dd1bed6cf21e2c6308b87899b16bfb85b29c7a16597ffe5efd999a1d1",
+            "4d45b093fa224b4bca431ec101597614f179caa58fc44ddf3e6497cddbf4b5e0",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
@@ -152,7 +152,7 @@ mod tests {
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "d464094cc35edfa067d7d2ef3dfb55d06491769d7d1c9c7e97cdd2ce8eabb83f",
+            "85f254317b7d96d8c375b56517e0016f9943711f5244ef68763d836ccf45224b",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
@@ -170,7 +170,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "b983b0cad9e1dbc4821b9c92cd459eb4c3b24fa0714e02b3d05a3844c8f3e36a",
+            "7f61c2b4511957e8d9de6beec49f20ffa80d8d9e72b5e10b5ef0d5f79d7fa678",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -188,7 +188,7 @@ mod tests {
             "wost/src/arch/x86_64/segment.rs",
             14,
             0,
-            "d6c19660e78ed2e32dd467b467b1fd9e25a62699349af2c8242ef90db434b15e",
+            "fa4324fcc0846225910fcab8349a1b26151b971b6fca285cf77ba7f646138f5f",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
@@ -200,7 +200,7 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "778d3a04294f0754bcde9dc9a078359bf40e12b3dc3fdcc45c0552e903397133",
+            "eefbc4e3c7b1b7fc6e78e316e66bbde49d945834ce244e7eda08d01b56dbad34",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
@@ -218,7 +218,7 @@ mod tests {
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "76b1e98ad738aec856bdecfefe12bfe511c7ca7a6cdc95eb65bb64fad44530b1",
+            "05f990b3f1ce87e919f4a5f1e716c8a725f48962f0241ea6443b4e24680dbe1f",
         ),
         (
             "wost/src/boot/mod.rs",
@@ -242,7 +242,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             17,
             3,
-            "9c47dee96cc6ae052a91b97b027170c24592f5a20957426409e43cd217020daa",
+            "f5c17b3eb28cac218c637584addcefc2eca8c20f04bec1c8fca1a368bde7dd0b",
         ),
         (
             "wost/src/mmio.rs",

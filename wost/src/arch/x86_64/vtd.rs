@@ -555,12 +555,20 @@ impl Vtd {
     /// Map `segment` into the domain, identity, and invalidate the unit's
     /// cache. Any failure that cannot prove rollback retains the segment here,
     /// before a caller can accidentally recycle device-reachable frames.
+    /// # Errors
+    ///
+    /// [`SegmentChangeError::Refused`] when the map is rolled back, and
+    /// [`SegmentChangeError::Retained`] when rollback itself cannot be proved.
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         self.map_segment_with::<true, true>(segment)
     }
 
     /// Identity-map `segment` so the requester may read but not write it.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_segment`](Self::map_segment).
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment_for_device_read(
         &mut self,
@@ -570,6 +578,10 @@ impl Vtd {
     }
 
     /// Identity-map `segment` so the requester may write but not read it.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_segment`](Self::map_segment).
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment_for_device_write(
         &mut self,
@@ -641,6 +653,16 @@ impl Vtd {
 
     /// Remove `segment` from the domain and drain every older DMA request before
     /// returning. Any uncertain failure retains the segment before returning.
+    ///
+    /// # Errors
+    ///
+    /// [`SegmentChangeError::Refused`] when the segment is not mapped here or
+    /// its range does not fit, and [`SegmentChangeError::Retained`] when a
+    /// page clear or DMA drain cannot be proved.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this owner no longer has a root table.
     #[must_use = "a still-mapped segment is still reachable by the device"]
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         let owner = DmaMappingOwner::new(self.root.address());
@@ -860,6 +882,11 @@ impl Vtd {
     /// read/write drain. Only after older requests are gone are the unpublished
     /// context and second-level bytes cleared. TE, IRE, the register window and
     /// both kernel roots remain owned for the rest of the boot.
+    ///
+    /// # Errors
+    ///
+    /// [`VtdError`] when the interrupt boundary is already lost, invalidation
+    /// does not complete, or the drain cannot be proved.
     pub fn park(&mut self) -> Result<(), VtdError> {
         if !self.boundary_active() {
             return Err(VtdError::InterruptBoundaryLost);

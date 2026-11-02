@@ -817,6 +817,10 @@ impl AddressSpace {
     }
 
     /// The physical address of the top-level table — what `CR3` would hold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the space has been reclaimed and no longer has a root.
     pub const fn root(&self) -> Paddr {
         match self.roots {
             Some(roots) => roots.full_root(),
@@ -1569,6 +1573,12 @@ impl AddressSpace {
     /// The KPTI owner must mint the exact linker witness; mapping or validation
     /// refusal returns both roots and every intermediate table before this
     /// returns.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::EntryEnclaveUnavailable`] when the entry path is not
+    /// implemented, and the same root and direct-map failures as
+    /// [`for_user`](Self::for_user).
     pub fn for_user_isolated() -> Result<Self, MapError> {
         if !super::kpti::entry_path_is_implemented() {
             return Err(MapError::EntryEnclaveUnavailable);
@@ -2383,6 +2393,12 @@ impl AddressSpace {
     }
 
     /// Remove every stack represented by `arena`, returning its frames.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::NotYours`] inside the rollback when `arena` belongs to
+    /// another root. A later unmap refusal keeps the remaining slots in the
+    /// returned [`StackRollback`].
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
         if arena.roots != self.roots() {
             return Err(StackRollback {
@@ -2399,6 +2415,10 @@ impl AddressSpace {
     }
 
     /// Continue the exact stack cleanup represented by `rollback`.
+    ///
+    /// # Errors
+    ///
+    /// The same rollback, still holding any stacks this attempt did not remove.
     #[cfg(feature = "selftest")]
     pub fn resume_stack_rollback(
         &mut self,
@@ -2598,6 +2618,15 @@ impl AddressSpace {
     /// A refusal leaves the space and one-shot release evidence reusable. A
     /// success empties the space and makes every later operation refuse
     /// (D-123).
+    ///
+    /// # Errors
+    ///
+    /// [`ReclaimFailure`] when the space is still active, still bound without
+    /// `released`, or a table frame cannot be returned. The space stays usable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a reclaimed space is asked to reclaim again.
     pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimFailure> {
         // A bound space needs the task table's linear `Released` evidence, and
         // a repeat could mint an owner for frame zero (D-123, D-139).
@@ -4389,6 +4418,10 @@ impl DeviceMapping {
     /// The mapping is not promised permanent: the unique region retains this
     /// token, and
     /// [`AddressSpace::unmap_device`] consumes both before clearing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` when the mapping is no longer live.
     pub fn claim_releasable(self) -> Result<ReleasableDevice, Self> {
         if !self.is_live() {
             return Err(self);
@@ -4434,6 +4467,10 @@ impl DeviceMapping {
     }
 
     /// Claim while a compatible user root is actually loaded by the CPU.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test closure takes the mapping twice.
     #[cfg(feature = "selftest")]
     pub fn claim_releasable_under_for_test(
         self,
@@ -4597,11 +4634,21 @@ impl ReleasableDevice {
     }
 
     /// Read one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`](crate::mmio::MmioError) when `offset` is misaligned or
+    /// outside the device window.
     pub fn read_u32(&self, offset: usize) -> Result<u32, crate::mmio::MmioError> {
         MmioRegion::read_u32(&self.registers, offset)
     }
 
     /// Write one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`](crate::mmio::MmioError) when `offset` is misaligned or
+    /// outside the device window.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), crate::mmio::MmioError> {
         MmioRegion::write_u32(&mut self.registers, offset, value)
     }

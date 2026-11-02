@@ -331,11 +331,19 @@ impl MappedBar {
     }
 
     /// Read one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`] when `offset` is misaligned or outside the BAR window.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         ReleasableDevice::read_u32(&self.region, offset)
     }
 
     /// Write one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`] when `offset` is misaligned or outside the BAR window.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         ReleasableDevice::write_u32(&mut self.region, offset, value)
     }
@@ -640,6 +648,11 @@ pub fn admit_bus_master(
 
 /// Disable bus mastering for a rejected DMA lease and remove BME from its
 /// eventual restoration word only after exact readback.
+///
+/// # Errors
+///
+/// [`EnableError`] when the function is not the live claim or the command
+/// readback does not match the word just written.
 pub fn disable_bus_master_for_retirement(
     function: &FunctionClaim,
     state: &mut CommandState,
@@ -676,6 +689,11 @@ pub fn disable_bus_master_for_retirement(
 ///
 /// Successful restoration of the returned state preserves every captured
 /// command bit except BME.
+///
+/// # Errors
+///
+/// [`EnableFailure`] returns the function when the command port is busy or
+/// the captured word cannot be read back.
 pub fn fence_bus_master(function: &FunctionClaim) -> Result<CommandState, EnableFailure> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -696,6 +714,10 @@ pub fn fence_bus_master(function: &FunctionClaim) -> Result<CommandState, Enable
 }
 
 /// Re-read one exact command owner immediately before a unit-wide transition.
+///
+/// # Errors
+///
+/// [`EnableError`] when the live command word is not the fenced one.
 pub fn verify_bus_master_fence(
     function: &FunctionClaim,
     state: &CommandState,
@@ -724,6 +746,10 @@ pub fn verify_bus_master_fence(
 }
 
 /// Restore a captured command word as one verified transaction.
+///
+/// # Errors
+///
+/// [`RestoreFailure`] returns `state` when the write does not read back.
 pub fn restore_command(
     function: &FunctionClaim,
     state: CommandState,
@@ -747,6 +773,10 @@ pub fn restore_command(
 }
 
 /// Finish a permanent command transition after exact readback.
+///
+/// # Errors
+///
+/// [`RestoreFailure`] returns `state` when the committed word does not read back.
 pub fn commit_command(function: &FunctionClaim, state: CommandState) -> Result<(), RestoreFailure> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -772,6 +802,10 @@ pub fn commit_command(function: &FunctionClaim, state: CommandState) -> Result<(
 /// only performs each requested cycle. The whole algorithm runs under one
 /// hold of the pair, so nobody can see a probe value or replace CF8 between a
 /// cycle's address and data instructions.
+///
+/// # Errors
+///
+/// [`ProbeFailure`] when a sizing cycle cannot be rolled back to the saved BAR.
 pub fn probe_bars(function: &FunctionClaim) -> Result<StagedProbe, ProbeFailure<()>> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
@@ -882,6 +916,10 @@ pub fn release_admitted_bar(admitted: AdmittedBar) -> Result<(), BarAuthorityFai
 }
 
 /// Retry an uncertain BAR restoration without releasing its function lease.
+///
+/// # Errors
+///
+/// [`ProbeFailure`] when the retry write does not read back.
 pub fn retry_probe(function: &FunctionClaim, retry: ProbeRetry) -> Result<(), ProbeFailure<()>> {
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;

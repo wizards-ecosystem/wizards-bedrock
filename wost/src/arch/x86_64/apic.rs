@@ -769,6 +769,11 @@ pub fn claim_eoi<'frame>(
 /// Dismiss the exact vector represented by `token`.
 ///
 /// A changed target returns the token unchanged and performs no write.
+///
+/// # Errors
+///
+/// Returns `token` when the in-service register no longer names its vector,
+/// so the write is skipped.
 pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<'frame>> {
     if !x86_apic::in_service::may_complete(
         interrupt_state(),

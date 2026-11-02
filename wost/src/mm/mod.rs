@@ -1077,6 +1077,10 @@ impl USegment {
     ///
     /// `None` if clearing cannot reach the run. Such frames are withheld rather
     /// than recycled with ring-3 bytes still present (D-12, D-107).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the external segment no longer owns its frames.
     pub fn reclaim(mut self) -> Option<Segment> {
         let Some(mut segment) = self.segment.take() else {
             panic!("an external segment no longer owns its frames");
@@ -1137,6 +1141,10 @@ impl Shared {
     ///
     /// Returns the unchanged owner if the layout describes a different number
     /// of bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` when `layout` does not describe this allocation's length.
     pub fn into_ring<const WORDS: usize>(
         self,
         layout: SharedLayout<WORDS>,
