@@ -35,9 +35,12 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## In progress
 
-- Clearing the host census (320 unique warns, matches stream 1). `# Errors`
-  is on the 16 `Result` functions the census named. Register-width casts and
-  closed-enum `expect`s are next.
+- Register-width `cast_possible_truncation` (about 120 sites) and
+  `exhaustive_enums` (37 closed protocol enums). `#[expect]` is unfulfilled
+  unless the lint is enabled, and enabling it crate-wide fails `cargo xtask
+  clippy -D warnings` until every site in that crate is answered. Do one
+  crate at a time: warn the lint in that crate, `expect` the proven field
+  extracts, `TryFrom` where the value can fail.
 - Census command is local only (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`,
   stream 1's `clippy.toml`). Root config is not edited.
 
