@@ -604,19 +604,21 @@ impl Controller {
     /// Discard whatever is sitting in the output buffer.
     ///
     /// False if it never drains, which means nothing real is on the other
-    /// end of these ports.
+    /// end of these ports. The status read after the last discard is required:
+    /// that byte may be the one that empties the buffer, and the check at the
+    /// top of the next iteration never runs once the bound is spent.
     fn flush(&mut self) -> bool {
         #[cfg(feature = "selftest")]
         if REFUSE_FLUSH.swap(false, Ordering::Relaxed) {
             return false;
         }
-        (0..FLUSH_LIMIT).any(|_| {
+        for _ in 0..FLUSH_LIMIT {
             if Port::read(&mut self.control) & status::OUTPUT_FULL == 0 {
                 return true;
             }
             let _ = Port::read(&mut self.data);
-            false
-        })
+        }
+        Port::read(&mut self.control) & status::OUTPUT_FULL == 0
     }
 
     fn write_data(&mut self, byte: u8) -> bool {

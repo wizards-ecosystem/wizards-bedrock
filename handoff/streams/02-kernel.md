@@ -2,6 +2,9 @@
 
 ## Done
 
+- 8042 output flush checks status after the last discarded byte. The old
+  `.any` loop treated "the 32nd read emptied the buffer" as failure, so a
+  controller that drained on the final allowed read was reported absent.
 - PCI enumeration queues each bus number at most once. A bridge secondary that
   was already queued (but not yet visited) used to take another worklist slot.
   Two hundred and fifty-five copies of one secondary filled the 256-entry list
@@ -41,6 +44,10 @@
 
 - Medium: PCI worklist duplicate secondaries hide a later bus. Fixed in
   `kernel/src/pci.rs`.
+- Low: `i8042::Controller::flush` reported failure when the 32nd discarded
+  byte was the one that emptied the output buffer. Fixed in
+  `kernel/src/arch/x86_64/i8042.rs`. A one-byte controller buffer never hits
+  this; a backlog of exactly `FLUSH_LIMIT` bytes did.
 
 ## Decisions
 
