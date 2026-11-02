@@ -121,7 +121,7 @@ fn seed_frames<const WORDS: usize>(frames: &mut FrameSpace<WORDS>, map: &MemoryM
 #[cfg(feature = "selftest")]
 /// Check that a reserved overlap is never seeded into the frame allocator.
 pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
-    let map = match MemoryMap::try_from_regions([
+    let Ok(map) = MemoryMap::try_from_regions([
         MemoryRegion {
             base: FRAME_SIZE,
             len: FRAME_SIZE * 4,
@@ -132,9 +132,8 @@ pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
             len: FRAME_SIZE,
             kind: MemoryKind::Reserved,
         },
-    ]) {
-        Ok(map) => map,
-        Err(_) => return false,
+    ]) else {
+        return false;
     };
     let mut frames = FrameSpace::<1>::new();
     let ignored = seed_frames(&mut frames, &map);
@@ -208,7 +207,8 @@ pub struct FirmwareMemory(());
 
 impl FirmwareMemory {
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: Paddr, len: usize) -> bool {
+    pub fn contains(self, address: Paddr, len: usize) -> bool {
+        let FirmwareMemory(()) = self;
         let guard = MAP.lock_leaf();
         let Some(map) = guard.as_ref() else {
             return false;
@@ -858,6 +858,7 @@ const CACHE_LINE: usize = 64;
 
 /// How an IOMMU reads the tables the CPU writes for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TableWalks {
     /// The unit snoops the processor caches, so a volatile write is visible to
     /// it as soon as it lands.

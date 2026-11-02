@@ -222,6 +222,10 @@ pub fn faulting_address() -> u64 {
 /// Each is independent, and each may be absent on an older CPU or a virtual
 /// machine that does not expose it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "kernel/src/user.rs and selftest.rs read these fields by name"
+)]
 pub struct Protections {
     /// Supervisor writes honour read-only page-table entries.
     pub write_protect: bool,
@@ -426,7 +430,7 @@ pub fn recover_write_protection_probe(
     if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    interrupt::resume_write_protection(frame, WriteProtectionRecoveryTarget::fixup())
+    interrupt::resume_write_protection(frame, &WriteProtectionRecoveryTarget::fixup())
 }
 
 fn enable_write_protection() {

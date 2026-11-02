@@ -6,7 +6,10 @@
 
 // This is the workspace's sole unsafe exception (D-67). `allow` is deliberate:
 // `expect` would make removing the final unsafe operation a build failure.
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "wost is the only crate permitted unsafe; expect would fail when the last unsafe operation is removed (D-67)"
+)]
 #![deny(clippy::expect_used, clippy::unwrap_used)]
 #![no_std]
 

@@ -250,7 +250,7 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
 ///
 /// `false` if the frame is not live, having written nothing.
 #[must_use = "a refused resume changed no trap frame"]
-pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {
+pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
@@ -269,7 +269,7 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
 #[must_use = "a refused resume changed no trap frame"]
 pub(super) fn resume_write_protection(
     frame: &TrapFrame,
-    target: super::cpu::WriteProtectionRecoveryTarget,
+    target: &super::cpu::WriteProtectionRecoveryTarget,
 ) -> bool {
     if !is_live_frame(frame) {
         return false;
@@ -318,7 +318,7 @@ pub(crate) fn suspend_trap() -> TrapSuspension {
 }
 
 /// Put back the state [`suspend_trap`] took.
-pub(crate) fn resume_trap(suspended: TrapSuspension) {
+pub(crate) fn resume_trap(suspended: &TrapSuspension) {
     TRAP_DEPTH.store(suspended.depth, Ordering::Relaxed);
     LIVE_FRAME.store(suspended.frame, Ordering::Relaxed);
 }

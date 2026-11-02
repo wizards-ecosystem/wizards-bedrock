@@ -440,7 +440,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
         // that will ever unwind it.
         unsafe { switch(save, load) };
     });
-    interrupt::resume_trap(suspended);
+    interrupt::resume_trap(&suspended);
     saved.restore();
     result
 }
@@ -478,7 +478,7 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
             unreachable!("a task retired from a trap was resumed");
         }
         Err(error) => {
-            interrupt::resume_trap(suspended);
+            interrupt::resume_trap(&suspended);
             saved.restore();
             Err(error)
         }
@@ -768,6 +768,10 @@ impl Released {
 /// Consuming the one-shot [`Binding`] proves that no later caller can install
 /// it. This is the rollback path for construction that stops before
 /// [`bind_address_space`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "kernel/src/user.rs and thread.rs pass Binding by value to spend the one-shot token"
+)]
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
         roots: binding.roots(),

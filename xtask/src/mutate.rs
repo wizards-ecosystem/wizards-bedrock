@@ -9875,8 +9875,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 876,
         file: "wost/src/arch/x86_64/interrupt.rs",
-        find: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
-        replace: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
+        find: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
+        replace: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
         breaks: "the user-copy resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -9886,8 +9886,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 877,
         file: "wost/src/arch/x86_64/interrupt.rs",
-        find: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
-        replace: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
+        find: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: &super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
+        replace: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: &super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
         breaks: "the write-protection resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -10043,7 +10043,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
+    interrupt::resume_usercopy(frame, &RecoveryTarget::fixup())
 }"#,
         replace: r#"impl RecoveryTarget {
     fn fixup() -> Self {
@@ -10056,7 +10056,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
 }
 
 fn hostile_resume(frame: &interrupt::TrapFrame) -> bool {
-    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
+    interrupt::resume_usercopy(frame, &RecoveryTarget::fixup())
 }
 
 /// Resume a faulting user copy at its fixup, if that is what faulted.

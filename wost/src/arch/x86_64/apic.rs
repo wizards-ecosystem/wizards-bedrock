@@ -428,6 +428,10 @@ impl<'state> Initialization<'state> {
         Ok(())
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Configured is copied into the published controller; the value is the mode token"
+    )]
     fn commit(mut self, configured: Configured) -> Result<Local, ApicError> {
         let ready = self
             .transaction
@@ -1012,6 +1016,10 @@ pub fn initialization_was_atomic_for_test() -> bool {
 /// Results from injecting every late APIC initialization refusal.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is one independent initialization probe result"
+)]
 pub struct InitializationFailureProbe {
     unavailable_and_terminal: bool,
     ignored_spurious_write_is_terminal: bool,
@@ -1505,6 +1513,10 @@ impl InitializationRegisters for Registers {
 }
 
 impl Registers {
+    #[expect(
+        clippy::unused_self,
+        reason = "x2APIC writes the named MSR; Registers is only the published-mode token"
+    )]
     fn write(&self, register: Register, value: u64) {
         // SAFETY: `Registers` is created only after x2APIC mode is read back,
         // and operations outside initialization obtain it only after the
@@ -1513,6 +1525,10 @@ impl Registers {
         unsafe { msr::write(register.msr(), value) };
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "x2APIC reads the named MSR; Registers is only the published-mode token"
+    )]
     fn read(&self, register: Register) -> u64 {
         msr::read(register.msr())
     }

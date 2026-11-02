@@ -140,19 +140,19 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "4d45b093fa224b4bca431ec101597614f179caa58fc44ddf3e6497cddbf4b5e0",
+            "7dd96fad369533c9d8c9e7842c0241d1d4fd2747ded4c74c75f04d068e531181",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "02a24e16ae7657e373d97f9dfa10e93d95a41b667aef27bd8e5690ece3b8d6d9",
+            "08757d52cea59f2f169f32799b0e06d728853d9274e93b3cf3f7de220c4b9fd5",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "85f254317b7d96d8c375b56517e0016f9943711f5244ef68763d836ccf45224b",
+            "9ac29ff8578b0528808278d59983a76133b1643f25274a09e6c1a573f4d2bbc8",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
@@ -170,7 +170,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "e1049507ed7a6c6cbff5fb05d5d215a97bd045bdde3d196e3649375c9e2eb0d1",
+            "3c58e060c780cc623910c3ffb4f3a235f7ffd88d0c0891a1fa4a38b9c34d1ea7",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -200,13 +200,13 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "eefbc4e3c7b1b7fc6e78e316e66bbde49d945834ce244e7eda08d01b56dbad34",
+            "1877c4da9f1398849018650f7ab67b29acf5e724d9cb942bfa80fa9b72b56353",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
             5,
             1,
-            "8aa48581c0a0c3c929b63982c6b53d8d11f6044d902142624f966110766a65d5",
+            "b34469cb03926fc0cc30557b83fd9ca5bad14899649ce7270488261eaf533720",
         ),
         (
             "wost/src/arch/x86_64/xstate.rs",
@@ -218,7 +218,7 @@ mod tests {
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "05f990b3f1ce87e919f4a5f1e716c8a725f48962f0241ea6443b4e24680dbe1f",
+            "9bd1b239ecce7bc90b6e4ada25b1e267f669af36ff680d0a020ca355c62240b9",
         ),
         (
             "wost/src/boot/mod.rs",
@@ -242,7 +242,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             17,
             3,
-            "92694aada640f5d797e9dd33a49a0042f5fb471444ff2506ce9c2be6fc6aea34",
+            "5fe4c21c0109a0ee920da5ef6874da3f939538e86441d3341bc3dc4b789def20",
         ),
         (
             "wost/src/mmio.rs",
@@ -254,7 +254,7 @@ mod tests {
             "wost/src/sync.rs",
             4,
             4,
-            "feda23d612ceb63311ffbe033360da789f2c7a319c5537c6edb1f6431b9058c5",
+            "2179a74fe0856320a6c36927c8f19e9f1a01a42b064b113986381a5c7fdb2700",
         ),
     ];
 

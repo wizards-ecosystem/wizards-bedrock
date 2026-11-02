@@ -24,31 +24,82 @@ the root workspace config, `kernel/`, and `libs/`.
 
 ## In progress
 
-- Nothing. The next census pass is the leftover list below.
+- Nothing.
+
+## Kernel-facing signatures left for the integration pass
+
+Do not change these in `wost` alone. Each one is still the current signature.
+Clippy is silenced on the `wost` side with `#[expect]` and the reason names
+the kernel caller.
+
+### Bool parameter
+
+- Item: `wost::arch::x86_64::vtd::Vtd::establish_deny_all(registers: ReleasableDevice, platform_interrupt_remapping: bool) -> Establishment`
+- Caller: `kernel/src/iommu.rs` passes `true`.
+- Suggested: `enum PlatformInterruptRemapping { Present, Absent }` and call `establish_deny_all(registers, PlatformInterruptRemapping::Present)`.
+
+Private VT-d toggles stay `bool` on purpose. Their call sites and mutations
+spell `true` or `false`. Suggested splits, still inside `wost` only, if a
+later pass wants them: `enable_queued_invalidation` / `disable_queued_invalidation`,
+the same pair for interrupt remapping and for translation, and
+`invalidate_context` / `invalidate_iotlb` instead of `invalidate(&mut self, context: bool)`.
+
+### `needless_pass_by_value`
+
+Clippy says the body does not consume the value. A reference matches that.
+The move is what the kernel call sites pass today.
+
+- `AddressSpace::map_boot(&mut self, virtual_base: u64, region: BootRegion, flags: Flags) -> Result<(), MapError>`
+  - Callers: `kernel/src/mem.rs` (`space.map_boot(...)`).
+  - Suggested: `region: &BootRegion`.
+- `AddressSpace::map_device(&mut self, admitted: AdmittedDeviceRange) -> Result<DeviceMapping, MapError>`
+  - Callers: `kernel/src/mem.rs`, `kernel/src/selftest.rs`.
+  - Suggested: `admitted: &AdmittedDeviceRange`.
+- `AddressSpace::unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback>`
+  - Caller: `kernel/src/mem.rs`.
+  - Suggested: `arena: &StackArena`.
+- `pci::admit_bus_master(authority: NvmeBusMasterAuthority<'_>, domain: DmaDomain<'_>, interrupts: InterruptIsolation<'_>, state: &mut CommandState) -> Result<(), EnableError>`
+  - Caller: `kernel/src/pci.rs`.
+  - Suggested: `authority: &NvmeBusMasterAuthority<'_>`, `domain: &DmaDomain<'_>`, `interrupts: &InterruptIsolation<'_>`.
+- `task::release_uninstalled(binding: Binding) -> Released`
+  - Callers: `kernel/src/user.rs`, `kernel/src/thread.rs`, `kernel/src/selftest.rs`.
+  - Suggested: `binding: &Binding`. The function's comment says the move spends the one-shot token; if `Binding` is `Copy`, the move does not do that.
+- `DeviceMapping::rejects_cache_substitution_for_test(self, page: usize) -> (Self, bool)`
+  - Caller: `kernel/src/selftest.rs` (`mapping.rejects_cache_substitution_for_test(1)`).
+  - Suggested: keep `self` if the method must hand the mapping back. `&self` changes the return.
+
+### `exhaustive_enums` that kernel matches without `_`
+
+- `paging::BarUnmapOutcome` — `kernel/src/mem.rs`.
+- `pci::BarEnableOutcome` — `kernel/src/pci.rs`.
+- `vtd::Retargeting` and `vtd::Establishment` — `kernel/src/iommu.rs`.
+
+`TableWalks` and `SpinLockWitness` are `#[non_exhaustive]` already. Kernel
+compares `SpinLockWitness` with `==`, which does not need a wildcard.
+
+### `struct_excessive_bools` read by kernel
+
+- `cpu::Protections` fields `write_protect`, `smep`, `smap`, `umip`, `nx`.
+  Callers: `kernel/src/user.rs`, `kernel/src/selftest.rs` (`Protections::enabled().nx` and `.write_protect`).
+  Suggested: leave the fields until a kernel change can group them.
 
 ## Not finished
 
-Measured with stream 1's `clippy.toml` (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`)
-and `-W clippy::pedantic -W clippy::cast_possible_truncation`, not by editing
-root config. After the cast helpers, self-test `wost` was about 118 unique
-warnings. This round then documented MMIO, `pic::silence`, and
-`port::release_spans`, and backticked the `doc_markdown` hits those runs named.
-Still open, in that order:
+`cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract`
+still fails on Linux because its `C:\` fixture contains `:`. Left alone. It is
+mutation 1789's Windows witness.
 
-- `# Errors` / `# Panics` on the remaining `wost` functions (paging, pci, vtd,
-  interrupt, task, one boot enter).
-- `cast_ptr_alignment` in `segment`, `mm`, `mmio`, `heap`, and paging. These
-  are aligned by a prior check; an `expect` should name that check, not a
-  silent cast.
-- `needless_pass_by_value` and `fn_params_excessive_bools`. Several are
-  kernel-facing signatures. An enum instead of `bool` needs a kernel edit,
-  which this stream does not own.
-- `exhaustive_enums`, `manual_let_else`, `unused_self`, `struct_excessive_bools`.
-- `tools/` has no Rust. `boot/limine` was not changed. `wost/src/boot` only
-  gained `usize_from_u64` for the framebuffer dimensions.
-- `cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract`
-  still fails on Linux because its `C:\` fixture contains `:`. Leave it until
-  a Windows run; it is mutation 1789's witness.
+Other pedantic `wost` warnings that were not in this round's list, still
+present under the stream 1 table: `borrow_as_ptr` (apic, xstate),
+`elidable_lifetime_names` (apic), `manual_assert` (paging, boot/mod),
+`nonminimal_bool` (paging), `single_match_else` (paging, sync),
+`similar_names` (apic), `match_same_arms` (apic), `semicolon_if_nothing_returned`
+(cpu), `too_many_lines` (paging `map_owned`-sized function), `map_unwrap_or`
+(task), `if_not_else` (task), `used_underscore_binding` (pci),
+`items_after_statements` and `checked_conversions` (limine glue).
+
+`tools/` has no Rust. Full `cargo xtask ci`, QEMU, and the mutation campaign
+were not run.
 
 ## Next steps
 

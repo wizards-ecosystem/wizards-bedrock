@@ -556,8 +556,15 @@ pub struct BarUnmapFailure {
 }
 
 /// Result of removing a function-bound BAR mapping.
+///
+/// Kernel matches name both outcomes. `non_exhaustive` waits until those
+/// matches gain a wildcard.
 #[derive(Debug)]
 #[must_use = "a refused BAR unmap retains the only cleanup authority"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/mem.rs matches both outcomes without a wildcard"
+)]
 pub enum BarUnmapOutcome {
     /// Every leaf and the device ledger entry were removed.
     Unmapped(pci_config::BarAuthority),
@@ -1150,6 +1157,10 @@ impl AddressSpace {
     /// # Errors
     ///
     /// As [`map_owned`](Self::map_owned).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs passes BootRegion by value; taking a reference is a kernel edit"
+    )]
     pub fn map_boot(
         &mut self,
         virtual_base: u64,
@@ -2139,6 +2150,10 @@ impl AddressSpace {
     ///
     /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if the device
     /// window is exhausted.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs and selftest.rs pass AdmittedDeviceRange by value"
+    )]
     pub fn map_device(&mut self, admitted: AdmittedDeviceRange) -> Result<DeviceMapping, MapError> {
         self.map_device_range(&admitted)
     }
@@ -2257,6 +2272,10 @@ impl AddressSpace {
     /// [`MapError::NotMapped`] if its ownership record or a leaf is gone, and
     /// [`MapError::Discontiguous`] if a leaf no longer names the exact device
     /// extent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a leaf that passed preflight is absent when it is cleared.
     pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), DeviceUnmapFailure> {
         if let Err(reason) = self.verify_device_unmap(&region) {
             return Err(DeviceUnmapFailure { reason, region });
@@ -2349,6 +2368,10 @@ impl AddressSpace {
     ///
     /// As [`map_stack`](Self::map_stack). A refusal rolls every earlier stack
     /// back; [`StackMapError::Rollback`] reports any cleanup refusal exactly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a single-stack rollback loses its cleanup authority.
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, StackMapError> {
         let mut stacks = Vec::new();
         stacks
@@ -2399,6 +2422,10 @@ impl AddressSpace {
     /// [`MapError::NotYours`] inside the rollback when `arena` belongs to
     /// another root. A later unmap refusal keeps the remaining slots in the
     /// returned [`StackRollback`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs passes StackArena by value"
+    )]
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
         if arena.roots != self.roots() {
             return Err(StackRollback {
@@ -2701,7 +2728,7 @@ impl AddressSpace {
                 Some(_) => {}
             }
         }
-        if self.roots_are_active(roots, cpu::page_table_base()) {
+        if Self::roots_are_active(roots, cpu::page_table_base()) {
             return Err(ReclaimFailure {
                 reason: ReclaimError::Active(cpu::page_table_base()),
                 released,
@@ -2756,7 +2783,7 @@ impl AddressSpace {
         live
     }
 
-    fn roots_are_active(&self, roots: AddressSpaceRoots, current_root: Paddr) -> bool {
+    fn roots_are_active(roots: AddressSpaceRoots, current_root: Paddr) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
     }
 
@@ -2769,7 +2796,7 @@ impl AddressSpace {
     #[cfg(feature = "selftest")]
     pub fn permanent_root_blocks_reclaim_for_test(&self) -> bool {
         self.roots
-            .is_some_and(|roots| self.roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
+            .is_some_and(|roots| Self::roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
     }
 
     /// Whether the device ledger independently blocks table reclaim.
@@ -2871,10 +2898,9 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
-        if self
-            .roots
-            .is_some_and(|roots| self.bound || self.roots_are_active(roots, cpu::page_table_base()))
-            && !self.shared.is_empty()
+        if self.roots.is_some_and(|roots| {
+            self.bound || Self::roots_are_active(roots, cpu::page_table_base())
+        }) && !self.shared.is_empty()
         {
             let keepalives = core::mem::take(&mut self.shared);
             core::mem::forget(keepalives);
@@ -4502,20 +4528,20 @@ impl DeviceMapping {
     /// Substitute one physical leaf while exercising the real claim door.
     #[cfg(feature = "selftest")]
     pub fn rejects_physical_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::Physical)
+        self.rejects_substitution_for_test(page, &DeviceSubstitution::Physical)
     }
 
     /// Substitute one leaf's cache policy while exercising the real claim door.
     #[cfg(feature = "selftest")]
     pub fn rejects_cache_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::CachePolicy)
+        self.rejects_substitution_for_test(page, &DeviceSubstitution::CachePolicy)
     }
 
     #[cfg(feature = "selftest")]
     fn rejects_substitution_for_test(
         self,
         page: usize,
-        substitution: DeviceSubstitution,
+        substitution: &DeviceSubstitution,
     ) -> (Self, bool) {
         let Ok(page_count) = usize::try_from(self.pages / PAGE_SIZE) else {
             return (self, false);

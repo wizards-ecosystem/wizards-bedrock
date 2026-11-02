@@ -428,6 +428,10 @@ pub struct BarEnableFailure {
 /// Result of exposing a mapped BAR through memory decode.
 #[derive(Debug)]
 #[must_use = "a refused decode transition retains mapping and restoration authority"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/pci.rs matches both outcomes without a wildcard"
+)]
 pub enum BarEnableOutcome {
     /// The BAR is accessible and the command transition remains owned.
     Enabled(MappedBar),
@@ -615,6 +619,10 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
 /// Refuses a stale BAR or command owner, a domain for another function, and
 /// every configuration access or exact-readback failure without consuming the
 /// command state.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "kernel/src/pci.rs passes the authority, domain, and interrupt proof by value"
+)]
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,
     domain: DmaDomain<'_>,

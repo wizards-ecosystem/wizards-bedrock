@@ -249,6 +249,10 @@ impl core::error::Error for VtdError {}
 
 /// What the unit reported about itself when it was taken over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is one independent VT-d capability bit reported at takeover"
+)]
 pub struct UnitFacts {
     /// The raw Capability register.
     pub capability: u64,
@@ -349,6 +353,10 @@ impl DmaDomain<'_> {
 /// Result of reusing a live interrupt owner for another DMA requester.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a retargeted VT-d owner must be installed or quarantined"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
+)]
 pub enum Retargeting {
     /// Translation is active through the replacement requester's tables.
     Retargeted,
@@ -361,6 +369,10 @@ pub enum Retargeting {
 /// The ownership-preserving result of establishing one VT-d domain.
 #[derive(Debug)]
 #[must_use = "a post-transition VT-d owner must be installed or quarantined"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
+)]
 pub enum Establishment {
     /// Translation is active through the complete new owner.
     Established(Vtd),
@@ -416,6 +428,10 @@ impl Vtd {
     /// an access, the unit reports no usable width or domain, firmware's state
     /// will not quiesce, a table frame is unavailable or misaligned, or the
     /// hardware does not accept the root-table pointer or translation.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "kernel/src/iommu.rs passes the platform fact as true; an enum is a kernel edit"
+    )]
     pub fn establish_deny_all(
         registers: ReleasableDevice,
         platform_interrupt_remapping: bool,
@@ -777,17 +793,14 @@ impl Vtd {
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
     #[must_use]
     pub fn boundary_active(&self) -> bool {
-        let pointer = match read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR)) {
-            Ok(pointer) => pointer,
-            Err(_) => return false,
+        let Ok(pointer) = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR)) else {
+            return false;
         };
-        let status = match read_u32(&self.registers, crate::usize_from_u64(vtd::GSTS)) {
-            Ok(status) => status,
-            Err(_) => return false,
+        let Ok(status) = read_u32(&self.registers, crate::usize_from_u64(vtd::GSTS)) else {
+            return false;
         };
-        let fault_control = match read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL)) {
-            Ok(control) => control,
-            Err(_) => return false,
+        let Ok(fault_control) = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL)) else {
+            return false;
         };
         if !translation_enabled(status)
             || !interrupt_remapping_enabled(status)
@@ -801,9 +814,8 @@ impl Vtd {
         let Some(expected) = interrupt_table_address(self.interrupts.address()) else {
             return false;
         };
-        let observed = match read_u64(&self.registers, crate::usize_from_u64(vtd::IRTA)) {
-            Ok(observed) => observed,
-            Err(_) => return false,
+        let Ok(observed) = read_u64(&self.registers, crate::usize_from_u64(vtd::IRTA)) else {
+            return false;
         };
         if observed != expected
             || interrupt_table_base(observed) != self.interrupts.address()
@@ -1142,6 +1154,10 @@ impl Vtd {
         }
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set QIE and false to clear it"
+    )]
     fn switch_queued_invalidation(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             self.gcmd | gcmd::QIE
@@ -1163,6 +1179,10 @@ impl Vtd {
         )
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set IRE and false to clear it"
+    )]
     fn switch_interrupt_remapping(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             enable_interrupt_remapping(self.gcmd)
@@ -1202,6 +1222,10 @@ impl Vtd {
         }
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set TE and false to clear it"
+    )]
     fn switch_translation(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             enable_translation(self.gcmd)
@@ -1240,6 +1264,10 @@ impl Vtd {
         Ok(())
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "selects context-cache invalidation versus IOTLB-only; call sites pass true or false"
+    )]
     fn invalidate(&mut self, context: bool) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
         if context {
@@ -1315,6 +1343,10 @@ impl Plan {
     /// All firmware-owned remapping facilities must already be inactive.
     /// This read-only boundary refuses a live non-identical SRTP and avoids
     /// guessing at firmware queue or interrupt-remapping quiescence (D-389).
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "private mirror of establish_deny_all's platform fact"
+    )]
     fn read(
         registers: &ReleasableDevice,
         platform_interrupt_remapping: bool,
