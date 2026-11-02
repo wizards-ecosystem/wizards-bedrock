@@ -56,6 +56,9 @@ reference, not followed linearly). Docs are numbered in creation order.
 
 ## Roadmap (phases)
 
+The assignment list for work after v0.2.0 is [docs/roadmap/NEXT.md](roadmap/NEXT.md).
+It does not replace this phase ledger or the foundation register.
+
 0. **Forge**: toolchain, workspace, boot to first light [done] (2026-07-18)
 1. First light polish: logging, panic handling, framebuffer console;
    framekernel split into `wost` + `kernel` [done] (2026-08-12)
