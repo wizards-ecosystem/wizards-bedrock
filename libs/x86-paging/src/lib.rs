@@ -1,4 +1,4 @@
-//! x86_64 four-level page table encoding.
+//! `x86_64` four-level page table encoding.
 //!
 //! Entry bits, the index each level takes from a virtual address, and
 //! canonical form. `wost` owns the tables; the encoding is checkable on the
@@ -491,7 +491,7 @@ impl Level {
     ///
     /// [`Pt`](Self::Pt) always does. [`Pd`](Self::Pd) and
     /// [`Pdpt`](Self::Pdpt) do with [`Flags::HUGE`]. [`Pml4`](Self::Pml4)
-    /// never does on any shipping x86_64.
+    /// never does on any shipping `x86_64`.
     pub const fn can_map_page(self) -> bool {
         !matches!(self, Self::Pml4)
     }
@@ -534,7 +534,7 @@ impl CanonicalAddress {
 ///
 /// Construct this before allocating or writing page tables. Every address the
 /// range can produce is page-aligned, canonical on the virtual side, and
-/// encodable in an x86_64 entry on the physical side.
+/// encodable in an `x86_64` entry on the physical side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappingRange {
     virtual_base: u64,

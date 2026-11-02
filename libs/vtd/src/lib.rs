@@ -321,7 +321,7 @@ impl ExtendedCapability {
 
     /// Byte offset of the IOTLB register block: IRO times sixteen.
     ///
-    /// Within that block the IOTLB Invalidate register (IOTLB_REG) sits at
+    /// Within that block the IOTLB Invalidate register (`IOTLB_REG`) sits at
     /// [`iotlb_command::COMMAND_REGISTER`].
     pub const fn iotlb_register_offset_bytes(self) -> u64 {
         ((self.0 >> Self::IRO_SHIFT) & Self::IRO_MASK) * 16
@@ -793,13 +793,13 @@ pub mod context_command {
     }
 }
 
-/// IOTLB invalidation through the IOTLB Invalidate register (IOTLB_REG).
+/// IOTLB invalidation through the IOTLB Invalidate register (`IOTLB_REG`).
 ///
 /// The register sits at [`COMMAND_REGISTER`](iotlb_command::COMMAND_REGISTER)
 /// within the IOTLB register block that
 /// [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
 pub mod iotlb_command {
-    /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
+    /// Offset of the IOTLB Invalidate register (`IOTLB_REG`) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;
 
     /// Invalidate IOTLB, bit 63 (set by software, cleared when done).

@@ -108,7 +108,7 @@ pub struct ExecutionEnvironment {
 pub enum DmaHandoffPlatform {
     /// The exact pinned QEMU TCG hypervisor leaf.
     QemuTcg,
-    /// The exact VMware Workstation hypervisor leaf.
+    /// The exact `VMware` Workstation hypervisor leaf.
     Vmware,
 }
 
@@ -161,7 +161,7 @@ impl ExecutionEnvironment {
     /// Bind a qualified DMA-handoff profile to CPU-resident platform evidence.
     ///
     /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
-    /// rewritten by a PCI requester. The exact QEMU TCG and VMware profiles
+    /// rewritten by a PCI requester. The exact QEMU TCG and `VMware` profiles
     /// are the only release platforms permitted to assert the DMA-safe
     /// handoff contract.
     pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {

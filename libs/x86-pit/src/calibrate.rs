@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
     }
 
-    /// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor would lose
+    /// `1_193_182` / 4 is `298_295.5`: nearest rounds up where floor would lose
     /// half a hertz per crystal tick.
     #[test]
     fn rounding_is_to_nearest_not_floor() {
@@ -156,7 +156,7 @@ mod tests {
     /// Inputs at the top of the space must answer, not overflow.
     ///
     /// These lines exercise the product's `checked_mul`. No input reaches a
-    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
+    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is `958_759` and the
     /// largest addend is `u16::MAX / 2` (D-105).
     #[test]
     fn the_product_at_the_top_of_the_space_cannot_overflow() {
@@ -186,7 +186,7 @@ mod tests {
 
     /// The numbers the two real machines produce, for both clocks a window is
     /// now shared by. QEMU models the APIC clock at a gigahertz and passes
-    /// the host's timestamp counter through; VMware has traditionally
+    /// the host's timestamp counter through; `VMware` has traditionally
     /// advertised a sixty-six megahertz bus. All measured over a genuine
     /// 20 ms window.
     #[test]

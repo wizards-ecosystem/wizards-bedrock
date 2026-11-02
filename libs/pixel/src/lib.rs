@@ -10,7 +10,7 @@
 //! ```
 //! use pixel::{Channel, FramebufferLayout, PixelFormat, Rgb, offset};
 //!
-//! // The layout QEMU and VMware both report: eight-bit channels, red high.
+//! // The layout QEMU and `VMware` both report: eight-bit channels, red high.
 //! let format = PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
 //!     .expect("valid channel masks");
 //! let red = Rgb { red: 255, green: 0, blue: 0 };
@@ -563,7 +563,7 @@ pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) ->
 mod tests {
     use super::*;
 
-    /// The layout QEMU and VMware both report: 8-bit channels, R high.
+    /// The layout QEMU and `VMware` both report: 8-bit channels, R high.
     fn rgb888() -> PixelFormat {
         PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
             .expect("valid RGB888")
@@ -1225,10 +1225,10 @@ mod tests {
     /// refused — at *both* copies of the bound.
     ///
     /// Exercise the boundary in both `channel_mask` and `encode` so the
-    /// duplicated checks cannot drift while refusing legal RGBx8888 (D-105).
+    /// duplicated checks cannot drift while refusing legal `RGBx8888` (D-105).
     #[test]
     fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
-        // 24 + 8 == 32: the top channel of a standard RGBx8888 report.
+        // 24 + 8 == 32: the top channel of a standard `RGBx8888` report.
         let top = Channel::new(24, 8);
         assert_ne!(top.encode(0xFF), 0, "encode refused a channel that fits");
 

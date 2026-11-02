@@ -3,7 +3,7 @@
 //! `wost` owns the CF8/CFC instructions; this crate owns their host-tested
 //! arithmetic. Offsets are dword-aligned, BAR masks are complemented in their
 //! register width, and 64-bit BARs consume two slots. CF8/CFC is the common
-//! mechanism on the QEMU i440fx and VMware 440BX targets (`012` §2).
+//! mechanism on the QEMU i440fx and `VMware` 440BX targets (`012` §2).
 //!
 //! # Examples
 //!
@@ -381,7 +381,7 @@ impl Class {
 
     /// Whether this is a PCI-to-PCI bridge, and so a bus to descend into.
     ///
-    /// **Enumeration must recurse.** VMware places functions behind
+    /// **Enumeration must recurse.** `VMware` places functions behind
     /// `pciBridge0`–`pciBridge7`, so a scan of bus zero alone may never find
     /// the controller (`012` §2).
     pub const fn is_bridge(self) -> bool {
@@ -632,18 +632,18 @@ pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xf0f0;
 /// Function authorities the platform PCI registry and kernel can hold at once.
 ///
 /// A unit-wide VT-d fence claims every live requester the unit governs. The
-/// default VMware machine alone presents 42, 32 of them root ports, so the
+/// default `VMware` machine alone presents 42, 32 of them root ports, so the
 /// bound is sized by the qualified platform rather than by the test machine.
 pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;
 
 /// Platform-bound policy for the entry-time DMA fence.
 ///
-/// The VMware profile recognizes one exact emulated 440BX host bridge whose
+/// The `VMware` profile recognizes one exact emulated 440BX host bridge whose
 /// command bit 2 is a read-only chipset control rather than a PCI requester
 /// bus-master enable, and one exact PIIX4 ISA bridge whose read-only bit 2 does
 /// govern a requester: its 8237 controllers. That requester stays in every
 /// inventory and is quiesced at the controllers instead. The caller must select
-/// the profile only from requester-inaccessible VMware CPU evidence; every
+/// the profile only from requester-inaccessible `VMware` CPU evidence; every
 /// other function and every near miss remains under the strict BME-off rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffFencePolicy {
@@ -666,7 +666,7 @@ pub struct QualifiedNonRequester {
 /// Exact platform evidence that one requester's bus mastering is held off at
 /// its DMA engines because its command bit 2 cannot be cleared.
 ///
-/// Construction is private to the entry fence, after the exact VMware PIIX4
+/// Construction is private to the entry fence, after the exact `VMware` PIIX4
 /// profile matched and both 8237 controllers were masked with no request
 /// pending. The function remains a requester in every inventory.
 #[derive(Debug)]
@@ -763,7 +763,7 @@ impl HandoffFencePolicy {
         }
     }
 
-    /// Admit only VMware's exact non-requesting 440BX host-bridge command.
+    /// Admit only `VMware`'s exact non-requesting 440BX host-bridge command.
     pub const fn vmware_440bx() -> Self {
         Self {
             kind: HandoffFencePolicyKind::Vmware440Bx,
@@ -805,7 +805,7 @@ impl HandoffFencePolicy {
         matches!(self.kind, HandoffFencePolicyKind::Vmware440Bx)
     }
 
-    /// Whether `at` is VMware's exact PIIX4 ISA bridge with read-only BME.
+    /// Whether `at` is `VMware`'s exact PIIX4 ISA bridge with read-only BME.
     fn classify_isa_requester(
         self,
         at: Address,
@@ -3789,7 +3789,7 @@ mod tests {
         ));
     }
 
-    /// VMware Workstation 17.6's default segment as its entry fence saw it on
+    /// `VMware` Workstation 17.6's default segment as its entry fence saw it on
     /// 2026-10-20: BDF, identity, class dword, command before, command after
     /// a BME-clear write. `00:00.0` and `00:07.0` hard-wire bit 2.
     type CapturedFunction = ((u8, u8, u8), u32, u32, u16, u16);
@@ -3808,7 +3808,7 @@ mod tests {
         ((0x0b, 0x00, 0), 0x07f0_15ad, 0x0108_0200, 0x0007, 0x0003),
     ];
 
-    /// The thirty-two VMware PCIe root ports at `00:15.0` through `00:18.7`.
+    /// The thirty-two `VMware` PCIe root ports at `00:15.0` through `00:18.7`.
     const VMWARE_ROOT_PORT: (u32, u32, u16, u16) = (0x07a0_15ad, 0x0604_0001, 0x0007, 0x0003);
 
     fn vmware_function(at: Address) -> Option<(u32, u32, u16, bool)> {

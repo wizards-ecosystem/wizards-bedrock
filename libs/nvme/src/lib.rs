@@ -187,7 +187,7 @@ impl DmaState {
 /// Byte offsets of the controller registers, from Base 2.2 §3.1.
 pub mod register {
     /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
-    /// §11 records that VMware's values are unmeasured.
+    /// §11 records that `VMware`'s values are unmeasured.
     pub const CAP: usize = 0x00;
     /// Controller configuration.
     pub const CC: usize = 0x14;
@@ -393,7 +393,7 @@ impl<P, E> PreparationFailure<P, E> {
 /// What `CAP` says, decoded.
 ///
 /// **Read, never assumed.** Every field here changes what a correct driver
-/// does, and `012` §11 records that VMware's values have not been measured.
+/// does, and `012` §11 records that `VMware`'s values have not been measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     bits: u64,

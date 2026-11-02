@@ -8,6 +8,12 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## Done
 
+- Doc comments backtick the identifiers `doc_markdown` named (`VMware`,
+  `x86_64`, `PrintScreen`, `IOTLB_REG`, and the PIT literals). Root
+  `clippy.toml` was not edited, so the idents are quoted in the prose.
+- `# Errors` on the 16 `Result` functions the census named (`ring-proto`,
+  `frame-space`, `nvme`, `x86-apic`, `x86-paging`, `acpi-tables`,
+  `pci-config`). `cargo doc --no-deps` on those crates reported no broken links.
 - Pure methods that return a new `Self` and do not mutate are `#[must_use]`:
   handle-space `reused`/`union`/`intersection`/`difference`, x86-cpuid
   `with_smep`/`with_smap`/`with_umip`, x86-paging `intersection`/`union`/

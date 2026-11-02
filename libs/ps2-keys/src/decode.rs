@@ -1,7 +1,7 @@
 //! The byte-at-a-time state machine over set 2's sequences.
 //!
 //! Everything a keyboard can legally send has a defined transition here:
-//! bare makes, `F0` breaks, `E0` extended makes and breaks, PrintScreen's
+//! bare makes, `F0` breaks, `E0` extended makes and breaks, `PrintScreen`'s
 //! fake-shift wrapping, Pause's eight-byte sequence with no break at all,
 //! and the protocol bytes — acknowledgements, self-test results, echoes —
 //! that the device may interleave with key data. Feeding any byte in any
@@ -46,7 +46,7 @@ mod protocol {
     }
 }
 
-/// The two codes PrintScreen and the navigation cluster wrap around
+/// The two codes `PrintScreen` and the navigation cluster wrap around
 /// themselves when modifiers are involved — `E0 12` and `E0 59`, shifts that
 /// no shift key sent. They exist so 1980s BIOSes could keep their shift
 /// state; this decoder discards them.
@@ -312,7 +312,7 @@ mod tests {
         );
     }
 
-    /// PrintScreen arrives wrapped in shifts nothing pressed, as in set 2.
+    /// `PrintScreen` arrives wrapped in shifts nothing pressed, as in set 2.
     #[test]
     fn set_1_discards_the_fake_shifts_around_print_screen() {
         let mut decoder = Decoder::translated();
@@ -367,7 +367,7 @@ mod tests {
     /// A shift held across a letter types a capital, through the set 1 path.
     ///
     /// The end-to-end shape the driver runs: decoder to shift state to layout.
-    /// It is the sequence that would have typed nothing on VMware (D-179).
+    /// It is the sequence that would have typed nothing on `VMware` (D-179).
     #[test]
     fn set_1_types_a_capital_through_the_whole_path() {
         let mut decoder = Decoder::translated();
@@ -462,7 +462,7 @@ mod tests {
         }
     }
 
-    /// The wire form of a bare PrintScreen press: fake shift, then the key.
+    /// The wire form of a bare `PrintScreen` press: fake shift, then the key.
     #[test]
     fn print_screen_make_is_one_event() {
         let mut decoder = Decoder::new();
