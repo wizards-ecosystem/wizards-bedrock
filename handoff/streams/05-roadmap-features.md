@@ -23,6 +23,7 @@ Draft pull request: https://github.com/wizards-ecosystem/wizards-bedrock/pull/3
   Dated decision records were left dated.
 - Added README "Start here" with the four public commands, channel `1.97.1`,
   and the statement that a successful build is not a boot.
+- Updated the draft pull request description to match this branch.
 - Added `experiments/register-index`, a separate Cargo workspace that prints
   register rows. `cargo test --manifest-path experiments/register-index/Cargo.toml --offline`
   passed on Linux with rustc 1.97.1: 4 tests, including the check that the
@@ -31,12 +32,11 @@ Draft pull request: https://github.com/wizards-ecosystem/wizards-bedrock/pull/3
 
 ## In progress
 
-- Nothing. The draft pull request still needs its description brought up to
-  this commit.
+- Nothing.
 
 ## Next steps
 
-- Update the pull request body. Leave it a draft. Do not merge.
+- Leave the pull request as a draft. Do not merge.
 - Do not run `cargo xtask ci`, QEMU, or the mutation sweep. The integration
   pass after all streams finish owns that.
 - Issue 2 still needs a clean Windows GNU report from someone who can run one.
