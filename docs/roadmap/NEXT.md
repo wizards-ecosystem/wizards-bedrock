@@ -188,3 +188,7 @@ updated in the same change.
 `experiments/` is outside the workspace and outside this backlog. A crate
 there can illustrate a stopped or later idea. It is not kernel code, not a
 register row, and not evidence.
+
+`experiments/register-index` prints the live and stopped rows of the foundation
+register. Its own `cargo test` checks that PW-006 and PW-010 are still the
+live pair from v0.2.0. The Markdown register wins if they disagree.

@@ -457,6 +457,7 @@ boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 handoff/    synthetic route-neutral envelope/payload fixtures, not Wizzy source
 docs/       design docs (design-first: docs before code)
 docs/roadmap/  assignment index after v0.2.0; the register stays the backlog
+experiments/ optional host tools outside the workspace, the register, and CI
 models/     TLA+ ring-protocol specs, plus four deliberate mutant configs that
             must each fail, checked by `cargo xtask model-check` (D-112)
 tools/      pinned TLA+ jar and the foreign FAT32 corpus, both digest-checked
