@@ -16,7 +16,7 @@ extern crate alloc;
 ///
 /// # Panics
 ///
-/// Panics when `value` does not fit in `usize`. On x86_64 the widths match,
+/// Panics when `value` does not fit in `usize`. On `x86_64` the widths match,
 /// so a displacement in a `u64` register constant cannot reach this.
 pub(crate) const fn usize_from_u64(value: u64) -> usize {
     assert!(

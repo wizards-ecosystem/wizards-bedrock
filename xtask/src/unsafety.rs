@@ -146,7 +146,7 @@ mod tests {
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "ff949f1cead5bf7ebf06c387cdfd673a4aeabc9699c4fa6c2a318c8334ccf0e3",
+            "02a24e16ae7657e373d97f9dfa10e93d95a41b667aef27bd8e5690ece3b8d6d9",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
@@ -182,7 +182,7 @@ mod tests {
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "5858f7c9e7bbe1bc8909fed5ce746e33ae3d8731159d6992a6e582b6345ffb60",
+            "d1c64a346c5a9b2aaff13dd58877414a51cbdd0f87aaab2d97de655ed53063ef",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
@@ -242,13 +242,13 @@ mod tests {
             "wost/src/mm/mod.rs",
             17,
             3,
-            "f5357d72c0201553c440d315fab25174f2adfdcb7093d9587ce37fb4f21e902c",
+            "9c47dee96cc6ae052a91b97b027170c24592f5a20957426409e43cd217020daa",
         ),
         (
             "wost/src/mmio.rs",
             2,
             2,
-            "982617ae9b24dd72bfeeca53ce86e76546b4ee3edc827bd43db5cdc51018a99b",
+            "05e2206a8fc27ef2bd704636e5c4a75e0bab11ba6fdc02935bd220691f5a29ad",
         ),
         (
             "wost/src/sync.rs",

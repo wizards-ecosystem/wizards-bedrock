@@ -120,6 +120,11 @@ pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<Por
 ///
 /// An empty array succeeds without touching the registry. A refusal returns
 /// the unchanged capabilities for an exact retry.
+///
+/// # Errors
+///
+/// Returns the spans still reserved when the registry refuses the release,
+/// including a self-test refusal injected before the registry changes.
 pub fn release_spans<const N: usize>(
     spans: [Option<PortSpan>; N],
 ) -> Result<(), SpanReleaseFailure<N>> {

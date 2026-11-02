@@ -24,12 +24,31 @@ the root workspace config, `kernel/`, and `libs/`.
 
 ## In progress
 
-- BeautifulRust census on `wost`, measured with stream 1's `clippy.toml` via
-  `CLIPPY_CONF_DIR` and `-W clippy::pedantic -W clippy::cast_possible_truncation`.
-  Truncating casts are cleared (range-checked helpers, or an `expect` when the
-  low half of a register is supposed to drop bits). `xtask` Linux `dead_code`
-  is cleared. Self-test `wost` was about 118 unique warnings after that, mostly
-  `# Errors` / `# Panics`, `needless_pass_by_value`, and `cast_ptr_alignment`.
+- Nothing. The next census pass is the leftover list below.
+
+## Not finished
+
+Measured with stream 1's `clippy.toml` (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`)
+and `-W clippy::pedantic -W clippy::cast_possible_truncation`, not by editing
+root config. After the cast helpers, self-test `wost` was about 118 unique
+warnings. This round then documented MMIO, `pic::silence`, and
+`port::release_spans`, and backticked the `doc_markdown` hits those runs named.
+Still open, in that order:
+
+- `# Errors` / `# Panics` on the remaining `wost` functions (paging, pci, vtd,
+  interrupt, task, one boot enter).
+- `cast_ptr_alignment` in `segment`, `mm`, `mmio`, `heap`, and paging. These
+  are aligned by a prior check; an `expect` should name that check, not a
+  silent cast.
+- `needless_pass_by_value` and `fn_params_excessive_bools`. Several are
+  kernel-facing signatures. An enum instead of `bool` needs a kernel edit,
+  which this stream does not own.
+- `exhaustive_enums`, `manual_let_else`, `unused_self`, `struct_excessive_bools`.
+- `tools/` has no Rust. `boot/limine` was not changed. `wost/src/boot` only
+  gained `usize_from_u64` for the framebuffer dimensions.
+- `cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract`
+  still fails on Linux because its `C:\` fixture contains `:`. Leave it until
+  a Windows run; it is mutation 1789's witness.
 
 ## Next steps
 

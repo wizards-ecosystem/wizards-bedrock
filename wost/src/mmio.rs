@@ -95,11 +95,23 @@ impl MmioRegion {
     }
 
     /// Write one 32-bit word at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError::OutOfBounds`] when the word would leave the region,
+    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
+    /// [`MmioError::Overflow`] when the byte range cannot be formed.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::once(value))
     }
 
     /// Read one 32-bit word at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError::OutOfBounds`] when the word would leave the region,
+    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
+    /// [`MmioError::Overflow`] when the byte range cannot be formed.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         let offset = self.check_words(offset, 1)?.offset();
         let word = self.base.wrapping_add(offset).cast::<u32>();
@@ -109,11 +121,23 @@ impl MmioRegion {
     }
 
     /// Write `count` copies of a 32-bit word starting at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError::OutOfBounds`] when the words would leave the region,
+    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
+    /// [`MmioError::Overflow`] when `count` words do not form a byte range.
     pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::repeat_n(value, count))
     }
 
     /// Write a slice of 32-bit words starting at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError::OutOfBounds`] when the words would leave the region,
+    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
+    /// [`MmioError::Overflow`] when `values` does not form a byte range.
     pub fn write_u32_slice(&mut self, offset: usize, values: &[u32]) -> Result<(), MmioError> {
         self.write_values(offset, values.iter().copied())
     }

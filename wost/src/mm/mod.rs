@@ -863,7 +863,7 @@ pub enum TableWalks {
 /// The CPU writes it through the direct map and the unit reads it at the
 /// physical address, so it is never mapped into any device's translation and
 /// a device cannot reach the structure that constrains it. Unpublished tables
-/// free their frames on drop; PublishedIommuTable retains every allocation a
+/// free their frames on drop; `PublishedIommuTable` retains every allocation a
 /// unit may have observed (D-357).
 #[derive(Debug)]
 pub(crate) struct IommuTable {

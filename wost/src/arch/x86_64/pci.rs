@@ -2,7 +2,7 @@
 //!
 //! `pci-config` owns the encoding and decoding. This module owns the ports,
 //! claimed atomically and locked across each address/data pair. CF8/CFC is the
-//! common mechanism on the QEMU i440fx and VMware 440BX targets (D-18, D-138).
+//! common mechanism on the QEMU i440fx and `VMware` 440BX targets (D-18, D-138).
 
 use nvme::{ControllerStateError, DisabledRegisters, register};
 use pci_config::{
