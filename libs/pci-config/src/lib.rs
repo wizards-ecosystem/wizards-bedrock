@@ -476,15 +476,24 @@ impl Bar {
     ///
     /// # Errors
     ///
-    /// `None` for the unsupported below-one-megabyte memory encoding or the
-    /// reserved memory encoding.
+    /// `None` for the unsupported below-one-megabyte memory encoding, the
+    /// reserved memory encoding, or an I/O address that does not fit the
+    /// sixteen-bit port space. Bits 31:16 of an I/O BAR are address, not
+    /// reserved flags; narrowing them would claim a different port.
     pub const fn decode(low: u32, high: u32) -> Option<Self> {
         if low == 0 {
             return Some(Self::Absent);
         }
         if low & Self::IS_IO != 0 {
+            // `From` and `TryFrom` are not callable from a const fn on this
+            // toolchain, so the widening is a cast and the fit check is a
+            // comparison. Bits 31:16 set means the port is outside I/O space.
+            let address = low & !0x3;
+            if address > u16::MAX as u32 {
+                return None;
+            }
             return Some(Self::Io {
-                port: (low & !0x3) as u16,
+                port: address as u16,
             });
         }
         let memory_type = low & Self::TYPE_MASK;
@@ -6027,6 +6036,12 @@ mod tests {
         assert_eq!(Bar::decode(0, 0), Some(Bar::Absent));
 
         assert_eq!(Bar::decode(0xC001, 0), Some(Bar::Io { port: 0xC000 }));
+        // The top of the sixteen-bit port space still decodes. One bit above
+        // it must not come back as port 0: `0x1_0001 & !0x3` is `0x1_0000`,
+        // and truncating that word claims the wrong device.
+        assert_eq!(Bar::decode(0xFFFF, 0), Some(Bar::Io { port: 0xFFFC }));
+        assert_eq!(Bar::decode(0x1_0001, 0), None);
+        assert_eq!(Bar::decode(0xFFFF_0001, 0), None);
 
         assert_eq!(
             Bar::decode(0xFEBF_0000, 0),
