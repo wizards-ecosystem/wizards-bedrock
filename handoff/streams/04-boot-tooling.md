@@ -13,14 +13,15 @@ the root workspace config, `kernel/`, and `libs/`.
   image names.
 - A mistyped task within edit distance 2 names the nearest command. `run`
   flags that look like QEMU options say they belong after `--`.
+- `cargo xtask help` names `QEMU`, `QEMU_DIR`, and `GDB`, and the two-edit
+  suggestion window.
 
 ## In progress
 
-- Nothing yet committed for help text or the toolchain preflight.
+- Toolchain preflight is next and not committed.
 
 ## Next steps
 
-- Document `QEMU`, `QEMU_DIR`, and `GDB` in `cargo xtask help`.
 - Preflight the pinned `rustc`/`rustdoc` before a kernel build so a missing
   toolchain is not a generic cargo spawn failure.
 - Re-read `wost/src/boot` for a handoff defect that host tests can prove.

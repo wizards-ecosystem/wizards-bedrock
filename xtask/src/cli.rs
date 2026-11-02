@@ -79,6 +79,13 @@ OPTIONS:
                       check only: forwarded to cargo
     -h, --help        print this help
     -- <ARGS>...      run only: pass ARGS through to QEMU
+
+ENVIRONMENT:
+    QEMU              path to qemu-system-x86_64; overrides QEMU_DIR and PATH
+    QEMU_DIR          directory containing that executable
+    GDB               path to the pinned WinLibs gdb used by debug
+
+A mistyped task names the closest command within two edits.
 ";
 
 /// Usage text, with CI composition rendered from the gate registry.
@@ -643,6 +650,19 @@ mod tests {
             parse_args(&["not-a-task"]).unwrap_err().to_string(),
             "unknown task `not-a-task`"
         );
+    }
+
+    #[test]
+    fn help_names_the_external_tool_variables() {
+        let help = help();
+        for required in [
+            "\n    QEMU ",
+            "\n    QEMU_DIR ",
+            "\n    GDB ",
+            "within two edits",
+        ] {
+            assert!(help.contains(required), "{required} missing from help");
+        }
     }
 
     #[test]
