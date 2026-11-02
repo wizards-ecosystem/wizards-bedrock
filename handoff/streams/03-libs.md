@@ -8,6 +8,10 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## Done
 
+- Small mechanical nits: `let`/`else` in `mmio-range::covering`, proptest
+  `cases` via `u32::try_from`, ring-proto interleaving asserts name the
+  failure, `Key`'s missing-docs expect has a reason, pixel hex literals are
+  grouped, and the timebase drift test declares its consts before statements.
 - Lossless `as` casts outside `const fn` are `From` (`u64::from`). Casts
   inside `const fn` stay, because `From` is not const-callable on 1.97.1.
 - Doc comments backtick the identifiers `doc_markdown` named (`VMware`,

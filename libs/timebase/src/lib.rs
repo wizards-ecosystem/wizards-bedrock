@@ -649,11 +649,11 @@ mod published_tests {
     /// behind every second and nothing else in this file would notice.
     #[test]
     fn a_thousand_updates_do_not_drift_from_one_conversion() {
+        const STEP: u64 = 1_000_000;
+        const UPDATES: u64 = 1_000;
         // Chosen so the two answers can differ: a step of exactly one
         // millisecond has no fraction to lose and left this green (D-155).
         let clock = Timebase::nanoseconds(3_192_000_000).expect("a real rate");
-        const STEP: u64 = 1_000_000;
-        const UPDATES: u64 = 1_000;
 
         let (mut base, mut fraction) = (0u64, 0u64);
         for _ in 0..UPDATES {

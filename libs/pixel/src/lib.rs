@@ -1256,8 +1256,8 @@ mod tests {
     /// from `mix` entirely (D-105).
     #[test]
     fn blending_reads_the_background_as_well_as_the_foreground() {
-        let from = Rgb::from_hex(0x4080C0);
-        let to = Rgb::from_hex(0xC04000);
+        let from = Rgb::from_hex(0x0040_80C0);
+        let to = Rgb::from_hex(0x00C0_4000);
 
         assert_eq!(from.blend(to, 0), from, "t = 0 is the background");
         assert_eq!(from.blend(to, 255), to, "t = 255 is the foreground");
