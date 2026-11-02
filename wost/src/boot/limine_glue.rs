@@ -32,6 +32,10 @@ const SUPPORTED_BPP: u16 = 32;
 /// Assemble [`BootInfo`] from the bootloader's answers and hand over control.
 ///
 /// Called only by [`entry!`](crate::entry).
+///
+/// # Panics
+///
+/// Panics if the kernel has already been entered.
 pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
     let Requests {
         base_revision,
@@ -116,7 +120,10 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
 /// request types do not implement it, and a hand-written impl here would print
 /// the addresses of static requests, which is not information anyone wants and
 /// is exactly what a KASLR ledger would rather not see in a log.
-#[expect(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "Limine request types have no Debug, and printing their addresses would leak the KASLR slide"
+)]
 #[derive(Clone, Copy)]
 pub struct Requests {
     /// The protocol revision the kernel asked for.
@@ -190,9 +197,9 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         return Err(FramebufferError::UnsupportedBpp(fb.bpp()));
     }
 
-    let pitch = fb.pitch() as usize;
-    let width = fb.width() as usize;
-    let height = fb.height() as usize;
+    let pitch = crate::usize_from_u64(fb.pitch());
+    let width = crate::usize_from_u64(fb.width());
+    let height = crate::usize_from_u64(fb.height());
     let bytes_per_pixel = usize::from(fb.bpp()) / 8;
     let layout = FramebufferLayout::new(fb.addr().addr(), width, height, pitch, bytes_per_pixel)
         .map_err(FramebufferError::InvalidGeometry)?;

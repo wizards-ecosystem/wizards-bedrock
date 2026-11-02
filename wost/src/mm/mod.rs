@@ -121,7 +121,7 @@ fn seed_frames<const WORDS: usize>(frames: &mut FrameSpace<WORDS>, map: &MemoryM
 #[cfg(feature = "selftest")]
 /// Check that a reserved overlap is never seeded into the frame allocator.
 pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
-    let map = match MemoryMap::try_from_regions([
+    let Ok(map) = MemoryMap::try_from_regions([
         MemoryRegion {
             base: FRAME_SIZE,
             len: FRAME_SIZE * 4,
@@ -132,9 +132,8 @@ pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
             len: FRAME_SIZE,
             kind: MemoryKind::Reserved,
         },
-    ]) {
-        Ok(map) => map,
-        Err(_) => return false,
+    ]) else {
+        return false;
     };
     let mut frames = FrameSpace::<1>::new();
     let ignored = seed_frames(&mut frames, &map);
@@ -208,7 +207,8 @@ pub struct FirmwareMemory(());
 
 impl FirmwareMemory {
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: Paddr, len: usize) -> bool {
+    pub fn contains(self, address: Paddr, len: usize) -> bool {
+        let FirmwareMemory(()) = self;
         let guard = MAP.lock_leaf();
         let Some(map) = guard.as_ref() else {
             return false;
@@ -359,7 +359,7 @@ impl Frame {
         // `&mut self`. The frame is allocatable memory, and every allocatable
         // region is direct-mapped, so the whole of it is reachable through the
         // pointer just formed.
-        unsafe { core::ptr::write_bytes(base, byte, FRAME_SIZE as usize) };
+        unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(FRAME_SIZE)) };
         true
     }
 
@@ -375,8 +375,13 @@ impl Frame {
     /// This is the machine witness for the D-12 zero-on-allocation boundary.
     #[cfg(feature = "selftest")]
     pub fn is_zero(&self) -> Option<bool> {
-        const WORDS: usize = FRAME_SIZE as usize / size_of::<u64>();
+        const WORDS: usize = crate::usize_from_u64(FRAME_SIZE) / size_of::<u64>();
 
+        // The frame address is page-aligned, so the first word is `u64`-aligned.
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "a frame address is page-aligned and a u64 is eight bytes"
+        )]
         let base = direct_map_pointer(self.address())?.cast::<u64>();
         let mut zero = true;
         for index in 0..WORDS {
@@ -444,7 +449,7 @@ impl Segment {
         // SAFETY: a live `Segment` proves the allocator admitted and reserved
         // every frame in this run; allocator-managed frames are direct-mapped.
         // `direct_pointer` separately proved the address arithmetic.
-        unsafe { core::ptr::write_bytes(base, byte, self.len() as usize) };
+        unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(self.len())) };
         true
     }
 
@@ -617,9 +622,14 @@ impl<'authority> DirectSpan<'authority> {
         if end > self.len || !(destination as usize).is_multiple_of(core::mem::align_of::<u64>()) {
             return false;
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the check above rejects a destination that is not eight-byte aligned"
+        )]
+        let word = destination.cast::<u64>();
         // SAFETY: the span's authority keeps all eight checked bytes live, and
         // the alignment check makes this one indivisible x86-64 qword store.
-        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };
+        unsafe { word.write_volatile(value.to_le()) };
         true
     }
 
@@ -848,6 +858,7 @@ const CACHE_LINE: usize = 64;
 
 /// How an IOMMU reads the tables the CPU writes for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TableWalks {
     /// The unit snoops the processor caches, so a volatile write is visible to
     /// it as soon as it lands.
@@ -863,7 +874,7 @@ pub enum TableWalks {
 /// The CPU writes it through the direct map and the unit reads it at the
 /// physical address, so it is never mapped into any device's translation and
 /// a device cannot reach the structure that constrains it. Unpublished tables
-/// free their frames on drop; PublishedIommuTable retains every allocation a
+/// free their frames on drop; `PublishedIommuTable` retains every allocation a
 /// unit may have observed (D-357).
 #[derive(Debug)]
 pub(crate) struct IommuTable {
@@ -1077,6 +1088,10 @@ impl USegment {
     ///
     /// `None` if clearing cannot reach the run. Such frames are withheld rather
     /// than recycled with ring-3 bytes still present (D-12, D-107).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the external segment no longer owns its frames.
     pub fn reclaim(mut self) -> Option<Segment> {
         let Some(mut segment) = self.segment.take() else {
             panic!("an external segment no longer owns its frames");
@@ -1137,6 +1152,10 @@ impl Shared {
     ///
     /// Returns the unchanged owner if the layout describes a different number
     /// of bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` when `layout` does not describe this allocation's length.
     pub fn into_ring<const WORDS: usize>(
         self,
         layout: SharedLayout<WORDS>,

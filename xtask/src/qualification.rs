@@ -1269,7 +1269,7 @@ fn advisory_command(
 
 pub(crate) fn begin_model(paths: &Paths) -> Result<ModelAttempt> {
     invalidate(paths, Kind::Model)?;
-    let java = java(paths.root())?.context("Java is unavailable; put the JVM for TLC on PATH")?;
+    let java = java(paths.root())?.with_context(|| missing_jvm("TLC cannot run"))?;
     let record = model_record_with_tool(paths, &java)?;
     Ok(ModelAttempt {
         paths: paths.clone(),
@@ -2471,7 +2471,7 @@ fn model_record(paths: &Paths) -> Result<Record> {
 }
 
 fn model_record_for_source(paths: &Paths, source: &SourceIdentity) -> Result<Record> {
-    let java = java(paths.root())?.context("Java is unavailable; model evidence cannot verify")?;
+    let java = java(paths.root())?.with_context(|| missing_jvm("model evidence cannot verify"))?;
     model_record_with_tool_and_source(paths, &java, source)
 }
 
@@ -4108,6 +4108,14 @@ fn cargo_audit_version(report: &str) -> Result<String> {
     Ok(report.to_string())
 }
 
+fn missing_jvm(role: &str) -> String {
+    format!(
+        "Java is unavailable; {role}. Put java{} on PATH. tools/tla/tla2tools.jar is the TLC \
+         model checker, not a JVM",
+        std::env::consts::EXE_SUFFIX
+    )
+}
+
 /// The Java runtime TLC would execute, if one is available on `PATH`.
 pub(crate) fn java(root: &Path) -> Result<Option<Tool>> {
     let Some(path) = find_on_path("java") else {
@@ -4289,6 +4297,21 @@ fn normalize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_jvm_names_the_executable_and_the_vendored_jar() {
+        let message = missing_jvm("TLC cannot run");
+        assert!(
+            message.contains("Java is unavailable; TLC cannot run"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("java{}", std::env::consts::EXE_SUFFIX)),
+            "{message}"
+        );
+        assert!(message.contains("tools/tla/tla2tools.jar"), "{message}");
+        assert!(message.contains("not a JVM"), "{message}");
+    }
 
     fn fixture_git(record: &mut Record) {
         let path = std::env::current_dir().unwrap().join("git");

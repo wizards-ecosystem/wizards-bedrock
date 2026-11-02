@@ -273,6 +273,11 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
 }
 
 /// Run the production arena validation against the active root.
+///
+/// # Errors
+///
+/// [`TaskError`] when a slot has no stack or the arena is not installed on
+/// the active root.
 #[cfg(feature = "selftest")]
 pub fn validate_arena_for_test(arena: &StackArena) -> Result<(), TaskError> {
     validate_arena(arena).map(|_| ())
@@ -310,6 +315,10 @@ pub fn current() -> usize {
 /// [`TaskError::Occupied`] if the slot's thread is live, [`TaskError::Boot`]
 /// for the boot slot, [`TaskError::OutOfRange`] past the table, and
 /// [`TaskError::NotInitialised`] before [`init`].
+///
+/// # Panics
+///
+/// Panics if the slot's pinned stack no longer names the frame this fabricates.
 pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
     // Before the lock, which clears the flag: what is wanted is the caller's
     // own, not the one taking this lock leaves behind.
@@ -349,12 +358,13 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     };
     let base = top.address() - FRAME_BYTES;
     let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
+    let frame_slot = crate::usize_from_u64(base) as *mut [u64; FRAME_WORDS];
     // SAFETY: `init` walked this stack's top page and found it mapped
     // writable; `base` is `FRAME_BYTES` below the top, inside that page, and
     // eight-byte aligned because the top is page-aligned. Nothing else is
     // using the stack: the slot is not `Alive`, and a dead slot's thread can
     // never be resumed. The lock is held, so no other fabrication races.
-    unsafe { core::ptr::write(base as usize as *mut [u64; FRAME_WORDS], frame) };
+    unsafe { core::ptr::write(frame_slot, frame) };
 
     let word = CONTEXTS.as_mut_ptr().cast::<u64>().wrapping_add(slot);
     // SAFETY: `slot` is below `MAX_TASKS`; the lock is held, and the assembly
@@ -430,7 +440,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
         // that will ever unwind it.
         unsafe { switch(save, load) };
     });
-    interrupt::resume_trap(suspended);
+    interrupt::resume_trap(&suspended);
     saved.restore();
     result
 }
@@ -468,7 +478,7 @@ pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
             unreachable!("a task retired from a trap was resumed");
         }
         Err(error) => {
-            interrupt::resume_trap(suspended);
+            interrupt::resume_trap(&suspended);
             saved.restore();
             Err(error)
         }
@@ -758,6 +768,10 @@ impl Released {
 /// Consuming the one-shot [`Binding`] proves that no later caller can install
 /// it. This is the rollback path for construction that stops before
 /// [`bind_address_space`].
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "kernel/src/user.rs and thread.rs pass Binding by value to spend the one-shot token"
+)]
 pub fn release_uninstalled(binding: Binding) -> Released {
     Released {
         roots: binding.roots(),
@@ -770,6 +784,10 @@ pub fn release_uninstalled(binding: Binding) -> Released {
 /// and hands back the evidence [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs.
 ///
 /// Returns the token unchanged if a live slot still names it.
+///
+/// # Errors
+///
+/// Returns `bound` when a live slot still runs on that address space.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     #[cfg(feature = "selftest")]
     if REFUSE_RELEASES.load(Ordering::Acquire) != 0 {

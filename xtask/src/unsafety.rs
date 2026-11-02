@@ -78,12 +78,12 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 ///
 /// The measurement and per-file audit records below are executable evidence;
 /// change history belongs in the decision log (D-124).
-pub const BUDGET: usize = 388;
+pub const BUDGET: usize = 386;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
 /// Kept separately because a ceiling cannot reveal drift below it.
-pub const MEASURED: usize = 388;
+pub const MEASURED: usize = 386;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -140,37 +140,37 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "3619e18a579da07b79774cc3aeaed42c41039218f7aaa7a82c2a7cb3cfe89604",
+            "7dd96fad369533c9d8c9e7842c0241d1d4fd2747ded4c74c75f04d068e531181",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "ff949f1cead5bf7ebf06c387cdfd673a4aeabc9699c4fa6c2a318c8334ccf0e3",
+            "08757d52cea59f2f169f32799b0e06d728853d9274e93b3cf3f7de220c4b9fd5",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "d464094cc35edfa067d7d2ef3dfb55d06491769d7d1c9c7e97cdd2ce8eabb83f",
+            "9ac29ff8578b0528808278d59983a76133b1643f25274a09e6c1a573f4d2bbc8",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
             2,
             0,
-            "1f86a1c6569b16f1c934f69134f9eab72109102971c374799d5ab6d6cb5be15e",
+            "f421b26b38101ff90e474994cf05ec48897fb1ec0f793aa57b5e5be9ccbc683c",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
             2,
             1,
-            "e1f019c6f2a2b6df61070d201c08f578a4fc02af943cdfed68a480687bfbddfb",
+            "c0a23acd651343eb745e8f23fe4ddb571cf7ddc83adf48663f1c9ddd0f8fee4e",
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "ffcd1a49b6854135bb875a9da60e514b17ec02016ab2be2822c855fa991cf370",
+            "3c58e060c780cc623910c3ffb4f3a235f7ffd88d0c0891a1fa4a38b9c34d1ea7",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -182,13 +182,13 @@ mod tests {
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "a698cd8d042170c7f89b027c61e48ba6b67779f9c01cb9f86f26679a906b555e",
+            "d1c64a346c5a9b2aaff13dd58877414a51cbdd0f87aaab2d97de655ed53063ef",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
             14,
             0,
-            "71e5cfef2416ec47e01dd6504544710c7e7138943d6b95ce1a5ebd492c310196",
+            "59013835771cf5b851cf7b46dcc220075f2d2abd365358481980e5496a469be9",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
@@ -200,25 +200,25 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "e5e26213bedfd484ea89f1de2f4b3aca57099512f24646b508251c926b54ba7a",
+            "1877c4da9f1398849018650f7ab67b29acf5e724d9cb942bfa80fa9b72b56353",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
             5,
             1,
-            "8aa48581c0a0c3c929b63982c6b53d8d11f6044d902142624f966110766a65d5",
+            "b34469cb03926fc0cc30557b83fd9ca5bad14899649ce7270488261eaf533720",
         ),
         (
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "5d360ea2c8fd1276816d2bbc282f4550126f36050c3f001d181748948a105495",
+            "2b158a1fe374bac0d05e41d94195675fcb47c096c3804dd9b927eeffd60c8095",
         ),
         (
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "1c2e8d9218d0d70befd4402a5440372ef39af823e1c5c83da4e6e4b19451d470",
+            "9bd1b239ecce7bc90b6e4ada25b1e267f669af36ff680d0a020ca355c62240b9",
         ),
         (
             "wost/src/boot/mod.rs",
@@ -236,25 +236,25 @@ mod tests {
             "wost/src/mm/heap.rs",
             6,
             5,
-            "306112aa957d6bb5e374897a6fd938fcaef7e96952db942acc716c5ebfc05eff",
+            "fc3e3eda92f73a6e1c639fd458bf5e79e264b7c83d1a577c418815cf1765b674",
         ),
         (
             "wost/src/mm/mod.rs",
             17,
             3,
-            "c8cfb8f7462609f8e62cc1b35ead8cf68e19a50671b199fef1dac0030d2ab7b5",
+            "5fe4c21c0109a0ee920da5ef6874da3f939538e86441d3341bc3dc4b789def20",
         ),
         (
             "wost/src/mmio.rs",
             2,
             2,
-            "982617ae9b24dd72bfeeca53ce86e76546b4ee3edc827bd43db5cdc51018a99b",
+            "61e84ab9ad4c68022897bf2fc8d9893884574a46ed2219e77541d3d6d82ec83f",
         ),
         (
             "wost/src/sync.rs",
             4,
             4,
-            "feda23d612ceb63311ffbe033360da789f2c7a319c5537c6edb1f6431b9058c5",
+            "2179a74fe0856320a6c36927c8f19e9f1a01a42b064b113986381a5c7fdb2700",
         ),
     ];
 

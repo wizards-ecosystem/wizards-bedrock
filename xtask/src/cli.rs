@@ -79,6 +79,13 @@ OPTIONS:
                       check only: forwarded to cargo
     -h, --help        print this help
     -- <ARGS>...      run only: pass ARGS through to QEMU
+
+ENVIRONMENT:
+    QEMU              path to qemu-system-x86_64; overrides QEMU_DIR and PATH
+    QEMU_DIR          directory containing that executable
+    GDB               path to the pinned WinLibs gdb used by debug
+
+A mistyped task names the closest command within two edits.
 ";
 
 /// Usage text, with CI composition rendered from the gate registry.
@@ -217,6 +224,41 @@ pub enum CleanScope {
     Everything,
 }
 
+/// Every task [`parse`] accepts, in the order of its match.
+///
+/// Suggestions and the help-coverage test both read this list, so a new arm
+/// has to be named here before it can be offered to a user.
+const TASK_NAMES: &[&str] = &[
+    "build",
+    "image",
+    "run",
+    "vmware",
+    "check",
+    "api-audit",
+    "clippy",
+    "doc",
+    "fmt",
+    "test",
+    "test-boot",
+    "boot-check",
+    "degraded-check",
+    "supply-chain",
+    "verify-vendor",
+    "update-sbom",
+    "model-check",
+    "baseline",
+    "debug",
+    "mutate",
+    "ci",
+    "evidence",
+    "verify-evidence",
+    "qualify-advisory",
+    "qualify-mutants-grade",
+    "qualify-security-deep",
+    "qualify-vmware",
+    "clean",
+];
+
 /// Parse the arguments after the task separator.
 ///
 /// Empty input is refused so a mistyped task cannot default to booting a VM.
@@ -286,7 +328,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
                     }
                     verify = Some(PathBuf::from(value));
                 } else {
-                    bail!("unknown option `{flag}`");
+                    bail!("{}", unknown_option(&name, &flag));
                 }
             }
         }
@@ -396,8 +438,63 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         } else {
             CleanScope::Build
         })),
-        other => bail!("unknown task `{other}`"),
+        other => bail!("{}", unknown_task(other)),
     }
+}
+
+fn unknown_option(task: &str, flag: &str) -> String {
+    if task == "run" && flag.starts_with('-') {
+        format!("unknown option `{flag}`; pass QEMU arguments after `--`")
+    } else {
+        format!("unknown option `{flag}`")
+    }
+}
+
+fn unknown_task(name: &str) -> String {
+    let mut best = usize::MAX;
+    let mut nearest = Vec::new();
+    for task in TASK_NAMES {
+        let distance = edit_distance(name, task);
+        if distance == 0 || distance > 2 {
+            continue;
+        }
+        if distance < best {
+            best = distance;
+            nearest.clear();
+        }
+        if distance == best {
+            nearest.push(*task);
+        }
+    }
+    match nearest.as_slice() {
+        [] => format!("unknown task `{name}`"),
+        [task] => format!("unknown task `{name}`; did you mean `{task}`?"),
+        tasks => {
+            let listed = tasks
+                .iter()
+                .map(|task| format!("`{task}`"))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            format!("unknown task `{name}`; did you mean {listed}?")
+        }
+    }
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.iter().enumerate() {
+            let substitution = usize::from(left_char != *right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 fn ensure_nonempty_path(value: &str) -> Result<()> {
@@ -537,6 +634,49 @@ mod tests {
     fn unknown_tasks_and_options_are_rejected() {
         assert!(parse_args(&["bulid"]).is_err());
         assert!(parse_args(&["build", "--fast"]).is_err());
+    }
+
+    #[test]
+    fn a_mistyped_task_names_the_nearest_command() {
+        assert_eq!(
+            parse_args(&["bulid"]).unwrap_err().to_string(),
+            "unknown task `bulid`; did you mean `build`?"
+        );
+        assert_eq!(
+            parse_args(&["chekc"]).unwrap_err().to_string(),
+            "unknown task `chekc`; did you mean `check`?"
+        );
+        assert_eq!(
+            parse_args(&["not-a-task"]).unwrap_err().to_string(),
+            "unknown task `not-a-task`"
+        );
+    }
+
+    #[test]
+    fn help_names_the_external_tool_variables() {
+        let help = help();
+        for required in [
+            "\n    QEMU ",
+            "\n    QEMU_DIR ",
+            "\n    GDB ",
+            "within two edits",
+        ] {
+            assert!(help.contains(required), "{required} missing from help");
+        }
+    }
+
+    #[test]
+    fn qemu_arguments_before_the_separator_say_where_they_belong() {
+        assert_eq!(
+            parse_args(&["run", "-display", "none"])
+                .unwrap_err()
+                .to_string(),
+            "unknown option `-display`; pass QEMU arguments after `--`"
+        );
+        assert_eq!(
+            parse_args(&["build", "-display"]).unwrap_err().to_string(),
+            "unknown option `-display`"
+        );
     }
 
     fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
@@ -755,8 +895,8 @@ mod tests {
     /// nobody will run; one the help offers but the parser rejects is worse.
     #[test]
     fn every_task_the_parser_accepts_is_named_in_the_help() {
-        // Derive this from the parser so the test cannot drift through a
-        // second handwritten task list.
+        // Read the match itself. `TASK_NAMES` is what suggestions offer, so it
+        // has to be this same list rather than a quiet subset.
         let names: Vec<&str> = include_str!("cli.rs")
             .lines()
             .filter(|line| {
@@ -769,6 +909,11 @@ mod tests {
             names.len() > 10,
             "the parser was read as {} tasks, so the reading is wrong",
             names.len()
+        );
+
+        assert_eq!(
+            names, TASK_NAMES,
+            "TASK_NAMES drifted from the parser match"
         );
 
         let help = help();

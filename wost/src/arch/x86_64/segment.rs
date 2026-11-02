@@ -130,8 +130,10 @@ pub fn init() {
     // until the `ltr` below, so no reference to it can exist yet.
     unsafe { core::ptr::write(task_state_pointer(), task_state) };
 
-    let task_state_descriptor =
-        SystemDescriptor::task_state(task_state_pointer() as u64, size_of::<TaskState>() as u16);
+    let task_state_descriptor = SystemDescriptor::task_state(
+        task_state_pointer() as u64,
+        crate::u16_from_usize(size_of::<TaskState>()),
+    );
 
     let mut entries = [0u64; ENTRIES];
     entries[0] = Descriptor::NULL.bits();
@@ -145,7 +147,10 @@ pub fn init() {
     // until the `lgdt` below.
     unsafe { core::ptr::write(GDT.as_mut_ptr(), entries) };
 
-    let pointer = TablePointer::new(GDT.address(), (size_of::<[u64; ENTRIES]>() - 1) as u16);
+    let pointer = TablePointer::new(
+        GDT.address(),
+        crate::u16_from_usize(size_of::<[u64; ENTRIES]>() - 1),
+    );
     // SAFETY: `lgdt` reads ten bytes at the operand and points the CPU at the
     // table they describe. Both are ours, correctly encoded and permanently
     // resident, and the entry the current `CS` will be reloaded from is present.
@@ -300,6 +305,10 @@ fn write_stack(at: usize, top: u64) {
             .is_multiple_of(8),
         "the privilege-stack entry is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)
@@ -331,6 +340,10 @@ pub(super) fn kernel_stack() -> u64 {
 /// `false` if the stack does not belong to the address space this CPU is
 /// walking, or after paired entry owns the TSS stacks. Either case leaves the
 /// current interrupt-stack entry unchanged.
+///
+/// # Panics
+///
+/// Panics if the interrupt-stack entry is not eight-byte aligned.
 #[must_use = "a refused double-fault stack install changed no TSS entry"]
 pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     if !stack.is_installed() || super::kpti::entry_is_ready() {
@@ -346,6 +359,10 @@ pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
             .is_multiple_of(8),
         "the interrupt-stack entry is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)
@@ -386,6 +403,10 @@ fn read_stack(at: usize) -> u64 {
             .is_multiple_of(8),
         "a stack pointer in the segment is not eight-byte aligned"
     );
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "the assert above proves this offset is eight-byte aligned"
+    )]
     let entry = task_state_pointer()
         .cast::<u8>()
         .wrapping_add(at)

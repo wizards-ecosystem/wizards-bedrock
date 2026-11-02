@@ -74,7 +74,38 @@ fn command(paths: &Paths) -> Command {
 }
 
 fn kernel_command(paths: &Paths) -> Result<Command> {
-    kernel_command_with_roots(paths, active_kernel_remap_roots(paths)?)
+    let roots = active_kernel_remap_roots(paths)?;
+    require_pinned_compilers(&roots[1])?;
+    kernel_command_with_roots(paths, roots)
+}
+
+/// Refuse a kernel build whose pinned toolchain has no compiler to spawn.
+///
+/// Cargo's own error is "could not execute process" after the build has
+/// already been described as starting. The path and `rust-toolchain.toml`
+/// are the facts a missing install needs.
+fn require_pinned_compilers(toolchain_root: &Path) -> Result<()> {
+    let bin = toolchain_root.join("bin");
+    for name in ["rustc", "rustdoc"] {
+        let path = bin.join(compiler_file(name));
+        if path.is_file() {
+            continue;
+        }
+        bail!(
+            "the pinned toolchain is missing {name} at {}. Install the toolchain recorded in \
+             rust-toolchain.toml (`rustup show`) before building the kernel",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn compiler_file(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
 }
 
 fn kernel_command_with_roots(paths: &Paths, roots: [PathBuf; 3]) -> Result<Command> {
@@ -309,6 +340,26 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn a_missing_pinned_compiler_names_the_toolchain_file() {
+        let root = crate::test_support::reserve_temp_directory("wizard-toolchain");
+        let missing = require_pinned_compilers(&root).unwrap_err().to_string();
+        assert!(missing.contains("missing rustc"), "{missing}");
+        assert!(missing.contains("rust-toolchain.toml"), "{missing}");
+        assert!(missing.contains("rustup show"), "{missing}");
+
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join(compiler_file("rustc")), b"rustc").unwrap();
+        let missing_doc = require_pinned_compilers(&root).unwrap_err().to_string();
+        assert!(missing_doc.contains("missing rustdoc"), "{missing_doc}");
+        assert!(!missing_doc.contains("missing rustc"), "{missing_doc}");
+
+        std::fs::write(bin.join(compiler_file("rustdoc")), b"rustdoc").unwrap();
+        require_pinned_compilers(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

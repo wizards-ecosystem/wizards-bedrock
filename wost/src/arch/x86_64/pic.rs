@@ -91,6 +91,10 @@ impl core::error::Error for PicError {}
 ///
 /// Claims both port blocks before taking `CONTROLLERS`, preserving leaf-lock
 /// order and all-or-none port ownership (D-105, D-121, D-138).
+///
+/// # Errors
+///
+/// [`PicError::PortsUnavailable`] when either controller's ports are already claimed.
 pub fn silence() -> Result<(), PicError> {
     if CONTROLLERS.lock_leaf().is_some() {
         return Ok(());

@@ -296,13 +296,14 @@ pub(super) unsafe fn restore(area: *const u8) {
 /// `CPUID.0DH.0` reported as available with bit 0 among them — `XSETBV` faults
 /// otherwise.
 unsafe fn set_extended_control(mask: u64) {
+    let (low, high) = crate::u32_halves(mask);
     // SAFETY: the caller's.
     unsafe {
         asm!(
             "xsetbv",
             in("ecx") 0,
-            in("eax") mask as u32,
-            in("edx") (mask >> 32) as u32,
+            in("eax") low,
+            in("edx") high,
             options(nostack, preserves_flags),
         );
     }

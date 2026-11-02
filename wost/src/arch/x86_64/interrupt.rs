@@ -250,7 +250,7 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
 ///
 /// `false` if the frame is not live, having written nothing.
 #[must_use = "a refused resume changed no trap frame"]
-pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {
+pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
@@ -269,7 +269,7 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
 #[must_use = "a refused resume changed no trap frame"]
 pub(super) fn resume_write_protection(
     frame: &TrapFrame,
-    target: super::cpu::WriteProtectionRecoveryTarget,
+    target: &super::cpu::WriteProtectionRecoveryTarget,
 ) -> bool {
     if !is_live_frame(frame) {
         return false;
@@ -318,7 +318,7 @@ pub(crate) fn suspend_trap() -> TrapSuspension {
 }
 
 /// Put back the state [`suspend_trap`] took.
-pub(crate) fn resume_trap(suspended: TrapSuspension) {
+pub(crate) fn resume_trap(suspended: &TrapSuspension) {
     TRAP_DEPTH.store(suspended.depth, Ordering::Relaxed);
     LIVE_FRAME.store(suspended.frame, Ordering::Relaxed);
 }
@@ -540,6 +540,10 @@ impl InterruptState {
     }
 
     /// Wait atomically while retaining this outer exclusion.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this guard was already consumed.
     pub fn wait_for_interrupt(&mut self) {
         assert!(self.live, "an interrupt exclusion was already consumed");
         assert_owner(self.owner);
@@ -686,6 +690,12 @@ pub fn are_enabled() -> bool {
 /// The report is the argument for [`InterruptState::restore`]; dropping it
 /// leaves interrupts off, which is always safe and occasionally what a caller
 /// means.
+///
+/// # Panics
+///
+/// Panics if exclusion nesting exceeds one machine word, if a nested
+/// exclusion observes interrupts already enabled, or if the outer exclusion
+/// finds a deferred wake still pending.
 pub fn disable() -> InterruptState {
     let previous = are_enabled();
     // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
@@ -833,6 +843,10 @@ fn flags() -> u64 {
 }
 
 /// Raise a breakpoint exception on this CPU.
+///
+/// # Panics
+///
+/// Panics if the interrupt table is not loaded.
 #[cfg(feature = "selftest")]
 pub fn breakpoint() {
     assert!(
