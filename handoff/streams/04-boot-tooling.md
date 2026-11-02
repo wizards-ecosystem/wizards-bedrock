@@ -24,7 +24,9 @@ the root workspace config, `kernel/`, and `libs/`.
 
 ## In progress
 
-- Nothing.
+- Clearing the BeautifulRust census on `wost` (211 shipped / 234 self-test)
+  against `origin/cursor/beautiful-rust-lints-b7b1`, without editing root
+  lint config. `xtask`'s three Linux `dead_code` warnings are cleared.
 
 ## Next steps
 
