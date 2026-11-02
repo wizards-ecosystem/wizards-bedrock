@@ -1085,10 +1085,6 @@ fn rollback_build(mut space: AddressSpace, cause: MapError) -> BuildError {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "paging bring-up is one ordered policy list; splitting it hides the sequence"
-)]
 fn build(
     map: &MemoryMap,
     direct: DirectMap,
@@ -1096,111 +1092,128 @@ fn build(
 ) -> Result<AddressSpace, BuildError> {
     let mut space = AddressSpace::new().map_err(BuildError::Mapping)?;
     let result = (|| -> Result<(), MapError> {
-        let sections = boot::sections();
-
-        // Read-only and executable; read-only and not; writable and not. No
-        // fourth combination exists, which is the whole of W^X.
-        let enclave = sections.entry_enclave;
-        let classes = [
-            (sections.text, Flags::NONE, "text"),
-            (sections.rodata, Flags::NO_EXECUTE, "rodata"),
-            (
-                sections.data,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "data",
-            ),
-            (enclave.text, Flags::NONE, "entry text"),
-            (enclave.rodata, Flags::NO_EXECUTE, "entry rodata"),
-            (
-                enclave.tables,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry tables",
-            ),
-            (
-                enclave.route,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry route",
-            ),
-            (
-                enclave.transition_stack,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry transition stack",
-            ),
-            (
-                enclave.ist_stack,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry IST stack",
-            ),
-        ];
-        let mut image_ranges = [(0, 0, Flags::NONE); 9];
-        for ((section, flags, name), range) in classes.into_iter().zip(image_ranges.iter_mut()) {
-            let physical = image
-                .to_physical(section.start)
-                .ok_or(MapError::Misaligned(section.start))?;
-            let region = BootRegion::describe(physical, section.mapped_len())
-                .ok_or(MapError::Undescribed(physical))?;
-            space.map_boot(section.start, region, flags)?;
-            debug!(
-                "paging: {name} {:#x}..{:#x} -> {physical:#x} {flags:?}",
-                section.start,
-                section.start + section.mapped_len()
-            );
-            *range = (physical, section.mapped_len(), flags);
-        }
-
-        let mut mapped = 0;
-        for run in map.page_runs() {
-            let base = run.base();
-            let end = base.checked_add(run.bytes()).ok_or(MapError::InvalidRange(
-                MappingRangeError::PhysicalEndOverflow,
-            ))?;
-            let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
-                if run.cache() == DirectMapCache::Framebuffer {
-                    Flags::WRITE_THROUGH
-                } else {
-                    Flags::NONE
-                },
-            );
-            let mut cursor = base;
-            while cursor < end {
-                let image_range = image_ranges.iter().find_map(|(start, len, flags)| {
-                    let image_end = start.checked_add(*len)?;
-                    (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
-                });
-                let (next, flags) = if let Some((image_end, flags)) = image_range {
-                    (end.min(image_end), flags)
-                } else {
-                    let next_image = image_ranges
-                        .iter()
-                        .map(|(start, _, _)| *start)
-                        .filter(|start| *start > cursor)
-                        .min()
-                        .unwrap_or(end);
-                    (end.min(next_image), default_flags)
-                };
-                let virtual_base = direct
-                    .virtual_address(cursor)
-                    .ok_or(MapError::NonCanonical(cursor))?;
-                let region = BootRegion::describe(cursor, next - cursor)
-                    .ok_or(MapError::Undescribed(cursor))?;
-                space.map_boot(virtual_base, region, flags)?;
-                mapped += next - cursor;
-                cursor = next;
-            }
-        }
-        info!(
-            "paging: direct map covers {} MiB at {:#x}",
-            mapped / (1 << 20),
-            direct.offset()
-        );
-
-        Ok(())
+        let image_ranges = map_kernel_sections(&mut space, image)?;
+        map_direct_runs(&mut space, map, direct, &image_ranges)
     })();
 
     match result {
         Ok(()) => Ok(space),
         Err(cause) => Err(rollback_build(space, cause)),
     }
+}
+
+/// Map the kernel image sections and record the physical ranges they occupy.
+///
+/// Read-only and executable; read-only and not; writable and not. No fourth
+/// combination exists, which is the whole of W^X.
+fn map_kernel_sections(
+    space: &mut AddressSpace,
+    image: ImageAddress,
+) -> Result<[(u64, u64, Flags); 9], MapError> {
+    let sections = boot::sections();
+    let enclave = sections.entry_enclave;
+    let classes = [
+        (sections.text, Flags::NONE, "text"),
+        (sections.rodata, Flags::NO_EXECUTE, "rodata"),
+        (
+            sections.data,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "data",
+        ),
+        (enclave.text, Flags::NONE, "entry text"),
+        (enclave.rodata, Flags::NO_EXECUTE, "entry rodata"),
+        (
+            enclave.tables,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry tables",
+        ),
+        (
+            enclave.route,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry route",
+        ),
+        (
+            enclave.transition_stack,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry transition stack",
+        ),
+        (
+            enclave.ist_stack,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry IST stack",
+        ),
+    ];
+    let mut image_ranges = [(0, 0, Flags::NONE); 9];
+    for ((section, flags, name), range) in classes.into_iter().zip(image_ranges.iter_mut()) {
+        let physical = image
+            .to_physical(section.start)
+            .ok_or(MapError::Misaligned(section.start))?;
+        let region = BootRegion::describe(physical, section.mapped_len())
+            .ok_or(MapError::Undescribed(physical))?;
+        space.map_boot(section.start, region, flags)?;
+        debug!(
+            "paging: {name} {:#x}..{:#x} -> {physical:#x} {flags:?}",
+            section.start,
+            section.start + section.mapped_len()
+        );
+        *range = (physical, section.mapped_len(), flags);
+    }
+    Ok(image_ranges)
+}
+
+/// Map the direct map, keeping kernel-image permissions where the ranges overlap.
+fn map_direct_runs(
+    space: &mut AddressSpace,
+    map: &MemoryMap,
+    direct: DirectMap,
+    image_ranges: &[(u64, u64, Flags); 9],
+) -> Result<(), MapError> {
+    let mut mapped = 0;
+    for run in map.page_runs() {
+        let base = run.base();
+        let end = base.checked_add(run.bytes()).ok_or(MapError::InvalidRange(
+            MappingRangeError::PhysicalEndOverflow,
+        ))?;
+        let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
+            if run.cache() == DirectMapCache::Framebuffer {
+                Flags::WRITE_THROUGH
+            } else {
+                Flags::NONE
+            },
+        );
+        let mut cursor = base;
+        while cursor < end {
+            let image_range = image_ranges.iter().find_map(|(start, len, flags)| {
+                let image_end = start.checked_add(*len)?;
+                (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
+            });
+            let (next, flags) = if let Some((image_end, flags)) = image_range {
+                (end.min(image_end), flags)
+            } else {
+                let next_image = image_ranges
+                    .iter()
+                    .map(|(start, _, _)| *start)
+                    .filter(|start| *start > cursor)
+                    .min()
+                    .unwrap_or(end);
+                (end.min(next_image), default_flags)
+            };
+            let virtual_base = direct
+                .virtual_address(cursor)
+                .ok_or(MapError::NonCanonical(cursor))?;
+            let region = BootRegion::describe(cursor, next - cursor)
+                .ok_or(MapError::Undescribed(cursor))?;
+            space.map_boot(virtual_base, region, flags)?;
+            mapped += next - cursor;
+            cursor = next;
+        }
+    }
+    info!(
+        "paging: direct map covers {} MiB at {:#x}",
+        mapped / (1 << 20),
+        direct.offset()
+    );
+    Ok(())
 }
 
 /// A partially populated boot space returns its complete table ledger.
