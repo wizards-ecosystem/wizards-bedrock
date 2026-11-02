@@ -355,10 +355,6 @@ fn echo_keystrokes() -> ! {
 /// unpreemptible. It arms nothing — the timer is the scheduler's to arm, and
 /// nothing has asked it for anything yet. Alone among the steps, its failure
 /// vetoes nothing: a kernel without a clock still wants its keyboard.
-#[expect(
-    clippy::too_many_lines,
-    reason = "interrupt admission is one ordered boot procedure"
-)]
 fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -370,7 +366,49 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     // is the only place a machine's speculation claims are visible.
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
-    if let Some(reason) = cpu::shared_kernel_mapping_reason(&speculation) {
+    select_user_isolation(cpu::shared_kernel_mapping_reason(&speculation));
+    arm_return_buffer_clear(if speculation.mds_no() {
+        MdsImmunity::Reported
+    } else {
+        MdsImmunity::Absent
+    });
+
+    match apic::init(vector::LOCAL_APIC) {
+        Ok(local) => info!("apic: {local}"),
+        Err(reason) => {
+            warn!("local apic: {reason}; interrupts stay off");
+            return;
+        }
+    }
+
+    report_clock(time::init());
+    publish_boot_time_page();
+
+    #[cfg(feature = "selftest")]
+    EXTERNAL_MASK_REFUSAL_PROVED.store(
+        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
+        Ordering::Release,
+    );
+    if !external_interrupts_are_admitted(external_controllers) {
+        warn!("ioapic: complete mask proof missing; interrupts stay off");
+        return;
+    }
+    if !iommu::interrupt_boundary_active() {
+        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
+        return;
+    }
+
+    if let Err(reason) = apic::enable_after_pending_audit() {
+        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
+        return;
+    }
+    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
+    info!("cpu: accepting interrupts");
+}
+
+/// Choose shared or paired user roots from the speculation controls just read.
+fn select_user_isolation(reason: Option<impl core::fmt::Display>) {
+    if let Some(reason) = reason {
         SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
         let isolation = if cfg!(feature = "selftest")
             && wost::arch::current::kpti_entry_path_is_implemented()
@@ -399,10 +437,20 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
             warn!("cpu: user isolation: no complete shared or paired entry path; ring 3 closed");
         }
     }
+}
 
-    // Arm `verw` unless `MDS_NO` makes it pointless; an unreadable `MD_CLEAR`
-    // errs toward executing it (D-98).
-    if speculation.mds_no() {
+/// Whether the processor reported `MDS_NO`.
+enum MdsImmunity {
+    /// The processor reports `mds_no`, so the flush buys nothing.
+    Reported,
+    /// Flush on every return to ring 3. An unreadable `MD_CLEAR` takes this
+    /// path (D-98).
+    Absent,
+}
+
+/// Arm `verw` unless `MDS_NO` makes it pointless.
+fn arm_return_buffer_clear(immunity: MdsImmunity) {
+    if matches!(immunity, MdsImmunity::Reported) {
         info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
     } else {
         interrupt::enable_buffer_clear();
@@ -416,16 +464,11 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
             }
         );
     }
+}
 
-    match apic::init(vector::LOCAL_APIC) {
-        Ok(local) => info!("apic: {local}"),
-        Err(reason) => {
-            warn!("local apic: {reason}; interrupts stay off");
-            return;
-        }
-    }
-
-    match time::init() {
+/// Log the clock measurement. Failure does not veto interrupts.
+fn report_clock(started: Result<time::Calibration, time::TimeError>) {
+    match started {
         Ok(report) => {
             let apic_source_hz = report.apic_source_hz();
             info!("time: apic source at {apic_source_hz} hz; {report}");
@@ -439,9 +482,13 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         }
         Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
     }
+}
 
-    // The page exists whether or not the clock does: a program reading `TIME`
-    // must find `MODE_NONE`, not a page fault (D-166).
+/// Publish the shared time page, or say that every reader must call.
+///
+/// The page exists whether or not the clock does: a program reading `TIME`
+/// must find `MODE_NONE`, not a page fault (D-166).
+fn publish_boot_time_page() {
     if timepage::init(time::counter_hz()) {
         let mode = if time::is_calibrated() {
             timepage::MODE_COUNTER
@@ -465,27 +512,6 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     } else {
         warn!("time: no page to publish the clock in; every query is ring Uptime");
     }
-
-    #[cfg(feature = "selftest")]
-    EXTERNAL_MASK_REFUSAL_PROVED.store(
-        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
-        Ordering::Release,
-    );
-    if !external_interrupts_are_admitted(external_controllers) {
-        warn!("ioapic: complete mask proof missing; interrupts stay off");
-        return;
-    }
-    if !iommu::interrupt_boundary_active() {
-        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
-        return;
-    }
-
-    if let Err(reason) = apic::enable_after_pending_audit() {
-        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
-        return;
-    }
-    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
-    info!("cpu: accepting interrupts");
 }
 
 const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllersMasked>) -> bool {
