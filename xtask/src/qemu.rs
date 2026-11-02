@@ -7085,7 +7085,15 @@ mod tests {
                         .checked_sub(1)
                         .expect("opening Rust bracket before its close");
                     if depth == 0 {
-                        return bytes.get(at.wrapping_sub(1)) == Some(&b'#');
+                        if bytes.get(at.wrapping_sub(1)) != Some(&b'#') {
+                            return false;
+                        }
+                        // `expect`, `must_use`, and doc comments do not hide
+                        // the item. `cfg` does.
+                        let rest = &prefix[at + 1..];
+                        let name_end = rest.find(['(', ']', ' ', '\n']).unwrap_or(rest.len());
+                        let name = rest[..name_end].trim();
+                        return matches!(name, "cfg" | "cfg_attr");
                     }
                 }
                 _ => {}
@@ -8798,7 +8806,7 @@ const LIVE: u32 = 7;
         let rights_close = matching(handle_space.as_bytes(), rights_open, b'{', b'}');
         let rights_impl = &handle_space[rights_open + 1..rights_close];
         assert!(
-            !rights_impl.contains("#["),
+            !rights_impl.contains("#[cfg"),
             "impl Rights contains a conditionally visible item"
         );
         let compact_rights: String = rights_impl

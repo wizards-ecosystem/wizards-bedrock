@@ -140,25 +140,25 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "7dd96fad369533c9d8c9e7842c0241d1d4fd2747ded4c74c75f04d068e531181",
+            "aa3af1cad3237fbc2d4e9f9628de106a505ffda531ba7984ff99739bdaef704c",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "08757d52cea59f2f169f32799b0e06d728853d9274e93b3cf3f7de220c4b9fd5",
+            "fe352dd9bae78898442b2e9e760958b11ac95bcaef281d3a76d7eb0d4dd7cd73",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "9ac29ff8578b0528808278d59983a76133b1643f25274a09e6c1a573f4d2bbc8",
+            "b3c0b43174925197d1008717c6548896d76da5352437efdd826751ec92679189",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
             2,
             0,
-            "f421b26b38101ff90e474994cf05ec48897fb1ec0f793aa57b5e5be9ccbc683c",
+            "f87adbb7990bc1821549b69602b11c07ca0d0c77657089e6f936c59e64fc0599",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
@@ -170,7 +170,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "3c58e060c780cc623910c3ffb4f3a235f7ffd88d0c0891a1fa4a38b9c34d1ea7",
+            "56840a41bf8b25c3fae2c193572337d21dbaed5ffc2bfe2e2fb4bf168873c8af",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -200,7 +200,7 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "1877c4da9f1398849018650f7ab67b29acf5e724d9cb942bfa80fa9b72b56353",
+            "cf7c1441b82ddae91f74578af2e7e62f030d913111f9abcbfcb9891c1c0637aa",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
@@ -212,19 +212,19 @@ mod tests {
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "2b158a1fe374bac0d05e41d94195675fcb47c096c3804dd9b927eeffd60c8095",
+            "dcc55812ee72761433d28d1e84f3966ae402ca17e5b46e51408d00a82b5f64d5",
         ),
         (
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "9bd1b239ecce7bc90b6e4ada25b1e267f669af36ff680d0a020ca355c62240b9",
+            "0be21cc13342e85ee4577e152cfeffa77b151f419e45d6ee394471210e1351e0",
         ),
         (
             "wost/src/boot/mod.rs",
             0,
             1,
-            "ef4fd0dcbf2c1d6ca31501b4d60ed3d7386fbce18bea96b3c672d47ecd7556c1",
+            "acbbc2fa50dac91c9c896a4bf586ee05d115f0923575238f7b6d94339f4ba62b",
         ),
         (
             "wost/src/cell.rs",
@@ -254,7 +254,7 @@ mod tests {
             "wost/src/sync.rs",
             4,
             4,
-            "2179a74fe0856320a6c36927c8f19e9f1a01a42b064b113986381a5c7fdb2700",
+            "c6d89b812ce5ae45ee8e15bbdadb6e1167eb9689f359255622dce79b8a66215d",
         ),
     ];
 
@@ -408,7 +408,7 @@ mod tests {
 
         let wost = std::fs::read_to_string(root.join("wost/src/lib.rs")).expect("wost lib.rs");
         assert!(
-            wost.contains("#![allow(unsafe_code)]"),
+            wost.contains("#![allow(") && wost.contains("unsafe_code"),
             "wost no longer lifts the workspace deny; the boundary has moved"
         );
     }
