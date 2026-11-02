@@ -483,6 +483,8 @@ impl core::fmt::Display for DmaFenceError {
     }
 }
 
+impl core::error::Error for DmaFenceError {}
+
 /// The ownership-preserving results of acquiring a sibling DMA fence.
 #[derive(Debug)]
 pub(crate) enum DmaFenceOutcome {
@@ -721,6 +723,8 @@ impl core::fmt::Display for ClaimError {
     }
 }
 
+impl core::error::Error for ClaimError {}
+
 /// Why a probed memory BAR could not become page-table authority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BarAdmissionError {
@@ -744,6 +748,8 @@ impl core::fmt::Display for BarAdmissionError {
         }
     }
 }
+
+impl core::error::Error for BarAdmissionError {}
 
 /// A refused memory-decode transition with the inaccessible mapped BAR.
 #[derive(Debug)]
@@ -805,6 +811,8 @@ impl core::fmt::Display for ReleaseError {
         }
     }
 }
+
+impl core::error::Error for ReleaseError {}
 
 /// Result of retiring a device, retaining the complete lease on refusal.
 #[must_use = "a retained PCI lease must be retried or the kernel must stop"]

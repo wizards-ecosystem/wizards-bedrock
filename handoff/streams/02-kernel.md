@@ -18,7 +18,7 @@
 
 ## In progress
 
-- Further kernel review: waiter registration, scheduler/zombie accounting,
+- Further kernel review. Waiter registration, scheduler/zombie accounting,
   NVMe completion matching, and loader placement were read and not changed.
   `WaitQueue::wait_unless` checks readiness while holding the waiter lock, so
   the classic lost-wakeup window is closed on this lock even though the prose
@@ -26,16 +26,13 @@
 
 ## Next steps
 
-- Error enums that already implement `Display` but not `core::error::Error`
-  (`EarlyTableError`, `InterruptEnableError`, `RoutingError`, `TakeError`,
-  `ClaimError`, `LoadError`, `user::SpawnError`, `KeyboardRouteError`, and any
-  siblings found the same way). `VfsError` also lacks `Display`.
-- `acpi::find_table_with_multiplicity`: the non-unique arm returns on the
-  first match, so the later `found.is_some()` / `return found` path for
-  `require_unique == false` is dead.
 - `Queue::abandon` posts completions and bumps `served` but does not
   `wake_all`, unlike `expire`. Production collect runs after the user thread
   is gone; only worth changing if a live waiter can observe abandon.
+- `acpi::find_table_with_multiplicity` looks like it has a dead non-unique
+  branch, but mutation 1819 in `xtask/src/mutate.rs` matches the
+  `if require_unique` text exactly. Do not delete or rewrap that branch in
+  this stream.
 - Do not add a new `report.check` without also updating `EXPECTED_CHECKS` and
   the xtask copies (`xtask/src/qemu.rs`, `xtask/src/vmware.rs`). Those files
   are outside this stream.
@@ -48,6 +45,16 @@
   byte was the one that emptied the output buffer. Fixed in
   `kernel/src/arch/x86_64/i8042.rs`. A one-byte controller buffer never hits
   this; a backlog of exactly `FLUSH_LIMIT` bytes did.
+
+## Cleanups
+
+- `core::error::Error` for kernel errors that already had `Display` and
+  `Debug`: `InterruptEnableError`, `DmaFenceError`, `ClaimError`,
+  `BarAdmissionError`, `ReleaseError`, `EarlyTableError`, `RoutingError`,
+  `TakeError`, `Refusal`, `TimePageError`, `LoadError`, `user::SpawnError`,
+  `KeyboardRouteError`, `BuildError`, `BusMasterAdmissionError`,
+  `BringUpError`. `VfsError` gained `Display` and `Error`. No `source()`
+  chains; nested types were not all checked for `Error`.
 
 ## Decisions
 

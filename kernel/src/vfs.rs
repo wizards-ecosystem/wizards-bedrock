@@ -112,6 +112,22 @@ pub(crate) enum VfsError {
     NotFound,
 }
 
+impl core::fmt::Display for VfsError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Path(error) => write!(formatter, "{error}"),
+            Self::Backend(error) => write!(formatter, "{error}"),
+            Self::NoVolume => core::fmt::Write::write_str(formatter, "no volume is mounted"),
+            Self::NotADirectory => {
+                core::fmt::Write::write_str(formatter, "a path component is not a directory")
+            }
+            Self::NotFound => core::fmt::Write::write_str(formatter, "the name is not there"),
+        }
+    }
+}
+
+impl core::error::Error for VfsError {}
+
 impl From<PathError> for VfsError {
     fn from(error: PathError) -> Self {
         Self::Path(error)

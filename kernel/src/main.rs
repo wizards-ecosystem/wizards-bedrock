@@ -1309,6 +1309,8 @@ impl core::fmt::Display for KeyboardRouteError {
     }
 }
 
+impl core::error::Error for KeyboardRouteError {}
+
 fn configure_keyboard_route(routing: &mut mem::Routing) -> Result<u32, KeyboardRouteError> {
     let gsi = routing.interrupts.gsi_for(KEYBOARD_IRQ);
     if !routing.io_apic.handles(gsi) {

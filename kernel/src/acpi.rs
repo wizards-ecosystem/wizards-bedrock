@@ -63,6 +63,8 @@ impl core::fmt::Display for EarlyTableError {
     }
 }
 
+impl core::error::Error for EarlyTableError {}
+
 /// Read one unique fixed-size ACPI table without allocator state.
 pub(crate) fn find_unique_early<const N: usize>(
     map: &MemoryMap,
