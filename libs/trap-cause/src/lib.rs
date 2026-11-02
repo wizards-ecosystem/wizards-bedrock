@@ -20,7 +20,7 @@
 //! };
 //! assert!(fault.was_present());
 //! assert!(fault.was_write());
-//! assert!(!fault.from_user());
+//! assert!(!fault.was_user());
 //!
 //! // Anything at or above the architectural range is a device's line.
 //! assert_eq!(TrapCause::decode(0x42, 0), TrapCause::Interrupt(0x42));
@@ -28,7 +28,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
-
+#![warn(clippy::verbose_bit_mask)]
 use core::ops::Range;
 
 use x86_tables::exception;
@@ -236,7 +236,7 @@ impl PageFault {
     }
 
     /// The access came from ring 3.
-    pub const fn from_user(self) -> bool {
+    pub const fn was_user(self) -> bool {
         self.0 & (1 << 2) != 0
     }
 
@@ -284,7 +284,7 @@ impl core::fmt::Debug for PageFault {
             } else {
                 "read"
             },
-            if self.from_user() { "user" } else { "kernel" }
+            if self.was_user() { "user" } else { "kernel" }
         )?;
         if self.reserved_bit_set() {
             core::fmt::Write::write_str(f, ", reserved bit set in a table entry")?;
@@ -339,6 +339,10 @@ pub struct RecoveryRule {
 
 impl RecoveryAttempt {
     /// Whether every architectural value binds this attempt to `rule`.
+    #[expect(
+        clippy::verbose_bit_mask,
+        reason = "the mask names the low bits of the field"
+    )]
     pub fn is_admitted_by(&self, rule: &RecoveryRule) -> bool {
         let class_matches = match rule.fault {
             RecoveryFault::SupervisorData => self.page_fault.is_supervisor_data_access(),
@@ -483,7 +487,7 @@ mod tests {
         let readers: [Reader; 7] = [
             (1 << 0, PageFault::was_present),
             (1 << 1, PageFault::was_write),
-            (1 << 2, PageFault::from_user),
+            (1 << 2, PageFault::was_user),
             (1 << 3, PageFault::reserved_bit_set),
             (1 << 4, PageFault::was_fetch),
             (1 << 5, PageFault::protection_key),
@@ -500,7 +504,7 @@ mod tests {
 
     #[test]
     fn only_exact_supervisor_data_faults_are_admitted() {
-        for bits in 0_u64..=u16::MAX as u64 {
+        for bits in 0_u64..=u64::from(u16::MAX) {
             assert_eq!(
                 PageFault(bits).is_supervisor_data_access(),
                 bits <= 0b11,
@@ -591,7 +595,7 @@ mod tests {
     #[test]
     fn user_copy_recovery_accepts_only_supervisor_data_faults() {
         let rule = user_copy_rule();
-        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+        for bits in (0_u64..=u64::from(u16::MAX)).chain((16..64).map(|bit| 1_u64 << bit)) {
             assert_eq!(
                 attempt(bits, 0x2345, 0x8001).is_admitted_by(&rule),
                 bits & !0b11 == 0,
@@ -603,7 +607,7 @@ mod tests {
     #[test]
     fn write_protection_recovery_requires_the_exact_protection_write() {
         let rule = write_protection_rule();
-        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+        for bits in (0_u64..=u64::from(u16::MAX)).chain((16..64).map(|bit| 1_u64 << bit)) {
             assert_eq!(
                 attempt(bits, 0xd00d, 0x9000).is_admitted_by(&rule),
                 bits == 0b11,

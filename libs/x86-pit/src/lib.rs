@@ -25,6 +25,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 pub mod calibrate;
 pub mod command;

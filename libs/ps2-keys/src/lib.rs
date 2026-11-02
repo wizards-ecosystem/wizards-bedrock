@@ -21,10 +21,13 @@
 //! ```
 //!
 //! Sequences follow the IBM PS/2 keyboard specification's scan code set 2
-//! tables, as transcribed by the OSDev wiki's "Keyboard Scan Codes" page.
+//! tables, as transcribed by the `OSDev` wiki's "Keyboard Scan Codes" page.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::unnecessary_wraps)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)

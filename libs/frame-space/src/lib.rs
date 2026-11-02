@@ -29,6 +29,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::missing_fields_in_debug)]
+#![warn(clippy::cast_possible_truncation)]
 
 use core::fmt;
 use core::num::NonZeroU64;
@@ -56,6 +58,10 @@ const FRAMES_PER_WORD: usize = u64::BITS as usize;
 /// covers 16 GiB and occupies 1 MiB of `.bss`, two bits per frame — two
 /// arrays of 65,536 `u64`, which is what `wost/src/mm/mod.rs` calls "one
 /// megabyte" and this line called two.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value was bounded to a length that fits the address width"
+)]
 pub const fn words_for(bytes: u64) -> usize {
     (bytes.div_ceil(FRAME_SIZE) as usize).div_ceil(FRAMES_PER_WORD)
 }
@@ -159,6 +165,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// mid-frame does not donate that frame, because the rest of it belongs to
     /// something else. Frames already managed are left alone, so overlapping
     /// regions in a bootloader's map cannot double-count.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     pub fn insert(&mut self, base: u64, len: u64) -> Inserted {
         let mut inserted = Inserted::default();
         let Some(end) = base.checked_add(len) else {
@@ -232,6 +242,12 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// A run that overflows or runs off the end reports the first frame past
     /// the space because `FRAME_COUNT` is a ceiling, not an offending frame
     /// (D-105).
+    ///
+    /// # Errors
+    ///
+    /// [`FreeError::NotManaged`] when any frame in the run is outside this
+    /// space, and [`FreeError::AlreadyFree`] when one is already free. Nothing
+    /// is released on either path.
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
         if count == 0 {
             return Ok(());
@@ -254,6 +270,11 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     }
 
     /// Hand one frame back.
+    ///
+    /// # Errors
+    ///
+    /// [`FreeError::NotManaged`] when `frame` is outside this space, and
+    /// [`FreeError::AlreadyFree`] on a double release.
     pub fn free(&mut self, frame: usize) -> Result<(), FreeError> {
         self.check_releasable(frame)?;
         self.release(frame);
@@ -332,6 +353,10 @@ impl<const WORDS: usize> Default for FrameSpace<WORDS> {
 
 /// Counts only. The bitmaps run to megabytes at kernel sizes, and the context
 /// most likely to print one is a panic handler (`005-code-conventions.md`).
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "the bitmap is megabytes; a panic Debug must not walk it"
+)]
 impl<const WORDS: usize> fmt::Debug for FrameSpace<WORDS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameSpace")

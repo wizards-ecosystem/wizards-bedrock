@@ -35,6 +35,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
 
 /// The weight at which one unit of real time is one unit of virtual time.
 ///
@@ -56,6 +57,10 @@ pub const RESOLUTION: u64 = 1024;
 /// Past it a one-unit charge truncates to no virtual time at all: the clock
 /// stops, the thread is always eligible, and everyone else starves.
 /// [`Entity::new`] clamps to it.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 pub const MAX_WEIGHT: u32 = RESOLUTION as u32 * BASE_WEIGHT;
 
 /// Largest virtual-time distance the wrapping order can distinguish.
@@ -112,6 +117,10 @@ impl Entity {
     }
 
     /// A virtual duration that cannot make the wrapping order ambiguous.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the widened value was range-checked before this narrowing"
+    )]
     const fn ordered_virtual_units(&self, real: u64) -> u64 {
         let units = self.virtual_units_wide(real);
         if units > MAX_ORDERED_DELTA as u128 {
@@ -122,6 +131,10 @@ impl Entity {
     }
 
     /// Convert this thread's virtual time back into real units.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     const fn real_units(&self, virtual_time: u64) -> u64 {
         ((virtual_time as u128 * self.weight as u128) / (RESOLUTION as u128 * BASE_WEIGHT as u128))
             as u64
@@ -200,6 +213,10 @@ impl Entity {
 ///
 /// Computed relative to the first entity so that a queue straddling a wrap
 /// still averages correctly.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the widened value was range-checked before this narrowing"
+)]
 pub fn average_vruntime<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> Option<u64> {
     let mut entities = entities.into_iter();
     let first = core::iter::Iterator::next(&mut entities)?;
@@ -583,6 +600,10 @@ mod tests {
     /// amount of credit and then run unopposed. With it, the burst is one
     /// slice.
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_returning_sleeper_cannot_monopolise_the_cpu() {
         let mut queue = [Entity::new(BASE_WEIGHT), Entity::new(BASE_WEIGHT)];
         queue[0].place(0, 0, SLICE);

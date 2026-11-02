@@ -58,6 +58,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -453,7 +454,7 @@ impl<'a> Elf<'a> {
 
         // Checked without overflowing: a `p_phoff` near `u64::MAX` with a
         // plausible count is exactly what a hostile image looks like.
-        let span = (program_count as u64) * (PROGRAM_HEADER_BYTES as u64);
+        let span = u64::from(program_count) * (PROGRAM_HEADER_BYTES as u64);
         let fits = program_offset
             .checked_add(span)
             .is_some_and(|end| end <= bytes.len() as u64);
@@ -493,6 +494,10 @@ impl<'a> Elf<'a> {
     /// Infallible by then: `parse` already established that the whole table is
     /// inside the image, so the walk cannot run off the end and needs no
     /// per-entry error.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     pub fn segments(&self) -> impl Iterator<Item = Segment> + use<'a> {
         let bytes = self.bytes;
         let base = self.program_offset as usize;
@@ -582,6 +587,10 @@ mod tests {
     }
 
     /// A well-formed image with the given program headers.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     fn image(segments: &[(u32, u32, u64, u64, u64, u64)]) -> Vec<u8> {
         let mut bytes = vec![0u8; HEADER_BYTES + segments.len() * PROGRAM_HEADER_BYTES];
         bytes[0..4].copy_from_slice(&MAGIC);

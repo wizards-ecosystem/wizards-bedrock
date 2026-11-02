@@ -5,6 +5,10 @@ use core::fmt;
 /// The externally observable lifetime of one local controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Lifecycle {
     /// No hardware transition has begun.
     Cold,
@@ -18,6 +22,10 @@ pub enum Lifecycle {
 
 /// Whether maskable interrupts are excluded at a hardware boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Interrupts {
     /// The interrupt flag is clear.
     Excluded,
@@ -27,6 +35,10 @@ pub enum Interrupts {
 
 /// One ordered boundary in the hardware transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum InitStage {
     /// Enter and verify x2APIC mode.
     Mode,
@@ -144,6 +156,10 @@ impl Lifecycle {
     }
 
     /// Admit the one transition that may touch cold hardware.
+    ///
+    /// # Errors
+    ///
+    /// [`BeginError`] unless this lifecycle is [`Lifecycle::Cold`].
     pub const fn admit(self) -> Result<(), BeginError> {
         match self {
             Self::Cold => Ok(()),
@@ -156,6 +172,11 @@ impl Lifecycle {
 
 impl InitTransaction {
     /// Begin an unpublished transaction from one observed lifecycle state.
+    ///
+    /// # Errors
+    ///
+    /// [`BeginError`] when `lifecycle` is not [`Lifecycle::Cold`]. The
+    /// hardware is not touched.
     pub const fn begin(lifecycle: Lifecycle) -> Result<Self, BeginError> {
         match lifecycle.admit() {
             Ok(()) => Ok(Self {
@@ -172,6 +193,13 @@ impl InitTransaction {
     }
 
     /// Enter the next hardware boundary while retaining interrupt exclusion.
+    ///
+    /// # Errors
+    ///
+    /// [`ProgressError::Settled`] when the transaction is no longer
+    /// initializing, [`ProgressError::InterruptsEnabled`] when `interrupts`
+    /// does not exclude the handler, and [`ProgressError::OutOfOrder`] when
+    /// `stage` is not the next boundary. The last two poison the transaction.
     pub fn enter(&mut self, stage: InitStage, interrupts: Interrupts) -> Result<(), ProgressError> {
         if !matches!(self.lifecycle, Lifecycle::Initializing) {
             return Err(ProgressError::Settled);
@@ -197,6 +225,13 @@ impl InitTransaction {
     }
 
     /// Publish readiness after the complete interrupt-excluded transaction.
+    ///
+    /// # Errors
+    ///
+    /// [`ProgressError::Settled`] when the transaction is no longer
+    /// initializing, [`ProgressError::InterruptsEnabled`] when `interrupts`
+    /// does not exclude the handler, and [`ProgressError::Incomplete`] when a
+    /// stage was skipped. The last two poison the transaction.
     pub fn complete(&mut self, interrupts: Interrupts) -> Result<Lifecycle, ProgressError> {
         if !matches!(self.lifecycle, Lifecycle::Initializing) {
             return Err(ProgressError::Settled);

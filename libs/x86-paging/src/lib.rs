@@ -1,4 +1,4 @@
-//! x86_64 four-level page table encoding.
+//! `x86_64` four-level page table encoding.
 //!
 //! Entry bits, the index each level takes from a virtual address, and
 //! canonical form. `wost` owns the tables; the encoding is checkable on the
@@ -29,6 +29,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -141,11 +143,13 @@ impl Flags {
     /// architecture grants `USER` and `WRITABLE` only where every level of the
     /// walk grants them, so the answer is a conjunction rather than the leaf's
     /// own opinion (D-103).
+    #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
     /// Both sets of flags together.
+    #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -212,6 +216,7 @@ impl Flags {
     pub const EVERYTHING_ALLOWED: Self = Self::NARROWED;
 
     /// This set without the flags in `other`.
+    #[must_use]
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
@@ -442,6 +447,10 @@ impl fmt::Debug for Entry {
 
 /// Whether an intermediate table participates in supervisor or user mappings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum TablePrivilege {
     /// Every leaf below this table is supervisor-only.
     Supervisor,
@@ -451,6 +460,10 @@ pub enum TablePrivilege {
 
 /// A level of the four-level page table walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Level {
     /// The page table: entries map 4 KiB pages.
     Pt = 1,
@@ -480,6 +493,10 @@ impl Level {
     }
 
     /// The slot `address` selects in a table at this level.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     pub const fn index(self, address: u64) -> usize {
         (address >> self.shift()) as usize % ENTRIES
     }
@@ -488,7 +505,7 @@ impl Level {
     ///
     /// [`Pt`](Self::Pt) always does. [`Pd`](Self::Pd) and
     /// [`Pdpt`](Self::Pdpt) do with [`Flags::HUGE`]. [`Pml4`](Self::Pml4)
-    /// never does on any shipping x86_64.
+    /// never does on any shipping `x86_64`.
     pub const fn can_map_page(self) -> bool {
         !matches!(self, Self::Pml4)
     }
@@ -531,7 +548,7 @@ impl CanonicalAddress {
 ///
 /// Construct this before allocating or writing page tables. Every address the
 /// range can produce is page-aligned, canonical on the virtual side, and
-/// encodable in an x86_64 entry on the physical side.
+/// encodable in an `x86_64` entry on the physical side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappingRange {
     virtual_base: u64,
@@ -1119,9 +1136,6 @@ mod tests {
 
     #[test]
     fn debug_says_what_the_entry_is() {
-        extern crate std;
-        use std::format;
-
         assert_eq!(format!("{:?}", Entry::ABSENT), "Entry(absent)");
         let entry =
             Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");

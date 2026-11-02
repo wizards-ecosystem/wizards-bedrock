@@ -20,6 +20,10 @@ impl Version {
     }
 
     /// The version number, in bits 0–7.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn number(self) -> u8 {
         self.0 as u8
     }
@@ -28,6 +32,10 @@ impl Version {
     ///
     /// The architectural value is an index rather than a count, so five means
     /// the controller implements entries zero through five.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn maximum_lvt_entry(self) -> u8 {
         (self.0 >> MAXIMUM_LVT_ENTRY_SHIFT) as u8
     }

@@ -10,7 +10,7 @@
 //! ```
 //! use pixel::{Channel, FramebufferLayout, PixelFormat, Rgb, offset};
 //!
-//! // The layout QEMU and VMware both report: eight-bit channels, red high.
+//! // The layout QEMU and `VMware` both report: eight-bit channels, red high.
 //! let format = PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
 //!     .expect("valid channel masks");
 //! let red = Rgb { red: 255, green: 0, blue: 0 };
@@ -25,6 +25,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::copy_iterator)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -44,6 +47,10 @@ pub struct Rgb {
 
 impl Rgb {
     /// Build a colour from a `0xRRGGBB` literal.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn from_hex(hex: u32) -> Self {
         Self {
             red: (hex >> 16) as u8,
@@ -53,6 +60,7 @@ impl Rgb {
     }
 
     /// Linear blend from `self` towards `other` by `intensity / 255`.
+    #[must_use]
     pub const fn blend(self, other: Self, intensity: u8) -> Self {
         Self {
             red: mix(self.red, other.red, intensity),
@@ -62,6 +70,10 @@ impl Rgb {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field occupies one byte of the register"
+)]
 const fn mix(from: u8, to: u8, intensity: u8) -> u8 {
     let (from, to, t) = (from as u32, to as u32, intensity as u32);
     ((from * (255 - t) + to * t) / 255) as u8
@@ -88,6 +100,10 @@ impl Channel {
     /// bootloader could report, including ones no framebuffer has: a channel
     /// that does not fit a 32-bit pixel contributes nothing rather than
     /// shifting past the end of one.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     pub const fn encode(self, intensity: u8) -> u32 {
         let size = self.size as u32;
         let shift = self.shift as u32;
@@ -118,6 +134,10 @@ pub struct PixelFormat {
 
 /// Which component of a [`PixelFormat`] is malformed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum ColourChannel {
     /// The red component.
     Red,
@@ -327,6 +347,10 @@ impl RowCopySpan {
     }
 }
 
+#[expect(
+    clippy::copy_iterator,
+    reason = "the cursor is a small value and advances only through a mutable borrow"
+)]
 impl Iterator for RowCopyPlan {
     type Item = RowCopySpan;
 
@@ -562,7 +586,7 @@ pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) ->
 mod tests {
     use super::*;
 
-    /// The layout QEMU and VMware both report: 8-bit channels, R high.
+    /// The layout QEMU and `VMware` both report: 8-bit channels, R high.
     fn rgb888() -> PixelFormat {
         PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
             .expect("valid RGB888")
@@ -656,6 +680,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn every_small_row_copy_stays_within_its_padded_layout() {
         for width in 1..=4 {
             for padding in 0..=3 {
@@ -1224,10 +1252,10 @@ mod tests {
     /// refused — at *both* copies of the bound.
     ///
     /// Exercise the boundary in both `channel_mask` and `encode` so the
-    /// duplicated checks cannot drift while refusing legal RGBx8888 (D-105).
+    /// duplicated checks cannot drift while refusing legal `RGBx8888` (D-105).
     #[test]
     fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
-        // 24 + 8 == 32: the top channel of a standard RGBx8888 report.
+        // 24 + 8 == 32: the top channel of a standard `RGBx8888` report.
         let top = Channel::new(24, 8);
         assert_ne!(top.encode(0xFF), 0, "encode refused a channel that fits");
 
@@ -1255,8 +1283,8 @@ mod tests {
     /// from `mix` entirely (D-105).
     #[test]
     fn blending_reads_the_background_as_well_as_the_foreground() {
-        let from = Rgb::from_hex(0x4080C0);
-        let to = Rgb::from_hex(0xC04000);
+        let from = Rgb::from_hex(0x0040_80C0);
+        let to = Rgb::from_hex(0x00C0_4000);
 
         assert_eq!(from.blend(to, 0), from, "t = 0 is the background");
         assert_eq!(from.blend(to, 255), to, "t = 255 is the foreground");

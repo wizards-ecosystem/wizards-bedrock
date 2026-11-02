@@ -19,6 +19,10 @@ pub struct PhysicalAddressWidth(u8);
 
 impl PhysicalAddressWidth {
     /// Decode a supported `MAXPHYADDR` answer.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     pub const fn from_leaf(maximum_extended_leaf: u32, eax: u32) -> Option<Self> {
         let bits = (eax & u8::MAX as u32) as u8;
         if maximum_extended_leaf < ADDRESS_SIZE_LEAF || bits < 32 || bits > 52 {

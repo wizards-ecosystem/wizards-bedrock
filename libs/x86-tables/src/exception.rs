@@ -135,6 +135,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     fn every_exception_name_matches_the_architecture() {
         let expected = [
             Some("divide error"),

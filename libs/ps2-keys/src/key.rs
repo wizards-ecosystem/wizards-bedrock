@@ -4,7 +4,7 @@
 ///
 /// Layout modules map identities to text, keeping wire decoding independent
 /// of keyboard layout.
-#[expect(missing_docs)] // the names are the documentation
+#[expect(missing_docs, reason = "the variant name is the key's legend")]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {

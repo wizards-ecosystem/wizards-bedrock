@@ -297,6 +297,10 @@ mod tests {
 
     /// No code may name two keys, within a table or its own sweep.
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     fn no_two_codes_share_a_key_within_a_table() {
         for table in [key_for, extended_key_for] {
             for code in 0..=u8::MAX {
