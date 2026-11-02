@@ -8,9 +8,14 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## Done
 
+- Pure methods that return a new `Self` and do not mutate are `#[must_use]`:
+  handle-space `reused`/`union`/`intersection`/`difference`, x86-cpuid
+  `with_smep`/`with_smap`/`with_umip`, x86-paging `intersection`/`union`/
+  `difference`, pci-config `Address::function_base`, pixel `Rgb::blend`,
+  x86-apic `ApicBase::enabled`/`x2apic`. Discarding one was a silent no-op.
 - `Bar::decode` refuses an I/O BAR whose address does not fit the 16-bit port
   space. The old cast kept only bits 15:2, so `0x1_0001` decoded as port 0
-  and a later alignment check accepted it. `u16::try_from` is the refusal.
+  and a later alignment check accepted it. Decode now returns `None`.
   Signature of `Bar` is unchanged. `From`/`TryFrom` are not const-callable
   here, so the fit check is `address > u16::MAX as u32`.
   `cargo test -p pci-config --lib --locked a_base_address_register_decodes`
@@ -18,9 +23,11 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## In progress
 
-- Host clippy census against stream 1's warn table
-  (`origin/cursor/beautiful-rust-lints-b7b1`, `CLIPPY_CONF_DIR` only; root
-  config is not edited). Clearing those warnings in `libs/`.
+- Clearing the host census (320 unique warns, matches stream 1). `#[must_use]`
+  is on the pure `Self`-returning builders the census named. `# Errors`,
+  register-width casts, and closed-enum `expect`s are next.
+- Census command is local only (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`,
+  stream 1's `clippy.toml`). Root config is not edited.
 
 ## Next steps
 

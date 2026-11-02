@@ -139,6 +139,7 @@ impl Slot {
     /// The next use of this slot, wrapping when the counter is exhausted.
     ///
     /// Saturation would make the last generation permanently reusable.
+    #[must_use]
     pub const fn reused(self) -> Self {
         Self {
             index: self.index,
@@ -362,16 +363,19 @@ impl Rights {
     }
 
     /// Both sets together.
+    #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
     /// Only the rights present in both sets.
+    #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
     /// This set without `other`.
+    #[must_use]
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }

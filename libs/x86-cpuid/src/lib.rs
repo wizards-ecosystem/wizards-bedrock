@@ -55,16 +55,19 @@ impl Cr4Additions {
     }
 
     /// Add supervisor mode execution prevention.
+    #[must_use]
     pub const fn with_smep(self) -> Self {
         Self(self.0 | 1 << 20)
     }
 
     /// Add supervisor mode access prevention.
+    #[must_use]
     pub const fn with_smap(self) -> Self {
         Self(self.0 | 1 << 21)
     }
 
     /// Add user mode instruction prevention.
+    #[must_use]
     pub const fn with_umip(self) -> Self {
         Self(self.0 | 1 << 11)
     }
