@@ -15,32 +15,35 @@ Do not merge this branch into `main`. The integration pull request stays open fo
 - Merged #6 (`cursor/beautiful-rust-lints-b7b1`) with a merge commit.
   Safety denies stay deny. Pedantic lints are warn. `cargo xtask clippy`
   still passes `-D warnings`.
+- Merged #7 (`cursor/libs-soundness-and-lints-8fd3`) cleanly. No overlap
+  with the lint commit except that both now exist: workspace lints and
+  the crate-level `#![warn]` attributes the libs stream added so
+  `expect` was fulfilled before `clippy.toml` existed.
 
 ## In progress
 
-Merges still to land, in order: #7, #5, #4, #3. Then the cross-cutting
+Merges still to land, in order: #5, #4, #3. Then the cross-cutting
 signature changes, the D-159 amendment, and `cargo xtask ci`.
 
 ## Next steps
 
-1. Merge `cursor/libs-soundness-and-lints-8fd3` (#7).
-2. Merge `cursor/kernel-review-e5bf` (#5).
-3. Merge `cursor/boot-tooling-dx-091e` (#4).
-4. Merge `cursor/roadmap-v030-docs-bb4c` (#3).
-5. Change the kernel-facing signatures listed in
+1. Merge `cursor/kernel-review-e5bf` (#5).
+2. Merge `cursor/boot-tooling-dx-091e` (#4).
+3. Merge `cursor/roadmap-v030-docs-bb4c` (#3).
+4. Change the kernel-facing signatures listed in
    `handoff/streams/04-boot-tooling.md`, and `vtd::second_level::pte`'s
    bool parameters from `handoff/streams/03-libs.md`.
-6. Clear the remaining pedantic `wost` warnings that stream 4 listed,
+5. Clear the remaining pedantic `wost` warnings that stream 4 listed,
    where a local edit is honest.
-7. Amend D-159 to record the warn-level pedantic rollout. Keep
+6. Amend D-159 to record the warn-level pedantic rollout. Keep
    `cargo xtask clippy` denying warnings. Narrowing casts stay
    per-site `try_from` or `#[expect]` with a reason.
-8. Leave mutation-pinned text alone: `require_unique`, the ACPI
+7. Leave mutation-pinned text alone: `require_unique`, the ACPI
    duplicate-table branch, and mutation 1819.
-9. Run `cargo xtask ci` and the host, kernel, clippy, and QEMU steps
+8. Run `cargo xtask ci` and the host, kernel, clippy, and QEMU steps
    that the repository defines and that run on Linux. The Windows-only
    codegen-path test (mutation 1789) is expected to fail on Linux.
-10. Open one pull request to `main`. Do not merge it.
+9. Open one pull request to `main`. Do not merge it.
 
 ## Decisions
 
