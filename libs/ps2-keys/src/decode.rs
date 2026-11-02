@@ -284,6 +284,10 @@ mod tests {
         decoder.feed(*last)
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "call sites compare this helper with the decoder Option"
+    )]
     fn event(key: Key, state: KeyState) -> Option<KeyEvent> {
         Some(KeyEvent { key, state })
     }

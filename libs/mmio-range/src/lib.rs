@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::copy_iterator)]
 
 use core::fmt;
 
@@ -115,6 +116,10 @@ pub struct AccessOffsets {
     width: usize,
 }
 
+#[expect(
+    clippy::copy_iterator,
+    reason = "the cursor is a small value and advances only through a mutable borrow"
+)]
 impl Iterator for AccessOffsets {
     type Item = usize;
 

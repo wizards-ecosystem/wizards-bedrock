@@ -7,6 +7,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::large_types_passed_by_value)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -264,6 +267,10 @@ impl Bpb {
     }
 
     /// Bytes in one cluster.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub const fn cluster_bytes(self) -> u32 {
         self.sectors_per_cluster * SECTOR_BYTES as u32
     }
@@ -281,6 +288,10 @@ impl Bpb {
     }
 
     /// Clusters the data area holds.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     pub const fn clusters(self) -> u32 {
         let data = self.total_sectors as u64 - self.first_data_sector();
         (data / self.sectors_per_cluster as u64) as u32
@@ -293,6 +304,10 @@ impl Bpb {
     /// with the volume, so a cyclic or oversized directory on a large volume
     /// cannot drive an unbounded read; the chain length is the tighter of this
     /// and the data area (D-352).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn directory_cluster_limit(self) -> u32 {
         let per_cluster = self.cluster_bytes() / ENTRY_BYTES as u32;
         let by_entries = if per_cluster == 0 {
@@ -325,6 +340,10 @@ impl Bpb {
         Ok(self.first_data_sector() + index * self.sectors_per_cluster as u64)
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     const fn table_position(self, cluster: u32) -> (u64, usize) {
         let byte = cluster as u64 * core::mem::size_of::<u32>() as u64;
         (
@@ -338,6 +357,10 @@ impl Bpb {
 
 /// What the table says follows `cluster`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Next {
     /// Another cluster.
     Cluster(u32),
@@ -522,6 +545,10 @@ const fn valid_short_name_byte(byte: u8) -> bool {
 
 /// What a thirty-two byte slot holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Slot {
     /// A usable entry.
     Entry(Entry),
@@ -1012,6 +1039,10 @@ mod tests {
     }
 
     impl TracedSectors {
+        #[expect(
+            clippy::large_types_passed_by_value,
+            reason = "the boot sector is the fixed 512-byte array the parser stores"
+        )]
         const fn new(boot: [u8; SECTOR_BYTES], base: u64) -> Self {
             Self {
                 boot,
@@ -1300,6 +1331,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_reserved_link_beyond_the_last_cluster_does_not_hide_it() {
         let mut volume = image_volume(1, 4);
         set_link(&mut volume, FIRST_DATA_CLUSTER, FIRST_DATA_CLUSTER + 1);
@@ -1371,6 +1406,10 @@ mod tests {
         volume.source.sectors[1][offset..offset + 4].copy_from_slice(&next.to_le_bytes());
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn short_entry(name: &[u8; 11], attributes: u8, cluster: u32, size: u32) -> [u8; ENTRY_BYTES] {
         let mut entry = [0u8; ENTRY_BYTES];
         entry[..11].copy_from_slice(name);
@@ -1804,6 +1843,10 @@ mod tests {
         assert_eq!(owned.entries()[0].name(), b"ALPHA.TXT");
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     fn file_volume() -> (Volume<SectorImage>, Vec<u8>, Entry) {
         let mut volume = image_volume(2, 2);
         set_link(&mut volume, 2, 3);
@@ -1821,6 +1864,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn file_reads_match_the_concatenated_sector_bytes_at_every_boundary() {
         for (offset, requested) in [
             (0usize, 2_048usize),
@@ -2051,6 +2098,10 @@ mod tests {
     impl Sectors for LinearFat {
         type Error = ();
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the value is bounded to the thirty-two-bit field"
+        )]
         fn read_sector(
             &mut self,
             sector: u64,
@@ -2097,6 +2148,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn a_file_skip_past_the_volume_is_refused_before_walking() {
         // The chain is acyclic, so the hare never fires: only the volume
         // bound can refuse a skip whose offset names more clusters than the
@@ -2121,6 +2176,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn an_early_end_of_chain_is_a_truncated_file_not_eof() {
         let mut skipped = image_volume(1, 4);
         set_link(&mut skipped, FIRST_DATA_CLUSTER, END_OF_CHAIN);
@@ -2141,6 +2200,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn skipped_clusters_consume_the_same_cycle_budget_as_copied_clusters() {
         let mut volume = image_volume(1, 4);
         set_link(&mut volume, 2, 3);
@@ -2197,6 +2260,10 @@ mod tests {
     impl Sectors for CountedLine {
         type Error = ();
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the value is bounded to the thirty-two-bit field"
+        )]
         fn read_sector(
             &mut self,
             sector: u64,

@@ -29,6 +29,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -445,6 +447,10 @@ impl fmt::Debug for Entry {
 
 /// Whether an intermediate table participates in supervisor or user mappings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum TablePrivilege {
     /// Every leaf below this table is supervisor-only.
     Supervisor,
@@ -454,6 +460,10 @@ pub enum TablePrivilege {
 
 /// A level of the four-level page table walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Level {
     /// The page table: entries map 4 KiB pages.
     Pt = 1,
@@ -483,6 +493,10 @@ impl Level {
     }
 
     /// The slot `address` selects in a table at this level.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     pub const fn index(self, address: u64) -> usize {
         (address >> self.shift()) as usize % ENTRIES
     }
@@ -1122,9 +1136,6 @@ mod tests {
 
     #[test]
     fn debug_says_what_the_entry_is() {
-        extern crate std;
-        use std::format;
-
         assert_eq!(format!("{:?}", Entry::ABSENT), "Entry(absent)");
         let entry =
             Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");

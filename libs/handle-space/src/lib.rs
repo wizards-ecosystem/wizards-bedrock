@@ -26,6 +26,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
 
 /// Bits at the bottom of every handle, always set, never part of the slot.
 ///
@@ -207,6 +208,10 @@ impl Quota {
     pub const EMPTY: u64 = 0;
 
     /// Handles the table holds.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub const fn live(bits: u64) -> u32 {
         bits as u32
     }

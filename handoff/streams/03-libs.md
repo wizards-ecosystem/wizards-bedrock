@@ -43,26 +43,18 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 
 ## In progress
 
-- Register-width `cast_possible_truncation` (about 120 sites) and
-  `exhaustive_enums` (37 closed protocol enums). `#[expect]` is unfulfilled
-  unless the lint is enabled, and enabling it crate-wide fails `cargo xtask
-  clippy -D warnings` until every site in that crate is answered. Do one
-  crate at a time: warn the lint in that crate, `expect` the proven field
-  extracts, `TryFrom` where the value can fail.
-- Census command is local only (`CLIPPY_CONF_DIR=/tmp/bedrock-clippy`,
-  stream 1's `clippy.toml`). Root config is not edited.
+Nothing. The census is recorded below. The one remaining warning is
+`vtd::second_level::pte`, which `wost` calls.
 
 ## Next steps
 
-1. Clear the census, smallest crates first. Register-width field extracts get
-   a narrow `#[expect(clippy::cast_possible_truncation, reason = "...")]`.
-   Values that can actually not fit use `TryFrom`. Lossless `as` becomes
-   `From`. Closed hardware enums get
-   `#[expect(clippy::exhaustive_enums, reason = "closed encoding")]` rather
-   than `#[non_exhaustive]`, because kernel matches are exhaustive and this
-   stream does not edit `kernel/`.
-2. Keep looking for soundness bugs while touching those crates.
-3. Do not merge.
+1. Do not merge.
+2. If `second_level::pte`'s two `bool`s should become a permission enum,
+   that edit is in `wost/src/arch/x86_64/vtd.rs` as well as `libs/vtd`.
+   This stream did not make it.
+3. Re-run the census after stream 1's `clippy.toml` lands on `main`. The
+   crate-level `#![warn]` attributes are what make `#[expect]` fulfilled
+   before that file exists.
 
 ## Bugs found
 
@@ -75,6 +67,43 @@ Branch: `cursor/libs-soundness-and-lints-8fd3`
 | Low | `libs/memory-map` `covered_by` | `start > end` returned covered. An empty span (`start == end`) stays vacuously covered. Fixed. |
 | Medium | `libs/fat32` cycle hare | A reserved link two steps ahead aborted the read before the cluster about to be read was returned. The hare now stops on `BadCluster`; `next_cluster` still errors when that link is followed. |
 | Low | `libs/fat32` `Volume::sector` | A base+sector wrap was `BadCluster(0)`. It is `Malformed`. |
+
+## Clippy census after this pass
+
+Against stream 1's table (`CLIPPY_CONF_DIR` pointed at that branch's
+`clippy.toml`, `cargo clippy --all-targets` on every `libs/` crate,
+`-D unfulfilled_lint_expectations`). Host only. rustc 1.97.1.
+
+| Crate | Remaining warnings |
+|---|---:|
+| vtd | 1 |
+| every other `libs/` crate | 0 |
+
+The one warning is `second_level::pte(paddr, read: bool, write: bool)`:
+`fn_params_excessive_bools` at threshold 0. Replacing the bools changes
+the signature `wost` calls. Left in place.
+
+`#[allow]` was not used. Stream 1 warns on `allow` via `allow_attributes`.
+Proven narrowings and closed enums use `#[expect(..., reason = "...")]`,
+and the crate warns that lint so today's gate (which does not load stream
+1's `clippy.toml`) still sees the expectation fulfilled.
+`avoid-breaking-exported-api` is false only in that `clippy.toml`, so an
+`expect` on a public item that the default config hides is unfulfilled
+today. Those sites were changed instead of suppressed.
+
+## API changes that do not need `kernel/` edits
+
+Searched `kernel/` and `wost/` before renaming.
+
+- `PageFault::from_user` is now `PageFault::was_user`, matching
+  `was_present` and `was_write`. Nothing outside `libs/trap-cause` called it.
+- `Class.class` is now `Class.code`. Callers use `Class::is_nvme` and
+  `Class::is_bridge`. Nothing outside this crate named the field.
+
+## API changes that would need `kernel/` or `wost/` edits
+
+- `vtd::second_level::pte(paddr, read: bool, write: bool)`. `wost`'s VT-d
+  mapper passes `DEVICE_READS` and `DEVICE_WRITES`. Not changed.
 
 ## Decisions
 

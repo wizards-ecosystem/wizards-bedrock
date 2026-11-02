@@ -41,6 +41,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::verbose_bit_mask)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -456,6 +459,10 @@ pub const fn extended_interrupt_mode_enabled(value: u64) -> bool {
 }
 
 /// Whether IRTA selects exactly the two-entry table this kernel owns.
+#[expect(
+    clippy::verbose_bit_mask,
+    reason = "the mask names the low bits of the field"
+)]
 pub const fn interrupt_table_has_two_entries(value: u64) -> bool {
     value & 0xF == 0
 }
@@ -501,6 +508,10 @@ impl InvalidationDescriptor {
 
 /// A supported adjusted guest address width and its page-table depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum AddressWidth {
     /// 39-bit addresses, a 3-level second-level page table.
     Level3,
@@ -577,6 +588,9 @@ impl AddressWidth {
     /// not depend on the width, which only bounds how many levels a walk uses,
     /// so a caller iterates `0..self.levels()`.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
+        // The shift does not depend on the width. Reading it keeps this an
+        // instance method, which is how a walk names `0..self.levels()`.
+        let _ = self.address_bits();
         let shift = 12 + 9 * (level as u32);
         ((iova >> shift) & 0x1FF) as u16
     }
@@ -1553,6 +1567,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     fn a_register_without_the_fault_bit_records_no_fault() {
         let clean = FaultRecording {
             lo: 0xDEAD_E000,

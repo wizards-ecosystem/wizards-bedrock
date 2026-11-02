@@ -26,6 +26,10 @@
 
 /// What the bytes so far have proved about their numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Arriving {
     /// Nothing seen yet distinguishes the two.
     Undecided,

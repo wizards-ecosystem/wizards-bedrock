@@ -30,6 +30,10 @@ pub enum WatchdogVerdict {
 /// zero. An early expiry has no such innocent explanation. TSC progress is
 /// compared only while its own elapsed count proves the PIT window could not
 /// have folded.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 pub const fn watchdog_verdict(
     apic_remaining: u32,
     tsc_ticks: u64,
@@ -223,6 +227,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn the_watchdog_distinguishes_disagreement_from_delay() {
         let expected_pit_ticks = (CRYSTAL_HZ / 50) as u16;
         let tsc_hz = 3_200_000_000;

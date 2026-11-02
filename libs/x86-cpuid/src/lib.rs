@@ -23,6 +23,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 pub mod physical;
 pub mod xstate;
@@ -105,6 +108,10 @@ pub struct ExecutionEnvironment {
 
 /// Requester-inaccessible CPU identity for a qualified DMA-handoff platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum DmaHandoffPlatform {
     /// The exact pinned QEMU TCG hypervisor leaf.
     QemuTcg,
@@ -215,6 +222,10 @@ impl FrequencyHints {
     /// `ratio` is `(denominator, numerator, crystal_hz)`. Zero fields mean the
     /// processor did not provide a usable ratio. Only the low sixteen bits of
     /// `base_mhz` are defined by leaf 0x16.
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     pub fn from_leaves(ratio: Option<(u32, u32, u32)>, base_mhz: Option<u32>) -> Self {
         let tsc_hz = match ratio {
             Some((denominator, numerator, crystal_hz))
@@ -411,6 +422,7 @@ mod tests {
     #[test]
     fn cr4_updates_are_add_only_and_exact() {
         const FIRMWARE: u64 = (1 << 17) | (1 << 23) | 1;
+        const HELD: u64 = (1 << 20) | (1 << 21) | (1 << 11);
         assert_eq!(
             Cr4Additions::extended_state().apply(FIRMWARE),
             FIRMWARE | (1 << 9) | (1 << 10) | (1 << 18)
@@ -434,7 +446,6 @@ mod tests {
             assert_eq!(additions.apply(FIRMWARE), expected);
         }
 
-        const HELD: u64 = (1 << 20) | (1 << 21) | (1 << 11);
         let repeated = Cr4Additions::none()
             .with_smep()
             .with_smep()

@@ -26,6 +26,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
 
 pub mod exception;
 pub mod gdt;

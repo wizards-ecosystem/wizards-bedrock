@@ -87,6 +87,10 @@ impl TaskState {
     ///
     /// `iomap_base` is set to the size of the segment, which puts the bitmap
     /// outside the limit — how x86 spells "ring 3 may touch no port at all".
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     pub const fn new() -> Self {
         Self {
             reserved_start: 0,

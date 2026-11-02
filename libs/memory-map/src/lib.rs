@@ -20,6 +20,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::fn_params_excessive_bools)]
+#![warn(clippy::struct_excessive_bools)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -193,6 +196,10 @@ pub struct MemoryMap {
 
 /// Cache policy for one admitted direct-map run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum DirectMapCache {
     /// Ordinary cacheable memory.
     Normal,
@@ -603,6 +610,10 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Copy)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "the test case lists independent properties of one memory kind"
+    )]
     struct MemoryKindCase {
         kind: MemoryKind,
         name: &'static str,
@@ -612,6 +623,10 @@ mod tests {
         device_mapping: bool,
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "each flag is an independent property of the case"
+    )]
     const fn kind_case(
         kind: MemoryKind,
         name: &'static str,

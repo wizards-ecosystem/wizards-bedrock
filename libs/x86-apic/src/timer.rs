@@ -43,6 +43,10 @@ pub const fn one_shot_entry(
 
 /// How the bus clock is divided before it drives the timer's countdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Divide {
     /// The bus clock, undivided.
     By1,
@@ -102,6 +106,10 @@ impl Divide {
 /// the counter's thirty-two bits becomes the furthest it can express, which
 /// is a caller that must re-arm when it expires rather than one that has been
 /// silently given a wrapped-around count.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 pub const fn initial_count(ticks: u64) -> u32 {
     if ticks == 0 {
         return 1;

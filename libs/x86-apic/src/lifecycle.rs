@@ -5,6 +5,10 @@ use core::fmt;
 /// The externally observable lifetime of one local controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Lifecycle {
     /// No hardware transition has begun.
     Cold,
@@ -18,6 +22,10 @@ pub enum Lifecycle {
 
 /// Whether maskable interrupts are excluded at a hardware boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Interrupts {
     /// The interrupt flag is clear.
     Excluded,
@@ -27,6 +35,10 @@ pub enum Interrupts {
 
 /// One ordered boundary in the hardware transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum InitStage {
     /// Enter and verify x2APIC mode.
     Mode,

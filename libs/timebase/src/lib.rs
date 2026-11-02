@@ -32,6 +32,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 /// Nanoseconds in a second, which is the unit on both sides of every
 /// conversion here.
@@ -75,6 +77,10 @@ impl Timebase {
     /// that no shift represents it in thirty-two bits — a ratio above four
     /// billion, or below one part in about eighteen quintillion. Neither is a
     /// pair of real clocks.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the widened value was range-checked before this narrowing"
+    )]
     pub const fn new(numerator: u64, denominator: u64) -> Option<Self> {
         if numerator == 0 || denominator == 0 {
             return None;
@@ -152,6 +158,10 @@ impl Timebase {
     /// // A thousand ticks of a 1 GHz counter is a thousand nanoseconds.
     /// assert_eq!(clock.resume(5_000, 0, 1_000), 6_000);
     /// ```
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the widened value was range-checked before this narrowing"
+    )]
     pub const fn resume(self, base_ns: u64, base_fraction: u64, ticks: u64) -> u64 {
         let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
         let whole = advanced >> self.shift;
@@ -171,6 +181,10 @@ impl Timebase {
     /// The reading this produces is the one [`resume`](Self::resume) would
     /// have given for the same arguments, which is what lets a program's own
     /// read and the kernel's agree rather than merely resemble each other.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the widened value was range-checked before this narrowing"
+    )]
     pub const fn advance(self, base_ns: u64, base_fraction: u64, ticks: u64) -> (u64, u64) {
         let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
         let whole = advanced >> self.shift;
@@ -201,6 +215,10 @@ impl Timebase {
     /// Saturating because this is a clock: a reading past the end of the range
     /// should read as far ahead as the type allows, never as though it had
     /// wrapped to the beginning.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the widened value was range-checked before this narrowing"
+    )]
     pub const fn convert(self, value: u64) -> u64 {
         // Both factors are bounded — any `u64` and at most thirty-two bits —
         // so the product is at most ninety-six bits and cannot overflow.
@@ -752,6 +770,10 @@ mod published_tests {
 /// has a finite, explicit fallback rather than an accidental endless wait
 /// (D-200).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum PollLimit {
     /// Stop at this monotonic nanosecond.
     Deadline(u64),

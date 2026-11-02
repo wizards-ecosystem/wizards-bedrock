@@ -25,6 +25,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::copy_iterator)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 use core::fmt;
 
@@ -44,6 +47,10 @@ pub struct Rgb {
 
 impl Rgb {
     /// Build a colour from a `0xRRGGBB` literal.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn from_hex(hex: u32) -> Self {
         Self {
             red: (hex >> 16) as u8,
@@ -63,6 +70,10 @@ impl Rgb {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field occupies one byte of the register"
+)]
 const fn mix(from: u8, to: u8, intensity: u8) -> u8 {
     let (from, to, t) = (from as u32, to as u32, intensity as u32);
     ((from * (255 - t) + to * t) / 255) as u8
@@ -89,6 +100,10 @@ impl Channel {
     /// bootloader could report, including ones no framebuffer has: a channel
     /// that does not fit a 32-bit pixel contributes nothing rather than
     /// shifting past the end of one.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each narrowing is into a register field or a value already bounded to that width"
+    )]
     pub const fn encode(self, intensity: u8) -> u32 {
         let size = self.size as u32;
         let shift = self.shift as u32;
@@ -119,6 +134,10 @@ pub struct PixelFormat {
 
 /// Which component of a [`PixelFormat`] is malformed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum ColourChannel {
     /// The red component.
     Red,
@@ -328,6 +347,10 @@ impl RowCopySpan {
     }
 }
 
+#[expect(
+    clippy::copy_iterator,
+    reason = "the cursor is a small value and advances only through a mutable borrow"
+)]
 impl Iterator for RowCopyPlan {
     type Item = RowCopySpan;
 
@@ -657,6 +680,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn every_small_row_copy_stays_within_its_padded_layout() {
         for width in 1..=4 {
             for padding in 0..=3 {
