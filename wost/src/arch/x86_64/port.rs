@@ -465,6 +465,6 @@ impl<const N: usize> PortBlock<N> {
         );
         // Cannot overflow: `new` bounded `base + N` to the end of I/O space and
         // the assertion above bounds `offset` below `N`.
-        self.base + offset as u16
+        self.base + crate::u16_from_usize(offset)
     }
 }

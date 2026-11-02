@@ -1353,7 +1353,7 @@ impl AddressSpace {
         if stack_refusal(&STACK_MAPPINGS_BEFORE_REFUSAL) {
             return Err(StackMapError::Mapping(MapError::OutOfMemory));
         }
-        let pages = slot.stack_len().div_ceil(PAGE_SIZE) as usize;
+        let pages = crate::usize_from_u64(slot.stack_len().div_ceil(PAGE_SIZE));
         let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         if !run.zero() {
             return Err(MapError::Unreachable(run.address()).into());
@@ -1405,7 +1405,7 @@ impl AddressSpace {
                 roots: self.roots(),
                 pending: StackCleanup::One(*slot),
             })?;
-        let pages = returned.pages() as usize;
+        let pages = crate::usize_from_u64(returned.pages());
         drop(returned);
         Ok(pages)
     }
@@ -1449,7 +1449,7 @@ impl AddressSpace {
                     },
                 })?;
             returned_pages = returned_pages
-                .checked_add(returned.pages() as usize)
+                .checked_add(crate::usize_from_u64(returned.pages()))
                 .unwrap_or_else(|| panic!("stack rollback page accounting overflowed"));
             drop(returned);
             remaining -= 1;

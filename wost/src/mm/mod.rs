@@ -359,7 +359,7 @@ impl Frame {
         // `&mut self`. The frame is allocatable memory, and every allocatable
         // region is direct-mapped, so the whole of it is reachable through the
         // pointer just formed.
-        unsafe { core::ptr::write_bytes(base, byte, FRAME_SIZE as usize) };
+        unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(FRAME_SIZE)) };
         true
     }
 
@@ -375,7 +375,7 @@ impl Frame {
     /// This is the machine witness for the D-12 zero-on-allocation boundary.
     #[cfg(feature = "selftest")]
     pub fn is_zero(&self) -> Option<bool> {
-        const WORDS: usize = FRAME_SIZE as usize / size_of::<u64>();
+        const WORDS: usize = crate::usize_from_u64(FRAME_SIZE) / size_of::<u64>();
 
         let base = direct_map_pointer(self.address())?.cast::<u64>();
         let mut zero = true;
@@ -444,7 +444,7 @@ impl Segment {
         // SAFETY: a live `Segment` proves the allocator admitted and reserved
         // every frame in this run; allocator-managed frames are direct-mapped.
         // `direct_pointer` separately proved the address arithmetic.
-        unsafe { core::ptr::write_bytes(base, byte, self.len() as usize) };
+        unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(self.len())) };
         true
     }
 

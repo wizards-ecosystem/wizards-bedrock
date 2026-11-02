@@ -447,7 +447,17 @@ impl FunctionClaim {
 
     /// The vendor and device word read while the function was claimed.
     pub const fn identity(&self) -> (u16, u16) {
-        (self.identity as u16, (self.identity >> 16) as u16)
+        // The configuration dword is vendor in the low half and device in the
+        // high half. The low cast drops the device id on purpose. Shifting by
+        // 16 leaves a value that fits in `u16`.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "PCI vendor id is the low 16 bits of the identity dword"
+        )]
+        let vendor = self.identity as u16;
+        // Shifting by 16 leaves a value that fits in `u16`.
+        let device = (self.identity >> 16) as u16;
+        (vendor, device)
     }
 }
 
@@ -505,12 +515,24 @@ pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
     let at = at.function_base();
     Port::write(address, at.bits());
     let identity = Port::read(data);
-    if pci_config::is_absent(identity as u16) {
+    // Vendor id is the low half. A present device still has a device id above it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "PCI absence is decided by the low 16 bits of the identity dword"
+    )]
+    let vendor = identity as u16;
+    if pci_config::is_absent(vendor) {
         return Err(ClaimError::Absent);
     }
     let header_at = at.at(header::HEADER_TYPE).ok_or(ClaimError::Unavailable)?;
     Port::write(address, header_at.bits());
-    let header = HeaderType::from_bits((Port::read(data) >> 16) as u8);
+    // Header type is one byte at bits 16..23 of the status/command dword.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "PCI header type is the byte at bits 16..23"
+    )]
+    let header_bits = (Port::read(data) >> 16) as u8;
+    let header = HeaderType::from_bits(header_bits);
     let authority = functions.claim(at, header).map_err(|reason| match reason {
         FunctionClaimError::Taken => ClaimError::Taken,
         FunctionClaimError::NoRoom => ClaimError::NoRoom,
@@ -895,8 +917,10 @@ fn configuration_cycle(
     let (offset, write) = match access {
         ProbeAccess::ReadCommand => (header::COMMAND, None),
         ProbeAccess::WriteCommand(value) => (header::COMMAND, Some(u32::from(value))),
-        ProbeAccess::ReadBar(index) => (header::BAR0 + index as u16 * 4, None),
-        ProbeAccess::WriteBar(index, value) => (header::BAR0 + index as u16 * 4, Some(value)),
+        ProbeAccess::ReadBar(index) => (header::BAR0 + crate::u16_from_usize(index) * 4, None),
+        ProbeAccess::WriteBar(index, value) => {
+            (header::BAR0 + crate::u16_from_usize(index) * 4, Some(value))
+        }
     };
     let register = function.at(offset).ok_or(())?;
     Port::write(address, register.bits());

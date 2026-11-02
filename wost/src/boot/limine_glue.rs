@@ -190,9 +190,9 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         return Err(FramebufferError::UnsupportedBpp(fb.bpp()));
     }
 
-    let pitch = fb.pitch() as usize;
-    let width = fb.width() as usize;
-    let height = fb.height() as usize;
+    let pitch = crate::usize_from_u64(fb.pitch());
+    let width = crate::usize_from_u64(fb.width());
+    let height = crate::usize_from_u64(fb.height());
     let bytes_per_pixel = usize::from(fb.bpp()) / 8;
     let layout = FramebufferLayout::new(fb.addr().addr(), width, height, pitch, bytes_per_pixel)
         .map_err(FramebufferError::InvalidGeometry)?;

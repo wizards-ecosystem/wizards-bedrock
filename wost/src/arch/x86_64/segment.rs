@@ -130,8 +130,10 @@ pub fn init() {
     // until the `ltr` below, so no reference to it can exist yet.
     unsafe { core::ptr::write(task_state_pointer(), task_state) };
 
-    let task_state_descriptor =
-        SystemDescriptor::task_state(task_state_pointer() as u64, size_of::<TaskState>() as u16);
+    let task_state_descriptor = SystemDescriptor::task_state(
+        task_state_pointer() as u64,
+        crate::u16_from_usize(size_of::<TaskState>()),
+    );
 
     let mut entries = [0u64; ENTRIES];
     entries[0] = Descriptor::NULL.bits();
@@ -145,7 +147,10 @@ pub fn init() {
     // until the `lgdt` below.
     unsafe { core::ptr::write(GDT.as_mut_ptr(), entries) };
 
-    let pointer = TablePointer::new(GDT.address(), (size_of::<[u64; ENTRIES]>() - 1) as u16);
+    let pointer = TablePointer::new(
+        GDT.address(),
+        crate::u16_from_usize(size_of::<[u64; ENTRIES]>() - 1),
+    );
     // SAFETY: `lgdt` reads ten bytes at the operand and points the CPU at the
     // table they describe. Both are ours, correctly encoded and permanently
     // resident, and the entry the current `CS` will be reloaded from is present.

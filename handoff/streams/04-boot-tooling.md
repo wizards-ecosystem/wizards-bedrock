@@ -24,9 +24,12 @@ the root workspace config, `kernel/`, and `libs/`.
 
 ## In progress
 
-- Clearing the BeautifulRust census on `wost` (211 shipped / 234 self-test)
-  against `origin/cursor/beautiful-rust-lints-b7b1`, without editing root
-  lint config. `xtask`'s three Linux `dead_code` warnings are cleared.
+- BeautifulRust census on `wost`, measured with stream 1's `clippy.toml` via
+  `CLIPPY_CONF_DIR` and `-W clippy::pedantic -W clippy::cast_possible_truncation`.
+  Truncating casts are cleared (range-checked helpers, or an `expect` when the
+  low half of a register is supposed to drop bits). `xtask` Linux `dead_code`
+  is cleared. Self-test `wost` was about 118 unique warnings after that, mostly
+  `# Errors` / `# Panics`, `needless_pass_by_value`, and `cast_ptr_alignment`.
 
 ## Next steps
 

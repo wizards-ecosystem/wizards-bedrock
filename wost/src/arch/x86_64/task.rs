@@ -349,12 +349,13 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     };
     let base = top.address() - FRAME_BYTES;
     let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
+    let frame_slot = crate::usize_from_u64(base) as *mut [u64; FRAME_WORDS];
     // SAFETY: `init` walked this stack's top page and found it mapped
     // writable; `base` is `FRAME_BYTES` below the top, inside that page, and
     // eight-byte aligned because the top is page-aligned. Nothing else is
     // using the stack: the slot is not `Alive`, and a dead slot's thread can
     // never be resumed. The lock is held, so no other fabrication races.
-    unsafe { core::ptr::write(base as usize as *mut [u64; FRAME_WORDS], frame) };
+    unsafe { core::ptr::write(frame_slot, frame) };
 
     let word = CONTEXTS.as_mut_ptr().cast::<u64>().wrapping_add(slot);
     // SAFETY: `slot` is below `MAX_TASKS`; the lock is held, and the assembly

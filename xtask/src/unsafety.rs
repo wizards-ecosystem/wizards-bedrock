@@ -140,7 +140,7 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "3619e18a579da07b79774cc3aeaed42c41039218f7aaa7a82c2a7cb3cfe89604",
+            "b26aea2dd1bed6cf21e2c6308b87899b16bfb85b29c7a16597ffe5efd999a1d1",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
@@ -158,19 +158,19 @@ mod tests {
             "wost/src/arch/x86_64/kpti.rs",
             2,
             0,
-            "1f86a1c6569b16f1c934f69134f9eab72109102971c374799d5ab6d6cb5be15e",
+            "f421b26b38101ff90e474994cf05ec48897fb1ec0f793aa57b5e5be9ccbc683c",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
             2,
             1,
-            "e1f019c6f2a2b6df61070d201c08f578a4fc02af943cdfed68a480687bfbddfb",
+            "c0a23acd651343eb745e8f23fe4ddb571cf7ddc83adf48663f1c9ddd0f8fee4e",
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "ffcd1a49b6854135bb875a9da60e514b17ec02016ab2be2822c855fa991cf370",
+            "b983b0cad9e1dbc4821b9c92cd459eb4c3b24fa0714e02b3d05a3844c8f3e36a",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -182,13 +182,13 @@ mod tests {
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "a698cd8d042170c7f89b027c61e48ba6b67779f9c01cb9f86f26679a906b555e",
+            "5858f7c9e7bbe1bc8909fed5ce746e33ae3d8731159d6992a6e582b6345ffb60",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
             14,
             0,
-            "71e5cfef2416ec47e01dd6504544710c7e7138943d6b95ce1a5ebd492c310196",
+            "d6c19660e78ed2e32dd467b467b1fd9e25a62699349af2c8242ef90db434b15e",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
@@ -200,7 +200,7 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "e5e26213bedfd484ea89f1de2f4b3aca57099512f24646b508251c926b54ba7a",
+            "778d3a04294f0754bcde9dc9a078359bf40e12b3dc3fdcc45c0552e903397133",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
@@ -212,13 +212,13 @@ mod tests {
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "5d360ea2c8fd1276816d2bbc282f4550126f36050c3f001d181748948a105495",
+            "2b158a1fe374bac0d05e41d94195675fcb47c096c3804dd9b927eeffd60c8095",
         ),
         (
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "1c2e8d9218d0d70befd4402a5440372ef39af823e1c5c83da4e6e4b19451d470",
+            "76b1e98ad738aec856bdecfefe12bfe511c7ca7a6cdc95eb65bb64fad44530b1",
         ),
         (
             "wost/src/boot/mod.rs",
@@ -242,7 +242,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             17,
             3,
-            "c8cfb8f7462609f8e62cc1b35ead8cf68e19a50671b199fef1dac0030d2ab7b5",
+            "f5357d72c0201553c440d315fab25174f2adfdcb7093d9587ce37fb4f21e902c",
         ),
         (
             "wost/src/mmio.rs",
