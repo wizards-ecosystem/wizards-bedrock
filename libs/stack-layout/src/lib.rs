@@ -14,6 +14,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
 
 /// Bytes in a page, the granularity mappings and guards come in.
 pub const PAGE_SIZE: u64 = 4096;
@@ -180,6 +181,10 @@ impl StackLayout {
     /// `None` unless every value is page-aligned and non-zero and the whole
     /// window fits below `u64::MAX` — a layout that wraps would alias its own
     /// slots, which is the one property this constructor exists to rule out.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value was bounded to a length that fits the address width"
+    )]
     pub const fn new(base: u64, stack_len: u64, guard_len: u64, slots: usize) -> Option<Self> {
         if !base.is_multiple_of(PAGE_SIZE)
             || !stack_len.is_multiple_of(PAGE_SIZE)

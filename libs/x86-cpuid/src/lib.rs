@@ -23,6 +23,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 
 pub mod physical;
 pub mod xstate;
@@ -55,16 +58,19 @@ impl Cr4Additions {
     }
 
     /// Add supervisor mode execution prevention.
+    #[must_use]
     pub const fn with_smep(self) -> Self {
         Self(self.0 | 1 << 20)
     }
 
     /// Add supervisor mode access prevention.
+    #[must_use]
     pub const fn with_smap(self) -> Self {
         Self(self.0 | 1 << 21)
     }
 
     /// Add user mode instruction prevention.
+    #[must_use]
     pub const fn with_umip(self) -> Self {
         Self(self.0 | 1 << 11)
     }
@@ -102,10 +108,14 @@ pub struct ExecutionEnvironment {
 
 /// Requester-inaccessible CPU identity for a qualified DMA-handoff platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum DmaHandoffPlatform {
     /// The exact pinned QEMU TCG hypervisor leaf.
     QemuTcg,
-    /// The exact VMware Workstation hypervisor leaf.
+    /// The exact `VMware` Workstation hypervisor leaf.
     Vmware,
 }
 
@@ -158,7 +168,7 @@ impl ExecutionEnvironment {
     /// Bind a qualified DMA-handoff profile to CPU-resident platform evidence.
     ///
     /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
-    /// rewritten by a PCI requester. The exact QEMU TCG and VMware profiles
+    /// rewritten by a PCI requester. The exact QEMU TCG and `VMware` profiles
     /// are the only release platforms permitted to assert the DMA-safe
     /// handoff contract.
     pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {
@@ -212,12 +222,16 @@ impl FrequencyHints {
     /// `ratio` is `(denominator, numerator, crystal_hz)`. Zero fields mean the
     /// processor did not provide a usable ratio. Only the low sixteen bits of
     /// `base_mhz` are defined by leaf 0x16.
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     pub fn from_leaves(ratio: Option<(u32, u32, u32)>, base_mhz: Option<u32>) -> Self {
         let tsc_hz = match ratio {
             Some((denominator, numerator, crystal_hz))
                 if denominator != 0 && numerator != 0 && crystal_hz != 0 =>
             {
-                let product = (crystal_hz as u64).checked_mul(numerator as u64);
+                let product = u64::from(crystal_hz).checked_mul(u64::from(numerator));
                 match product {
                     Some(product) => product
                         .checked_add(u64::from(denominator) / 2)
@@ -232,7 +246,7 @@ impl FrequencyHints {
         let base_hz = if base_mhz == 0 {
             None
         } else {
-            Some(base_mhz as u64 * 1_000_000)
+            Some(u64::from(base_mhz) * 1_000_000)
         };
         Self { tsc_hz, base_hz }
     }
@@ -408,6 +422,7 @@ mod tests {
     #[test]
     fn cr4_updates_are_add_only_and_exact() {
         const FIRMWARE: u64 = (1 << 17) | (1 << 23) | 1;
+        const HELD: u64 = (1 << 20) | (1 << 21) | (1 << 11);
         assert_eq!(
             Cr4Additions::extended_state().apply(FIRMWARE),
             FIRMWARE | (1 << 9) | (1 << 10) | (1 << 18)
@@ -431,7 +446,6 @@ mod tests {
             assert_eq!(additions.apply(FIRMWARE), expected);
         }
 
-        const HELD: u64 = (1 << 20) | (1 << 21) | (1 << 11);
         let repeated = Cr4Additions::none()
             .with_smep()
             .with_smep()

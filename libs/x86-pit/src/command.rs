@@ -15,6 +15,10 @@
 
 /// Which of the three counters the word addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Channel {
     /// Counter 0, historically the system timer interrupt.
     Zero,
@@ -45,6 +49,10 @@ impl Channel {
 
 /// How the sixteen-bit count crosses the eight-bit data port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Access {
     /// Low byte only.
     LowByte,
@@ -66,6 +74,10 @@ impl Access {
 
 /// What the counter does with its count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum OperatingMode {
     /// Mode 0: count down once, raise the output at zero, keep counting.
     InterruptOnTerminalCount,

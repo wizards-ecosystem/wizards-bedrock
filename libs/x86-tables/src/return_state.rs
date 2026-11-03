@@ -144,10 +144,10 @@ mod tests {
     fn state() -> UserReturnState {
         UserReturnState::new(
             0x4000,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             ORDINARY_FLAGS,
             0x8000,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         )
     }
 
@@ -160,19 +160,19 @@ mod tests {
     fn both_return_addresses_stay_in_the_low_user_half() {
         let at_edge = UserReturnState::new(
             USER_END - 1,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             ORDINARY_FLAGS,
             USER_END - 1,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         );
         assert_eq!(at_edge.validate(USER_CODE, USER_DATA, USER_END), Ok(()));
 
         let bad_instruction = UserReturnState::new(
             USER_END,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             ORDINARY_FLAGS,
             0x8000,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         );
         assert_eq!(
             bad_instruction.validate(USER_CODE, USER_DATA, USER_END),
@@ -181,10 +181,10 @@ mod tests {
 
         let bad_stack = UserReturnState::new(
             0x4000,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             ORDINARY_FLAGS,
             USER_END,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         );
         assert_eq!(
             bad_stack.validate(USER_CODE, USER_DATA, USER_END),
@@ -196,14 +196,14 @@ mod tests {
     fn both_user_selectors_are_exact() {
         for (code, stack, expected) in [
             (
-                Selector::new(1, 0).bits() as u64,
-                USER_DATA.bits() as u64,
-                UserReturnError::CodeSelector(Selector::new(1, 0).bits() as u64),
+                u64::from(Selector::new(1, 0).bits()),
+                u64::from(USER_DATA.bits()),
+                UserReturnError::CodeSelector(u64::from(Selector::new(1, 0).bits())),
             ),
             (
-                USER_CODE.bits() as u64,
-                Selector::new(2, 0).bits() as u64,
-                UserReturnError::StackSelector(Selector::new(2, 0).bits() as u64),
+                u64::from(USER_CODE.bits()),
+                u64::from(Selector::new(2, 0).bits()),
+                UserReturnError::StackSelector(u64::from(Selector::new(2, 0).bits())),
             ),
         ] {
             let candidate = UserReturnState::new(0x4000, code, ORDINARY_FLAGS, 0x8000, stack);
@@ -233,10 +233,10 @@ mod tests {
         ] {
             let candidate = UserReturnState::new(
                 0x4000,
-                USER_CODE.bits() as u64,
+                u64::from(USER_CODE.bits()),
                 flags,
                 0x8000,
-                USER_DATA.bits() as u64,
+                u64::from(USER_DATA.bits()),
             );
             assert_eq!(
                 candidate.validate(USER_CODE, USER_DATA, USER_END),
@@ -249,10 +249,10 @@ mod tests {
             let flags = ORDINARY_FLAGS | optional;
             let candidate = UserReturnState::new(
                 0x4000,
-                USER_CODE.bits() as u64,
+                u64::from(USER_CODE.bits()),
                 flags,
                 0x8000,
-                USER_DATA.bits() as u64,
+                u64::from(USER_DATA.bits()),
             );
             assert_eq!(candidate.validate(USER_CODE, USER_DATA, USER_END), Ok(()));
         }

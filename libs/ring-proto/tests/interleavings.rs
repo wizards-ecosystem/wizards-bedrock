@@ -36,7 +36,7 @@ fn exercise_production_queues() {
             if state.queues.submit().is_some() {
                 state.admitted += 1;
             }
-            assert!(state.queues.is_consistent());
+            assert!(state.queues.is_consistent(), "producer broke the ring");
             drop(state);
             thread::yield_now();
         }
@@ -51,7 +51,7 @@ fn exercise_production_queues() {
                 if took {
                     state.taken += 1;
                 }
-                assert!(state.queues.is_consistent());
+                assert!(state.queues.is_consistent(), "worker take broke the ring");
                 took
             };
             thread::yield_now();
@@ -62,7 +62,7 @@ fn exercise_production_queues() {
                     "an admitted operation was dropped"
                 );
                 state.completed += 1;
-                assert!(state.queues.is_consistent());
+                assert!(state.queues.is_consistent(), "worker completion broke the ring");
             }
             thread::yield_now();
         }
@@ -75,7 +75,7 @@ fn exercise_production_queues() {
             if state.queues.reap().is_some() {
                 state.reaped += 1;
             }
-            assert!(state.queues.is_consistent());
+            assert!(state.queues.is_consistent(), "consumer broke the ring");
             drop(state);
             thread::yield_now();
         }
@@ -104,10 +104,16 @@ fn exercise_production_queues() {
         "an admission was not completed"
     );
     assert_eq!(state.reaped, state.admitted, "a completion was not reaped");
-    assert_eq!(state.queues.outstanding(), 0);
-    assert!(state.queues.submissions().is_empty());
-    assert!(state.queues.completions().is_empty());
-    assert!(state.queues.is_consistent());
+    assert_eq!(state.queues.outstanding(), 0, "work remained outstanding");
+    assert!(
+        state.queues.submissions().is_empty(),
+        "a submission was left queued"
+    );
+    assert!(
+        state.queues.completions().is_empty(),
+        "a completion was left queued"
+    );
+    assert!(state.queues.is_consistent(), "the ring ended inconsistent");
 }
 
 #[test]

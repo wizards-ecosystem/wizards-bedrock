@@ -13,6 +13,10 @@ pub const TABLE_LEN: usize = 256;
 pub const TABLE_BYTES: usize = TABLE_LEN * size_of::<Gate>();
 
 /// Value the table's limit field takes: one less than its size.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 pub const TABLE_LIMIT: u16 = (TABLE_BYTES - 1) as u16;
 
 /// Present, ring 0, 64-bit interrupt gate.
@@ -60,6 +64,10 @@ impl Gate {
     /// # Panics
     ///
     /// Panics if `stack` exceeds 7.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     pub const fn interrupt(handler: u64, selector: Selector, stack: u8) -> Self {
         assert!(
             stack <= MAX_INTERRUPT_STACK,

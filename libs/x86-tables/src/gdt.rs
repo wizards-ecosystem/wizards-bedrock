@@ -136,7 +136,7 @@ mod tests {
     /// The two-bit descriptor privilege level, zero for every ring 0 entry.
     const PRIVILEGE: u64 = 0b11 << 45;
 
-    /// The two values every x86_64 kernel arrives at, which is the point of
+    /// The two values every `x86_64` kernel arrives at, which is the point of
     /// asserting them: if a bit moves, this is where it shows.
     /// A task-state descriptor sets the type and present bits and **nothing
     /// else** in the flag byte.
@@ -190,7 +190,7 @@ mod tests {
 
     /// The paired-root exit loads the user selectors from a read-only table,
     /// so the processor must never need to write a descriptor's accessed bit.
-    /// QEMU's TCG does not enforce that write; VMware's hardware did, and the
+    /// QEMU's TCG does not enforce that write; `VMware`'s hardware did, and the
     /// first `iretq` to ring 3 faulted inside the exit trampoline (D-426).
     #[test]
     fn every_code_and_data_descriptor_is_already_accessed() {

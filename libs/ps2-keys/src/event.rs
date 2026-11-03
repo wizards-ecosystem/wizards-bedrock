@@ -4,6 +4,10 @@ use crate::key::Key;
 
 /// Whether the key went down or came up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum KeyState {
     /// The key went down — also what a held key repeats.
     Pressed,

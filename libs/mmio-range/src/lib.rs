@@ -10,6 +10,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::copy_iterator)]
 
 use core::fmt;
 
@@ -37,13 +38,11 @@ impl AddressRange {
         if len == 0 || align == 0 || !align.is_power_of_two() {
             return None;
         }
-        let end = match base.checked_add(len) {
-            Some(end) => end,
-            None => return None,
+        let Some(end) = base.checked_add(len) else {
+            return None;
         };
-        let end = match end.checked_next_multiple_of(align) {
-            Some(end) => end,
-            None => return None,
+        let Some(end) = end.checked_next_multiple_of(align) else {
+            return None;
         };
         Some(Self {
             base: base & !(align - 1),
@@ -117,6 +116,10 @@ pub struct AccessOffsets {
     width: usize,
 }
 
+#[expect(
+    clippy::copy_iterator,
+    reason = "the cursor is a small value and advances only through a mutable borrow"
+)]
 impl Iterator for AccessOffsets {
     type Item = usize;
 

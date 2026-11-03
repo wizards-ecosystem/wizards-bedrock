@@ -266,7 +266,7 @@ proptest! {
             Placement::Top => prop_assert_eq!(usage.used(), 0, "the top used the stack"),
             Placement::Base => prop_assert_eq!(usage.headroom(), 0, "the base left headroom"),
             _ => prop_assert_eq!(
-                slot.usage_at(pointer - 1).map(|deeper| deeper.used()),
+                slot.usage_at(pointer - 1).map(stack_layout::StackUsage::used),
                 Some(usage.used() + 1),
                 "one byte deeper did not use exactly one byte more"
             ),
@@ -306,7 +306,7 @@ proptest! {
 fn the_half_open_property_reaches_every_boundary_class() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut crossing = 0usize;
@@ -355,7 +355,7 @@ fn the_half_open_property_reaches_every_boundary_class() {
 fn the_usage_and_span_properties_reach_every_placement_and_both_answers() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut places = [0usize; 5];
@@ -401,7 +401,7 @@ fn the_usage_and_span_properties_reach_every_placement_and_both_answers() {
 fn the_layout_properties_reach_multi_slot_windows() {
     const SAMPLES: usize = 4096;
     let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
+        cases: u32::try_from(SAMPLES).expect("sample count fits in u32"),
         ..Config::default()
     });
     let mut accepted = 0usize;

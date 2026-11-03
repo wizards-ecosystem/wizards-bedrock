@@ -41,6 +41,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::verbose_bit_mask)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -321,7 +324,7 @@ impl ExtendedCapability {
 
     /// Byte offset of the IOTLB register block: IRO times sixteen.
     ///
-    /// Within that block the IOTLB Invalidate register (IOTLB_REG) sits at
+    /// Within that block the IOTLB Invalidate register (`IOTLB_REG`) sits at
     /// [`iotlb_command::COMMAND_REGISTER`].
     pub const fn iotlb_register_offset_bytes(self) -> u64 {
         ((self.0 >> Self::IRO_SHIFT) & Self::IRO_MASK) * 16
@@ -456,6 +459,10 @@ pub const fn extended_interrupt_mode_enabled(value: u64) -> bool {
 }
 
 /// Whether IRTA selects exactly the two-entry table this kernel owns.
+#[expect(
+    clippy::verbose_bit_mask,
+    reason = "the mask names the low bits of the field"
+)]
 pub const fn interrupt_table_has_two_entries(value: u64) -> bool {
     value & 0xF == 0
 }
@@ -501,6 +508,10 @@ impl InvalidationDescriptor {
 
 /// A supported adjusted guest address width and its page-table depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum AddressWidth {
     /// 39-bit addresses, a 3-level second-level page table.
     Level3,
@@ -577,6 +588,9 @@ impl AddressWidth {
     /// not depend on the width, which only bounds how many levels a walk uses,
     /// so a caller iterates `0..self.levels()`.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
+        // The shift does not depend on the width. Reading it keeps this an
+        // instance method, which is how a walk names `0..self.levels()`.
+        let _ = self.address_bits();
         let shift = 12 + 9 * (level as u32);
         ((iova >> shift) & 0x1FF) as u16
     }
@@ -793,13 +807,13 @@ pub mod context_command {
     }
 }
 
-/// IOTLB invalidation through the IOTLB Invalidate register (IOTLB_REG).
+/// IOTLB invalidation through the IOTLB Invalidate register (`IOTLB_REG`).
 ///
 /// The register sits at [`COMMAND_REGISTER`](iotlb_command::COMMAND_REGISTER)
 /// within the IOTLB register block that
 /// [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
 pub mod iotlb_command {
-    /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
+    /// Offset of the IOTLB Invalidate register (`IOTLB_REG`) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;
 
     /// Invalidate IOTLB, bit 63 (set by software, cleared when done).
@@ -907,8 +921,12 @@ impl FaultRecording {
     const FAULT: u64 = 1 << 63;
     /// Request type, bit 126 (bit 62 of the high qword).
     const TYPE: u64 = 1 << 62;
-    /// Fault reason, bits 111:104 (bits 47:40 of the high qword).
-    const REASON_SHIFT: u32 = 40;
+    /// Fault reason, bits 103:96 (bits 39:32 of the high qword).
+    ///
+    /// Bits 123:104 are the PASID value. Reading FR from bit 104 reports that
+    /// field, which is zero on hardware without PASID, so every fault looks
+    /// like reason 0.
+    const REASON_SHIFT: u32 = 32;
     /// Eight fault-reason bits.
     const REASON_MASK: u64 = 0xFF;
     /// Source identifier, bits 79:64 (bits 15:0 of the high qword).
@@ -1092,7 +1110,7 @@ mod tests {
     fn sagaw_maps_each_level_to_its_own_bit() {
         // Bit (levels - 2), placed with an independent literal.
         for levels in 2u8..=5 {
-            let cap = Capability::from_bits(1 << (8 + (levels - 2) as u64));
+            let cap = Capability::from_bits(1 << (8 + u64::from(levels - 2)));
             assert!(cap.sagaw_supports(levels), "level {levels}");
             for other in 2u8..=5 {
                 if other != levels {
@@ -1516,11 +1534,12 @@ mod tests {
     #[test]
     fn fault_recording_positions_match_the_spec() {
         // Positions restated relative to the 128-bit record: F bit 127, T bit
-        // 126, FR bits 111:104, SID bits 79:64, FI bits 63:12.
+        // 126, FR bits 103:96, SID bits 79:64, FI bits 63:12. Bits 111:104
+        // are the low half of the PASID value, not the reason.
         assert_eq!(FaultRecording::FAULT, 1 << (127 - 64));
         assert_eq!(FaultRecording::TYPE, 1 << (126 - 64));
-        assert_eq!(FaultRecording::REASON_SHIFT, 104 - 64);
-        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 111:104");
+        assert_eq!(FaultRecording::REASON_SHIFT, 96 - 64);
+        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 103:96");
         assert_eq!(FaultRecording::SID_MASK, 0xFFFF, "SID bits 79:64");
     }
 
@@ -1528,7 +1547,9 @@ mod tests {
     fn a_recorded_fault_decodes_its_source_reason_and_address() {
         let record = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (1 << 63) | (1 << 62) | (0x0C << 40) | 0xBEEF,
+            // Reason 0x0C at bits 103:96, and 0xA5 in the PASID bits above it.
+            // A decoder that starts at bit 104 returns the PASID instead.
+            hi: (1 << 63) | (1 << 62) | (0x0C << (96 - 64)) | (0xA5 << (104 - 64)) | 0xBEEF,
         };
         assert!(record.is_fault());
         assert_eq!(record.source_id(), 0xBEEF);
@@ -1546,10 +1567,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     fn a_register_without_the_fault_bit_records_no_fault() {
         let clean = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (0x0C << 40) | 0xBEEF, // reason and SID set, but F clear
+            hi: (0x0C << (96 - 64)) | 0xBEEF, // reason and SID set, but F clear
         };
         assert!(!clean.is_fault());
 

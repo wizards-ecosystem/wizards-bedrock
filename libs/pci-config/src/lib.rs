@@ -3,7 +3,7 @@
 //! `wost` owns the CF8/CFC instructions; this crate owns their host-tested
 //! arithmetic. Offsets are dword-aligned, BAR masks are complemented in their
 //! register width, and 64-bit BARs consume two slots. CF8/CFC is the common
-//! mechanism on the QEMU i440fx and VMware 440BX targets (`012` §2).
+//! mechanism on the QEMU i440fx and `VMware` 440BX targets (`012` §2).
 //!
 //! # Examples
 //!
@@ -21,6 +21,15 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::large_stack_arrays)]
+#![warn(clippy::match_same_arms)]
+#![warn(clippy::needless_pass_by_value)]
+#![warn(clippy::panic_in_result_fn)]
+#![warn(clippy::similar_names)]
+#![warn(clippy::single_match_else)]
+#![warn(clippy::too_many_lines)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -137,11 +146,16 @@ impl Address {
     /// Device ownership is a bus/device/function claim. Treating two offsets
     /// in the same header as different identities would let two drivers claim
     /// the same function.
+    #[must_use]
     pub const fn function_base(self) -> Self {
         Self(self.0 & !0xFF)
     }
 
     /// Which bus this names.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn bus(self) -> u8 {
         (self.0 >> 16) as u8
     }
@@ -347,7 +361,7 @@ impl core::error::Error for FunctionClaimError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Class {
     /// The broad kind: `0x01` is mass storage, `0x06` a bridge.
-    pub class: u8,
+    pub code: u8,
     /// Within that kind: `0x08` under mass storage is a non-volatile memory
     /// controller.
     pub subclass: u8,
@@ -360,12 +374,16 @@ pub struct Class {
 
 impl Class {
     /// Decode the class word at [`header::CLASS`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub const fn from_bits(bits: u32) -> Self {
         Self {
             revision: bits as u8,
             interface: (bits >> 8) as u8,
             subclass: (bits >> 16) as u8,
-            class: (bits >> 24) as u8,
+            code: (bits >> 24) as u8,
         }
     }
 
@@ -375,16 +393,16 @@ impl Class {
     /// and `01:08:01` is NVMHCI, a different and older interface this driver
     /// would misprogram.
     pub const fn is_nvme(self) -> bool {
-        self.class == 0x01 && self.subclass == 0x08 && self.interface == 0x02
+        self.code == 0x01 && self.subclass == 0x08 && self.interface == 0x02
     }
 
     /// Whether this is a PCI-to-PCI bridge, and so a bus to descend into.
     ///
-    /// **Enumeration must recurse.** VMware places functions behind
+    /// **Enumeration must recurse.** `VMware` places functions behind
     /// `pciBridge0`–`pciBridge7`, so a scan of bus zero alone may never find
     /// the controller (`012` §2).
     pub const fn is_bridge(self) -> bool {
-        self.class == 0x06 && self.subclass == 0x04
+        self.code == 0x06 && self.subclass == 0x04
     }
 }
 
@@ -432,6 +450,10 @@ impl HeaderType {
 
 /// A base address register, decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum Bar {
     /// A memory window.
     Memory {
@@ -476,15 +498,28 @@ impl Bar {
     ///
     /// # Errors
     ///
-    /// `None` for the unsupported below-one-megabyte memory encoding or the
-    /// reserved memory encoding.
+    /// `None` for the unsupported below-one-megabyte memory encoding, the
+    /// reserved memory encoding, or an I/O address that does not fit the
+    /// sixteen-bit port space. Bits 31:16 of an I/O BAR are address, not
+    /// reserved flags; narrowing them would claim a different port.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     pub const fn decode(low: u32, high: u32) -> Option<Self> {
         if low == 0 {
             return Some(Self::Absent);
         }
         if low & Self::IS_IO != 0 {
+            // `From` and `TryFrom` are not callable from a const fn on this
+            // toolchain, so the widening is a cast and the fit check is a
+            // comparison. Bits 31:16 set means the port is outside I/O space.
+            let address = low & !0x3;
+            if address > u16::MAX as u32 {
+                return None;
+            }
             return Some(Self::Io {
-                port: (low & !0x3) as u16,
+                port: address as u16,
             });
         }
         let memory_type = low & Self::TYPE_MASK;
@@ -513,6 +548,10 @@ impl Bar {
 
 /// Register width used to interpret a probed memory-window mask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum MemoryWidth {
     /// One 32-bit base-address register.
     Bits32,
@@ -575,23 +614,29 @@ pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Opti
 /// `None` when the mask decodes nothing, or when the size will not fit the
 /// port space it claims to describe.
 ///
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 const fn io_window_size(mask: u32) -> Option<u16> {
-    let mask = mask & !0x3;
+    // Complement in the port space, not the 32-bit register. A decoder that
+    // implements only A[15:2] hardwires bits 31:16 to zero; treating those
+    // zeros as unimplemented size bits produces a window larger than the
+    // space and the probe then drops the ports.
+    let mask = (mask as u16) & !0x3;
     if mask == 0 {
         return None;
     }
     let size = (!mask).wrapping_add(1);
-    // A run that does not fit the sixteen-bit port space is a device
-    // misreporting, and claiming it would be claiming most of I/O space.
-    if size >> u16::BITS == 0 {
-        Some(size as u16)
-    } else {
-        None
-    }
+    if size == 0 { None } else { Some(size) }
 }
 
 /// One command-register access in a verified enable transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum CommandAccess {
     /// Read the command register. Only its low sixteen bits are consumed.
     Read,
@@ -601,6 +646,10 @@ pub enum CommandAccess {
 
 /// One configuration-space operation in the entry-time DMA fence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum HandoffAccess {
     /// Read the complete vendor/device identity dword.
     ReadIdentity,
@@ -622,18 +671,18 @@ pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xf0f0;
 /// Function authorities the platform PCI registry and kernel can hold at once.
 ///
 /// A unit-wide VT-d fence claims every live requester the unit governs. The
-/// default VMware machine alone presents 42, 32 of them root ports, so the
+/// default `VMware` machine alone presents 42, 32 of them root ports, so the
 /// bound is sized by the qualified platform rather than by the test machine.
 pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;
 
 /// Platform-bound policy for the entry-time DMA fence.
 ///
-/// The VMware profile recognizes one exact emulated 440BX host bridge whose
+/// The `VMware` profile recognizes one exact emulated 440BX host bridge whose
 /// command bit 2 is a read-only chipset control rather than a PCI requester
 /// bus-master enable, and one exact PIIX4 ISA bridge whose read-only bit 2 does
 /// govern a requester: its 8237 controllers. That requester stays in every
 /// inventory and is quiesced at the controllers instead. The caller must select
-/// the profile only from requester-inaccessible VMware CPU evidence; every
+/// the profile only from requester-inaccessible `VMware` CPU evidence; every
 /// other function and every near miss remains under the strict BME-off rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffFencePolicy {
@@ -656,7 +705,7 @@ pub struct QualifiedNonRequester {
 /// Exact platform evidence that one requester's bus mastering is held off at
 /// its DMA engines because its command bit 2 cannot be cleared.
 ///
-/// Construction is private to the entry fence, after the exact VMware PIIX4
+/// Construction is private to the entry fence, after the exact `VMware` PIIX4
 /// profile matched and both 8237 controllers were masked with no request
 /// pending. The function remains a requester in every inventory.
 #[derive(Debug)]
@@ -753,7 +802,7 @@ impl HandoffFencePolicy {
         }
     }
 
-    /// Admit only VMware's exact non-requesting 440BX host-bridge command.
+    /// Admit only `VMware`'s exact non-requesting 440BX host-bridge command.
     pub const fn vmware_440bx() -> Self {
         Self {
             kind: HandoffFencePolicyKind::Vmware440Bx,
@@ -795,7 +844,7 @@ impl HandoffFencePolicy {
         matches!(self.kind, HandoffFencePolicyKind::Vmware440Bx)
     }
 
-    /// Whether `at` is VMware's exact PIIX4 ISA bridge with read-only BME.
+    /// Whether `at` is `VMware`'s exact PIIX4 ISA bridge with read-only BME.
     fn classify_isa_requester(
         self,
         at: Address,
@@ -990,6 +1039,14 @@ impl core::error::Error for HandoffFenceError {}
 /// Returns the exact unavailable cycle, refused command readback or changing
 /// function identity. A refusal never restores BME on a function already
 /// fenced.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the steps are one ordered transaction; splitting them would hide that order"
+)]
 pub fn fence_dma_handoff(
     policy: HandoffFencePolicy,
     mut access: impl FnMut(Address, HandoffAccess) -> Option<u32>,
@@ -1502,6 +1559,12 @@ impl core::error::Error for EnableError {}
 ///
 /// This is the safe first stage for a memory-mapped controller whose firmware
 /// DMA state must be disabled before bus mastering is admitted.
+///
+/// # Errors
+///
+/// [`EnableFailure`] when the lease is stale, configuration access fails, or
+/// the device does not read back the requested command word. A failed
+/// restoration is part of that failure.
 pub fn enable_memory_space<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -1550,6 +1613,16 @@ pub fn fence_bus_master<const N: usize>(
 ///
 /// This is the last selected-function check before a unit-wide VT-d write.
 /// It neither changes nor consumes the command owner.
+///
+/// # Errors
+///
+/// [`EnableError::Stale`] when `authority` or `state` is not the live lease,
+/// [`EnableError::Access`] when the read fails, and [`EnableError::Changed`]
+/// when the command word is no longer the installed value.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "each narrowing is into a register field or a value already bounded to that width"
+)]
 pub fn verify_bus_master_fence<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -1614,6 +1687,18 @@ fn enable_bus_master_with_leases<const N: usize>(
     )
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the assert is a broken invariant, not a failure the caller handles"
+)]
+#[expect(
+    clippy::single_match_else,
+    reason = "the match keeps the failure path next to the success path"
+)]
 fn begin_command<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -1668,6 +1753,10 @@ fn begin_command<const N: usize>(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn change_command(
     at: Address,
     original: u16,
@@ -1707,6 +1796,10 @@ fn admit_bus_master<const N: usize>(
     admit_bus_master_with_leases(&mut functions.commands, authority.lease, state, access)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn admit_bus_master_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     function: FunctionLease,
@@ -1771,6 +1864,10 @@ pub fn disable_bus_master_for_retirement<const N: usize>(
     )
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn disable_bus_master_for_retirement_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     function: FunctionLease,
@@ -1833,6 +1930,10 @@ pub fn restore_command<const N: usize>(
     restore_command_with_leases(&mut functions.commands, authority, state, access)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn restore_command_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -1922,6 +2023,10 @@ pub fn commit_command<const N: usize>(
     commit_command_with_leases(&mut functions.commands, authority, state, access)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn commit_command_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -1965,6 +2070,10 @@ fn commit_command_with_leases<const N: usize>(
 /// Keeping the sequence here makes its ordering and rollback host-testable;
 /// the adapter only has to keep its hardware lock for the closure's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum ProbeAccess {
     /// Read the command register. Only its low sixteen bits are consumed.
     ReadCommand,
@@ -2112,6 +2221,10 @@ impl core::error::Error for BarIdentityError {}
 
 /// One access in the indivisible BAR-identity and memory-decode transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed encoding; a new variant is a protocol bug, not a compatible extension"
+)]
 pub enum BarEnableAccess {
     /// Read one BAR slot before any command write.
     ReadBar(usize),
@@ -2145,6 +2258,10 @@ impl<const N: usize> FunctionClaims<N> {
         self.slots.iter().position(|held| *held == Some(function))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     fn holds_bar(&self, authority: &BarAuthority) -> bool {
         let Some(slot) = self.slot_of(authority.function) else {
             return false;
@@ -2188,6 +2305,10 @@ pub fn admit_mapped_bus_master<const N: usize>(
 ///
 /// Refuses a stale or cross-function probe, a non-memory slot, or a BAR whose
 /// existing mapping authority has not been returned.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 pub fn bind_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -2232,6 +2353,10 @@ pub fn bind_memory_bar<const N: usize>(
 ///
 /// Returns the unchanged authority if its function generation or BAR slot is
 /// no longer live in this registry.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 pub fn release_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: BarAuthority,
@@ -2346,6 +2471,10 @@ pub fn enable_memory_bar<const N: usize>(
     .map_err(BarEnableError::Command)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn admit_memory_space_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     function: FunctionLease,
@@ -2538,6 +2667,14 @@ pub fn probe_bars<const N: usize, E>(
     probe_bars_with_leases(&mut functions.commands, authority, access)
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the assert is a broken invariant, not a failure the caller handles"
+)]
+#[expect(
+    clippy::single_match_else,
+    reason = "the match keeps the failure path next to the success path"
+)]
 fn probe_bars_with_leases<const N: usize, E>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -2606,6 +2743,10 @@ pub fn retry_probe<const N: usize, E>(
     retry_probe_with_leases(&mut functions.commands, authority, retry, access)
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the assert is a broken invariant, not a failure the caller handles"
+)]
 fn retry_probe_with_leases<const N: usize, E>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -2637,6 +2778,14 @@ fn retry_probe_with_leases<const N: usize, E>(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the steps are one ordered transaction; splitting them would hide that order"
+)]
 fn probe_bars_unleased<E>(
     registers: usize,
     mut access: impl FnMut(ProbeAccess) -> Result<u32, E>,
@@ -2786,6 +2935,10 @@ fn probe_bars_unleased<E>(
     })
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn restore_probe_bars<E>(
     mut restore: ProbeRestore,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
@@ -2819,6 +2972,10 @@ fn restore_probe_bars<E>(
     Ok(restore)
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the register is the low sixteen bits of the dword"
+)]
 fn finish_probe_restoration<E>(
     restore: ProbeRestore,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
@@ -3280,6 +3437,10 @@ impl PciTopology {
     ///
     /// The same topology errors as [`Self::observe`]. The consumed authority
     /// can name only the exact platform tuple recognized by the handoff policy.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the token is taken by value so the caller gives up its copy"
+    )]
     pub fn observe_non_requester(
         &mut self,
         authority: QualifiedNonRequester,
@@ -3318,6 +3479,10 @@ impl PciTopology {
     /// The same topology errors as [`Self::observe`], or
     /// [`TopologyError::QuiescedRequesterChanged`] when any field the entry
     /// fence bound differs.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the token is taken by value so the caller gives up its copy"
+    )]
     pub fn observe_quiesced_requester(
         &mut self,
         authority: QuiescedIsaRequester,
@@ -3371,6 +3536,10 @@ impl PciTopology {
     /// Returns [`TopologyError`] when a present function is unrooted, a child
     /// range escapes its parent, or unrelated branches overlap. A retained
     /// observation error is returned first and requires [`Self::reset`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub fn seal(&mut self) -> Result<(), TopologyError> {
         self.sealed = false;
         if let Some(error) = self.observation_failure {
@@ -3454,6 +3623,10 @@ impl PciTopology {
     }
 
     /// The sealed routing range of one exact bridge function.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     pub fn bridge_range(&self, at: Address) -> Option<BridgeRange> {
         if !self.sealed {
             return None;
@@ -3491,6 +3664,10 @@ impl PciTopology {
         (bits != 0).then_some(Address(bits))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the field occupies one byte of the register"
+    )]
     fn secondary_for(&self, bridge: Address) -> u8 {
         for secondary in 1u16..=u16::from(u8::MAX) {
             let secondary = secondary as u8;
@@ -3548,6 +3725,10 @@ fn function_index(at: Address) -> usize {
         + usize::from(at.function())
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the value is bounded to the thirty-two-bit field"
+)]
 fn address_for_index(index: usize) -> Address {
     let bus = index / (usize::from(DEVICES) * usize::from(FUNCTIONS));
     let on_bus = index % (usize::from(DEVICES) * usize::from(FUNCTIONS));
@@ -3559,6 +3740,10 @@ fn address_for_index(index: usize) -> Address {
 }
 
 /// A bridge's primary bus number, out of the word at [`header::BUS_NUMBERS`].
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field occupies one byte of the register"
+)]
 pub const fn primary_bus(bits: u32) -> u8 {
     bits as u8
 }
@@ -3566,6 +3751,10 @@ pub const fn primary_bus(bits: u32) -> u8 {
 /// A bridge's secondary bus number, out of the word at [`header::BUS_NUMBERS`].
 ///
 /// The bus behind it, which is the number a recursive enumeration descends to.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field occupies one byte of the register"
+)]
 pub const fn secondary_bus(bits: u32) -> u8 {
     (bits >> 8) as u8
 }
@@ -3574,6 +3763,10 @@ pub const fn secondary_bus(bits: u32) -> u8 {
 ///
 /// The highest bus behind it: the bridge forwards to every bus from its
 /// secondary through this one.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the field occupies one byte of the register"
+)]
 pub const fn subordinate_bus(bits: u32) -> u8 {
     (bits >> 16) as u8
 }
@@ -3690,6 +3883,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "these arms name different operations that currently share a result"
+    )]
     fn every_handoff_fence_uncertainty_refuses_the_boundary() {
         let target = Address::new(0, 0, 0, 0).expect("target function");
         let identity = 0x1234_5678;
@@ -3767,7 +3964,7 @@ mod tests {
         ));
     }
 
-    /// VMware Workstation 17.6's default segment as its entry fence saw it on
+    /// `VMware` Workstation 17.6's default segment as its entry fence saw it on
     /// 2026-10-20: BDF, identity, class dword, command before, command after
     /// a BME-clear write. `00:00.0` and `00:07.0` hard-wire bit 2.
     type CapturedFunction = ((u8, u8, u8), u32, u32, u16, u16);
@@ -3786,7 +3983,7 @@ mod tests {
         ((0x0b, 0x00, 0), 0x07f0_15ad, 0x0108_0200, 0x0007, 0x0003),
     ];
 
-    /// The thirty-two VMware PCIe root ports at `00:15.0` through `00:18.7`.
+    /// The thirty-two `VMware` PCIe root ports at `00:15.0` through `00:18.7`.
     const VMWARE_ROOT_PORT: (u32, u32, u16, u16) = (0x07a0_15ad, 0x0604_0001, 0x0007, 0x0003);
 
     fn vmware_function(at: Address) -> Option<(u32, u32, u16, bool)> {
@@ -3809,6 +4006,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "the test builds one fixed image of every command word on the bus"
+    )]
     fn the_captured_vmware_segment_fences_and_fits_the_function_authority_limit() {
         let mut commands = [[[None::<u16>; FUNCTIONS as usize]; DEVICES as usize]; 256];
         let mut quiesces = 0;
@@ -3852,6 +4053,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the steps are one ordered transaction; splitting them would hide that order"
+    )]
     fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
         let isa = Address::new(0, 7, 0, 0).expect("VMware ISA bridge");
         let identity = 0x7110_8086;
@@ -4137,6 +4342,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the steps are one ordered transaction; splitting them would hide that order"
+    )]
     fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command() {
         let host = Address::new(0, 0, 0, 0).expect("VMware host bridge");
         let identity = 0x7190_8086;
@@ -5566,6 +5775,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn an_address_puts_every_field_where_the_manual_says() {
         // Pairwise-distinct fields expose every accidental swap (D-136).
         let at = Address::new(0x12, 0x1A, 0x05, 0x3C).expect("a valid address");
@@ -5579,6 +5792,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn every_address_round_trips_through_its_fields() {
         for bus in [0u8, 1, 0x7F, 0x80, 0xFE, 0xFF] {
             for device in 0..DEVICES {
@@ -5602,6 +5819,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn every_offset_of_one_function_has_one_identity() {
         for start in (0..HEADER_BYTES).step_by(4) {
             let identity = Address::new(0x12, 0x1A, 5, start).expect("valid");
@@ -5940,6 +6161,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn an_address_that_cannot_be_encoded_is_refused() {
         assert!(Address::new(0, DEVICES, 0, 0).is_none(), "device 32");
         assert!(Address::new(0, 0, FUNCTIONS, 0).is_none(), "function 8");
@@ -5965,7 +6190,7 @@ mod tests {
     fn the_class_word_is_read_as_four_separate_bytes() {
         // Distinct bytes prevent one field from standing in for another.
         let class = Class::from_bits(0x0C_03_30_A1);
-        assert_eq!(class.class, 0x0C);
+        assert_eq!(class.code, 0x0C);
         assert_eq!(class.subclass, 0x03);
         assert_eq!(class.interface, 0x30);
         assert_eq!(class.revision, 0xA1);
@@ -6027,6 +6252,12 @@ mod tests {
         assert_eq!(Bar::decode(0, 0), Some(Bar::Absent));
 
         assert_eq!(Bar::decode(0xC001, 0), Some(Bar::Io { port: 0xC000 }));
+        // The top of the sixteen-bit port space still decodes. One bit above
+        // it must not come back as port 0: `0x1_0001 & !0x3` is `0x1_0000`,
+        // and truncating that word claims the wrong device.
+        assert_eq!(Bar::decode(0xFFFF, 0), Some(Bar::Io { port: 0xFFFC }));
+        assert_eq!(Bar::decode(0x1_0001, 0), None);
+        assert_eq!(Bar::decode(0xFFFF_0001, 0), None);
 
         assert_eq!(
             Bar::decode(0xFEBF_0000, 0),
@@ -6131,6 +6362,10 @@ mod tests {
             );
         }
         assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
+        // The same windows with bits 31:16 hardwired to zero. Complementing
+        // the full dword used to call these too big to be ports.
+        assert_eq!(io_window_size(0x0000_FFFC), Some(4));
+        assert_eq!(io_window_size(0x0000_FFE0), Some(32));
     }
 
     #[test]
@@ -6736,6 +6971,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     fn a_bar_authority_names_its_index_and_refuses_foreign_or_forged_identities() {
         let mut functions = FunctionClaims::<2>::new();
         let first = functions
@@ -6777,6 +7016,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "the names are the two values this check is distinguishing"
+    )]
     fn enabling_memory_decode_keeps_a_firmware_enabled_bit_and_refuses_a_retired_phase() {
         let mut functions = FunctionClaims::<1>::new();
         let function = functions
@@ -6831,13 +7074,20 @@ mod tests {
                 .expect("function authority");
             (functions, authority)
         }
-        fn position(fake: &FakeConfig, want: impl Fn(&ProbeAccess) -> bool, last: bool) -> usize {
+        enum Edge {
+            First,
+            Last,
+        }
+        #[expect(
+            clippy::needless_pass_by_value,
+            reason = "the token is taken by value so the caller gives up its copy"
+        )]
+        fn position(fake: &FakeConfig, want: impl Fn(&ProbeAccess) -> bool, edge: Edge) -> usize {
             let events = fake.events();
             let matches = |event: &Option<ProbeAccess>| event.as_ref().is_some_and(&want);
-            let found = if last {
-                events.iter().rposition(matches)
-            } else {
-                events.iter().position(matches)
+            let found = match edge {
+                Edge::Last => events.iter().rposition(matches),
+                Edge::First => events.iter().position(matches),
             };
             found.expect("the rehearsal performed the access")
         }
@@ -6848,7 +7098,7 @@ mod tests {
         let first_bar_write = position(
             &clean,
             |event| matches!(event, ProbeAccess::WriteBar(..)),
-            false,
+            Edge::First,
         );
 
         let (mut rehearsal, rehearsed) = claimed();
@@ -6859,7 +7109,7 @@ mod tests {
         let restore_write = position(
             &failing,
             |event| matches!(event, ProbeAccess::WriteCommand(_)),
-            true,
+            Edge::Last,
         );
 
         let (mut functions, authority) = claimed();
@@ -6914,6 +7164,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "these arms name different operations that currently share a result"
+    )]
     fn changed_or_foreign_bar_identity_performs_zero_command_writes() {
         let mut functions = FunctionClaims::<2>::new();
         let first = functions
@@ -7035,6 +7289,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the register is the low sixteen bits of the dword"
+    )]
     fn exact_wide_bar_reads_precede_the_first_decode_write() {
         let mut functions = FunctionClaims::<1>::new();
         let function = functions

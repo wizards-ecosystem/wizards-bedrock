@@ -34,6 +34,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::exhaustive_enums)]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
@@ -101,6 +103,10 @@ impl Register {
     /// The block is laid out so that each sixteen-byte slot in the page becomes
     /// one consecutive register number from the base of the block — the same table,
     /// divided by its own stride.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the value is bounded to the thirty-two-bit field"
+    )]
     pub const fn msr(self) -> u32 {
         FIRST_MSR + (self.0 / REGISTER_STRIDE) as u32
     }
