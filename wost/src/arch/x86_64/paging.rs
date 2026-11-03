@@ -556,8 +556,15 @@ pub struct BarUnmapFailure {
 }
 
 /// Result of removing a function-bound BAR mapping.
+///
+/// Kernel matches name both outcomes. `non_exhaustive` waits until those
+/// matches gain a wildcard.
 #[derive(Debug)]
 #[must_use = "a refused BAR unmap retains the only cleanup authority"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/mem.rs matches both outcomes without a wildcard"
+)]
 pub enum BarUnmapOutcome {
     /// Every leaf and the device ledger entry were removed.
     Unmapped(pci_config::BarAuthority),
@@ -817,6 +824,10 @@ impl AddressSpace {
     }
 
     /// The physical address of the top-level table — what `CR3` would hold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the space has been reclaimed and no longer has a root.
     pub const fn root(&self) -> Paddr {
         match self.roots {
             Some(roots) => roots.full_root(),
@@ -1146,6 +1157,10 @@ impl AddressSpace {
     /// # Errors
     ///
     /// As [`map_owned`](Self::map_owned).
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs passes BootRegion by value; taking a reference is a kernel edit"
+    )]
     pub fn map_boot(
         &mut self,
         virtual_base: u64,
@@ -1353,7 +1368,7 @@ impl AddressSpace {
         if stack_refusal(&STACK_MAPPINGS_BEFORE_REFUSAL) {
             return Err(StackMapError::Mapping(MapError::OutOfMemory));
         }
-        let pages = slot.stack_len().div_ceil(PAGE_SIZE) as usize;
+        let pages = crate::usize_from_u64(slot.stack_len().div_ceil(PAGE_SIZE));
         let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         if !run.zero() {
             return Err(MapError::Unreachable(run.address()).into());
@@ -1405,7 +1420,7 @@ impl AddressSpace {
                 roots: self.roots(),
                 pending: StackCleanup::One(*slot),
             })?;
-        let pages = returned.pages() as usize;
+        let pages = crate::usize_from_u64(returned.pages());
         drop(returned);
         Ok(pages)
     }
@@ -1449,7 +1464,7 @@ impl AddressSpace {
                     },
                 })?;
             returned_pages = returned_pages
-                .checked_add(returned.pages() as usize)
+                .checked_add(crate::usize_from_u64(returned.pages()))
                 .unwrap_or_else(|| panic!("stack rollback page accounting overflowed"));
             drop(returned);
             remaining -= 1;
@@ -1569,6 +1584,12 @@ impl AddressSpace {
     /// The KPTI owner must mint the exact linker witness; mapping or validation
     /// refusal returns both roots and every intermediate table before this
     /// returns.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::EntryEnclaveUnavailable`] when the entry path is not
+    /// implemented, and the same root and direct-map failures as
+    /// [`for_user`](Self::for_user).
     pub fn for_user_isolated() -> Result<Self, MapError> {
         if !super::kpti::entry_path_is_implemented() {
             return Err(MapError::EntryEnclaveUnavailable);
@@ -2129,6 +2150,10 @@ impl AddressSpace {
     ///
     /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if the device
     /// window is exhausted.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs and selftest.rs pass AdmittedDeviceRange by value"
+    )]
     pub fn map_device(&mut self, admitted: AdmittedDeviceRange) -> Result<DeviceMapping, MapError> {
         self.map_device_range(&admitted)
     }
@@ -2247,6 +2272,10 @@ impl AddressSpace {
     /// [`MapError::NotMapped`] if its ownership record or a leaf is gone, and
     /// [`MapError::Discontiguous`] if a leaf no longer names the exact device
     /// extent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a leaf that passed preflight is absent when it is cleared.
     pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), DeviceUnmapFailure> {
         if let Err(reason) = self.verify_device_unmap(&region) {
             return Err(DeviceUnmapFailure { reason, region });
@@ -2339,6 +2368,10 @@ impl AddressSpace {
     ///
     /// As [`map_stack`](Self::map_stack). A refusal rolls every earlier stack
     /// back; [`StackMapError::Rollback`] reports any cleanup refusal exactly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a single-stack rollback loses its cleanup authority.
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, StackMapError> {
         let mut stacks = Vec::new();
         stacks
@@ -2383,6 +2416,16 @@ impl AddressSpace {
     }
 
     /// Remove every stack represented by `arena`, returning its frames.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::NotYours`] inside the rollback when `arena` belongs to
+    /// another root. A later unmap refusal keeps the remaining slots in the
+    /// returned [`StackRollback`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "kernel/src/mem.rs passes StackArena by value"
+    )]
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
         if arena.roots != self.roots() {
             return Err(StackRollback {
@@ -2399,6 +2442,10 @@ impl AddressSpace {
     }
 
     /// Continue the exact stack cleanup represented by `rollback`.
+    ///
+    /// # Errors
+    ///
+    /// The same rollback, still holding any stacks this attempt did not remove.
     #[cfg(feature = "selftest")]
     pub fn resume_stack_rollback(
         &mut self,
@@ -2598,6 +2645,15 @@ impl AddressSpace {
     /// A refusal leaves the space and one-shot release evidence reusable. A
     /// success empties the space and makes every later operation refuse
     /// (D-123).
+    ///
+    /// # Errors
+    ///
+    /// [`ReclaimFailure`] when the space is still active, still bound without
+    /// `released`, or a table frame cannot be returned. The space stays usable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a reclaimed space is asked to reclaim again.
     pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimFailure> {
         // A bound space needs the task table's linear `Released` evidence, and
         // a repeat could mint an owner for frame zero (D-123, D-139).
@@ -2672,7 +2728,7 @@ impl AddressSpace {
                 Some(_) => {}
             }
         }
-        if self.roots_are_active(roots, cpu::page_table_base()) {
+        if Self::roots_are_active(roots, cpu::page_table_base()) {
             return Err(ReclaimFailure {
                 reason: ReclaimError::Active(cpu::page_table_base()),
                 released,
@@ -2727,7 +2783,7 @@ impl AddressSpace {
         live
     }
 
-    fn roots_are_active(&self, roots: AddressSpaceRoots, current_root: Paddr) -> bool {
+    fn roots_are_active(roots: AddressSpaceRoots, current_root: Paddr) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
     }
 
@@ -2740,7 +2796,7 @@ impl AddressSpace {
     #[cfg(feature = "selftest")]
     pub fn permanent_root_blocks_reclaim_for_test(&self) -> bool {
         self.roots
-            .is_some_and(|roots| self.roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
+            .is_some_and(|roots| Self::roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
     }
 
     /// Whether the device ledger independently blocks table reclaim.
@@ -2842,10 +2898,9 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
-        if self
-            .roots
-            .is_some_and(|roots| self.bound || self.roots_are_active(roots, cpu::page_table_base()))
-            && !self.shared.is_empty()
+        if self.roots.is_some_and(|roots| {
+            self.bound || Self::roots_are_active(roots, cpu::page_table_base())
+        }) && !self.shared.is_empty()
         {
             let keepalives = core::mem::take(&mut self.shared);
             core::mem::forget(keepalives);
@@ -2889,6 +2944,11 @@ impl EntrySlot {
 fn entry_slot(table: Paddr, index: usize) -> Result<EntrySlot, MapError> {
     assert!(index < ENTRIES, "a level's index is always below 512");
     let base = mm::direct_pointer(table, PAGE_SIZE).ok_or(MapError::Unreachable(table))?;
+    // A direct-mapped frame is page-aligned, which is stricter than `Entry`.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "direct_pointer returns a page-aligned frame and Entry is eight bytes"
+    )]
     let pointer = base.cast::<Entry>().wrapping_add(index);
     let pointer = NonNull::new(pointer).ok_or(MapError::Unreachable(table))?;
     Ok(EntrySlot { pointer })
@@ -4389,6 +4449,10 @@ impl DeviceMapping {
     /// The mapping is not promised permanent: the unique region retains this
     /// token, and
     /// [`AddressSpace::unmap_device`] consumes both before clearing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` when the mapping is no longer live.
     pub fn claim_releasable(self) -> Result<ReleasableDevice, Self> {
         if !self.is_live() {
             return Err(self);
@@ -4434,6 +4498,10 @@ impl DeviceMapping {
     }
 
     /// Claim while a compatible user root is actually loaded by the CPU.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test closure takes the mapping twice.
     #[cfg(feature = "selftest")]
     pub fn claim_releasable_under_for_test(
         self,
@@ -4460,20 +4528,20 @@ impl DeviceMapping {
     /// Substitute one physical leaf while exercising the real claim door.
     #[cfg(feature = "selftest")]
     pub fn rejects_physical_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::Physical)
+        self.rejects_substitution_for_test(page, &DeviceSubstitution::Physical)
     }
 
     /// Substitute one leaf's cache policy while exercising the real claim door.
     #[cfg(feature = "selftest")]
     pub fn rejects_cache_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::CachePolicy)
+        self.rejects_substitution_for_test(page, &DeviceSubstitution::CachePolicy)
     }
 
     #[cfg(feature = "selftest")]
     fn rejects_substitution_for_test(
         self,
         page: usize,
-        substitution: DeviceSubstitution,
+        substitution: &DeviceSubstitution,
     ) -> (Self, bool) {
         let Ok(page_count) = usize::try_from(self.pages / PAGE_SIZE) else {
             return (self, false);
@@ -4597,11 +4665,21 @@ impl ReleasableDevice {
     }
 
     /// Read one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`](crate::mmio::MmioError) when `offset` is misaligned or
+    /// outside the device window.
     pub fn read_u32(&self, offset: usize) -> Result<u32, crate::mmio::MmioError> {
         MmioRegion::read_u32(&self.registers, offset)
     }
 
     /// Write one register word.
+    ///
+    /// # Errors
+    ///
+    /// [`MmioError`](crate::mmio::MmioError) when `offset` is misaligned or
+    /// outside the device window.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), crate::mmio::MmioError> {
         MmioRegion::write_u32(&mut self.registers, offset, value)
     }

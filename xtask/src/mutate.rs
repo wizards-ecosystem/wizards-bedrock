@@ -9875,8 +9875,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 876,
         file: "wost/src/arch/x86_64/interrupt.rs",
-        find: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
-        replace: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
+        find: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
+        replace: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: &super::usercopy::RecoveryTarget) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
         breaks: "the user-copy resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -9886,8 +9886,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 877,
         file: "wost/src/arch/x86_64/interrupt.rs",
-        find: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
-        replace: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
+        find: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: &super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
+        replace: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: &super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
         breaks: "the write-protection resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -10043,7 +10043,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
+    interrupt::resume_usercopy(frame, &RecoveryTarget::fixup())
 }"#,
         replace: r#"impl RecoveryTarget {
     fn fixup() -> Self {
@@ -10056,7 +10056,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
 }
 
 fn hostile_resume(frame: &interrupt::TrapFrame) -> bool {
-    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
+    interrupt::resume_usercopy(frame, &RecoveryTarget::fixup())
 }
 
 /// Resume a faulting user copy at its fixup, if that is what faulted.
@@ -13309,8 +13309,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1555,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "            self.root.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.root.address() {\n",
-        replace: "            self.context.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.context.address() {\n",
+        find: "            self.root.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(\n            &mut self.registers,\n            crate::usize_from_u64(vtd::GCMD),\n            command,\n        )?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR))?;\n        if root_table_address(pointer) == self.root.address() {\n",
+        replace: "            self.context.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(\n            &mut self.registers,\n            crate::usize_from_u64(vtd::GCMD),\n            command,\n        )?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR))?;\n        if root_table_address(pointer) == self.context.address() {\n",
         breaks: "the root pointer is programmed with the context table's address and read back as expected, so the unit walks a table the kernel never meant as its root",
         reddens: Caught::Panic {
             marker: "the bound-space witness did not retire",
@@ -19247,8 +19247,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1714,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.switch_queued_invalidation(true)?;\n        let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;",
-        replace: "        let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;\n        self.switch_queued_invalidation(true)?;",
+        find: "        self.switch_queued_invalidation(true)?;\n        let observed_queue = read_u64(&self.registers, crate::usize_from_u64(vtd::IQA))?;",
+        replace: "        let observed_queue = read_u64(&self.registers, crate::usize_from_u64(vtd::IQA))?;\n        self.switch_queued_invalidation(true)?;",
         breaks: "the invalidation queue is read back before the hardware enables queued invalidation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19780,7 +19780,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1763,
         file: "wost/src/arch/x86_64/apic.rs",
-        find: "        if !Entry::from_bits(InitializationRegisters::read(&registers, entry) as u32).is_masked() {\n            return Err(ApicError::NotResponding);\n        }",
+        find: "        if !Entry::from_bits(crate::u32_from_u64(InitializationRegisters::read(\n            &registers, entry,\n        )))\n        .is_masked()\n        {\n            return Err(ApicError::NotResponding);\n        }",
         replace: "        let _ = InitializationRegisters::read(&registers, entry);",
         breaks: "APIC takeover can publish after a local source refuses its mask write",
         reddens: Caught::Check("unmaskable or unknown apic source inventories poison takeover"),
@@ -19984,8 +19984,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1783,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "            self.poll_u64(vtd::CCMD as usize, context_command::global_completed)?;",
-        replace: "            self.poll_u64(vtd::CCMD as usize, context_command::completed)?;",
+        find: "            self.poll_u64(\n                crate::usize_from_u64(vtd::CCMD),\n                context_command::global_completed,\n            )?;",
+        replace: "            self.poll_u64(\n                crate::usize_from_u64(vtd::CCMD),\n                context_command::completed,\n            )?;",
         breaks: "VT-d context invalidation accepts an ignored global request",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20105,8 +20105,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1794,
         file: "wost/src/mm/mod.rs",
-        find: "        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
-        replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
+        find: "        unsafe { word.write_volatile(value.to_le()) };",
+        replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { word.write_volatile(value.to_le()) };",
         breaks: "a permission byte becomes visible before the atomic VT-d entry publication",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -26836,8 +26836,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 2438,
         file: "xtask/src/qemu.rs",
-        find: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator,",
-        replace: "        vars_firmware: firmware(directory, VARS_FIRMWARE)?,\n        emulator: directory.join(exe_name(\"qemu-system-x86_64\")),",
+        find: "        vars_firmware: firmware(&emulator, VARS_FIRMWARE)?,\n        emulator,",
+        replace: "        vars_firmware: firmware(&emulator, VARS_FIRMWARE)?,\n        emulator: emulator.with_file_name(exe_name(\"qemu-system-x86_64\")),",
         breaks: "an explicit QEMU executable is replaced by the default filename",
         reddens: Caught::HostTest {
             package: "xtask",

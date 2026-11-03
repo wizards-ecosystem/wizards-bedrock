@@ -249,6 +249,10 @@ impl core::error::Error for VtdError {}
 
 /// What the unit reported about itself when it was taken over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is one independent VT-d capability bit reported at takeover"
+)]
 pub struct UnitFacts {
     /// The raw Capability register.
     pub capability: u64,
@@ -349,6 +353,10 @@ impl DmaDomain<'_> {
 /// Result of reusing a live interrupt owner for another DMA requester.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a retargeted VT-d owner must be installed or quarantined"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
+)]
 pub enum Retargeting {
     /// Translation is active through the replacement requester's tables.
     Retargeted,
@@ -361,6 +369,10 @@ pub enum Retargeting {
 /// The ownership-preserving result of establishing one VT-d domain.
 #[derive(Debug)]
 #[must_use = "a post-transition VT-d owner must be installed or quarantined"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "kernel/src/iommu.rs matches every variant without a wildcard"
+)]
 pub enum Establishment {
     /// Translation is active through the complete new owner.
     Established(Vtd),
@@ -416,6 +428,10 @@ impl Vtd {
     /// an access, the unit reports no usable width or domain, firmware's state
     /// will not quiesce, a table frame is unavailable or misaligned, or the
     /// hardware does not accept the root-table pointer or translation.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "kernel/src/iommu.rs passes the platform fact as true; an enum is a kernel edit"
+    )]
     pub fn establish_deny_all(
         registers: ReleasableDevice,
         platform_interrupt_remapping: bool,
@@ -441,7 +457,7 @@ impl Vtd {
                 registers,
             };
         };
-        let status = match read_u32(&registers, vtd::GSTS as usize) {
+        let status = match read_u32(&registers, crate::usize_from_u64(vtd::GSTS)) {
             Ok(status) => status,
             Err(reason) => return Establishment::Refused { reason, registers },
         };
@@ -458,8 +474,8 @@ impl Vtd {
             extended: plan.extended,
             width: plan.width,
             walks,
-            iotlb_base: plan.extended.iotlb_register_offset_bytes() as usize,
-            fault_offset: plan.capability.fault_recording_offset_bytes() as usize,
+            iotlb_base: crate::usize_from_u64(plan.extended.iotlb_register_offset_bytes()),
+            fault_offset: crate::usize_from_u64(plan.capability.fault_recording_offset_bytes()),
             fault_registers: plan.capability.number_of_fault_recording_registers(),
             gcmd: 0,
             root: PublishedIommuTable::new(root),
@@ -555,12 +571,20 @@ impl Vtd {
     /// Map `segment` into the domain, identity, and invalidate the unit's
     /// cache. Any failure that cannot prove rollback retains the segment here,
     /// before a caller can accidentally recycle device-reachable frames.
+    /// # Errors
+    ///
+    /// [`SegmentChangeError::Refused`] when the map is rolled back, and
+    /// [`SegmentChangeError::Retained`] when rollback itself cannot be proved.
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         self.map_segment_with::<true, true>(segment)
     }
 
     /// Identity-map `segment` so the requester may read but not write it.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_segment`](Self::map_segment).
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment_for_device_read(
         &mut self,
@@ -570,6 +594,10 @@ impl Vtd {
     }
 
     /// Identity-map `segment` so the requester may write but not read it.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_segment`](Self::map_segment).
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment_for_device_write(
         &mut self,
@@ -641,6 +669,16 @@ impl Vtd {
 
     /// Remove `segment` from the domain and drain every older DMA request before
     /// returning. Any uncertain failure retains the segment before returning.
+    ///
+    /// # Errors
+    ///
+    /// [`SegmentChangeError::Refused`] when the segment is not mapped here or
+    /// its range does not fit, and [`SegmentChangeError::Retained`] when a
+    /// page clear or DMA drain cannot be proved.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this owner no longer has a root table.
     #[must_use = "a still-mapped segment is still reachable by the device"]
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         let owner = DmaMappingOwner::new(self.root.address());
@@ -712,7 +750,7 @@ impl Vtd {
     #[must_use]
     pub fn domain(&self) -> Option<DmaDomain<'_>> {
         let function = self.function?;
-        let status = read_u32(&self.registers, vtd::GSTS as usize).ok()?;
+        let status = read_u32(&self.registers, crate::usize_from_u64(vtd::GSTS)).ok()?;
         if !translation_enabled(status) {
             return None;
         }
@@ -755,17 +793,14 @@ impl Vtd {
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
     #[must_use]
     pub fn boundary_active(&self) -> bool {
-        let pointer = match read_u64(&self.registers, vtd::RTADDR as usize) {
-            Ok(pointer) => pointer,
-            Err(_) => return false,
+        let Ok(pointer) = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR)) else {
+            return false;
         };
-        let status = match read_u32(&self.registers, vtd::GSTS as usize) {
-            Ok(status) => status,
-            Err(_) => return false,
+        let Ok(status) = read_u32(&self.registers, crate::usize_from_u64(vtd::GSTS)) else {
+            return false;
         };
-        let fault_control = match read_u32(&self.registers, vtd::FECTL as usize) {
-            Ok(control) => control,
-            Err(_) => return false,
+        let Ok(fault_control) = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL)) else {
+            return false;
         };
         if !translation_enabled(status)
             || !interrupt_remapping_enabled(status)
@@ -779,9 +814,8 @@ impl Vtd {
         let Some(expected) = interrupt_table_address(self.interrupts.address()) else {
             return false;
         };
-        let observed = match read_u64(&self.registers, vtd::IRTA as usize) {
-            Ok(observed) => observed,
-            Err(_) => return false,
+        let Ok(observed) = read_u64(&self.registers, crate::usize_from_u64(vtd::IRTA)) else {
+            return false;
         };
         if observed != expected
             || interrupt_table_base(observed) != self.interrupts.address()
@@ -800,7 +834,7 @@ impl Vtd {
     /// Whether the unit's root-table pointer names this domain's root table.
     #[cfg(feature = "selftest")]
     pub fn walks_kernel_root_for_test(&self) -> Option<bool> {
-        let pointer = read_u64(&self.registers, vtd::RTADDR as usize).ok()?;
+        let pointer = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR)).ok()?;
         Some(root_table_address(pointer) == self.root.address())
     }
 
@@ -810,11 +844,13 @@ impl Vtd {
     /// nothing new while the overflow stands.
     #[must_use]
     pub fn take_fault(&mut self) -> Option<Fault> {
-        let status = FaultStatus::from_bits(read_u32(&self.registers, vtd::FSTS as usize).ok()?);
+        let status = FaultStatus::from_bits(
+            read_u32(&self.registers, crate::usize_from_u64(vtd::FSTS)).ok()?,
+        );
         if status.overflow() {
             write_u32(
                 &mut self.registers,
-                vtd::FSTS as usize,
+                crate::usize_from_u64(vtd::FSTS),
                 FaultStatus::acknowledge_overflow(),
             )
             .ok()?;
@@ -858,6 +894,11 @@ impl Vtd {
     /// read/write drain. Only after older requests are gone are the unpublished
     /// context and second-level bytes cleared. TE, IRE, the register window and
     /// both kernel roots remain owned for the rest of the boot.
+    ///
+    /// # Errors
+    ///
+    /// [`VtdError`] when the interrupt boundary is already lost, invalidation
+    /// does not complete, or the drain cannot be proved.
     pub fn park(&mut self) -> Result<(), VtdError> {
         if !self.boundary_active() {
             return Err(VtdError::InterruptBoundaryLost);
@@ -1003,13 +1044,17 @@ impl Vtd {
     fn set_root_table(&mut self) -> Result<(), VtdError> {
         write_u64(
             &mut self.registers,
-            vtd::RTADDR as usize,
+            crate::usize_from_u64(vtd::RTADDR),
             self.root.address(),
         )?;
         let command = set_root_table_pointer(self.gcmd);
-        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;
+        write_u32(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::GCMD),
+            command,
+        )?;
         self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;
-        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;
+        let pointer = read_u64(&self.registers, crate::usize_from_u64(vtd::RTADDR))?;
         if root_table_address(pointer) == self.root.address() {
             Ok(())
         } else {
@@ -1020,11 +1065,19 @@ impl Vtd {
     fn set_interrupt_table(&mut self) -> Result<(), VtdError> {
         let pointer = interrupt_table_address(self.interrupts.address())
             .ok_or(VtdError::InterruptTableRefused)?;
-        write_u64(&mut self.registers, vtd::IRTA as usize, pointer)?;
+        write_u64(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::IRTA),
+            pointer,
+        )?;
         let command = set_interrupt_table_pointer(self.gcmd);
-        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;
+        write_u32(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::GCMD),
+            command,
+        )?;
         self.poll_status(interrupt_table_pointer_set, VtdError::InterruptTableRefused)?;
-        let observed = read_u64(&self.registers, vtd::IRTA as usize)?;
+        let observed = read_u64(&self.registers, crate::usize_from_u64(vtd::IRTA))?;
         if observed == pointer
             && interrupt_table_base(observed) == self.interrupts.address()
             && interrupt_table_has_two_entries(observed)
@@ -1059,21 +1112,34 @@ impl Vtd {
         }
         let queue = invalidation_queue_address(self.invalidation_queue.address())
             .ok_or(VtdError::Misaligned)?;
-        write_u64(&mut self.registers, vtd::IQT as usize, 0)?;
-        write_u64(&mut self.registers, vtd::IQA as usize, queue)?;
+        write_u64(&mut self.registers, crate::usize_from_u64(vtd::IQT), 0)?;
+        write_u64(&mut self.registers, crate::usize_from_u64(vtd::IQA), queue)?;
         self.switch_queued_invalidation(true)?;
-        let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;
+        let observed_queue = read_u64(&self.registers, crate::usize_from_u64(vtd::IQA))?;
         if observed_queue != queue {
             return Err(VtdError::InvalidationQueueRefused);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        write_u64(&mut self.registers, vtd::IQT as usize, INVALIDATION_TAIL)?;
+        write_u64(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::IQT),
+            INVALIDATION_TAIL,
+        )?;
         let mut completed = false;
         for _ in 0..POLL_LIMIT {
             if self
                 .invalidation_queue
                 .read_u64(INVALIDATION_STATUS_INDEX)
-                .is_some_and(|value| value as u32 == INVALIDATION_COMPLETE)
+                .is_some_and(|value| {
+                    // The completion code lives in the low half. High bits are
+                    // a separate status field and must not reject a match.
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "queued-invalidation completion is the low 32 bits"
+                    )]
+                    let code = value as u32;
+                    code == INVALIDATION_COMPLETE
+                })
             {
                 completed = true;
                 break;
@@ -1088,13 +1154,21 @@ impl Vtd {
         }
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set QIE and false to clear it"
+    )]
     fn switch_queued_invalidation(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             self.gcmd | gcmd::QIE
         } else {
             self.gcmd & !gcmd::QIE
         };
-        write_u32(&mut self.registers, vtd::GCMD as usize, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::GCMD),
+            self.gcmd,
+        )?;
         self.poll_status(
             |status| (status & gsts::QIES != 0) == on,
             if on {
@@ -1105,13 +1179,21 @@ impl Vtd {
         )
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set IRE and false to clear it"
+    )]
     fn switch_interrupt_remapping(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             enable_interrupt_remapping(self.gcmd)
         } else {
             self.gcmd & !(gcmd::IRE | gcmd::CFI)
         };
-        write_u32(&mut self.registers, vtd::GCMD as usize, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::GCMD),
+            self.gcmd,
+        )?;
         self.poll_status(
             |status| {
                 interrupt_remapping_enabled(status) == on
@@ -1126,13 +1208,13 @@ impl Vtd {
     /// Intel specifies that this message never traverses interrupt remapping,
     /// so polling fault records is the only compatible default-deny policy.
     fn mask_fault_interrupt(&mut self) -> Result<(), VtdError> {
-        let prior = read_u32(&self.registers, vtd::FECTL as usize)?;
+        let prior = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL))?;
         write_u32(
             &mut self.registers,
-            vtd::FECTL as usize,
+            crate::usize_from_u64(vtd::FECTL),
             prior | fault_event_control::MASK,
         )?;
-        let observed = read_u32(&self.registers, vtd::FECTL as usize)?;
+        let observed = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL))?;
         if fault_event_control::masked(observed) {
             Ok(())
         } else {
@@ -1140,13 +1222,21 @@ impl Vtd {
         }
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one hardware bit; call sites pass true to set TE and false to clear it"
+    )]
     fn switch_translation(&mut self, on: bool) -> Result<(), VtdError> {
         self.gcmd = if on {
             enable_translation(self.gcmd)
         } else {
             self.gcmd & !gcmd::TE
         };
-        write_u32(&mut self.registers, vtd::GCMD as usize, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            crate::usize_from_u64(vtd::GCMD),
+            self.gcmd,
+        )?;
         self.poll_status(
             |status| translation_enabled(status) == on,
             VtdError::TranslationTimeout,
@@ -1159,7 +1249,8 @@ impl Vtd {
     /// fault instead of reaching memory that the caller may recycle.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
-        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
+        let command_register =
+            self.iotlb_base + crate::usize_from_u64(iotlb_command::COMMAND_REGISTER);
         write_u64(
             &mut self.registers,
             command_register,
@@ -1173,17 +1264,25 @@ impl Vtd {
         Ok(())
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "selects context-cache invalidation versus IOTLB-only; call sites pass true or false"
+    )]
     fn invalidate(&mut self, context: bool) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
         if context {
             write_u64(
                 &mut self.registers,
-                vtd::CCMD as usize,
+                crate::usize_from_u64(vtd::CCMD),
                 context_command::global(),
             )?;
-            self.poll_u64(vtd::CCMD as usize, context_command::global_completed)?;
+            self.poll_u64(
+                crate::usize_from_u64(vtd::CCMD),
+                context_command::global_completed,
+            )?;
         }
-        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
+        let command_register =
+            self.iotlb_base + crate::usize_from_u64(iotlb_command::COMMAND_REGISTER);
         write_u64(
             &mut self.registers,
             command_register,
@@ -1204,7 +1303,11 @@ impl Vtd {
     fn flush_write_buffer(&mut self) -> Result<(), VtdError> {
         if self.capability.requires_write_buffer_flush() {
             let command = self.gcmd | gcmd::WBF;
-            write_u32(&mut self.registers, vtd::GCMD as usize, command)?;
+            write_u32(
+                &mut self.registers,
+                crate::usize_from_u64(vtd::GCMD),
+                command,
+            )?;
             self.poll_status(
                 |status| (status & gsts::WBFS) == 0,
                 VtdError::InvalidationTimeout,
@@ -1215,7 +1318,7 @@ impl Vtd {
 
     fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: VtdError) -> Result<(), VtdError> {
         for _ in 0..POLL_LIMIT {
-            if ready(read_u32(&self.registers, vtd::GSTS as usize)?) {
+            if ready(read_u32(&self.registers, crate::usize_from_u64(vtd::GSTS))?) {
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -1240,18 +1343,24 @@ impl Plan {
     /// All firmware-owned remapping facilities must already be inactive.
     /// This read-only boundary refuses a live non-identical SRTP and avoids
     /// guessing at firmware queue or interrupt-remapping quiescence (D-389).
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "private mirror of establish_deny_all's platform fact"
+    )]
     fn read(
         registers: &ReleasableDevice,
         platform_interrupt_remapping: bool,
     ) -> Result<Self, VtdError> {
-        let version = Version::from_bits(read_u32(registers, vtd::VERSION as usize)?);
+        let version = Version::from_bits(read_u32(registers, crate::usize_from_u64(vtd::VERSION))?);
         if !version.register_invalidation_supported() {
             return Err(VtdError::UnsupportedRegisterInvalidationVersion {
                 version: version.bits(),
             });
         }
-        let capability = Capability::from_bits(read_u64(registers, vtd::CAP as usize)?);
-        let extended = ExtendedCapability::from_bits(read_u64(registers, vtd::ECAP as usize)?);
+        let capability =
+            Capability::from_bits(read_u64(registers, crate::usize_from_u64(vtd::CAP))?);
+        let extended =
+            ExtendedCapability::from_bits(read_u64(registers, crate::usize_from_u64(vtd::ECAP))?);
         let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
             capability: capability.bits(),
         })?;
@@ -1270,7 +1379,7 @@ impl Plan {
         if !extended.extended_interrupt_mode() {
             return Err(VtdError::NoExtendedInterruptMode);
         }
-        let status = read_u32(registers, vtd::GSTS as usize)?;
+        let status = read_u32(registers, crate::usize_from_u64(vtd::GSTS))?;
         if !takeover_ready(status) {
             return Err(VtdError::FirmwareFacilitiesActive { status });
         }
@@ -1292,8 +1401,9 @@ fn read_u64(registers: &ReleasableDevice, offset: usize) -> Result<u64, VtdError
 /// Write a 64-bit register as its two aligned 32-bit halves, low first so a
 /// command bit in the high half triggers after the low half is in place.
 fn write_u64(registers: &mut ReleasableDevice, offset: usize, value: u64) -> Result<(), VtdError> {
-    write_u32(registers, offset, value as u32)?;
-    write_u32(registers, offset + 4, (value >> 32) as u32)
+    let (low, high) = crate::u32_halves(value);
+    write_u32(registers, offset, low)?;
+    write_u32(registers, offset + 4, high)
 }
 
 fn read_u32(registers: &ReleasableDevice, offset: usize) -> Result<u32, VtdError> {
