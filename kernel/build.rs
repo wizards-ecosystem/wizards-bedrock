@@ -5,7 +5,8 @@
 //! wants a script. A `-C link-arg` from here reaches the final link alone.
 
 fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("Cargo sets CARGO_MANIFEST_DIR for build scripts");
     println!("cargo:rustc-link-arg=-T{manifest_dir}/linker.ld");
     println!("cargo:rerun-if-changed=linker.ld");
 }

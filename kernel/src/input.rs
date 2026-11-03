@@ -413,7 +413,7 @@ pub(crate) fn start_poller() {
     }
     match crate::thread::spawn("keyboard-poll", poll_forever) {
         Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
-            info!("keyboard: polled every {POLL_INTERVAL_MS} ms")
+            info!("keyboard: polled every {POLL_INTERVAL_MS} ms");
         }
         Ok(_) => info!("keyboard: clockless poller yields between bounded drains"),
         Err(reason) => {
@@ -502,12 +502,11 @@ pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
     POLLER_PEER_PROGRESS.store(false, Ordering::Release);
     POLLER_SAW_PEER.store(false, Ordering::Release);
     POLLER_ROUNDS.store(rounds, Ordering::Release);
-    match crate::thread::spawn("keyboard-poll-check", poll_forever) {
-        Ok(_) => true,
-        Err(_) => {
-            POLLER_RUNNING.store(false, Ordering::Release);
-            false
-        }
+    if crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok() {
+        true
+    } else {
+        POLLER_RUNNING.store(false, Ordering::Release);
+        false
     }
 }
 

@@ -35,7 +35,7 @@ pub(crate) const TIME: u64 = 0x0000_1000_0000_0000;
 /// What this page's layout is called.
 ///
 /// A reader that cannot say what shape the page is would have to guess, which
-/// is IoRing's improvement over io_uring and the same argument as the ring
+/// is `IoRing`'s improvement over `io_uring` and the same argument as the ring
 /// header's version word.
 pub(crate) const VERSION: u32 = 1;
 
@@ -126,7 +126,9 @@ pub(crate) fn init(counter_hz: u64) -> bool {
     let mut shared = USegment::from(run).share().into_bytes();
 
     write_u32(&mut shared, constants::VERSION, VERSION);
-    write_u32(&mut shared, constants::PAGE_BYTES, PAGE_SIZE as u32);
+    let page_bytes = u32::try_from(PAGE_SIZE)
+        .unwrap_or_else(|_| panic!("a page does not fit the time-page constant"));
+    write_u32(&mut shared, constants::PAGE_BYTES, page_bytes);
     write_u64(&mut shared, constants::COUNTER_HZ, counter_hz);
 
     *PAGE.lock_leaf() = Some(shared);
@@ -213,9 +215,11 @@ fn restore(shared: SharedBytes) {
     *PAGE.lock_leaf() = Some(shared);
     if DESIRED_MODE.load(Ordering::Acquire) == MODE_NONE {
         let publication = publish(MODE_NONE, 0, Timebase::UNCALIBRATED);
-        if publication != Publication::Published {
-            panic!("a restored time page refused its deferred publication");
-        }
+        assert_eq!(
+            publication,
+            Publication::Published,
+            "a restored time page refused its deferred publication"
+        );
     }
 }
 
@@ -248,6 +252,8 @@ impl core::fmt::Display for TimePageError {
         }
     }
 }
+
+impl core::error::Error for TimePageError {}
 
 /// Read the page the way a program does, and say what it found.
 ///
@@ -378,17 +384,19 @@ fn write_u64(page: &mut SharedBytes, at: usize, value: u64) {
 
 fn read_u32(page: &SharedBytes, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    if !page.read_volatile_at(at, &mut bytes) {
-        panic!("an internal time-page field was outside the shared page");
-    }
+    assert!(
+        page.read_volatile_at(at, &mut bytes),
+        "an internal time-page field was outside the shared page"
+    );
     u32::from_le_bytes(bytes)
 }
 
 #[cfg(feature = "selftest")]
 fn read_u64(page: &SharedBytes, at: usize) -> u64 {
     let mut bytes = [0u8; 8];
-    if !page.read_volatile_at(at, &mut bytes) {
-        panic!("an internal time-page field was outside the shared page");
-    }
+    assert!(
+        page.read_volatile_at(at, &mut bytes),
+        "an internal time-page field was outside the shared page"
+    );
     u64::from_le_bytes(bytes)
 }

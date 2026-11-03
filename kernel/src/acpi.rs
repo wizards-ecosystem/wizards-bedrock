@@ -63,6 +63,8 @@ impl core::fmt::Display for EarlyTableError {
     }
 }
 
+impl core::error::Error for EarlyTableError {}
+
 /// Read one unique fixed-size ACPI table without allocator state.
 pub(crate) fn find_unique_early<const N: usize>(
     map: &MemoryMap,
@@ -94,7 +96,7 @@ pub(crate) fn find_unique_early<const N: usize>(
     let root = Rsdp::parse(&root_pointer[..length]).map_err(|_| EarlyTableError::RootPointer)?;
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         (Some(xsdt), _) => (xsdt, true),
-        (None, Some(rsdt)) => (rsdt, false),
+        (None, Some(legacy_root)) => (legacy_root, false),
         (None, None) => return Err(EarlyTableError::RootPointer),
     };
 
@@ -152,12 +154,9 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     // Each refusal says so: a boot that lost its routing to the ACPI-only
     // reader is otherwise a keyboard that stopped for no stated reason.
     let (firmware, root) = parse_root(rsdp)?;
-    let madt = match find_table(firmware, root, Sdt::MADT) {
-        Some(madt) => madt,
-        None => {
-            warn!("acpi: no madt among the tables listed");
-            return None;
-        }
+    let Some(madt) = find_table(firmware, root, Sdt::MADT) else {
+        warn!("acpi: no madt among the tables listed");
+        return None;
     };
     let interrupts = match Interrupts::parse(&madt) {
         Ok(interrupts) => interrupts,
@@ -226,6 +225,10 @@ pub(crate) fn find_unique_table(
     find_table_with_multiplicity(firmware, root, signature, true)
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "uniqueness is one private flag; mutation 1819 matches the require_unique text"
+)]
 fn find_table_with_multiplicity(
     firmware: FirmwareMemory,
     root: Rsdp,
@@ -236,7 +239,7 @@ fn find_table_with_multiplicity(
         // The XSDT wherever it exists: the RSDT's entries are 32-bit and
         // cannot name a table above 4 GiB.
         (Some(xsdt), _) => (xsdt, true),
-        (None, Some(rsdt)) => (rsdt, false),
+        (None, Some(legacy_root)) => (legacy_root, false),
         (None, None) => {
             warn!("acpi: root pointer names neither an xsdt nor an rsdt");
             return None;

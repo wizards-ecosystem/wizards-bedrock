@@ -72,7 +72,7 @@ mod reply {
 
 /// An MF2 keyboard's identity as it reads behind a translating controller.
 ///
-/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. VMware
+/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. `VMware`
 /// answers this while reporting its translation bit clear, which is why the
 /// bit is not what the driver asks (D-178).
 pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
@@ -147,6 +147,8 @@ impl fmt::Display for InterruptEnableError {
         }
     }
 }
+
+impl core::error::Error for InterruptEnableError {}
 
 /// Why the keyboard could not be brought up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,7 +408,7 @@ impl Controller {
     ///
     /// The self-test's only way to reach the set 1 path on a machine where the
     /// expected key is known: QEMU honours this bit, so turning it on
-    /// reproduces what VMware does unasked, with an injected keystroke whose
+    /// reproduces what `VMware` does unasked, with an injected keystroke whose
     /// identity the harness chose (D-179).
     #[cfg(feature = "selftest")]
     pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {
@@ -604,19 +606,21 @@ impl Controller {
     /// Discard whatever is sitting in the output buffer.
     ///
     /// False if it never drains, which means nothing real is on the other
-    /// end of these ports.
+    /// end of these ports. The status read after the last discard is required:
+    /// that byte may be the one that empties the buffer, and the check at the
+    /// top of the next iteration never runs once the bound is spent.
     fn flush(&mut self) -> bool {
         #[cfg(feature = "selftest")]
         if REFUSE_FLUSH.swap(false, Ordering::Relaxed) {
             return false;
         }
-        (0..FLUSH_LIMIT).any(|_| {
+        for _ in 0..FLUSH_LIMIT {
             if Port::read(&mut self.control) & status::OUTPUT_FULL == 0 {
                 return true;
             }
             let _ = Port::read(&mut self.data);
-            false
-        })
+        }
+        Port::read(&mut self.control) & status::OUTPUT_FULL == 0
     }
 
     fn write_data(&mut self, byte: u8) -> bool {
