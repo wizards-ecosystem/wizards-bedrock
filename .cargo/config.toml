@@ -2,6 +2,10 @@
 # It *replaces* the [target.x86_64-unknown-none] rustflags below, so the kernel
 # links without code-model=kernel — a broken higher-half image with no build
 # error. Pass lint flags after `--`: cargo kclippy -- -D warnings
+#
+# `cargo clippy` and `cargo kclippy` report the BeautifulRust pedantic warns
+# and still exit 0. `cargo xtask clippy` appends `-D warnings` and fails until
+# those warns are cleared. Do not put that denial in RUSTFLAGS.
 
 [alias]
 xtask = "run --profile xtask --package xtask --"
