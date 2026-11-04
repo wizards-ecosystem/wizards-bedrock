@@ -1,7 +1,7 @@
 //! The `IA32_APIC_BASE` model-specific register.
 //!
-//! One register records whether the APIC is enabled, whether it uses x2APIC,
-//! and whether this is the processor the firmware started.
+//! One register records whether the APIC is enabled, whether it uses x2APIC, and
+//! whether this is the processor the firmware started.
 
 /// Register number `rdmsr` and `wrmsr` name.
 pub const MSR: u32 = 0x1B;
@@ -50,20 +50,12 @@ impl Base {
     }
 
     /// The same register with the hardware enable bit set.
-    ///
-    /// Every other register bit is preserved.
     #[must_use]
     pub const fn enabled(self) -> Self {
         Self(self.0 | ENABLE)
     }
 
     /// The same register in x2APIC mode.
-    ///
-    /// Sets the hardware enable bit as well, because the architecture's state
-    /// machine has no edge from disabled straight to x2APIC — writing that
-    /// combination in one step raises a general protection fault. A caller
-    /// still has to make the two writes in order; this only ensures the second
-    /// one is not also the first.
     #[must_use]
     pub const fn x2apic(self) -> Self {
         Self(self.0 | ENABLE | X2APIC)
@@ -88,14 +80,8 @@ mod tests {
 
     /// The three flag bits sit where the manual puts them.
     ///
-    /// `TYPICAL = 0xFEE0_0900` sets both `BOOTSTRAP` and `ENABLE`, so swapping
-    /// the two constants left all fifty-seven tests green — and
-    /// `Base::enabled()` would then set the **read-only** bootstrap bit and
-    /// never enable the APIC (D-142).
-    ///
-    /// SDM Vol. 3A §11.4.4, `IA32_APIC_BASE`: bit 8 BSP, bit 10 x2APIC enable,
-    /// bit 11 APIC global enable. Written as literals, against which the
-    /// constants are checked one at a time.
+    /// SDM Vol. 3A §11.4.4, `IA32_APIC_BASE`: bit 8 BSP, bit 10 x2APIC enable, bit 11
+    /// APIC global enable.
     #[test]
     fn the_base_flags_sit_where_the_manual_puts_them() {
         assert_eq!(BOOTSTRAP, 1 << 8, "BSP is bit 8");
@@ -175,9 +161,6 @@ mod tests {
     }
 
     /// The base MSR's fields sit where the manual puts them.
-    ///
-    /// Literal anchors keep an implementation constant from serving as its own
-    /// oracle (D-105).
     #[test]
     fn the_base_msr_fields_are_where_the_manual_puts_them() {
         // SDM Vol. 3A §11.4.4 / table 11-5: bit 8 BSP, bit 10 x2APIC enable,

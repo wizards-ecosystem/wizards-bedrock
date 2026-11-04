@@ -1,23 +1,5 @@
 //! Path splitting whose output can never name an ancestor.
 //!
-//! **There is no `/`** (`012` §5). An absolute path is a *malformed argument*,
-//! not a permission failure, because there is no root to resolve it against: a
-//! program holds directory handles and nothing else, and "the top" is not a
-//! thing this kernel has a name for.
-//!
-//! **`..` is resolved lexically, here, before any node is touched.** A
-//! component vector that pops on `..` and refuses on underflow means the
-//! resolver above never holds a parent pointer — so **there is no operation
-//! that can walk upward**. That is stronger than `RESOLVE_BENEATH`, which
-//! enforces a predicate on a resolver still capable of ascending; the capacity
-//! is what is missing here, not the permission.
-//!
-//! Fuchsia reached the same answer — *Dot Dot Considered Harmful* — and moved
-//! it client-side. This kernel has no trusted client library, so it goes in the
-//! resolver, which is to say here (D-171).
-//!
-//! **The property, and it is what the whole crate is for:**
-//!
 //! > No output of [`split`] contains `..`, and no output is longer than the
 //! > input's component count. A walker fed these can only descend.
 //!
@@ -50,11 +32,6 @@
 pub const SEPARATOR: u8 = b'/';
 
 /// The longest a single component may be.
-///
-/// 255, which is what every filesystem this kernel will read agrees on and
-/// what a `u8` length field holds. Longer is refused rather than truncated: a
-/// truncated name is a *different* name, and resolving it finds a different
-/// file.
 pub const MAX_NAME: usize = 255;
 
 /// Why a path could not be split.
@@ -64,10 +41,6 @@ pub enum PathError {
     /// The path is empty, which names nothing.
     Empty,
     /// The path begins with a separator.
-    ///
-    /// **A malformed argument, not a denial.** There is no root, so there is
-    /// nothing for an absolute path to be relative to, and reporting it as a
-    /// permission failure would suggest that some other program could.
     Absolute,
     /// A `..` that would leave the directory it started from.
     Escapes,
@@ -76,11 +49,6 @@ pub enum PathError {
     /// A component containing a byte no name may hold.
     BadName,
     /// The path went deeper than the caller left room for.
-    ///
-    /// The **deepest point reached**, not the result: `a/b/c/../../d` is two
-    /// components long and passes through three, so a buffer of two refuses
-    /// it. Bounding the intermediate rather than the answer is what keeps the
-    /// work bounded by the caller's buffer and not by the path's length.
     TooDeep,
 }
 
@@ -103,9 +71,6 @@ impl core::fmt::Display for PathError {
 impl core::error::Error for PathError {}
 
 /// Split `path` into components, resolving `.` and `..` as it goes.
-///
-/// Returns how many of `into` were filled. The components borrow from `path`,
-/// so nothing is copied and nothing is allocated.
 ///
 /// # Errors
 ///
@@ -166,9 +131,6 @@ pub fn split<'a>(path: &'a [u8], into: &mut [&'a [u8]]) -> Result<usize, PathErr
 }
 
 /// Whether every byte of `component` may appear in a name.
-///
-/// A separator cannot — the splitter has already removed them — and neither can
-/// a NUL, which is how a name crosses into C and back with its tail cut off.
 fn is_a_name(component: &[u8]) -> bool {
     for &byte in component {
         if byte == 0 || byte == SEPARATOR {
@@ -228,10 +190,6 @@ mod tests {
     }
 
     /// Empty components and `.` disappear without changing what is named.
-    ///
-    /// A doubled separator and a trailing one are how an empty component
-    /// arrives, and both are ordinary in paths a program builds by
-    /// concatenation.
     #[test]
     fn empty_components_and_dots_disappear() {
         let plain = components(b"a/b").unwrap();
@@ -248,9 +206,6 @@ mod tests {
     }
 
     /// `..` cancels the component before it, and the output never holds one.
-    ///
-    /// The property the crate exists for: a walker fed these can only descend,
-    /// because there is nothing in the output that means "up".
     #[test]
     fn dot_dot_cancels_and_never_survives() {
         assert_eq!(components(b"a/../b").unwrap(), vec![b"b".to_vec()]);
@@ -279,11 +234,6 @@ mod tests {
     }
 
     /// Ascending past the start is refused, from every direction.
-    ///
-    /// Not clamped to the start, which is what a resolver that "just stays
-    /// inside" would do — and which silently answers a different question than
-    /// the caller asked. `012` §5 is explicit that the *capacity* to ascend is
-    /// what must be missing.
     #[test]
     fn ascending_past_the_start_is_refused_not_clamped() {
         for escape in [
@@ -309,10 +259,6 @@ mod tests {
     }
 
     /// An absolute path is malformed, and says so as itself.
-    ///
-    /// Not `Escapes` and not a denial: there is no root, so there is nothing
-    /// for it to be relative to, and calling it a permission failure would
-    /// suggest some other program could.
     #[test]
     fn an_absolute_path_is_malformed_rather_than_denied() {
         for absolute in [b"/".as_slice(), b"/a", b"//a", b"/../a", b"/etc/passwd"] {
@@ -331,10 +277,6 @@ mod tests {
     }
 
     /// A name that is not one is refused rather than passed on.
-    ///
-    /// A NUL is how a name crosses into C and back with its tail cut off, and a
-    /// name too long is a *different* name once truncated — which resolves to a
-    /// different file.
     #[test]
     fn a_name_that_is_not_one_is_refused() {
         assert_eq!(components(b"a/b\0c"), Err(PathError::BadName));
@@ -352,15 +294,6 @@ mod tests {
     }
 
     /// A path deeper than the caller's buffer is refused, not truncated.
-    ///
-    /// Truncation would resolve a *prefix* of what was asked for, which is a
-    /// directory the caller did not name — and on a walk that ends in an open,
-    /// opening the wrong thing.
-    ///
-    /// The bound is on the **deepest point reached**, not on the answer, so a
-    /// path that goes down three and back to two is refused by a buffer of
-    /// two. That is deliberate: bounding the intermediate is what keeps the
-    /// work bounded by the buffer rather than by the path.
     #[test]
     fn a_path_deeper_than_the_buffer_is_refused() {
         let mut two = [b"".as_slice(); 2];
@@ -379,10 +312,6 @@ mod tests {
     }
 
     /// Every path either resolves to a descent or is refused.
-    ///
-    /// Exhaustive over short paths built from the pieces that matter, because
-    /// the property is about *every* input and a handful of examples is not.
-    /// Nothing here may panic, and nothing that resolves may hold a `..`.
     #[test]
     fn every_short_path_either_descends_or_is_refused() {
         const PIECES: [&[u8]; 5] = [b"a", b".", b"..", b"", b"b"];

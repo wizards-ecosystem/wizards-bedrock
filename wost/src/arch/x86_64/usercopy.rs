@@ -1,8 +1,4 @@
-//! Privilege-boundary copies under SMAP.
-//!
-//! Only this module opens the access window. It range-checks and walks every
-//! page before copying; only an exact supervisor fault in its assembly copy
-//! interval may resume at the private fixup (D-81, D-83, D-120).
+//! Privilege-boundary copies under SMAP. Only this module opens the access window.
 
 use core::arch::asm;
 use core::fmt;
@@ -13,22 +9,22 @@ use super::{cpu, interrupt, paging};
 
 /// The first address that is not user memory.
 ///
-/// The boundary [`paging`] maps against, re-exported rather than transcribed:
-/// the range a copy may touch and the range a mapping may cover are the same
-/// range, and a second literal is a way for them to stop being (D-124).
+/// The boundary [`paging`] maps against, re-exported rather than transcribed: the range a copy may
+/// touch and the range a mapping may cover are the same range, and a second literal is a way for
+/// them to stop being.
 pub use super::paging::USER_END;
 
-// Explicit assembly gives the faulting instructions a stable recovery range
-// that compiler-generated copying cannot (D-120).
+// Explicit assembly gives the faulting instructions a stable recovery range that compiler-generated
+// copying cannot.
 ::core::arch::global_asm!(
     ".globl wost_copy_across",
     "wost_copy_across:",
-    // rdi = destination, rsi = source, rdx = length.
+    // Rdi = destination, rsi = source, rdx = length.
     "  mov rcx, rdx",
     "  test rcx, rcx",
     "  jz 3f",
-    // Everything between these two labels can fault, and a fault in it is the
-    // program's bad pointer rather than the kernel's bug.
+    // Everything between these two labels can fault, and a fault in it is the program's bad pointer
+    // rather than the kernel's bug.
     ".globl wost_copy_fault_start",
     "wost_copy_fault_start:",
     "  mov al, [rsi]",
@@ -43,8 +39,8 @@ pub use super::paging::USER_END;
     // Nothing left uncopied.
     "  xor rax, rax",
     "  ret",
-    // Where a recovered fault resumes. `rcx` still holds what was left, and
-    // the trap restored it along with everything else.
+    // Where a recovered fault resumes. `rcx` still holds what was left, and the trap restored it
+    // along with everything else.
     ".globl wost_copy_fixup",
     "wost_copy_fixup:",
     "  mov rax, rcx",
@@ -54,8 +50,7 @@ pub use super::paging::USER_END;
 unsafe extern "C" {
     /// Copy `len` bytes, returning how many were **not** copied.
     ///
-    /// Zero on success. Non-zero only where a fault was recovered, which means
-    /// the range stopped being mapped between the walk and the copy.
+    /// Zero on success.
     fn wost_copy_across(destination: *mut u8, source: *const u8, len: usize) -> usize;
 
     /// The first instruction of the copy that can fault.
@@ -125,8 +120,8 @@ pub enum UserCopyError {
     NotUserMemory(u64),
     /// The range wraps, so it does not describe a span at all.
     Wraps(u64),
-    /// The range stopped being mapped between the walk and the copy.
-    /// Names how many bytes were left.
+    /// The range stopped being mapped between the walk and the copy. Names how many bytes were
+    /// left.
     Vanished(usize),
     /// A page of it is not mapped, or not reachable from ring 3.
     Unmapped(u64),
@@ -161,14 +156,11 @@ enum Direction {
 
 /// The window in which ring-0 code may touch ring-3 memory.
 ///
-/// Scoped, and private, so it cannot be held across anything: the whole of its
-/// life is one `wost_copy_across` invocation. An open window is the CPU agreeing to
-/// dereference whatever a user pointer happens to be, and the shorter it is,
-/// the smaller the class of bugs that can be a privilege escalation rather
-/// than a fault.
+/// Scoped, and private, so it cannot be held across anything: the whole of its life is one
+/// `wost_copy_across` invocation.
 struct Window {
-    /// False where SMAP is absent, in which case `stac` would be a `#UD` and
-    /// the access needs no permission anyway.
+    /// False where SMAP is absent, in which case `stac` would be a `#UD` and the access needs no
+    /// permission anyway.
     opened: bool,
 }
 
@@ -176,11 +168,9 @@ impl Window {
     fn open() -> Self {
         let opened = cpu::Protections::enabled().smap;
         if opened {
-            // SAFETY: `stac` sets a flag permitting ring-0 access to user
-            // pages, and only runs where `cpuid` reported SMAP. It changes
-            // memory-access semantics and `EFLAGS.AC`, so neither `nomem` nor
-            // `preserves_flags` is valid and the copy stays inside the window
-            // (D-97).
+            // SAFETY: `stac` sets a flag permitting ring-0 access to user pages, and only runs
+            // where `cpuid` reported SMAP. It changes memory-access semantics and `EFLAGS.AC`, so
+            // neither `nomem` nor `preserves_flags` is valid and the copy stays inside the window.
             unsafe { asm!("stac", options(nostack)) };
         }
         Self { opened }
@@ -190,9 +180,8 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         if self.opened {
-            // SAFETY: as `open`; `clac` clears the flag that one set, and it
-            // is as much a memory barrier as `stac` for the same reason —
-            // an access moved *after* it would fault.
+            // SAFETY: as `open`; `clac` clears the flag that one set, and it is as much a memory
+            // barrier as `stac` for the same reason — an access moved *after* it would fault.
             unsafe { asm!("clac", options(nostack)) };
         }
     }
@@ -227,12 +216,11 @@ fn admits(address: u64, len: usize, direction: Direction) -> Result<(), UserCopy
     Ok(())
 }
 
-/// Copy `into.len()` bytes from user memory at `from`.
+/// Copy `into.len` bytes from user memory at `from`.
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Validation failures move nothing;
-/// [`UserCopyError::Vanished`] may leave a partial copy.
+/// Validation failures move nothing; [`UserCopyError::Vanished`] may leave a partial copy.
 pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     admits(from, into.len(), Direction::FromUser)?;
     if into.is_empty() {
@@ -240,9 +228,9 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     }
 
     let window = Window::open();
-    // SAFETY: `admits` proved every source page live and user-readable; `into`
-    // is a disjoint live kernel slice. The window covers exactly this call, and
-    // the fixup returns a remainder if a source page disappears (D-120).
+    // SAFETY: `admits` proved every source page live and user-readable; `into` is a disjoint live
+    // kernel slice. The window covers exactly this call, and the fixup returns a remainder if a
+    // source page disappears.
     let left = unsafe { wost_copy_across(into.as_mut_ptr(), from as *const u8, into.len()) };
     drop(window);
     if left != 0 {
@@ -253,8 +241,7 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
 
 /// Drive one fixed user-copy fault through the private recovery window.
 ///
-/// `true` means the full probe remained and its private destination did not
-/// change.
+/// `true` means the full probe remained and its private destination did not change.
 #[cfg(feature = "selftest")]
 pub fn drive_fault_recovery_for_test() -> bool {
     const HOLE: u64 = 0x0000_6000_0000_0000;
@@ -267,9 +254,9 @@ pub fn drive_fault_recovery_for_test() -> bool {
     }
     let mut scratch = UNCHANGED;
     let window = Window::open();
-    // SAFETY: `HOLE` is a canonical user address just observed unmapped under
-    // interrupt exclusion. The assembly's exact fault interval resumes at its
-    // fixup, and `scratch` is a live, disjoint destination.
+    // SAFETY: `HOLE` is a canonical user address just observed unmapped under interrupt exclusion.
+    // The assembly's exact fault interval resumes at its fixup, and `scratch` is a live, disjoint
+    // destination.
     let left = unsafe { wost_copy_across(scratch.as_mut_ptr(), HOLE as *const u8, scratch.len()) };
     drop(window);
     let exact = left == scratch.len() && scratch == UNCHANGED;
@@ -281,8 +268,7 @@ pub fn drive_fault_recovery_for_test() -> bool {
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Validation failures move nothing;
-/// [`UserCopyError::Vanished`] may leave a partial copy.
+/// Validation failures move nothing; [`UserCopyError::Vanished`] may leave a partial copy.
 pub fn copy_to_user(onto: u64, from: &[u8]) -> Result<(), UserCopyError> {
     admits(onto, from.len(), Direction::ToUser)?;
     if from.is_empty() {
@@ -290,8 +276,8 @@ pub fn copy_to_user(onto: u64, from: &[u8]) -> Result<(), UserCopyError> {
     }
 
     let window = Window::open();
-    // SAFETY: as `copy_from_user`, and `admits` additionally established that
-    // every page is writable from ring 3.
+    // SAFETY: as `copy_from_user`, and `admits` additionally established that every page is
+    // writable from ring 3.
     let left = unsafe { wost_copy_across(onto as *mut u8, from.as_ptr(), from.len()) };
     drop(window);
     if left != 0 {

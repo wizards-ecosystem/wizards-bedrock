@@ -1,14 +1,4 @@
-//! The legacy 8259 interrupt controllers.
-//!
-//! There is nothing to drive here. Interrupts arrive through the local APIC,
-//! and the only thing the cascaded pair of 8259s is ever asked to do is stop
-//! delivering — which is a prerequisite for enabling interrupts at all, because
-//! whatever the firmware left them programmed with is still wired to this CPU.
-//!
-//! They are remapped before they are masked. A controller left where the
-//! firmware puts it delivers IRQ 0 as vector 8, which is the double fault: an
-//! interrupt that leaks through would arrive as the one exception whose report
-//! is guaranteed to be a lie.
+//! The legacy 8259 interrupt controllers. There is nothing to drive here.
 
 use core::fmt;
 
@@ -27,32 +17,28 @@ const REGISTER_COUNT: usize = 2;
 
 /// Register offsets from a controller's base port.
 mod register {
-    /// Takes the initialisation sequence's first word and the operation
-    /// commands; reads back the request and in-service registers.
+    /// Takes the initialisation sequence's first word and the operation commands; reads back the
+    /// request and in-service registers.
     pub(super) const COMMAND: usize = 0;
-    /// Takes the rest of the initialisation sequence, and the interrupt mask
-    /// once it is over.
+    /// Takes the rest of the initialisation sequence, and the interrupt mask once it is over.
     pub(super) const DATA: usize = 1;
 }
 
-/// The four-word initialisation sequence, Intel 8259A datasheet §"Programming
-/// the 8259A". Writing the first commits the controller to receiving the rest,
-/// in order, on the data port.
+/// The four-word initialisation sequence, Intel 8259A datasheet §"Programming the 8259A". Writing
+/// the first commits the controller to receiving the rest, in order, on the data port.
 mod initialise {
     /// Begin initialisation, and promise a fourth word.
     pub(super) const BEGIN: u8 = 0x11;
-    /// The primary's second-word input line the secondary cascades onto,
-    /// as a bitmap: IRQ 2.
+    /// The primary's second-word input line the secondary cascades onto, as a bitmap: IRQ 2.
     pub(super) const CASCADE_LINE: u8 = 1 << 2;
     /// The secondary's second word says the same thing as a number.
     pub(super) const CASCADE_IDENTITY: u8 = 2;
-    /// Fourth word: 8086 mode, which is what makes the vector offsets above
-    /// mean anything.
+    /// Fourth word: 8086 mode, which is what makes the vector offsets above mean anything.
     pub(super) const MODE_8086: u8 = 0x01;
 }
 
-/// Where the primary's eight lines are remapped to — immediately above the
-/// architectural exceptions, which is where every x86 kernel puts them.
+/// Where the primary's eight lines are remapped to — immediately above the architectural
+/// exceptions, which is where every x86 kernel puts them.
 const PRIMARY_VECTORS: u8 = 0x20;
 
 /// Where the secondary's eight follow.
@@ -61,8 +47,8 @@ const SECONDARY_VECTORS: u8 = PRIMARY_VECTORS + 8;
 /// Every line masked.
 const MASK_ALL: u8 = 0xFF;
 
-/// The controllers, once claimed. `None` until [`silence`] has run, which makes
-/// this the record of whether it has.
+/// The controllers, once claimed. `None` until [`silence`] has run, which makes this the record of
+/// whether it has.
 static CONTROLLERS: SpinLock<Option<Pair>> = SpinLock::new(None);
 
 /// Why the legacy controllers could not be silenced.
@@ -89,8 +75,8 @@ impl core::error::Error for PicError {}
 ///
 /// Does nothing after the first successful call.
 ///
-/// Claims both port blocks before taking `CONTROLLERS`, preserving leaf-lock
-/// order and all-or-none port ownership (D-105, D-121, D-138).
+/// Claims both port blocks before taking `CONTROLLERS`, preserving leaf-lock order and all-or-none
+/// port ownership.
 ///
 /// # Errors
 ///
@@ -100,14 +86,14 @@ pub fn silence() -> Result<(), PicError> {
         return Ok(());
     }
 
-    // The sole compiled caller runs before scheduling. The second state check
-    // still resolves an attempt whose port claim lost just before publication.
+    // The sole compiled caller runs before scheduling. The second state check still resolves an
+    // attempt whose port claim lost just before publication.
     let claims = port::claim_block_pair::<2, 2>(PRIMARY, SECONDARY);
 
     let mut controllers = CONTROLLERS.lock_leaf();
     if controllers.is_some() {
-        // A successful pair cannot reach this branch: the published owner
-        // already holds the same permanent claims.
+        // A successful pair cannot reach this branch: the published owner already holds the same
+        // permanent claims.
         return Ok(());
     }
     let (primary, secondary) = claims.ok_or(PicError::PortsUnavailable)?;
@@ -124,11 +110,10 @@ pub(super) fn is_silenced() -> bool {
     CONTROLLERS.lock_leaf().is_some()
 }
 
-/// The interrupt mask each controller holds, read back from the hardware, or
-/// `None` before [`silence`] has claimed them.
+/// The interrupt mask each controller holds, read back from the hardware, or `None` before
+/// [`silence`] has claimed them.
 ///
-/// Read back rather than remembered: the point of asking is to find out whether
-/// the write landed.
+/// Read back rather than remembered: the point of asking is to find out whether the write landed.
 #[cfg(feature = "selftest")]
 pub fn masks() -> Option<(u8, u8)> {
     let mut controllers = CONTROLLERS.lock_leaf();
@@ -141,9 +126,7 @@ pub fn masks() -> Option<(u8, u8)> {
 
 /// Reclaim this module's lock on the terminal panic path.
 ///
-/// Called by [`panic::reclaim`](crate::panic::reclaim). A fault raised inside
-/// [`silence`] would otherwise leave the lock held for ever, and the panic path
-/// is entitled to look at anything.
+/// Called by [`panic::reclaim`](crate::panic::reclaim).
 pub(crate) fn force_unlock(panic: &PanicToken) {
     CONTROLLERS.force_unlock(panic);
 }
@@ -156,18 +139,13 @@ struct Pair {
 }
 
 impl Pair {
-    /// Walk both controllers through the initialisation sequence, moving their
-    /// vectors clear of the architectural exceptions.
+    /// Walk both controllers through the initialisation sequence, moving their vectors clear of the
+    /// architectural exceptions.
     ///
-    /// The first word of the sequence clears the interrupt mask, so for the
-    /// length of this function every line the firmware left connected is
-    /// unmasked. That is harmless only because it runs with the interrupt flag
-    /// clear — this is called before anything sets it, and never again.
+    /// The first word of the sequence clears the interrupt mask, so for the length of this function
+    /// every line the firmware left connected is unmasked.
     ///
-    /// The classic delay between accesses is deliberately absent. It covers the
-    /// bus recovery time of a discrete 8259A; on every machine this kernel
-    /// boots, the pair is emulated by the chipset or the hypervisor and each
-    /// `out` is already a completed transaction.
+    /// The classic delay between accesses is deliberately absent.
     fn remap(&mut self) {
         for (controller, vectors, cascade) in [
             (&mut self.primary, PRIMARY_VECTORS, initialise::CASCADE_LINE),

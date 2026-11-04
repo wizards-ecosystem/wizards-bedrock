@@ -1,8 +1,5 @@
 //! Checked address arithmetic for repeated MMIO accesses.
 //!
-//! Hardware access belongs in `wost`; deciding whether a repeated access fits
-//! is pure arithmetic and is host-tested here.
-//!
 //! ```
 //! let span = mmio_range::AccessRange::repeated(8, 3, 4, 32).unwrap();
 //! assert_eq!(span.offset(), 8);
@@ -62,9 +59,6 @@ impl AddressRange {
 }
 
 /// Find the lowest aligned gap after projecting each occupied record.
-///
-/// This keeps a bounded ownership ledger in its native representation rather
-/// than requiring a second array of ranges beside it.
 pub fn first_fit_by<T>(
     window: AddressRange,
     len: u64,

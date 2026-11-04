@@ -1,8 +1,5 @@
 //! Crash-safe isolation and progress for mutation sweeps.
-//!
-//! Source the harness lays down is written, never copied. `fs::copy` carries
-//! the snapshot timestamp with it, and a source older than the object built
-//! from the mutation is exactly what Cargo declines to rebuild (D-237).
+//! Restored source is written, never copied: `fs::copy` keeps a timestamp Cargo treats as fresh.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -99,13 +96,8 @@ pub struct Session {
 }
 
 impl Session {
-    /// Open a fresh sweep or resume the interrupted sweep for this commit and
-    /// registry.
-    ///
-    /// # Errors
-    ///
-    /// If another sweep is live, the checkout is not clean, its source/index
-    /// digest changed, or the durable state is malformed.
+    /// Open a fresh sweep or resume the one interrupted for this commit and registry.
+    /// Refuses a live sweep, a dirty checkout, a changed digest, or a malformed journal.
     pub fn open(paths: &Paths, registry: &str, mutation_count: usize) -> Result<Self> {
         ensure!(is_digest(registry), "mutation registry digest is malformed");
         let state_root = prepare_state_root(paths.target_dir())?;
@@ -180,12 +172,7 @@ impl Session {
         self.journal.active
     }
 
-    /// Restore an interrupted mutation from the immutable snapshot so it can
-    /// be rerun.
-    ///
-    /// # Errors
-    ///
-    /// If the journal and registry disagree or exact restoration fails.
+    /// Restore an interrupted mutation from the immutable snapshot so it can be rerun.
     pub fn recover(&mut self, index: usize, relative: &str) -> Result<()> {
         validate_relative(relative)?;
         ensure!(
@@ -252,11 +239,8 @@ impl Session {
         self.store.save(&mut self.journal)
     }
 
-    /// Verify the source and index, write the final summary and retire the
-    /// resumable journal.
-    ///
-    /// `ids` are the registry's permanent identities in sweep order, so the
-    /// durable report names each outcome's mutation rather than its position.
+    /// Verify source and index, write the summary, and retire the journal.
+    /// `ids` are permanent identities in sweep order, so the report names mutations rather than positions.
     pub fn complete(mut self, ids: &[u16]) -> Result<Vec<Outcome>> {
         ensure!(self.journal.active.is_none(), "a mutation is still active");
         ensure!(
@@ -982,13 +966,8 @@ fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Write a source file the way an editor would, so the build system sees it
-/// change.
-///
-/// `std::fs::copy` carries the source's timestamp onto the destination, which
-/// moves a restored file *backwards* in time — behind the object built from
-/// the mutation. Cargo calls that fresh and keeps the defect, in the package
-/// and in everything that inlined it (D-237).
+/// Write source the way an editor would, so the build system sees a change.
+/// `fs::copy` moves the timestamp backwards and Cargo keeps the object built from the mutation.
 fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
     write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))
 }
@@ -1544,10 +1523,8 @@ pub(crate) fn require_direct_file_if_present(
     Ok(true)
 }
 
-/// Open `path` for reading without following a final-component link, then
-/// prove from the opened handle that it is one real file (D-344).
-///
-/// A path check alone cannot stop a link swapped in before an ordinary open.
+/// Open `path` without following a final-component link, then prove the handle is one real file.
+/// A path check cannot stop a link swapped in before an ordinary open.
 pub(crate) fn open_real_file(path: &Path, label: &str) -> Result<File> {
     let file =
         open_without_following(path).with_context(|| format!("opening {}", path.display()))?;

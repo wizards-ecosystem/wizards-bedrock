@@ -1,7 +1,7 @@
-# v0.3.0 assignment index
+# v0.3.0 work index
 
-This file assigns work after the v0.2.0 qualified diagnostic release (D-449,
-tag on `694061f`). It is an index for the next round of changes. The
+This file lists work after the v0.2.0 qualified diagnostic release (D-449,
+tag on `694061f`). The
 [foundation register](../016-pre-wizzy-foundation.md) remains the only kernel
 backlog. A row here does not admit work, close a row, or start a `TRIGGER`.
 
@@ -10,10 +10,10 @@ disposable virtual machines. It is not a foundation close, a desktop, a stable
 ABI, or a bare-metal qualification. PW-006 and PW-010 are the live register
 rows. Every `TRIGGER` and `WIZZY` row stays stopped.
 
-Sizes are relative scope for one agent: **S** is a focused document or
-single-crate edit, **M** crosses a few files in one directory, **L** needs a
-qualification campaign or several subsystems. Directory lists are the files an
-agent may edit. Leave every other directory alone.
+Sizes are relative scope: **S** is a focused document or single-crate edit,
+**M** crosses a few files in one directory, **L** needs a qualification
+campaign or several subsystems. A directory list is the files that change
+belongs in. Leave every other directory alone.
 
 ## Open issues
 
@@ -75,19 +75,17 @@ Do them before any phase 7–13 product work.
 | 1 | PW-010, synchronize the hostile-surface census with the source | M | `docs/017-pre-wizzy-hostile-surface-audit.md` only, until a missing surface is a confirmed defect | Re-read every arithmetic, indexing, shift, and callee boundary the census claims. D-325 and D-341 already reject a stale `OPEN` label and an unreadable cross-cutting row. Update the census in place. Do not change a register state in this step. |
 | 2 | PW-006, repeat the hostile-surface audit and record only reproduced defects | L | `docs/017-pre-wizzy-hostile-surface-audit.md`, then one of `kernel/`, `wost/`, `libs/`, `xtask/`, or `boot/` per confirmed defect | Re-attack hostile inputs, cleanup paths, safe `wost` callers, and release-only invariant failures. A new register row needs a concrete defect, broken invariant, missing proof, or named handoff consumer. The phase-close ADR in `docs/004-decision-log.md` is written after the evidence exists, and it links the audit, each break-test, and the remaining trigger-only rows. Historical boots are not new evidence. |
 
-PW-006 implementation order, so parallel agents do not edit the same files:
+PW-006 order, so the audit and the fixes do not edit the same files at once:
 
-1. One agent owns `docs/017-pre-wizzy-hostile-surface-audit.md` and produces a
-   defect list. Each defect names one directory and the check that should go
-   red.
-2. After that list is committed, separate agents take `kernel/`, `wost/`,
-   `libs/`, `xtask/`, and `boot/`. Each agent edits only its directory and
-   only the defects assigned to it.
-3. The docs agent then records proved rows in `docs/016-pre-wizzy-foundation.md`
-   and the ADR in `docs/004-decision-log.md`. Unproved rows stay live.
-4. Nobody starts `cargo xtask mutate`, `cargo xtask evidence`, or a VMware
-   boot in parallel with those edits. v0.2.0 had to repeat its sweep once an
-   edited index invalidated the report (D-449).
+1. `docs/017-pre-wizzy-hostile-surface-audit.md` gets a defect list first.
+   Each defect names one directory and the check that should go red.
+2. After that list is committed, `kernel/`, `wost/`, `libs/`, `xtask/`, and
+   `boot/` take only the defects named for that directory.
+3. Proved rows are then recorded in `docs/016-pre-wizzy-foundation.md` and
+   the ADR in `docs/004-decision-log.md`. Unproved rows stay live.
+4. Do not start `cargo xtask mutate`, `cargo xtask evidence`, or a VMware
+   boot while those edits are still landing. v0.2.0 had to repeat its sweep
+   once an edited index invalidated the report (D-449).
 
 Public write-ups of this audit name the register row and the proof. They do
 not add exploit detail.
@@ -108,8 +106,8 @@ section. Tag the qualified commit directly with a new version. Do not move
 The grade (`cargo xtask qualify-mutants-grade --run`) and Deep
 (`cargo xtask qualify-security-deep --run`) campaigns are continuous against
 `main`. They are not release blockers. They need a frozen tree, exclusive
-machine time, and, for Deep, the owned authenticated session. Do not assign
-them to an agent that is also editing source.
+machine time, and, for Deep, the owned authenticated session. Do not run
+them on a tree that is still being edited.
 
 ## Priority 3 — documentation that is still worth doing
 
@@ -132,7 +130,7 @@ admits them. Each one is a new design doc before code.
 | AMD-Vi backend | L | `libs/vtd` consumers in `wost/` | PW-711 fires on a qualified AMD host. |
 | Non-identity IOVA maps | M | `wost/`, `libs/` | PW-712 fires when a caller must hide the physical map from a device. |
 
-## Stopped — do not assign
+## Stopped
 
 These are in the register so they are not rediscovered as feature ideas.
 
@@ -154,22 +152,9 @@ These are in the register so they are not rediscovered as feature ideas.
 | Rust fallback userland | — | none | Declined (D-183) |
 | Own bootloader | — | none | No unmet handoff (D-219) |
 
-## Suggested next-round split
+## Directory boundaries
 
-Use one owner per directory. The audit writer finishes the defect list before
-the code owners start.
-
-| Owner | Directories | Starts with |
-|---|---|---|
-| A | `docs/017-pre-wizzy-hostile-surface-audit.md` | PW-010 census, then the PW-006 defect list |
-| B | `kernel/` | Defects A assigns to `kernel/` |
-| C | `wost/` | Defects A assigns to `wost/` |
-| D | `libs/` | Defects A assigns to `libs/` |
-| E | `xtask/` | Witnesses for those defects; no full sweep until the tree is frozen |
-| F | `boot/` | Only a defect A assigns to `boot/` |
-| G | `README.md`, `docs/roadmap/`, `docs/releases/` | Issue 2's report and the release notes of the next tag |
-| H | `Cargo.toml`, `.github/`, `rust-toolchain.toml` | Only a pin change PW-705's trigger has fired, or the version bump on the commit that will be tagged |
-
+The audit document is finished before code in the same rows changes.
 `models/` changes only with `cargo xtask model-check` in the frozen
 qualification, or when a ring-protocol invariant actually changes. `fixtures/`
 changes only when the ABI transcription changes and its existing checker is
@@ -181,7 +166,7 @@ updated in the same change.
 2. [Code conventions](../005-code-conventions.md) before editing.
 3. The subsystem doc in `docs/` for the area being changed.
 4. [Foundation register](../016-pre-wizzy-foundation.md) for what is live.
-5. This file for who may edit which directory.
+5. This file for what is still open and which directory it belongs in.
 6. [v0.2.0 release scope](../releases/v0.2.0.md) for what the qualified image
    actually demonstrated.
 

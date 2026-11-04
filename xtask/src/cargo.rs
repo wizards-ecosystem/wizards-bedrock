@@ -80,10 +80,7 @@ fn kernel_command(paths: &Paths) -> Result<Command> {
 }
 
 /// Refuse a kernel build whose pinned toolchain has no compiler to spawn.
-///
-/// Cargo's own error is "could not execute process" after the build has
-/// already been described as starting. The path and `rust-toolchain.toml`
-/// are the facts a missing install needs.
+/// Cargo reports the failure only after it has already described the build as starting.
 fn require_pinned_compilers(toolchain_root: &Path) -> Result<()> {
     let bin = toolchain_root.join("bin");
     for name in ["rustc", "rustdoc"] {

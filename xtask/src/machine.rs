@@ -1,31 +1,12 @@
-//! Facts about the machine that more than one crate states, checked to agree.
-//!
-//! A page is 4096 bytes, and five places in this tree say so: `frame-space`
-//! and `slab-layout` call it `FRAME_SIZE`, `stack-layout` and `x86-paging`
-//! call it `PAGE_SIZE`, and `kernel/src/mem.rs` has its own. They are four
-//! crates and a kernel module with no dependency between them, which is why
-//! each declares its own — and nothing compared them (D-160).
-//!
-//! Every layout in the kernel is computed from one of these. A frame allocator
-//! handing out 4096-byte frames to a slab allocator that believes they are
-//! 2048 does not fail a test; it fails at the second slab. The literal is the
-//! same in all five today, which is exactly the state a duplication is in right
-//! up until it is not.
-//!
-//! **The sites are discovered, not listed** (D-157). What this module names is
-//! the *fact* — which constant names mean "the size of a page" — and it then
-//! goes and finds every definition of one. A sixth transcription is covered by
-//! the check the day it is written.
+//! Page-size constants stated in more than one crate, checked to agree.
+//! Definitions are discovered by name, so a new transcription is covered when it is written.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Constant names that all mean "the size of a page".
-///
-/// The list is the check's subject rather than its data: adding a name here
-/// widens what is compared, and adding a *definition* anywhere in the tree is
-/// found without touching this file.
+/// Constant names that mean the size of a page.
+/// Adding a name here widens the comparison; a new definition is found without editing this file.
 const PAGE_SIZE_NAMES: [&str; 2] = ["PAGE_SIZE", "FRAME_SIZE"];
 
 /// The trees a machine constant can live in.
@@ -45,12 +26,7 @@ pub struct Definition {
 }
 
 /// Every definition of a page-size constant under `root`.
-///
-/// # Errors
-///
-/// If a source tree cannot be read, or a definition's value is not a literal
-/// this can evaluate — which is itself worth failing on, because a page size
-/// computed rather than stated is a page size this cannot compare.
+/// A computed value fails here: only a literal can be compared.
 pub fn page_size_definitions(root: &Path) -> Result<Vec<Definition>> {
     let mut found = Vec::new();
     for tree in ROOTS {

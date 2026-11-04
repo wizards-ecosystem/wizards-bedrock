@@ -1,10 +1,5 @@
 //! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock.
 //!
-//! The envelope says which target and ABI versions opaque artifact bytes need,
-//! where those bytes came from, which effects they request, and which digest
-//! identifies them. It does not say whether the bytes are bytecode, ELF or
-//! Wasm.
-//!
 //! # Examples
 //!
 //! ```
@@ -157,9 +152,6 @@ struct Record<'a> {
 }
 
 /// Verify one canonical record against supported versions and consumed bytes.
-///
-/// Effect requirements are authenticated metadata only. Successful
-/// verification does not grant the artifact any authority.
 ///
 /// # Errors
 ///

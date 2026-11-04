@@ -1,9 +1,5 @@
-//! Memory-mapped I/O regions.
-//!
-//! An [`MmioRegion`] is constructed once from a mapping the caller vouches for,
-//! then hands out bounds- and alignment-checked volatile accesses in safe code.
-//! Every access returns a [`Result`]: a driver bug becomes an error value, not
-//! a stray write into whatever follows the device.
+//! Memory-mapped I/O regions. An [`MmioRegion`] is constructed once from a mapping the caller
+//! vouches for, then hands out bounds- and alignment-checked volatile accesses in safe code.
 
 use core::fmt;
 use mmio_range::{AccessError, AccessRange};
@@ -67,9 +63,9 @@ pub struct MmioRegion {
     len: usize,
 }
 
-// SAFETY: `MmioRegion` is a base pointer plus a length, and the raw pointer
-// keeps it `!Sync`, so accesses cannot race across CPUs. `new` requires the
-// same live mapping in every page-table root that can run.
+// SAFETY: `MmioRegion` is a base pointer plus a length, and the raw pointer keeps it `!Sync`, so
+// accesses cannot race across CPUs. `new` requires the same live mapping in every page-table root
+// that can run.
 unsafe impl Send for MmioRegion {}
 
 impl MmioRegion {
@@ -77,18 +73,17 @@ impl MmioRegion {
     ///
     /// # Safety
     ///
-    /// `base` must name the same live, 4-byte-aligned mapping of at least `len`
-    /// bytes in every page-table root that can run for this region's lifetime,
-    /// and no other code may access that memory while this region exists.
+    /// `base` must name the same live, 4-byte-aligned mapping of at least `len` bytes in every
+    /// page-table root that can run for this region's lifetime, and no other code may access that
+    /// memory while this region exists.
     pub(crate) const unsafe fn new(base: *mut u8, len: usize) -> Self {
         Self { base, len }
     }
 
     /// The address the region begins at.
     ///
-    /// For a caller that needs to describe the same memory another way — the
-    /// framebuffer, which is remapped with a different memory type once the
-    /// kernel owns its page tables.
+    /// For a caller that needs to describe the same memory another way — the framebuffer, which is
+    /// remapped with a different memory type once the kernel owns its page tables.
     #[cfg(feature = "selftest")]
     pub(crate) const fn base_address(&self) -> *mut u8 {
         self.base
@@ -98,9 +93,9 @@ impl MmioRegion {
     ///
     /// # Errors
     ///
-    /// [`MmioError::OutOfBounds`] when the word would leave the region,
-    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
-    /// [`MmioError::Overflow`] when the byte range cannot be formed.
+    /// [`MmioError::OutOfBounds`] when the word would leave the region, [`MmioError::Misaligned`]
+    /// when `offset` is not a multiple of 4, and [`MmioError::Overflow`] when the byte range cannot
+    /// be formed.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::once(value))
     }
@@ -109,9 +104,9 @@ impl MmioRegion {
     ///
     /// # Errors
     ///
-    /// [`MmioError::OutOfBounds`] when the word would leave the region,
-    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
-    /// [`MmioError::Overflow`] when the byte range cannot be formed.
+    /// [`MmioError::OutOfBounds`] when the word would leave the region, [`MmioError::Misaligned`]
+    /// when `offset` is not a multiple of 4, and [`MmioError::Overflow`] when the byte range cannot
+    /// be formed.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         let offset = self.check_words(offset, 1)?.offset();
         #[expect(
@@ -119,8 +114,8 @@ impl MmioRegion {
             reason = "check_words rejects an offset that is not a multiple of 4"
         )]
         let word = self.base.wrapping_add(offset).cast::<u32>();
-        // SAFETY: `check_words` proved the word is contained and aligned in the
-        // live mapping promised by `new`.
+        // SAFETY: `check_words` proved the word is contained and aligned in the live mapping
+        // promised by `new`.
         Ok(unsafe { word.read_volatile() })
     }
 
@@ -128,9 +123,9 @@ impl MmioRegion {
     ///
     /// # Errors
     ///
-    /// [`MmioError::OutOfBounds`] when the words would leave the region,
-    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
-    /// [`MmioError::Overflow`] when `count` words do not form a byte range.
+    /// [`MmioError::OutOfBounds`] when the words would leave the region, [`MmioError::Misaligned`]
+    /// when `offset` is not a multiple of 4, and [`MmioError::Overflow`] when `count` words do not
+    /// form a byte range.
     pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::repeat_n(value, count))
     }
@@ -139,9 +134,9 @@ impl MmioRegion {
     ///
     /// # Errors
     ///
-    /// [`MmioError::OutOfBounds`] when the words would leave the region,
-    /// [`MmioError::Misaligned`] when `offset` is not a multiple of 4, and
-    /// [`MmioError::Overflow`] when `values` does not form a byte range.
+    /// [`MmioError::OutOfBounds`] when the words would leave the region, [`MmioError::Misaligned`]
+    /// when `offset` is not a multiple of 4, and [`MmioError::Overflow`] when `values` does not
+    /// form a byte range.
     pub fn write_u32_slice(&mut self, offset: usize, values: &[u32]) -> Result<(), MmioError> {
         self.write_values(offset, values.iter().copied())
     }
@@ -158,8 +153,8 @@ impl MmioRegion {
                 reason = "check_words rejects a cursor that is not a multiple of 4"
             )]
             let word = self.base.wrapping_add(cursor).cast::<u32>();
-            // SAFETY: `range` proves each word is aligned and contained by
-            // this unique device mapping.
+            // SAFETY: `range` proves each word is aligned and contained by this unique device
+            // mapping.
             unsafe { word.write_volatile(value) };
         }
         Ok(())

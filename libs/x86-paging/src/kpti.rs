@@ -89,10 +89,6 @@ impl fmt::Display for RootPairError {
 impl core::error::Error for RootPairError {}
 
 /// Frame accounting while a full/stripped root pair is being constructed.
-///
-/// Root acquisition is deliberately separate from published pair authority:
-/// a refusal after the first root must return that one frame, while a complete
-/// pair can move into [`PairFrameAuthority`] only after both roots exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PairConstructionLedger {
     root_frames: u8,
@@ -105,8 +101,6 @@ impl PairConstructionLedger {
     }
 
     /// Record one newly acquired root frame.
-    ///
-    /// Returns `None` rather than permitting a third root to enter the pair.
     pub const fn acquire_root(self) -> Option<Self> {
         if self.root_frames >= 2 {
             return None;
@@ -161,10 +155,6 @@ impl PairFrameAuthority {
     }
 
     /// Settle an all-or-nothing cleanup observation.
-    ///
-    /// Returning no frames preserves the complete authority for retry. An
-    /// exact return releases it. Any partial count is rejected because it
-    /// would describe a half-reclaimed pair.
     ///
     /// # Errors
     ///
@@ -262,11 +252,6 @@ pub struct FlushPremise {
 impl FlushPremise {
     /// Admit the flush policy over one complete leaf-domain observation.
     ///
-    /// `leaf_domain` must contain the flags of every present leaf reachable
-    /// through either member of the pair. The runtime owns that exhaustive
-    /// walk; this admission makes the no-PCID and all-non-global predicates
-    /// inseparable once the observation has been supplied.
-    ///
     /// # Errors
     ///
     /// Refuses enabled PCID or the first observed global leaf.
@@ -313,10 +298,6 @@ impl fmt::Display for FlushPremiseError {
 impl core::error::Error for FlushPremiseError {}
 
 /// Whether one lower-half top-level slot has the same shared user link.
-///
-/// Two absent slots match. Present slots must point to one identical user
-/// table with exactly the ordinary table-link policy; hardware `ACCESSED`
-/// drift does not change their identity.
 pub const fn shared_user_link_matches(full: Entry, stripped: Entry) -> bool {
     if !full.is_present() || !stripped.is_present() {
         return full.bits() == Entry::ABSENT.bits() && stripped.bits() == Entry::ABSENT.bits();
@@ -612,10 +593,6 @@ pub struct ObservedPage {
 }
 
 /// Whether every supplied entry-stack guard is absent from both roots.
-///
-/// The two observations must enumerate every present leaf that could cover a
-/// supplied guard. Invalid observations fail closed, including an absent leaf
-/// or a range that is empty, unaligned, or overflowing.
 pub fn stack_guards_are_absent(
     stacks: &[EntryStackRange],
     full_present_pages: &[ObservedPage],
@@ -661,11 +638,6 @@ impl ObservedPage {
 }
 
 /// Whether the stripped higher half contains exactly the expected enclave.
-///
-/// `observed` must contain every present leaf found in the stripped root's
-/// higher half. The comparison is order-independent and rejects an empty
-/// enclave, duplicate virtual pages, a missing or extra leaf, a large page,
-/// different backing, or any permission outside the expected policy.
 pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> bool {
     if expected.is_empty() || expected.len() != observed.len() {
         return false;

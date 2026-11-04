@@ -1,8 +1,5 @@
-//! Building the bootable disk image.
-//!
-//! Everything happens in-process in pure Rust — no xorriso, no mtools. The
-//! artifact is a raw disk with an MBR partition table holding one FAT32 EFI
-//! system partition.
+//! Building the bootable disk image in-process.
+//! A raw disk, an MBR, and one FAT32 EFI system partition.
 
 pub mod corpus;
 pub mod esp;

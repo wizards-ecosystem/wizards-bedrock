@@ -1,9 +1,4 @@
 //! The spurious-interrupt vector register.
-//!
-//! Two unrelated things share one register: the vector the APIC delivers when
-//! it has committed to delivering something and then found it had nothing to
-//! say, and the bit that software-enables the controller. Writing the second is
-//! what turns the APIC on, so it is written once everything else is configured.
 
 use crate::vector::InterruptVector;
 
@@ -92,10 +87,6 @@ mod tests {
     }
 
     /// The hardwired nibble is four bits, not three.
-    ///
-    /// Values ending in 0xF or 0x0 cannot distinguish 0x0F from 0x07. The
-    /// literal anchor prevents accepting 0x27 when hardware delivers 0x2F
-    /// (D-124).
     #[test]
     fn the_hardwired_low_bits_are_the_whole_nibble() {
         assert_eq!(HARDWIRED_LOW_BITS, 0b1111);

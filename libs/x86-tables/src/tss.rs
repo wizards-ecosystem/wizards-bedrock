@@ -1,10 +1,4 @@
 //! The 64-bit task-state segment.
-//!
-//! Hardware task switching is gone in long mode; what survives is a table of
-//! stack pointers. `RSP0` is the stack the CPU switches to when an interrupt
-//! arrives from ring 3, and the seven interrupt stack table entries are stacks a
-//! gate can demand unconditionally — which is the only way to handle a fault
-//! whose cause is that the current stack is unusable.
 
 use core::fmt;
 
@@ -16,9 +10,6 @@ const PRIVILEGE_STACKS: usize = 3;
 pub const INTERRUPT_STACKS: usize = 7;
 
 /// The layout the CPU reads. Every reserved field must stay zero.
-///
-/// Packed to four bytes because the architecture places the first stack pointer
-/// at offset 4, which natural alignment would not do.
 #[derive(Clone, Copy)]
 #[repr(C, packed(4))]
 pub struct TaskState {
@@ -45,10 +36,6 @@ impl TaskState {
 
     /// Byte offset of privilege-stack entry `level` inside the segment.
     ///
-    /// Exists for the same reason the interrupt-stack one does: a targeted
-    /// eight-byte store rather than a rewrite of the whole structure, so a
-    /// trap arriving mid-update reads one stack or the other (D-95).
-    ///
     /// # Panics
     ///
     /// As [`set_privilege_stack`](Self::set_privilege_stack).
@@ -59,18 +46,10 @@ impl TaskState {
 
     /// Byte offset of interrupt-stack entry `index` inside the segment.
     ///
-    /// Exists so a caller can rewrite one entry rather than the whole
-    /// structure. That distinction is not cosmetic: the entry is eight bytes
-    /// and naturally aligned, so a targeted store is atomic against a double
-    /// fault arriving mid-write, while a whole-segment `write_volatile` is a
-    /// memcpy that can be observed torn (D-94).
-    ///
     /// # Panics
     ///
-    /// Outside 1..=[`INTERRUPT_STACKS`], as [`set_interrupt_stack`] does — the
-    /// table is indexed from one because zero means "no stack switch".
-    ///
-    /// [`set_interrupt_stack`]: Self::set_interrupt_stack
+    /// Outside 1..=[`INTERRUPT_STACKS`], as [`set_interrupt_stack`](Self::set_interrupt_stack)
+    /// does. The table is indexed from one because zero means "no stack switch".
     pub const fn interrupt_stack_offset(index: usize) -> usize {
         assert!(
             index.wrapping_sub(1) < INTERRUPT_STACKS,
@@ -84,9 +63,6 @@ impl TaskState {
     }
 
     /// An empty task-state segment with no I/O permission bitmap.
-    ///
-    /// `iomap_base` is set to the size of the segment, which puts the bitmap
-    /// outside the limit — how x86 spells "ring 3 may touch no port at all".
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the register is the low sixteen bits of the dword"
@@ -105,8 +81,8 @@ impl TaskState {
 
     /// Point interrupt stack table entry `index` at `top`.
     ///
-    /// The value is the address the stack grows *down* from, so it is one past
-    /// the end of the memory reserved for it.
+    /// The value is the address the stack grows *down* from, so it is one past the end
+    /// of the memory reserved for it.
     ///
     /// # Panics
     ///

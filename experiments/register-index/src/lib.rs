@@ -1,9 +1,6 @@
 //! Experimental reading aid for the foundation register.
 //!
-//! The Markdown register in `docs/016-pre-wizzy-foundation.md` is the
-//! authority. This crate only prints and checks the rows it can parse. It is
-//! outside the kernel workspace, outside `cargo xtask ci`, and outside the
-//! register itself.
+//! `docs/016-pre-wizzy-foundation.md` is the authority.
 
 use std::path::{Path, PathBuf};
 
@@ -72,7 +69,7 @@ pub fn rows(document: &str) -> Vec<Row> {
     document.lines().filter_map(parse_row).collect()
 }
 
-/// `true` when the state still names kernel work an agent might pick up.
+/// `true` when the state still names live kernel work.
 pub fn is_live(state: &str) -> bool {
     LIVE_STATES.contains(&state)
 }

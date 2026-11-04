@@ -1,15 +1,10 @@
 //! Where each register sits in the local APIC's page.
 //!
-//! Offsets are Intel SDM Vol. 3A table 11-1. Only the registers this kernel
-//! touches are named; the rest are absent rather than listed and unused.
+//! Offsets are Intel SDM Vol. 3A table 11-1.
 
 use crate::Register;
 
 /// This APIC's identifier.
-///
-/// The whole register in x2APIC mode; the top byte of it in the memory-mapped
-/// one. Another difference between the two encodings that only the reader of
-/// this register has to care about.
 pub const ID: Register = Register::new(0x020);
 
 /// Version, and how many local vector table entries this APIC implements.
@@ -82,9 +77,6 @@ pub const LVT_LINT1: Register = Register::new(0x360);
 pub const LVT_ERROR: Register = Register::new(0x370);
 
 /// Local vector entries in the order used by the version register's maximum.
-///
-/// CMCI is entry six even though its register precedes the other entries in
-/// address order.
 pub const LOCAL_VECTOR_TABLE: [Register; 7] = [
     LVT_TIMER,
     LVT_THERMAL,
@@ -146,15 +138,6 @@ mod tests {
     ];
 
     /// `ALL` names every register the crate defines.
-    ///
-    /// The comment above it says so, and nothing checked it. A fifteenth
-    /// `pub const NAME: Register` added and left out would silently shrink
-    /// three sweeps at once — the alignment check, the collision check and the
-    /// MSR anchoring — and all three would go on reporting success (D-161).
-    ///
-    /// Compared by offset rather than by count: a list that dropped one
-    /// register and repeated another has the right length, and only the
-    /// offsets say so.
     #[test]
     fn all_names_every_register_the_crate_defines() {
         let mut defined: Vec<usize> = include_str!("register.rs")
@@ -231,9 +214,7 @@ mod tests {
         assert_eq!(DIVIDE_CONFIGURATION.offset(), 0x3E0);
     }
 
-    /// SDM Vol. 3A table 11-1's "MSR address" column, for every register named
-    /// here. Transcribed rather than derived, so the derivation has something
-    /// independent to be wrong against.
+    /// SDM Vol. 3A table 11-1 MSR addresses for every register named here.
     #[test]
     fn every_register_lands_on_the_msr_the_manual_gives() {
         let anchored = [

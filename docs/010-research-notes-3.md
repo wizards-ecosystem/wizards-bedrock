@@ -75,10 +75,9 @@ as author-measured and unreplicated. Both halves of that flag are now resolved,
 in opposite directions.
 
 **The containment property is verified, and it is the one we actually rely on.**
-An agent went to the live repository to break the boundary and could not: there
+A whole-repository search could not find a break in that boundary: there
 are **zero occurrences of `#[allow(unsafe_code)]` in the entire Asterinas
-repository** ◆ — checked by whole-repo code search, with every non-`lib.rs` hit
-read individually. Real drivers — virtio, NVMe, PCI, i8042, framebuffer, uart,
+repository** ◆ — every non-`lib.rs` hit was read individually. Real drivers — virtio, NVMe, PCI, i8042, framebuffer, uart,
 block, network — all live in `deny(unsafe_code)` crates. This holds at ~100k
 lines, 90 contributors, four years. **The discipline scales.** That is the claim
 D-13 depends on, and it is now empirical rather than aspirational.

@@ -1,11 +1,5 @@
-//! Physical memory: which frames exist, and who owns each one.
-//!
-//! A [`Frame`] owns one allocator entry until drop; `frame_space::FrameSpace`
-//! supplies the host-tested search. Frames are reached through the direct map
-//! whose offset [`init`] records.
-//!
-//! [`USegment`] marks bytes as externally modifiable. Such bytes cannot become
-//! kernel-owned again until [`USegment::reclaim`] clears them (D-44, D-107).
+//! Physical memory: which frames exist, and who owns each one. A [`Frame`] owns one allocator entry
+//! until drop; `frame_space::FrameSpace` supplies the host-tested search.
 
 pub mod heap;
 
@@ -32,9 +26,8 @@ pub type Paddr = u64;
 
 /// Highest physical address the frame allocator tracks.
 ///
-/// Two bits of `.bss` per frame, so 16 GiB costs one megabyte — which the
-/// image does not carry, because both bitmaps start zeroed. Memory above this
-/// is reported as ignored at boot rather than silently lost.
+/// Two bits of `.bss` per frame, so 16 GiB costs one megabyte — which the image does not carry,
+/// because both bitmaps start zeroed.
 pub const CEILING: u64 = 16 << 30;
 
 /// The bookkeeping, sized for [`CEILING`].
@@ -44,10 +37,8 @@ static FRAMES: SpinLock<Frames> = SpinLock::new(Frames::new());
 
 /// The direct map's offset, or zero before [`init`] has run.
 ///
-/// An atomic rather than a field of the locked structure: zeroing a frame must
-/// not be done while holding the allocator's lock, and the offset never
-/// changes once written. Zero is an unambiguous "not yet" — the higher-half
-/// direct map is never at zero.
+/// An atomic rather than a field of the locked structure: zeroing a frame must not be done while
+/// holding the allocator's lock, and the offset never changes once written.
 static DIRECT_MAP_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 static INIT: Once = Once::new();
@@ -90,8 +81,8 @@ impl fmt::Display for Report {
 
 /// Take every exclusively allocatable whole-frame run under management.
 ///
-/// The map arbitrates overlaps first, excluding every frame touched by a
-/// kernel, boot, firmware, or other non-allocatable claim.
+/// The map arbitrates overlaps first, excluding every frame touched by a kernel, boot, firmware, or
+/// other non-allocatable claim.
 ///
 /// # Panics
 ///
@@ -155,9 +146,7 @@ pub fn free_frames() -> usize {
 
 /// Allocation-free read-only access to physical firmware tables at handoff.
 ///
-/// This deliberately cannot read usable, bootloader, kernel, reserved, or
-/// device memory. It borrows the copied boot map directly so the platform
-/// contract can be checked before the allocator records global memory state.
+/// This deliberately cannot read usable, bootloader, kernel, reserved, or device memory.
 #[derive(Debug, Clone, Copy)]
 pub struct EarlyFirmwareMemory<'map> {
     map: &'map MemoryMap,
@@ -200,8 +189,8 @@ impl<'map> EarlyFirmwareMemory<'map> {
 
 /// Read-only access to physical firmware tables after memory initialization.
 ///
-/// This carries the same narrow authority as [`EarlyFirmwareMemory`] without
-/// borrowing the boot handoff after the global map has accepted it.
+/// This carries the same narrow authority as [`EarlyFirmwareMemory`] without borrowing the boot
+/// handoff after the global map has accepted it.
 #[derive(Debug, Clone, Copy)]
 pub struct FirmwareMemory(());
 
@@ -251,8 +240,8 @@ fn firmware_contains(map: &MemoryMap, address: Paddr, len: usize) -> bool {
 fn read_firmware_bytes(base: *const u8, buffer: &mut [u8]) {
     for (index, slot) in buffer.iter_mut().enumerate() {
         let byte = base.wrapping_add(index);
-        // SAFETY: the only callers first proved every byte immutable ACPI
-        // storage and proved the direct-map address range cannot overflow.
+        // SAFETY: the only callers first proved every byte immutable ACPI storage and proved the
+        // direct-map address range cannot overflow.
         *slot = unsafe { byte.read_volatile() };
     }
 }
@@ -283,9 +272,6 @@ pub(crate) fn map_direct_cache(start: Paddr, end: Paddr) -> Option<crate::boot::
 }
 
 /// Where the boot map covers `len` bytes with memory, or `None` before it is up.
-///
-/// See [`crate::boot::MemoryMap::first_memory_run`] for why a caller asks
-/// rather than names an address (D-177).
 #[cfg(feature = "selftest")]
 pub fn first_memory_run(len: u64) -> Option<Paddr> {
     MAP.lock_leaf()
@@ -305,8 +291,8 @@ pub fn direct_map() -> Option<DirectMap> {
 
 /// Reclaim the frame allocator's lock on the terminal panic path.
 ///
-/// A panic can interrupt either lock's holder, so reporting must recover them
-/// before it reads allocator state.
+/// A panic can interrupt either lock's holder, so reporting must recover them before it reads
+/// allocator state.
 pub(crate) fn force_unlock(panic: &PanicToken) {
     FRAMES.force_unlock(panic);
     MAP.force_unlock(panic);
@@ -314,8 +300,8 @@ pub(crate) fn force_unlock(panic: &PanicToken) {
 
 /// One physical frame, owned for as long as this value lives.
 ///
-/// It cannot be copied or safely constructed except by allocation, so mutable
-/// access through the direct map has one owner.
+/// It cannot be copied or safely constructed except by allocation, so mutable access through the
+/// direct map has one owner.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Frame {
     index: usize,
@@ -326,11 +312,10 @@ impl Frame {
     ///
     /// # Safety
     ///
-    /// `address` must be a frame [`allocate`] or [`allocate_zeroed`] returned
-    /// and whose handle was forgotten, and no other `Frame` may name it.
-    /// Dropping the result frees it, so a second handle over one frame is a
-    /// double free — and one built over a frame nothing allocated corrupts the
-    /// allocator's records.
+    /// `address` must be a frame [`allocate`] or [`allocate_zeroed`] returned and whose handle was
+    /// forgotten, and no other `Frame` may name it. Dropping the result frees it, so a second
+    /// handle over one frame is a double free — and one built over a frame nothing allocated
+    /// corrupts the allocator's records.
     pub(crate) const unsafe fn from_raw(address: Paddr) -> Self {
         Self {
             index: (address / FRAME_SIZE) as usize,
@@ -344,21 +329,17 @@ impl Frame {
 
     /// Fill every byte of the frame with `byte`.
     ///
-    /// Returns `false` if the direct map cannot reach it, which means either
-    /// that [`init`] has not run or that the bootloader's map does not cover
-    /// this frame. Neither is recoverable at the call site, but both are
-    /// reportable, and a silent no-op would hand out a page table full of
-    /// whatever the last owner left.
+    /// Returns `false` if the direct map cannot reach it, which means either that [`init`] has not
+    /// run or that the bootloader's map does not cover this frame.
     #[must_use = "a refused frame fill changed no bytes"]
     pub fn fill(&mut self, byte: u8) -> bool {
         let Some(base) = direct_map_pointer(self.address()) else {
             return false;
         };
-        // SAFETY: `self` owns this frame — no other `Frame` can name it, since
-        // the allocator hands out one handle per frame and this method needs
-        // `&mut self`. The frame is allocatable memory, and every allocatable
-        // region is direct-mapped, so the whole of it is reachable through the
-        // pointer just formed.
+        // SAFETY: `self` owns this frame — no other `Frame` can name it, since the allocator hands
+        // out one handle per frame and this method needs `&mut self`. The frame is allocatable
+        // memory, and every allocatable region is direct-mapped, so the whole of it is reachable
+        // through the pointer just formed.
         unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(FRAME_SIZE)) };
         true
     }
@@ -369,10 +350,9 @@ impl Frame {
         self.fill(0)
     }
 
-    /// Whether every byte of the frame is zero, or `None` if the direct map
-    /// cannot reach it.
+    /// Whether every byte of the frame is zero, or `None` if the direct map cannot reach it.
     ///
-    /// This is the machine witness for the D-12 zero-on-allocation boundary.
+    /// This is the machine witness for the zero-on-allocation boundary.
     #[cfg(feature = "selftest")]
     pub fn is_zero(&self) -> Option<bool> {
         const WORDS: usize = crate::usize_from_u64(FRAME_SIZE) / size_of::<u64>();
@@ -386,10 +366,9 @@ impl Frame {
         let mut zero = true;
         for index in 0..WORDS {
             let word = base.wrapping_add(index);
-            // SAFETY: the frame `self` owns is allocatable memory and so is
-            // direct-mapped whichever map is in force, and `index` stays below
-            // the number of words in one frame. The direct map preserves the
-            // frame's `u64` alignment.
+            // SAFETY: the frame `self` owns is allocatable memory and so is direct-mapped whichever
+            // map is in force, and `index` stays below the number of words in one frame. The direct
+            // map preserves the frame's `u64` alignment.
             zero &= unsafe { word.read_volatile() } == 0;
         }
         Some(zero)
@@ -406,11 +385,9 @@ impl Drop for Frame {
     }
 }
 
-/// A run of consecutive physical frames, owned for as long as this value
-/// lives.
+/// A run of consecutive physical frames, owned for as long as this value lives.
 ///
-/// What a 2 MiB mapping and a multi-page stack are allocated as. The same
-/// ownership rule as [`Frame`]: one handle per run, released whole on drop.
+/// What a 2 MiB mapping and a multi-page stack are allocated as.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Segment {
     first: usize,
@@ -439,16 +416,15 @@ impl Segment {
 
     /// Fill every byte of the run with `byte`.
     ///
-    /// False if the direct map cannot reach the whole run, having written
-    /// nothing.
+    /// False if the direct map cannot reach the whole run, having written nothing.
     #[must_use = "a refused segment fill changed no bytes"]
     pub fn fill(&mut self, byte: u8) -> bool {
         let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: a live `Segment` proves the allocator admitted and reserved
-        // every frame in this run; allocator-managed frames are direct-mapped.
-        // `direct_pointer` separately proved the address arithmetic.
+        // SAFETY: a live `Segment` proves the allocator admitted and reserved every frame in this
+        // run; allocator-managed frames are direct-mapped. `direct_pointer` separately proved the
+        // address arithmetic.
         unsafe { core::ptr::write_bytes(base, byte, crate::usize_from_u64(self.len())) };
         true
     }
@@ -465,11 +441,9 @@ impl Segment {
 
     /// Write `bytes` at `offset` within the run.
     ///
-    /// This is the safe loading path: bytes enter before pages become
-    /// read-only and executable (D-13, D-96).
+    /// This is the safe loading path: bytes enter before pages become read-only and executable.
     ///
-    /// `false` if the write would run past the run, or if the direct map
-    /// cannot reach it.
+    /// `false` if the write would run past the run, or if the direct map cannot reach it.
     #[must_use = "a refused segment write changed no bytes"]
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
         let Some(end) = offset.checked_add(bytes.len()) else {
@@ -482,20 +456,19 @@ impl Segment {
             return false;
         };
         let destination = base.wrapping_add(offset);
-        // SAFETY: the checked write lies in this uniquely owned allocator run,
-        // which is direct-mapped, and the caller's bytes cannot overlap it.
+        // SAFETY: the checked write lies in this uniquely owned allocator run, which is
+        // direct-mapped, and the caller's bytes cannot overlap it.
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
         true
     }
 
-    /// Read `into.len()` bytes from `offset` within the run.
+    /// Read `into.len` bytes from `offset` within the run.
     ///
-    /// [`SharedBytes`] uses volatile copies and [`SharedRing`] reserves its
-    /// publication words for the architecture boundary. [`USegment`] exposes
-    /// no reader (D-107, D-221).
+    /// [`SharedBytes`] uses volatile copies and [`SharedRing`] reserves its publication words for
+    /// the architecture boundary.
     ///
-    /// `false` if the read would run past the run, or if the direct map cannot
-    /// reach it, having written nothing into `into`.
+    /// `false` if the read would run past the run, or if the direct map cannot reach it, having
+    /// written nothing into `into`.
     #[cfg(feature = "selftest")]
     #[must_use = "a refused segment read copied no bytes"]
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
@@ -509,8 +482,8 @@ impl Segment {
             return false;
         };
         let source = base.wrapping_add(offset);
-        // SAFETY: the checked read lies in this owned allocator run, which is
-        // direct-mapped, and the caller's output cannot overlap it.
+        // SAFETY: the checked read lies in this owned allocator run, which is direct-mapped, and
+        // the caller's output cannot overlap it.
         unsafe { core::ptr::copy_nonoverlapping(source, into.as_mut_ptr(), into.len()) };
         true
     }
@@ -521,9 +494,8 @@ impl Segment {
     ///
     /// # Safety
     ///
-    /// `count` frames from `address` must be a run that
-    /// [`allocate_contiguous`] returned and whose handle was forgotten, and
-    /// no other `Segment` may name any of them. Dropping the result frees
+    /// `count` frames from `address` must be a run that [`allocate_contiguous`] returned and whose
+    /// handle was forgotten, and no other `Segment` may name any of them. Dropping the result frees
     /// them, so a second handle over the same run is a double free.
     pub(crate) const unsafe fn from_raw(address: Paddr, count: usize) -> Self {
         Self {
@@ -553,14 +525,14 @@ struct DirectSpan<'authority> {
 
 impl<'authority> DirectSpan<'authority> {
     fn from_segment(segment: &'authority Segment) -> Option<Self> {
-        // SAFETY: a live `Segment` is the allocator's unique handle for every
-        // frame in this run and keeps those direct-mapped bytes allocated.
+        // SAFETY: a live `Segment` is the allocator's unique handle for every frame in this run and
+        // keeps those direct-mapped bytes allocated.
         unsafe { Self::from_proven_run(segment.address(), segment.len()) }
     }
 
     fn from_shared(allocation: &'authority SharedAllocation) -> Option<Self> {
-        // SAFETY: `SharedAllocation` retains its segment for this borrow and
-        // permits byte access specifically through volatile operations.
+        // SAFETY: `SharedAllocation` retains its segment for this borrow and permits byte access
+        // specifically through volatile operations.
         unsafe { Self::from_proven_run(allocation.0.address(), allocation.0.len()) }
     }
 
@@ -579,8 +551,8 @@ impl<'authority> DirectSpan<'authority> {
             return false;
         }
         let destination = self.base.wrapping_add(offset);
-        // SAFETY: the span's authority keeps the run live, and the checked
-        // offset names exactly one byte within it.
+        // SAFETY: the span's authority keeps the run live, and the checked offset names exactly one
+        // byte within it.
         unsafe { destination.write_volatile(byte) };
         true
     }
@@ -590,8 +562,8 @@ impl<'authority> DirectSpan<'authority> {
             return None;
         }
         let source = self.base.wrapping_add(offset);
-        // SAFETY: the span's authority keeps the run live, and the checked
-        // offset names exactly one byte within it.
+        // SAFETY: the span's authority keeps the run live, and the checked offset names exactly one
+        // byte within it.
         Some(unsafe { source.read_volatile() })
     }
 
@@ -627,8 +599,8 @@ impl<'authority> DirectSpan<'authority> {
             reason = "the check above rejects a destination that is not eight-byte aligned"
         )]
         let word = destination.cast::<u64>();
-        // SAFETY: the span's authority keeps all eight checked bytes live, and
-        // the alignment check makes this one indivisible x86-64 qword store.
+        // SAFETY: the span's authority keeps all eight checked bytes live, and the alignment check
+        // makes this one indivisible x86-64 qword store.
         unsafe { word.write_volatile(value.to_le()) };
         true
     }
@@ -652,8 +624,8 @@ impl<'authority> DirectSpan<'authority> {
             return false;
         }
         let line = self.base.wrapping_add(offset);
-        // SAFETY: the span's authority keeps the run live in the direct map, and
-        // the checked offset names a byte within it, so the line is mapped.
+        // SAFETY: the span's authority keeps the run live in the direct map, and the checked offset
+        // names a byte within it, so the line is mapped.
         unsafe { cpu::flush_cache_line(line) };
         true
     }
@@ -691,11 +663,8 @@ impl<'authority> DirectSpan<'authority> {
 
 /// Frames made reachable by a device for direct memory access.
 ///
-/// A command whose completion is uncertain cannot return its frames to the
-/// allocator: the device may still write through the physical address it was
-/// given. A live mapping prevents recycling even if its owner is dropped.
-/// [`retain`](Self::retain) additionally removes every safe way to access the
-/// allocation when completion or revocation is uncertain.
+/// A command whose completion is uncertain cannot return its frames to the allocator: the device
+/// may still write through the physical address it was given.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DmaSegment {
     segment: Option<Segment>,
@@ -824,8 +793,8 @@ impl DmaSegment {
 
     /// Permanently withhold the run from both safe access and recycling.
     ///
-    /// Idempotent, so a controller can retain everything it owns without
-    /// distinguishing the object that made its state uncertain.
+    /// Idempotent, so a controller can retain everything it owns without distinguishing the object
+    /// that made its state uncertain.
     pub fn retain(&mut self) {
         if let Some(segment) = self.segment.take() {
             core::mem::forget(segment);
@@ -852,30 +821,27 @@ impl From<Segment> for DmaSegment {
 
 /// Bytes in one processor cache line, the granule `clflush` moves.
 ///
-/// Every x86-64 processor reports 64, and the flush walks a table at this
-/// stride; a smaller line would be flushed in full by the same walk.
+/// Every x86-64 processor reports 64, and the flush walks a table at this stride; a smaller line
+/// would be flushed in full by the same walk.
 const CACHE_LINE: usize = 64;
 
 /// How an IOMMU reads the tables the CPU writes for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TableWalks {
-    /// The unit snoops the processor caches, so a volatile write is visible to
-    /// it as soon as it lands.
+    /// The unit snoops the processor caches, so a volatile write is visible to it as soon as it
+    /// lands.
     Coherent,
-    /// The unit reads memory directly, so every written line is flushed out of
-    /// the caches before the unit may depend on it.
+    /// The unit reads memory directly, so every written line is flushed out of the caches before
+    /// the unit may depend on it.
     Uncached,
 }
 
-/// A run of kernel-owned frames an IOMMU walks: a root, context, or
-/// second-level table.
+/// A run of kernel-owned frames an IOMMU walks: a root, context, or second-level table.
 ///
-/// The CPU writes it through the direct map and the unit reads it at the
-/// physical address, so it is never mapped into any device's translation and
-/// a device cannot reach the structure that constrains it. Unpublished tables
-/// free their frames on drop; `PublishedIommuTable` retains every allocation a
-/// unit may have observed (D-357).
+/// The CPU writes it through the direct map and the unit reads it at the physical address, so it is
+/// never mapped into any device's translation and a device cannot reach the structure that
+/// constrains it.
 #[derive(Debug)]
 pub(crate) struct IommuTable {
     frames: Segment,
@@ -883,8 +849,8 @@ pub(crate) struct IommuTable {
 }
 
 impl IommuTable {
-    /// Allocate `frames` contiguous zeroed frames for one structure or arena,
-    /// with the zeros already visible to a unit that walks `walks`.
+    /// Allocate `frames` contiguous zeroed frames for one structure or arena, with the zeros
+    /// already visible to a unit that walks `walks`.
     pub(crate) fn new(frames: usize, walks: TableWalks) -> Option<Self> {
         let mut segment = allocate_contiguous(frames, 1)?;
         if !segment.fill(0) {
@@ -1044,8 +1010,6 @@ pub fn published_iommu_table_drop_retains_for_test() -> bool {
 /// A run of frames whose bytes are ring 3's.
 ///
 /// Its contents are outside kernel control and cannot be read as trusted data.
-/// Conversion is one-way except through [`reclaim`](Self::reclaim), which
-/// clears every byte before returning kernel ownership (D-44, D-107).
 #[derive(Debug, PartialEq, Eq)]
 pub struct USegment {
     segment: Option<Segment>,
@@ -1076,9 +1040,7 @@ impl USegment {
 
     /// Pin this run for sharing, giving up the right to map it as owned.
     ///
-    /// Consuming, with no conversion back. `map_shared` writes no `OWNED` bit,
-    /// while `map_user` consumes a `USegment` and writes one, so one run cannot
-    /// enter both ownership paths (D-115).
+    /// Consuming, with no conversion back.
     #[must_use]
     pub fn share(self) -> Shared {
         Shared(Arc::new(SharedAllocation(self)))
@@ -1086,8 +1048,7 @@ impl USegment {
 
     /// Take the run back for the kernel, with every byte cleared.
     ///
-    /// `None` if clearing cannot reach the run. Such frames are withheld rather
-    /// than recycled with ring-3 bytes still present (D-12, D-107).
+    /// `None` if clearing cannot reach the run.
     ///
     /// # Panics
     ///
@@ -1099,8 +1060,8 @@ impl USegment {
         if segment.zero() {
             return Some(segment);
         }
-        // Returning a failed clear would expose the previous external owner's
-        // bytes through the allocator's next handle (D-115).
+        // Returning a failed clear would expose the previous external owner's bytes through the
+        // allocator's next handle.
         core::mem::forget(segment);
         None
     }
@@ -1150,8 +1111,7 @@ impl Shared {
 
     /// Consume the allocation into one checked ring partition.
     ///
-    /// Returns the unchanged owner if the layout describes a different number
-    /// of bytes.
+    /// Returns the unchanged owner if the layout describes a different number of bytes.
     ///
     /// # Errors
     ///
@@ -1195,7 +1155,7 @@ impl SharedBytes {
         write_shared_volatile(&self.0, offset, bytes)
     }
 
-    /// Volatile-read `into.len()` bytes from `offset` within the run.
+    /// Volatile-read `into.len` bytes from `offset` within the run.
     #[must_use = "a refused shared-memory read copied no bytes"]
     pub fn read_volatile_at(&self, offset: usize, into: &mut [u8]) -> bool {
         read_shared_volatile(&self.0, offset, into)
@@ -1251,28 +1211,24 @@ impl<const WORDS: usize> SharedRing<WORDS> {
 
     /// Acquire-load one aligned little-endian publication index.
     ///
-    /// `None` means the offset is not one of this layout's publication words
-    /// or the word is not reachable through the direct map. An acquired
-    /// producer tail makes its earlier volatile payload writes visible; an
-    /// acquired consumer head makes its earlier payload reads precede reuse.
+    /// `None` means the offset is not one of this layout's publication words or the word is not
+    /// reachable through the direct map.
     pub fn load_acquire_u32(&self, offset: usize) -> Option<u32> {
         if !self.layout.contains_publication_word(offset) {
             return None;
         }
         let address = self.publication_address(offset)?;
-        // SAFETY: `publication_address` proves this exact word stays mapped
-        // and aligned for this borrow; `SharedAllocation` keeps its bytes
-        // external rather than representing them as a Rust object.
+        // SAFETY: `publication_address` proves this exact word stays mapped and aligned for this
+        // borrow; `SharedAllocation` keeps its bytes external rather than representing them as a
+        // Rust object.
         let value = unsafe { shared_memory::load_acquire_u32(address) };
         Some(u32::from_le(value))
     }
 
     /// Release-store one aligned little-endian publication index.
     ///
-    /// `false` means the offset is not one of this layout's publication words
-    /// or the word is not reachable through the direct map. A producer
-    /// publishes completed volatile payload writes through a tail; a consumer
-    /// publishes completed payload reads before the producer may reuse them.
+    /// `false` means the offset is not one of this layout's publication words or the word is not
+    /// reachable through the direct map.
     #[must_use = "a refused shared-memory publication stored no index"]
     pub fn store_release_u32(&self, offset: usize, value: u32) -> bool {
         if !self.layout.contains_publication_word(offset) {
@@ -1281,9 +1237,9 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         let Some(address) = self.publication_address(offset) else {
             return false;
         };
-        // SAFETY: `publication_address` proves this exact word stays mapped
-        // and aligned for this borrow; `SharedAllocation` keeps its bytes
-        // external rather than representing them as a Rust object.
+        // SAFETY: `publication_address` proves this exact word stays mapped and aligned for this
+        // borrow; `SharedAllocation` keeps its bytes external rather than representing them as a
+        // Rust object.
         unsafe { shared_memory::store_release_u32(address, value.to_le()) };
         true
     }
@@ -1478,8 +1434,8 @@ impl ExternalZeroRefusal {
         if expected_len > len {
             return false;
         }
-        // SAFETY: the refusal state and allocator ledger above prove this exact
-        // run is withheld and cannot be reused while the observation runs.
+        // SAFETY: the refusal state and allocator ledger above prove this exact run is withheld and
+        // cannot be reused while the observation runs.
         let Some(span) = (unsafe { DirectSpan::from_proven_run(self.address, len) }) else {
             return false;
         };
@@ -1520,9 +1476,9 @@ impl ExternalZeroRefusal {
             return false;
         }
 
-        // SAFETY: `WITHHELD` is published only after the sole `Segment` handle
-        // is forgotten. `Segment::drop` publishes `RELEASED` instead, so this
-        // state proves no allocator owner can name these exact frames.
+        // SAFETY: `WITHHELD` is published only after the sole `Segment` handle is forgotten.
+        // `Segment::drop` publishes `RELEASED` instead, so this state proves no allocator owner can
+        // name these exact frames.
         let mut segment = unsafe { Segment::from_raw(self.address, self.count) };
         if !segment.zero() {
             core::mem::forget(segment);
@@ -1593,8 +1549,8 @@ pub fn freed_external_run_is_zero_for_test(address: Paddr, count: usize) -> bool
     if !(first..end).all(|frame| frames.is_free(frame)) {
         return false;
     }
-    // SAFETY: the allocator lock keeps this verified free run from being
-    // allocated until the scan completes, and managed frames are direct-mapped.
+    // SAFETY: the allocator lock keeps this verified free run from being allocated until the scan
+    // completes, and managed frames are direct-mapped.
     let Some(span) = (unsafe { DirectSpan::from_proven_run(address, len) }) else {
         return false;
     };
@@ -1609,8 +1565,7 @@ pub fn allocate() -> Option<Frame> {
 
 /// Allocate `count` consecutive frames, the first aligned to `align` frames.
 ///
-/// `align` is rounded up to a power of two. A 2 MiB page wants
-/// `allocate_contiguous(512, 512)`.
+/// `align` is rounded up to a power of two.
 pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
     let first = FRAMES.lock_leaf().allocate_contiguous(count, align)?;
     Some(Segment { first, count })
@@ -1618,8 +1573,8 @@ pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
 
 /// Allocate one frame filled with zeros.
 ///
-/// Returns an unreachable frame to the allocator rather than exposing stale
-/// contents through a new mapping.
+/// Returns an unreachable frame to the allocator rather than exposing stale contents through a new
+/// mapping.
 pub fn allocate_zeroed() -> Option<Frame> {
     let mut frame = allocate()?;
     frame.zero().then_some(frame)
@@ -1632,9 +1587,7 @@ fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
 
 /// Where the direct map makes `len` bytes at `physical` accessible.
 ///
-/// Arithmetic only. Whether the map actually *reaches* those bytes is the
-/// caller's to establish: [`FirmwareMemory`] checks the memory map, and a
-/// [`Frame`] or [`Segment`] carries it by construction.
+/// Arithmetic only.
 pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);
     if offset == 0 {

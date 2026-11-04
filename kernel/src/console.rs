@@ -1,7 +1,6 @@
 //! Framebuffer text console.
 //!
-//! Renders Noto Sans Mono bitmap glyphs onto the framebuffer the bootloader
-//! handed us. This is user-facing output; diagnostics go to the serial log.
+//! User-facing output. Diagnostics go to the serial log.
 
 use core::fmt;
 
@@ -15,17 +14,14 @@ use crate::theme::Palette;
 const FONT_HEIGHT: RasterHeight = RasterHeight::Size16;
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 
-/// Blank border kept around the text area.
-/// Where a line starts, and the floor `erase_previous` will not go below.
+/// Blank border kept around the text area. Where a line starts, and the floor `erase_previous` will
+/// not go below.
 pub(crate) const MARGIN: usize = 8;
 
-/// Extra pixels between baselines, so ascenders and descenders do not touch.
 const LINE_GAP: usize = 2;
 
-/// Drawn in place of any character the font does not carry.
 const FALLBACK_GLYPH: char = '?';
 
-/// ASCII backspace: move back a cell and blank it.
 const BACKSPACE: char = '\u{8}';
 
 /// A monospaced text console over a linear framebuffer.
@@ -191,7 +187,6 @@ impl Console {
         self.blank_cell();
     }
 
-    /// Paint the cell under the cursor in the background colour.
     fn blank_cell(&mut self) {
         for row in 0..self.line_height {
             for column in 0..self.glyph_width {
@@ -228,7 +223,6 @@ impl Console {
         }
     }
 
-    /// Shift the text area up one line and clear the line that opens up.
     fn scroll(&mut self) {
         let shift = self.line_height;
         let retained = self.cursor_y.saturating_sub(MARGIN + shift);
@@ -246,8 +240,8 @@ impl fmt::Write for Console {
     }
 }
 
-/// Look up a glyph, falling back to [`FALLBACK_GLYPH`] so rendering can never
-/// fail on an unexpected character.
+/// Look up a glyph, falling back to [`FALLBACK_GLYPH`] so rendering can never fail on an unexpected
+/// character.
 fn raster_for(character: char) -> Option<RasterizedChar> {
     get_raster(character, FONT_WEIGHT, FONT_HEIGHT)
         .or_else(|| get_raster(FALLBACK_GLYPH, FONT_WEIGHT, FONT_HEIGHT))

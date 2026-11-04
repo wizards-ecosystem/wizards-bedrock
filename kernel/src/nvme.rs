@@ -1,29 +1,8 @@
-//! An NVMe controller, polled.
+//! A polled NVMe controller.
 //!
-//! `libs/nvme` owns every number; `wost` owns the memory-mapped accesses and
-//! the frames. What is here is the sequence: bring a controller up, ask it what
-//! it is, build one I/O queue pair, and read a block.
-//!
-//! **Polled is what makes this affordable** (`012` §2). `Create I/O Completion
-//! Queue` with `IEN = 0` disables interrupts for that queue, which removes
-//! "this kernel has no interrupt sharing" from the critical path entirely. The
-//! cost is that a read spins. D-200 confines that polling to the one file
-//! worker, where timer and input interrupts may preempt it; `RingEnter` only
-//! admits the request. PW-704 requires a measured workload before replacing it.
-//!
-//! **Three things decide whether this works at all, and none is optional.**
-//! Bus master must be on or the controller cannot DMA and *there is no error
-//! anywhere to read*. The PCI lease withholds it until controller-disable
-//! readback is exact. The register window must be mapped **uncacheable**;
-//! write-back is a silent, hard-to-debug bug. And `CAP` is read, never assumed:
-//! the queue size, the doorbell stride, the timeout and the page-size range all
-//! come from it, and `012` §11 records that `VMware`'s values are unmeasured.
-//!
-//! **The ring parallel is a trap.** This looks like `kernel::queue` and is not:
-//! there is no completion tail to read, entries are found by their phase tag,
-//! completions are matched by command identifier rather than by slot, and
-//! capacity is `size - 1`. The arithmetic is shared through `libs/nvme`; the
-//! structure is not (D-169).
+//! Completion queues are created with `IEN` clear. Bus master must be on, the register window
+//! uncacheable, and `CAP` read rather than assumed. Entries are found by phase tag, not a
+//! completion tail.
 
 #[cfg(feature = "selftest")]
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -223,33 +202,22 @@ pub(crate) fn candidate_stack_usage_for_test() -> Option<CandidateStack> {
     })
 }
 
-/// Entries in the queues this driver builds.
-///
-/// Small: one command is outstanding at a time while the path is polled, and a
-/// deeper queue would be depth nothing uses. It is clamped against `CAP.MQES`
-/// rather than assumed, because a controller may offer fewer.
+/// Entries in the queues this driver builds. It is clamped against `CAP.MQES` rather than assumed,
+/// because a controller may offer fewer.
 const WANTED_ENTRIES: u32 = 8;
 
-/// The identifier of the one I/O queue pair.
 const IO_QUEUE: u16 = 1;
 
-/// The namespace this driver reads from.
-///
-/// One, which is the first and the only one QEMU's controller presents. A
-/// driver that enumerated namespaces would ask `Identify` for the list; this
-/// one reads the namespace it was told about and says so.
+/// The namespace this driver reads from. One, which is the first and the only one QEMU's controller
+/// presents.
 const NAMESPACE: u32 = 1;
 
-/// How many completion reads boot may attempt before the clock is calibrated.
-///
-/// Once calibrated, the command deadline is real time instead. The attempt
-/// bound keeps early bring-up finite before that service exists (D-200).
+/// How many completion reads boot may attempt before the clock is calibrated. The attempt bound
+/// keeps early bring-up finite before that service exists.
 const POLL_ATTEMPTS: u32 = 5_000_000;
 
-/// Real-time bound for one command once the monotonic clock exists.
 const COMMAND_TIMEOUT_MS: u64 = 5_000;
 
-/// One submission queue and the completion queue that answers it.
 #[derive(Debug)]
 struct QueuePair {
     /// Which queue this is; zero is the admin pair.
@@ -261,35 +229,27 @@ struct QueuePair {
     /// The completion entries, likewise.
     completion: DmaSegment,
     /// Whether each segment may still have a live or cached VT-d translation.
-    ///
-    /// These are conservative hardware-ownership facts, not publication
-    /// shadows. An uncertain map or unmap leaves its bit set and retains the
-    /// segment, so neither `Drop` nor candidate teardown can recycle it.
     submission_mapped: bool,
     completion_mapped: bool,
-    /// Where the host will write next. **Shadowed**, because the doorbell is
-    /// write-only and the controller's idea of the tail cannot be read back.
+    /// Where the host will write next. Shadowed, because the doorbell is write-only and the
+    /// controller's idea of the tail cannot be read back.
     tail: u32,
     submission_head: u32,
     completion_head: u32,
-    /// The phase a *new* completion carries.
-    ///
-    /// There is no tail to read: an entry is new when its phase tag differs
-    /// from the last pass's. A zeroed queue starts at zero, so the first pass
-    /// looks for one.
+    /// The phase a *new* completion carries. There is no tail to read: an entry is new when its
+    /// phase tag differs from the last pass's.
     phase: bool,
 }
 
 impl QueuePair {
-    /// Allocate and clear both queues.
     fn new(id: u16, capacity: Capacity) -> Option<Self> {
         let submission_frames = frames_for(capacity.submission_bytes());
         let completion_frames = frames_for(capacity.completion_bytes());
 
         let mut submission = DmaSegment::from(mm::allocate_contiguous(submission_frames, 1)?);
         let mut completion = DmaSegment::from(mm::allocate_contiguous(completion_frames, 1)?);
-        // Cleared, because the phase tag of an unwritten entry is what says
-        // "nothing here yet", and stale memory says whatever it last held.
+        // Cleared, because the phase tag of an unwritten entry is what says "nothing here yet", and
+        // stale memory says whatever it last held.
         if !submission.zero() || !completion.zero() {
             return None;
         }
@@ -308,7 +268,6 @@ impl QueuePair {
         })
     }
 
-    /// Withhold every queue frame a controller may still reach.
     fn retain(&mut self) {
         self.submission.retain();
         self.completion.retain();
@@ -328,7 +287,6 @@ impl QueuePair {
         self.submission_mapped || self.completion_mapped
     }
 
-    /// Make both queues reachable by the device, or neither (D-357).
     #[must_use = "unmapped queues cannot be published to the controller"]
     fn map_into(&mut self, isolation: &mut Vtd) -> bool {
         if self.has_mappings() {
@@ -375,7 +333,6 @@ impl QueuePair {
         !self.has_mappings()
     }
 
-    /// Every frame of both queues, for a check that reads the domain back.
     #[cfg(feature = "selftest")]
     fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
         for queue in [&self.submission, &self.completion] {
@@ -395,7 +352,6 @@ impl Drop for QueuePair {
     }
 }
 
-/// Frames enough to hold `bytes`.
 fn frames_for(bytes: u64) -> usize {
     usize::try_from(bytes.div_ceil(PAGE_SIZE))
         .unwrap_or_else(|_| panic!("a byte count does not fit a frame count"))
@@ -411,18 +367,17 @@ fn frames_for(bytes: u64) -> usize {
     )
 )]
 pub(crate) struct Controller {
-    /// Where the registers are readable. Kept so a check can ask **how they
-    /// were mapped**: a register file mapped write-back is a driver whose
-    /// writes arrive when the cache feels like it, and nothing about the
-    /// driver's behaviour would say so on an emulator.
+    /// Where the registers are readable. Kept so a check can ask how they were mapped: a register
+    /// file mapped write-back is a driver whose writes arrive when the cache feels like it, and
+    /// nothing about the driver's behaviour would say so on an emulator.
     #[cfg(feature = "selftest")]
     observed_window: u64,
     registers: Option<MappedBar>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
-    /// The next command identifier. Wrapping is fine: a completion is matched
-    /// by it and only one command is outstanding at a time.
+    /// The next command identifier. Wrapping is fine: a completion is matched by it and only one
+    /// command is outstanding at a time.
     next_id: u16,
     #[cfg(feature = "selftest")]
     published_commands: u32,
@@ -443,8 +398,8 @@ pub(crate) struct Controller {
     /// Queue creations which crossed namespace validation during the witness.
     #[cfg(feature = "selftest")]
     intercepted_io_queue_creations: u32,
-    /// Publish the next transfer buffer without mapping it, so a check can
-    /// watch the domain refuse the device.
+    /// Publish the next transfer buffer without mapping it, so a check can watch the domain refuse
+    /// the device.
     #[cfg(feature = "selftest")]
     leave_data_unmapped: bool,
     /// What `Identify` said, kept so a check can ask rather than infer.
@@ -542,19 +497,16 @@ pub(crate) struct DisabledController {
     capacity: Capacity,
 }
 
-/// A disabled controller whose PCI function accepted bus-master admission.
-///
-/// Only [`DisabledController::admit_bus_master`] constructs this value, so
-/// consuming it is proof that controller start cannot bypass a refused PCI
-/// transition.
+/// A disabled controller whose PCI function accepted bus-master admission. Only
+/// [`DisabledController::admit_bus_master`] constructs this value, so consuming it is proof that
+/// controller start cannot bypass a refused PCI transition.
 #[derive(Debug)]
 pub(crate) struct BusMasterAdmittedController(DisabledController);
 
 /// The two ownership-preserving results of bus-master admission.
 #[derive(Debug)]
 pub(crate) enum BusMasterAdmission {
-    /// PCI admitted DMA behind the installed domain and minted controller-start
-    /// authority.
+    /// PCI admitted DMA behind the installed domain and minted controller-start authority.
     Admitted(BusMasterAdmittedController),
     /// PCI refused DMA and returned retirement authority.
     Refused(BusMasterAdmissionFailure),
@@ -570,7 +522,7 @@ pub(crate) struct BusMasterAdmissionFailure {
 /// Why fresh controller proof or the PCI command transition refused DMA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BusMasterAdmissionError {
-    /// No DMA-remapping domain is installed for the function (D-357).
+    /// No DMA-remapping domain is installed for the function.
     Unisolated,
     /// The admin queues could not be made reachable through the domain.
     QueuesUnreachable,
@@ -640,8 +592,8 @@ pub(crate) enum BringUpError {
     InvalidTransfer(TransferError),
     /// Identify Namespace data did not fit the supported storage contract.
     InvalidNamespace(NamespaceError),
-    /// No DMA domain is installed, or the one installed refused a queue or
-    /// transfer buffer, so nothing may be published (D-357).
+    /// No DMA domain is installed, or the one installed refused a queue or transfer buffer, so
+    /// nothing may be published.
     Isolation,
 }
 
@@ -803,10 +755,8 @@ impl StartFailure {
     }
 }
 
-/// Bring a controller up on its mapped register window.
-///
-/// The specification's initialisation sequence, in order, with the two waits
-/// bounded by `CAP.TO` rather than by a number chosen here.
+/// Bring a controller up on its mapped register window. The specification's initialisation
+/// sequence, in order, with the two waits bounded by `CAP.TO` rather than by a number chosen here.
 pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
     #[cfg(feature = "selftest")]
     let observed_window = registers.address();
@@ -866,8 +816,8 @@ enum DisabledRegisterWrite {
 fn read_capabilities(registers: MappedBar) -> CapabilityRead {
     let preparation = ControllerPreparation::new(registers);
 
-    // `CAP` in two halves, because an `MmioRegion` makes thirty-two-bit
-    // accesses. The specification allows it for this register.
+    // `CAP` in two halves, because an `MmioRegion` makes thirty-two-bit accesses. The specification
+    // allows it for this register.
     let (preparation, low) = match preparation.access(|registers| read(registers, register::CAP)) {
         Ok(result) => result,
         Err(failure) => {
@@ -889,8 +839,8 @@ fn disable_preparation(
     preparation: ControllerPreparation<MappedBar>,
     capabilities: Capabilities,
 ) -> DisableOutcome {
-    // Disabled before any policy refusal, so even an unsupported controller
-    // can be retired without leaving firmware DMA behind.
+    // Disabled before any policy refusal, so even an unsupported controller can be retired without
+    // leaving firmware DMA behind.
     let (preparation, ()) = match preparation.access(|registers| write(registers, register::CC, 0))
     {
         Ok(result) => result,
@@ -994,9 +944,8 @@ fn program_admin_registers(
         observed_window,
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
-    // The controller latches ASQ and ACQ when their high half is written.
-    // Each register is one dword, so the address is split rather than checked
-    // for fitting in 32 bits.
+    // The controller latches ASQ and ACQ when their high half is written. Each register is one
+    // dword, so the address is split rather than checked for fitting in 32 bits.
     let writes = [
         (register::AQA, aqa),
         (register::ASQ, dword_low(submission)),
@@ -1031,7 +980,6 @@ const fn dword_low(address: u64) -> u32 {
     address as u32
 }
 
-/// High dword of a queue address. Shifting by 32 leaves a value that fits.
 fn dword_high(address: u64) -> u32 {
     u32::try_from(address >> 32)
         .unwrap_or_else(|_| panic!("a shifted address does not fit a dword"))
@@ -1055,8 +1003,8 @@ fn finish_preparation(
     capacity: Capacity,
     #[cfg(feature = "selftest")] observed_window: u64,
 ) -> PrepareOutcome {
-    // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the
-    // specification's fixed logarithms.
+    // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the specification's fixed
+    // logarithms.
     let page_shift = PAGE_SIZE.trailing_zeros() - 12;
     let cc = configuration::ENABLE
         | (page_shift << configuration::PAGE_SIZE_SHIFT)
@@ -1098,7 +1046,6 @@ fn finish_preparation(
     })
 }
 
-/// Return a mapping while the controller is already verified disabled.
 fn retire_disabled(
     context: &mut ThreadContext,
     registers: DisabledPreparation<MappedBar>,
@@ -1131,10 +1078,8 @@ fn retire_failed_preparation_access(
 }
 
 impl Controller {
-    /// Commands this controller has been given.
-    ///
-    /// Incremented only after the submission doorbell write succeeds, so a
-    /// local refusal cannot satisfy evidence that the device was asked.
+    /// Commands this controller has been given. Incremented only after the submission doorbell
+    /// write succeeds, so a local refusal cannot satisfy evidence that the device was asked.
     #[cfg(feature = "selftest")]
     pub(crate) const fn commands(&self) -> u32 {
         self.published_commands
@@ -1162,7 +1107,6 @@ impl Controller {
         self.io.is_some()
     }
 
-    /// Ask the namespace how large it is and how large its blocks are.
     fn identify_namespace(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         let mut buffer =
             DmaSegment::from(mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?);
@@ -1195,7 +1139,6 @@ impl Controller {
         Ok(())
     }
 
-    /// Build the one I/O queue pair, with its interrupts disabled.
     fn create_io_queues(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         #[cfg(feature = "selftest")]
         if self.intercept_io_queue_creation {
@@ -1208,10 +1151,9 @@ impl Controller {
         self.run_admin(negotiation, None)?;
 
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
-        // Install the owner before the first fallible domain transition. An
-        // uncertain partial map must remain visible to controller retirement,
-        // which keeps the device and domain quarantined until the exact queue
-        // leaves can be invalidated.
+        // Install the owner before the first fallible domain transition. An uncertain partial map
+        // must remain visible to controller retirement, which keeps the device and domain
+        // quarantined until the exact queue leaves can be invalidated.
         self.io = Some(pair);
         // Reachable before the controller can be told about either queue.
         {
@@ -1225,11 +1167,11 @@ impl Controller {
         let pair = self.io.as_ref().ok_or(BringUpError::Isolation)?;
         let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
         let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
-        // Once either command is published, the controller can retain these
-        // runs. Keeping them here gives failure cleanup ownership of both.
+        // Once either command is published, the controller can retain these runs. Keeping them here
+        // gives failure cleanup ownership of both.
 
-        // Completion first because submission names it; `IEN` stays clear so
-        // bootstrap remains polled (`012` §2).
+        // Completion first because submission names it; `IEN` stays clear so bootstrap remains
+        // polled.
         let completion = Command::create_completion_queue(
             self.take_id(),
             IO_QUEUE,
@@ -1240,8 +1182,7 @@ impl Controller {
         .ok_or(BringUpError::QueueSize)?;
         self.run_admin(completion, None)?;
 
-        // `CDW11` here is the completion queue's identifier in the high half,
-        // and `PC` in bit 0.
+        // `CDW11` here is the completion queue's identifier in the high half, and `PC` in bit 0.
         let submission = Command::create_submission_queue(
             self.take_id(),
             IO_QUEUE,
@@ -1260,9 +1201,8 @@ impl Controller {
     ///
     /// # Errors
     ///
-    /// [`BringUpError::InvalidTransfer`] before submission when the command,
-    /// namespace or DMA extent does not fit; otherwise the controller's
-    /// command, memory and readiness errors.
+    /// [`BringUpError::InvalidTransfer`] before submission when the command, namespace or DMA
+    /// extent does not fit; otherwise the controller's command, memory and readiness errors.
     pub(crate) fn read_blocks(
         &mut self,
         lba: u64,
@@ -1316,7 +1256,6 @@ impl Controller {
         .map_err(BringUpError::InvalidTransfer)
     }
 
-    /// Build and publish a read already proved to fit every outer bound.
     fn submit_read(
         &mut self,
         request: ReadTransfer,
@@ -1488,14 +1427,12 @@ impl Controller {
             && self.intercepted_read_submissions == intercepted_before
     }
 
-    /// The next command identifier.
     fn take_id(&mut self) -> u16 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         id
     }
 
-    /// Run one command on the admin queue.
     fn run_admin(
         &mut self,
         command: Command,
@@ -1504,12 +1441,8 @@ impl Controller {
         self.run_on(0, command, data)
     }
 
-    /// Submit `command` to queue `which` and spin until it is answered.
-    ///
-    /// Nothing is published without an installed DMA domain. The transfer
-    /// buffer enters the domain before the doorbell and leaves it once the
-    /// completion proves the device is done with it, so the device reaches
-    /// exactly the published-and-unretired set (D-357).
+    /// Submit `command` to queue `which` and spin until it is answered. Nothing is published
+    /// without an installed DMA domain.
     fn run_on(
         &mut self,
         which: u16,
@@ -1568,8 +1501,7 @@ impl Controller {
             COMMAND_HELD.store(false, Ordering::Release);
         }
 
-        // There is no tail to read; the phase tag is how a new entry is
-        // recognised (`012` §3).
+        // There is no tail to read; the phase tag is how a new entry is recognised.
         let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
         #[cfg(feature = "selftest")]
         if self.force_timeout {
@@ -1593,10 +1525,9 @@ impl Controller {
         self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)
     }
 
-    /// Write one submission and ring its doorbell, or roll the reservation back.
-    ///
-    /// Reserve ownership first: a refused preparation cancels it, and only a
-    /// rung doorbell needs controller quiescence to recover.
+    /// Write one submission and ring its doorbell, or roll the reservation back. Reserve ownership
+    /// first: a refused preparation cancels it, and only a rung doorbell needs controller
+    /// quiescence to recover.
     #[expect(
         clippy::panic_in_result_fn,
         reason = "a reservation that cannot be cancelled or published is a terminal invariant"
@@ -1729,8 +1660,8 @@ impl Controller {
         if !self.dma.complete() {
             panic!("a matching completion must finish one published command");
         }
-        // The completion is the proof the device is done with the
-        // buffer; it leaves the domain before anything else happens.
+        // The completion is the proof the device is done with the buffer; it leaves the domain
+        // before anything else happens.
         if !unmap_data(isolation, data, data_mapped) {
             return self.fail_controller(BringUpError::Isolation);
         }
@@ -1756,10 +1687,9 @@ impl Controller {
         Ok(entry)
     }
 
-    /// Stop uncertain DMA before exposing an error to the caller.
-    ///
-    /// A buffer the stop proved quiescent leaves the domain; a retained one
-    /// stays mapped, because the device may still reach it.
+    /// Stop uncertain DMA before exposing an error to the caller. A buffer the stop proved
+    /// quiescent leaves the domain; a retained one stays mapped, because the device may still reach
+    /// it.
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
@@ -1780,7 +1710,6 @@ impl Controller {
         Err(error)
     }
 
-    /// Disable the controller and verify it idle, or withhold all DMA memory.
     fn stop_dma(&mut self, data: Option<&mut DmaSegment>) {
         if !self.dma.is_settled() {
             match stop_controller(self) {
@@ -1864,15 +1793,14 @@ impl Controller {
         let protected = matches!(result, Err(BringUpError::NotReady))
             && self.dma.is_quiesced()
             && !data.is_retained();
-        // Record the expected failure before quiescing the deliberately
-        // outstanding DMA command for the remainder of the boot.
+        // Record the expected failure before quiescing the deliberately outstanding DMA command for
+        // the remainder of the boot.
         if self.dma.is_in_flight() {
             self.stop_dma(Some(data));
         }
         protected
     }
 
-    /// The queue pair with this identifier.
     fn queue_mut(&mut self, which: u16) -> Option<&mut QueuePair> {
         if which == self.admin.id {
             return Some(&mut self.admin);
@@ -1892,7 +1820,6 @@ impl Controller {
     }
 }
 
-/// Whether a command's transfer buffer was published into the DMA domain.
 #[derive(Clone, Copy)]
 enum DataMapping {
     /// The buffer was mapped before the doorbell.
@@ -1908,7 +1835,6 @@ impl DataMapping {
     }
 }
 
-/// Take a published buffer out of the domain, or report that it is still in.
 fn unmap_data(
     isolation: &mut Vtd,
     data: Option<&mut DmaSegment>,
@@ -1925,9 +1851,6 @@ impl Drop for Controller {
 }
 
 /// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`.
-///
-/// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
-/// fatal status does not mean the controller can still reach host memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Readiness {
     Ready,
@@ -2044,10 +1967,8 @@ fn write_submission(
     result
 }
 
-/// Bring the controller up and say what it is.
-///
-/// Reports a retirement-qualified failure: the selector may keep booting
-/// without storage, but may try a sibling only when teardown was exact.
+/// Bring the controller up and say what it is. Reports a retirement-qualified failure: the selector
+/// may keep booting without storage, but may try a sibling only when teardown was exact.
 pub(crate) fn start(
     context: &mut ThreadContext,
     device: &mut crate::pci::Device,
@@ -2093,12 +2014,11 @@ pub(crate) fn start(
 }
 
 impl DisabledController {
-    /// The admission steps: the installed domain reaches the admin queues and
-    /// mints its proof, then the fresh disabled observation reaches PCI.
-    ///
-    /// Separate from [`admit_bus_master`](Self::admit_bus_master) so that each
-    /// refusal builds a small value rather than a whole admission result: the
-    /// debug build gives every such temporary its own stack slot (D-287).
+    /// The admission steps: the installed domain reaches the admin queues and mints its proof, then
+    /// the fresh disabled observation reaches PCI. Separate from
+    /// [`admit_bus_master`](Self::admit_bus_master) so that each refusal builds a small value
+    /// rather than a whole admission result: the debug build gives every such temporary its own
+    /// stack slot.
     fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
         let mut installed = crate::iommu::installed();
         let Some(isolation) = installed.as_mut() else {
@@ -2140,8 +2060,8 @@ impl DisabledController {
         }
     }
 
-    /// Admit DMA from a fresh observation through the retained mapped BAR,
-    /// behind the installed domain, which must already reach the admin queues.
+    /// Admit DMA from a fresh observation through the retained mapped BAR, behind the installed
+    /// domain, which must already reach the admin queues.
     pub(crate) fn admit_bus_master(
         mut self,
         device: &mut crate::pci::Device,
@@ -2193,11 +2113,8 @@ pub(crate) fn activity_for_test() -> (usize, usize) {
     )
 }
 
-/// The one controller, kept so anything that wants blocks can ask.
-///
-/// A `static` rather than a value threaded through boot because the driver
-/// outlives the function that built it. Runtime reads reach it only through
-/// the file worker (D-200).
+/// The one controller, kept so anything that wants blocks can ask. A `static` rather than a value
+/// threaded through boot because the driver outlives the function that built it.
 static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
 
 static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =
@@ -2205,8 +2122,8 @@ static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Dev
 
 static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLock::new(None);
 
-/// A disabled controller kept with its PCI lease when unit-wide VT-d
-/// ownership becomes uncertain before DMA admission.
+/// A disabled controller kept with its PCI lease when unit-wide VT-d ownership becomes uncertain
+/// before DMA admission.
 static IOMMU_QUARANTINE: ThreadLock<Option<(DisabledController, crate::pci::Device)>> =
     ThreadLock::new(None);
 
@@ -2257,8 +2174,7 @@ pub(crate) fn keep_controller_quarantine(
     retained.device = Some(device);
 }
 
-/// Keep a prepared controller and its selected-function owner beside an
-/// uncertain unit takeover.
+/// Keep a prepared controller and its selected-function owner beside an uncertain unit takeover.
 pub(crate) fn keep_iommu_quarantine(controller: DisabledController, device: crate::pci::Device) {
     let mut retained = IOMMU_QUARANTINE.lock();
     assert!(
@@ -2391,8 +2307,8 @@ pub(crate) fn measure_buffered_read_for_test() -> Option<(u64, u64)> {
     controller.measure_buffered_read(buffer)
 }
 
-/// Whether the installed domain mints a proof and the unit walks the kernel's
-/// root table, for the controller that was kept.
+/// Whether the installed domain mints a proof and the unit walks the kernel's root table, for the
+/// controller that was kept.
 #[cfg(feature = "selftest")]
 pub(crate) fn isolation_is_active_for_test() -> Option<(bool, bool)> {
     let held = CONTROLLER.lock();
@@ -2405,8 +2321,8 @@ pub(crate) fn isolation_is_active_for_test() -> Option<(bool, bool)> {
     ))
 }
 
-/// The pages the domain reaches, read back from its tables, beside the frames
-/// of every live queue, both sorted.
+/// The pages the domain reaches, read back from its tables, beside the frames of every live queue,
+/// both sorted.
 #[cfg(feature = "selftest")]
 pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc::vec::Vec<u64>)> {
     let held = CONTROLLER.lock();
@@ -2419,8 +2335,8 @@ pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc
     Some((reachable, expected))
 }
 
-/// Ask the production proof door to read the live installed unit without
-/// creating a weaker self-test-only translation transition.
+/// Ask the production proof door to read the live installed unit without creating a weaker
+/// self-test-only translation transition.
 #[cfg(feature = "selftest")]
 pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
     let held = CONTROLLER.lock();
@@ -2452,12 +2368,9 @@ pub(crate) struct FenceWitness {
     pub(crate) faulted: bool,
 }
 
-/// Publish a read into the kept buffer without mapping it, then ask the unit
-/// and the buffer what happened.
-///
-/// A priming read maps and unmaps the same frame first, so a unit whose cache
-/// was not invalidated at the unmap would still translate the frame and let
-/// the device write through.
+/// Publish a read into the kept buffer without mapping it, then ask the unit and the buffer what
+/// happened. A priming read maps and unmaps the same frame first, so a unit whose cache was not
+/// invalidated at the unmap would still translate the frame and let the device write through.
 #[cfg(feature = "selftest")]
 pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
     const PATTERN: u8 = 0xA5;

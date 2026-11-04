@@ -1,8 +1,5 @@
 //! What the documents say about the tree, checked against the tree.
-//!
-//! Documentation may name planned or rejected crates, so missing paths are not
-//! automatically errors. Every missing documented crate instead needs one
-//! explicit exemption with its reason, making drift reviewable (D-124).
+//! A documented crate that is missing needs an explicit exemption; absence alone is not an error.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -19,10 +16,7 @@ pub struct Absent {
 }
 
 /// Every crate the documents may name without the tree holding it.
-///
-/// Adding a line here is the reviewable act. Removing one when the crate gets
-/// written is the other half, and the check requires that too: an exemption
-/// nobody removes is an exemption nobody reads.
+/// Adding a line is the review; removing it when the crate appears is required too.
 pub const ABSENT: &[Absent] = &[
     Absent {
         crate_name: "xstate",
@@ -52,10 +46,6 @@ pub const ABSENT: &[Absent] = &[
 ];
 
 /// Every `libs/<name>` the documents mention.
-///
-/// # Errors
-///
-/// If `docs/` cannot be read.
 pub fn named_in_docs(root: &Path) -> Result<BTreeSet<String>> {
     let docs = root.join("docs");
     let mut found = BTreeSet::new();
@@ -105,9 +95,8 @@ mod tests {
             .to_path_buf()
     }
 
-    /// Project-authored Markdown whose paths and commands are promises to a
-    /// reader. The bootloader README is upstream material and stays outside
-    /// this list.
+    /// Project-authored Markdown whose paths and commands are promises.
+    /// The bootloader README is upstream and stays outside this list.
     fn markdown_documents(root: &Path) -> Vec<PathBuf> {
         let mut documents = [
             "README.md",
@@ -320,7 +309,7 @@ mod tests {
     }
 
     /// `014`'s current closing table must match source; dated per-slice history
-    /// remains historical rather than being rewritten (D-175).
+    /// remains historical rather than being rewritten.
     #[test]
     fn the_phase_close_says_what_the_source_says() {
         let root = root();
@@ -395,7 +384,7 @@ mod tests {
     }
 
     /// Living documents cite mutations by permanent identity, so every cited
-    /// identity must still name a registered mutation (D-341).
+    /// identity must still name a registered mutation.
     #[test]
     fn every_living_mutation_citation_names_a_registered_identity() {
         let root = root();
@@ -492,9 +481,8 @@ mod tests {
         assert!(ids("mutation-only recovery; the mutation sweep; 12 mutations").is_empty());
     }
 
-    /// Every identity a citation such as `mutations 12, 14 and 1,020 through
-    /// 1,022` names, with its one-based line. An inverted range yields
-    /// `u64::MAX`, which no registry holds.
+    /// Every identity a citation such as `mutations 12, 14 and 1,020 through 1,022` names.
+    /// An inverted range yields `u64::MAX`, which no registry holds.
     fn mutation_citations(document: &str) -> Vec<(usize, u64)> {
         let mut cited = Vec::new();
         for (index, line) in document.lines().enumerate() {
@@ -802,7 +790,7 @@ mod tests {
         }
     }
 
-    /// Current-facing plans cannot quietly turn D-183 back into an experiment.
+    /// Current-facing plans cannot quietly reopen the closed language boundary.
     #[test]
     fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
         const CURRENT_PLANS: [&str; 7] = [

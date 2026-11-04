@@ -1,13 +1,8 @@
 //! `x86_64` four-level page table encoding.
 //!
-//! Entry bits, the index each level takes from a virtual address, and
-//! canonical form. `wost` owns the tables; the encoding is checkable on the
-//! host, so D-30 puts it here.
+//! Entry bits, the index each level takes from a virtual address, and canonical form.
 //!
-//! Transcribed from Intel SDM Vol. 3A §4.5, tables 4-14 through 4-19. The
-//! tests restate each bit position from the manual rather than from this file,
-//! which is the only way a transcription error fails instead of agreeing with
-//! itself.
+//! Transcribed from Intel SDM Vol. 3A §4.5, tables 4-14 through 4-19.
 //!
 //! ```
 //! use x86_paging::{Entry, Flags, Level, MappingRange, PAGE_SIZE};
@@ -49,8 +44,7 @@ pub const ENTRIES: usize = 512;
 
 /// Bits of an entry that hold a physical address.
 ///
-/// SDM: bits 51:12. The architecture reserves 63:52 for flags and the
-/// no-execute bit, and the low twelve bits are always zero because every
+/// SDM: bits 51:12. Bits 63:52 are flags, and the low twelve stay zero because the
 /// target is page-aligned.
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -63,9 +57,7 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 /// The first address a user mapping may not cover.
 ///
 /// The last canonical page stays unmapped, so no user instruction can end at
-/// [`USER_END`]. A trap taken after such an instruction would save a
-/// non-canonical return address, and returning to it faults in the kernel
-/// (D-348).
+/// [`USER_END`].
 pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
 
 /// Whether `len` bytes at `at` lie wholly below [`USER_MAPPING_END`].
@@ -85,10 +77,6 @@ pub const fn user_mapping_fits(at: u64, len: u64) -> bool {
 }
 
 /// Flags of a page table entry.
-///
-/// A hand-rolled bit set rather than a `bitflags` dependency, on the
-/// `sha256.rs` precedent: one type, a handful of operations, and the
-/// alternative is a crate in the kernel's trusted path.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(u64);
 
@@ -118,15 +106,11 @@ impl Flags {
     /// built.
     pub const NO_EXECUTE: Self = Self(1 << 63);
 
-    /// This mapping owns the frame beneath it, so unmapping returns that
-    /// frame to the allocator (D-88).
+    /// This mapping owns the frame beneath it, so unmapping returns that frame to the
+    /// allocator.
     ///
-    /// Bit 9 is one of the three the architecture leaves to software in a page
-    /// entry (Intel SDM Vol. 3A ch. 4, the `AVL` bits); the CPU ignores it. It
-    /// is provenance written where the mapping is, which is the only place
-    /// that survives every path an unmap can be reached by — a frame the
-    /// allocator handed out must come back, and one the firmware placed must
-    /// not, and nothing outside the entry knows which is which.
+    /// Bit 9 is one of the three the architecture leaves to software in a page entry
+    /// (Intel SDM Vol. 3A ch. 4, the `AVL` bits); the CPU ignores it.
     pub const OWNED: Self = Self(1 << 9);
 
     /// No flags at all.
@@ -138,11 +122,6 @@ impl Flags {
     }
 
     /// Only the flags in both.
-    ///
-    /// What a page walk needs to compute an *effective* permission: the
-    /// architecture grants `USER` and `WRITABLE` only where every level of the
-    /// walk grants them, so the answer is a conjunction rather than the leaf's
-    /// own opinion (D-103).
     #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
@@ -155,14 +134,6 @@ impl Flags {
     }
 
     /// The permission a walk has left after passing through `self`.
-    ///
-    /// The architecture computes a page's effective permission from the whole
-    /// path, not from its leaf: `USER` and `WRITABLE` are the conjunction down
-    /// the walk, and `NO_EXECUTE` the disjunction. A caller that reads the
-    /// leaf alone states a stronger permission than the CPU will grant.
-    ///
-    /// `self` is what the walk has accumulated so far — start it at
-    /// [`Flags::EVERYTHING_ALLOWED`] — and `entry` is the level just read.
     ///
     /// # Examples
     ///
@@ -198,10 +169,6 @@ impl Flags {
     }
 
     /// Fold an accumulated walk back onto the leaf's own flags.
-    ///
-    /// The leaf keeps everything the walk does not narrow — its address bits'
-    /// companions, `PRESENT`, `HUGE`, `OWNED` — and gives up `USER` and
-    /// `WRITABLE` to the path, and gains `NO_EXECUTE` from it.
     #[must_use]
     pub const fn effective_for(self, leaf: Self) -> Self {
         let kept = leaf.difference(Self::NARROWED).difference(Self::NO_EXECUTE);
@@ -227,9 +194,6 @@ impl Flags {
     }
 
     /// Whether this mapping is both writable and executable.
-    ///
-    /// The predicate W^X is the absence of. Named here rather than spelled out
-    /// at each call site so the security baseline has one definition (D-12).
     pub const fn is_write_execute(self) -> bool {
         self.contains(Self::PRESENT)
             && self.contains(Self::WRITABLE)
@@ -246,9 +210,6 @@ impl core::ops::BitOr for Flags {
 }
 
 /// Whether one walk found the exact expected four-kilobyte leaf.
-///
-/// Accessed and dirty are omitted from identity because hardware may set them
-/// without changing the mapping's physical target or policy.
 pub const fn page_identity_matches(
     mapped: u64,
     flags: Flags,
@@ -337,16 +298,9 @@ impl Entry {
     }
 
     /// An entry that maps nothing.
-    ///
-    /// What an unmapped slot holds: all zero, so `PRESENT` is clear and every
-    /// other bit with it. Writing this is how a mapping is taken away (D-88).
     pub const ABSENT: Self = Self(0);
 
     /// A leaf entry at `level` mapping a page at `address` with `flags`.
-    ///
-    /// `PRESENT` is not added for you: an entry whose caller forgot it is a
-    /// mapping that silently does not exist, and that is worth a compile-time
-    /// habit of naming it.
     ///
     /// # Errors
     ///
@@ -372,12 +326,6 @@ impl Entry {
     }
 
     /// An entry pointing at the table below.
-    ///
-    /// Intermediate entries carry `PRESENT | WRITABLE` and never `NO_EXECUTE`.
-    /// A [`TablePrivilege::User`] entry also carries [`Flags::USER`]; otherwise
-    /// a parent would silently make every user leaf beneath it supervisor-only.
-    /// The effective permission of a mapping is the intersection down the
-    /// walk, so W^X remains enforced at the leaves.
     ///
     /// # Errors
     ///
@@ -407,18 +355,12 @@ impl Entry {
     }
 
     /// Whether the entry maps a large page rather than naming a table.
-    ///
-    /// Meaningful only at [`Level::Pd`] and [`Level::Pdpt`]; the bit means
-    /// something else entirely at the other two.
     pub const fn is_huge(self) -> bool {
         self.flags().contains(Flags::HUGE)
     }
 
     /// Whether another intermediate entry names the same table with the same
     /// software-selected policy.
-    ///
-    /// Hardware may set [`Flags::ACCESSED`] during a page walk. Every other
-    /// bit, including the physical address, remains part of the identity.
     pub const fn table_identity_matches(self, found: Self) -> bool {
         self.address() == found.address()
             && self.flags().difference(Flags::ACCESSED).bits()
@@ -481,8 +423,6 @@ impl Level {
     pub const WALK: [Self; 4] = [Self::Pml4, Self::Pdpt, Self::Pd, Self::Pt];
 
     /// The lowest bit of the virtual address this level's index occupies.
-    ///
-    /// Nine bits per level above the twelve-bit page offset: 12, 21, 30, 39.
     pub const fn shift(self) -> u32 {
         12 + 9 * (self as u32 - 1)
     }
@@ -502,10 +442,6 @@ impl Level {
     }
 
     /// Whether this level's entries may map a page directly.
-    ///
-    /// [`Pt`](Self::Pt) always does. [`Pd`](Self::Pd) and
-    /// [`Pdpt`](Self::Pdpt) do with [`Flags::HUGE`]. [`Pml4`](Self::Pml4)
-    /// never does on any shipping `x86_64`.
     pub const fn can_map_page(self) -> bool {
         !matches!(self, Self::Pml4)
     }
@@ -513,9 +449,8 @@ impl Level {
 
 /// Whether `address` is canonical — bits 63:48 all copies of bit 47.
 ///
-/// The CPU faults on a non-canonical address rather than truncating it, so
-/// this is worth checking before a walk rather than after a general-protection
-/// fault.
+/// The CPU faults on a non-canonical address rather than truncating it, so this is
+/// worth checking before a walk rather than after a general-protection fault.
 pub const fn is_canonical(address: u64) -> bool {
     let sign_extended = ((address as i64) << 16 >> 16) as u64;
     sign_extended == address
@@ -545,10 +480,6 @@ impl CanonicalAddress {
 }
 
 /// A mapping range whose complete arithmetic has been checked up front.
-///
-/// Construct this before allocating or writing page tables. Every address the
-/// range can produce is page-aligned, canonical on the virtual side, and
-/// encodable in an `x86_64` entry on the physical side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MappingRange {
     virtual_base: u64,
@@ -878,7 +809,7 @@ mod tests {
     #[test]
     fn indices_decompose_a_known_address() {
         // The kernel's own base. Worked by hand from the bit layout:
-        // 0xffff_ffff_8000_0000 >> 39 = ...1ff, and the rest follow.
+        // 0xffff_ffff_8000_0000 >> 39 =...1ff, and the rest follow.
         let base = 0xffff_ffff_8000_0000;
         assert_eq!(Level::Pml4.index(base), 511);
         assert_eq!(Level::Pdpt.index(base), 510);
@@ -1216,9 +1147,9 @@ mod tests {
     /// The owned bit is software-only: the CPU never sees it, and it survives
     /// a round trip through an entry.
     ///
-    /// It sits in the architecture's `AVL` window (bits 9..11), clear of every
-    /// flag the hardware defines and clear of the address field, so setting it
-    /// changes neither where a mapping points nor what it permits.
+    /// It sits in the architecture's `AVL` window (bits 9..11), clear of every flag the
+    /// hardware defines and clear of the address field, so setting it changes neither
+    /// where a mapping points nor what it permits.
     #[test]
     fn the_owned_bit_is_software_only_and_survives_an_entry() {
         const AVL: u64 = 0b111 << 9;
@@ -1271,11 +1202,6 @@ mod tests {
     }
 
     /// Intersection keeps what both hold, and nothing else.
-    ///
-    /// The operation a walk uses to narrow a permission at every level, so it
-    /// is worth its own check: an implementation that returned the union, or
-    /// either operand, would make a walk report a permission the CPU does not
-    /// grant.
     #[test]
     fn intersection_keeps_only_what_both_hold() {
         let user_write = Flags::USER.union(Flags::WRITABLE);

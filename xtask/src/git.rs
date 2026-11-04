@@ -1,9 +1,5 @@
-//! The one Git executable a run trusts with source identity (D-344).
-//!
-//! Git answers whether the checkout is clean and which commit and tree it is.
-//! A run resolves Git once, spawns that exact file for every query, and each
-//! record names the bytes that answered, so a substituted executable is
-//! visible in the evidence and cannot change during a run.
+//! The one Git executable a run trusts with source identity.
+//! Resolved once and spawned for every query, so a substitute cannot appear mid-run.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -201,8 +197,7 @@ impl Git {
     }
 
     fn filter_drivers(&self, root: &Path) -> Result<BTreeSet<String>> {
-        // D-406 excludes the checkout owner's same-account rewrite between
-        // this bounded discovery and the immediately returned query.
+        // A same-account rewrite between this discovery and the query it returns is excluded.
         parse_filter_drivers(&self.filter_configuration(root)?)
     }
 

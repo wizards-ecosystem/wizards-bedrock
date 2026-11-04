@@ -1,17 +1,7 @@
-//! The kernel's clock: a counter that never stops, and a timer armed only for
-//! what someone is waiting for.
+//! A free-running counter, and a timer armed only for the next wait.
 //!
-//! Two clocks, one window. The timestamp counter free-runs and is read with
-//! one instruction, so it is the clock: [`now_ns`] is a subtraction and a
-//! multiply. The APIC timer counts down and interrupts, so it is the alarm:
-//! one-shot, armed for the next moment the scheduler has a reason to look and
-//! stopped when there is none.
-//!
-//! Both rates are normally measured against the 8254 in one twenty-millisecond
-//! window. A complete invariant CPUID ratio can replace a refused TSC
-//! measurement, and the retained 8254 then validates live APIC appointments.
-//! D-36 for calibration, D-57 for tickless scheduling, D-225 for selection and
-//! revocation.
+//! The timestamp counter is the clock. The APIC timer is the one-shot alarm. Rates come from the
+//! 8254, or from an invariant CPUID ratio the 8254 then checks.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
@@ -30,59 +20,47 @@ use crate::arch::current::pit::Pit;
 /// Nanoseconds in a millisecond.
 pub(crate) const NANOSECONDS_PER_MS: u64 = 1_000_000;
 
-/// The bus clock, undivided. The divisor never enters the correctness path —
-/// calibration measures the divided clock and every arming is derived from
-/// the same clock — so this choice only sets how finely and how far ahead the
-/// alarm can be set, and the finest costs nothing.
+/// The bus clock, undivided. The divisor never enters the correctness path — calibration measures
+/// the divided clock and every arming is derived from the same clock — so this choice only sets how
+/// finely and how far ahead the alarm can be set, and the finest costs nothing.
 const DIVIDE: Divide = Divide::By1;
 
-/// The soonest the timer will be armed for.
-///
-/// A deadline already passed would otherwise arm one tick of a gigahertz
-/// clock and take the interrupt again immediately. The floor bounds that at
-/// twenty thousand a second.
+/// The soonest the timer will be armed for. A deadline already passed would otherwise arm one tick
+/// of a gigahertz clock and take the interrupt again immediately.
 const MINIMUM_LEAD_NS: u64 = 50_000;
 
-/// Measurement window, in crystal ticks: twenty milliseconds. Long enough
-/// that the port reads bracketing it are noise, short enough to stay well
-/// inside the 54.9 ms at which the sixteen-bit counter becomes ambiguous.
+/// Measurement window, in crystal ticks: twenty milliseconds. Long enough that the port reads
+/// bracketing it are noise, short enough to stay well inside the 54.9 ms at which the sixteen-bit
+/// counter becomes ambiguous.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the const assertion below proves CRYSTAL_HZ / 50 fits u16"
 )]
 const WINDOW_TICKS: u16 = (CRYSTAL_HZ / 50) as u16;
 
-/// The largest believable gap between two counter observations: ten
-/// milliseconds. An honest gap is a handful of ticks and a hypervisor
-/// hiccup a few thousand; only a stall jumps further, and a stall that
-/// crosses the counter's 54.9 ms span folds the window modulo 65536 into a
-/// rate inflated by a factor the believability bounds cannot see. A step
-/// past this — or backwards, which is the fold showing directly — discards
-/// the attempt instead of guessing.
+/// The largest believable gap between two counter observations: ten milliseconds. An honest gap is
+/// a handful of ticks and a hypervisor hiccup a few thousand; only a stall jumps further, and a
+/// stall that crosses the counter's 54.9 ms span folds the window modulo 65536 into a rate inflated
+/// by a factor the believability bounds cannot see.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the const assertion below proves CRYSTAL_HZ / 100 fits u16"
 )]
 const MAX_STEP: u16 = (CRYSTAL_HZ / 100) as u16;
 
-/// Windows to attempt before concluding the hardware is lying. Two must
-/// agree, so this allows a few discarded ones around them.
+/// Windows to attempt before concluding the hardware is lying. Two must agree, so this allows a few
+/// discarded ones around them.
 const MEASUREMENT_ATTEMPTS: u32 = 5;
 
-/// Counter reads to allow one window before declaring the chip stuck. A
-/// healthy window needs a few thousand; each read is a bus transaction, so
-/// the cap has to stay small enough that a dead chip costs seconds across
-/// every attempt, not the harness's whole timeout.
+/// Counter reads to allow one window before declaring the chip stuck. A healthy window needs a few
+/// thousand; each read is a bus transaction, so the cap has to stay small enough that a dead chip
+/// costs seconds across every attempt, not the harness's whole timeout.
 const MAX_POLLS: u32 = 100_000;
 
-/// One part in sixty-four: two windows this close are measuring the same
-/// clock; a stall that survived the step guard cannot fake agreement twice.
+/// One part in sixty-four: two windows this close are measuring the same clock; a stall that
+/// survived the step guard cannot fake agreement twice.
 const AGREEMENT_DIVISOR: u64 = 64;
 
-/// Longest interval between validation interrupts while a deadline exists.
-///
-/// Forty milliseconds stays inside the PIT's unambiguous 54.9 ms span. An
-/// idle machine with no deadline still arms nothing.
 const WATCHDOG_NS: u64 = 40 * NANOSECONDS_PER_MS;
 
 /// Consecutive conclusive failures required before revocation.
@@ -99,46 +77,42 @@ const _: () = {
     );
 };
 
-/// Believable bounds for the APIC's divided clock: QEMU models a gigahertz,
-/// `VMware` tens of megahertz. A reading outside three orders of magnitude
-/// either way is a corrupted measurement, not a strange machine.
+/// Believable bounds for the APIC's divided clock: QEMU models a gigahertz, `VMware` tens of
+/// megahertz. A reading outside three orders of magnitude either way is a corrupted measurement,
+/// not a strange machine.
 const BELIEVABLE_APIC_HZ: core::ops::RangeInclusive<u64> = 1_000_000..=50_000_000_000;
 
-/// Believable bounds for the timestamp counter, which is a CPU clock rather
-/// than a bus one: hundreds of megahertz at the bottom of what can boot this,
-/// a hundred gigahertz above anything that will exist for a while.
+/// Believable bounds for the timestamp counter, which is a CPU clock rather than a bus one:
+/// hundreds of megahertz at the bottom of what can boot this, a hundred gigahertz above anything
+/// that will exist for a while.
 const BELIEVABLE_TSC_HZ: core::ops::RangeInclusive<u64> = 100_000_000..=100_000_000_000;
 
-/// The counter's reading when the clock started, subtracted from every one
-/// since so uptime begins at zero rather than at whenever the machine did.
+/// The counter's reading when the clock started, subtracted from every one since so uptime begins
+/// at zero rather than at whenever the machine did.
 static ORIGIN: AtomicU64 = AtomicU64::new(0);
 
-/// Counter ticks into nanoseconds, packed (`Timebase::to_bits`). Zero until
-/// calibration succeeds, which reads back as the conversion that answers zero
-/// — so an uncalibrated clock reports no time at all rather than nonsense.
+/// Counter ticks into nanoseconds, packed (`Timebase::to_bits`). Zero until calibration succeeds,
+/// which reads back as the conversion that answers zero — so an uncalibrated clock reports no time
+/// at all rather than nonsense.
 static TSC_TO_NANOSECONDS: AtomicU64 = AtomicU64::new(0);
 
-/// Nanoseconds into APIC countdown ticks, packed the same way. Zero until
-/// calibration succeeds, and [`arm_at`] declines to arm anything through it.
+/// Nanoseconds into APIC countdown ticks, packed the same way. Zero until calibration succeeds, and
+/// [`arm_at`] declines to arm anything through it.
 static NANOSECONDS_TO_APIC: AtomicU64 = AtomicU64::new(0);
 
-/// The measured counter rate used by the watchdog and time page.
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
 /// The measured APIC rate observed by the self-test.
 #[cfg(feature = "selftest")]
 static APIC_HZ: AtomicU64 = AtomicU64::new(0);
 
-/// Nanoseconds at which the timing subsystem was revoked.
 static REVOKED_AT_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Private scheduling epoch after the public clock is revoked.
 static SCHEDULER_NOW_NS: AtomicU64 = AtomicU64::new(0);
 
-/// Why the live timing subsystem was revoked; zero means it remains active.
 static REVOCATION: AtomicUsize = AtomicUsize::new(0);
 
-/// Last live watchdog operands observed by the self-test.
 #[cfg(feature = "selftest")]
 static LAST_WATCHDOG_TSC: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "selftest")]
@@ -146,10 +120,8 @@ static LAST_WATCHDOG_PIT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "selftest")]
 static LAST_WATCHDOG_EXPECTED: AtomicU64 = AtomicU64::new(0);
 
-/// Consecutive conclusive watchdog disagreements.
 static WATCHDOG_DISAGREEMENTS: AtomicUsize = AtomicUsize::new(0);
 
-/// The claimed reference clock and the validation window currently armed.
 static HARDWARE: SpinLock<ClockHardware> = SpinLock::new(ClockHardware::EMPTY);
 
 #[derive(Debug)]
@@ -213,8 +185,7 @@ impl fmt::Display for TimeError {
             }
             Self::LocalTimer(reason) => write!(f, "the local timer refused setup: {reason}"),
             Self::Implausible => {
-                // Include the failed guard and values so calibration refusals
-                // are actionable (D-176).
+                // Include the failed guard and values so calibration refusals are actionable.
                 let (tsc, apic) = last_measurement();
                 write!(
                     f,
@@ -252,20 +223,16 @@ enum CalibrationSource {
 }
 
 impl Calibration {
-    /// Whether two windows measured the same pair of clocks: each within one
-    /// part in sixty-four — far looser than honest window jitter, far tighter
-    /// than the factor-of-two-and-up a folded window inflates by. Both must
-    /// agree, because a window that fooled one counter fooled both.
+    /// Whether two windows measured the same pair of clocks: each within one part in sixty-four —
+    /// far looser than honest window jitter, far tighter than the factor-of-two-and-up a folded
+    /// window inflates by. Both must agree, because a window that fooled one counter fooled both.
     fn agrees_with(self, other: Self) -> bool {
         close(self.tsc_hz, other.tsc_hz) && close(self.apic_hz, other.apic_hz)
     }
 
-    /// Whether the processor promised that the counter this clock is built on
-    /// runs at a constant rate.
-    ///
-    /// Not a veto: QEMU declines the bit while providing a steady counter, and
-    /// the evidence this kernel actually has is its two agreeing windows. A
-    /// machine without it gets a warning naming what is unpromised.
+    /// Whether the processor promised that the counter this clock is built on runs at a constant
+    /// rate. Not a veto: QEMU declines the bit while providing a steady counter, and the evidence
+    /// this kernel actually has is its two agreeing windows.
     pub(crate) const fn counter_is_invariant(self) -> bool {
         self.invariant
     }
@@ -276,7 +243,6 @@ impl Calibration {
     }
 }
 
-/// Whether two measurements of one clock are within [`AGREEMENT_DIVISOR`].
 fn close(one: u64, other: u64) -> bool {
     one.abs_diff(other) <= one / AGREEMENT_DIVISOR
 }
@@ -304,26 +270,14 @@ impl fmt::Display for Calibration {
     }
 }
 
-/// Select, validate and start the kernel's clock and alarm.
-///
-/// Runs with the interrupt flag still clear — asserted, because it is what
-/// makes the measurement unpreemptible for free. Two consecutive windows must
-/// agree before their answer is believed: every guard inside [`measure`] can
-/// be slipped by a stall of exactly the wrong length, but a second
-/// independent window cannot be slipped to the same wrong answer. An invariant
-/// TSC with a complete CPUID crystal ratio is an alternate rate source when
-/// those windows refuse; the APIC is then measured against that TSC. The PIT
-/// remains claimed as the independent live watchdog.
-///
-/// Nothing is armed at the end. The timer is put in one-shot mode and left
-/// stopped; the first thing to want an interrupt from it is the scheduler,
-/// and until something does there is nothing to interrupt for.
+/// Select, validate and start the kernel's clock and alarm. Runs with the interrupt flag still
+/// clear — asserted, because it is what makes the measurement unpreemptible for free.
 ///
 /// # Errors
 ///
-/// [`TimeError::PitUnavailable`] if the reference is already claimed,
-/// [`TimeError::Implausible`] if neither timing source produces two agreeing,
-/// believable windows, or [`TimeError::LocalTimer`] if final timer setup fails.
+/// [`TimeError::PitUnavailable`] if the reference is already claimed, [`TimeError::Implausible`] if
+/// neither timing source produces two agreeing, believable windows, or [`TimeError::LocalTimer`] if
+/// final timer setup fails.
 #[expect(
     clippy::panic_in_result_fn,
     reason = "a calibrated timer that then refuses to stop is a terminal invariant"
@@ -381,8 +335,8 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
         return Err(TimeError::Implausible);
     };
 
-    // Stopped before unmasked: the countdown the last window left running
-    // would otherwise interrupt when it reached zero.
+    // Stopped before unmasked: the countdown the last window left running would otherwise interrupt
+    // when it reached zero.
     let disarmed = match apic::disarm_timer() {
         Ok(disarmed) => disarmed,
         Err(reason) => {
@@ -399,8 +353,8 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     #[cfg(feature = "selftest")]
     APIC_HZ.store(calibration.apic_hz, Ordering::Relaxed);
     NANOSECONDS_TO_APIC.store(countdown.to_bits(), Ordering::Relaxed);
-    // Origin before the conversion that makes it readable, or a reader could
-    // report the age of the machine as the age of the kernel.
+    // Origin before the conversion that makes it readable, or a reader could report the age of the
+    // machine as the age of the kernel.
     ORIGIN.store(cpu::timestamp(), Ordering::Relaxed);
     TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Relaxed);
     *HARDWARE.lock_leaf() = ClockHardware {
@@ -469,15 +423,6 @@ fn measure_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
     })
 }
 
-/// One bracketed window, measuring both clocks.
-///
-/// The two counter reads sit inside the crystal reads, so the skew of the
-/// port transactions lands symmetrically: each rate is understated by two
-/// reads in twenty milliseconds, which is noise. `None` means the window is
-/// not trustworthy — a stuck counter, a step past [`MAX_STEP`] or backwards
-/// (a stall folding through the counter's span), a window that overshot its
-/// bound, or a rate outside belief — and the caller decides how patient to
-/// be.
 fn measure(pit: &mut Pit) -> Option<Calibration> {
     match measured(pit) {
         Ok(calibration) => Some(calibration),
@@ -490,19 +435,15 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
 
 /// Why a window was not trustworthy.
 ///
-/// `measure` had six ways to return `None` and said which nowhere. On a machine
-/// whose author can attach a debugger that is a debugger's job; on one they
-/// cannot — which is every machine D-18 makes this project answer to — it is
-/// the difference between an answer and another boot (D-176).
+/// The refusal has to name the failed check, because this machine may have no debugger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Refusal {
     /// Nothing has been measured yet.
     None = 0,
-    /// The crystal's count went backwards, or jumped further than one poll
-    /// should.
+    /// The crystal's count went backwards, or jumped further than one poll should.
     CrystalStepped = 1,
-    /// The window did not close inside the poll bound: a crystal that is not
-    /// counting looks exactly like this.
+    /// The window did not close inside the poll bound: a crystal that is not counting looks exactly
+    /// like this.
     NeverClosed = 2,
     /// A counter read backwards across the window.
     CounterWentBack = 3,
@@ -560,8 +501,6 @@ impl Refusal {
 #[cfg(feature = "selftest")]
 impl Refusal {
     /// Every refusal, so a check can sweep them without a list of its own.
-    ///
-    /// D-161: the list a test sweeps can itself fall behind.
     pub(crate) const ALL: [Self; 7] = [
         Self::None,
         Self::CrystalStepped,
@@ -573,11 +512,9 @@ impl Refusal {
     ];
 }
 
-/// Every refusal reads back as the one that was recorded.
-///
-/// A diagnosis that names the wrong guard is worse than one that names none,
-/// and the way it comes to name the wrong guard is a discriminant and a `match`
-/// arm drifting apart — which nothing else here would notice (D-176).
+/// Every refusal reads back as the one that was recorded. A diagnosis that names the wrong guard is
+/// worse than one that names none, and the way it comes to name the wrong guard is a discriminant
+/// and a `match` arm drifting apart — which nothing else here would notice.
 #[cfg(feature = "selftest")]
 pub(crate) fn every_refusal_reads_back_as_itself() -> bool {
     let held = LAST_REFUSAL.load(Ordering::Relaxed);
@@ -594,7 +531,6 @@ static LAST_REFUSAL: core::sync::atomic::AtomicUsize = core::sync::atomic::Atomi
 
 /// The numbers the last refused window saw, for a machine that will not say.
 static LAST_APIC_HZ: AtomicU64 = AtomicU64::new(0);
-/// See [`LAST_APIC_HZ`].
 static LAST_TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
 /// What the last refused window measured, whether or not it was believed.
@@ -607,8 +543,8 @@ pub(crate) fn last_measurement() -> (u64, u64) {
 
 /// One window, saying why rather than only whether.
 fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
-    // Free-running from the top under a still-masked entry: 32 bits at even
-    // 5 GHz is 0.86 s to zero, forty times the window.
+    // Free-running from the top under a still-masked entry: 32 bits at even 5 GHz is 0.86 s to
+    // zero, forty times the window.
     apic::arm_timer(u32::MAX);
     pit.start_measurement();
 
@@ -638,8 +574,8 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
     let apic_end = apic::timer_current_count();
     let pit_end = pit.count();
 
-    // The APIC counts down and the timestamp counter counts up, which is the
-    // only difference between the two measurements.
+    // The APIC counts down and the timestamp counter counts up, which is the only difference
+    // between the two measurements.
     let apic_counted = u64::from(
         apic_start
             .checked_sub(apic_end)
@@ -649,16 +585,16 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
         .checked_sub(tsc_start)
         .ok_or(Refusal::CounterWentBack)?;
     let pit_ticks = elapsed_ticks(pit_start, pit_end);
-    // The closing reads sit outside the step guard, so they get the same
-    // bound by range: a fold between loop exit and here lands outside it.
+    // The closing reads sit outside the step guard, so they get the same bound by range: a fold
+    // between loop exit and here lands outside it.
     if !(WINDOW_TICKS..=WINDOW_TICKS + MAX_STEP).contains(&pit_ticks) {
         return Err(Refusal::Overshot);
     }
 
     let apic_hz = calibrate::measured_hz(apic_counted, pit_ticks);
     let tsc_hz = calibrate::measured_hz(tsc_counted, pit_ticks);
-    // Recorded whether or not believed: which number was wrong is the whole
-    // diagnosis, and learning it otherwise costs another boot.
+    // Recorded whether or not believed: which number was wrong is the whole diagnosis, and learning
+    // it otherwise costs another boot.
     LAST_APIC_HZ.store(apic_hz, Ordering::Relaxed);
     LAST_TSC_HZ.store(tsc_hz, Ordering::Relaxed);
     if !BELIEVABLE_APIC_HZ.contains(&apic_hz) || !BELIEVABLE_TSC_HZ.contains(&tsc_hz) {
@@ -675,11 +611,6 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
 }
 
 /// Nanoseconds since the clock started. Zero for as long as it never does.
-///
-/// One counter read and one multiply, taking no lock — which is what makes it
-/// callable from a trap handler, where every scheduling decision is made.
-/// A revoked clock freezes at its last trusted reading. It never fabricates
-/// progress and never moves backwards while callers unwind their waits.
 pub(crate) fn now_ns() -> u64 {
     if Revocation::current() != Revocation::None {
         return REVOKED_AT_NS.load(Ordering::Acquire);
@@ -713,12 +644,8 @@ pub(crate) fn adjacent_readings_for_test() -> (u64, u64) {
     )
 }
 
-/// Nanoseconds used only for scheduler progress.
-///
-/// Before revocation this is the public monotonic clock. Afterwards each APIC
-/// expiry advances it from the independent PIT window, while [`now_ns`]
-/// remains frozen and no caller can mistake fallback scheduling for trusted
-/// elapsed time.
+/// Nanoseconds used only for scheduler progress. Before revocation this is the public monotonic
+/// clock.
 pub(crate) fn scheduler_now_ns() -> u64 {
     if Revocation::current() != Revocation::None {
         return SCHEDULER_NOW_NS.load(Ordering::Acquire);
@@ -731,11 +658,8 @@ pub(crate) fn scheduler_now_ns() -> u64 {
     }
 }
 
-/// The counter reading the clock's zero sits at.
-///
-/// For the page that publishes this clock (D-152): a reader computes
-/// `convert(rdtsc - origin)`, which is what [`now_ns`] computes, so the two
-/// cannot drift.
+/// The counter reading the clock's zero sits at. For the page that publishes this clock: a reader
+/// computes `convert(rdtsc - origin)`, which is what [`now_ns`] computes, so the two cannot drift.
 pub(crate) fn origin_ticks() -> u64 {
     ORIGIN.load(Ordering::Relaxed)
 }
@@ -745,16 +669,14 @@ pub(crate) fn conversion() -> Timebase {
     Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
 }
 
-/// Milliseconds since the clock started, for anything that reports to a
-/// person.
+/// Milliseconds since the clock started, for anything that reports to a person.
 pub(crate) fn uptime_ms() -> u64 {
     now_ns() / NANOSECONDS_PER_MS
 }
 
-/// Whether the clock was measured, and therefore whether it runs at all.
-///
-/// What anything that means to wait must ask first: with no clock there is no
-/// deadline and no timer, so a wait would be a hang.
+/// Whether the clock was measured, and therefore whether it runs at all. What anything that means
+/// to wait must ask first: with no clock there is no deadline and no timer, so a wait would be a
+/// hang.
 pub(crate) fn is_calibrated() -> bool {
     let calibrated = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
         .is_calibrated()
@@ -778,12 +700,8 @@ pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
     result
 }
 
-/// Ask for a timer interrupt at `deadline`, or as soon as the hardware can
-/// manage if it has already passed.
-///
-/// Does nothing before the alarm is calibrated. After public-clock revocation
-/// it continues to provide bounded scheduler progress against the retained
-/// PIT, but it admits no new timing promise.
+/// Ask for a timer interrupt at `deadline`, or as soon as the hardware can manage if it has already
+/// passed. Does nothing before the alarm is calibrated.
 ///
 /// # Panics
 ///
@@ -832,8 +750,8 @@ pub(crate) fn disarm() {
 }
 
 fn stop_apic_timer() {
-    // No conversion means no APIC countdown was admitted. Losing the timer
-    // after publishing one remains a fatal hardware-authority contradiction.
+    // No conversion means no APIC countdown was admitted. Losing the timer after publishing one
+    // remains a fatal hardware-authority contradiction.
     match apic::disarm_timer() {
         Ok(_) => {}
         Err(apic::TimerError::Unavailable)
@@ -843,9 +761,9 @@ fn stop_apic_timer() {
     }
 }
 
-/// One expiry — and nothing else, because this runs in trap context, where
-/// D-31 and D-34 still bind: no locks, no logging. What to do about it is the
-/// scheduler's, and it is called next.
+/// One expiry, and nothing else.
+///
+/// This runs in trap context: no locks and no logging. The scheduler acts on it next.
 pub(crate) fn on_expiry() {
     #[cfg(feature = "selftest")]
     EXPIRIES.fetch_add(1, Ordering::Relaxed);
@@ -996,8 +914,7 @@ pub(crate) fn counter_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)
 }
 
-/// The measured rate of the APIC timer's divided clock; zero if calibration
-/// declined.
+/// The measured rate of the APIC timer's divided clock; zero if calibration declined.
 #[cfg(feature = "selftest")]
 pub(crate) fn apic_hz() -> u64 {
     APIC_HZ.load(Ordering::Relaxed)

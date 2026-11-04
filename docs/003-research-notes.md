@@ -6,11 +6,11 @@
 > rationale, Capsicum's rights count, the WASI target, and two WizFS rules.
 > Current decisions live in `004-decision-log.md` and `002-architecture.md`.
 
-Produced 2026-07-18 by a multi-agent research pass (5 search angles, 26
-sources fetched, 125 claims extracted, 25 adversarially verified: 11
-confirmed, 0 refuted, 14 unverified due to verification-infrastructure
-interruptions — flagged below). Findings feed `002-architecture.md`; the
-"Actions" section at the bottom lists the concrete design changes adopted.
+Produced 2026-07-18 from 5 search angles, 26 sources, and 125 claims.
+Twenty-five claims were checked against the sources: 11 confirmed, 0 refuted,
+14 unverified because the check was interrupted — flagged below. Findings
+feed `002-architecture.md`; the "Actions" section lists the design changes
+adopted.
 
 ## Tier 1 — Verified findings (adversarial 3-vote confirmation)
 

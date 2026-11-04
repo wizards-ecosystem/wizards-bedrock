@@ -1,20 +1,5 @@
 //! Allocation bookkeeping for physical page frames.
 //!
-//! Arithmetic over two bitmaps, with no hardware behind it; `wost::mm` wraps
-//! one in a lock and hands out the frame handles (D-43, on `port_space`'s
-//! precedent).
-//!
-//! Two bitmaps, because one could not tell a double free from a frame that was
-//! never ours — and [`free`](FrameSpace::free) is what a `Drop` impl calls,
-//! the one place a bug is silent.
-//!
-//! Capacity is a const parameter so the kernel names its ceiling while tests
-//! use spaces small enough for a stack. Both start zeroed, so a `static` one
-//! lands in `.bss`.
-//!
-//! The search is first-fit from a rotating hint. Swapping in a buddy changes
-//! this file and nothing else.
-//!
 //! ```
 //! use frame_space::{FrameSpace, FRAME_SIZE};
 //!
@@ -39,9 +24,6 @@ use core::num::NonZeroU64;
 pub const FRAME_SIZE: u64 = 4096;
 
 /// An aligned frame's distinct nonzero identity, including physical frame zero.
-///
-/// Unaligned addresses are refused. Even the highest `u64` frame number leaves
-/// room for the nonzero bias, so an optional identity still occupies one word.
 pub const fn frame_identity(address: u64) -> Option<NonZeroU64> {
     if !address.is_multiple_of(FRAME_SIZE) {
         return None;
@@ -53,11 +35,6 @@ pub const fn frame_identity(address: u64) -> Option<NonZeroU64> {
 const FRAMES_PER_WORD: usize = u64::BITS as usize;
 
 /// Bitmap words needed to cover `bytes` of physical address space.
-///
-/// The const argument a [`FrameSpace`] takes: `FrameSpace<{ words_for(16 << 30) }>`
-/// covers 16 GiB and occupies 1 MiB of `.bss`, two bits per frame — two
-/// arrays of 65,536 `u64`, which is what `wost/src/mm/mod.rs` calls "one
-/// megabyte" and this line called two.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value was bounded to a length that fits the address width"
@@ -103,9 +80,6 @@ pub struct Inserted {
 }
 
 /// Which physical frames exist, and which are free.
-///
-/// `WORDS` sets the ceiling: the space covers `WORDS * 64` frames starting at
-/// physical zero. Use [`words_for`] to name it in bytes.
 pub struct FrameSpace<const WORDS: usize> {
     /// Set: this frame is usable RAM under our control.
     managed: [u64; WORDS],
@@ -160,11 +134,6 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     }
 
     /// Take the physical byte range `base..base + len` under management, free.
-    ///
-    /// The range is narrowed to whole frames *inside* it: a region that starts
-    /// mid-frame does not donate that frame, because the rest of it belongs to
-    /// something else. Frames already managed are left alone, so overlapping
-    /// regions in a bootloader's map cannot double-count.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the value was bounded to a length that fits the address width"
@@ -202,12 +171,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// Allocate `count` consecutive frames whose first frame is a multiple of
     /// `align`, both counted in frames.
     ///
-    /// `align` is rounded up to the next power of two, so a caller may pass the
-    /// natural alignment it wants without checking. A 2 MiB page needs
-    /// `allocate_contiguous(512, 512)`.
-    ///
-    /// First-fit from a rotating hint, wrapping once. Nothing here promises a
-    /// policy — see the module docs.
+    /// First-fit from a rotating hint, wrapping once.
     pub fn allocate_contiguous(&mut self, count: usize, align: usize) -> Option<usize> {
         if count == 0 || count > Self::FRAME_COUNT {
             return None;
@@ -234,14 +198,8 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
 
     /// Hand `count` frames starting at `first` back.
     ///
-    /// All or nothing: if any frame in the run is not ours or is already free,
-    /// nothing is released and the first offending frame is reported. A partial
-    /// release would leave a caller's `Drop` believing it had given everything
-    /// back.
-    ///
-    /// A run that overflows or runs off the end reports the first frame past
-    /// the space because `FRAME_COUNT` is a ceiling, not an offending frame
-    /// (D-105).
+    /// A run that overflows or runs off the end reports the first frame past the space
+    /// because `FRAME_COUNT` is a ceiling, not an offending frame.
     ///
     /// # Errors
     ///
@@ -319,7 +277,6 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
                 return None;
             }
             match (start..end).find(|&frame| !self.is_free(frame)) {
-                // Every frame in the window is free.
                 None => return Some(start),
                 // Resume past the blocker: no run can straddle it, so the
                 // windows in between cannot succeed either.
@@ -351,8 +308,8 @@ impl<const WORDS: usize> Default for FrameSpace<WORDS> {
     }
 }
 
-/// Counts only. The bitmaps run to megabytes at kernel sizes, and the context
-/// most likely to print one is a panic handler (`005-code-conventions.md`).
+/// Counts only. The bitmaps run to megabytes at kernel sizes, and the context most
+/// likely to print one is a panic handler.
 #[expect(
     clippy::missing_fields_in_debug,
     reason = "the bitmap is megabytes; a panic Debug must not walk it"

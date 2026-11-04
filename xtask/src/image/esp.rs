@@ -76,7 +76,7 @@ pub fn populate<D: ReadWriteSeek>(
     let boot = root.create_dir("boot").context("creating /boot")?;
     write_file(&boot, paths::KERNEL_ON_ESP, kernel)?;
 
-    // The initrd: one built program (D-100), beside the kernel because
+    // The initrd: one built program, beside the kernel because
     // Limine's `module_path` is relative to the boot volume.
     let program = super::program::build().context("building the fixed ring-3 witness")?;
     write_file(&boot, paths::PROGRAM_ON_ESP, &program)?;

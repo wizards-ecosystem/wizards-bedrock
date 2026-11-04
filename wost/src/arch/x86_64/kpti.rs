@@ -1,8 +1,5 @@
-//! The linker-owned entry enclave and its fail-closed CPU-local route.
-//!
-//! D-407's stripped root may map only the ranges described by
-//! [`EntryEnclave`]. A published route is authority only while its complete
-//! root pair and guarded entry stacks match the state installed on this CPU.
+//! The linker-owned entry enclave and its fail-closed CPU-local route. The stripped root may map
+//! only the ranges described by [`EntryEnclave`].
 
 use core::mem::{offset_of, size_of};
 #[cfg(feature = "selftest")]
@@ -60,7 +57,7 @@ impl EnclaveMapping {
     }
 }
 
-/// Validated, unforgeable linker geometry for D-407's entry enclave.
+/// Validated, unforgeable linker geometry for the entry enclave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct EntryEnclave {
     mappings: [EnclaveMapping; 6],
@@ -351,10 +348,9 @@ pub(super) fn publish_route(
 }
 
 fn refuse_route(reason: RouteError) -> Result<(), RouteError> {
-    // `ROUTE_UPDATING` is deliberately retained. It is not entry authority,
-    // and assembly makes every interrupt terminal until the caller either
-    // clears the transaction or stops, so a refused successor cannot revive
-    // the previously published task.
+    // `ROUTE_UPDATING` is deliberately retained. It is not entry authority, and assembly makes
+    // every interrupt terminal until the caller either clears the transaction or stops, so a
+    // refused successor cannot revive the previously published task.
     Err(reason)
 }
 
@@ -501,8 +497,8 @@ pub(super) fn entry_stacks_are_guarded_and_scrubbed() -> bool {
     }
     let bytes = TRANSITION_STACK.as_mut_ptr().cast::<u8>();
     (0..STACK_BYTES).all(|offset| {
-        // SAFETY: the route is empty, so hardware cannot be using the
-        // transition stack; the linker-owned allocation spans STACK_BYTES.
+        // SAFETY: the route is empty, so hardware cannot be using the transition stack; the
+        // linker-owned allocation spans STACK_BYTES.
         let byte = unsafe { bytes.add(offset) };
         // SAFETY: `byte` is inside that same inactive allocation.
         unsafe { byte.read_volatile() == 0 }

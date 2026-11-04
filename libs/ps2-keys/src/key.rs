@@ -1,9 +1,6 @@
 //! The physical keys of a US 104-key board.
 
 /// One physical key, named for its US-layout legend.
-///
-/// Layout modules map identities to text, keeping wire decoding independent
-/// of keyboard layout.
 #[expect(missing_docs, reason = "the variant name is the key's legend")]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

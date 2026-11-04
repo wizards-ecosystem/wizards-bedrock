@@ -1,20 +1,8 @@
 //! Property tests over the allocator's ledger.
 //!
-//! The module doc states the reason for the design, and it is a checkable
-//! claim rather than a description:
-//!
 //! > Two bitmaps, because one could not tell a double free from a frame that
 //! > was never ours — and `free` is what a `Drop` impl calls, the one place a
 //! > bug is silent.
-//!
-//! `allocate_contiguous` states another: "Allocate `count` consecutive frames
-//! whose first frame is a multiple of `align` ... `align` is rounded up to the
-//! next power of two." A run that is not aligned, or overlaps a live one, is
-//! two owners for one frame — the failure a frame allocator exists to prevent.
-//!
-//! What is *not* here: the policy. The doc says "Nothing here promises a
-//! policy", so no property asserts which frame comes back, only that whichever
-//! does is free, aligned, and nobody else's.
 
 use frame_space::{FRAME_SIZE, FrameSpace, FreeError};
 use proptest::prelude::*;
@@ -87,9 +75,6 @@ fn request() -> impl Strategy<Value = (usize, usize)> {
 
 proptest! {
     /// A run is aligned, and no frame in it belongs to a live run.
-    ///
-    /// Two owners for one frame is the defect; a sequence of differently
-    /// aligned requests is what produces the near-misses that find it.
     #[test]
     fn an_allocated_run_is_aligned_and_nobody_elses(
         requests in prop::collection::vec(request(), 1..10),
@@ -118,10 +103,6 @@ proptest! {
     }
 
     /// Allocation and release return the ledger to exactly where it started.
-    ///
-    /// The count is checked after every step as well as at the end, so a
-    /// release that returns the wrong number of frames cannot be cancelled out
-    /// by a later one.
     #[test]
     fn the_free_count_returns_to_its_baseline(
         requests in prop::collection::vec(request(), 1..10),
@@ -200,11 +181,7 @@ proptest! {
     }
 }
 
-/// How often a generated request is actually granted — D-242's obligation on a
-/// generated-input check.
-///
-/// Every run property skips a refused allocation, so a low grant rate would
-/// leave them asserting almost nothing.
+/// How often a generated request is granted.
 #[test]
 fn the_ledger_properties_reach_granted_allocations() {
     const SAMPLES: usize = 4096;

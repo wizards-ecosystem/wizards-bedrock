@@ -1,20 +1,10 @@
 //! Global descriptor table entries.
-//!
-//! In 64-bit mode a code or data descriptor carries almost nothing: base and
-//! limit are ignored, and what remains is a handful of permission bits. System
-//! descriptors — the task-state segment is the only one this kernel uses — are
-//! twice as wide and do carry a base address.
 
 /// The bits this crate sets. Ones it deliberately leaves clear — the privilege
 /// level of the kernel pair, granularity — are named in the tests that assert
 /// they stay clear.
 mod bit {
-    /// Accessed, written already set (D-426).
-    ///
-    /// The processor sets it on the first load of a selector, which is a write
-    /// to the table. The first load of the user pair is the `iretq` inside the
-    /// paired-root exit, where the table is mapped read-only, so a clear bit
-    /// is a supervisor write fault there on hardware that enforces it.
+    /// Accessed, written already set.
     pub(super) const ACCESSED: u64 = 1 << 40;
     /// Readable for a code segment, writable for a data segment.
     pub(super) const ACCESS: u64 = 1 << 41;
@@ -23,10 +13,6 @@ mod bit {
     /// Code or data rather than a system descriptor.
     pub(super) const CODE_OR_DATA: u64 = 1 << 44;
     /// Descriptor privilege level three: ring 3 may load it.
-    ///
-    /// Both bits, because the field is two wide and ring 3 is the only
-    /// non-zero level this kernel uses — there is no ring 1 or 2 here, and
-    /// leaving one bit set would name a level nothing runs at.
     pub(super) const RING_THREE: u64 = 0b11 << 45;
     /// The descriptor is usable.
     pub(super) const PRESENT: u64 = 1 << 47;
@@ -65,9 +51,9 @@ impl Descriptor {
 
     /// Ring 3 code: present, executable, readable, 64-bit, DPL 3, accessed.
     ///
-    /// `sysret` and `iretq` both require the user descriptors to sit at
-    /// specific indices relative to each other, which is why the order in the
-    /// table is fixed rather than incidental (D-96).
+    /// `sysret` and `iretq` both require the user descriptors to sit at specific
+    /// indices relative to each other, which is why the order in the table is fixed
+    /// rather than incidental.
     pub const USER_CODE: Self = Self(
         bit::PRESENT
             | bit::CODE_OR_DATA
@@ -99,12 +85,6 @@ pub struct SystemDescriptor {
 
 impl SystemDescriptor {
     /// Describe a task-state segment of `size` bytes at `base`.
-    ///
-    /// The limit is one less than the size, which is what makes an offset equal
-    /// to the size — the value `iomap_base` carries to mean "no I/O bitmap" —
-    /// land outside the segment. A task-state segment cannot exceed a 16-bit
-    /// limit even with a full I/O bitmap, so the limit's high nibble is always
-    /// zero and is not encoded.
     ///
     /// # Panics
     ///
@@ -141,14 +121,14 @@ mod tests {
     /// A task-state descriptor sets the type and present bits and **nothing
     /// else** in the flag byte.
     ///
-    /// Bits 52–55 need explicit zero anchors: granularity would scale the
-    /// 104-byte limit to `0x67FFF`, placing `iomap_base` inside the segment and
-    /// making the CPU read an unintended I/O permission bitmap (D-142).
+    /// Bits 52–55 need explicit zero anchors: granularity would scale the 104-byte
+    /// limit to `0x67FFF`, placing `iomap_base` inside the segment and making the CPU
+    /// read an unintended I/O permission bitmap.
     ///
     /// SDM Vol. 3A figure 8-4: for a 64-bit TSS descriptor, bit 52 is
-    /// available-for-software, 53 is reserved-zero, 54 is the default/big bit
-    /// which must be clear, and 55 is granularity, which must be clear so the
-    /// limit is counted in bytes.
+    /// available-for-software, 53 is reserved-zero, 54 is the default/big bit which
+    /// must be clear, and 55 is granularity, which must be clear so the limit is
+    /// counted in bytes.
     #[test]
     fn a_task_state_descriptor_sets_no_size_or_granularity_bits() {
         const SIZE: u16 = 104;
@@ -188,10 +168,10 @@ mod tests {
         assert_eq!(Descriptor::NULL.bits(), 0);
     }
 
-    /// The paired-root exit loads the user selectors from a read-only table,
-    /// so the processor must never need to write a descriptor's accessed bit.
-    /// QEMU's TCG does not enforce that write; `VMware`'s hardware did, and the
-    /// first `iretq` to ring 3 faulted inside the exit trampoline (D-426).
+    /// The paired-root exit loads the user selectors from a read-only table, so the
+    /// processor must never need to write a descriptor's accessed bit. QEMU's TCG does
+    /// not enforce that write; `VMware`'s hardware did, and the first `iretq` to ring 3
+    /// faulted inside the exit trampoline.
     #[test]
     fn every_code_and_data_descriptor_is_already_accessed() {
         for descriptor in [
@@ -249,11 +229,6 @@ mod tests {
 
     /// The user descriptors differ from the kernel ones by the privilege field
     /// and nothing else.
-    ///
-    /// Transcribed against the kernel pair rather than re-derived: a user code
-    /// segment that also differed in, say, the long-mode bit would be a
-    /// different kind of segment wearing ring 3's number, and the difference
-    /// would be invisible in a boot that worked (D-96).
     #[test]
     fn the_user_descriptors_are_the_kernel_ones_at_ring_three() {
         assert_eq!(
@@ -277,9 +252,6 @@ mod tests {
     }
 
     /// Code is executable and data is not, at both privilege levels.
-    ///
-    /// A data descriptor with the executable bit set is a code segment the CPU
-    /// will happily jump into, and at ring 3 that is a privilege boundary.
     #[test]
     fn only_the_code_descriptors_are_executable() {
         assert_ne!(Descriptor::KERNEL_CODE.bits() & bit::EXECUTABLE, 0);
@@ -290,8 +262,8 @@ mod tests {
 
     /// The long-mode bit is set for code and clear for data, at ring 3 too.
     ///
-    /// A data descriptor with `L` set is reserved, and the manual says the
-    /// result is undefined rather than ignored.
+    /// A data descriptor with `L` set is reserved, and the manual says the result is
+    /// undefined rather than ignored.
     #[test]
     fn long_mode_is_a_code_only_bit_at_every_level() {
         const LONG_MODE: u64 = 1 << 53;

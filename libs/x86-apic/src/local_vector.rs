@@ -1,15 +1,8 @@
 //! Local vector table entries.
-//!
-//! One 32-bit register for each interrupt source the APIC owns itself — its
-//! timer, its two local pins, its error line — all sharing a layout. An entry
-//! says which vector the source delivers on, or that it delivers nothing.
 
 use crate::vector::InterruptVector;
 
-/// Bits 8–10: delivery mode. Zero is a plain vector delivered to this
-/// processor, which is the only mode this kernel programs. The others exist so
-/// firmware can wire a pin to the non-maskable interrupt or to the legacy
-/// controller, and undoing that is exactly what masking is for.
+/// Bits 8–10: delivery mode.
 const DELIVERY_FIXED: u32 = 0;
 
 /// Bit 16: the source is disconnected while this is set.
@@ -56,35 +49,20 @@ pub struct Entry(u32);
 
 impl Entry {
     /// An entry that delivers nothing.
-    ///
-    /// This is also the value the architecture resets every entry to, so
-    /// writing it puts a pin back the way the processor started rather than
-    /// merely quiet.
     pub const MASKED: Self = Self(MASK);
 
     /// Deliver `vector` to this processor whenever the source fires.
-    ///
     pub const fn fixed(vector: InterruptVector) -> Self {
         Self(vector.get() as u32 | DELIVERY_FIXED)
     }
 
     /// Deliver `vector` once when the timer's countdown reaches zero, and
     /// then stop.
-    ///
-    /// The mode a tickless kernel programs: each expiry is an event the
-    /// scheduler asked for, and the timer does nothing again until it is
-    /// armed for the next one.
-    ///
     pub const fn one_shot(vector: InterruptVector) -> Self {
         Self(Self::fixed(vector).bits() | TIMER_ONE_SHOT)
     }
 
     /// Deliver `vector` every time the timer's countdown reaches zero.
-    ///
-    /// The reload is the hardware's: at zero the timer restarts from its
-    /// initial count with no software involved, which is what makes the tick
-    /// periodic rather than re-armed.
-    ///
     pub const fn periodic(vector: InterruptVector) -> Self {
         Self(Self::fixed(vector).bits() | TIMER_PERIODIC)
     }
@@ -242,12 +220,6 @@ mod tests {
     }
 
     /// The timer-mode field is bits 18:17, both of them.
-    ///
-    /// Every mode test compares `f(TIMER_PERIODIC)` against `TIMER_PERIODIC`,
-    /// so no bit position is pinned; `0b11 << 17` narrowed to `0b01 << 17`
-    /// left all 51 tests green, and a TSC-deadline entry then read back as
-    /// one-shot — which `kernel/src/selftest.rs` asks about a value it read
-    /// off real hardware (D-105).
     #[test]
     fn the_timer_mode_field_is_bits_eighteen_and_seventeen() {
         // SDM Vol. 3A table 11-2: 00 one-shot, 01 periodic, 10 TSC-deadline.

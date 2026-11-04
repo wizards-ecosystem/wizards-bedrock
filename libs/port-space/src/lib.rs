@@ -1,15 +1,5 @@
 //! Reservation bookkeeping for the x86 I/O port space.
 //!
-//! A driver that owns a device's registers must own *every* port an access
-//! reaches, not merely the one it names: a 32-bit `out` to port `n` drives
-//! `n..n + 4`. Tracking that is arithmetic over a bitmap with no hardware
-//! behind it, so it lives here and is unit-tested on the host; `wost` wraps one
-//! of these in a lock and hands out the port handles.
-//!
-//! Fixed-driver reservations are permanent. A transient PCI lease may return
-//! several dynamic spans together before a driver commits; the wrapper keeps
-//! release behind the unique span capabilities (D-199).
-//!
 //! # Examples
 //!
 //! ```
@@ -40,10 +30,6 @@ const PORTS_PER_WORD: usize = u64::BITS as usize;
 const WORDS: usize = PORT_COUNT / PORTS_PER_WORD;
 
 /// Which ports are spoken for.
-///
-/// One bit per port. [`reserve`](Self::reserve) is all-or-nothing: a span that
-/// overlaps an existing reservation leaves the table exactly as it found it, so
-/// a refused claim can never half-own a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortSpace {
     reserved: [u64; WORDS],
@@ -59,8 +45,8 @@ impl PortSpace {
 
     /// Whether `port` is spoken for.
     ///
-    /// A port outside the space reads as reserved: nothing may drive it, which
-    /// is the answer that stops a caller treating it as free.
+    /// A port outside the space reads as reserved: nothing may drive it, which is the
+    /// answer that stops a caller treating it as free.
     pub const fn is_reserved(&self, port: usize) -> bool {
         if port >= PORT_COUNT {
             return true;
@@ -70,9 +56,9 @@ impl PortSpace {
 
     /// Reserve the `len` ports starting at `port`.
     ///
-    /// False — and nothing recorded — if any of them is already reserved, if
-    /// the span would run past the end of the space, or if `len` is zero, which
-    /// would reserve nothing while reporting success.
+    /// False — and nothing recorded — if any of them is already reserved, if the span
+    /// would run past the end of the space, or if `len` is zero, which would reserve
+    /// nothing while reporting success.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve(&mut self, port: usize, len: usize) -> bool {
         let Some(span) = self.span(port, len) else {
@@ -85,18 +71,6 @@ impl PortSpace {
     }
 
     /// Reserve several spans, all or none.
-    ///
-    /// Fixed-driver claims in this registry are **permanent**, because a driver
-    /// owns its registers for the life of the kernel. A transient higher-level
-    /// lease can return its unique spans through
-    /// [`release_all`](Self::release_all), but that does not help a caller
-    /// which takes one fixed span and fails on the second: the first is
-    /// stranded for the boot. Only the registry lock can answer the complete
-    /// all-or-none question (D-138).
-    ///
-    /// False, and nothing recorded, if *any* span is unavailable — checked
-    /// against the others in the same call, so two overlapping spans in one
-    /// request are refused rather than silently merged.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
@@ -131,12 +105,8 @@ impl PortSpace {
 
     /// Release several reserved spans, all or none.
     ///
-    /// This is bookkeeping for a higher-level transient lease, not an
-    /// address-based ownership API: the `wost` wrapper accepts only the unique
-    /// span values its matching reservation returned (D-199).
-    ///
-    /// False, and nothing changed, if the request is empty, malformed,
-    /// overlaps itself, or contains any port which is not currently reserved.
+    /// False, and nothing changed, if the request is empty, malformed, overlaps itself,
+    /// or contains any port which is not currently reserved.
     #[must_use = "a refused release leaves every requested port reserved"]
     pub fn release_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
@@ -171,9 +141,6 @@ impl PortSpace {
     }
 
     /// Whether the `len` ports starting at `port` could be reserved right now.
-    ///
-    /// The question [`reserve`](Self::reserve) answers as a side effect,
-    /// separated out so a caller can ask without taking anything.
     pub fn is_available(&self, port: usize, len: usize) -> bool {
         self.span(port, len).is_some()
     }
@@ -209,10 +176,6 @@ fn bounded_span(port: usize, len: usize) -> Option<Range<usize>> {
 }
 
 /// Spans one [`reserve_all`](PortSpace::reserve_all) may take at once.
-///
-/// Two is what the two callers need. The array is fixed because this crate is
-/// `no_std` with no allocator, and a ceiling that refuses is better than a
-/// silent truncation that reserves some of what was asked for.
 pub const MAX_SPANS: usize = 8;
 
 /// Whether two resolved spans share a port.
@@ -229,11 +192,6 @@ mod tests {
     const WIDTHS: [usize; 3] = [1, 2, 4];
 
     /// A refused multi-span reservation strands nothing.
-    ///
-    /// The whole point: a claim here is permanent, so a caller that takes the
-    /// first span and then fails has foreclosed it for the life of the boot.
-    /// Both real callers wanted two spans and neither could ask for them
-    /// together (D-138).
     #[test]
     fn a_refused_multi_span_reservation_takes_nothing() {
         const SPANS: [(usize, usize); MAX_SPANS] = [
@@ -277,17 +235,12 @@ mod tests {
         for (port, len) in spans {
             assert!(!space.is_available(port, len), "{port:#x} was not recorded");
         }
-        // And nothing beyond them: the span at 0x70 is untouched.
         assert!(space.is_available(0x70, 1));
         // Asking again is refused, because the registry never releases.
         assert!(!space.reserve_all(&spans));
     }
 
     /// Two spans in one request that overlap each other are refused.
-    ///
-    /// `span` only sees what is already *recorded*, so without the pairwise
-    /// check both halves of `[(0x60, 4), (0x62, 2)]` pass it and the caller is
-    /// told it owns one range twice.
     #[test]
     fn a_request_that_overlaps_itself_is_refused() {
         let mut space = PortSpace::new();
@@ -433,11 +386,6 @@ mod tests {
     }
 
     /// Availability agrees with reserving, *and* with an independent oracle.
-    ///
-    /// `is_available` and `reserve` both return `span(p, l).is_some()`, so
-    /// comparing them is `span(p,l).is_some() == span(p,l).is_some()` — true
-    /// for every implementation of `span`, correct or not. Mutating `span`'s
-    /// overlap scan killed three other tests here and never this one (D-105).
     #[test]
     fn availability_agrees_with_what_reserving_would_do() {
         let mut space = PortSpace::new();
@@ -517,9 +465,6 @@ mod tests {
 
     /// The I/O space is sixteen bits, from the architecture rather than from
     /// itself.
-    ///
-    /// Literal upper-bound witnesses keep `PORT_COUNT` from serving as its own
-    /// oracle (D-124).
     #[test]
     fn the_io_space_is_sixteen_bits() {
         assert_eq!(PORT_COUNT, 65_536);

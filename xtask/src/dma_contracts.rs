@@ -73,10 +73,8 @@ fn call_is<'a>(expression: &'a Expr, name: &str) -> Option<&'a ExprCall> {
     path_expression_is(&call.func, &[name]).then_some(call)
 }
 
-/// A second-level leaf permission built from the mapper's const directions.
-///
-/// `Permission::ReadWrite` here would publish bidirectional DMA for every
-/// caller. The only accepted form names `DEVICE_READS` and `DEVICE_WRITES`.
+/// A leaf permission built from the mapper's const directions.
+/// `Permission::ReadWrite` would publish bidirectional DMA; only `DEVICE_READS` and `DEVICE_WRITES` are accepted.
 fn permission_from_directions(expression: &Expr) -> Result<(), &'static str> {
     let Some(call) = call_is(expression, "from_directions") else {
         return Err("permission is not from_directions");
@@ -93,9 +91,8 @@ fn permission_from_directions(expression: &Expr) -> Result<(), &'static str> {
     let syn::PathArguments::AngleBracketed(generic) = &segment.arguments else {
         return Err("from_directions has no const directions");
     };
-    // Syn parses a turbofish identifier as a type when it has no value
-    // context. `DEVICE_READS` and `DEVICE_WRITES` are const parameters; either
-    // spelling is the same name in the same order.
+    // Syn parses a turbofish identifier as a type outside a value context.
+    // `DEVICE_READS` and `DEVICE_WRITES` are const parameters, in that order.
     let names: Vec<String> = generic
         .args
         .iter()
@@ -487,9 +484,8 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(snapshot.contains("if let Some(authority) = quiesced {"));
     assert!(snapshot.contains("TopologyError::QuiescedRequesterMissing"));
 
-    // D-426: the entry-quiesced ISA requester stays in every inventory, so a
-    // unit-wide fence must hold it by exact identity, command and a fresh
-    // 8237 remask rather than by a BME clear it cannot perform.
+    // The entry-quiesced ISA requester stays in every inventory.
+    // A unit-wide fence must hold it by identity, command, and a fresh 8237 remask.
     let requester_fence = kernel_pci
         .split_once("pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {")
         .expect("sibling requester fence")

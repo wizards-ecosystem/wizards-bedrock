@@ -1,13 +1,7 @@
-//! Intel 8042 keyboard controller driver — raw set 2, interrupt or polled.
+//! Intel 8042 keyboard controller, set 2, interrupt or polled.
 //!
-//! The controller raises IRQ 1 once something has routed it (D-49); until
-//! then, and on a machine with no I/O APIC, a thread drains it on an interval
-//! (D-37, D-57). Translation is switched off either way — the decoder in
-//! `ps2-keys` speaks set 2 as the keyboard sends it, not the set 1 the
-//! controller would fake for a 1980s BIOS.
-//!
-//! Every wait is bounded, in the 16550 driver's idiom: a controller that
-//! stops answering costs a timeout and a decline, never a hang.
+//! Translation stays off: `ps2-keys` decodes set 2, not the set 1 a BIOS translator fakes. Every
+//! wait is bounded.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
@@ -39,20 +33,19 @@ mod config {
     pub(super) const FIRST_IRQ: u8 = 1 << 0;
     /// Raise IRQ 12 when a second-port byte arrives.
     pub(super) const SECOND_IRQ: u8 = 1 << 1;
-    /// Translate the keyboard's set 2 into set 1 — the compatibility shim
-    /// firmware leaves on.
+    /// Translate the keyboard's set 2 into set 1 — the compatibility shim firmware leaves on.
     pub(super) const TRANSLATE: u8 = 1 << 6;
 }
 
 mod device {
-    /// Asked for only by the self-test, which is the only thing that has a
-    /// reason to prove the keyboard is answering rather than simply use it.
+    /// Asked for only by the self-test, which is the only thing that has a reason to prove the
+    /// keyboard is answering rather than simply use it.
     #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
     #[cfg(feature = "selftest")]
     pub(super) const SET_SCANCODE_SET: u8 = 0xF0;
-    /// Which the driver reads at bring-up to learn whether its bytes will be
-    /// translated, and the self-test reads again to check the answer.
+    /// Which the driver reads at bring-up to learn whether its bytes will be translated, and the
+    /// self-test reads again to check the answer.
     pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
     pub(super) const RESET: u8 = 0xFF;
@@ -64,17 +57,13 @@ mod reply {
     pub(super) const ACK: u8 = 0xFA;
     /// The keyboard's basic assurance test passed — follows a reset.
     pub(super) const TEST_PASSED: u8 = 0xAA;
-    /// Answer to the `device::ECHO` command, and so equally the
-    /// self-test's alone.
+    /// Answer to the `device::ECHO` command, and so equally the self-test's alone.
     #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
 }
 
-/// An MF2 keyboard's identity as it reads behind a translating controller.
-///
-/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. `VMware`
-/// answers this while reporting its translation bit clear, which is why the
-/// bit is not what the driver asks (D-178).
+/// An MF2 keyboard's identity as it reads behind a translating controller. `VMware` answers this
+/// while reporting its translation bit clear, which is why the bit is not what the driver asks.
 pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
 /// An MF2 keyboard's identity when the controller does not rewrite its reply.
@@ -89,23 +78,18 @@ pub(crate) enum Translation {
     Disabled,
 }
 
-/// Selection argument that reads the current set back instead of setting one.
 #[cfg(feature = "selftest")]
 const CURRENT_SET: u8 = 0x00;
 
-/// A missing controller floats the bus high, so the status register reads as
-/// this forever.
 const ABSENT_STATUS: u8 = 0xFF;
 
-/// Stale bytes to discard before giving up on an output buffer that will not
-/// drain.
+/// Stale bytes to discard before giving up on an output buffer that will not drain.
 const FLUSH_LIMIT: u32 = 32;
 
-/// Poll attempts for an ordinary command's acknowledgement.
 const RESPONSE_ATTEMPTS: u32 = 100_000;
 
-/// Poll attempts for the keyboard's basic assurance test, which the protocol
-/// allows hundreds of milliseconds for after a reset.
+/// Poll attempts for the keyboard's basic assurance test, which the protocol allows hundreds of
+/// milliseconds for after a reset.
 const RESET_ATTEMPTS: u32 = 2_000_000;
 
 #[cfg(feature = "selftest")]
@@ -209,28 +193,19 @@ impl core::error::Error for I8042Error {}
 pub(crate) struct Controller {
     data: Port<u8>,
     control: Port<u8>,
-    /// Whether the bytes this delivers are set 1 rather than set 2.
-    ///
-    /// Read from the keyboard's identity at bring-up, not from the
-    /// configuration byte: a controller that translates while reporting the
-    /// bit clear is a real machine, and the identity is the reply it cannot
-    /// answer falsely (D-178, D-179).
+    /// Whether the bytes this delivers are set 1 rather than set 2. Read from the keyboard's
+    /// identity at bring-up, not from the configuration byte: a controller that translates while
+    /// reporting the bit clear is a real machine, and the identity is the reply it cannot answer
+    /// falsely.
     translated: bool,
 }
 
 impl Controller {
-    /// Claim the controller and walk it into the polled configuration.
-    ///
-    /// The sequence is the standard bring-up with one quirk honoured: some
-    /// controllers reset their configuration during the `0xAA` self-test, so
-    /// the interrupts-off, translation-off byte is written again afterwards.
-    /// Every required control command and configuration write is admitted and
-    /// verified before the sequence advances (D-249).
-    /// Reset supplies the protocol's set 2 default. A refused scanning enable
-    /// is fatal because a keyboard that will not scan is not an input device.
+    /// Claim the controller and walk it into the polled configuration. A refused scanning enable is
+    /// fatal because a keyboard that will not scan is not an input device.
     pub(crate) fn new() -> Result<Self, I8042Error> {
-        // Both or neither: a claim is permanent, so a stranded `DATA` would
-        // mean no keyboard controller for the rest of the boot (D-138).
+        // Both or neither: a claim is permanent, so a stranded `DATA` would mean no keyboard
+        // controller for the rest of the boot.
         let (data, control) = port::i8042().ok_or(I8042Error::PortsUnavailable)?;
         let mut controller = Self {
             data,
@@ -270,8 +245,8 @@ impl Controller {
         if !controller.reset_keyboard() {
             return Err(I8042Error::KeyboardMissing);
         }
-        // Asked before scanning starts, or the reply would interleave with
-        // key data; a silent controller is taken at the config byte's word (D-179).
+        // Asked before scanning starts, or the reply would interleave with key data; a silent
+        // controller is taken at the config byte's word.
         controller.translated = controller.identity() == Some(TRANSLATED_MF2);
         if !controller.device_command(device::ENABLE_SCANNING) {
             return Err(I8042Error::CommandRefused);
@@ -279,14 +254,10 @@ impl Controller {
         Ok(controller)
     }
 
-    /// The next byte from the keyboard, or `None` when the buffer is empty.
-    ///
-    /// Bytes flagged as coming from the disabled second port are discarded —
-    /// the port is off, but a defensive discard costs one branch. The
-    /// discard is bounded like every wait here, because callers hold a lock
-    /// with interrupts excluded: a controller that dies into a floating bus
-    /// reads as endlessly full *and* from the second port, and an unbounded
-    /// discard would wedge the machine silently.
+    /// The next byte from the keyboard, or `None` when the buffer is empty. The discard is bounded
+    /// like every wait here, because callers hold a lock with interrupts excluded: a controller
+    /// that dies into a floating bus reads as endlessly full *and* from the second port, and an
+    /// unbounded discard would wedge the machine silently.
     pub(crate) fn poll_byte(&mut self) -> Option<u8> {
         for _ in 0..FLUSH_LIMIT {
             let status = Port::read(&mut self.control);
@@ -301,13 +272,9 @@ impl Controller {
         None
     }
 
-    /// Have the controller raise IRQ 1 when the keyboard has a byte for us.
-    ///
-    /// Left off by [`new`](Self::new) on purpose (D-37): a line nothing routes
-    /// is a line that would fire into a vector with no handler. It is turned on
-    /// only once the I/O APIC has somewhere to send it, and the change is read
-    /// back rather than assumed — some controllers quietly ignore a
-    /// configuration write.
+    /// Have the controller raise IRQ 1 when the keyboard has a byte for us. Left off by
+    /// [`new`](Self::new) on purpose: a line nothing routes is a line that would fire into a vector
+    /// with no handler.
     pub(crate) fn enable_interrupt(&mut self) -> Result<(), InterruptEnableError> {
         if !Self::flush(self) {
             return Err(InterruptEnableError::Unavailable);
@@ -377,21 +344,14 @@ impl Controller {
     }
 
     /// Whether the bytes this controller delivers are set 1.
-    ///
-    /// See the field: the identity is the arbiter, not the configuration byte.
     pub(crate) const fn is_translated(&self) -> bool {
         self.translated
     }
 
-    /// The two bytes the keyboard identifies itself with.
-    ///
-    /// The discriminator this kernel could not otherwise reach without a
-    /// human at the machine: an MF2 keyboard answers `0xAB 0x83`, and the
-    /// same keyboard behind a translating controller answers `0xAB 0x41`,
-    /// because translation rewrites the reply as it rewrites everything else.
-    /// So the pair says whether the bytes the decoder is about to read are the
-    /// set it decodes — a question the configuration byte answers only if the
-    /// controller reports it honestly (D-178).
+    /// The two bytes the keyboard identifies itself with. The discriminator this kernel could not
+    /// otherwise reach without a human at the machine: an MF2 keyboard answers `0xAB 0x83`, and the
+    /// same keyboard behind a translating controller answers `0xAB 0x41`, because translation
+    /// rewrites the reply as it rewrites everything else.
     pub(crate) fn identity(&mut self) -> Option<(u8, u8)> {
         if !Self::flush(self) {
             return None;
@@ -404,12 +364,10 @@ impl Controller {
         Some((first, second))
     }
 
-    /// Turn the controller's translation on or off, and report what stuck.
-    ///
-    /// The self-test's only way to reach the set 1 path on a machine where the
-    /// expected key is known: QEMU honours this bit, so turning it on
-    /// reproduces what `VMware` does unasked, with an injected keystroke whose
-    /// identity the harness chose (D-179).
+    /// Turn the controller's translation on or off, and report what stuck. The self-test's only way
+    /// to reach the set 1 path on a machine where the expected key is known: QEMU honours this bit,
+    /// so turning it on reproduces what `VMware` does unasked, with an injected keystroke whose
+    /// identity the harness chose.
     #[cfg(feature = "selftest")]
     pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {
         if !Self::flush(self) {
@@ -518,11 +476,6 @@ impl Controller {
         (result, consumed)
     }
 
-    /// Reset the keyboard and wait for its basic assurance test.
-    ///
-    /// The protocol answers with an acknowledgement and then the test result,
-    /// but emulators disagree about the acknowledgement, so either shape is
-    /// accepted: what matters is that `0xAA` arrives.
     fn reset_keyboard(&mut self) -> bool {
         if !self.write_data(device::RESET) {
             return false;
@@ -534,13 +487,10 @@ impl Controller {
         }
     }
 
-    /// Send one byte to the keyboard and require its acknowledgement.
     fn device_command(&mut self, byte: u8) -> bool {
         self.write_data(byte) && self.read_reply(RESPONSE_ATTEMPTS) == Some(reply::ACK)
     }
 
-    /// Send one command to the controller itself. Controller commands are
-    /// not acknowledged; ones with a reply go through `controller_query`.
     fn controller_command(&mut self, command: u8) -> bool {
         #[cfg(feature = "selftest")]
         if REFUSE_CONTROL_COMMAND.swap(false, Ordering::Relaxed) {
@@ -569,7 +519,6 @@ impl Controller {
         self.read_reply(RESPONSE_ATTEMPTS).ok_or(no_reply)
     }
 
-    /// Send one controller command and read its reply byte.
     fn controller_query(&mut self, command: u8) -> Option<u8> {
         if !self.controller_command(command) {
             return None;
@@ -603,12 +552,8 @@ impl Controller {
             .ok_or(I8042Error::ConfigurationRefused)
     }
 
-    /// Discard whatever is sitting in the output buffer.
-    ///
-    /// False if it never drains, which means nothing real is on the other
-    /// end of these ports. The status read after the last discard is required:
-    /// that byte may be the one that empties the buffer, and the check at the
-    /// top of the next iteration never runs once the bound is spent.
+    /// Discard whatever is sitting in the output buffer. False if it never drains, which means
+    /// nothing real is on the other end of these ports.
     fn flush(&mut self) -> bool {
         #[cfg(feature = "selftest")]
         if REFUSE_FLUSH.swap(false, Ordering::Relaxed) {

@@ -1,7 +1,6 @@
 //! Kernel logging.
 //!
-//! Records go to the serial console only. The framebuffer carries user-facing
-//! output, so diagnostics never scroll the banner away.
+//! Records go to the serial console only, so diagnostics never scroll the framebuffer.
 
 use core::fmt::{self, Write};
 
@@ -18,7 +17,6 @@ pub(crate) enum Level {
 }
 
 impl Level {
-    /// Fixed-width tag, so records line up in the serial log.
     const fn tag(self) -> &'static str {
         match self {
             #[cfg(feature = "selftest")]
@@ -30,7 +28,6 @@ impl Level {
     }
 }
 
-/// Records less severe than this are discarded at the call site.
 const MAX_LEVEL: Level = Level::Info;
 
 /// Emit one record. Use the [`error!`](crate::error), [`warn!`](crate::warn),

@@ -1,8 +1,5 @@
 //! Deterministic FAT32 corpus shared by machine and host checks.
-//!
-//! The exact bytes embedded in the NVMe namespace are read independently by
-//! `fatfs` and `libs/fat32`; the pinned foreign corpus separately checks the
-//! format assumptions (D-170, D-207).
+//! `fatfs` and `libs/fat32` read the same bytes; a foreign corpus checks the format assumptions.
 
 #[cfg(test)]
 use std::io::Cursor;
@@ -14,32 +11,21 @@ use fatfs::{FatType, FileSystem, FsOptions};
 use super::esp;
 
 /// Bytes of the volume.
-///
-/// FAT32 needs at least 65525 clusters to be FAT32 at all, so a volume much
-/// smaller than this is silently formatted as FAT16 — which this reader
-/// refuses, correctly, and which would look like a bug in the reader.
+/// Below 65525 clusters `fatfs` silently formats FAT16, which this reader refuses.
 pub const VOLUME_BYTES: usize = 64 * 1024 * 1024;
 
 /// A file small enough to sit in one cluster.
 pub const SMALL_NAME: &str = "HELLO.TXT";
 
-/// A file long enough to need a chain of them.
-///
-/// Forty kilobytes: more than one cluster at every cluster size `fatfs` will
-/// choose here, so reading it walks the table rather than staying in the first
-/// cluster. A file that fitted would leave the chain walk unexercised.
+/// A file long enough to need a cluster chain.
+/// Forty kilobytes exceeds one cluster at every size `fatfs` chooses here.
 pub const LARGE_NAME: &str = "BIG.BIN";
 
 /// Bytes of [`LARGE_NAME`].
 pub const LARGE_BYTES: usize = 40 * 1024;
 
-/// A file that is created and then deleted.
-///
-/// It leaves a slot beginning `0xE5` **before** live entries, which is the
-/// only way to reach the difference between "deleted" and "the directory ends
-/// here" on a real volume. A reader that confused the two would lose every
-/// file after it, and against a corpus with no deletions nothing would say so
-/// (D-170).
+/// A file created and then deleted, leaving `0xE5` before live entries.
+/// That is the only way to tell a deleted slot from the end of the directory.
 pub const DELETED_NAME: &str = "GONE.TXT";
 
 /// A directory, so the walk has somewhere to descend.
@@ -54,12 +40,8 @@ pub const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
 /// What [`NESTED_NAME`] holds.
 pub const NESTED_CONTENT: &[u8] = b"one directory down\n";
 
-/// Byte `index` of [`LARGE_NAME`].
-///
-/// **Position-dependent on purpose.** A file of one repeated byte cannot tell a
-/// read at the right offset from a read at the wrong one, and a reader that
-/// walked the chain incorrectly would return plausible bytes from the wrong
-/// cluster and pass. This is D-155's rule applied to a corpus (D-170).
+/// Byte `index` of [`LARGE_NAME`], different at every position.
+/// A repeated byte cannot tell a right offset or a right cluster from a wrong one.
 pub const fn large_byte(index: usize) -> u8 {
     // A cheap mixing of the index so neighbouring bytes differ and so do
     // bytes a cluster apart.
@@ -67,11 +49,7 @@ pub const fn large_byte(index: usize) -> u8 {
 }
 
 /// Build the volume.
-///
-/// # Errors
-///
-/// If `fatfs` refuses to format or to write, which on an in-memory volume of
-/// this size means a version change rather than an environment problem.
+/// A refusal here is a `fatfs` version change, not an environment problem.
 #[cfg(test)]
 fn build() -> Result<Vec<u8>> {
     let mut bytes = vec![0u8; VOLUME_BYTES];
@@ -131,11 +109,7 @@ mod tests {
     }
 
     /// The corpus is the same bytes every time it is built.
-    ///
-    /// What `012` §1 measured and what the whole arrangement rests on: with
-    /// chrono off, `fatfs` pins the volume id and the timestamps, so a volume
-    /// built now and one built in a second are identical. A corpus that
-    /// changed under the checks would make every disagreement below suspect.
+    /// With chrono off, `fatfs` pins the volume id and the timestamps.
     #[test]
     fn the_corpus_is_the_same_bytes_every_time() {
         let first = build().expect("a volume");
@@ -144,11 +118,8 @@ mod tests {
         assert!(first == second, "two builds of the corpus differ");
     }
 
-    /// It really is FAT32, and not FAT16 wearing the name.
-    ///
-    /// Below 65525 clusters `fatfs` formats FAT16 whatever it is asked for,
-    /// and `libs/fat32` refuses that — correctly, and in a way that would look
-    /// like a bug in the reader rather than a volume too small.
+    /// It really is FAT32, not FAT16 wearing the name.
+    /// Below 65525 clusters `fatfs` formats FAT16 whatever it is asked for.
     #[test]
     fn the_corpus_really_is_fat32() {
         let bytes = build().expect("a volume");
@@ -159,17 +130,12 @@ mod tests {
     }
 
     /// `libs/fat32` reads what `fatfs` wrote, byte for byte.
-    ///
-    /// The oracle. Two independent implementations of one format over one
-    /// corpus, and the disagreement is the failure — which is a better
-    /// arrangement than depending on the mature one, because a dependency
-    /// cannot disagree with itself (`012` §1, D-170).
+    /// Two implementations of one format; a dependency cannot disagree with itself.
     #[test]
     fn the_reader_reads_what_the_writer_wrote() {
         let bytes = build().expect("a volume");
         let mut volume = fat32::Volume::mount(Bytes(&bytes), 0).expect("mounting the corpus");
 
-        // The small file, whole.
         let root = volume.bpb().root_cluster();
         let small = volume
             .lookup(root, SMALL_NAME.as_bytes())
@@ -182,7 +148,6 @@ mod tests {
         );
         assert_eq!(read, SMALL_CONTENT);
 
-        // The large one, whole, which walks the chain.
         let large = volume
             .lookup(root, LARGE_NAME.as_bytes())
             .expect("BIG.BIN is there");
@@ -196,7 +161,6 @@ mod tests {
             assert_eq!(*byte, large_byte(index), "byte {index}");
         }
 
-        // And a directory below the root.
         let directory = volume
             .lookup(root, DIRECTORY_NAME.as_bytes())
             .expect("DATA is there");
@@ -213,12 +177,7 @@ mod tests {
     }
 
     /// A read from the middle of a file starts where it was told to.
-    ///
-    /// The property a chain walk breaks silently: reading from offset zero
-    /// works whatever the walk does, because the first cluster is the entry's
-    /// own. Only a read that has to *skip* clusters exercises it, and only a
-    /// file whose bytes differ by position can tell a skip of three from a
-    /// skip of four.
+    /// Offset zero succeeds even if the chain walk is wrong; only a skip can show it.
     #[test]
     fn a_read_from_the_middle_starts_where_it_was_told() {
         let bytes = build().expect("a volume");
@@ -253,10 +212,8 @@ mod tests {
         }
     }
 
-    /// A read stops at the end of the file rather than at the end of a cluster.
-    ///
-    /// The last cluster's tail holds whatever its previous occupant left, and a
-    /// reader bounded by the cluster rather than by the size hands that back.
+    /// A read stops at the end of the file, not at the end of a cluster.
+    /// The last cluster's tail is the previous occupant's data.
     #[test]
     fn a_read_stops_at_the_end_of_the_file() {
         let bytes = build().expect("a volume");
@@ -275,7 +232,6 @@ mod tests {
         );
         assert_eq!(&greedy[..got], SMALL_CONTENT);
 
-        // Past the end is nothing at all, rather than the next file.
         let past = volume
             .read_file(&small, small.size, &mut greedy)
             .expect("readable");
@@ -283,10 +239,7 @@ mod tests {
     }
 
     /// Every file the corpus holds is listed, and nothing else is.
-    ///
-    /// The directory walk seen from the other side: a reader that stopped at
-    /// the first deleted entry, or that returned long-name fragments, would
-    /// produce a different set and every lookup above would still pass.
+    /// Stopping at the first deleted entry would still leave the lookups above green.
     #[test]
     fn the_root_lists_exactly_what_was_written() {
         let bytes = build().expect("a volume");

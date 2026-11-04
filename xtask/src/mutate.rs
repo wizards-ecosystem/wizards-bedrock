@@ -1,12 +1,5 @@
-//! Persistent deliberate defects and the exact checks required to catch them.
-//!
-//! The cheap gate requires every source pattern to occur exactly once. The
-//! complete task applies each mutation in a clean, commit-pinned, journaled
-//! workspace, proves the witness class green first, and then requires the
-//! mutation's exact check, terminal marker or timeout, boot marker, or host-test
-//! verdict to go red. Another failure is inconclusive, and a selected-zero-tests
-//! host command proves nothing. Machine entries stay outside CI because each
-//! costs a boot.
+//! Persistent deliberate defects and the checks that must catch them.
+//! Each source pattern must occur once; machine entries stay outside CI because each costs a boot.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::path::PathBuf;
@@ -21,19 +14,15 @@ use crate::{qemu, qualification, sha256, tasks};
 /// One deliberate defect, and what it is a defect *in*.
 #[derive(Debug, Clone, Copy)]
 pub struct Mutation {
-    /// Permanent identity that documents cite; never renumbered or reused (D-341).
+    /// Permanent identity that documents cite; never renumbered or reused.
     pub id: u16,
     /// Workspace-relative path.
     pub file: &'static str,
     /// The exact text to replace. Must occur exactly once.
     pub find: &'static str,
-    /// What to put there.
+
     pub replace: &'static str,
-    /// The property this removes, in the register a check name is written in.
-    ///
-    /// Human-facing, and deliberately *not* the check's name: only four of
-    /// these are, and the paraphrases read better in a progress line than the
-    /// checks they stand for. [`Mutation::reddens`] carries the name.
+    /// Human-facing property removed, deliberately not the check's name.
     pub breaks: &'static str,
     /// The check this must turn red, or why nothing names it.
     pub reddens: Caught,
@@ -87,12 +76,8 @@ pub const RETIRED_MUTATION_IDS: &[u16] = &[
     2096, 2097, 2098, 2099, 2100, 2104, 2109, 2112, 2115, 2116, 2117, 2120, 2121, 2123, 2124, 2192,
 ];
 
-/// The defects, each of which some check must notice.
-///
-/// Chosen to be *load-bearing rather than merely different*: every one removes
-/// a guard, a bound or a strip that something depends on, and none is a
-/// cosmetic edit that would fail a build instead. A mutation that cannot
-/// compile tests nothing.
+/// Load-bearing defects: each removes a guard, bound, or strip a check depends on.
+/// A mutation that cannot compile tests nothing.
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1,
@@ -2025,7 +2010,7 @@ pub const MUTATIONS: &[Mutation] = &[
                   reaches a verdict at all",
         },
     },
-    // Trap-context logging is caught by ThreadLock's fail-stop (D-122).
+    // Trap-context logging is caught by ThreadLock's fail-stop.
     Mutation {
         id: 175,
         file: "kernel/src/user.rs",
@@ -2038,7 +2023,7 @@ pub const MUTATIONS: &[Mutation] = &[
                   defect being a defect",
         },
     },
-    // A ring-3 copy-window target must retire rather than enter kernel recovery (D-126).
+    // A ring-3 copy-window target must retire rather than enter kernel recovery.
     Mutation {
         id: 176,
         file: "wost/src/arch/x86_64/usercopy.rs",
@@ -2170,7 +2155,7 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "contracts::known_fallible_results_are_not_discarded",
         },
     },
-    // Retained Phase 0-5 audit checks (D-135 to D-145).
+
     Mutation {
         id: 188,
         file: "kernel/src/console.rs",
@@ -2287,7 +2272,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     // Charging one slot too few leaves the final insertion no prepaid room,
-    // the boundary that would allocate or panic in trap context (D-182).
+    // the boundary that would allocate or panic in trap context.
     Mutation {
         id: 197,
         file: "kernel/src/handle.rs",
@@ -2468,7 +2453,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     // Q35 leaves a bus-zero-only walk looking plausible, so the proof counts
-    // buses rather than functions (D-168).
+    // buses rather than functions.
     Mutation {
         id: 212,
         file: "kernel/src/pci.rs",
@@ -2494,8 +2479,7 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "tests::function_claims_validate_headers_and_aliases_before_commit",
         },
     },
-    // The ports a device decodes left free for anyone to claim, which is the
-    // arrangement D-77 said proves the wrong thing.
+    // The ports a device decodes left free for anyone to claim, which proves the wrong thing.
     Mutation {
         id: 214,
         file: "kernel/src/pci.rs",
@@ -3098,7 +3082,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("invalid nvme namespace stops before io queues"),
     },
     // A disk of identical blocks hides a dropped LBA, so the namespace gives
-    // every block a distinct signature (D-169).
+    // every block a distinct signature.
     Mutation {
         id: 258,
         file: "libs/nvme/src/lib.rs",
@@ -3150,7 +3134,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the controller's registers are uncacheable"),
     },
     // A missing cluster bias reads valid sectors belonging to another file,
-    // so the image corpus distinguishes adjacent clusters (D-170).
+    // so the image corpus distinguishes adjacent clusters.
     Mutation {
         id: 262,
         file: "libs/fat32/src/lib.rs",
@@ -3197,7 +3181,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the volume mounts and says what a fat32 volume says"),
     },
     // Treating `..` as a name lets a caller ask the resolver to escape its
-    // starting handle, contrary to `012` section 5 (D-171).
+    // starting handle, contrary to `012` section 5.
     Mutation {
         id: 266,
         file: "libs/path-walk/src/lib.rs",
@@ -3234,7 +3218,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     // Globally unique fixture names hide a missing parent comparison, so two
-    // fixture directories deliberately contain `MOTD` (D-172).
+    // fixture directories deliberately contain `MOTD`.
     Mutation {
         id: 269,
         file: "kernel/src/tmpfs.rs",
@@ -3275,7 +3259,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a second backend answers the same three operations"),
     },
     // A list-only directory handle must not become traversal authority
-    // (D-173).
+    // .
     Mutation {
         id: 272,
         file: "kernel/src/queue.rs",
@@ -3387,7 +3371,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a read is a submission with its own offset"),
     },
     // The buffer bound moved after the read. The output is unchanged, so
-    // only the driver's command counter can tell the kernels apart (D-173).
+    // only the driver's command counter can tell the kernels apart.
     Mutation {
         id: 279,
         file: "kernel/src/queue.rs",
@@ -3398,7 +3382,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a ring operation cannot reach past its rights or its pages"),
     },
     // A rights word read as its low half, so undefined bits are dropped
-    // rather than refused (D-174).
+    // rather than refused.
     Mutation {
         id: 280,
         file: "kernel/src/queue.rs",
@@ -3432,8 +3416,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a token that does not fit names no operation",
         reddens: Caught::Check("a word that does not fit is refused rather than truncated"),
     },
-    // D-133's exemption, put back. The waiter still runs on the slice already
-    // armed, so only the counter distinguishes this from a working wake.
+    // The waiter still runs on the slice already armed, so only the counter distinguishes this from a working wake.
     Mutation {
         id: 283,
         file: "kernel/src/thread.rs",
@@ -3447,7 +3430,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a syscall wake arms the timer for what it woke"),
     },
     // A discriminant and its `match` arm drifting apart, which is how a
-    // diagnosis comes to name the wrong guard (D-176).
+    // diagnosis comes to name the wrong guard.
     Mutation {
         id: 284,
         file: "kernel/src/time.rs",
@@ -3457,7 +3440,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("every refusal the clock can record reads back as itself"),
     },
     // A run offered from a region that is described but is not memory, which
-    // is the hole the four probes fell into on VMware (D-177).
+    // is the hole the four probes fell into on VMware.
     Mutation {
         id: 285,
         file: "libs/memory-map/src/lib.rs",
@@ -3480,7 +3463,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a program duplicates its bootstrap handle"),
     },
     // The identity read as a translating controller would rewrite it, which is
-    // the state the check exists to catch (D-178).
+    // the state the check exists to catch.
     Mutation {
         id: 287,
         file: "kernel/src/selftest.rs",
@@ -3641,8 +3624,8 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "contracts::no_item_mem_exposes_names_the_running_address_space",
         },
     },
-    // Forget every ownership entry after D-117's old fixed ceiling. The table
-    // frames remain live and reachable, but reclamation silently loses them.
+    // Forget every ownership entry past the old fixed ceiling.
+    // The table frames stay live, but reclamation silently loses them.
     Mutation {
         id: 302,
         file: "wost/src/arch/x86_64/paging.rs",
@@ -3837,7 +3820,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "deliberately forgotten ownership is distinct from ordinary contention",
         reddens: Caught::Check("forgotten lock ownership is distinct from contention"),
     },
-    // D-390 makes PCI configuration mandatory before memory initialization,
+    // PCI configuration is mandatory before memory initialization,
     // so removing the unconditional survey is the reachable behavior change.
     Mutation {
         id: 324,
@@ -6269,7 +6252,7 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "vmware::tests::selftest_and_shipped_vms_do_not_share_machine_state",
         },
     },
-    // The property tier's own falsifiability (D-242): the defect must
+    // The property tier's own falsifiability: the defect must
     // survive every generated case, not one a unit test names.
     Mutation {
         id: 549,
@@ -7747,7 +7730,7 @@ pub const MUTATIONS: &[Mutation] = &[
             why: "the request path destructures a running read's state, so a read that begins while its entry stays queued reaches the unreachable arm the ring model proves cannot occur",
         },
     },
-    // The forged head keeps every other empty-ring relation valid (D-396).
+    // The forged head keeps every other empty-ring relation valid.
     Mutation {
         id: 686,
         file: "kernel/src/queue.rs",
@@ -10272,8 +10255,8 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     Mutation {
         id: 905,
         file: "xtask/src/supply_chain.rs",
-        // D-344's opened-file primitive made deleting only the earlier path
-        // check equivalent. Remove the complete pre-read refusal (D-398).
+        // Deleting only the earlier path check is now equivalent.
+        // Remove the complete pre-read refusal.
         find: "    crate::mutation_workspace::require_direct_file(parent, &path, label)?;\n    let mut file = crate::mutation_workspace::open_real_file(&path, label)?;",
         replace: "    let mut file = std::fs::File::open(&path)\n        .with_context(|| format!(\"opening {}\", path.display()))?;",
         breaks: "supply-chain text follows a redirected file before opening it",
@@ -26961,13 +26944,8 @@ fn prove_green_baselines(paths: &Paths, mutations: &[Mutation]) -> Result<()> {
     Ok(())
 }
 
-/// Apply each mutation, run its exact machine or host witness, and require red.
-///
-/// # Errors
-///
-/// If a pattern no longer matches, if the tree cannot be restored, or if any
-/// mutation **survives** — which is the interesting failure and the reason
-/// this exists.
+/// Apply each mutation, run its exact witness, and require that witness to go red.
+/// A pattern mismatch, a restore failure, or a mutation that survives is an error.
 pub fn run(paths: &Paths) -> Result<()> {
     let registry = registry_fingerprint();
     let qualification_attempt = qualification::begin_mutation(paths, &registry, MUTATIONS.len())?;
@@ -27369,9 +27347,8 @@ const HOST_TEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 static HOST_TEST_TEMPORARIES: AtomicU64 = AtomicU64::new(0);
 
-/// A caught mutation can strand fixed-name scratch below the temporary
-/// directory, which would redden every later witness that reserves it, so each
-/// host witness gets a new empty temporary directory of its own.
+/// Each host witness gets its own empty temporary directory.
+/// Fixed-name scratch left by a caught mutation would redden the next witness.
 fn fresh_host_test_temporary(paths: &Paths) -> Result<PathBuf> {
     let target = paths.target_dir();
     let parent = target.join("host-temp");
@@ -27692,12 +27669,7 @@ mod tests {
     }
 
     /// Every mutation still names something that exists, exactly once.
-    ///
-    /// The cheap tier, and the one that matters more: a pattern that has
-    /// stopped matching is a mutation that silently stopped testing anything —
-    /// which is the failure mode this whole file exists to catch, one level up.
-    /// Milliseconds, in `cargo test`, so it is in the gate where the boot
-    /// itself cannot be.
+    /// A pattern that stopped matching is a check that silently stopped testing anything.
     #[test]
     fn every_mutation_still_applies() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -27928,9 +27900,7 @@ mod tests {
     }
 
     /// Every mutation says what catching it looks like.
-    ///
-    /// A generic panic would be the way to credit an unrelated crash, and a
-    /// panic with no reason would be the way to dodge naming a check.
+    /// A generic panic would credit an unrelated crash.
     #[test]
     fn a_panicking_mutation_names_an_exact_marker_and_why_it_is_terminal() {
         for mutation in MUTATIONS {
@@ -28154,9 +28124,7 @@ mod tests {
     }
 
     /// No two mutations break the same property.
-    ///
-    /// A duplicate is a witness run spent twice on one question; machine
-    /// entries make that cost a complete boot.
+    /// A duplicate spends a witness, and for a machine entry a whole boot, twice.
     #[test]
     fn no_two_mutations_name_the_same_property() {
         for (index, mutation) in MUTATIONS.iter().enumerate() {
@@ -28167,7 +28135,7 @@ mod tests {
     }
 
     /// Documents cite identities, so an identity may neither repeat nor
-    /// return after its mutation is deleted (D-341).
+    /// return after its mutation is deleted.
     #[test]
     fn every_mutation_identity_is_permanent_and_accounted_for() {
         let mut seen = BTreeMap::new();

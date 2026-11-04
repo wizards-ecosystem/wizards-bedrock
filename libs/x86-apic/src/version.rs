@@ -1,9 +1,6 @@
 //! The local APIC version register.
 
 /// Lowest version number an APIC integrated into the processor reports.
-///
-/// Below it is the discrete 82489DX of the 486 era, which predates most of what
-/// the rest of this crate encodes.
 const FIRST_INTEGRATED: u8 = 0x10;
 
 /// First bit of the maximum local-vector-table entry number.
@@ -29,9 +26,6 @@ impl Version {
     }
 
     /// Highest local-vector-table entry number this APIC implements.
-    ///
-    /// The architectural value is an index rather than a count, so five means
-    /// the controller implements entries zero through five.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the field occupies one byte of the register"
@@ -41,10 +35,6 @@ impl Version {
     }
 
     /// Whether this APIC is part of the processor rather than a separate chip.
-    ///
-    /// A reading of zero is the other useful answer: it means nothing answered
-    /// the read, which is what an unmapped or misdirected register page looks
-    /// like from here.
     pub const fn is_integrated(self) -> bool {
         self.number() >= FIRST_INTEGRATED
     }
@@ -89,9 +79,6 @@ mod tests {
     }
 
     /// The boundary, both sides.
-    ///
-    /// Common values 0x14, 0x0F and 0 admit any threshold in 0x10..=0x14, so
-    /// both sides explicitly anchor the architectural boundary (D-124).
     #[test]
     fn the_integrated_threshold_is_sixteen() {
         assert_eq!(FIRST_INTEGRATED, 0x10);

@@ -1,12 +1,6 @@
-//! Boot-time self-checks.
+//! Boot-time self-checks on a `selftest` kernel.
 //!
-//! Hardware-dependent checks run on a fully booted `selftest` kernel and report
-//! through [`crate::arch::current::debug_exit`]. Pure logic belongs in a host
-//! `libs/` test instead. Boot assertions are not repeated because a panic is a
-//! missing verdict, not a red check.
-//!
-//! Fixture code below uses ABI-width casts and long procedures on purpose.
-//! The expects name that; they are not a license for the shipped graph.
+//! Pure logic belongs in a host `libs/` test. A panic is a missing verdict, not a red check.
 
 #![expect(
     clippy::cast_possible_truncation,
@@ -205,7 +199,6 @@ fn allocation_is_zeroed() -> bool {
 
 fn a_run_is_contiguous_and_aligned() -> bool {
     const FRAMES: usize = 8;
-    /// Distinct per frame, so a page from somewhere else reads as the wrong one.
     const MARK: u8 = 0xC7;
 
     let before = mm::free_frames();
@@ -279,8 +272,8 @@ fn the_image_obeys_write_xor_execute() -> bool {
     ]
     .into_iter()
     .all(|(section, writable, executable)| {
-        // Offsets from the base, never a sum of two higher-half addresses:
-        // those are within a hair of `u64::MAX` and adding a pair overflows.
+        // Offsets from the base, never a sum of two higher-half addresses: those are within a hair
+        // of `u64::MAX` and adding a pair overflows.
         let len = section.mapped_len();
         let middle = section.start + ((len / 2) & !4095);
         [section.start, middle, section.start + len - 4096]
@@ -333,8 +326,8 @@ fn the_direct_map_is_not_executable() -> bool {
     let Some(frame) = mm::allocate() else {
         return false;
     };
-    // Any frame the allocator owns is inside a region the direct map covers,
-    // so its direct-map address is a fair sample of the whole mapping.
+    // Any frame the allocator owns is inside a region the direct map covers, so its direct-map
+    // address is a fair sample of the whole mapping.
     let Some(address) = mm::direct_map().and_then(|map| map.virtual_address(frame.address()))
     else {
         return false;
@@ -366,8 +359,8 @@ fn firmware_reads_are_bounded() -> bool {
         pick(|region| region.kind.is_allocatable()),
         pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
         pick(|region| region.kind.is_firmware_table()),
-        // Inside the address space, so only the map can refuse it — an address
-        // at the top would be caught by an overflow guard instead.
+        // Inside the address space, so only the map can refuse it — an address at the top would be
+        // caught by an overflow guard instead.
         map.regions()
             .map(|region| region.base + region.len)
             .max()
@@ -428,8 +421,7 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
         return false;
     };
 
-    // `OWNED` is expected because `map_owned` writes it: the entry is where
-    // provenance lives (D-88).
+    // `OWNED` is expected because `map_owned` writes it: the entry is where provenance lives.
     let expected = wanted.union(Flags::PRESENT).union(Flags::OWNED);
     let translated = paging::translate(probe) == Some((physical, expected));
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
@@ -462,11 +454,9 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     }
 
     let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
-    // `>=`: a program retiring elsewhere frees a slot too, and that does not
-    // falsify this thread's slot coming back (D-117).
     let settled = runs_until(200, || thread::free_slots() >= free_before);
-    // And nothing is left registered, so a later wake cannot name a thread
-    // that is no longer waiting here.
+    // And nothing is left registered, so a later wake cannot name a thread that is no longer
+    // waiting here.
     came_back && settled && REREAD_QUEUE.is_idle()
 }
 
@@ -496,7 +486,6 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
 }
 
 fn a_program_cannot_bring_smap_down_with_it() -> bool {
-    /// `EFLAGS.AC`.
     const AC: u64 = 1 << 18;
 
     let call = trap::last_syscall();
@@ -523,14 +512,11 @@ fn a_faulting_program_dies_alone() -> bool {
     }
     let fault = trap::last_user_fault();
 
-    // This process's own fault: its slot, and the FAULT argument (1) it left
-    // in `rax`, which survives the dispatch to the `ud2` (D-327).
+    // This process's own fault: its slot, and the FAULT argument (1) it left in `rax`, which
+    // survives the dispatch to the `ud2`.
     let this_child = fault.slot == spawned.slot && fault.rax == 1;
-    // From ring 3, by the CPU's own account.
     let from_user = fault.code_selector & 0b11 == 3;
-    // The fault the program chose, and no other.
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
-    // Its stack pointer is in user memory, not the kernel's.
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     // The exact incarnation reached its last rites, not a global tally.
     let retired = last_rites_for(&spawned, 2_000).is_some();
@@ -557,8 +543,6 @@ fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
         && kind == trap::InvalidUserReturnKind::StackPointer;
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
-    // A refusal is process-local: the timer keeps arriving and a clean child
-    // can still cross the same gate, return through the same tail and exit.
     let calls = trap::last_syscall();
     let Ok(successor) = user::run_for_bootstrap() else {
         return false;
@@ -619,27 +603,22 @@ fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
-    // This process's own fault: its slot, and the window address it jumped to,
-    // still in `rax` when the fetch faulted (D-327).
     let this_child = fault.slot == spawned.slot && fault.rax == start;
     // A page fault on the copy window, the case the arm must refuse.
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
     // From ring 3, which is what makes this the case the arm must refuse.
     let from_user = fault.code_selector & 0b11 == 3;
-    // The exact incarnation reached its last rites, rather than being resumed
-    // at the fixup.
+    // The exact incarnation reached its last rites, rather than being resumed at the fixup.
     let retired = last_rites_for(&spawned, 2_000).is_some();
-    // The counter did not move: nothing was recovered.
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
-    // And the window is a real range: an empty `fault_window` would make
-    // the check pass with the arm deleted.
+    // And the window is a real range: an empty `fault_window` would make the check pass with the
+    // arm deleted.
     let real_window = start < end;
 
     this_child && page_fault && from_user && retired && not_recovered && real_window
 }
 
 fn two_spaces_map_one_address_to_different_memory() -> bool {
-    /// A user address neither space has anything else at.
     const SHARED: u64 = user::CODE + 0x10_0000;
 
     if !runs_until(2000, || !user::has_zombies()) {
@@ -714,19 +693,16 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
 }
 
 fn every_enabled_state_component_survives_a_switch() -> bool {
-    /// What this thread puts there.
     const MINE: xstate::Probe = xstate::Probe {
         x87: 0x1234_5678_7654_3210,
         xmm: 0xA5A5_1234_5678_A5A5,
         ymm: 0xC3C3_0F0F_F0F0_3C3C,
     };
     if !xstate::is_enabled() {
-        // The hardware state is coherent; user launch separately refuses it.
         return xstate::bytes() == 0 && xstate::extended_control() == 0;
     }
 
-    // The write and read agree before anything else runs. Reading pops x87,
-    // so install the complete probe again for the actual switch.
+    // The write and read agree before anything else runs.
     if !xstate::write_probe(MINE)
         || xstate::read_probe() != Some(MINE)
         || !xstate::write_probe(MINE)
@@ -746,17 +722,15 @@ fn every_enabled_state_component_survives_a_switch() -> bool {
     let kept = xstate::read_probe() == Some(MINE);
     let intruded = EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1;
 
-    // Read live `XCR0` instead of restating `init`'s precondition (D-115).
+    // Read live `XCR0` instead of restating `init`'s precondition.
     let mask = xstate::extended_control();
     let masked = mask & 0b111 == 0b111 && xstate::bytes() <= 1024;
 
     kept && intruded && masked
 }
 
-/// Set by the intruding thread once it has read its restored state.
 static EXTENDED_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 
-/// Whether the intruding thread read back all three of its own values.
 static EXTENDED_INTRUDER_SAW_OWN: AtomicUsize = AtomicUsize::new(0);
 
 fn clobber_extended_state() {
@@ -776,7 +750,6 @@ fn clobber_extended_state() {
 }
 
 fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
-    /// A user address nothing else uses.
     const PROBE: u64 = user::STACK + 0x40_0000;
 
     in_reclaimed_space(AddressSpace::for_user, |space| {
@@ -950,11 +923,8 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     let Some(original) = user::image() else {
         return false;
     };
-    /// Offset of the first program header's flags, from the ELF64 layout.
     const FLAGS: usize = elf64::HEADER_BYTES + 4;
-    /// The image entry point in the ELF64 header.
     const ENTRY: usize = 24;
-    /// Its `p_offset`, `p_filesz` and `p_vaddr`.
     const OFFSET: usize = elf64::HEADER_BYTES + 8;
     const VADDR: usize = elf64::HEADER_BYTES + 16;
     const FILE_SIZE: usize = elf64::HEADER_BYTES + 32;
@@ -992,7 +962,6 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         (result, cleaned, refused_before_mapping)
     };
 
-    // Writable and executable at once.
     let mut write_execute = original.to_vec();
     write_execute[FLAGS..FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
     let wx_refused = matches!(
@@ -1000,17 +969,13 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::WriteExecute(_))
     );
 
-    // Moving only `p_offset` isolates the contents bound from the independent
-    // file-size-versus-memory-size refusal (D-105).
     let overrun = doctor(OFFSET, original.len() as u64);
     let overrun_refused = matches!(load(&overrun, 0).0, Err(user::LoadError::Truncated(_)));
 
-    // More file than memory to put it in, and only that.
     let mut oversized = doctor(FILE_SIZE, 8);
     oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
     let oversized_refused = matches!(load(&oversized, 0).0, Err(user::LoadError::Malformed(_)));
 
-    // Placed in the kernel's half.
     let mut intruding = doctor(VADDR, 0xffff_8000_0000_0000);
     intruding[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let intruding_refused = matches!(
@@ -1018,7 +983,7 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::NotUserMemory(_))
     );
 
-    // Code there could trap with a non-canonical return address (D-348).
+    // Code there could trap with a non-canonical return address.
     let mut topmost = doctor(VADDR, x86_paging::USER_MAPPING_END);
     topmost[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let (topmost_result, topmost_cleaned, topmost_preflight) = load(&topmost, 0);
@@ -1026,8 +991,8 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         && topmost_cleaned
         && topmost_preflight;
 
-    // ELF congruence is still valid, but this loader deliberately places only
-    // whole-page segments and refuses that narrower contract before mapping.
+    // ELF congruence is still valid, but this loader deliberately places only whole-page segments
+    // and refuses that narrower contract before mapping.
     let mut unaligned = doctor(VADDR, field(VADDR) + 1);
     unaligned[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let (unaligned_result, unaligned_cleaned, unaligned_preflight) = load(&unaligned, 0);
@@ -1052,20 +1017,18 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     ) && congruence_cleaned
         && congruence_preflight;
 
-    // And something that is not an ELF at all.
     let not_an_elf = [0u8; 64];
     let refused_outright = matches!(load(&not_an_elf, 0).0, Err(user::LoadError::NotAnElf(_)));
 
-    // Validated before the first placement: zero is a valid user address but
-    // outside the executable segment, so a late refusal is observable.
+    // Validated before the first placement: zero is a valid user address but outside the executable
+    // segment, so a late refusal is observable.
     let invalid_entry = doctor(ENTRY, 0);
     let (entry_result, entry_cleaned, entry_preflight) = load(&invalid_entry, 0);
     let entry_refused = matches!(entry_result, Err(user::LoadError::InvalidEntry(0)))
         && entry_cleaned
         && entry_preflight;
 
-    // Each success carries its own immutable placement record. Loading again
-    // cannot overwrite the first call's cleanup evidence.
+    // Loading again cannot overwrite the first call's cleanup evidence.
     let (first, first_cleaned, _) = load(original, 0);
     let (second, second_cleaned, _) = load(original, 0x1_0000);
     let independent = match (first, second) {
@@ -1114,21 +1077,18 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     }
     let second = trap::last_syscall();
 
-    // Ring 3 again, through the same one gate.
     let from_user = second.code_selector & 0b11 == 3;
     let through_the_gate = second.vector as u8 == vector::SYSCALL.get();
     // At its own user addresses, not the first program's.
     let elsewhere =
         second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
-    // Slot identity is the witness because sequential threads may correctly
-    // reuse a stack (D-117).
+    // Slot identity is the witness because sequential threads may correctly reuse a stack.
     let landed_on_its_own = thread::layout()
         .and_then(|layout| layout.slot(second.slot.checked_sub(1)?))
         .is_some_and(|slot| {
             second.frame_address > slot.stack_base() && second.frame_address <= slot.stack_top()
         });
-    // Both are kernel stacks, which a shared or stale `RSP0` pointing at user
-    // memory would not be.
+    // Both are kernel stacks, which a shared or stale `RSP0` pointing at user memory would not be.
     let kernel_stacks =
         second.frame_address >= usercopy::USER_END && first_landing >= usercopy::USER_END;
 
@@ -1141,8 +1101,8 @@ fn the_return_to_ring_three_clears_buffers() -> bool {
     if !armed || executed == 0 {
         return false;
     }
-    // Once per crossing, not once at boot: every syscall came through this
-    // branch, so the tally cannot lag the crossings.
+    // Once per crossing, not once at boot: every syscall came through this branch, so the tally
+    // cannot lag the crossings.
     executed >= trap::last_syscall().count as u64
 }
 
@@ -1154,7 +1114,6 @@ fn a_faulting_user_copy_resumes_and_reports() -> bool {
 }
 
 fn boundary_probe() -> Option<(u64, u64)> {
-    /// Well clear of anything a program is loaded at.
     const CODE: u64 = user::CODE + 0x20_0000;
     const STACK: u64 = user::STACK + 0x20_0000;
 
@@ -1174,8 +1133,8 @@ fn boundary_probe() -> Option<(u64, u64)> {
     }
 
     let mut context = context();
-    // Read-only and executable, as a program's text is: the write refusal
-    // below is about the leaf's own permission and needs a page that has it.
+    // Read-only and executable, as a program's text is: the write refusal below is about the leaf's
+    // own permission and needs a page that has it.
     mem::map_user_for_test(&mut context, CODE, code.into(), Flags::NONE)?.ok()?;
     mem::map_user_for_test(
         &mut context,
@@ -1352,8 +1311,7 @@ fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool {
     const OBSERVER: u8 = 0x3c;
     const VICTIM: u8 = 0xc3;
 
-    // The ownership snapshots describe only this fixture. Do not let a timer
-    // hand the CPU to the cleanup worker so it can retire older zombies between
+    // Do not let a timer hand the CPU to the cleanup worker so it can retire older zombies between
     // those snapshots and make correct local reclamation look imbalanced.
     let disabled = interrupt::disable();
     let result = (|| {
@@ -1483,12 +1441,10 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && echoed == written;
 
     let mut scratch = [0u8; 8];
-    // Kernel memory, named as if it were the user's.
     let kernel_refused = matches!(
         usercopy::copy_from_user(boot::sections().text.start, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))
     );
-    // A range that starts inside user space and ends outside it.
     let straddling_refused = matches!(
         usercopy::copy_from_user(usercopy::USER_END - 4, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))
@@ -1498,13 +1454,10 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         usercopy::copy_from_user(u64::MAX - 2, &mut scratch),
         Err(UserCopyError::Wraps(_))
     );
-    // User memory that is not there.
     let hole_refused = matches!(
         usercopy::copy_from_user(0x0000_2000_0000_0000, &mut scratch),
         Err(UserCopyError::Unmapped(_))
     );
-    // And a write to the program's own page, which ring 3 may execute and
-    // neither ring may write.
     let read_only_refused = matches!(
         usercopy::copy_to_user(code, &written),
         Err(UserCopyError::ReadOnly(_))
@@ -1565,7 +1518,6 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     };
     let (_, submissions, completions) = queue.shape();
 
-    // Fill the completion queue by serving as many rounds as it holds.
     let mut posted = 0u32;
     while posted < completions {
         let room = submissions as usize;
@@ -1583,8 +1535,8 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         posted += served as u32;
     }
 
-    // Nothing has been reaped, so nothing more can be admitted: every slot is
-    // either spoken for or already holds a completion.
+    // Nothing has been reaped, so nothing more can be admitted: every slot is either spoken for or
+    // already holds a completion.
     let refuses = queue.reserve_for_test(1) == 0 && queue.is_consistent();
 
     // A strict-prefix claim must not imply that unread completions were consumed.
@@ -1594,12 +1546,10 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     let reaped = queue.reap_up_to(queue.completion_head());
     let followed = head_before == 0 && reaped == partial as usize;
 
-    // Room for exactly what was reaped, and no more.
     let resumes = queue.reserve_for_test(partial as usize) == partial as usize
         && queue.reserve_for_test(1) == 0
         && queue.is_consistent();
 
-    // The user head is an untrusted claim; an out-of-range claim reaps nothing.
     let Some(liar) = queue::Queue::new() else {
         return false;
     };
@@ -1625,17 +1575,13 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
 }
 
 fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
-    /// A user address nothing else uses.
     const AT: u64 = user::STACK + 0x60_0000;
 
     let Some(mut queue) = queue::Queue::new() else {
         return false;
     };
-    // Compare the exported shape, not `Queue::new`'s constructor invariants.
     let (version, submissions, completions) = queue.shape();
 
-    // Not yet decided: that the header page was published to match, which is
-    // the whole ABI a program reads.
     let announced = queue.published_shape() == (version, submissions, completions)
         && version == ring_proto::VERSION;
 
@@ -1648,8 +1594,8 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
             flags.contains(Flags::USER) && flags.contains(Flags::WRITABLE)
         });
 
-        // And cannot give them away. `unmap` reads the owned bit before minting a
-        // `Segment`, and these frames were never the space's to own.
+        // And cannot give them away. `unmap` reads the owned bit before minting a `Segment`, and
+        // these frames were never the space's to own.
         let unowned = matches!(space.unmap(AT, PAGE_SIZE), Err(MapError::NotOwned(AT)));
 
         announced && reachable && unowned
@@ -1670,8 +1616,8 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
         return false;
     };
 
-    // A rights word whose low half is perfectly valid and whose high half is
-    // not. A cast reads it as the low half; `try_from` refuses it whole.
+    // A rights word whose low half is perfectly valid and whose high half is not. A cast reads it
+    // as the low half; `try_from` refuses it whole.
     queue.post_submission_for_test(
         0,
         queue::Submission::about(
@@ -1682,8 +1628,7 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
         ),
     );
 
-    // An operation to cancel, and a token that is not its token because it
-    // does not fit in one.
+    // An operation to cancel, and a token that is not its token because it does not fit in one.
     queue.post_submission_for_test(
         1,
         queue::Submission::simple(queue::Opcode::Timer, 0xDEAD, 3_600_000_000_000),
@@ -1704,7 +1649,6 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     }
     let cancelled = queue.read_completion(1);
 
-    // A file offset past every file this kernel can hold.
     let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
         return false;
     };
@@ -1737,8 +1681,6 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     }
 
     widened.status == queue::STATUS_DENIED
-        // The timer is still in flight: the cancellation named no operation,
-        // which is what a token that does not fit names.
         && cancelled.status == queue::STATUS_NOT_FOUND
         && queue.in_flight() == 1
         // And the read answered "nothing", rather than the file's first bytes.
@@ -1833,8 +1775,8 @@ fn a_completion_carries_a_file_handle() -> bool {
         return false;
     }
 
-    // **Read, and never write.** There is no write path, and a right that
-    // grants nothing is a syscall name in disguise (D-78).
+    // Read, and never write. There is no write path, and a right that grants nothing is a syscall
+    // name in disguise.
     granted == Rights::UNIVERSAL.union(Rights::READ)
         && !granted.contains(Rights::WRITE)
         && !granted.contains(Rights::TRAVERSE)
@@ -1912,7 +1854,6 @@ fn a_read_is_a_submission_with_its_own_offset() -> bool {
     };
     let (table, handle) = file;
 
-    // Two reads, at different offsets, into different parts of the data area.
     for (slot, token, offset, at, length) in [
         (1usize, 0x00A1u32, 0u64, 64u64, 16u32),
         (2, 0x00A2, 8, 128, 16),
@@ -1943,8 +1884,6 @@ fn a_read_is_a_submission_with_its_own_offset() -> bool {
         return false;
     }
 
-    // The bytes are the file's, at the offsets asked for — and the two differ,
-    // which is what a read that ignored the offset could not manage.
     head == SMALL_CONTENT[..16] && later == SMALL_CONTENT[8..24] && head != later
 }
 
@@ -2176,10 +2115,8 @@ fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() -> bool {
         "selftest: awaiting storage-delay keystroke",
         "  PRESS  c   to continue the storage round",
     );
-    // This self-test runs before the permanent fallback starts so the scheduler
-    // checks below retain their tickless baseline. Drain explicitly while the
-    // storage worker is held, proving polling and unrelated IRQ admission can
-    // progress together.
+    // This self-test runs before the permanent fallback starts so the scheduler checks below retain
+    // their tickless baseline.
     let arrived = finish_delayed_read_input(
         || {
             runs_until(input::HUMAN_WAIT_MS, || {
@@ -2296,7 +2233,6 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let Ok(unwalkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::ENUMERATE)) else {
         return false;
     };
-    // And one that can be walked, for the paths that are about the path.
     let object = crate::object::directory(root);
     let Ok(walkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE)) else {
         return false;
@@ -2306,8 +2242,8 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         return false;
     }
 
-    // A file held without READ, so a read of it is a refusal about the right
-    // rather than about the file.
+    // A file held without READ, so a read of it is a refusal about the right rather than about the
+    // file.
     let Some(root_node) = vfs::resolve(root, SMALL_NAME).ok() else {
         return false;
     };
@@ -2318,7 +2254,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let Ok(unreadable) = table.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
-    // Grant `READ` so this case reaches the buffer bound (D-173).
+    // Grant `READ` so this case reaches the buffer bound.
     let object = crate::object::file(file);
     let Ok(readable) = table.insert(object, Rights::UNIVERSAL.union(Rights::READ)) else {
         return false;
@@ -2326,7 +2262,6 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
 
     let before = nvme::command_count_for_test();
     let asked = [
-        // No TRAVERSE.
         (
             0usize,
             0xD1u32,
@@ -2337,9 +2272,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         ),
         // A path that would leave the directory.
         (1, 0xD2, walkable, 256, 2, queue::STATUS_BAD_PATH),
-        // A path buffer outside the data area.
         (2, 0xD3, walkable, 8192, 8, queue::STATUS_BAD_BUFFER),
-        // A path of no length at all.
         (3, 0xD4, walkable, 0, 0, queue::STATUS_BAD_BUFFER),
     ];
     for (slot, token, handle, at, length, _) in asked {
@@ -2365,8 +2298,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         })
     });
 
-    // Device-access counts distinguish preflight refusal from a late error
-    // after I/O (D-173).
+    // Device-access counts distinguish preflight refusal from a late error after I/O.
     queue.post_submission_for_test(
         4,
         queue::Queue::about_at(queue::Opcode::Read, 0xD5, unreadable, 0, 0, 16),
@@ -2375,8 +2307,8 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         5,
         queue::Queue::about_at(queue::Opcode::Read, 0xD6, unreadable, 0, 4090, 16),
     );
-    // The one that reaches the bound: the device must still not be asked, or
-    // the bound is checked with the work already done.
+    // The one that reaches the bound: the device must still not be asked, or the bound is checked
+    // with the work already done.
     queue.post_submission_for_test(
         6,
         queue::Queue::about_at(queue::Opcode::Read, 0xD7, readable, 0, 4090, 16),
@@ -2390,7 +2322,6 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         && queue.read_completion(6).status == queue::STATUS_BAD_BUFFER;
     let untouched = before == after;
 
-    // Nothing was promised and kept: every refusal above gave its slot back.
     refused && served && denied && untouched && table.live() == 4 && table.promised() == 0
 }
 
@@ -2429,7 +2360,6 @@ fn open_the_small_file(
 fn a_second_backend_answers_the_same_three_operations() -> bool {
     let root = vfs::tmp_root();
 
-    // Resolve and read a file at the top.
     let Ok(vfs::Node::File(motd)) = vfs::resolve(root, b"MOTD") else {
         return false;
     };
@@ -2441,8 +2371,8 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A read from the middle starts where it was told, and stops at the end
-    // rather than at the arena's.
+    // A read from the middle starts where it was told, and stops at the end rather than at the
+    // arena's.
     let mut window = [0u8; 8];
     let Ok(partial) = vfs::read(motd, 4, &mut window) else {
         return false;
@@ -2465,8 +2395,6 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A name in two directories resolves to the right one; a lookup ignoring
-    // the parent is only wrong when names repeat, so here they do (D-172).
     let Ok(vfs::Node::File(shadowed)) = vfs::resolve(root, b"NOTES/MOTD") else {
         return false;
     };
@@ -2477,7 +2405,6 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // And enumeration agrees with what resolves.
     let mut names = 0usize;
     let mut directories = 0usize;
     if vfs::enumerate(root, |_, is_directory| {
@@ -2492,8 +2419,8 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A file walked through is refused here too, which is the rule being the
-    // VFS's rather than FAT's.
+    // A file walked through is refused here too, which is the rule being the VFS's rather than
+    // FAT's.
     let through = vfs::resolve(root, b"MOTD/ONE.TXT");
     let hostile = vfs::read(
         vfs::File::Tmp {
@@ -2550,8 +2477,8 @@ fn a_device_is_not_a_file() -> bool {
     if storage.name() != b"storage" {
         return false;
     }
-    // Not a file and not a directory: the *node* is a third thing, which is
-    // what makes the distinction structural rather than a flag.
+    // Not a file and not a directory: the *node* is a third thing, which is what makes the
+    // distinction structural rather than a flag.
     if matches!(vfs::resolve(root, b"console"), Ok(vfs::Node::File(_))) {
         return false;
     }
@@ -2562,7 +2489,6 @@ fn a_device_is_not_a_file() -> bool {
         return false;
     }
 
-    // Every device is listed, and none of them claims to be a directory.
     let mut listed = 0usize;
     let mut any_directory = false;
     if vfs::enumerate(root, |_, is_directory| {
@@ -2575,8 +2501,8 @@ fn a_device_is_not_a_file() -> bool {
         return false;
     }
 
-    // A device has nothing inside it, so a path through one is refused for the
-    // same reason a path through a file is.
+    // A device has nothing inside it, so a path through one is refused for the same reason a path
+    // through a file is.
     let through = vfs::resolve(root, b"storage/anything");
     let missing = vfs::resolve(root, b"nothing");
 
@@ -2609,8 +2535,6 @@ fn no_backend_lets_a_path_escape_or_cross() -> bool {
         }
     }
 
-    // Names that exist on one backend and not another. Each of these resolves
-    // from its own root and from nowhere else.
     let crossings: &[(vfs::Directory, &[u8])] = &[
         (vfs::tmp_root(), SMALL_NAME),
         (vfs::tmp_root(), b"storage"),
@@ -2623,8 +2547,8 @@ fn no_backend_lets_a_path_escape_or_cross() -> bool {
         }
     }
 
-    // And each name does resolve where it belongs, so the refusals above are
-    // about the backend rather than about the name.
+    // And each name does resolve where it belongs, so the refusals above are about the backend
+    // rather than about the name.
     vfs::resolve(vfs::tmp_root(), b"MOTD").is_ok()
         && vfs::resolve(vfs::dev_root(), b"storage").is_ok()
 }
@@ -2634,12 +2558,9 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
         return false;
     };
 
-    // A file at the top.
     let Ok(vfs::Node::File(small)) = vfs::resolve(root, SMALL_NAME) else {
         return false;
     };
-    // The variant matters: a FAT root resolves to a FAT file, and the match
-    // is the enum dispatch being exhaustive (D-172).
     let vfs::File::Fat { size, .. } = small else {
         return false;
     };
@@ -2654,7 +2575,6 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
         return false;
     }
 
-    // A directory, then a file inside it, through one path.
     let Ok(vfs::Node::Directory(_)) = vfs::resolve(root, DIRECTORY_NAME) else {
         return false;
     };
@@ -2673,7 +2593,6 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
         return false;
     };
 
-    // And `.` and a cancelled `..` both name the directory they started from.
     let here = matches!(vfs::resolve(root, b"."), Ok(vfs::Node::Directory(_)));
     let round_trip = matches!(vfs::resolve(root, b"DATA/.."), Ok(vfs::Node::Directory(_)));
 
@@ -2713,8 +2632,8 @@ fn no_path_can_name_anything_above_the_handle() -> bool {
         }
     }
 
-    // And an empty path names nothing rather than the directory itself, which
-    // is what a resolver that treated it as `.` would answer.
+    // And an empty path names nothing rather than the directory itself, which is what a resolver
+    // that treated it as `.` would answer.
     matches!(
         vfs::resolve(root, b""),
         Err(vfs::VfsError::Path(path_walk::PathError::Empty))
@@ -2762,8 +2681,8 @@ fn enumeration_lists_what_traversal_would_find() -> bool {
         return false;
     }
 
-    // Resolve after enumeration because both paths take the controller leaf;
-    // resolving in the callback would re-enter it (D-171).
+    // Resolve after enumeration because both paths take the controller leaf; resolving in the
+    // callback would re-enter it.
     let mut listed = [[0u8; 12]; 4];
     let mut lengths = [0usize; 4];
     let mut count = 0usize;
@@ -2808,8 +2727,7 @@ fn the_kernel_reads_the_file_the_host_wrote() -> bool {
                 return Ok(false);
             }
 
-            // Extra buffer exposes a read incorrectly bounded by cluster size
-            // instead of file size (D-170).
+            // Extra buffer exposes a read incorrectly bounded by cluster size instead of file size.
             let mut read = [0u8; fat32::SECTOR_BYTES];
             let got = volume.read_file(entry.cluster, entry.size, 0, &mut read)?;
             Ok(got == SMALL_CONTENT.len() && &read[..got] == SMALL_CONTENT)
@@ -2873,7 +2791,6 @@ fn a_path_resolves_through_a_directory() -> bool {
                 return Ok(false);
             }
 
-            // A file is not a directory, whatever its bytes look like.
             let through_a_file = volume.resolve(root, &[SMALL_NAME, NESTED_NAME]);
             let missing = volume.resolve(root, &[b"NOPE.TXT"]);
             Ok(through_a_file == Err(fat32::FatError::WrongKind)
@@ -2883,25 +2800,14 @@ fn a_path_resolves_through_a_directory() -> bool {
     )
 }
 
-/// What `xtask` put on the namespace.
-///
-/// Transcribed from `xtask/src/image/corpus.rs`, which writes it — two copies
-/// of one table, so a host test compares them (D-158, D-170).
 const SMALL_NAME: &[u8] = b"HELLO.TXT";
-/// See [`SMALL_NAME`].
 const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
-/// See [`SMALL_NAME`].
 const LARGE_NAME: &[u8] = b"BIG.BIN";
-/// See [`SMALL_NAME`].
 const LARGE_BYTES: usize = 40 * 1024;
-/// See [`SMALL_NAME`].
 const DIRECTORY_NAME: &[u8] = b"DATA";
-/// See [`SMALL_NAME`].
 const NESTED_NAME: &[u8] = b"NESTED.TXT";
-/// See [`SMALL_NAME`].
 const NESTED_CONTENT: &[u8] = b"one directory down\n";
 
-/// Byte `index` of [`LARGE_NAME`], as `xtask` computed it.
 const fn large_byte(index: usize) -> u8 {
     ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
@@ -2995,9 +2901,6 @@ fn the_unit_walks_the_kernels_root_table() -> bool {
     nvme::isolation_is_active_for_test().is_some_and(|(_, walks_kernel_root)| walks_kernel_root)
 }
 
-/// Read back from the second-level tables the unit walks, not from the
-/// driver's index of them: the reachable set is exactly the live queue frames
-/// while no transfer is published (D-357).
 fn the_dma_domain_reaches_exactly_the_live_queue_frames() -> bool {
     nvme::reachable_frames_for_test()
         .is_some_and(|(reachable, expected)| !expected.is_empty() && reachable == expected)
@@ -3007,9 +2910,9 @@ fn a_domain_proof_is_refused_while_translation_is_off() -> bool {
     nvme::domain_proof_follows_translation_for_test()
 }
 
-/// The hook reads into the buffer once first, so a stale cached translation
-/// would let the unmapped write through; the fault proves the unmap
-/// invalidated the unit's cache and the device cannot reach the frame.
+/// The hook reads into the buffer once first, so a stale cached translation would let the unmapped
+/// write through; the fault proves the unmap invalidated the unit's cache and the device cannot
+/// reach the frame.
 fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
     nvme::unmapped_write_is_fenced_for_test().is_some_and(|witness| {
         witness.completed && witness.drained && witness.unchanged && witness.faulted
@@ -3094,8 +2997,8 @@ fn an_uncertain_vtd_mapping_never_recycles_its_frames() -> bool {
         let Some(isolation) = installed.as_mut() else {
             return false;
         };
-        // The first refusal makes the just-installed translation uncertain;
-        // the second makes rollback uncertainty explicit.
+        // The first refusal makes the just-installed translation uncertain; the second makes
+        // rollback uncertainty explicit.
         isolation.force_invalidation_failures_for_test(2);
         matches!(
             isolation.map_segment(&mut dma),
@@ -3121,9 +3024,9 @@ fn an_uncertain_vtd_unmap_never_recycles_its_frames() -> bool {
         if isolation.map_segment(&mut dma).is_err() {
             return false;
         }
-        // The leaf is removed, but a failed invalidation means the device may
-        // still hold its old translation. Ownership must therefore disappear
-        // into the DMA segment's boot-lifetime retention state.
+        // The leaf is removed, but a failed invalidation means the device may still hold its old
+        // translation. Ownership must therefore disappear into the DMA segment's boot-lifetime
+        // retention state.
         isolation.force_invalidation_failures_for_test(1);
         matches!(
             isolation.unmap_segment(&mut dma),
@@ -3134,8 +3037,8 @@ fn an_uncertain_vtd_unmap_never_recycles_its_frames() -> bool {
     reserved && retained && mm::free_frames() == before - 1
 }
 
-/// Firmware-reserved DMA regions carry no authority without a typed physical
-/// classification: neither a device hole nor usable RAM is admitted.
+/// Firmware-reserved DMA regions carry no authority without a typed physical classification:
+/// neither a device hole nor usable RAM is admitted.
 fn firmware_reserved_dma_regions_never_become_mapping_authority() -> bool {
     let Some(map) = mm::memory_map_for_test() else {
         return false;
@@ -3188,10 +3091,6 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() -> bool {
         && !iommu::reserved_regions_are_supported_for_test(&[(usable, usable + PAGE_SIZE - 1)])
 }
 
-/// The first eight bytes of block `lba` on the check machine's namespace.
-///
-/// Written by `xtask` when it makes the backing file, and transcribed here —
-/// which is two copies of one table, so a host test compares them (D-158).
 const fn disk_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
@@ -3209,12 +3108,11 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
         return false;
     };
 
-    // More than one bus visited, and a bridge to explain why.
     survey.buses >= 2
         && survey.bridges >= 1
         && survey.highest_bus >= 1
-        // And the counts agree with what the callback saw, so the survey is
-        // reporting the walk rather than a number of its own.
+        // And the counts agree with what the callback saw, so the survey is reporting the walk
+        // rather than a number of its own.
         && survey.functions == on_bus_zero + beyond
         && on_bus_zero >= 6
         && pci::duplicate_secondaries_do_not_hide_a_later_bus_for_test()
@@ -3223,9 +3121,9 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
 static DEVICE_CLAIM_CHECK: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_PORT_CHECK: AtomicUsize = AtomicUsize::new(0);
 
-/// Run the two checks that require a free PCI function before VT-d requester
-/// takeover owns the complete unit. Each path returns every temporary owner;
-/// only the immutable verdict crosses into the later report.
+/// Run the two checks that require a free PCI function before VT-d requester takeover owns the
+/// complete unit. Each path returns every temporary owner; only the immutable verdict crosses into
+/// the later report.
 pub(crate) fn prepare_pci_claim_checks() {
     if DEVICE_CLAIM_CHECK.load(Ordering::Acquire) != 0 {
         return;
@@ -3241,8 +3139,6 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
 }
 
 fn check_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
-    // The bridge behind bus zero: it has no windows to disturb, and it is
-    // there on both boot targets.
     let mut bridge = None;
     if pci::enumerate(|function| {
         if bridge.is_none() && function.class.is_bridge() && function.header.is_bridge() {
@@ -3270,22 +3166,22 @@ fn check_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
     };
     let recorded = pci::is_claimed(at) && pci::claims() == before + 1;
 
-    // A different register offset is still the same function and the same
-    // claim, so a second driver cannot enter through an alias.
+    // A different register offset is still the same function and the same claim, so a second driver
+    // cannot enter through an alias.
     let refused = matches!(
         pci::lease(at.at(pci_config::header::BAR0).expect("a BAR offset")),
         Err(pci::ClaimError::Taken)
     );
 
-    // And the holder still holds it: a refusal that released what it found
-    // would be indistinguishable from here without asking.
+    // And the holder still holds it: a refusal that released what it found would be
+    // indistinguishable from here without asking.
     let intact = pci::is_claimed(at)
         && pci::claims() == before + 1
         && held.at() == at.function_base()
         && held.identity().0 != 0xFFFF;
 
-    // Bridge headers have two BARs; probing a third would overwrite bus numbers
-    // before restoring them (D-168).
+    // Bridge headers have two BARs; probing a third would overwrite bus numbers before restoring
+    // them.
     let two_registers = held.window(2).is_none()
         && held.window(3).is_none()
         && held.window(4).is_none()
@@ -3315,8 +3211,8 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         return false;
     }
 
-    // Walk the candidates until one with an I/O window is claimed; none
-    // having one is a failure here, not a pass.
+    // Walk the candidates until one with an I/O window is claimed; none having one is a failure
+    // here, not a pass.
     let mut context = context();
     let mut found = None;
     let mut seen = 0;
@@ -3351,14 +3247,13 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         return false;
     };
 
-    // Every port in the window is the device's. The first and the last, so a
-    // claim that recorded only the base would be caught.
+    // The first and the last, so a claim that recorded only the base would be caught.
     let last = port + (size as u16 - 1);
     let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
     let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
 
-    // Reacquiring the same function exercises both registries, then returns
-    // it so the later unit-wide requester takeover can own the exact function.
+    // Reacquiring the same function exercises both registries, then returns it so the later
+    // unit-wide requester takeover can own the exact function.
     let at = device.at();
     wost::arch::current::port::refuse_span_release_for_test();
     let (reason, device) = match device.release(&mut context).into_retained() {
@@ -3382,7 +3277,6 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         Err(_) => false,
     };
 
-    // An outside claim proves refusal is limited to the device's window.
     let outside = port.checked_add(size as u16).is_some_and(|outside| {
         wost::arch::current::port::claim_spans::<1>(&[(outside, 1)])
             .is_some_and(|span| wost::arch::current::port::release_spans(span).is_ok())
@@ -3409,14 +3303,12 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     }
     queue.publish_tail_for_test(2);
 
-    // Admitted and deferred: no completions, and the ring's own accounting
-    // says two operations are outstanding.
     let in_flight = queue.serve(&table) == 0 && queue.in_flight() == 2 && queue.outstanding() == 2;
 
     let ended = queue.abandon();
 
-    // Each got the completion it was owed, and it says what happened rather
-    // than pretending to be a result.
+    // Each got the completion it was owed, and it says what happened rather than pretending to be a
+    // result.
     let first = queue.read_completion(0);
     let second = queue.read_completion(1);
     let completed = first.token == 0xA1
@@ -3427,14 +3319,14 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     in_flight
         && ended == 2
         && completed
-        // Nothing left that could touch the pages, and `outstanding` would
-        // otherwise say work is in flight for ever.
+        // Nothing left that could touch the pages, and `outstanding` would otherwise say work is in
+        // flight for ever.
         && queue.is_quiet()
         && queue.in_flight() == 0
         && queue.outstanding() == 0
         && queue.is_consistent()
-        // A second sweep finds nothing: teardown is idempotent, because
-        // `reclaim` is not the only path to a zombie.
+        // A second sweep finds nothing: teardown is idempotent, because `reclaim` is not the only
+        // path to a zombie.
         && queue.abandon() == 0
 }
 
@@ -3558,18 +3450,16 @@ fn a_promise_outlives_the_program_that_made_it() -> bool {
     };
     let promised = table.live() == 1 && table.promised() == 1;
 
-    // The program dies. Everything the kernel held of it is dropped, and the
-    // only reference left in the world is the one inside the promise.
     drop(table);
 
     let Some(orphan) = watching.upgrade() else {
-        // A table freed under an outstanding promise is a use-after-free
-        // waiting for the completion to arrive, not merely a failed check.
+        // A table freed under an outstanding promise is a use-after-free waiting for the completion
+        // to arrive, not merely a failed check.
         return false;
     };
 
-    // Surviving is not working: the promise is spent against the orphaned
-    // table, as a completion after the program's death would.
+    // Surviving is not working: the promise is spent against the orphaned table, as a completion
+    // after the program's death would.
     let usage_before = HandleTable::arena_usage_for_test();
     let Ok(handle) = reservation.install(second, full, full) else {
         return false;
@@ -3589,7 +3479,6 @@ fn a_promise_outlives_the_program_that_made_it() -> bool {
         && usage_after.1 == usage_before.1 + 1;
 
     // And with the promise gone, the table goes when the last reference does.
-    // A `Weak` that still upgrades here is a table nothing will ever free.
     drop(orphan);
     drop(foreign);
     let released = watching.upgrade().is_none();
@@ -3604,8 +3493,8 @@ fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
 
     version == timepage::VERSION
         && page_bytes == PAGE_SIZE as u32
-        // The measured rate, not merely a non-zero one: a page publishing
-        // somebody else's clock would still pass a "is it plausible" test.
+        // The measured rate, not merely a non-zero one: a page publishing somebody else's clock
+        // would still pass a "is it plausible" test.
         && counter_hz == crate::time::counter_hz()
         && counter_hz > 0
 }
@@ -3624,8 +3513,6 @@ fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
 
     let agrees = before <= published && published <= after;
 
-    // And it *advances*: a page whose conversion is zero answers the same
-    // number every time, which sits inside any sandwich taken quickly enough.
     let first = reading.at(cpu::timestamp());
     let moved = spins_until(1_000_000, || reading.at(cpu::timestamp()) > first);
 
@@ -3651,8 +3538,8 @@ fn revoking_the_clock_sends_readers_to_uptime() -> bool {
     let Some(revoked) = timepage::read() else {
         return false;
     };
-    // Exactly two, begin and end: one would leave the page permanently odd
-    // and every reader spinning.
+    // Exactly two, begin and end: one would leave the page permanently odd and every reader
+    // spinning.
     let stepped = revoked.seq == before.seq.wrapping_add(2);
     let closed = revoked.mode == timepage::MODE_NONE;
 
@@ -3686,16 +3573,15 @@ fn revoking_the_clock_sends_readers_to_uptime() -> bool {
 }
 
 fn the_clocks_update_window_is_never_preemptible() -> bool {
-    // The revocation check has published twice by now, so this is not a count
-    // that has never been exercised.
+    // The revocation check has published twice by now, so this is not a count that has never been
+    // exercised.
     let Some(seq) = timepage::sequence() else {
         return false;
     };
 
     timepage::is_published()
         && timepage::windows_left_preemptible() == 0
-        // Read the odd marker to prove every update opened its seqlock window
-        // (D-166).
+        // Read the odd marker to prove every update opened its seqlock window.
         && timepage::windows_never_opened() == 0
         && timebase::Seq::is_stable(seq)
         // Publishing moves it, so "even" is not merely "never written".
@@ -3715,8 +3601,8 @@ fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
         flags.contains(Flags::USER)
             && !flags.contains(Flags::WRITABLE)
             && flags.contains(Flags::NO_EXECUTE)
-            // And not the space's to give away: the frame is the kernel's, so an
-            // unmap must not hand it to the allocator.
+            // And not the space's to give away: the frame is the kernel's, so an unmap must not
+            // hand it to the allocator.
             && matches!(
                 space.unmap(timepage::TIME, PAGE_SIZE),
                 Err(MapError::NotOwned(_))
@@ -3765,8 +3651,8 @@ fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
         && !granted.contains(Rights::DUPLICATE)
         && arrived != source
         && table.live() == 2
-        // The promise became a handle: a table charged twice for one runs
-        // out at half its quota and nothing else would say so.
+        // The promise became a handle: a table charged twice for one runs out at half its quota and
+        // nothing else would say so.
         && table.promised() == 0
 }
 
@@ -3815,15 +3701,14 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     let sealed = crate::object::bootstrap_identity();
     let attenuated = crate::object::bootstrap_identity();
 
-    // Room to spare: a refusal must be reached *after* a promise is taken, and
-    // a full table refuses before there is one.
+    // Room to spare: a refusal must be reached *after* a promise is taken, and a full table refuses
+    // before there is one.
     let table = shared_handle_table_or_false!(8);
     let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(duplicable, full) else {
         return false;
     };
-    // Held without DUPLICATE, which is what makes copying it a refusal rather
-    // than a mistake.
+    // Held without DUPLICATE, which is what makes copying it a refusal rather than a mistake.
     let Ok(undupable) = table.insert(sealed, Rights::INSPECT) else {
         return false;
     };
@@ -3834,21 +3719,18 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     let attenuation_request = narrow.union(Rights::WAIT);
 
     let asked = [
-        // Refused at the lookup: a well-formed value naming nothing of ours.
         (
             0xF001u32,
             source ^ 0x40,
             u64::from(full.bits()),
             queue::STATUS_BAD_HANDLE,
         ),
-        // Refused at the right: held, but not passable.
         (
             0xF002,
             undupable,
             u64::from(Rights::INSPECT.bits()),
             queue::STATUS_DENIED,
         ),
-        // Refused at the attenuation: asking for more than is held.
         (
             0xF003,
             attenuation_source,
@@ -3897,8 +3779,6 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
             completion.token == *token && completion.status == *status && completion.value == 0;
     }
 
-    // Three promises taken, three given back: a leak is invisible in the
-    // completions and shows later as a table full of nothing.
     refused && table.live() == 3 && table.promised() == 0
 }
 
@@ -3908,7 +3788,6 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
     };
     let held = crate::object::bootstrap_identity();
 
-    // Room for exactly one, which the source takes.
     let table = shared_handle_table_or_false!(1);
     let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(held, full) else {
@@ -3924,8 +3803,8 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
             u64::from(full.bits()),
         ),
     );
-    // Neither malformed rights nor a malformed path may be inspected first,
-    // or the result-producing operations have two admission orders (D-151).
+    // Neither malformed rights nor a malformed path may be inspected first, or the result-producing
+    // operations have two admission orders.
     queue.post_submission_for_test(
         1,
         queue::Submission::about(
@@ -3978,7 +3857,6 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     );
     queue.publish_tail_for_test(1);
 
-    // Admitted, and *not* completed.
     let deferred = queue.serve(&table) == 0 && queue.in_flight() == 1;
     let Some(deadline) = queue.earliest_deadline() else {
         return false;
@@ -3986,8 +3864,8 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     // Before the deadline nothing is due, however often it is asked.
     let early = queue.expire(crate::time::now_ns()) == 0 && queue.in_flight() == 1;
 
-    // A million reads: the deadline is two milliseconds out and the clock is
-    // running, so a deadline this does not reach is not slow, it is wrong.
+    // A million reads: the deadline is two milliseconds out and the clock is running, so a deadline
+    // this does not reach is not slow, it is wrong.
     if !spins_until(1_000_000, || crate::time::now_ns() >= deadline) {
         return false;
     }
@@ -3998,8 +3876,6 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     deferred
         && early
         && due == 1
-        // And only once: the second sweep finds nothing, which is D-79's rule
-        // seen from the side a deferral could break it from.
         && queue.expire(crate::time::now_ns()) == 0
         && queue.in_flight() == 0
         && completion.token == 0x7117
@@ -4036,8 +3912,6 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
         return false;
     }
 
-    // The target's, posted from inside the cancellation, then the
-    // cancellation's own.
     let target = queue.read_completion(0);
     let canceller = queue.read_completion(1);
 
@@ -4047,8 +3921,8 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
         && canceller.status == queue::STATUS_OK
         && canceller.value == u64::from(0xDEADu32);
 
-    // A second cancellation finds nothing: advisory, as io_uring's
-    // `-EALREADY`, for a race the program cannot avoid.
+    // A second cancellation finds nothing: advisory, as io_uring's `-EALREADY`, for a race the
+    // program cannot avoid.
     queue.post_submission_for_test(
         2,
         queue::Submission::simple(queue::Opcode::Cancel, 0xC0DF, 0xDEAD),
@@ -4069,7 +3943,6 @@ fn every_submission_gets_exactly_one_completion() -> bool {
         return false;
     };
 
-    // Three operations: one served, one served differently, one refused.
     let asked = [
         queue::Submission::simple(queue::Opcode::Echo, 0x1111, 0xDEAD_BEEF),
         queue::Submission::simple(queue::Opcode::Uptime, 0x2222, 0),
@@ -4082,7 +3955,6 @@ fn every_submission_gets_exactly_one_completion() -> bool {
     queue.publish_tail_for_test(asked.len() as u32);
 
     let served = queue.serve(&shared_handle_table_or_false!(8));
-    // Exactly one each, and no more: a second call finds nothing left.
     let once = served == asked.len() && queue.serve(&shared_handle_table_or_false!(8)) == 0;
     let accounted = queue.outstanding() == 0 && queue.is_consistent();
 
@@ -4095,13 +3967,9 @@ fn every_submission_gets_exactly_one_completion() -> bool {
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
         && uptime.status == queue::STATUS_OK
-        // The value, not only the token: a zeroed `now_ns()` once left this
-        // green (D-115).
         && uptime.value > 0
         && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
-        // Refused *with* a completion, which is the rule: an operation the
-        // kernel will not serve still reports, or a caller waits for ever.
         && refused.status == queue::STATUS_UNKNOWN_OPCODE;
 
     once && accounted && matched
@@ -4113,12 +3981,10 @@ fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
     };
     let (_, submissions, completions) = queue.shape();
 
-    // Ask for far more than either queue holds.
     let wanted = (completions as usize) * 4;
     let admitted = queue.reserve_for_test(wanted);
 
-    // Bounded by the submission queue, which is the tighter of the two here,
-    // and never by nothing.
+    // Bounded by the submission queue, which is the tighter of the two here, and never by nothing.
     let bounded = admitted > 0 && admitted <= submissions as usize;
     let refused = admitted < wanted;
     let consistent = queue.is_consistent();
@@ -4144,32 +4010,27 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     }
     let posted = queue.read_completion(0);
 
-    // Ring 3 rewrites the entry it already submitted, as a hostile program
-    // would the instant it saw the head move.
+    // Ring 3 rewrites the entry it already submitted, as a hostile program would the instant it saw
+    // the head move.
     queue.post_submission_for_test(
         0,
         queue::Submission::simple(queue::Opcode::Unknown(0xDEAD), 0xBAAD, 0xFFFF_FFFF),
     );
 
-    // The visible rewrite plus original completion proves service used the
-    // copied submission (D-115).
     let rewritten = queue.read_submission(0);
     let took_effect = rewritten.token == 0xBAAD && rewritten.opcode != queue::Opcode::Echo;
     let unchanged = took_effect
         && posted.token == 0xABCD
         && posted.status == queue::STATUS_OK
         && posted.value == 0x0F0F_0F0F
-        // And serving again does not re-serve the rewritten entry: the slot
-        // was consumed, and the new bytes are a submission nobody made.
         && queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
-    // Reservations make this runaway tail reach the explicit posted bound
-    // instead of an empty-queue early return (D-115).
+    // Reservations make this runaway tail reach the explicit posted bound instead of an empty-queue
+    // early return.
     let Some(runaway) = queue::Queue::new() else {
         return false;
     };
-    // Three written, and a tail claiming four billion. Without the bound the
-    // kernel admits and serves all three from slots it was never told about.
+    // Without the bound the kernel admits and serves all three from slots it was never told about.
     for slot in 0..3 {
         runaway.post_submission_for_test(
             slot,
@@ -4195,8 +4056,8 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     partial.publish_tail_for_test(1);
     let only_published = partial.serve(&shared_handle_table_or_false!(8)) == 1;
     let one_reported = partial.read_completion(0).token == 0x5150;
-    // And nothing is held open: the one served reported, and the two unpublished
-    // entries were never admitted, so no reservation outlives the round.
+    // And nothing is held open: the one served reported, and the two unpublished entries were never
+    // admitted, so no reservation outlives the round.
     let still_reserved = partial.outstanding() == 0 && partial.is_consistent();
 
     unchanged
@@ -4208,9 +4069,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
 }
 
 fn thread_local_storage_follows_the_thread() -> bool {
-    /// Somewhere in the low half, aligned, and not zero.
     const MINE: u64 = 0x0000_1234_5678_0000;
-    /// What the other thread sets.
     const THEIRS: u64 = 0x0000_7654_3210_0000;
 
     let restore = task::read_thread_base();
@@ -4240,10 +4099,8 @@ fn thread_local_storage_follows_the_thread() -> bool {
     checked && restored
 }
 
-/// Set by the intruding thread once it has run.
 static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 
-/// What the intruding thread read back from its own base.
 static BASE_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
 
 fn set_another_thread_base() {
@@ -4257,7 +4114,6 @@ fn set_another_thread_base() {
 }
 
 fn a_user_page_comes_back_cleared() -> bool {
-    /// Two user addresses nothing else uses.
     const FIRST: u64 = user::STACK + 0xA0_0000;
     const SECOND: u64 = user::STACK + 0xA1_0000;
     /// What a program would have left in the page.
@@ -4277,8 +4133,6 @@ fn a_user_page_comes_back_cleared() -> bool {
             return false;
         }
 
-        // It comes back untyped, and only a clearing conversion makes it the
-        // kernel's again; the handle is followed, not the allocator asked.
         let Ok(unmapped) = space.unmap(FIRST, PAGE_SIZE) else {
             return false;
         };
@@ -4311,8 +4165,8 @@ fn a_user_page_comes_back_cleared() -> bool {
         };
         let refused_as_kernel = second.into_kernel().is_none();
 
-        // Reallocation need not return these frames, so a tally observes the
-        // drop clear without relying on same-frame readback (D-119, D-123).
+        // Reallocation need not return these frames, so a tally observes the drop clear without
+        // relying on same-frame readback.
         let cleared_before = paging::cleared_on_drop();
         let Some(mut third) = mm::allocate_contiguous(2, 1) else {
             return false;
@@ -4352,7 +4206,6 @@ fn a_bound_space_is_not_reclaimed() -> bool {
         return false;
     };
 
-    // A thread to bind it to, which is what makes it un-reclaimable.
     let mut bound = None;
     let slot =
         match thread::spawn_in_space("bound-space", leave_at_once, binding, |_, installed| {
@@ -4389,8 +4242,8 @@ fn a_bound_space_is_not_reclaimed() -> bool {
         Err(bound) => bound,
     };
 
-    // Refused with no evidence and left untouched, so the same value can be
-    // reclaimed once the task table supplies the evidence below.
+    // Refused with no evidence and left untouched, so the same value can be reclaimed once the task
+    // table supplies the evidence below.
     let held = mm::free_frames();
     let refused = matches!(
         space.reclaim(None),
@@ -4401,15 +4254,15 @@ fn a_bound_space_is_not_reclaimed() -> bool {
     ) && !space.is_reclaimed()
         && mm::free_frames() == held;
 
-    // And once the thread is gone, the task table says so and the space comes
-    // back — so this is not simply "reclaim never works".
+    // And once the thread is gone, the task table says so and the space comes back — so this is not
+    // simply "reclaim never works".
     let gone = runs_until(500, || !task::slot_is_live_for_test(slot));
     assert!(gone, "the bound-space witness did not retire");
     let released = task::release_address_space(bound)
         .expect("a retired bound-space witness releases its binding");
 
-    // Release evidence survives a foreign and a repeated target, and the
-    // rightful space is still reclaimable with it afterwards.
+    // Release evidence survives a foreign and a repeated target, and the rightful space is still
+    // reclaimable with it afterwards.
     let Ok(mut foreign) = AddressSpace::for_user() else {
         assert!(
             space.reclaim(Some(released)).is_ok(),
@@ -5482,8 +5335,8 @@ fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
             && user::zombie_owns_slot_for_test(slot);
         task::restore_release_for_test();
 
-        // Nothing else exits, spawns or collects after the refusal lifts, so
-        // the worker can finish only through its production retry.
+        // Nothing else exits, spawns or collects after the refusal lifts, so the worker can finish
+        // only through its production retry.
         let worker_finished_its_retry = runs_until(2_000, || {
             queue::worker_reaps_for_test() > reaped && !user::has_zombies()
         });
@@ -5507,8 +5360,8 @@ fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
 }
 
 fn a_dead_program_gives_its_memory_back() -> bool {
-    // Drain anything earlier checks left, so the measurement below is about
-    // this program and not about theirs.
+    // Drain anything earlier checks left, so the measurement below is about this program and not
+    // about theirs.
     while user::collect().is_some() {}
 
     let resources_before = spawn_resources();
@@ -5522,14 +5375,12 @@ fn a_dead_program_gives_its_memory_back() -> bool {
         return false;
     }
 
-    // Its slot came back with it: the thread is gone from both tables, which
-    // is what makes the index usable again.
     let slot_returned = runs_until(500, || {
         thread::free_slots() >= resources_before.thread_slots
     });
 
-    // And its memory, once collected: asked directly, because waiting for
-    // idle in a busy self-test may wait for ever.
+    // And its memory, once collected: asked directly, because waiting for idle in a busy self-test
+    // may wait for ever.
     let collected_directly = user::collect().is_some();
     let (pages_after, tables_after) = user::reclaimed();
     let gave_back = pages_after > pages_before && tables_after > tables_before;
@@ -5537,12 +5388,10 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     let resources_after = spawn_resources();
     let owners_returned = resources_after.has_same_ownership(&resources_before);
 
-    // And nothing is left waiting: one program made one zombie, and it is
-    // collected.
     let drained = !user::has_zombies();
 
-    // Sixteen slots, forty programs: without reclamation every spawn after
-    // the sixteenth is refused, and the snapshot says the memory came back.
+    // Sixteen slots, forty programs: without reclamation every spawn after the sixteenth is
+    // refused, and the snapshot says the memory came back.
     let repetition_before = spawn_resources();
     let mut ran = 0;
     for _ in 0..40 {
@@ -5563,8 +5412,8 @@ fn a_dead_program_gives_its_memory_back() -> bool {
 }
 
 fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
-    // Before the stateful ring-3 group, and waited for: the trap-context
-    // logging mutation must assert before later state can hide the cause.
+    // Before the stateful ring-3 group, and waited for: the trap-context logging mutation must
+    // assert before later state can hide the cause.
     let isolated = runs_until(2_000, || {
         while user::collect().is_some() {}
         !user::has_zombies()
@@ -5591,17 +5440,15 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
             }
 
             let (refused_after, number, unanswered) = user::refusals();
-            // Exactly one refusal, of the number the program asked for.
             let counted = refused_after == refused_before + 1 && number == 0x0BAD_0BAD;
-            // Every answer was written back: a program that got nothing cannot tell a
-            // call it made wrong from one the kernel dropped.
+            // Every answer was written back: a program that got nothing cannot tell a call it made
+            // wrong from one the kernel dropped.
             let answered = unanswered == 0;
-            // And it left by exiting, not by faulting — so the refusal really did
-            // return to ring 3 and the program ran on.
+            // And it left by exiting, not by faulting — so the refusal really did return to ring 3
+            // and the program ran on.
             let exited = trap::last_user_fault().count == faults_before;
 
-            // Whichever observer wins says the one warning. A second real refusal
-            // still advances accounting but must not re-arm UART output.
+            // A second real refusal still advances accounting but must not re-arm UART output.
             let _first_observer_may_already_have_reported = user::report_refusals();
             let Ok(second) = user::run_probing() else {
                 return false;
@@ -5626,9 +5473,6 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
         if user::has_zombies() {
             return false;
         }
-        // A process that has not reached orphaning is not a zombie yet. The
-        // ownership baseline keeps every early exit waiting for its live
-        // process records, thread slot, and allocated resources to return.
         match resources_before {
             Some(before) => spawn_resources_are_restored(&before),
             None => true,
@@ -5644,8 +5488,8 @@ fn a_gated_process_holds_spawn_ownership(before: &SpawnResources) -> bool {
     };
     let waiting = runs_until(500, user::gated_cross_is_waiting);
     let live_owner_visible = waiting && !spawn_resources_are_restored(before);
-    // Release after every successful spawn, even when the observations above
-    // fail, so the witness cannot strand the process it uses.
+    // Release after every successful spawn, even when the observations above fail, so the witness
+    // cannot strand the process it uses.
     let released = user::release_gated_cross() == 1;
     let finished = last_rites_for(&spawned, 2_000).is_some();
 
@@ -5672,8 +5516,6 @@ fn a_program_drives_its_own_ring() -> bool {
         return false;
     };
 
-    // Read from the exit record, not the program: its ring pages are already
-    // reclaimed, and the record was taken at death (D-117).
     let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
@@ -5682,16 +5524,13 @@ fn a_program_drives_its_own_ring() -> bool {
     // The kernel's own tally, which ring 3 cannot write.
     let one_served = served == 1;
 
-    // The program wrote a submission, and it is the one the ABI describes.
     let asked = submitted.opcode == queue::Opcode::Echo && submitted.token != 0;
 
-    // And the completion answers *that* submission.
     let answered = completed.token == submitted.token
         && completed.status == queue::STATUS_OK
         && completed.value == submitted.argument;
 
-    // It left by exit, not by fault: a program disagreeing with its answer
-    // executes `ud2`.
+    // It left by exit, not by fault: a program disagreeing with its answer executes `ud2`.
     let exited = trap::last_user_fault().count == faults_before;
 
     one_served && asked && answered && exited
@@ -5765,15 +5604,15 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let submitted = rites.submitted;
     let completed = rites.completed;
 
-    // It began with one handle, so the nonzero handle ring 3 supplied can only
-    // be the bootstrap entry. The requested right is exactly INSPECT.
+    // It began with one handle, so the nonzero handle ring 3 supplied can only be the bootstrap
+    // entry.
     let asked = submitted.opcode == queue::Opcode::Duplicate
         && submitted.token != 0
         && submitted.handle != 0
         && submitted.argument == u64::from(Rights::INSPECT.bits());
 
-    // The completion carries a distinct, representable handle, and the exit
-    // record proves both entries were installed before teardown reclaimed them.
+    // The completion carries a distinct, representable handle, and the exit record proves both
+    // entries were installed before teardown reclaimed them.
     let new_handle = u32::try_from(completed.value).ok();
     let answered = completed.token == submitted.token
         && completed.status == queue::STATUS_OK
@@ -5782,8 +5621,8 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
         && rites.handles == 2
         && rites.bootstrap == Some(object::ObjectType::Channel);
 
-    // Every emitted-program disagreement executes `ud2`, so a clean exit is
-    // independent evidence that ring 3 accepted the same result.
+    // Every emitted-program disagreement executes `ud2`, so a clean exit is independent evidence
+    // that ring 3 accepted the same result.
     let exited = trap::last_user_fault().count == faults_before;
 
     asked && answered && retained && exited
@@ -5810,7 +5649,6 @@ fn a_program_waits_through_its_trap_frame() -> bool {
         && trap::last_user_fault().count == faults_before
 }
 
-/// The real ring a kernel thread waits on during the syscall wake check.
 static SYSCALL_WAKE_RING: SpinLock<Option<Arc<queue::Queue>>> = SpinLock::new(None);
 
 /// Zero while the waiter is live and one after its production wait returns.
@@ -5902,8 +5740,8 @@ fn finish_syscall_wake_check(
 }
 
 fn a_spawned_program_holds_exactly_one_handle() -> bool {
-    // Its own program: every ring-3 check counts crossings, and an extra one
-    // would land on whichever check looked next.
+    // Its own program: every ring-3 check counts crossings, and an extra one would land on
+    // whichever check looked next.
     let Ok(spawned) = user::run_for_bootstrap() else {
         return false;
     };
@@ -5911,21 +5749,21 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
         return false;
     };
 
-    // Captured while the slot was still Reserved: observing after `spawn`
-    // returns races this short program's exit (D-217).
+    // Captured while the slot was still Reserved: observing after `spawn` returns races this short
+    // program's exit.
     let exactly_one = birth.handles == 1;
     let a_channel = birth.bootstrap == object::ObjectType::Channel;
 
-    // And a ring at the shared address, in place before its first
-    // instruction (D-113); the kernel's record, not the rewritable header (D-115).
+    // And a ring at the shared address, in place before its first instruction; the kernel's record,
+    // not the rewritable header.
     let (version, submissions, completions) = birth.ring;
     let has_a_ring = version == ring_proto::VERSION
         && submissions > 0
         && completions >= submissions.saturating_mul(2);
     let mapped = birth.ring_flags.contains(Flags::USER);
 
-    // Leaves with one handle, and is waited for: retiring during a later
-    // check would move the free-slot count under it (D-117).
+    // Leaves with one handle, and is waited for: retiring during a later check would move the
+    // free-slot count under it.
     let died_with_one = last_rites_for(&spawned, 2_000).is_some_and(|rites| {
         rites.handles == 1 && rites.bootstrap == Some(object::ObjectType::Channel)
     });
@@ -5940,7 +5778,6 @@ fn a_meaningless_right_is_refused() -> bool {
     let refused = table.insert(channel.clone(), Rights::READ) == Err(HandleError::Meaningless);
     let also_refused = table.insert(channel.clone(), Rights::ALL) == Err(HandleError::Meaningless);
 
-    // Universal rights mean the same for every object.
     let allowed = table.insert(channel.clone(), Rights::UNIVERSAL).is_ok();
     let nothing_is_allowed = table.insert(channel, Rights::NONE).is_ok();
 
@@ -6128,7 +5965,6 @@ fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
         return false;
     };
 
-    // Where this check is actually running.
     let pointer = cpu::stack_pointer();
     if pointer < slot.stack_base() || pointer >= slot.stack_top() {
         return false;
@@ -6334,8 +6170,8 @@ fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
         };
         let user_is_absent = paging::translate(probe).is_some() && space.lookup(probe).is_none();
 
-        // The shared half is not reachable from ring 3: a top-level entry
-        // carrying `USER` would hand every program the kernel.
+        // The shared half is not reachable from ring 3: a top-level entry carrying `USER` would
+        // hand every program the kernel.
         let kernel_is_not_user = space
             .lookup(text)
             .is_some_and(|(_, flags)| !flags.contains(Flags::USER));
@@ -6351,18 +6187,16 @@ fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     let Some((_, user_flags)) = paging::translate(user_at) else {
         return false;
     };
-    // The user page really is user-accessible, all the way down.
     let user_is_user = user_flags.contains(Flags::USER);
 
-    // The kernel's own text is not, and neither are its parents.
     let text = boot::sections().text.start;
     let Some((_, text_flags)) = paging::translate(text) else {
         return false;
     };
     let kernel_is_not_user = !text_flags.contains(Flags::USER);
 
-    // And the direct map is writable and never executable, which is the pair
-    // W^X depends on being reported truthfully.
+    // And the direct map is writable and never executable, which is the pair W^X depends on being
+    // reported truthfully.
     let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
         return false;
     };
@@ -6385,8 +6219,8 @@ fn a_refused_mapping_leaves_no_trace() -> bool {
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
     let free_before = mm::free_frames();
 
-    // Occupy the *second* page of the range, so the mapping below gets one
-    // page in before it is refused.
+    // Occupy the *second* page of the range, so the mapping below gets one page in before it is
+    // refused.
     let Some(taken) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
@@ -6634,7 +6468,6 @@ fn ram_mappings_keep_the_direct_map_cache_type() -> bool {
         });
     }
 
-    // Each boot range maps with exactly its own direct-map type.
     let framebuffer = mm::memory_map_for_test().and_then(|map| {
         map.page_runs()
             .find(|run| run.cache() == wost::boot::DirectMapCache::Framebuffer)
@@ -6761,9 +6594,7 @@ fn an_unmapped_range_returns_its_frames() -> bool {
         return false;
     };
 
-    // The entries are gone the moment `unmap` returns...
     let gone = paging::translate(probe).is_none();
-    // ...but the frames are not the allocator's yet.
     let withheld = mm::free_frames() == free_while_mapped && token.pages() == PAGES;
 
     let returned = token.into_kernel().is_some_and(|segment| {
@@ -6786,7 +6617,6 @@ fn probe_page(index: u64) -> Option<BootRegion> {
     BootRegion::describe(base.checked_add(index * PAGE_SIZE)?, PAGE_SIZE)
 }
 
-/// How many pages [`probe_page`] hands out, and the run it asks for.
 const PROBE_PAGES: u64 = 2;
 
 fn the_map_offers_a_run_to_probe() -> bool {
@@ -6811,7 +6641,6 @@ fn a_differing_remap_is_refused() -> bool {
 }
 
 fn a_boot_mapping_cannot_claim_ownership() -> bool {
-    /// Canonical, and far from anything a fresh space maps.
     const PROBE: u64 = 0xffff_8880_0000_0000;
 
     in_reclaimed_space(AddressSpace::new, |space| {
@@ -6828,15 +6657,14 @@ fn a_boot_mapping_cannot_claim_ownership() -> bool {
             .lookup(PROBE)
             .is_some_and(|(_, flags)| !flags.contains(Flags::OWNED));
         let before = mm::free_frames();
-        // With the bit stripped, `unmap` sees a mapping nothing owns and
-        // refuses, rather than minting a second owner of a boot frame.
+        // With the bit stripped, `unmap` sees a mapping nothing owns and refuses, rather than
+        // minting a second owner of a boot frame.
         let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
         provenance_removed && refused && mm::free_frames() == before
     })
 }
 
 fn writable_executable_mappings_leave_no_trace() -> bool {
-    /// Canonical user memory, far from every mapping a fresh space inherits.
     const BOOT: u64 = 0x0000_0500_0000_0000;
     const OWNED: u64 = 0x0000_0600_0000_0000;
     const USER: u64 = 0x0000_0700_0000_0000;
@@ -7112,12 +6940,11 @@ fn a_user_space_cannot_reach_the_kernel_half() -> bool {
         };
         let unmapped = user.unmap(KERNEL, PAGE_SIZE);
         let mapped = user.map_boot(KERNEL, region, Flags::NO_EXECUTE);
-        // The canonical-hole check precedes half ownership, so the straddle
-        // must report that distinct refusal.
+        // The canonical-hole check precedes half ownership, so the straddle must report that
+        // distinct refusal.
         let straddles =
             user.unmap(HOLE_EDGE, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(HOLE_EDGE));
-        // The last mappable user page reaches mapping lookup rather than half
-        // refusal.
+        // The last mappable user page reaches mapping lookup rather than half refusal.
         let reaches_its_own =
             user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
 
@@ -7129,8 +6956,8 @@ fn a_user_space_cannot_reach_the_kernel_half() -> bool {
 }
 
 fn the_last_canonical_page_is_never_user_memory() -> bool {
-    // Code ending on this page would trap with a non-canonical return
-    // address, which `iretq` refuses in ring 0 (D-348).
+    // Code ending on this page would trap with a non-canonical return address, which `iretq`
+    // refuses in ring 0.
     const TOP: u64 = x86_paging::USER_MAPPING_END;
     const BELOW: u64 = TOP - PAGE_SIZE;
 
@@ -7194,15 +7021,14 @@ fn a_user_mapping_cannot_widen_a_supervisor_table() -> bool {
 }
 
 fn an_undescribed_range_cannot_be_mapped() -> bool {
-    /// Far above anything a PC memory map describes, and above `mm::CEILING`.
     const NOWHERE: u64 = 0x0000_7000_0000_0000;
 
     BootRegion::describe(NOWHERE, PAGE_SIZE).is_none()
         // Unaligned and empty ranges are refused before the map is consulted.
         && BootRegion::describe(PAGE_SIZE + 1, PAGE_SIZE).is_none()
         && BootRegion::describe(PAGE_SIZE, 0).is_none()
-        // And a range that runs off the end of physical space cannot overflow
-        // its way into looking described.
+        // And a range that runs off the end of physical space cannot overflow its way into looking
+        // described.
         && BootRegion::describe(u64::MAX - PAGE_SIZE + 1, PAGE_SIZE).is_none()
 }
 
@@ -7502,8 +7328,6 @@ fn the_editing_keys_move_the_cursor() -> bool {
     let Some(((home_x, home_y), _)) = dev::console_cursor() else {
         return false;
     };
-    // The margin, not `home_x <= start_x`, which holds for every reset; the
-    // margin is where `erase_previous` refuses to go below (D-105).
     let started_a_line =
         home_x == crate::console::MARGIN && home_x <= typed_x && home_y == start_y + line_height;
 
@@ -7541,8 +7365,8 @@ fn keyboard_input_is_polled_without_legacy_interrupts() -> bool {
 }
 
 fn the_heap_reuses_a_freed_slot() -> bool {
-    // Warm the class, so what is measured below is a reuse and not the refill
-    // that any first allocation of a class must pay for.
+    // Warm the class, so what is measured below is a reuse and not the refill that any first
+    // allocation of a class must pay for.
     drop(core::hint::black_box(Box::new(0u32)));
 
     let before = mm::heap::stats();
@@ -7552,8 +7376,8 @@ fn the_heap_reuses_a_freed_slot() -> bool {
     let after = mm::heap::stats();
     let balanced = taken && after.live == before.live && after.slab_frames == before.slab_frames;
 
-    // Accounting cannot see a free-list leak; LIFO reuse must return the
-    // same address, with `black_box` ordering both allocations (D-124).
+    // Accounting cannot see a free-list leak; LIFO reuse must return the same address, with
+    // `black_box` ordering both allocations.
     let first = core::hint::black_box(Box::new(0u32));
     let address = core::hint::black_box(core::ptr::from_ref(&*first) as usize);
     drop(first);
@@ -7565,11 +7389,8 @@ fn the_heap_reuses_a_freed_slot() -> bool {
 }
 
 fn a_refill_costs_one_frame_and_balances() -> bool {
-    /// Enough allocations of one class to span several slab frames.
     const TAKEN: usize = 512;
 
-    // The vector's buffer outlives all three snapshots, so only the slots
-    // under test move between them.
     let mut held: Vec<Box<[u8; 64]>> = Vec::with_capacity(TAKEN);
     let before = mm::heap::stats();
     for index in 0..TAKEN {
@@ -7577,8 +7398,8 @@ fn a_refill_costs_one_frame_and_balances() -> bool {
     }
     let after_taking = mm::heap::stats();
 
-    // Each slot still holds what it was given, which is what a slot handed out
-    // twice would have overwritten.
+    // Each slot still holds what it was given, which is what a slot handed out twice would have
+    // overwritten.
     let intact = held
         .iter()
         .enumerate()
@@ -7627,14 +7448,12 @@ fn context() -> ThreadContext {
     ThreadContext::require()
 }
 
-/// Yields a thread may spend waiting for something before the check gives up
-/// — so a switch that never hands control over is a red verdict, not a hang.
+/// Yields a thread may spend waiting for something before the check gives up — so a switch that
+/// never hands control over is a red verdict, not a hang.
 const YIELD_BUDGET: usize = 100_000;
 
-/// Turns the alternation check asks for.
 const TURNS: usize = 64;
 
-/// Whose turn it is: zero for the first thread, one for the second.
 static TURN: AtomicUsize = AtomicUsize::new(0);
 
 /// Turns taken so far, each one strictly after the other thread's.
@@ -7684,11 +7503,8 @@ fn threads_alternate_strictly() -> bool {
     alternated && exited && TURNS_TAKEN.load(Ordering::Acquire) == TURNS
 }
 
-/// What the register-churning thread concluded: zero while it is still
-/// running, one if its values survived every switch, two if they did not.
 static CHURN_VERDICT: AtomicUsize = AtomicUsize::new(0);
 
-/// Rounds of churn, each ending in a yield.
 const CHURN_ROUNDS: u64 = 256;
 
 fn churn(seed: u64) -> bool {
@@ -7725,7 +7541,6 @@ fn churn(seed: u64) -> bool {
     (a, b, c, d, e) == (p, q, r, s, t)
 }
 
-/// Knuth's multiplier, for a sequence with no short cycle.
 const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 
 fn churn_and_report() {
@@ -7782,8 +7597,6 @@ fn a_scroll_moves_one_visible_cursor() -> bool {
         cursor_y = next_y;
     }
 
-    // The cursor underline moves one pixel above its prior origin. Blank input
-    // leaves no other legitimate foreground mark there.
     let Some(probe_y) = scrolled_from.and_then(|y| y.checked_sub(1)) else {
         return false;
     };
@@ -8030,8 +7843,8 @@ fn thread_stacks_are_guarded() -> bool {
     exact && pinned && init_validation
 }
 
-/// What a thread found the interrupt flag to be on its first instruction:
-/// zero before it ran, one for set, two for clear.
+/// What a thread found the interrupt flag to be on its first instruction: zero before it ran, one
+/// for set, two for clear.
 static FIRST_RUN_FLAG: AtomicUsize = AtomicUsize::new(0);
 static FIRST_RUN_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -8145,10 +7958,8 @@ fn an_exited_slot_is_reused() -> bool {
     returned && again && returned_again && state_cleared
 }
 
-/// Set to tell every spinner to finish.
 static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
 
-/// How many loops each spinner has run: one counter per weight class.
 static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
 static HEAVY_SPINS: AtomicUsize = AtomicUsize::new(0);
 
@@ -8198,7 +8009,6 @@ fn the_clock_is_running() -> bool {
 }
 
 fn a_spinner_cannot_starve_another() -> bool {
-    /// Generous beside a 3 ms slice, stingy beside a hung harness.
     const PATIENCE_MS: u64 = 500;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -8216,7 +8026,6 @@ fn a_spinner_cannot_starve_another() -> bool {
 }
 
 fn runtime_divides_by_weight() -> bool {
-    /// Long enough for a couple of hundred slices between them.
     const WINDOW_MS: u64 = 600;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -8244,11 +8053,9 @@ fn runtime_divides_by_weight() -> bool {
 /// What the blocked reader saw: zero until it has anything to say.
 static READER_SAW: AtomicUsize = AtomicUsize::new(0);
 
-/// Whether the reader actually stopped being runnable to get its keystroke:
-/// zero until it knows, one for blocked, two for not.
-///
-/// Recorded across the read because key arrival alone cannot distinguish a
-/// blocked reader from a polling one.
+/// Whether the reader actually stopped being runnable to get its keystroke: zero until it knows,
+/// one for blocked, two for not. Recorded across the read because key arrival alone cannot
+/// distinguish a blocked reader from a polling one.
 static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
 
 fn read_one_key() {
@@ -8270,8 +8077,6 @@ fn a_blocked_reader_waits_while_the_poller_runs() -> bool {
     if thread::spawn("reader", read_one_key).is_err() {
         return false;
     }
-    // Long enough for the reader to be picked, run, and block; short beside
-    // everything between here and the injection.
     let blocked = runs_until(50, || thread::blocks() > blocks);
 
     let passes = input::poller_passes();
@@ -8319,14 +8124,13 @@ fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     if !input::start_bounded_poller(ROUNDS) {
         return false;
     }
-    // Its own sleeps are what let this thread run, so waiting is a sleep too.
     thread::sleep_ms(&mut context(), (ROUNDS as u64 + 2) * 10);
 
     let passes = input::poller_passes() - before;
     let exited = yields_until(|| thread::free_slots() == free);
 
-    // And it slept between rounds, which the count cannot show: each sleep
-    // arms a timer, one of which is this thread's own (D-124).
+    // And it slept between rounds, which the count cannot show: each sleep arms a timer, one of
+    // which is this thread's own.
     let slept = time::expiries() - expiries_before >= ROUNDS as u64;
 
     if passes != ROUNDS || !exited || !slept {
@@ -8370,7 +8174,6 @@ fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     })
 }
 
-/// Release every thread used to fill the table before the idle retry.
 static RELEASE_IDLE_FILLERS: AtomicUsize = AtomicUsize::new(0);
 
 fn wait_for_idle_retry() {
@@ -8455,10 +8258,8 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
         return false;
     };
 
-    // This exact incarnation retired: its rites are recorded and, with no other
-    // program spawned to reuse the slot, stay recorded past the reap. The busy
-    // worker then reaped it without a spawn: its slot holds no zombie and the
-    // reap and reclaim counters advanced (D-355).
+    // The busy worker then reaped it without a spawn: its slot holds no zombie and the reap and
+    // reclaim counters advanced.
     let reaped_this_child = last_rites_for(&spawned, 2_000).is_some()
         && runs_until(2000, || {
             let now = user::reclaimed();
@@ -8481,8 +8282,8 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
 }
 
 fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
-    // Slept rather than spun: while this normal thread is runnable the idle
-    // thread must not run, which the second half checks.
+    // Slept rather than spun: while this normal thread is runnable the idle thread must not run,
+    // which the second half checks.
     let idled = thread::idle_halts();
     thread::sleep_ms(&mut context(), 20);
     let ran_when_free = thread::idle_halts() > idled;
@@ -8541,10 +8342,9 @@ fn a_scroll_does_not_block_interrupts() -> bool {
             let before = time::now_ns();
             console.write_line("");
             let elapsed = time::now_ns() - before;
-            // Framebuffer MMIO can finish before an already-due virtual APIC
-            // timer is injected. Keep the observation inside the console
-            // guard: mutation 189's outer exclusion must prevent this real
-            // delivery until after the result has been fixed as false.
+            // Framebuffer MMIO can finish before an already-due virtual APIC timer is injected.
+            // Keep the observation inside the console guard: mutation 189's outer exclusion must
+            // prevent this real delivery until after the result has been fixed as false.
             let delivered = spins_until(DELIVERY_ATTEMPTS, || {
                 time::expiries() - taken >= EXPECTED_EXPIRIES
             });
@@ -8565,17 +8365,15 @@ fn a_scroll_does_not_block_interrupts() -> bool {
 
 static LONGEST_SCROLL: AtomicUsize = AtomicUsize::new(0);
 
-/// Tally of what has been checked so far.
 struct Report {
     passed: usize,
     failed: usize,
 }
 
-/// Bumped whenever the machine-to-harness verdict grammar changes.
 const VERDICT_VERSION: usize = 1;
 
-/// Exact check count; mismatch catches deletion or bypass before the verdict.
-/// Changing it requires a retained mutation (D-119).
+/// Exact check count; mismatch catches deletion or bypass before the verdict. Changing it requires
+/// a retained mutation.
 const EXPECTED_CHECKS: usize = 294;
 
 #[cfg(feature = "selftest")]
@@ -9522,8 +9320,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         sleeping_hands_the_cpu_over(),
     );
 
-    // Everything above ran without an idle thread, the only witness for a
-    // sleeper halting on its own stack; from here something is always runnable.
+    // Everything above ran without an idle thread, the only witness for a sleeper halting on its
+    // own stack; from here something is always runnable.
     report.check(
         "a failed idle start can be retried exactly once",
         a_failed_idle_start_can_be_retried_exactly_once(),
@@ -9609,8 +9407,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "an echo to the keyboard comes back",
         input::echo_roundtrips(),
     );
-    // The identity first, because it decides what the set query is worth;
-    // recorded as answered, since `None` and a wrong number differ (D-176).
+    // The identity first, because it decides what the set query is worth; recorded as answered,
+    // since `None` and a wrong number differ.
     let identity = input::identity();
     let translated = identity == Some(TRANSLATED_MF2);
     if !translated && identity != Some(UNTRANSLATED_MF2) {
@@ -9621,22 +9419,22 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         translated || identity == Some(UNTRANSLATED_MF2),
     );
 
-    // Translation rewrites set-query replies, so this stays diagnostic and
-    // the decoder is proved from received bytes (D-178, D-179, D-239).
+    // Translation rewrites set-query replies, so this stays diagnostic and the decoder is proved
+    // from received bytes.
     let set = input::scancode_set();
     if !translated && set != Some(2) {
         warn!("keyboard: reports scancode set {set:?}, not 2");
     }
 
-    // Set up before the marker: the reader must be blocked before the harness
-    // presses, or an already-waiting keystroke proves nothing.
+    // Set up before the marker: the reader must be blocked before the harness presses, or an
+    // already-waiting keystroke proves nothing.
     report.check(
         "a blocked keyboard reader waits while the poller runs",
         a_blocked_reader_waits_while_the_poller_runs(),
     );
 
-    // Kept in step with READY_MARKER in `xtask/src/qemu.rs`; nothing may talk
-    // to the keyboard between the marker and the wait.
+    // Kept in step with READY_MARKER in `xtask/src/qemu.rs`; nothing may talk to the keyboard
+    // between the marker and the wait.
     let first_key = input::arm_key(ps2_keys::Key::A);
     let last_key = input::arm_key(ps2_keys::Key::Enter);
     let polling_before = input::poller_passes();
@@ -9669,8 +9467,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the blocked reader woke with the injected key through polling",
         the_blocked_reader_woke_with_the_key(polling_before),
     );
-    // Before the editing check: Enter is the last injected key and only a
-    // press echoes, so its release is when the console stops moving.
+    // Before the editing check: Enter is the last injected key and only a press echoes, so its
+    // release is when the console stops moving.
     report.check(
         "the injected editing keys arrive, ending with enter",
         last_key.is_some_and(input::await_armed_key),
@@ -9680,8 +9478,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_editing_keys_move_the_cursor(),
     );
 
-    // The set 1 path: QEMU honours the translation bit, producing the stream
-    // VMware delivers unasked, with a key the harness chose (D-179).
+    // The set 1 path: QEMU honours the translation bit, producing the stream VMware delivers
+    // unasked, with a key the harness chose.
     report.check(
         "the controller accepts translation being turned on",
         input::set_translation(crate::arch::current::i8042::Translation::Enabled),
@@ -9690,30 +9488,29 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "translation updates the decoder from the controller identity",
         input::decoder_matches_identity(),
     );
-    // Seeded against the stream on purpose: the round can succeed only by
-    // reading the bytes, as VMware forces (D-239).
+    // Seeded against the stream on purpose: the round can succeed only by reading the bytes, as
+    // VMware forces.
     input::assume_wrong_numbering();
-    // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, under the
-    // same rule: nothing talks to the keyboard between marker and wait.
+    // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, under the same rule: nothing
+    // talks to the keyboard between marker and wait.
     let translated_key = input::arm_key(ps2_keys::Key::B);
     awaiting(
         "selftest: awaiting translated keystroke",
         "  PRESS  b   for the last round",
     );
-    // `B`, not `A`, so the first round's stale event cannot satisfy this wait
-    // (D-155, D-165).
+    // `B`, not `A`, so the first round's stale event cannot satisfy this wait.
     report.check(
         "a translated keystroke decodes to the same key",
         translated_key.is_some_and(input::await_armed_key),
     );
-    // Ask only after a byte has arrived so this observes the active decoder
-    // instead of re-deriving it from the identity that configured it (D-239).
+    // Ask only after a byte has arrived so this observes the active decoder instead of re-deriving
+    // it from the identity that configured it.
     report.check(
         "the keyboard's numbering and the decoder's are the same",
         input::decoder_reads_what_arrives(),
     );
-    // Turned back off, and the question re-opened rather than answered from
-    // the written bit; the next decisive byte settles it (D-178, D-239).
+    // Turned back off, and the question re-opened rather than answered from the written bit; the
+    // next decisive byte settles it.
     let restored = input::set_translation(crate::arch::current::i8042::Translation::Disabled);
     report.check(
         "the decoder reads the set that arrives, not the bit that was written",
@@ -9741,7 +9538,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         apic::error_status() == 0,
     );
 
-    // Read this detector last so every preceding check can trip it (D-143).
+    // Read this detector last so every preceding check can trip it.
     report.check(
         "no lock is taken while a leaf guard is held",
         a_leaf_guard_is_the_last_lock(),
@@ -9774,8 +9571,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the dma domain reaches exactly the live queue frames",
         the_dma_domain_reaches_exactly_the_live_queue_frames(),
     );
-    // Before the translation toggle below, which flushes the unit's caches
-    // and would hide a stale translation this check exists to expose.
+    // Before the translation toggle below, which flushes the unit's caches and would hide a stale
+    // translation this check exists to expose.
     report.check(
         "a device write into an unmapped frame faults and changes nothing",
         a_device_write_into_an_unmapped_frame_faults_and_changes_nothing(),
@@ -9930,8 +9727,6 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
         && green & blue == 0
         && red & blue == 0;
 
-    // And the three compose as the format says, which disjoint masks alone
-    // do not show: a `pack` dropping a channel passes them (D-124).
     let white = pack(u8::MAX, u8::MAX, u8::MAX) == red | green | blue;
     let black = pack(0, 0, 0) == 0;
 
@@ -9944,11 +9739,10 @@ fn ports_are_exclusive() -> bool {
 
 fn a_save_stays_inside_its_area() -> bool {
     if !xstate::is_enabled() {
-        // The bounds check has no instruction to exercise; user launch refuses.
         return xstate::bytes() == 0;
     }
-    // The form is whatever the processor supports; what must hold on every
-    // processor is that the area was sized for the form in use.
+    // The form is whatever the processor supports; what must hold on every processor is that the
+    // area was sized for the form in use.
     xstate::save_stays_inside_its_area()
 }
 
@@ -9967,8 +9761,8 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
         *slot = handle;
     }
 
-    // Distinct values. Two claims of one slot would give the same index and
-    // the same generation, so the handles themselves would collide.
+    // Two claims of one slot would give the same index and the same generation, so the handles
+    // themselves would collide.
     let mut distinct = true;
     for (index, handle) in handles.iter().enumerate() {
         for earlier in &handles[..index] {
@@ -9976,8 +9770,8 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
         }
     }
 
-    // And every one still resolves — an overwrite leaves the loser naming a
-    // slot that is stale in its table rather than the object it was given.
+    // And every one still resolves — an overwrite leaves the loser naming a slot that is stale in
+    // its table rather than the object it was given.
     let all_live = handles
         .iter()
         .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Channel));
@@ -9998,8 +9792,7 @@ fn a_reclaimed_space_answers_nothing() -> bool {
     };
     let zero_is_live = space.zero_root_is_live_for_test();
 
-    // Something to look up, so the `None` below is about the reclaim and not
-    // about an empty space.
+    // Something to look up, so the `None` below is about the reclaim and not about an empty space.
     let Some(mut page) = mm::allocate_contiguous(1, 1) else {
         let reclaimed = space.reclaim(None).is_ok();
         drop(space);
@@ -10039,8 +9832,8 @@ fn a_reclaimed_space_answers_nothing() -> bool {
     let reclaimed = space.reclaim(None).is_ok();
     let empty = space.is_reclaimed();
 
-    // Counted, not observed: frame zero reads as zeros, so an unguarded
-    // `lookup` returns the same `None` the guard does (D-139).
+    // Counted, not observed: frame zero reads as zeros, so an unguarded `lookup` returns the same
+    // `None` the guard does.
     let refusals = paging::reclaimed_refusals();
 
     let silent = space.lookup(at).is_none();
@@ -10077,12 +9870,11 @@ fn a_refused_pair_of_claims_strands_neither() -> bool {
     // COM1 is the serial driver's, so any pair naming it must be refused.
     let refused = port::claim_pair::<u8, u8>(FREE, uart::COM1).is_none();
 
-    // And the free half is still free: chaining would have taken it on the
-    // way to failing.
+    // And the free half is still free: chaining would have taken it on the way to failing.
     let untouched = port::claim::<u8>(FREE).is_some();
 
-    // Which also proves the first line was a real refusal and not a refusal
-    // of `FREE` itself — it was claimable a moment later.
+    // Which also proves the first line was a real refusal and not a refusal of `FREE` itself — it
+    // was claimable a moment later.
     let taken_now = port::claim::<u8>(FREE).is_none();
 
     refused && untouched && taken_now
@@ -10137,7 +9929,6 @@ fn latch_admits_one() -> bool {
     !latch.is_claimed() && latch.claim() && !latch.claim() && latch.is_claimed()
 }
 
-/// Every input line on both legacy controllers, disconnected.
 const MASKED: u8 = 0xFF;
 
 fn a_lock_excludes_interrupts() -> bool {
@@ -10146,8 +9937,8 @@ fn a_lock_excludes_interrupts() -> bool {
     let mut context = context();
 
     let before = interrupt::are_enabled();
-    // The sanctioned order is one token-bearing outer lock and one inner leaf.
-    // Two leaves would trip D-143's detector and mask a later real violation.
+    // One token-bearing outer lock and one inner leaf. Two leaves would trip the lock-order
+    // detector and hide a later real violation.
     let outer_guard = outer.lock(&mut context);
     let excluded = !interrupt::are_enabled();
 
@@ -10182,7 +9973,6 @@ fn rates_are_believable() -> bool {
         && (500_000_000..=10_000_000_000).contains(&time::counter_hz())
 }
 
-/// What a continuous read of the clock saw.
 struct ClockSweep {
     monotonic: bool,
     advanced: bool,
@@ -10196,8 +9986,8 @@ fn sweep_clock() -> ClockSweep {
     const PAIRS: u32 = 1_000;
 
     let deadline = time::uptime_ms() + SPAN_MS;
-    // Seed with a real reading so the first comparison, sampled under a lock,
-    // is not vacuously monotonic against zero (D-124).
+    // Seed with a real reading so the first comparison, sampled under a lock, is not vacuously
+    // monotonic against zero.
     let mut previous = time::now_ns();
     let mut sweep = ClockSweep {
         monotonic: true,
@@ -10240,7 +10030,6 @@ fn sweep_clock() -> ClockSweep {
 }
 
 fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
-    // Fifty 100 Hz periods expose any surviving periodic source.
     const QUIET_MS: u64 = 500;
 
     let before = time::expiries();
@@ -10250,7 +10039,6 @@ fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
 
 fn the_timer_fires_about_once_a_slice() -> bool {
     const WINDOW_MS: u64 = 300;
-    /// `thread::SLICE_NS`, in the unit this window is measured in.
     const SLICE_MS: u64 = 3;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -10266,22 +10054,17 @@ fn the_timer_fires_about_once_a_slice() -> bool {
     STOP_SPINNING.store(1, Ordering::Release);
     let exited = yields_until(|| thread::free_slots() == free);
 
-    // A factor of four either way: the window is slice-quantised and
-    // hypervisor-jittered, and the cases differ by orders of magnitude.
     let expected = WINDOW_MS / SLICE_MS;
     exited && spent >= expected / 4 && spent <= expected * 4
 }
 
 fn a_sleeper_wakes_on_time_and_quietly() -> bool {
-    /// Long enough that a surviving tick would be caught many times, short
-    /// beside the harness's patience.
+    /// Long enough that a surviving tick would be caught many times, short beside the harness's
+    /// patience.
     const SLEEP_MS: u64 = 200;
-    // Five bounded validation windows plus wake slack; a 10 ms periodic source
-    // would exceed this budget fourfold.
+    // Five bounded validation windows plus wake slack; a 10 ms periodic source would exceed this
+    // budget fourfold.
     const EXPIRY_BUDGET: u64 = 7;
-    /// How late the wake may be. Nothing else is runnable, so the thread
-    /// resumes the moment its own timer fires — this is slack for the
-    /// hypervisor, not for the policy.
     const LATE_MS: u64 = 50;
 
     let expiries = time::expiries();
@@ -10290,15 +10073,13 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     let slept = time::uptime_ms() - before;
     let spent = time::expiries() - expiries;
 
-    // Two-sided: armed on the APIC clock and measured on the counter's, so a
-    // conversion wrong either way is a wait of the wrong length.
+    // Two-sided: armed on the APIC clock and measured on the counter's, so a conversion wrong
+    // either way is a wait of the wrong length.
     (SLEEP_MS..=SLEEP_MS + LATE_MS).contains(&slept) && (1..=EXPIRY_BUDGET).contains(&spent)
 }
 
 fn sleeping_hands_the_cpu_over() -> bool {
     const SLEEP_MS: u64 = 100;
-    /// A thread with the CPU to itself counts far more than this in 100 ms;
-    /// one scavenging a spin loop's leftovers counts far fewer.
     const PROGRESS: usize = 10_000;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -10318,11 +10099,10 @@ fn sleeping_hands_the_cpu_over() -> bool {
     progressed && woken && exited
 }
 
-// Interpret identity in the observed translation mode because a translator
-// rewrites replies and scancodes alike (D-178).
+// Interpret identity in the observed translation mode because a translator rewrites replies and
+// scancodes alike.
 const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
 
-/// The same keyboard, behind a controller that translates.
 const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
 fn keyboard_config_matches_its_routing() -> bool {
@@ -10334,8 +10114,8 @@ fn keyboard_config_matches_its_routing() -> bool {
         return false;
     };
 
-    // Translation stays off: a controller quietly converting to set 1 is the
-    // classic keyboard that types the wrong characters.
+    // Translation stays off: a controller quietly converting to set 1 is the classic keyboard that
+    // types the wrong characters.
     let raw = byte & TRANSLATE == 0;
     // The second port is never enabled — nothing is on it.
     let second_silent = byte & SECOND_IRQ == 0;
@@ -10345,7 +10125,6 @@ fn keyboard_config_matches_its_routing() -> bool {
 }
 
 fn ping_is_consistent(ping: Record) -> bool {
-    /// `RFLAGS` bit 9.
     const INTERRUPT_FLAG: u64 = 1 << 9;
 
     ping.vector == u64::from(vector::PING.get())
@@ -10355,7 +10134,6 @@ fn ping_is_consistent(ping: Record) -> bool {
 }
 
 fn frame_is_consistent(breakpoint: Record) -> bool {
-    /// Bit 1 of the flags register reads as one on every x86 ever made.
     const RESERVED_FLAG: u64 = 1 << 1;
 
     breakpoint.vector == u64::from(exception::BREAKPOINT)

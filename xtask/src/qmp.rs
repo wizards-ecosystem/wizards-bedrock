@@ -1,10 +1,5 @@
-//! QMP over the emulator's private standard streams (D-346).
-//!
-//! QEMU speaks QMP on the stdin and stdout pipes of the child the harness
-//! spawned, so no other local process can reach the control channel. One pump
-//! thread drains QEMU's output for the whole run and forwards each bounded
-//! message; every command carries an `id`, a deadline and a cancellation flag,
-//! and only the reply naming that `id` can answer it.
+//! QMP on the private stdin and stdout of the QEMU child.
+//! One pump drains output for the whole run; only the reply whose `id` matches can answer a command.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::Arc;
@@ -59,10 +54,8 @@ pub struct Qmp {
 }
 
 impl Qmp {
-    /// Read QEMU's greeting from `output` and negotiate capabilities.
-    ///
-    /// The pump thread keeps draining `output` until QEMU closes it, even
-    /// after a protocol failure, so a refused session never blocks QEMU.
+    /// Read QEMU's greeting and negotiate capabilities.
+    /// The pump keeps draining after a protocol failure so a refused session cannot block QEMU.
     pub fn negotiate(
         input: impl Write + Send + 'static,
         output: impl Read + Send + 'static,
@@ -208,8 +201,7 @@ struct WriteRequest {
     abandoned: Arc<AtomicBool>,
 }
 
-/// The caller waits with a deadline; only this one worker owns the OS writer.
-/// Closing its producer does not synchronously join a possibly blocked write.
+/// Only this worker owns the OS writer. Closing its producer does not join a blocked write.
 /// The machine owner must stop the child to close the peer after a refusal.
 struct CommandWriter {
     requests: Option<SyncSender<WriteRequest>>,
@@ -411,10 +403,7 @@ fn key_event(qcode: &str, down: bool) -> String {
 }
 
 /// Press and then release `qcode`.
-///
-/// Explicit down and up rather than the monitor's `sendkey`, whose automatic
-/// release fires on QEMU's schedule instead of ours; the kernel asserts both
-/// halves of the sequence, so both are stated.
+/// Explicit down and up: `sendkey` releases on QEMU's schedule, and the kernel checks both halves.
 fn key_arguments(qcode: &str) -> String {
     format!(
         r#"{{"events": [{}, {}]}}"#,

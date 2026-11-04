@@ -1,6 +1,4 @@
-//! SHA-256, so vendored binaries can be checksum-pinned without taking on a
-//! dependency for it. Straight from FIPS 180-4; verified against the NIST
-//! vectors below.
+//! SHA-256 for pinning vendored binaries without a dependency. FIPS 180-4, checked against the NIST vectors.
 
 const ROUND_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -19,10 +17,6 @@ const INITIAL_STATE: [u32; 8] = [
 
 const BLOCK_SIZE: usize = 64;
 
-/// Hash `data`.
-///
-/// # Panics
-///
 /// Panics if the resident input exceeds SHA-256's 64-bit length field.
 pub fn digest(data: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new();

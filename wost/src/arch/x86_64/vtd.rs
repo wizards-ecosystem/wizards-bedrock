@@ -1,25 +1,5 @@
-//! Intel VT-d: program one DMA-remapping domain over checked MMIO.
-//!
-//! The kernel maps the unit's register window (from the DMAR the firmware
-//! reports) and hands it here. This unit takes the hardware over from firmware,
-//! builds a default-deny root before PCI discovery, then may add a context for
-//! one storage function whose second-level tree maps only the frames
-//! [`map_segment`](Vtd::map_segment) installs, so every other requester and
-//! every address the device was not handed faults (D-357, D-389).
-//! Every bit layout is `libs/vtd`; every frame is an `mm::IommuTable`;
-//! the only volatile access is the checked register window, so this file adds
-//! no `unsafe`. Invalidation goes through the Context Command and IOTLB
-//! registers rather than an invalidation queue, and a unit that reports
-//! non-coherent page walks gets its table lines flushed rather than refused
-//! (D-358).
-//!
-//! The second-level tables live in one owned arena and are found by walking the
-//! tree the hardware walks. Root, context, deny-all interrupt, private
-//! invalidation-queue and second-level arenas are fixed frame owners with no
-//! heap:
-//! a storage candidate that allocates on the heap cannot restore its resource
-//! baseline (D-199), and a unit moved by value through the candidate's frames
-//! must stay small enough for the boot stack.
+//! Intel VT-d: program one DMA-remapping domain over checked MMIO. The kernel maps the unit's
+//! register window (from the DMAR the firmware reports) and hands it here.
 
 #[cfg(feature = "selftest")]
 use alloc::vec::Vec;
@@ -66,14 +46,12 @@ const INVALIDATION_COMPLETE: u32 = 1;
 
 /// Second-level tables one domain may hold, the top table included.
 ///
-/// Every 2 MiB region a mapped segment touches costs one leaf table, plus one
-/// table per upper level, and the four queues and one transfer buffer fit in a
-/// handful. The arena is allocated whole when the domain is established, so
-/// mapping never allocates and a full arena refuses rather than grows.
+/// Every 2 MiB region a mapped segment touches costs one leaf table, plus one table per upper
+/// level, and the four queues and one transfer buffer fit in a handful.
 const TABLE_LIMIT: usize = 24;
 
-/// Frames retained by one unit owner: root, context, IR table, QI queue and
-/// the fixed second-level arena.
+/// Frames retained by one unit owner: root, context, IR table, QI queue and the fixed second-level
+/// arena.
 pub const OWNED_TABLE_FRAMES: usize = TABLE_LIMIT + 4;
 
 /// Why a VT-d domain could not be established or changed.
@@ -96,8 +74,7 @@ pub enum VtdError {
         /// Raw capability register for the refused unit.
         capability: u64,
     },
-    /// The unit cannot prove that completed TE transitions drain both DMA
-    /// directions.
+    /// The unit cannot prove that completed TE transitions drain both DMA directions.
     NoDmaDraining,
     /// Firmware did not advertise platform interrupt-remapping support.
     NoPlatformInterruptRemapping,
@@ -111,14 +88,14 @@ pub enum VtdError {
     OutOfTables,
     /// A table frame was not page aligned, so no entry can name it.
     Misaligned,
-    /// Firmware left translation, queued invalidation, interrupt remapping or
-    /// compatibility-format interrupt delivery active at kernel takeover.
+    /// Firmware left translation, queued invalidation, interrupt remapping or compatibility-format
+    /// interrupt delivery active at kernel takeover.
     FirmwareFacilitiesActive {
         /// Global Status value observed by the read-only preflight.
         status: u32,
     },
-    /// The root-table pointer did not take: the status never reported it set,
-    /// or the pointer read back names another table.
+    /// The root-table pointer did not take: the status never reported it set, or the pointer read
+    /// back names another table.
     RootTableRefused,
     /// The interrupt-table pointer did not take or read back exactly.
     InterruptTableRefused,
@@ -276,10 +253,9 @@ pub struct UnitFacts {
     pub dma_draining: bool,
 }
 
-/// A programmed VT-d domain owner: after successful establishment translation
-/// is active through tables that reach only mapped segments; after an
-/// uncertain transition the complete value is retained without assuming the
-/// live hardware state.
+/// A programmed VT-d domain owner: after successful establishment translation is active through
+/// tables that reach only mapped segments; after an uncertain transition the complete value is
+/// retained without assuming the live hardware state.
 #[derive(Debug)]
 pub struct Vtd {
     registers: ReleasableDevice,
@@ -291,7 +267,7 @@ pub struct Vtd {
     iotlb_base: usize,
     fault_offset: usize,
     fault_registers: u16,
-    /// The command word every write to `GCMD` is built from (D-358).
+    /// The command word every write to `GCMD` is built from.
     gcmd: u32,
     root: PublishedIommuTable,
     context: PublishedIommuTable,
@@ -299,8 +275,8 @@ pub struct Vtd {
     interrupts: PublishedIommuTable,
     /// One-page queue used only while globally invalidating the IEC.
     invalidation_queue: PublishedIommuTable,
-    /// The second-level tables, one frame each; table 0 is the top level the
-    /// context points at, and the first `table_count` are carved.
+    /// The second-level tables, one frame each; table 0 is the top level the context points at, and
+    /// the first `table_count` are carved.
     tables: PublishedIommuTable,
     table_count: usize,
     #[cfg(feature = "selftest")]
@@ -311,11 +287,9 @@ pub struct Vtd {
 
 /// Proof that a DMA-remapping domain is active for one exact function.
 ///
-/// Minted only by [`Vtd::domain`] after translation is confirmed on and the
-/// function's context entry names the domain's own tables, and consumed by
-/// `wost::pci::admit_bus_master`, so no path enables bus mastering without the
-/// fence in place (D-357). The proof borrows the unit, so dropping or mutating
-/// its tables is impossible while that admission authority remains usable.
+/// Minted only by [`Vtd::domain`] after translation is confirmed on and the function's context
+/// entry names the domain's own tables, and consumed by `wost::pci::admit_bus_master`, so no path
+/// enables bus mastering without the fence in place.
 #[derive(Debug)]
 #[must_use = "a DMA domain proof is required to admit bus mastering"]
 pub struct DmaDomain<'unit> {
@@ -325,10 +299,8 @@ pub struct DmaDomain<'unit> {
 
 /// Linear proof that this unit blocks every interrupt from its exact function.
 ///
-/// Minted only after IRE, EIME and the compatibility-format block read back,
-/// IRTA names the owner's empty table, and queued invalidation is off. It is
-/// consumed beside [`DmaDomain`] when PCI admits BME (D-372), and keeps the
-/// minting unit borrowed until that use completes.
+/// Minted only after IRE, EIME and the compatibility-format block read back, IRTA names the owner's
+/// empty table, and queued invalidation is off.
 #[derive(Debug)]
 #[must_use = "interrupt isolation proof is required to admit bus mastering"]
 pub struct InterruptIsolation<'unit> {
@@ -352,8 +324,7 @@ impl DmaDomain<'_> {
 
 /// Whether platform firmware reported interrupt-remapping support.
 ///
-/// A `bool` at [`Vtd::establish_deny_all`] read as a bare `true` in
-/// `kernel/src/iommu.rs`. The variant is the fact the call is passing.
+/// A `bool` at [`Vtd::establish_deny_all`] read as a bare `true` in `kernel/src/iommu.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_enums,
@@ -399,8 +370,7 @@ pub enum Establishment {
         /// Register authority remains safe to return.
         registers: ReleasableDevice,
     },
-    /// A unit-wide write was attempted, so all possible hardware owners stay
-    /// inseparable.
+    /// A unit-wide write was attempted, so all possible hardware owners stay inseparable.
     Retained {
         /// Why the transition could not be proved complete.
         reason: VtdError,
@@ -409,8 +379,7 @@ pub enum Establishment {
     },
 }
 
-/// One recorded translation fault: the device named an address it was not
-/// handed.
+/// One recorded translation fault: the device named an address it was not handed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault {
     /// The requester's bus and device-and-function, as the unit saw them.
@@ -433,17 +402,15 @@ struct Plan {
 impl Vtd {
     /// Take the unit over behind an empty, default-deny DMA root.
     ///
-    /// Reads the unit's capabilities, refuses every active firmware remapping
-    /// facility, and installs kernel-owned empty DMA and interrupt tables from
-    /// an observed TE-off state. On return every requester faults until
-    /// [`retarget`](Self::retarget) publishes one selected context.
+    /// Reads the unit's capabilities, refuses every active firmware remapping facility, and
+    /// installs kernel-owned empty DMA and interrupt tables from an observed TE-off state.
     ///
     /// # Errors
     ///
-    /// The register window comes back with the reason when the window refuses
-    /// an access, the unit reports no usable width or domain, firmware's state
-    /// will not quiesce, a table frame is unavailable or misaligned, or the
-    /// hardware does not accept the root-table pointer or translation.
+    /// The register window comes back with the reason when the window refuses an access, the unit
+    /// reports no usable width or domain, firmware's state will not quiesce, a table frame is
+    /// unavailable or misaligned, or the hardware does not accept the root-table pointer or
+    /// translation.
     pub fn establish_deny_all(
         registers: ReleasableDevice,
         platform_interrupt_remapping: PlatformInterruptRemapping,
@@ -525,9 +492,6 @@ impl Vtd {
     /// Publish the kernel's empty roots from a firmware-quiescent state.
     ///
     /// Read-only preflight was repeated immediately before this transition.
-    /// A non-identical root is never installed while TE is active. Once TE is
-    /// enabled, a final read/write drain settles every request that could have
-    /// entered before the default-deny boundary became live.
     fn transition(&mut self) -> Result<(), VtdError> {
         self.mask_fault_interrupt()?;
         self.set_root_table()?;
@@ -580,13 +544,13 @@ impl Vtd {
         }
     }
 
-    /// Map `segment` into the domain, identity, and invalidate the unit's
-    /// cache. Any failure that cannot prove rollback retains the segment here,
-    /// before a caller can accidentally recycle device-reachable frames.
+    /// Map `segment` into the domain, identity, and invalidate the unit's cache.
+    ///
     /// # Errors
     ///
     /// [`SegmentChangeError::Refused`] when the map is rolled back, and
     /// [`SegmentChangeError::Retained`] when rollback itself cannot be proved.
+    /// A failure that cannot prove rollback retains the segment.
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         self.map_segment_with::<true, true>(segment)
@@ -683,14 +647,13 @@ impl Vtd {
         }
     }
 
-    /// Remove `segment` from the domain and drain every older DMA request before
-    /// returning. Any uncertain failure retains the segment before returning.
+    /// Remove `segment` from the domain and drain every older DMA request before returning. Any
+    /// uncertain failure retains the segment before returning.
     ///
     /// # Errors
     ///
-    /// [`SegmentChangeError::Refused`] when the segment is not mapped here or
-    /// its range does not fit, and [`SegmentChangeError::Retained`] when a
-    /// page clear or DMA drain cannot be proved.
+    /// [`SegmentChangeError::Refused`] when the segment is not mapped here or its range does not
+    /// fit, and [`SegmentChangeError::Retained`] when a page clear or DMA drain cannot be proved.
     ///
     /// # Panics
     ///
@@ -734,8 +697,8 @@ impl Vtd {
         }
     }
 
-    /// Clear an inclusive page range and drain every request that could still
-    /// use one of its cached translations.
+    /// Clear an inclusive page range and drain every request that could still use one of its cached
+    /// translations.
     fn rollback_range(&mut self, start: u64, last: u64) -> Result<(), VtdError> {
         let mut page = start;
         let mut failure = None;
@@ -757,16 +720,16 @@ impl Vtd {
         self.forced_invalidation_failures = count;
     }
 
-    /// Number of read-and-write-drained IOTLB invalidations completed by this
-    /// owner, including the takeover drain and every live revocation drain.
+    /// Number of read-and-write-drained IOTLB invalidations completed by this owner, including the
+    /// takeover drain and every live revocation drain.
     #[cfg(feature = "selftest")]
     pub const fn completed_dma_drains_for_test(&self) -> u64 {
         self.completed_dma_drains
     }
 
-    /// Mint a proof that this domain isolates the function it was established
-    /// for: translation is on, the root entry for the bus names the context
-    /// table, and the function's context entry names this domain's own tree.
+    /// Mint a proof that this domain isolates the function it was established for: translation is
+    /// on, the root entry for the bus names the context table, and the function's context entry
+    /// names this domain's own tree.
     #[must_use]
     pub fn domain(&self) -> Option<DmaDomain<'_>> {
         let function = self.function?;
@@ -860,8 +823,8 @@ impl Vtd {
 
     /// Read and clear the first recorded translation fault, if any.
     ///
-    /// An overflowed fault log is acknowledged first, because the unit records
-    /// nothing new while the overflow stands.
+    /// An overflowed fault log is acknowledged first, because the unit records nothing new while
+    /// the overflow stands.
     #[must_use]
     pub fn take_fault(&mut self) -> Option<Fault> {
         let status = FaultStatus::from_bits(
@@ -910,15 +873,12 @@ impl Vtd {
 
     /// Revoke the selected context while keeping translation default-deny.
     ///
-    /// The root entry becomes absent before global invalidation and a complete
-    /// read/write drain. Only after older requests are gone are the unpublished
-    /// context and second-level bytes cleared. TE, IRE, the register window and
-    /// both kernel roots remain owned for the rest of the boot.
+    /// The root entry becomes absent before global invalidation and a complete read/write drain.
     ///
     /// # Errors
     ///
-    /// [`VtdError`] when the interrupt boundary is already lost, invalidation
-    /// does not complete, or the drain cannot be proved.
+    /// [`VtdError`] when the interrupt boundary is already lost, invalidation does not complete, or
+    /// the drain cannot be proved.
     pub fn park(&mut self) -> Result<(), VtdError> {
         if !self.boundary_active() {
             return Err(VtdError::InterruptBoundaryLost);
@@ -936,9 +896,7 @@ impl Vtd {
 
     /// Reuse a live default-deny owner for a replacement DMA requester.
     ///
-    /// Context and second-level memory are prepared behind an absent root
-    /// entry. Publishing that entry is the first live change; global
-    /// invalidation follows while TE and IRE remain enabled.
+    /// Context and second-level memory are prepared behind an absent root entry.
     pub fn retarget(&mut self, function: Address) -> Retargeting {
         if !self.boundary_active() {
             return Retargeting::Retained(VtdError::InterruptBoundaryLost);
@@ -963,8 +921,8 @@ impl Vtd {
         Retargeting::Retargeted
     }
 
-    /// Clear only the DMA tables while the unit is parked. The interrupt table
-    /// is a distinct owned frame and is deliberately untouched.
+    /// Clear only the DMA tables while the unit is parked. The interrupt table is a distinct owned
+    /// frame and is deliberately untouched.
     fn clear_dma_tables(&mut self) -> Result<(), VtdError> {
         for index in 0..ENTRIES {
             if !self.root.write_u64(index, 0) || !self.context.write_u64(index, 0) {
@@ -979,8 +937,8 @@ impl Vtd {
         Ok(())
     }
 
-    /// Every page the second-level tree the unit walks currently reaches,
-    /// read back from the table frames rather than from any shadow of them.
+    /// Every page the second-level tree the unit walks currently reaches, read back from the table
+    /// frames rather than from any shadow of them.
     #[cfg(feature = "selftest")]
     pub fn reachable_pages_for_test(&self) -> Option<Vec<u64>> {
         let mut pages = Vec::new();
@@ -1020,8 +978,8 @@ impl Vtd {
                 if child >= TABLE_LIMIT {
                     return Err(VtdError::OutOfTables);
                 }
-                // Carved from the arena zeroed at establishment, so the new
-                // table is empty before any entry points at it.
+                // Carved from the arena zeroed at establishment, so the new table is empty before
+                // any entry points at it.
                 let pointer = second_level::table_pointer(self.table_address(child));
                 if !self.tables.write_u64(slot, pointer) {
                     return Err(VtdError::OutOfTables);
@@ -1113,10 +1071,7 @@ impl Vtd {
 
     /// Globally invalidate the interrupt-entry cache through a private queue.
     ///
-    /// SIRTP does not imply this invalidation on the baseline hardware the
-    /// kernel supports. The wait descriptor's status write is the completion
-    /// boundary; QI is disabled again before register-based DMA invalidation
-    /// can be used.
+    /// SIRTP does not imply this invalidation on the baseline hardware the kernel supports.
     fn invalidate_interrupt_cache(&mut self) -> Result<(), VtdError> {
         let invalidate = InvalidationDescriptor::global_interrupt_entry_cache();
         let status_address =
@@ -1154,8 +1109,8 @@ impl Vtd {
                 .invalidation_queue
                 .read_u64(INVALIDATION_STATUS_INDEX)
                 .is_some_and(|value| {
-                    // The completion code lives in the low half. High bits are
-                    // a separate status field and must not reject a match.
+                    // The completion code lives in the low half. High bits are a separate status
+                    // field and must not reject a match.
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "queued-invalidation completion is the low 32 bits"
@@ -1228,8 +1183,8 @@ impl Vtd {
 
     /// Permanently mask the unit's own fault-event MSI.
     ///
-    /// Intel specifies that this message never traverses interrupt remapping,
-    /// so polling fault records is the only compatible default-deny policy.
+    /// Intel specifies that this message never traverses interrupt remapping, so polling fault
+    /// records is the only compatible default-deny policy.
     fn mask_fault_interrupt(&mut self) -> Result<(), VtdError> {
         let prior = read_u32(&self.registers, crate::usize_from_u64(vtd::FECTL))?;
         write_u32(
@@ -1266,10 +1221,9 @@ impl Vtd {
         )
     }
 
-    /// Complete an architected read/write drain. During a unit transition every
-    /// requester is already behind translation; during live revocation the
-    /// affected root or leaves are already clear. Later requests therefore
-    /// fault instead of reaching memory that the caller may recycle.
+    /// Complete an architected read/write drain. During a unit transition every requester is
+    /// already behind translation; during live revocation the affected root or leaves are already
+    /// clear.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
         let command_register =
@@ -1364,8 +1318,6 @@ impl Plan {
     /// Read and validate every capability needed before the first unit write.
     ///
     /// All firmware-owned remapping facilities must already be inactive.
-    /// This read-only boundary refuses a live non-identical SRTP and avoids
-    /// guessing at firmware queue or interrupt-remapping quiescence (D-389).
     fn read(
         registers: &ReleasableDevice,
         platform_interrupt_remapping: PlatformInterruptRemapping,
@@ -1417,8 +1369,8 @@ fn read_u64(registers: &ReleasableDevice, offset: usize) -> Result<u64, VtdError
     Ok(u64::from(low) | (u64::from(high) << 32))
 }
 
-/// Write a 64-bit register as its two aligned 32-bit halves, low first so a
-/// command bit in the high half triggers after the low half is in place.
+/// Write a 64-bit register as its two aligned 32-bit halves, low first so a command bit in the high
+/// half triggers after the low half is in place.
 fn write_u64(registers: &mut ReleasableDevice, offset: usize, value: u64) -> Result<(), VtdError> {
     let (low, high) = crate::u32_halves(value);
     write_u32(registers, offset, low)?;

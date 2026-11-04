@@ -1,8 +1,6 @@
 //! Architectural checks for a 64-bit return to ring three.
 //!
-//! `iretq` consumes selectors, addresses and flags together. Keeping their
-//! pure admission rule here makes the final privileged adapter small and gives
-//! every field a host witness (D-368).
+//! `iretq` consumes selectors, addresses and flags together.
 
 use crate::Selector;
 
@@ -12,10 +10,6 @@ const ALWAYS_ONE: u64 = 1 << 1;
 const INTERRUPT: u64 = 1 << 9;
 
 /// Flags a 64-bit user context may carry through this kernel's `iretq`.
-///
-/// Condition codes, tracing, direction, resume, alignment checking and CPUID
-/// discovery are user state. System fields, virtual-8086 state and every
-/// reserved bit are deliberately absent.
 const USER_FLAGS: u64 = (1 << 0)
     | ALWAYS_ONE
     | (1 << 2)
@@ -60,10 +54,6 @@ impl UserReturnState {
 
     /// Validate one return against the installed user selectors and low-half
     /// address boundary.
-    ///
-    /// `user_end` is the first address outside admitted user register state.
-    /// Passing it in keeps paging policy at the caller while this crate owns
-    /// the architectural relationship among all five words.
     ///
     /// # Errors
     ///

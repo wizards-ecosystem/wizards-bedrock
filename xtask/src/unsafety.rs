@@ -1,21 +1,5 @@
-//! Counting the `unsafe` in `wost`, and holding it to a budget.
-//!
-//! `010` §1 is explicit that the framekernel paper's ~14% TCB *ratio* is not
-//! evidence of anything: a percentage falls when safe code is added, which is
-//! not a safety improvement, and it rises when unsafe code is deleted from a
-//! shrinking crate, which is not a regression. **Absolute lines are the
-//! relevant audit cost**, because the number a reviewer must read is the
-//! number of lines, and D-77's phase-close instruction is to track them
-//! against a budget rather than a ratio.
-//!
-//! So this counts lines *inside* `unsafe` blocks — not occurrences of the
-//! word, which double-counts every `// SAFETY:` comment that mentions it, and
-//! not blocks, which says nothing about how much is in each.
-//!
-//! The budget is a ceiling deliberately set close to the current number. A
-//! generous one would never fire, and a budget that never fires is a claim
-//! (D-28). Raising it is a reviewable line in a commit, which is the whole
-//! mechanism.
+//! Count lines inside `unsafe` blocks in `wost` and hold that count to a budget.
+//! A budget that cannot fire is not a check; comments and declarations are not operations.
 
 use std::path::Path;
 
@@ -75,20 +59,14 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 }
 
 /// Lines of `unsafe` `wost` may hold.
-///
-/// The measurement and per-file audit records below are executable evidence;
-/// change history belongs in the decision log (D-124).
 pub const BUDGET: usize = 386;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
-///
 /// Kept separately because a ceiling cannot reveal drift below it.
 pub const MEASURED: usize = 386;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
-///
-/// Parsed Rust syntax rather than occurrences of the word: comments, strings
-/// and unsafe declarations are not operations and do not enter this count.
+/// Parsed syntax: comments, strings, and declarations are not operations.
 pub fn measure(directory: &Path) -> Result<(usize, usize)> {
     let mut lines = 0;
     let mut blocks = 0;
@@ -140,121 +118,121 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "aa3af1cad3237fbc2d4e9f9628de106a505ffda531ba7984ff99739bdaef704c",
+            "270458aeed7af26973e46803fe2e850e6cc9c12dcb19b34634ad337c9fd070ff",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "fe352dd9bae78898442b2e9e760958b11ac95bcaef281d3a76d7eb0d4dd7cd73",
+            "ecce35feb9b7fa0d71210480b4f270f7d74c6bd930f8d06f7d1d75c9cc25f28d",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "b3c0b43174925197d1008717c6548896d76da5352437efdd826751ec92679189",
+            "5e51be12a58a24cba455378ce07fc641bedd2aecde74a46c13d7b8f883b568ae",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
             2,
             0,
-            "f87adbb7990bc1821549b69602b11c07ca0d0c77657089e6f936c59e64fc0599",
+            "6010b7466563d53cca7320c4e5efe06da5e51f0f1df67c9653a6ec84663ae8a0",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
             2,
             1,
-            "c0a23acd651343eb745e8f23fe4ddb571cf7ddc83adf48663f1c9ddd0f8fee4e",
+            "c277cb79205ba0018012ba90d70d2618f41590093b0937c874a73254b5964163",
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
             14,
             0,
-            "56840a41bf8b25c3fae2c193572337d21dbaed5ffc2bfe2e2fb4bf168873c8af",
+            "84265573baa6ea7014c34aca361709d52c49f3bd37c7e5ef4495115425fe26d8",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
             2,
             0,
-            "4cf6b632b37b1be9af9c66a885a9b7e40650a494a69a075ac5e00f4b265d916c",
+            "8fbe2f7c898ace42568113259a4d311fa2e41fd3440fd60a9cc83ec7b70b05e0",
         ),
         (
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "d1c64a346c5a9b2aaff13dd58877414a51cbdd0f87aaab2d97de655ed53063ef",
+            "5ecf3b5ef6ee9b7673d659b7a458379008db9ac72fcaffa3021b1abbf5d34a91",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
             14,
             0,
-            "59013835771cf5b851cf7b46dcc220075f2d2abd365358481980e5496a469be9",
+            "67291cd83ece3470c4694337831b355f4bc1cbdcf4c040314b7fd8ca9f03d501",
         ),
         (
             "wost/src/arch/x86_64/shared_memory.rs",
             2,
             2,
-            "6143ca421ca29d7c048b84661bdd13768bd3a0d5c40d4746c2831e500304a8d0",
+            "21a7992a4cb834274416c74b5a3b0de3f22b7facc27ddbbc12bde8c6f8eaf3e6",
         ),
         (
             "wost/src/arch/x86_64/task.rs",
             14,
             2,
-            "cf7c1441b82ddae91f74578af2e7e62f030d913111f9abcbfcb9891c1c0637aa",
+            "7678136c97ab186c3516f4a74bb5c2db11ecc7f8bcb5fcb9d7f1c66af1e926d4",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
             5,
             1,
-            "b34469cb03926fc0cc30557b83fd9ca5bad14899649ce7270488261eaf533720",
+            "a60dd3d145a34a9f9e6a9ae0f83c50ac9fd51f901ff7ef7c0d78e5a3635dbe2c",
         ),
         (
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "dcc55812ee72761433d28d1e84f3966ae402ca17e5b46e51408d00a82b5f64d5",
+            "faa6844d69eb2088247bcb3385eca1401672f20441fac384d61daa7d760f1d51",
         ),
         (
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "0be21cc13342e85ee4577e152cfeffa77b151f419e45d6ee394471210e1351e0",
+            "716b93e40af90b0a3b6c8569b4e048424b5072a3c4484ac63f44d64d40d028bd",
         ),
         (
             "wost/src/boot/mod.rs",
             0,
             1,
-            "acbbc2fa50dac91c9c896a4bf586ee05d115f0923575238f7b6d94339f4ba62b",
+            "813ba6bd456ac865a936bdd37668c7f28a9b24ac93f155ceffbfe1a5de9f6074",
         ),
         (
             "wost/src/cell.rs",
             0,
             1,
-            "92e1579f8d90b74e8d0897dc5a1da8e23b238131d156d7a565b36ae82b6b4ce9",
+            "0d26fb8fb7ab8b7e9de0329c9531006a77e9bf8f448e0a85a5b2e25d2ae06f85",
         ),
         (
             "wost/src/mm/heap.rs",
             6,
             5,
-            "fc3e3eda92f73a6e1c639fd458bf5e79e264b7c83d1a577c418815cf1765b674",
+            "af61cb302c4ee5fce60898eb621f99662ca152d7c9abe591684ad38af8b4feef",
         ),
         (
             "wost/src/mm/mod.rs",
             17,
             3,
-            "5fe4c21c0109a0ee920da5ef6874da3f939538e86441d3341bc3dc4b789def20",
+            "e1366f5257705e0438d7ef7cb48805d82db0953f465cbcacf23e069b28e367c3",
         ),
         (
             "wost/src/mmio.rs",
             2,
             2,
-            "61e84ab9ad4c68022897bf2fc8d9893884574a46ed2219e77541d3d6d82ec83f",
+            "07b811a919ca5e3d90f2dc1252c2d5d4cfa6dca7a8708413f40bc4e9588040ec",
         ),
         (
             "wost/src/sync.rs",
             4,
             4,
-            "c6d89b812ce5ae45ee8e15bbdadb6e1167eb9689f359255622dce79b8a66215d",
+            "30890a520f87c4377839791482edabbd11fcc3051af528738fa9274a15eedc67",
         ),
     ];
 
@@ -355,9 +333,7 @@ mod tests {
         );
     }
 
-    /// `kernel/` has none at all, which `#![deny(unsafe_code)]` enforces — so
-    /// this is the check that the *counter* agrees with the lint, and would
-    /// notice an `#[allow]` slipped in beside it.
+    /// The counter must agree with `#![deny(unsafe_code)]`, including an `#[allow]` slipped in beside it.
     #[test]
     fn the_kernel_has_no_unsafe_at_all() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -368,7 +344,7 @@ mod tests {
     }
 
     /// Check the declarations because counting blocks cannot see an unused
-    /// `unsafe fn` or `unsafe impl` (D-147).
+    /// `unsafe fn` or `unsafe impl`.
     #[test]
     fn the_crate_boundary_is_still_declared() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -399,7 +375,7 @@ mod tests {
         );
 
         // `kernel/` denies rather than forbids, because `wost`'s `entry!`
-        // macro expands `#[allow(unsafe_code)]` items into it (D-67).
+        // macro expands `#[allow(unsafe_code)]` items into it.
         let main = std::fs::read_to_string(root.join("kernel/src/main.rs")).expect("main.rs");
         assert!(
             main.contains("#![deny(unsafe_code)]"),

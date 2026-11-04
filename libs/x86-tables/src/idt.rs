@@ -1,8 +1,4 @@
 //! Interrupt descriptor table gates.
-//!
-//! A 64-bit gate is sixteen bytes that name a handler, the code selector to
-//! enter it with, and optionally one of the seven interrupt stacks in the
-//! task-state segment.
 
 use crate::Selector;
 
@@ -21,9 +17,9 @@ pub const TABLE_LIMIT: u16 = (TABLE_BYTES - 1) as u16;
 
 /// Present, ring 0, 64-bit interrupt gate.
 ///
-/// An interrupt gate clears the interrupt flag on entry; the trap gate that
-/// does not is deliberately unavailable, because a handler that wants to run
-/// with interrupts on should say so itself.
+/// An interrupt gate clears the interrupt flag on entry; the trap gate that does not is
+/// deliberately unavailable, because a handler that wants to run with interrupts on
+/// should say so itself.
 const INTERRUPT_GATE: u8 = 0x8E;
 
 /// Highest interrupt stack table index a gate can select.
@@ -57,10 +53,6 @@ impl Gate {
 
     /// An interrupt gate entering `handler` through `selector`.
     ///
-    /// `stack` selects an entry in the task-state segment's interrupt stack
-    /// table, counted from 1; zero means the handler runs on whichever stack
-    /// was in use when the interrupt arrived.
-    ///
     /// # Panics
     ///
     /// Panics if `stack` exceeds 7.
@@ -86,14 +78,6 @@ impl Gate {
     }
 
     /// An interrupt gate ring 3 may invoke with `int`.
-    ///
-    /// The same gate in every respect but its descriptor privilege level.
-    /// A gate at DPL 0 raises a general-protection fault when user code names
-    /// it, which is what every vector in this table should do — a device's
-    /// line is not a service. Exactly one gate is opened this way, and it is
-    /// the kernel's entry (D-96).
-    ///
-    /// An interrupt gate clears IF before kernel stack discipline exists.
     ///
     /// # Panics
     ///
@@ -165,17 +149,6 @@ mod tests {
 
     /// A user-callable gate differs from an ordinary one by its privilege and
     /// nothing else.
-    ///
-    /// The bit that lets ring 3 in is the only one that may change. A gate
-    /// that also became a trap gate, or lost its stack, would be a different
-    /// kind of entry wearing the same name — and it would work, which is what
-    /// makes it worth checking (D-96).
-    ///
-    /// The equalities against `ordinary` are identities: `callable_from_user`
-    /// delegates to `interrupt` and then sets two bits of `attributes`, so the
-    /// handler, selector and stack are literally the same fields, and
-    /// `((a | 0x60) >> 5) & 3 == 3` for every `a`. Transcribed bytes instead —
-    /// the whole attribute word, against the manual (D-105).
     #[test]
     fn a_user_callable_gate_differs_only_in_privilege() {
         let selector = Selector::new(1, 0);
@@ -195,13 +168,6 @@ mod tests {
     }
 
     /// The bytes the CPU reads are where the manual says they are.
-    ///
-    /// `tss::TaskState` got these pins from D-95 and `Gate` did not, though it
-    /// is equally a structure hardware parses byte for byte. Swapping
-    /// `interrupt_stack` and `attributes` keeps the size at sixteen and leaves
-    /// every accessor round-tripping through its own named field — the shipped
-    /// table then reads IST where DPL should be, with every test green
-    /// (D-105).
     #[test]
     fn a_gate_is_laid_out_the_way_the_manual_says() {
         use core::mem::{align_of, offset_of, size_of};
@@ -218,12 +184,6 @@ mod tests {
     }
 
     /// And every field of a built gate holds the value the manual asks for.
-    ///
-    /// Read as fields rather than through the accessors, because an accessor
-    /// and the field it names always agree — that is what left the split of
-    /// the handler address across three fields unchecked. Together with the
-    /// offsets above this is the sixteen bytes, which `libs/` cannot
-    /// `transmute` to (D-105).
     #[test]
     fn a_built_gate_holds_the_encoding_the_manual_asks_for() {
         let gate = Gate::interrupt(0xffff_8000_1234_5678, Selector::new(1, 0), 1);

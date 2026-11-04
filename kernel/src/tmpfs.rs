@@ -1,35 +1,19 @@
-//! A filesystem made of memory.
+//! An in-memory filesystem, the second VFS backend.
 //!
-//! The second backend, and `014` says why there has to be one: *the VFS needs
-//! at least two backends before its abstraction is anything but a guess.* A
-//! directory trait with one implementation is a description of that
-//! implementation.
-//!
-//! **Deliberately unlike FAT32 in the ways that matter.** It has no clusters,
-//! no chains, no on-disk anything, and its directories are a flat table with
-//! parent indices rather than a linked structure on a device. If the VFS's
-//! three operations fit both, they are about directories rather than about
-//! FAT.
-//!
-//! **Fixed-size and read-only before the Wizzy gate.** The arena is a `static`;
-//! admitting growth here would invent the post-gate write protocol before its
-//! caller. What is here is populated once, at boot.
+//! Flat parent indices, no clusters. Fixed and read-only so growth does not invent the write
+//! protocol.
 
 use wost::sync::{Once, SpinLock};
 
-/// Entries the arena holds.
 const MAX_ENTRIES: usize = 8;
 
-/// Bytes of file content the arena holds.
 const MAX_BYTES: usize = 512;
 
-/// The longest name an entry may have.
 const MAX_NAME: usize = 16;
 
 /// The index of the root directory, which always exists.
 pub(crate) const ROOT: usize = 0;
 
-/// What an entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// A directory: other entries name it as their parent.
@@ -38,7 +22,6 @@ enum Kind {
     File { at: usize, len: usize },
 }
 
-/// One entry.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     name: [u8; MAX_NAME],
@@ -48,7 +31,6 @@ struct Entry {
 }
 
 impl Entry {
-    /// The unused slot.
     const EMPTY: Self = Self {
         name: [0; MAX_NAME],
         name_len: 0,
@@ -57,7 +39,6 @@ impl Entry {
     };
 }
 
-/// The whole filesystem.
 #[derive(Debug)]
 struct Arena {
     entries: [Entry; MAX_ENTRIES],
@@ -75,7 +56,6 @@ impl Arena {
     };
 }
 
-/// The one instance.
 static ARENA: SpinLock<Arena> = SpinLock::new(Arena::EMPTY);
 static INIT: Once = Once::new();
 
@@ -84,8 +64,8 @@ pub(crate) fn init() {
     assert!(INIT.claim(), "tmpfs initialized twice");
     let mut arena = Arena::EMPTY;
 
-    // The root, which is its own parent — the only entry that is, and the
-    // reason nothing needs a separate "is the root" flag.
+    // The root, which is its own parent — the only entry that is, and the reason nothing needs a
+    // separate "is the root" flag.
     arena.entries[ROOT] = Entry {
         name: [0; MAX_NAME],
         name_len: 0,
@@ -183,8 +163,8 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     let arena = ARENA.lock_leaf();
     for index in 0..arena.used {
         let entry = &arena.entries[index];
-        // The parent is the whole containment check; `index != ROOT` stops
-        // the root, its own parent, from being found inside itself.
+        // The parent is the whole containment check; `index != ROOT` stops the root, its own
+        // parent, from being found inside itself.
         if index == ROOT || entry.parent != directory {
             continue;
         }
@@ -262,11 +242,6 @@ pub(crate) fn list(directory: usize) -> Option<Listing> {
 }
 
 /// Copy bytes of a file into `into`, starting `offset` in.
-///
-/// Returns how many were copied, which is fewer than asked for at the end of
-/// the file and zero past it — the same shape as every other backend's, and
-/// with the same reason: **offsets are per operation** and nothing here holds
-/// a cursor (D-152, D-171).
 pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usize {
     if offset >= len {
         return 0;

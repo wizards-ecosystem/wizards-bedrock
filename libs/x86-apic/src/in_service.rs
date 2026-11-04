@@ -30,9 +30,6 @@ pub enum DismissalOwnership {
 }
 
 /// Return the highest-priority vector present in the eight ISR words.
-///
-/// The APIC dismisses that vector when software writes EOI, so a lower set bit
-/// cannot authorize the write while a higher-priority delivery is nested.
 pub fn highest(registers: &[u32; 8]) -> Option<u8> {
     for (bank, bits) in registers.iter().enumerate().rev() {
         if *bits != 0 {

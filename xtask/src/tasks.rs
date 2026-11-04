@@ -1,7 +1,5 @@
 //! The check, format, and housekeeping tasks.
-//!
-//! Each Cargo-driven task runs over every graph in `crate::gate::REGISTRY`,
-//! so standalone commands and the complete local gate cannot drift apart.
+//! Each Cargo-driven task runs over every graph in `crate::gate::REGISTRY`, so standalone commands and `ci` cannot drift.
 
 use std::path::Path;
 use std::time::Duration;
@@ -34,10 +32,7 @@ pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
 }
 
 /// Lint every crate, treating warnings as errors.
-///
-/// The `-D warnings` goes after `--` on purpose: setting `RUSTFLAGS` instead
-/// would replace the target rustflags in `.cargo/config.toml` and silently
-/// build a kernel without `code-model=kernel`.
+/// `-D warnings` goes after `--`: `RUSTFLAGS` would replace `.cargo/config.toml` and drop `code-model=kernel`.
 pub fn clippy(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
@@ -49,13 +44,8 @@ pub fn clippy(paths: &Paths) -> Result<()> {
     )
 }
 
-/// Build the documentation, so the doc-link lints have something to fire on.
-///
-/// `missing_docs` notices a doc comment that is absent; nothing notices one
-/// that points at a name since renamed or made private, because
-/// `rustdoc::broken_intra_doc_links` only fires under rustdoc — which no other
-/// gate step runs. The lints themselves are declared in `[workspace.lints]`,
-/// so an editor reports them too; this is what makes them a gate.
+/// Build the documentation so intra-doc link lints have something to fire on.
+/// `rustdoc::broken_intra_doc_links` runs only under rustdoc, which no other gate step does.
 pub fn doc(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
@@ -85,20 +75,13 @@ pub fn test(paths: &Paths) -> Result<()> {
 }
 
 /// Boot a self-test kernel under QEMU and require its verdict.
-///
-/// This is the only automated check that exercises the kernel on a machine
-/// rather than as arithmetic on the host.
+/// This is the check that runs the kernel on a machine rather than as host arithmetic.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
     qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
 }
 
 /// Boot a self-test kernel while preserving a valid failed or panic verdict.
-///
-/// # Errors
-///
-/// If the kernel cannot be built, QEMU cannot run, or its serial and exit
-/// evidence do not form one valid outcome.
 pub fn observe_test_boot(
     paths: &Paths,
     profile: Profile,
@@ -109,10 +92,7 @@ pub fn observe_test_boot(
 }
 
 /// How long a self-test boot may take, by profile.
-///
-/// A debug kernel runs several times slower under emulation — a console
-/// scroll alone costs the better part of a second — so holding it to the
-/// release budget would report load as a hang.
+/// A debug kernel under emulation is slower; the release budget would report that as a hang.
 const fn selftest_timeout(profile: Profile) -> Duration {
     match profile {
         Profile::Release => SELFTEST_TIMEOUT,
@@ -124,15 +104,12 @@ const fn selftest_timeout(profile: Profile) -> Duration {
 /// a hung kernel is reported rather than waited on.
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Machine mutations can trigger several bounded red paths before their exact
-/// witness. Keep enough room for those paths and the interactive rounds while
-/// retaining exact shorter deadlines for mutations whose property is timeout.
+/// Machine mutations can take several bounded red paths before their exact witness.
+/// Keep room for those paths, and keep shorter deadlines where the property is the timeout itself.
 pub(crate) const MUTATION_SELFTEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Boot the shipped kernel and require it to reach its steady state.
-///
-/// The self-test kernel exits at the debug-exit device the moment it has a
-/// verdict; this boots the image that goes on the disk.
+/// The self-test kernel exits at the debug device; this boots the image that goes on the disk.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
     boot_shipped_image(paths, image.path())
@@ -142,9 +119,8 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
     qemu::run_boot_check(paths, image, BOOT_SETTLE)
 }
 
-/// Boot without PCI configuration or x2APIC and require both refusals, then
-/// boot the shipped kernel without a remapping unit and require storage to
-/// refuse rather than run unisolated (D-357).
+/// Boot without PCI configuration or x2APIC and require both refusals.
+/// Then boot without a remapping unit and require storage to refuse rather than run unisolated.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     match observe_degraded_boot(paths, profile)? {
         qemu::DegradedOutcome::Panicked {
@@ -463,12 +439,7 @@ fn for_each_pass(
 }
 
 /// The command line for one pass.
-///
-/// `--all-targets` goes to the host half only, and only for a subcommand that
-/// takes it. The kernel crates have no test or bench targets and cannot have
-/// any, but the host crates do — and without it neither `check` nor `clippy`
-/// ever sees their test code. A `useless_vec` in `sha256.rs`'s tests sat there
-/// unreported until someone ran clippy by hand.
+/// `--all-targets` goes to the host half only, and only for a subcommand that takes it.
 fn pass_args(
     subcommand: &str,
     pass: gate::CargoPass,
@@ -691,9 +662,8 @@ mod tests {
         }
     }
 
-    /// Kernel passes are cross-compiled and host passes are not — the property
-    /// that stops a kernel crate being checked for the host triple, which is
-    /// what produces phantom errors across every kernel file.
+    /// Kernel passes are cross-compiled and host passes are not.
+    /// Checking a kernel crate for the host triple produces phantom errors across every kernel file.
     #[test]
     fn only_the_host_pass_builds_for_the_host() {
         for pass in gate::REGISTRY.cargo_passes() {

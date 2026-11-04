@@ -99,9 +99,8 @@ const PRIVATE_DESCENDANT_PROBE_ARGUMENT: &str =
 const PRIVATE_CREDENTIAL_DENIED_EXIT: i32 = 73;
 const PRIVATE_CREDENTIAL_READABLE_EXIT: i32 = 74;
 const PRIVATE_CREDENTIAL_ERROR_EXIT: i32 = 75;
-/// `FILE_READ_DATA` for the Windows credential probe. Absent from a non-test
-/// Linux build: the open that consumes it is Windows-only, and the constant
-/// would otherwise be dead there.
+/// `FILE_READ_DATA` for the Windows credential probe.
+/// The open is Windows-only, so a non-test Linux build would see the constant as dead.
 #[cfg(any(windows, test))]
 const FILE_READ_DATA_ACCESS: u32 = 0x0000_0001;
 const WORKER_ALLOWED_CANARY_NAME: &str = "worker-allowed-read-canary";
@@ -6788,10 +6787,8 @@ fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<
     )?;
     remove_owned_config_fields(&mut defaults, "features", &["memories"])?;
     remove_owned_config_fields(&mut defaults, "windows", &["sandbox"])?;
-    // Disabling memories makes this Codex runtime project the rest of the
-    // memories schema, and its associated network feature, as explicit nulls.
-    // Normalize only those exact inert values; any active or newly introduced
-    // default remains part of the pinned full-schema digest.
+    // Disabling memories makes this runtime project the rest of that schema as explicit nulls.
+    // Normalize only those inert values; any other default stays in the pinned digest.
     remove_null_config_fields(
         &mut defaults,
         "memories",
@@ -9504,9 +9501,8 @@ fn begin(paths: &Paths) -> Result<()> {
 }
 
 fn verify(paths: &Paths, scan_directory: &Path) -> Result<()> {
-    // D-373: this deliberately invalidates any legacy PASS record before
-    // inspecting unsigned provider output. Semantic consistency is useful to
-    // the operator, but caller-selected bytes have no release authority.
+    // Invalidate any legacy PASS record before inspecting unsigned provider output.
+    // Caller-selected bytes have no release authority.
     let attempt = qualification::begin_security_deep(paths, true)?;
     let request = read(
         &attempt.directory().join(REQUEST),

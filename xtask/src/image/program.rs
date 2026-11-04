@@ -1,7 +1,5 @@
 //! Builds the fixed ELF64 ring-3 boundary witness.
-//!
-//! Qualification decodes the emitted instructions independently, and the
-//! kernel's ELF parser checks the container (D-100).
+//! Qualification decodes the emitted instructions; the kernel parser checks the container.
 
 use anyhow::{Context, Result};
 use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
@@ -10,8 +8,7 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
 /// Build the ring-3 witness used by the boot checks.
-///
-/// Every wrong answer reaches `ud2`, making disagreement observable at boot.
+/// Every wrong answer reaches `ud2`, so disagreement is visible at boot.
 fn code() -> Result<Vec<u8>> {
     const RING: u64 = 0x0000_2000_0000_0000;
     const SUBMISSIONS_AT: u32 = 4096;
@@ -73,7 +70,7 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x02]);
     let not_probing = branch(&mut code, 0x75);
 
-    // An unsupported call proves trap-side refusal remains nonblocking (D-122).
+    // An unsupported call proves trap-side refusal remains nonblocking.
     code.extend_from_slice(&[0xB8]);
     code.extend_from_slice(&UNSERVED_CALL.to_le_bytes());
     code.extend_from_slice(&[0xCD, 0x80]);
@@ -117,7 +114,7 @@ fn code() -> Result<Vec<u8>> {
     patch(&mut code, unknown_behaviour, early_die)?;
     code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]);
 
-    // AC forces trap entry to establish SMAP isolation itself (D-101).
+    // AC forces trap entry to establish SMAP isolation itself.
     let ring = code.len();
     patch(&mut code, echoing, ring)?;
     patch(&mut code, duplicating, ring)?;
@@ -211,7 +208,7 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0x89, 0x83]);
     code.extend_from_slice(&(SUBMISSIONS_AT + 16).to_le_bytes());
 
-    // Aligned x86 `mov` supplies the ABI's acquire edge here (D-221).
+    // Aligned x86 `mov` supplies the ABI's acquire edge here.
     let acquire_completion = code.len();
     patch(&mut code, not_benchmarking, acquire_completion)?;
     code.extend_from_slice(&[0x8B, 0x43, COMPLETION_TAIL_AT]);
@@ -284,16 +281,14 @@ const PROGRAM_ARGUMENT: u32 = 0x00C0_FFEE;
 const DUPLICATE_RIGHTS: u32 = 1 << 3;
 
 /// A call number this kernel does not serve.
-///
-/// Far above anything `enum wiz_call` names, so adding a call cannot turn this
-/// into a real one by accident.
+/// Far above anything `enum wiz_call` names, so a new call cannot collide with it.
 const UNSERVED_CALL: u32 = 0x0BAD_0BAD;
 
 /// Behaviour that enters the kernel with the first noncanonical low address
-/// as its stack pointer (D-368).
+/// as its stack pointer.
 const INVALID_STACK_BEHAVIOUR: u8 = 6;
 
-/// Behaviour that enters the kernel with `RFLAGS.NT` set (D-368).
+/// Behaviour that enters the kernel with `RFLAGS.NT` set.
 const INVALID_FLAGS_BEHAVIOUR: u8 = 7;
 
 /// The first address in the canonical hole.
@@ -334,16 +329,11 @@ fn patch(code: &mut [u8], site: usize, target: usize) -> Result<()> {
 const PT_LOAD: u32 = 1;
 
 /// Readable and executable, and deliberately not writable: W^X is not relaxed
-/// for user memory (D-12).
+/// for user memory.
 const PF_READ_EXECUTE: u32 = 0b101;
 
-/// Build the program image.
-///
-/// The segment uses byte alignment because the loader copies into fresh frames.
-///
-/// # Errors
-///
-/// Returns an error if the fixed program's branch layout exceeds `rel8`.
+/// Build the program image. The segment is byte-aligned because the loader copies into fresh frames.
+/// Returns an error if a branch no longer fits in `rel8`.
 pub fn build() -> Result<Vec<u8>> {
     let code = code()?;
     let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES + code.len()];

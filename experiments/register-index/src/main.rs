@@ -1,8 +1,7 @@
-//! Print foundation-register rows for assignment.
+//! Print live and stopped rows from the foundation register.
 //!
-//! The register file is authoritative. This binary is an experimental index.
+//! The register file is authoritative.
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use register_index::{find_register, invocation, render, rows};
@@ -23,8 +22,9 @@ fn main() -> ExitCode {
 fn report() -> Result<String, String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let parsed = invocation(&args).map_err(|error| error.to_string())?;
-    let path = match &parsed.register {
-        Some(path) => path.clone(),
+    let selection = parsed.selection;
+    let path = match parsed.register {
+        Some(path) => path,
         None => {
             let start = std::env::current_dir().map_err(|error| error.to_string())?;
             find_register(&start).ok_or_else(|| {
@@ -41,10 +41,7 @@ fn report() -> Result<String, String> {
         return Err(format!("duplicate register ids: {}", duplicates.join(", ")));
     }
     if parsed_rows.is_empty() {
-        return Err(format!(
-            "no register rows in {}",
-            Path::new(&path).display()
-        ));
+        return Err(format!("no register rows in {}", path.display()));
     }
-    Ok(render(&parsed_rows, parsed.selection))
+    Ok(render(&parsed_rows, selection))
 }

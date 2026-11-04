@@ -1,8 +1,6 @@
-//! The things a handle can name.
+//! What a handle can name.
 //!
-//! Channels currently provide only the opaque identity used by the bootstrap
-//! handle. File and directory references are copyable VFS identities. Message
-//! transport waits for a concrete Wizzy caller (D-248).
+//! Channels expose bootstrap identity. Message transport waits for a Wizzy caller.
 
 use alloc::sync::Arc;
 #[cfg(feature = "selftest")]
@@ -28,8 +26,8 @@ impl ObjectType {
     /// The rights that mean something for this kind of object.
     pub(crate) const fn per_type_rights(self) -> Rights {
         match self {
-            // Bootstrap channels expose identity, not data operations. The
-            // universal rights remain meaningful for every object.
+            // Bootstrap channels expose identity, not data operations. The universal rights remain
+            // meaningful for every object.
             Self::Channel => Rights::NONE,
             Self::File => Rights::READ,
             Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),

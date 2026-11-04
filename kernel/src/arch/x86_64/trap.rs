@@ -1,14 +1,7 @@
 //! What the kernel does when the CPU raises a vector.
 //!
-//! Every vector arrives here — exceptions the CPU raised against itself, and
-//! interrupts the local APIC delivered. An interrupt is dismissed and returned
-//! from; an unexpected one still ends the machine, which is what keeps a leaked
-//! legacy line from arriving as something else.
-//!
-//! Fault disposition follows its origin. A user-copy fault resumes at the
-//! fixup (D-120), a ring-3 fault retires the program (D-102), and other faults
-//! halt the kernel. Breakpoints resume; supervised restart remains absent
-//! (D-14, D-31).
+//! A user-copy fault resumes at the fixup, a ring-3 fault retires the program, and any other fault
+//! halts the kernel.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
@@ -47,15 +40,11 @@ fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
     panic!("invalid user return could not be retired: {error:?}");
 }
 
-/// The kernel's response to every vector.
-///
-/// Nothing here logs. A fault can be raised while a lock is held, so taking the
+/// The kernel's response to every vector. A fault can be raised while a lock is held, so taking the
 /// console lock in trap context can deadlock against the interrupted code.
 fn on_trap(frame: &TrapFrame) {
-    // Dispatched on the decoded cause, not the raw vector (D-81): the
-    // architecture's meaning is read once, in `libs/trap-cause`, host-tested.
-    // The entry path stores one architectural vector in a `u64` slot. A word
-    // that does not fit a vector is not a device line this kernel can decode.
+    // Dispatched on the decoded cause, not the raw vector: the architecture's meaning is read once,
+    // in `libs/trap-cause`, host-tested.
     let Ok(vector) = u8::try_from(frame.vector()) else {
         panic!(
             "trap vector {:#x} does not fit an architectural vector",
@@ -90,8 +79,8 @@ fn on_trap(frame: &TrapFrame) {
         TrapCause::Interrupt(raw) if raw == vector::TIMER.get() => {
             let eoi = claim_eoi(frame, vector::TIMER);
             crate::time::on_expiry();
-            // Dismissed before any switch: the APIC holds this priority class
-            // until EOI, and a switched-in thread would hold every expiry hostage.
+            // Dismissed before any switch: the APIC holds this priority class until EOI, and a
+            // switched-in thread would hold every expiry hostage.
             dismiss(eoi);
             crate::thread::reschedule(frame);
         }
@@ -100,15 +89,15 @@ fn on_trap(frame: &TrapFrame) {
             let eoi = claim_eoi(frame, vector::KEYBOARD);
             let woke = crate::input::on_interrupt();
             dismiss(eoi);
-            // A thread woken by a keystroke must not wait for the next
-            // expiry: there may not be one.
+            // A thread woken by a keystroke must not wait for the next expiry: there may not be
+            // one.
             if woke {
                 crate::thread::reschedule(frame);
             }
         }
 
-        // The CPU's saved privilege decides: a kernel-context `int 0x80` must
-        // not be served as a ring-3 call (D-96, D-124).
+        // The CPU's saved privilege decides: a kernel-context `int 0x80` must not be served as a
+        // ring-3 call.
         TrapCause::Interrupt(raw)
             if raw == vector::SYSCALL.get() && frame.code_selector() & 0b11 == 3 =>
         {
@@ -119,15 +108,14 @@ fn on_trap(frame: &TrapFrame) {
             );
             #[cfg(feature = "selftest")]
             LAST_SYSCALL.record(frame);
-            // Whether SMAP is on inside the handler, after the entry path ran,
-            // which is what D-101 is about.
+            // Whether SMAP is on inside the handler, after the entry path ran.
             #[cfg(feature = "selftest")]
             SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
             crate::user::call(frame);
         }
 
-        // Not dismissed: a spurious interrupt sets no in-service bit, so an
-        // EOI here would retire a real interrupt underneath it.
+        // Not dismissed: a spurious interrupt sets no in-service bit, so an EOI here would retire a
+        // real interrupt underneath it.
         TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {
             #[cfg(feature = "selftest")]
             SPURIOUS_OBSERVATIONS.fetch_add(1, Ordering::Relaxed);
@@ -139,14 +127,14 @@ fn on_trap(frame: &TrapFrame) {
             frame.instruction_pointer()
         ),
 
-        // The controlled ring-0 write-protection probe has an exact error code
-        // and private recovery interval; ordinary kernel faults remain fatal.
+        // The controlled ring-0 write-protection probe has an exact error code and private recovery
+        // interval; ordinary kernel faults remain fatal.
         #[cfg(feature = "selftest")]
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if cpu::recover_write_protection_probe(frame, fault) => {}
 
-        // Only a ring-0 fault inside the user-copy interval recovers; a ring-3
-        // fault at the same address is the program's (D-120, D-126).
+        // Only a ring-0 fault inside the user-copy interval recovers; a ring-3 fault at the same
+        // address is the program's.
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if usercopy::recover(frame, fault) =>
         {
@@ -203,7 +191,6 @@ fn dismiss(token: apic::EoiToken<'_>) {
     );
 }
 
-/// Faults recovered inside the user-copy window during self-test.
 #[cfg(feature = "selftest")]
 static USER_COPY_RECOVERIES: AtomicUsize = AtomicUsize::new(0);
 
@@ -213,13 +200,8 @@ pub(crate) fn user_copy_recoveries() -> usize {
     USER_COPY_RECOVERIES.load(Ordering::Acquire)
 }
 
-/// Whether this fault is a program's to die of rather than the machine's.
-///
-/// Two conditions, and both are needed. It must have come from ring 3 — the
-/// kernel faulting is still a kernel bug and still terminal. And it must be a
-/// fault a program can cause and the machine can survive: a double fault means
-/// the fault path itself failed, and a machine check is the hardware reporting
-/// its own failure. Neither becomes survivable because a program was running.
+/// Whether this fault is a program's to die of rather than the machine's. It must have come from
+/// ring 3 — the kernel faulting is still a kernel bug and still terminal.
 fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
     let from_ring_three = frame.code_selector() & 0b11 == 3;
     let survivable = !matches!(
@@ -231,15 +213,9 @@ fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
     from_ring_three && survivable
 }
 
-/// How many spurious interrupts have been delivered.
-///
-/// Should stay at zero. A count that climbs means an interrupt was dismissed
-/// that should not have been, or a vector was reprogrammed while one was in
-/// flight — neither of which shows up any other way.
 #[cfg(feature = "selftest")]
 static SPURIOUS_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
 
-/// A fault formatted for the panic message.
 struct Report<'a> {
     frame: &'a TrapFrame,
     cause: TrapCause,
@@ -276,7 +252,6 @@ impl fmt::Display for Report<'_> {
     }
 }
 
-/// What the last fault from ring 3 looked like.
 #[cfg(feature = "selftest")]
 static LAST_USER_FAULT: Recorder = Recorder::new();
 
@@ -361,7 +336,6 @@ pub(crate) fn smap_survived_the_last_syscall() -> bool {
     SMAP_ON_ENTRY.load(Ordering::Acquire) == 1
 }
 
-/// What the last call from ring 3 looked like.
 #[cfg(feature = "selftest")]
 static LAST_SYSCALL: Recorder = Recorder::new();
 
@@ -371,12 +345,8 @@ pub(crate) fn last_syscall() -> Record {
     Recorder::read(&LAST_SYSCALL)
 }
 
-/// What the last vector of one kind saw.
-///
-/// A vector that resumes leaves no trace unless something records it, and both
-/// of the ones that resume — the breakpoint and the ping — are deliberate acts
-/// whose whole point is to be observed afterwards. Atomics rather than a lock
-/// because this is written from trap context.
+/// What the last vector of one kind saw. Atomics rather than a lock because this is written from
+/// trap context.
 #[cfg(feature = "selftest")]
 struct Recorder {
     count: AtomicUsize,
@@ -408,8 +378,6 @@ impl Recorder {
         }
     }
 
-    /// Record `frame`, publishing the count last so a reader that sees it sees
-    /// the rest.
     fn record(&self, frame: &TrapFrame) {
         self.slot
             .store(wost::arch::current::task::current(), Ordering::Relaxed);
@@ -428,7 +396,6 @@ impl Recorder {
         self.count.fetch_add(1, Ordering::Release);
     }
 
-    /// A consistent copy of what was last recorded.
     #[cfg(feature = "selftest")]
     fn read(&self) -> Record {
         Record {
@@ -464,9 +431,6 @@ pub(crate) struct Record {
     /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
     /// The thread slot that took it.
-    ///
-    /// Slots identify callers even when sequential threads correctly reuse a
-    /// stack (D-117).
     pub(crate) slot: usize,
     /// The general register loaded with the interrupted stack pointer.
     pub(crate) rax: u64,

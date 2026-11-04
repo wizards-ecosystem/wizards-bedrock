@@ -1,22 +1,10 @@
 //! The byte-at-a-time state machine over set 2's sequences.
-//!
-//! Everything a keyboard can legally send has a defined transition here:
-//! bare makes, `F0` breaks, `E0` extended makes and breaks, `PrintScreen`'s
-//! fake-shift wrapping, Pause's eight-byte sequence with no break at all,
-//! and the protocol bytes — acknowledgements, self-test results, echoes —
-//! that the device may interleave with key data. Feeding any byte in any
-//! state cannot panic, and garbage costs at most the sequence it corrupted:
-//! the machine resets to idle and the next key decodes.
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
 use crate::{set1, table};
 
 /// Bytes the protocol reserves; they never begin a key sequence.
-///
-/// They appear as command replies and error reports, and because a command
-/// can be answered while a key sequence is in flight, the decoder swallows
-/// them from idle rather than treating them as unknown makes.
 mod protocol {
     /// Break prefix: the next code is a release.
     pub(super) const BREAK: u8 = 0xF0;
@@ -52,8 +40,8 @@ mod protocol {
 /// state; this decoder discards them.
 const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 
-// Both bytes are also absent from `table::extended_key_for`; the guard keeps
-// the behaviour if a future edit adds them there, as base-table keys (D-124).
+// Both bytes are also absent from `table::extended_key_for`; the guard keeps the
+// behaviour if a future edit adds them there, as base-table keys.
 
 /// Pause sends this whole sequence on press and nothing on release — the
 /// one key with no break code.
@@ -70,10 +58,6 @@ const SET_1_PAUSE_SEQUENCE: [u8; 6] = [0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5];
 const SET_1_FAKE_SHIFTS: [u8; 4] = [0x2A, 0xAA, 0x36, 0xB6];
 
 /// Which numbering the bytes arriving are in.
-///
-/// A controller that translates delivers set 1 whatever the keyboard was told
-/// to speak, and says so only in its identity reply — so the driver picks, and
-/// this is what it picks between (D-179).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Set {
     /// What the keyboard sends when nothing rewrites it.
@@ -115,12 +99,6 @@ impl Decoder {
 
     /// A decoder reading the set 1 a translating controller delivers.
     ///
-    /// Not a mode of the same machine: set 1 puts the release in the high bit
-    /// where set 2 uses an `F0` prefix, spells Pause in six bytes rather than
-    /// eight, and numbers every key differently. The layout above it and the
-    /// events below are shared, which is the whole of what the two have in
-    /// common (D-179).
-    ///
     /// # Examples
     ///
     /// ```
@@ -146,14 +124,9 @@ impl Decoder {
     }
 
     /// Feed one byte; an event comes out when one is complete.
-    ///
-    /// Total: every byte in every state has a defined transition, and a byte
-    /// that fits no sequence resets the machine to idle so the next key
-    /// still decodes. Protocol replies are transparent wherever they arrive:
-    /// they produce no event and leave an in-flight key sequence intact.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
-        // In set 1 `0xAA` is the left shift's release, not a reply; the reset
-        // path reads the colliding self-test result before scanning (D-179).
+        // In set 1 `0xAA` is the left shift's release, not a reply; the reset path
+        // reads the colliding self-test result before scanning.
         let reply = match self.set {
             Set::Two => protocol::is_reply(byte),
             Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,
@@ -337,12 +310,6 @@ mod tests {
     }
 
     /// **The collision, decided.**
-    ///
-    /// `0xAA` is the self-test result *and* `0x2A | 0x80`, the left shift's
-    /// release. Swallowing it as a reply would leave shift held down for ever
-    /// after the first capital letter — so in set 1 it is a key, and the
-    /// self-test result is read by the reset path before scanning is enabled
-    /// where no decoder can see it (D-179).
     #[test]
     fn set_1_reads_aa_as_a_shift_release_not_a_self_test_result() {
         let mut decoder = Decoder::translated();
@@ -352,7 +319,6 @@ mod tests {
             event(Key::ShiftLeft, KeyState::Released)
         );
 
-        // And set 2, where `0xAA` is unambiguous, still swallows it.
         let mut set_two = Decoder::new();
         assert_eq!(set_two.feed(protocol::SELF_TEST_PASSED), None);
     }
@@ -364,14 +330,10 @@ mod tests {
         for reply in [protocol::ACK, protocol::ECHO, protocol::RESEND] {
             assert_eq!(decoder.feed(reply), None, "{reply:#04x} is not a key");
         }
-        // And a key still decodes after them.
         assert_eq!(decoder.feed(0x1E), event(Key::A, KeyState::Pressed));
     }
 
     /// A shift held across a letter types a capital, through the set 1 path.
-    ///
-    /// The end-to-end shape the driver runs: decoder to shift state to layout.
-    /// It is the sequence that would have typed nothing on `VMware` (D-179).
     #[test]
     fn set_1_types_a_capital_through_the_whole_path() {
         let mut decoder = Decoder::translated();
@@ -423,8 +385,8 @@ mod tests {
 
     #[test]
     fn the_pause_sequence_yields_one_press_and_no_break() {
-        // Transcribed, not `PAUSE_SEQUENCE`: a truncated constant compared
-        // against itself passed every test and left phantom releases (D-105).
+        // Transcribed, not `PAUSE_SEQUENCE`: a truncated constant compared against
+        // itself passed every test and left phantom releases.
         const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
         assert_eq!(PAUSE_SEQUENCE, WIRE, "the sequence is not the wire form");
 
@@ -438,9 +400,6 @@ mod tests {
 
     /// A short prefix of the sequence yields nothing, and the byte after a
     /// complete one is an ordinary key.
-    ///
-    /// The length is the half nothing pinned: a decoder that stopped early
-    /// would emit `Pause` and then decode the remaining bytes as keys.
     #[test]
     fn no_proper_prefix_of_the_pause_sequence_decodes() {
         const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
@@ -595,10 +554,6 @@ mod tests {
     /// Totality: every byte, fed in every reachable prefix state, neither
     /// panics nor wedges the machine — a letter still decodes afterwards,
     /// possibly on the second try when the byte itself opened a new prefix.
-    ///
-    /// The Pause prefixes are derived from the sequence constant so every
-    /// intermediate `Pause(n)` state — home of the crate's indexed access —
-    /// remains covered when the sequence changes.
     #[test]
     fn no_byte_in_no_state_panics_or_wedges() {
         let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];
@@ -640,7 +595,6 @@ mod tests {
             assert_eq!(decoder.feed(0xF0), None, "{fake:#04x} break marker");
             assert_eq!(decoder.feed(fake), None, "{fake:#04x} break");
 
-            // And the decoder is back at rest, not stuck in a state.
             assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
         }
     }

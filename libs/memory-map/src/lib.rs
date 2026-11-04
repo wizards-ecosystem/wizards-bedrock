@@ -1,9 +1,5 @@
 //! A complete bounded physical memory map.
 //!
-//! The map is built before an allocator exists, so its storage is fixed. A
-//! fixed bound is safe only when overflow refuses the whole handoff rather
-//! than returning a useful-looking prefix.
-//!
 //! # Examples
 //!
 //! ```
@@ -33,11 +29,6 @@ const PAGE_SIZE: u64 = 4096;
 pub const MAX_REGIONS: usize = 128;
 
 /// What a region of the physical address space is for.
-///
-/// Named after what the kernel may do with a region rather than after any one
-/// bootloader's constants. [`MemoryKind::Unknown`] preserves a foreign value
-/// so it can be reported and treated as reserved rather than silently folded
-/// into a known kind (D-42).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MemoryKind {
@@ -63,9 +54,6 @@ pub enum MemoryKind {
 
 impl MemoryKind {
     /// Whether the frame allocator may hand this region out.
-    ///
-    /// Reclaimable kinds are excluded because their live structures still
-    /// have users when the allocator is built.
     pub const fn is_allocatable(self) -> bool {
         matches!(self, Self::Usable)
     }
@@ -77,10 +65,8 @@ impl MemoryKind {
 
     /// Whether the kernel's direct map should cover this region.
     ///
-    /// Reserved ranges may be device holes and must not gain the direct map's
-    /// cache type. Bootloader, image, framebuffer and firmware-table memory
-    /// stay included because the kernel is still using them when it changes
-    /// page tables (D-45).
+    /// Reserved ranges may be device holes and must not gain the direct map's cache
+    /// type.
     pub const fn is_direct_mapped(self) -> bool {
         matches!(
             self,
@@ -184,10 +170,6 @@ impl fmt::Display for MemoryMapError {
 impl core::error::Error for MemoryMapError {}
 
 /// A complete physical memory map copied into fixed early storage.
-///
-/// Copying releases the bootloader-owned source structures for later reclaim.
-/// The fixed representation exists before heap initialization, and its
-/// constructor never returns a partial prefix.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MemoryMap {
     regions: [MemoryRegion; MAX_REGIONS],
@@ -328,10 +310,6 @@ impl Iterator for AllocatableRuns<'_> {
 impl MemoryMap {
     /// Copy a complete region stream or refuse it whole.
     ///
-    /// Regions may overlap or arrive unsorted. Every covering claim participates
-    /// in arbitration, so a non-admitted kind refuses an overlapping range
-    /// regardless of order (D-241).
-    ///
     /// # Errors
     ///
     /// [`MemoryMapError::Empty`] when `regions` is empty, or
@@ -389,11 +367,6 @@ impl MemoryMap {
     }
 
     /// Yield normalized page-policy runs shared by mapping and allocation.
-    ///
-    /// Runs are page-aligned, disjoint and maximal. A page is omitted unless
-    /// every claim admits direct mapping; framebuffer cache policy wins.
-    /// Allocation additionally requires complete, exclusively allocatable
-    /// coverage.
     pub fn page_runs(&self) -> PageRuns<'_> {
         PageRuns {
             map: self,
@@ -403,9 +376,6 @@ impl MemoryMap {
     }
 
     /// Yield whole frames covered only by allocatable claims.
-    ///
-    /// Partial frames and frames touched by any other claim are excluded. The
-    /// boundary sweep prevents a huge range from causing a page-by-page delay.
     pub fn allocatable_runs(&self) -> AllocatableRuns<'_> {
         AllocatableRuns {
             runs: self.page_runs(),
@@ -413,26 +383,16 @@ impl MemoryMap {
     }
 
     /// Whether every byte of `start..end` lies inside a described region.
-    ///
-    /// Adjacent regions jointly cover a range. Input order is not assumed, so
-    /// each bounded step searches the complete map.
     pub fn covers(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, |_| true)
     }
 
     /// Whether every byte of `start..end` lies inside described memory.
-    ///
-    /// A reserved device hole is described but is not memory; this distinction
-    /// prevents a cacheable alias from being granted to device registers.
     pub fn covers_memory(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, MemoryKind::is_direct_mapped)
     }
 
     /// The one cache type the direct map gives every byte of `start..end`.
-    ///
-    /// `None` unless the map covers the range with memory, or if the range
-    /// mixes framebuffer and ordinary memory: no single mapping of it could
-    /// agree with the direct map's type for every page (D-349).
     pub fn direct_map_cache(&self, start: u64, end: u64) -> Option<DirectMapCache> {
         if !self.covers_memory(start, end) {
             return None;
@@ -461,10 +421,6 @@ impl MemoryMap {
 
     /// Whether a firmware-reserved region, given by its first and last byte,
     /// reaches no page of RAM or firmware storage.
-    ///
-    /// A remapping unit maps such a region for a device in whole pages, so a
-    /// page it shares with memory the kernel owns refuses it, as does an
-    /// empty or inverted region.
     pub fn allows_reserved_region(&self, base: u64, limit: u64) -> bool {
         let start = base - base % PAGE_SIZE;
         let end = limit
@@ -474,15 +430,6 @@ impl MemoryMap {
     }
 
     /// Find a page-aligned, nonzero memory run of at least `len` bytes.
-    ///
-    /// Callers use this rather than assuming a conventional low page exists,
-    /// which keeps machine checks meaningful across firmware layouts (D-177).
-    ///
-    /// The run it names is one [`covers_memory`](Self::covers_memory) agrees
-    /// is memory. Filtering to direct-mapped regions was not enough on its own:
-    /// a reserved region overlapping the one chosen made the two answers
-    /// contradict, and a caller acting on this one would map a device hole
-    /// (D-241).
     pub fn first_memory_run(&self, len: u64) -> Option<u64> {
         if len == 0 {
             return None;
@@ -788,10 +735,6 @@ mod tests {
     }
 
     /// Two regions at one base answer the same whichever order they arrive in.
-    ///
-    /// Transcribed from `covers`'s "Input order is not assumed" contract.
-    /// Overlap order must change neither the verdict nor the walk distance
-    /// (D-241).
     #[test]
     fn overlapping_regions_answer_the_same_in_either_order() {
         let usable = MemoryRegion {
@@ -1281,10 +1224,6 @@ mod tests {
     }
 
     /// A run this names is one `covers_memory` agrees is memory.
-    ///
-    /// The two contracts are about the same address and disagreed: the filter
-    /// picked from a direct-mapped region while the walk landed in a reserved
-    /// one overlapping it, and D-177 says callers act on this answer (D-241).
     #[test]
     fn a_named_memory_run_is_memory_by_the_other_contract() {
         let usable = MemoryRegion {

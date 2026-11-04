@@ -1,16 +1,4 @@
 //! Where kernel stacks and the guard gaps below them sit inside a window.
-//!
-//! A stack overrun should fault, not corrupt, so every stack has a gap below
-//! it that is simply never mapped — absence of mapping is the strongest guard
-//! there is, and it costs nothing. This crate is the arithmetic that places
-//! them: which addresses are a slot's guard, which are its stack, and the
-//! proof (as host tests) that no two slots touch. The mapping itself is
-//! `wost`'s; the policy of how many and where is the kernel's.
-//!
-//! One caveat travels with the design rather than the arithmetic: a stack
-//! frame larger than the guard can step clean over it without faulting. A
-//! guard of one page is adequate for a kernel built without `alloca` and
-//! without SSE spills, and D-52 says so explicitly rather than silently.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -23,10 +11,6 @@ pub const PAGE_SIZE: u64 = 4096;
 const WORD: u64 = 8;
 
 /// A window carved into equal slots of guard-then-stack.
-///
-/// Slots ascend from `base`, each `guard_len + stack_len` bytes: the guard
-/// occupies the low addresses, the stack the high ones, so a stack growing
-/// down runs into its own guard and never into a neighbour.
 ///
 /// # Examples
 ///
@@ -112,10 +96,6 @@ impl Slot {
     }
 
     /// Split this stack's capacity at an observed descending stack pointer.
-    ///
-    /// The top itself represents an unused stack and the base represents a
-    /// completely used one. A pointer outside the checked slot has no usage
-    /// meaning and is refused.
     pub const fn usage_at(&self, pointer: u64) -> Option<StackUsage> {
         if pointer < self.stack_base || pointer > self.stack_top() {
             return None;
@@ -127,10 +107,6 @@ impl Slot {
     }
 
     /// The word-aligned span from the stack's base to `clearance` below `pointer`.
-    ///
-    /// A frame at `pointer` whose own calls stay within `clearance` holds
-    /// nothing there. `None` when `pointer` is outside the stack or no whole
-    /// word fits below the clearance.
     ///
     /// # Examples
     ///
@@ -158,9 +134,6 @@ impl Slot {
 }
 
 /// Whether two half-open byte ranges overlap.
-///
-/// Empty ranges touch nothing. An overflowing non-empty range is invalid and
-/// treated as overlapping so a caller protecting memory fails closed.
 pub const fn ranges_overlap(left: u64, left_len: u64, right: u64, right_len: u64) -> bool {
     if left_len == 0 || right_len == 0 {
         return false;
@@ -177,10 +150,6 @@ pub const fn ranges_overlap(left: u64, left_len: u64, right: u64, right_len: u64
 impl StackLayout {
     /// Lay out `slots` stacks of `stack_len` bytes, each above a
     /// `guard_len`-byte gap, ascending from `base`.
-    ///
-    /// `None` unless every value is page-aligned and non-zero and the whole
-    /// window fits below `u64::MAX` — a layout that wraps would alias its own
-    /// slots, which is the one property this constructor exists to rule out.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the value was bounded to a length that fits the address width"
@@ -261,10 +230,6 @@ mod tests {
     }
 
     /// The addresses the layout actually produces, transcribed.
-    ///
-    /// Absolute addresses are independent of `stride()`, unlike a relational
-    /// `base + stride·i <= base + stride·i` tautology that also admits
-    /// overlapping slots (D-105).
     #[test]
     fn slots_land_where_the_arithmetic_says() {
         let layout = layout();
@@ -288,10 +253,6 @@ mod tests {
     }
 
     /// No stack overlaps a neighbour's, and every gap between them is a guard.
-    ///
-    /// Stated against the *stacks* rather than against `stride`, so a stride
-    /// that swallowed the guard would be visible here: a guard page is a page
-    /// nothing maps, and it is only a guard if it is not another slot's stack.
     #[test]
     fn no_two_stacks_touch_and_a_guard_lies_between_them() {
         let layout = layout();
@@ -347,10 +308,9 @@ mod tests {
         assert_eq!(slot.usage_at(slot.stack_top() + 1), None);
     }
 
-    /// `end()` and `last.stack_top()` are the same expression written twice,
-    /// so the equality between them is `X == X`; the window's length against a
-    /// transcribed number is what says the layout is the size it claims
-    /// (D-105).
+    /// `end` and `last.stack_top` are the same expression written twice, so the
+    /// equality between them is `X == X`; the window's length against a transcribed
+    /// number is what says the layout is the size it claims.
     #[test]
     fn the_window_ends_where_the_last_slot_does() {
         let layout = layout();
@@ -383,10 +343,6 @@ mod tests {
     }
 
     /// A page is four kilobytes, and a guard smaller than one is refused.
-    ///
-    /// Anchor `PAGE_SIZE` and include a 2048-byte rejection because positive
-    /// values aligned to 4096 cannot distinguish a halved modulus. `wost` maps
-    /// in 4096-byte units (D-124).
     #[test]
     fn a_guard_smaller_than_a_page_is_refused() {
         assert_eq!(PAGE_SIZE, 4096);

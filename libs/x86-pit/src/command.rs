@@ -1,17 +1,4 @@
 //! The control word written to program or latch a counter.
-//!
-//! One byte selects a counter, says how its sixteen bits will be transferred
-//! over an eight-bit port, and picks an operating mode. The layout is the
-//! Intel 8254 datasheet's: counter in bits 7–6, access in bits 5–4, mode in
-//! bits 3–1, and binary-coded decimal in bit 0, which stays zero because
-//! nothing has counted in decimal since the chip was new. Counter select 11
-//! is not a fourth counter but the read-back command, whose byte has its own
-//! layout below.
-//!
-//! Each multi-value hardware field is transcribed whole — every mode, every
-//! access width — because an encoding is one primitive that is incoherent in
-//! halves, which is the exception the conventions carve out of the
-//! no-speculative-API rule.
 
 /// Which of the three counters the word addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,10 +104,6 @@ impl ControlWord {
     }
 
     /// Latch `channel`'s count for a coherent two-byte read.
-    ///
-    /// Access bits of zero are what distinguish a latch command from a
-    /// programming word; the counter keeps running while the latched value
-    /// waits to be read.
     pub const fn latch(channel: Channel) -> Self {
         Self(channel.bits())
     }
@@ -128,11 +111,8 @@ impl ControlWord {
     /// Latch `channel`'s status byte — the read-back command asking for
     /// status only.
     ///
-    /// The read-back layout is its own: bits 7–6 both set, bit 5 clear would
-    /// latch counts, bit 4 clear latches status, and counters are named
-    /// one-hot in bits 3–1. The status byte read from the counter's port
-    /// afterwards carries [`STATUS_NULL_COUNT`](crate::STATUS_NULL_COUNT),
-    /// which is why anyone asks.
+    /// The read-back layout is its own: bits 7–6 both set, bit 5 clear would latch
+    /// counts, bit 4 clear latches status, and counters are named one-hot in bits 3–1.
     pub const fn read_back_status(channel: Channel) -> Self {
         /// Bits 7–6 set: this is a read-back, not a programming word.
         const READ_BACK: u8 = 0b11 << 6;
