@@ -5,41 +5,125 @@
   </picture>
 </h1>
 
-Bedrock is a from-scratch **Rust kernel** for x86_64 and UEFI, booted by
-[Limine](https://github.com/limine-bootloader/limine). It owns hardware support,
-memory protection, scheduling, the capability-based async kernel ABI and kernel
-qualification. Handles and submission/completion queues are native; `spawn()`
-replaces `fork()`. Storage currently uses read-only FAT32 over NVMe.
+Bedrock is a from-scratch **Rust kernel** for x86_64 and UEFI. [Limine](https://github.com/limine-bootloader/limine) enters it in long mode at `0xffffffff80000000`. From that handoff the kernel installs its own descriptor tables and page tables, turns on the CPU's supervisor protections, schedules threads, fences PCI DMA with VT-d, reads an NVMe disk, and runs a ring-3 program whose external authority is a handle table.
 
-Realm (the separate private `wizards-realm` project) owns the
-operating environment: Wizzy services, Bedrock/Linux adapters, shell, desktop,
-applications, compatibility ports and product images. Ink owns Wizzy and its
-compiler/runtime. D-366 records the separation and history-preserving rename
-from wizards-os. Bedrock builds and qualifies independently of either checkout.
+The workspace version is 0.2.0. The qualified boot image for that version is recorded in [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md). This repository is the kernel: hardware, memory, scheduling, storage, and the capability ABI. A shell, desktop, and network stack live outside it. The phase plan is [docs/000-vision.md](docs/000-vision.md).
 
-D-183's Wizzy language choice remains in force. Realm's compiler-readiness
-gate is **CLOSED**; Bedrock's admitted integration evidence is recorded in
-[the kernel handoff](docs/015-wizzy-userland.md). D-184's finite
-[foundation register](docs/016-pre-wizzy-foundation.md) is the current kernel
-backlog. The kernel diagnostic image is not a Realm distribution.
+## What a boot does
 
-**Qualified diagnostic release:** v0.2.0 is the first qualified release
-(D-449). Every D-425 gate ran on its exact commit, including the complete
-mutation sweep and fresh VMware Workstation self-test and shipped boots. Its
-GitHub release ships the boot image and a verifiable evidence bundle. v0.1.0
-remains the earlier source-only preview (D-441). There is no complete desktop
-or userland. No bare-metal hardware is qualified, and there is no production
-readiness, stable ABI or completed security audit. Keep experiments in
-disposable virtual machines, away from primary machines and important storage.
-See the [release scope](docs/releases/v0.2.0.md),
-[contribution guide](CONTRIBUTING.md) and [security policy](SECURITY.md).
+`cargo xtask run` builds a 64 MiB UEFI disk and boots the shipped kernel in QEMU. The image is a raw MBR disk with one FAT32 EFI system partition, written entirely in Rust. Limine loads `wizard-kernel.elf` and the module `hello.elf`.
 
-## Start here
+On the way to the prompt the kernel:
 
-The documented host is Windows with the GNU Rust toolchain. The pinned
-channel is `1.97.1` (`rust-toolchain.toml`), which also installs `rustfmt`,
-`clippy`, and the `x86_64-unknown-none` target on first use. QEMU is optional
-and is not required to compile.
+1. Fences inherited PCI bus masters before it trusts a device, and installs a default-deny VT-d domain before storage DMA.
+2. Opens a 16550 serial log at `COM1` (`0x3F8`) and, when Limine provides a linear framebuffer, a Noto Sans Mono console with its own shadow buffer.
+3. Installs the GDT, IDT, and TSS, then enables write protection, NX, SMEP, SMAP, and UMIP where the processor reports them. `syscall` and `sysenter` are shut. The only gate ring 3 may enter is interrupt `0x80`.
+4. Enables XSAVE, compacted when the CPU allows it. Without extended state, ring 3 stays closed.
+5. Builds a complete physical memory map, a two-bitmap frame allocator, W^X page tables, a direct map, and a heap whose size classes run from 16 to 2048 bytes. Page-table pages, heap frames, and user stacks are allocated zeroed. The boot thread then moves onto a guarded stack. If that allocation fails, ring 3 stays closed and the kernel continues.
+6. Silences the legacy PICs, reads speculation controls, and selects user page-table isolation (below). It starts the local APIC in x2APIC mode, calibrates the APIC timer and TSC from the PIT, and publishes a read-only time page.
+7. Walks PCI configuration space through bridges, claims one NVMe function, and mounts its FAT32 volume read-only. Without a complete VT-d domain the log says `storage: no DMA isolation` and the volume stays unmounted.
+8. Brings up tmpfs and a devfs that names `storage` (a block device) and `console` (a character device).
+9. Starts a tickless EEVDF scheduler and an idle thread that halts. It loads `hello.elf` into its own address space: one read-execute segment linked at `0x400000000000`, a guarded stack, the time page, a shared submission/completion ring, and a handle table whose single birth handle is an opaque bootstrap identity. The witness checks entry version 1, posts `Echo` with argument `0x00C0FFEE`, enters the kernel, checks the completion, and exits.
+10. The boot thread blocks on the PS/2 keyboard and paints each decoded character. With no PCI topology the I/O APIC routes that line and each key is an interrupt. While PCI is present, interrupt isolation keeps those lines masked and a poller drains the controller every 10 ms.
+
+Serial carries diagnostics. The framebuffer carries the banner and the echo.
+
+## How the kernel is put together
+
+### One crate may write `unsafe`
+
+`wost` is the privileged framework: Limine glue, ports, MMIO, paging, the VT-d unit, interrupt entry, context switch, and locks. It is the only crate allowed to write `unsafe`. The kernel binary is `no_std`, `no_main`, and `#![deny(unsafe_code)]`, because `wost::entry!` expands its boot glue there. Every `libs/` crate is `#![forbid(unsafe_code)]`. Arithmetic that can be checked without hardware lives in `libs/` and runs under `cargo test` on the host. `wost` keeps the lock and the instruction.
+
+Every kernel link is read back. The entry sits in the higher half, no section is orphaned, no segment is both writable and executable, and `.bss` costs no file bytes.
+
+### Processor, memory, and time
+
+The kernel runs on the boot processor. x2APIC is required; a CPU without it leaves interrupts off. The scheduler's timer is an alarm, armed for the next decision and stopped when nothing is due. A 3 ms slice is the EEVDF tunable. Sixteen kernel stacks of 32 KiB sit above an unmapped 4 KiB guard, plus the boot thread. The double-fault stack and the boot thread's own stack use the same geometry.
+
+User address spaces share the kernel half when the CPU's speculation controls admit it. When they do not, each user space gets a paired root: a full kernel root and a stripped root that maps only the linker-owned entry enclave. The self-test kernel forces the paired path so that entry is executed even on a CPU that would allow sharing. If neither path is available, ring 3 stays closed. Returns to ring 3 execute `verw` unless the processor reports `MDS_NO`.
+
+The time page, mapped at `0x10000000000` in every user space, publishes a fixed tick-to-nanosecond conversion under a seqlock. Constants on that page (version, page size, counter rate) are written once. Two consecutive disagreements with the PIT freeze public time.
+
+### The native ABI
+
+A program's external authority is its handle table. Handles are process-local integers: an 18-bit arena index (262,144 slots), a generation that rejects stale reuse, and a per-table mixer. Rights name what the holder may do. `Duplicate` returns a new handle with fewer rights. A spawned program is born holding exactly one handle, an opaque channel identity with no peer and no messages.
+
+The data path is a submission/completion ring, protocol version 1: 8 submission slots and 16 completion slots, kernel-owned pages mapped into the process. The kernel copies shared bytes once and validates the copy. Every accepted submission reserves a completion, and every operation posts exactly one. The opcodes are:
+
+| Opcode | What it does |
+|---|---|
+| `Echo` | Return the argument |
+| `Uptime` | Return kernel uptime in nanoseconds |
+| `Duplicate` | Narrow a held handle; the completion carries the new one |
+| `Timer` | Complete after the requested nanoseconds |
+| `Cancel` | End an in-flight operation by token; both the cancel and the target still complete once |
+| `OpenAt` | Resolve a path from a directory handle and return a handle for it |
+| `Read` | Read a file at an explicit offset into the ring's data page |
+
+Anything else completes as a refusal. Paths are relative to a held directory. `..` is resolved lexically and underflow is refused, so the resolver has no parent pointer to follow. FAT32 names are 8.3; long-name entries and the volume label are skipped. File reads have no cursor: each `Read` says where it starts.
+
+Four synchronous calls cross interrupt `0x80`: `Exit`, `RingEnter` (serve the ring and report how many operations completed), `RingWait` (sleep until a deferred completion is due), and `ThreadBase` (set this thread's `FS` base). `RingEnter` admits an NVMe read; one file worker polls the controller and posts the completion.
+
+The same ring protocol is a TLA+ model in `models/`. `Ring.tla` checks admission. `RingMemory.tla` checks publication across normal, cancelled, and retired operations. Four mutant configs must each violate a named invariant. `cargo xtask model-check` runs TLC against the digest-pinned jar in `tools/tla/`.
+
+`hello.elf` is the fixed ELF64 witness the image builder emits. It is the program the shipped boot runs. It is a boundary exercise, small enough that a wrong answer hits `ud2`.
+
+### Storage
+
+PCI enumeration uses CF8/CFC and walks bridges, because a scan of bus zero misses controllers behind them. A driver claims a function, not a bare port range. The first usable NVMe controller is brought up with one I/O queue pair and completion interrupts off. Queue depth, doorbell stride, timeout, and page size come from `CAP`. The register window is mapped uncacheable, and bus master stays off until the controller-disable readback matches. `libs/nvme` holds the command and queue arithmetic; the kernel holds the frames and the poll.
+
+The FAT32 reader is the same `no_std` crate on the host and in the kernel. It accepts 512-byte sectors, checks cluster chains, and allocates nothing. The volume begins at sector 2048, the offset the image builder writes. The VFS is a directory enum over FAT32, tmpfs, and devfs: resolve, enumerate, and a reserved modify. Backends are selected by an enum, so a new one is a compile error at every match.
+
+## Layout
+
+```
+kernel/          kernel binary, higher-half, no hand-written unsafe
+wost/            privileged framework, the only crate that may write unsafe
+libs/            host-tested no_std arithmetic
+xtask/           build, image, QEMU, VMware, gate, mutation, evidence
+boot/            limine.conf and a digest-pinned Limine UEFI binary
+models/          TLA+ ring models and the four mutant configs
+tools/           pinned TLC jar and a digest-checked FAT32 corpus
+docs/            design docs, one per subsystem
+supply-chain/    SPDX SBOM, third-party notices, license texts
+fixtures/abi-pressure/   native ABI transcription
+handoff/         route-neutral envelope fixtures
+experiments/     optional host tools outside the workspace and the gate
+```
+
+| Crate | What it owns |
+|---|---|
+| `acpi-tables` | RSDP, XSDT, MADT, DMAR, validated before use |
+| `eevdf` | virtual-deadline scheduling |
+| `elf64` | ELF64 headers and loadable segments |
+| `fat32` | read-only FAT32 over any sector source |
+| `frame-space` | physical-frame bitmap allocation |
+| `handle-space` | handle encoding, rights, quotas |
+| `memory-map` | a firmware map that refuses rather than truncate |
+| `mmio-range` | repeated MMIO span checks |
+| `nvme` | NVMe registers, queues, and commands |
+| `panic-record` | framed panic text |
+| `path-walk` | lexical paths that cannot ascend |
+| `pci-config` | configuration-space addresses and BARs |
+| `pixel` | framebuffer pixel layout |
+| `port-space` | I/O port reservations, including wide `out`s |
+| `ps2-keys` | PS/2 set 2 scancodes and the US layout |
+| `ring-proto` | ring admission and shared-memory layout |
+| `slab-layout` | heap size classes |
+| `stack-layout` | guarded stack geometry |
+| `timebase` | tick and nanosecond conversion |
+| `trap-cause` | exception vector and error-code decode |
+| `vtd` | VT-d tables, registers, and invalidation |
+| `wizzy-handoff` | route-neutral artifact identity envelopes |
+| `x86-apic` | local APIC registers |
+| `x86-cpuid` | CPUID leaves, including protection and x2APIC |
+| `x86-paging` | four-level page-table entries |
+| `x86-pit` | PIT commands and calibration arithmetic |
+| `x86-tables` | GDT, IDT, and TSS encodings |
+
+## Quick start
+
+The documented host is Windows with the GNU Rust toolchain. The pinned channel is `1.97.1` (`rust-toolchain.toml`), which also installs `rustfmt`, `clippy`, and the `x86_64-unknown-none` target. QEMU is optional for the compile.
 
 ```powershell
 git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
@@ -48,136 +132,52 @@ cargo fetch --locked
 cargo xtask build --release
 ```
 
-A successful build compiles the kernel and checks its linked layout. It does
-not prove a boot. Booting, when you want it, is `cargo xtask run` in a
-disposable virtual machine. Full local qualification is `cargo xtask ci` and
-is not the newcomer path.
-
-Then read [the architecture](docs/002-architecture.md),
-[the code conventions](docs/005-code-conventions.md), and
-[the foundation register](docs/016-pre-wizzy-foundation.md). Work after v0.2.0
-is indexed by directory in [docs/roadmap/NEXT.md](docs/roadmap/NEXT.md).
-[Contributing](CONTRIBUTING.md) covers forks, pull requests, and which checks
-a documentation change actually needs.
-
-A clean Windows report of these four commands is still open as
-[issue #2](https://github.com/wizards-ecosystem/wizards-bedrock/issues/2).
-The steps are the same ones under [Building & running](#building--running).
-
-## Status
-
-Working, and unfinished. The kernel boots on UEFI, brings up descriptor tables,
-x2APIC, paging and an EEVDF scheduler, reaches ring 3 with a handle table and an
-async queue ABI, claims a PCI NVMe device, and mounts read-only FAT32 over a
-VFS. It then settles at a prompt that echoes keystrokes. There is no product `init`, shell or user program. Those belong to Realm
-and remain gated. The echo prompt is a kernel diagnostic.
-
-| Phases 0 to 5 | Closed, each by a dated VMware boot. Last close 2026-08-24 |
-| --- | --- |
-| Phase 6, VFS and storage | Slices landed 2026-08-25. v0.2.0 qualified the diagnostic image (D-449). The phase stays open on PW-006 and PW-010 |
-| Realm userland | Owned by Realm; **gated** on compiler readiness (D-183), currently CLOSED |
-
-The supported VMware target reads no `RDCL_NO` bit, so D-250 keeps the
-shared-root user path closed on that target. D-407 is the path v0.2.0
-qualified: a user address space owns paired full/stripped roots and crosses
-through an exact non-secret entry enclave on a guarded, scrubbed stack, with
-PCID off. PW-580 and PW-706 closed on `694061f` (D-449). The fresh self-test
-and shipped VMware qualifications read capabilities `0x44` and selected paired
-roots. A Workstation log, a CPU signature, or an inferred capability still
-does not replace the guest's architectural read.
-
-[docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
-the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
-the only current backlog. `wizards-ink`, which owns the Wizzy compiler, is a
-separate repository and is not yet public.
-
-Design docs live in [docs/](docs/), one per subsystem, written before the
-code (design-first). Start with the
-[decision log](docs/004-decision-log.md) (every choice, its alternatives,
-and rationale). See [docs/002-architecture.md](docs/002-architecture.md). Research
-evidence behind them is in [the founding pass](docs/003-research-notes.md),
-[the second pass](docs/008-research-notes-2.md), and
-[the foundation-verification pass](docs/010-research-notes-3.md) and
-[the userland pass](docs/018-research-notes-5.md); later passes
-annotate corrections to the earlier historical snapshots.
-[Code conventions](docs/005-code-conventions.md) covers how the code is written.
+A successful build compiles the kernel and checks the linked image. Boot it with `cargo xtask run`. The full local gate is `cargo xtask ci`.
 
 ## Building & running
 
-The documented host is Windows with the GNU Rust host toolchain. Other hosts
-are outside the launch checks (PW-708). Source builds use public inputs only:
-no sibling checkout, VMware, or proprietary scanner is required. No WSL or
-external imaging tools are needed. QEMU is optional for compiling and host
-tests. Prerequisite: [rustup](https://rustup.rs) with the GNU host
-(`rustup-init -y --default-host x86_64-pc-windows-gnu`; Visual Studio is not
-required). For optional boots, install [QEMU](https://www.qemu.org/)
-(`winget install SoftwareFreedomConservancy.QEMU`). Open a fresh terminal
-after installing rustup so `cargo` is on PATH. The first build installs the
-pinned `1.97.1` toolchain and the `x86_64-unknown-none` target from
-`rust-toolchain.toml`. That file lists `rustfmt` and `clippy`. It omits
-`rust-mingw` because the component does not exist on other hosts; rustup
-installs it as part of the Windows GNU host toolchain.
-
-```powershell
-git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
-cd wizards-bedrock
-cargo fetch --locked
-cargo xtask build --release
-```
-
-The pinned GNU host also needs rustup's `rust-mingw` component (normally
-installed with that host). The build compiles the shipped kernel and checks
-its linked layout; it does not prove a boot. Optional image and machine tasks:
+Install rustup with the GNU host (`rustup-init -y --default-host x86_64-pc-windows-gnu`). Open a fresh terminal so `cargo` is on `PATH`. The first build installs the pinned toolchain from `rust-toolchain.toml`. That file omits `rust-mingw` because the component does not exist on other hosts; rustup installs it with the Windows GNU toolchain. For boots, install QEMU (`winget install SoftwareFreedomConservancy.QEMU`). The runner looks at `QEMU`, then `QEMU_DIR`, then `C:\Program Files\qemu`, then `PATH`.
 
 ```
-cargo xtask build              # compile the kernel (x86_64-unknown-none)
-cargo xtask image              # build target/bedrock.img, a bootable UEFI disk image
-cargo xtask run                # boot it in QEMU (serial output on stdio)
-cargo xtask vmware             # generate the self-test VM in vm/self-test/
-cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
-cargo xtask help               # every task, including the check tasks below
+cargo xtask build --release   # compile the kernel
+cargo xtask image              # write target/bedrock.img
+cargo xtask run                # boot the shipped image in QEMU, serial on stdio
+cargo xtask vmware             # generate vm/self-test/
+cargo xtask vmware --shipped   # generate vm/shipped/
+cargo xtask help               # every task
 ```
 
-`cargo xtask run -- <args>` accepts QEMU diagnostic options `-d`, `-D`,
-`-display` and `--display`, each with a value; the machine profile stays fixed.
-QEMU is found at `C:\Program Files\qemu` or on `PATH`; `QEMU_DIR` or `QEMU`
-override that.
+`cargo xtask run` and `cargo xtask image` use the shipped kernel. `cargo xtask run --` forwards QEMU diagnostic options `-d`, `-D`, `-display`, and `--display`, each with a value. The machine profile stays fixed.
 
-Kernel debugging additionally uses the pinned native GDB from WinLibs. The
-batch command proves a clean setup without leaving a VM running; the ordinary
-command opens an interactive prompt at the kernel's `kmain` entry, and quitting
-GDB terminates its private QEMU machine.
+`cargo xtask debug` opens a private QEMU at `kmain` under the pinned WinLibs GDB. `cargo xtask debug --check` proves the setup and exits. The accepted identity is GDB 17.2 from WinLibs r4:
 
 ```
 winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact
-cargo xtask debug --check
-cargo xtask debug
 ```
 
-Open a fresh terminal after the WinGet install, or set `GDB` to the exact
-`gdb.exe`. The accepted debugger identity is GDB 17.2 from WinLibs r4 (D-231).
+Set `GDB` if that `gdb.exe` is not on `PATH`.
+
+**Never set `RUSTFLAGS`.** It replaces the `[target.x86_64-unknown-none]` rustflags in `.cargo/config.toml`, and the kernel links without `code-model=kernel`. Pass lint flags after `--`.
+
+`cargo build --workspace` cannot select a target per package on stable. Bare Cargo commands cover the host half through `default-members`. These aliases reach the kernel:
+
+| Alias | Runs |
+|---|---|
+| `cargo kcheck` | `cargo check` on `wost` and `wizard-kernel` for `x86_64-unknown-none` |
+| `cargo kclippy` | the same for clippy |
+| `cargo kbuild` | a release kernel build |
+
+`cargo xtask` runs the orchestrator under the optimized `xtask` profile. Audited graphs, host tests, and the mutation workspace keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
+
+Release builds use `panic = "abort"`, LTO, and debug info that costs no loaded bytes.
 
 ## Development
 
 ```
-cargo xtask ci       # run the complete local gate below
+cargo xtask ci
 ```
 
-`ci` is the ordinary local source gate. D-441 amends D-26 only for the
-lightweight hosted **Source preview checks**, which run fmt, supply-chain,
-vendor verification, the release compile and focused documentation tests on
-one Windows GNU runner. They do not replace local CI. The first v0.1.0 launch
-uses D-441's bounded gate; substantive kernel changes retain ordinary CI.
-Phase close additionally requires the exceptional qualifications listed below.
-`cargo xtask help` lists every task and renders this same registry. The marked
-section is checked byte for byte against the registry that execution iterates,
-so changing a Cargo graph or gate stage requires a reviewable documentation
-change (D-212).
-
-On Windows, `cargo xtask clean` may leave only the currently running
-`target/xtask/xtask.exe` image until that process exits. The task treats the
-platform lock as success only after proving that exact executable is the sole
-target residual; any other artifact or redirect remains a failure (D-418).
+`ci` is the local source gate. Its stages are rendered from the same registry the tool executes:
 
 <!-- CI-REGISTRY:START -->
 Cargo graphs used by each Cargo-driven gate stage:
@@ -206,262 +206,22 @@ Ordered `cargo xtask ci` stages:
 | 11 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
 <!-- CI-REGISTRY:END -->
 
-`boot-check` boots the shipped kernel and requires it to settle at its prompt;
-`degraded-check` boots it with PCI configuration forced unavailable and on a
-processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
-devfs surveys, and a steady state rather than a triple fault. It then boots the
-shipped image on a machine with no remapping unit and requires storage to say
-`storage: no DMA isolation` and stay unmounted rather than run a controller the
-IOMMU does not constrain (D-357).
+`boot-check` boots the shipped image and requires the keyboard prompt. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `api-audit` requires a compiler-resolved caller for every public item in `libs/` and `wost`. `doc` exists so rustdoc's link lints run.
 
-Nine tasks are deliberately **not** in `ci`: `debug` needs the pinned native
-GDB and is normally interactive, `model-check` needs TLC and Java, `vmware`
-needs VMware Workstation to boot the result, `qualify-vmware` validates the
-fresh transcript after that human boot, `mutate` needs one QEMU boot per known
-defect, `baseline` needs six QEMU boots for descriptive measurements, and
-`qualify-advisory` needs `cargo-audit` plus fresh RustSec data.
-`qualify-mutants-grade --run` owns and contains the complete current-source
-campaign. `qualify-security-deep --run` owns the pinned Codex Security MCP
-server, its complete Windows process tree, exact tool dialogue and private
-scratch; `--begin` and `--verify=RESULT_DIR` remain diagnostic-only (D-406).
-The grade and Deep runs are continuous campaigns against `main` rather than
-release prerequisites (D-425): a release bundle carries each one's record only
-when it names the release's exact source, and otherwise records that campaign
-as `deferred`.
-A gate step that
-fails for want of an exceptional tool or a long qualification teaches people
-to skip the gate.
-`model-check` prints the exact resolved Java identity before invoking it;
-`vmware` prints the image kind, exact byte length and SHA-256 digest, resolved
-`vmrun` identity and a fully quoted launch command when Workstation is
-installed, or names that dependency as unavailable without blocking VM
-generation. Self-test and shipped generation use separate machine state and
-start with separate empty serial transcripts (D-218, D-235).
-After booting each generated machine and completing its human input rounds, run
-`cargo xtask qualify-vmware` for self-test and
-`cargo xtask qualify-vmware --shipped` for the shipped image. Qualification
-validates and preserves each
-fresh transcript; generation alone is not phase-close execution evidence.
-Generate, boot and qualify each selector before generating the other. Keep
-exactly that machine running during qualification, then stop it: the record
-requires an exact one-machine `vmrun` observation and the matching build image.
-Use one fresh boot per transcript; an appended second boot is diagnostic
-output rather than qualification evidence. The receipt binds the source-rendered
-configuration, while qualification preserves exact runtime VMX and serial
-bytes and admits only the reviewed Workstation additions (D-365).
+These tasks stay outside `ci` because they need a tool, a person, or a long run: `debug`, `baseline` (six QEMU boots), `model-check`, `vmware`, `mutate` (one QEMU boot per registered defect, on a copy under `target/mutate/`), `qualify-advisory`, `qualify-mutants-grade --run`, and `qualify-security-deep --run`. After a human boots a generated VMware machine, `cargo xtask qualify-vmware` checks the self-test transcript and `cargo xtask qualify-vmware --shipped` checks the shipped one. `cargo xtask evidence` runs the gate, reproduces the shipped image twice, and writes a bundle that `cargo xtask verify-evidence` rechecks offline.
 
-For authorized host console automation, Workstation's built-in VNC can
-deliver the same prompt-directed input without guest software (D-431).
-While the generated machine is stopped, add only this optional complete
-group to its runtime `.vmx`:
+## Further reading
 
-```text
-RemoteDisplay.vnc.enabled = "TRUE"
-RemoteDisplay.vnc.ip = "127.0.0.1"
-RemoteDisplay.vnc.port = "5997"
-```
+See [docs/002-architecture.md](docs/002-architecture.md). Subsystem docs, written before the code:
 
-Keep the source template and generation receipt unchanged. After starting,
-verify that the exact generated machine is the sole `vmrun` listing and that
-its VMware process owns a listener bound only to `127.0.0.1:5997` before
-connecting to that local endpoint. If either identity or binding cannot be
-established, stop the attempt. This console has no VNC authentication and
-does not isolate input from other local host processes. Do not add other
-`RemoteDisplay` settings or substitute addresses or ports: qualification
-refuses them and every incomplete group. Follow the actual on-screen input
-rounds and preserve the emitted serial bytes. Qualify while the machine is
-running, then stop it and verify that the listener is gone.
+- [Boot](docs/001-boot.md)
+- [CPU](docs/006-cpu-fundamentals.md)
+- [Memory](docs/007-memory.md)
+- [Scheduling](docs/009-multitasking.md)
+- [Ring 3 and the ABI](docs/011-userspace.md)
+- [Storage](docs/014-storage.md)
+- [Code conventions](docs/005-code-conventions.md)
 
-`cargo xtask baseline` builds the fixed-QEMU self-test image once in release
-and debug modes, then boots each three times. It requires a clean ordinary
-self-test verdict while enforcing reviewed bands for image size, unsafe count,
-boot time, retained frame/heap/handle state, one real ring-3 trap round trip and
-one full-buffer NVMe read. The reported variance is a regression alarm for this
-emulated development machine, not a hardware benchmark or ABI promise (D-230).
+The language boundary is [docs/015-wizzy-userland.md](docs/015-wizzy-userland.md) (D-183). The kernel register is [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md) (D-184).
 
-`mutate` requires a clean `HEAD` and writes only to a locked, journalled copy
-under `target/mutate/`, with its own build directory. An interrupted sweep
-resumes at its active mutation after restoring that copy; it never repairs or
-rewrites the checkout or Git index (D-208).
-
-`cargo xtask evidence` requires a clean `HEAD`, runs the complete gate, builds
-the shipped release in two fresh target directories, requires byte-identical
-kernel and image artifacts, and boots the exact bundled image. It writes the
-deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
-then rechecks its source identity, installed tool and firmware identities,
-vendored and machine inputs, artifact hashes, reproducibility result and boot
-result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v11 requires
-source-bound records for the current mutation sweep, the fresh RustSec review,
-all model runs and both generated-and-booted VMware selectors, plus fixed-shape
-Java and VMware tool identities. It always declares
-`qualification.cargo-mutants-grade.status` and
-`qualification.codex-security-deep.status` as exactly `pass` or `deferred`
-(D-425). A passing campaign's record and canonical artifacts are verified
-exactly, including Deep's owned authority; a deferred campaign carries no
-record or file, and a missing or other status is refused. It accepts either one
-exact source commit or a direct child which modifies only the five closure
-documents named by D-330 while retaining the locked newest passing parent
-mutation report. Verification therefore rejects an
-unavailable, stale, omitted or changed phase-close qualification rather than
-changing schema (D-218, D-244, D-330, D-373). D-406 advances qualification
-to v6: only an owned, pinned live Deep MCP session can create the Deep PASS,
-and every earlier record or bundle is invalid.
-
-D-441 separates experimental source previews from qualified diagnostic
-releases and supersedes only D-425's first-v0.1.0 assignment. v0.1.0 publishes
-reviewed source after disclosure/license review, whitespace checks, fmt,
-supply-chain/vendor verification, a shipped release compile and focused
-decision/documentation/registry tests on its exact clean commit. Its GitHub
-release is a prerelease, not Latest, with no new kernel/VM image or qualification
-bundle. Final executed results belong in the GitHub release body. Its tag never
-moves; a later qualified release needs its own version.
-
-Qualified diagnostic releases retain `cargo xtask ci`, the complete curated
-`cargo xtask mutate` sweep, `cargo xtask model-check`, fresh
-`cargo xtask qualify-advisory`, both human VMware qualifications, reproducible
-images, and `cargo xtask evidence` plus `cargo xtask verify-evidence` on the
-exact qualified commit, which is then tagged directly. Only rows actually
-proved may close afterward; publication alone closes none. D-330's
-documentation-only child remains supported. The source preview makes no claim
-that these qualifications ran or passed.
-
-`qualify-mutants-grade --run` resolves the pinned grader and nextest, publishes
-the exact source/tool/environment request, and starts the full campaign in an
-exclusive `xtask`-owned directory through the bounded process owner. It accepts
-only a successful run with unchanged source and tools, an identical independent
-inventory, and exact non-caught dispositions from the tracked
-`xtask/mutants-adjudications.json`; caller-supplied adjudications have no PASS
-authority. `qualify-security-deep --run` resolves and hash-pins the selected
-plugin, Node, Python executable and Codex, records and stability-binds the
-complete isolated Python-owned runtime tree, the four-file adjacent Codex
-runtime and Git, reserves one
-budget-observed OS-temporary run, and owns exactly one non-authoritative
-Daybreak access advisory before exactly one Deep start plus one completion on
-the same MCP session. The advisory reports account display access only: it
-cannot grant model entitlement, select a provider, mint PASS or stop a scan.
-It clears inherited routing inputs,
-proves the effective official ChatGPT configuration, refuses a live login
-credential with any pre-existing hard-link alias, and gives every worker a
-newly written clean clone of the frozen tracked source rather than the live
-checkout. Provider metadata carries the one exact root-readable `managed`
-named profile accepted by official pinned Codex Security. The wrapper validates
-and preserves that provider-generated app-server permission profile unchanged;
-only
-an initial or resumed `codex exec` crosses the mandatory attenuation boundary,
-where the wrapper validates the complete invocation and replaces the named
-profile exactly once. The effective profile denies host-root access by default,
-allows only `:minimal`, the owned repository/scan/plugin trees and qualified
-runtime bytes, denies clone metadata, unqualified Python package/cache trees
-and both live and projected credential names, disables network, and forces
-`windows.sandbox="mxc"` as the unique final override with its exact effective
-origin. Before MCP, pinned Codex/MXC explicitly compiles and selects that exact
-effective named profile from the owned scan root. Positive controls first prove
-that the probe operations work outside the sandbox; the selected profile must
-then satisfy every planned allowed read while denying every planned denied
-read, two fresh-file creates, append/truncate/overwrite against an existing
-readable canary, a loopback listener, an outbound loopback connection and a
-descendant read. The split canonical v3 ledger binds those seven exact probe
-counts independently of the worker-transition proof. Each real app-server
-child produces a launch receipt for its worker attempt, so parallel or retried
-workers may produce multiple launches. Each initial or resumed exec must emit
-its actual `thread.started` identity; the wrapper seals that start before
-forwarding the event, and any zero-exit receipt must pair with the same process,
-worker, arguments and thread start. The exact completion `threadIds` and
-`executionThreadIds` sets are retained: execution identities must be a nonempty
-subset of the completed thread set, every one must have an observed initial
-start, and every resumed start must have same-worker initial ancestry. Private
-CLI and Python wrappers constrain the allowed exec arguments, derive the worker
-shell environment only from qualified paths and mirror their scripts. It
-requires the pinned completion reply and remeasures the owned clone, source and
-tools after their last use, replays the six canonical artifacts (request,
-manifest, findings, coverage, report and worker-transition ledger), cleans its
-private scratch, and only then commits PASS. Its Git queries run with a
-fixed-only environment,
-absolute repository bindings and every effective repository content-filter
-driver disabled. `--begin` still publishes the source-bound
-request and `--verify=RESULT_DIR` still validates imported artifacts for
-diagnosis, but neither diagnostic action can obtain release authority (D-406).
-
-`test` runs the host suite; `test-boot` boots a kernel built with the
-`selftest` feature headless in QEMU, injects a keystroke over QMP when the
-kernel asks for one (D-38), and reads the verdict from the exit code, which
-is how anything needing a real machine gets tested (D-28). `doc` exists to
-make the rustdoc link lints fire: nothing else in the gate runs rustdoc, so
-without it a doc link can rot unnoticed (D-22).
-
-`api-audit` builds every registered target graph offline and requires an exact
-compiler-resolved caller for each public `libs/` and `wost` item or enum
-variant. Caller evidence is bound to its package, target, source origin and
-compiler inputs; an unclassified source shape fails closed. Re-exports and
-documentation do not count, and fields remain outside the claim because stable
-rustc does not diagnose every live destructuring pattern (D-213, D-275).
-Each round runs up to four independent graphs together, with one Cargo job
-per graph; the large `xtask` test harness runs alone. Rounds run sequentially,
-and results retain graph order (D-442).
-
-Every Cargo-driven check runs over every graph in the registry above. A Cargo
-feature is a different crate graph, and linting only one of them is how two
-dead constants once rode a release image out. Adding a build-only feature
-means adding its graph to `xtask/src/gate.rs`.
-
-Every kernel build is read back and checked against what `kernel/linker.ld` is
-written to produce: entry in the higher half, no orphan sections, no segment
-both writable and executable, `.bss` costing no file space (D-40).
-
-**`cargo build --workspace` does not work, and cannot on stable.** The kernel
-crates only build for `x86_64-unknown-none` and `xtask` only for the host, and
-cargo has no stable way to say so per package (`package.forced-target` is
-nightly). Bare cargo commands are therefore scoped to the host half by
-`default-members`, and these aliases reach the other half:
-
-| Alias | Runs |
-|---|---|
-| `cargo kcheck` | `cargo check` on `wost` + `wizard-kernel` for the kernel target |
-| `cargo kclippy` | the same for clippy |
-| `cargo kbuild` | a release kernel build |
-
-`cargo xtask` is an alias as well. It runs the orchestrator under the optimized
-`xtask` profile, so the tool hashes and parses the tree at full speed while
-every graph it audits, every host test and the mutation workspace keep the
-plain `dev` profile (D-292).
-
-**Never set the `RUSTFLAGS` environment variable here.** It replaces the
-`[target.x86_64-unknown-none]` rustflags in `.cargo/config.toml`, and the
-kernel would link without `code-model=kernel`: a broken higher-half image
-with no build error. Pass lint flags after `--` instead.
-
-For the same reason, `.vscode/settings.json` points rust-analyzer at
-`cargo xtask check`. Without it the editor checks the kernel for the host
-triple and reports phantom errors across every kernel file.
-
-## Contributing
-
-Outside contributions are welcome through forks and pull requests. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md) for scope, focused checks and maintainer
-review; AI-assisted contributions are welcome when reviewed and explained.
-Use [issues](https://github.com/wizards-ecosystem/wizards-bedrock/issues) for
-ordinary bugs and [private reporting](SECURITY.md) for vulnerabilities. The
-[foundation register](docs/016-pre-wizzy-foundation.md) owns known-open work;
-its WZ blockers and stopped triggers remain outside launch implementation.
-
-## Layout
-
-```
-wost/       privileged kernel framework, the only crate that may write `unsafe`
-kernel/     the kernel binary (no_std, #![deny(unsafe_code)], higher-half)
-libs/       shared no_std crates: pure logic, host-testable (including
-            memory-map, frame-space, ring-proto, and architecture encodings)
-xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
-boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
-handoff/    synthetic route-neutral envelope/payload fixtures, not Wizzy source
-docs/       design docs (design-first: docs before code)
-docs/roadmap/  assignment index after v0.2.0; the register stays the backlog
-experiments/ optional host tools outside the workspace, the register, and CI
-models/     TLA+ ring-protocol specs, plus four deliberate mutant configs that
-            must each fail, checked by `cargo xtask model-check` (D-112)
-tools/      pinned TLA+ jar and the foreign FAT32 corpus, both digest-checked
-supply-chain/  SBOM, third-party notices and license texts
-fixtures/abi-pressure/  native ABI transcription + uncompiled Phase-5 pressure test
-                       (kernel contract evidence; executable ports belong to Realm)
-```
+Outside contributions arrive through forks and pull requests. [CONTRIBUTING.md](CONTRIBUTING.md) covers scope and which checks a change needs. Report vulnerabilities through [SECURITY.md](SECURITY.md).
