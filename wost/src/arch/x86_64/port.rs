@@ -1,5 +1,6 @@
 //! Typed x86 I/O port access. Ports are handed out by [`claim`] and [`claim_block`], which record
 //! every claim in a registry so exclusivity is checked rather than merely promised.
+//! [`claim_pair`] answers that for i8042 under one lock.
 
 use core::arch::asm;
 use core::marker::PhantomData;
