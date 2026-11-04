@@ -1,13 +1,5 @@
 //! The decision log, checked against the code that cites it.
-//!
-//! `docs/004-decision-log.md` is the authority on why this kernel is shaped the
-//! way it is. Host tests enforce two text properties where `cargo test` can
-//! reach them (D-41):
-//!
-//! - the entries run from `D-01` upward with no gap and no repeat, so a number
-//!   cannot be skipped when one is minted;
-//! - every `D-NNN` written anywhere in the tree names an entry that exists.
-//!
+//! Entries run from `D-01` with no gap or repeat, and every `D-NNN` in the tree names one.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -18,10 +10,6 @@ use anyhow::{Context, Result};
 pub const LOG: &str = "docs/004-decision-log.md";
 
 /// Every decision number the log defines, in order.
-///
-/// # Errors
-///
-/// If the log cannot be read.
 pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
     let path = root.join(LOG);
     let text =
@@ -34,10 +22,7 @@ pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
 }
 
 /// The decision number a `D-`-stripped string starts with, and what follows.
-///
-/// The digits must end at a boundary, symmetric with the one the caller checks
-/// in front: a run of hex that merely opens with a digit is not a citation, and
-/// reporting one would name a decision nobody claimed.
+/// Digits must end at a boundary, so a hex run that merely opens with a digit is not a citation.
 fn number(rest: &str) -> Option<(u32, &str)> {
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() || digits.len() > 3 {
@@ -101,7 +86,7 @@ fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
             } else if matches!(
                 path.extension().and_then(|extension| extension.to_str()),
                 // Linker scripts cite decisions and therefore belong in the
-                // source inventory (D-147).
+                // source inventory.
                 Some("rs" | "md" | "toml" | "h" | "cpp" | "tla" | "cfg" | "ld")
             ) {
                 found.push(path);
@@ -124,11 +109,6 @@ mod tests {
     }
 
     /// The log numbers its entries from one upward with no gap and no repeat.
-    ///
-    /// A gap is a decision that was minted and lost, or a number skipped by
-    /// accident; the log is append-only, so either is a mistake rather than a
-    /// style. The repeat half is not hypothetical either — two sessions
-    /// appending on the same day is exactly how it would happen.
     #[test]
     fn the_decisions_are_numbered_without_a_gap() {
         let numbers = defined(&root()).expect("reading the decision log");
@@ -155,9 +135,6 @@ mod tests {
     }
 
     /// Every `D-NNN` written anywhere names an entry the log defines.
-    ///
-    /// This is the one that would have caught D-121, cited in eight places
-    /// with nothing behind it.
     #[test]
     fn every_citation_names_a_decision_that_exists() {
         let root = root();

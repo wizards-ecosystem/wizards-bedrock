@@ -1,7 +1,5 @@
 //! Generating a VMware VM directory: a flat VMDK plus a VMX.
-//!
-//! The raw image is copied in alongside the descriptors so the folder is
-//! self-contained and can be moved or archived on its own.
+//! The raw image is copied in so the folder stands on its own.
 
 mod config;
 
@@ -68,9 +66,7 @@ pub struct Geometry {
 }
 
 /// Geometry covering `sectors`.
-///
-/// The cylinder count rounds up: truncating would declare a geometry smaller
-/// than the extent it describes.
+/// The cylinder count rounds up; truncating would declare a disk smaller than the extent.
 pub fn geometry(sectors: u64) -> Geometry {
     Geometry {
         cylinders: sectors.div_ceil(HEADS * SECTORS_PER_TRACK),
@@ -80,10 +76,7 @@ pub fn geometry(sectors: u64) -> Geometry {
 }
 
 /// Substitute `{{KEY}}` placeholders in `template`.
-///
-/// Substituted text is never rescanned, so a value that itself contains a
-/// placeholder is emitted literally. An unrecognised key is an error rather
-/// than a silently empty field.
+/// Values are not rescanned, and an unrecognised key is an error rather than an empty field.
 pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
     const OPEN: &str = "{{";
     const CLOSE: &str = "}}";
@@ -145,7 +138,7 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     )?;
     write_new(&vm_dir.join(VMDK_NAME), vmdk.as_bytes())?;
 
-    // Share the builder so both machine gates boot identical bytes (D-176).
+    // Share the builder so both machine gates boot identical bytes.
     let namespace = crate::qemu::nvme_image(paths.root())?;
     let nvme_flat = vm_dir.join(NVME_FLAT_NAME);
     let nvme_bytes = copy_new(&namespace, &nvme_flat)?;
@@ -613,7 +606,7 @@ fn verify_shipped_transcript(text: &str) -> Result<()> {
 }
 
 // Each storage candidate logs its own translation record and a retired one's
-// comes first, so the last record is the kept controller's (D-358).
+// comes first, so the last record is the kept controller's.
 fn require_translation_before_storage(text: &str) -> Result<()> {
     let translation = info_records(text)
         .filter(|(_, message)| translation_record(message))
@@ -978,8 +971,7 @@ mod tests {
     fn selftest_transcript_with_isolation(isolation: &str) -> String {
         let expected = expected_selftest_checks(&repository_root()).expect("current check count");
         let mut transcript = String::new();
-        // The order the 2026-10-20 VMware self-test boot emitted: storage is
-        // selected before user isolation, and isolation before the APIC.
+        // Storage is selected before user isolation, and isolation before the APIC.
         for marker in [
             "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester",
             VMWARE_ISA_DMA_MARKER,
@@ -1867,13 +1859,13 @@ mod tests {
         .unwrap();
 
         assert!(vmx.contains(r#"firmware = "efi""#));
-        // Storage fails closed on a machine with no remapping unit (D-357).
+        // Storage fails closed on a machine with no remapping unit.
         assert!(vmx.contains(r#"vvtd.enable = "TRUE""#));
         assert!(vmx.contains(r#"acpi.addtable.filename = "dma-handoff.bin""#));
         assert!(vmx.contains(&format!(r#"serial0.fileName = "{serial}""#)));
         assert!(vmx.contains(r#"sata0:0.fileName = "bedrock.vmdk""#));
         // A namespace-less candidate before the usable controller makes the
-        // retirement path observable on VMware (D-176, D-240).
+        // retirement path observable on VMware.
         assert!(vmx.contains(r#"nvme0.present = "TRUE""#));
         assert!(
             !vmx.contains(r#"nvme0:0.present"#),
@@ -1881,7 +1873,7 @@ mod tests {
         );
         assert!(vmx.contains(r#"nvme1.present = "TRUE""#));
         assert!(vmx.contains(r#"nvme1:0.fileName = "wizard-nvm.vmdk""#));
-        // before the guest gets a chance to look for it (D-176).
+        // The downstream bridge is present before the guest scans for it.
         assert!(vmx.contains(r#"pciBridge4.virtualDev = "pcieRootPort""#));
     }
 }

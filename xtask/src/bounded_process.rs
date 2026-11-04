@@ -1,12 +1,5 @@
-//! Bounded child execution without pipe-EOF waits.
-//!
-//! Regular-file capture prevents inherited pipe handles from extending a wait.
-//! Termination gets its own bounded poll. On Windows every command runs in a
-//! job object that holds each process it starts, and the whole job is
-//! terminated when the command ends, times out or fails (D-347). The byte cap
-//! bounds memory rather than disk retained through an unlinked capture file.
-//! Line-framed dialogues also poll caller-owned live state under the same
-//! deadline, so an external scratch-budget failure ends the job (D-406).
+//! Bounded child execution without waiting on pipe EOF.
+//! On Windows the child and every process it starts share a job terminated with the command.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, SeekFrom, Write};
@@ -51,9 +44,8 @@ pub(crate) fn isolate_git_environment(command: &mut Command) {
         .envs(FIXED_GIT_ENVIRONMENT.iter().copied());
 }
 
-/// Run one non-interactive child through its deadline and capture both streams.
-///
-/// Failure cleanup may consume the additional bounded post-kill interval.
+/// Run one non-interactive child to its deadline and capture both streams.
+/// Cleanup may use one extra bounded interval after the kill.
 pub(crate) fn output(command: Command, timeout: Duration, label: &str) -> Result<Output> {
     output_with_limit(command, timeout, label, MAX_CAPTURE_BYTES)
 }
@@ -133,12 +125,8 @@ fn dialogue_deadline(start: Instant, timeout: Duration) -> Result<Instant> {
         .context("bounded child deadline overflowed")
 }
 
-/// Run one line-framed dialogue through one deadline and capture diagnostics.
-///
-/// The dialogue runs off the polling thread so a blocked pipe cannot prevent
-/// the complete child tree from being stopped at the original deadline.
-/// The owner observer runs on that polling thread under the same deadline.
-/// Failure cleanup may consume the additional bounded post-kill interval.
+/// Run one line-framed dialogue to one deadline and capture diagnostics.
+/// The dialogue is off the polling thread so a blocked pipe cannot postpone stopping the tree.
 pub(crate) fn output_dialogue<T, O, F>(
     mut command: Command,
     timeout: Duration,
@@ -325,11 +313,8 @@ fn read_bounded_line<R: BufRead>(
     Ok(Some(line))
 }
 
-/// Run one child while reducing stdout on a dedicated reader thread.
-///
-/// The consumer must bound each record before allocating it. Stderr remains a
-/// separately bounded diagnostic stream. Reader errors are observed while the
-/// child is live so the complete process tree is stopped before returning.
+/// Run one child while a reader thread reduces stdout.
+/// Bound each record before allocating it, and stop the tree before returning a reader error.
 pub(crate) fn output_streamed<T, F>(
     mut command: Command,
     timeout: Duration,
@@ -464,9 +449,7 @@ fn join_reader(thread: JoinHandle<()>, label: &str) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("{label} panicked"))
 }
 
-/// One bounded command and every process it starts. On Windows they share a
-/// job object that is terminated as a whole; dropping the tree does that, so
-/// no descendant outlives the command however it ends.
+/// One command and every process it starts. On Windows they share a job terminated as a whole.
 struct Tree {
     #[cfg(windows)]
     child: command_group::GroupChild,

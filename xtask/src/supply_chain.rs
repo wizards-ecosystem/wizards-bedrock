@@ -1,9 +1,5 @@
-//! Offline verification and deterministic SPDX rendering for D-220.
-//!
-//! Cargo's lock file is enough to identify registry bytes, but not enough to
-//! say which licenses were selected, which packages reach the image, or which
-//! non-Cargo artifacts participate. The reviewed inventory adds only those
-//! facts; this module refuses any disagreement between the two records.
+//! Offline supply-chain verification and deterministic SPDX rendering.
+//! The lock file identifies registry bytes; the inventory adds licenses and other artifacts, and the two must agree.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -21,7 +17,7 @@ const SPDX: &str = "supply-chain/foundation.spdx";
 const SPDX_STAGING: &str = "foundation.spdx.incomplete";
 const NOTICES: &str = "supply-chain/THIRD-PARTY-NOTICES.md";
 const MAGIC: &str = "wizard-supply-chain-v1";
-/// The one registry source a locked package may name (D-345, as D-213's audit).
+/// The one registry source a locked package may name.
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const HEADER: &str = "kind|name|version|scope|sha256|license|note";
 const MAX_INVENTORY_BYTES: u64 = 1024 * 1024;
@@ -619,9 +615,7 @@ fn verify_runtime_scope(
 }
 
 /// Every source-less locked package is a distinct workspace member.
-///
-/// A path crate outside the workspace has no inventory row or SPDX package,
-/// so the lock may not carry one, even under a member's name.
+/// A path crate outside the workspace has no inventory row, so the lock may not carry one.
 fn verify_path_packages(
     packages: &[LockedPackage],
     members: &std::collections::BTreeMap<String, Vec<Dependency>>,
@@ -690,9 +684,7 @@ fn package_name(manifest: &str) -> Result<String> {
 }
 
 /// Normal dependency names declared by one member manifest.
-///
-/// This is a line reader, so it refuses every declaration shape it does not
-/// model rather than silently omitting a runtime dependency.
+/// A line reader: declarations it does not model are refused, not omitted.
 fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
     let mut in_normal_dependencies = false;
     let mut dependencies = Vec::new();
@@ -745,10 +737,7 @@ fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
 }
 
 /// Whether a table header is spelled the one way `manifest_dependencies` compares.
-///
-/// Whitespace, a quoted key other than a target's specifier, or text after the
-/// closing bracket can name a dependency table those comparisons never match,
-/// and only a TOML parser could say which (D-345).
+/// Other spellings can name a dependency table those comparisons never match.
 fn canonical_header(line: &str) -> bool {
     let Some(path) = line
         .strip_prefix("[[")

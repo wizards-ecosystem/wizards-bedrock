@@ -43,7 +43,7 @@ const CAMPAIGN_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const CAMPAIGN_ROOT: &str = "qualification-runs/cargo-mutants";
 /// The directory cargo-mutants creates inside its `--output` argument.
 const CARGO_MUTANTS_OUTPUT: &str = "mutants.out";
-/// The reviewed crates.io `cargo-mutants 27.1.0` executable (D-342).
+/// The reviewed crates.io `cargo-mutants 27.1.0` executable.
 const CARGO_MUTANTS_EXECUTABLE_SHA256: &str =
     "4ef442752564625eef9786739a1d57cc692263fca071dd16751f45ba2e322d9c";
 const INVENTORY_COMMAND: &str = "cargo mutants -p xtask --list --json --diff --no-times";
@@ -226,9 +226,8 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     let (mut grade, noncaught) = parse_outcomes(&outcomes, &candidates)?;
     grade.adjudicated = verify_adjudications(&adjudications, &noncaught)?;
     require_campaign_success(result.status, &grade, &root)?;
-    // Inventory is another grader invocation and doctests exercise the pinned
-    // Cargo toolchain. Rebind source and both external tools after their final
-    // use, immediately before any PASS-producing call.
+    // Inventory and doctests are separate tool runs.
+    // Rebind source and both tools after their last use, immediately before any PASS.
     require_campaign_identity(
         attempt.source(),
         &qualification::source_identity(paths.root())?,

@@ -1,13 +1,7 @@
 //! Build orchestrator for The Wizard's Bedrock.
-//!
-//! Everything happens in-process in pure Rust — no xorriso, mtools, or other
-//! external imaging tools. The bootable artifact is a raw disk image with an
-//! MBR partition table holding a single FAT32 EFI system partition.
-//!
 //! Run `cargo xtask help` for the task list.
 
-// In-source because xtask takes no workspace lints (D-22); D-67's rule that
-// unsafe is permitted nowhere in silence still applies here.
+// Declared here because xtask takes no workspace lints. Unsafe stays forbidden.
 #![forbid(unsafe_code)]
 
 pub mod api;

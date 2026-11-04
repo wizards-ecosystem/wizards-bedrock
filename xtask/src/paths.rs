@@ -1,8 +1,5 @@
 //! Where everything lives.
-//!
-//! Every path the build touches is derived here from a handful of constants, so
-//! renaming a package or switching profile is a one-line change rather than a
-//! hunt for string literals.
+//! Paths derive from a few constants, so a rename is not a hunt through string literals.
 
 use std::path::{Path, PathBuf};
 
@@ -106,9 +103,8 @@ pub const KERNEL_PACKAGE: &str = "wizard-kernel";
 /// Packages that only ever build for the kernel target.
 pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 
-/// Packages that build and run their tests on the host. `libs/` crates are
-/// `no_std` but compile for the host under `cfg(test)`, which is the whole
-/// point of putting pure logic there.
+/// Packages that build and test on the host.
+/// `libs/` crates are `no_std` but compile for the host under `cfg(test)`.
 pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
@@ -140,18 +136,8 @@ pub const HOST_PACKAGES: &[&str] = &[
     "xtask",
 ];
 
-/// The `default-members` entries of a workspace manifest, as package names.
-///
-/// This list exists twice — here as [`HOST_PACKAGES`], and in the root
-/// manifest, where it scopes bare cargo commands to the half that builds for
-/// the host. Two copies of a list is two chances to add a crate to one of
-/// them, which is exactly what happened to `port-space`: the gate silently
-/// stopped covering it. A test below reads the real manifest through this
-/// function and requires the two to agree.
-///
-/// Hand-rolled rather than a TOML dependency, on the `sha256.rs` precedent —
-/// one array, one call site. Entries are directory paths and the package name
-/// is the last segment, a convention the same test enforces by comparing.
+/// The `default-members` of a workspace manifest, as package names.
+/// The same list lives in the root manifest; this parse exists so a test can require they agree.
 pub fn default_members(manifest: &str) -> Vec<String> {
     manifest
         .split_once("default-members = [")
@@ -173,10 +159,8 @@ pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
 /// Cargo feature that compiles the kernel's boot-time self-checks in.
 pub const SELFTEST_FEATURE: &str = "selftest";
 
-/// The same feature spelled the way a workspace-scoped `--features` wants it.
-///
-/// Written out rather than formatted, because a `const` cannot be — so a test
-/// below asserts it against the two constants it is made of.
+/// The spelling a workspace-scoped `--features` wants.
+/// Written out because a `const` cannot format; a test checks it against the two halves.
 pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
 /// Cargo feature which makes the production PCI configuration claim refuse.
@@ -230,10 +214,7 @@ impl Paths {
     }
 
     /// Locate the workspace from cargo's environment.
-    ///
-    /// `build.target-dir` in a cargo config is deliberately not honoured —
-    /// reading it would mean parsing `cargo metadata`. Set `CARGO_TARGET_DIR`
-    /// instead; see `docs/005-code-conventions.md`.
+    /// `build.target-dir` is ignored: reading it would parse `cargo metadata`. Set `CARGO_TARGET_DIR`.
     pub fn discover() -> Result<Self> {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir
@@ -438,13 +419,8 @@ default-members = [
         );
     }
 
-    /// The names here and the paths in `boot/limine.conf` are one contract
-    /// written twice.
-    ///
-    /// `KERNEL_ON_ESP`'s doc says "must match the `path:` line" and nothing
-    /// read that file. A drift produces an unbootable image, found forty-five
-    /// seconds into `boot-check` rather than by `cargo test` — the same shape
-    /// as the `default-members` drift the test above exists for (D-105).
+    /// The names here and the paths in `boot/limine.conf` are one contract written twice.
+    /// Drift is an unbootable image, otherwise found only inside `boot-check`.
     #[test]
     fn the_boot_configuration_names_the_files_the_image_builder_writes() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -469,15 +445,8 @@ default-members = [
         assert_eq!(named("module_path:"), PROGRAM_ON_ESP);
     }
 
-    /// Every crate under `libs/` is in both lists.
-    ///
-    /// The test above compares the two lists **to each other**, so a crate in
-    /// *neither* is symmetric and passes — and it needs no manifest edit to
-    /// exist, because Cargo promotes a path dependency inside the workspace
-    /// directory to a member on its own. So `libs/foo` depended on by
-    /// `kernel/` builds fine while `cargo xtask test`, clippy's host pass and
-    /// `doc` never see it. That is the `port-space` drift the sibling test
-    /// exists to prevent, entered by the other door (D-124).
+    /// Every crate under `libs/` is in both package lists.
+    /// Comparing the lists to each other misses a crate that is in neither, and Cargo adopts path crates on its own.
     #[test]
     fn every_libs_crate_is_in_both_lists() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

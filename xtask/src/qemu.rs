@@ -25,30 +25,22 @@ pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
 /// Whether the fixed machine presents the DMA-remapping unit storage requires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Remapping {
-    /// The ordinary machine: an Intel unit ahead of every PCI device (D-357).
+    /// The ordinary machine: an Intel unit ahead of every PCI device.
     Present,
     /// The degraded machine that proves storage fails closed without one.
     Absent,
 }
 
-/// The remapping unit owns both DMA and interrupt delivery. Its empty IR table
-/// blocks every PCI interrupt while caching mode makes the unit cache
-/// not-present DMA entries, so every mapping change must be invalidated.
+/// The remapping unit owns DMA and interrupt delivery.
+/// An empty IR table blocks PCI interrupts, and caching mode requires an invalidation on every mapping change.
 const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"];
 
-/// QEMU 9.2 deliberately emits a scoped DRHD even though its one emulated
-/// unit intercepts every PCI DMA request. The release boundary does not infer
-/// catch-all authority from that implementation detail, so the fixed test
-/// platform supplies a separate checksummed attestation naming the real unit.
+/// QEMU 9.2 emits a scoped DRHD even though its unit intercepts every PCI DMA request.
+/// The fixed platform therefore ships a separate checksummed attestation of the real unit.
 const QEMU_DMA_COVERAGE_BYTES: usize = 48;
 
 /// The fixed machine profile, with or without the remapping unit.
-///
-/// Pins the CPU, TCG, and ambient configuration so protection checks cannot
-/// pass under a weaker or different execution model (D-18). Its exact
-/// CPU-resident hypervisor leaf authenticates D-390's otherwise writable ACPI
-/// handoff bytes. The unit comes ahead of the bridge and the storage devices,
-/// which QEMU requires of it.
+/// CPU, TCG, and the unit's place ahead of the bridge are pinned; QEMU requires that order.
 fn machine_args(remapping: Remapping) -> Vec<&'static str> {
     let mut arguments = vec![
         "-no-user-config",
@@ -65,7 +57,7 @@ fn machine_args(remapping: Remapping) -> Vec<&'static str> {
         arguments.extend(IOMMU_DEVICE);
     }
     // Provide a downstream bus so a bus-zero-only scan fails as it would on
-    // VMware's bridged topology (D-168).
+    // VMware's bridged topology.
     arguments.extend(["-device", "pci-bridge,id=behind,chassis_nr=1"]);
     arguments
 }
@@ -131,12 +123,8 @@ pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<P
         .find(|candidate| candidate.is_file())
 }
 
-/// Locate the exact QEMU executable.
-///
-/// `QEMU` names the emulator binary outright; `QEMU_DIR` names the installation
-/// it lives in. Both win over the default location and over `PATH`. A setting
-/// that does not name a file fails here: continuing would report the absence
-/// as missing firmware, because firmware search is rooted at the emulator.
+/// Locate the exact QEMU executable. `QEMU` and `QEMU_DIR` win over the default and `PATH`.
+/// A setting that is not a file fails here: firmware search is rooted at the emulator.
 fn locate(
     binary: Option<PathBuf>,
     directory: Option<PathBuf>,
@@ -179,10 +167,7 @@ fn require_emulator(path: PathBuf, source: &str) -> Result<PathBuf> {
 }
 
 /// Places one named edk2 image may live, relative to the emulator.
-///
-/// A Windows install keeps the executable and `share/` together. An FHS install
-/// keeps the executable in `bin/` and the firmware under the prefix's `share/`,
-/// so that prefix is searched as well.
+/// Windows keeps `share/` beside the executable; an FHS install keeps it under the prefix.
 fn firmware_candidates(emulator: &Path, name: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let Some(directory) = emulator.parent() else {
@@ -521,12 +506,7 @@ impl Drop for RunVars {
 }
 
 /// Per-run ACPI authorities for the fixed QEMU platform.
-///
-/// The coverage table states the real catch-all remapping topology without
-/// replacing QEMU's standards-defined DMAR. The handoff table states the
-/// entry-time DMA contract from D-390 after CPU state authenticates this exact
-/// virtual platform. Both files live in the private run directory and stay
-/// owned until the machine terminates.
+/// The coverage table names the real catch-all unit without replacing QEMU's DMAR; both files die with the machine.
 struct RunDmaCoverage {
     path: Option<PathBuf>,
     handoff: PathBuf,
@@ -646,51 +626,29 @@ fn qemu_dma_coverage_table() -> [u8; QEMU_DMA_COVERAGE_BYTES] {
 }
 
 /// Bytes of one logical block on the NVMe namespace.
-///
-/// QEMU's controller formats at 512 and the kernel reads what `Identify`
-/// reports rather than this; the constant is here because the *content* below
-/// is written a block at a time and has to agree with what the driver will
-/// see.
+/// Content below is written a block at a time and must agree with what the driver reads from `Identify`.
 pub const NVME_BLOCK_BYTES: usize = 512;
 
 /// Blocks given known content.
 pub const NVME_SIGNED_BLOCKS: u64 = 8;
 
-/// The first eight bytes of block `lba`.
-///
-/// **Different in every block, on purpose.** A disk of zeros cannot tell a read
-/// that happened from one that did not, and a disk with the same bytes
-/// everywhere cannot tell a read of block three from a read of block zero — so
-/// a driver that ignored the logical block address would pass. This is D-155's
-/// rule applied to a corpus rather than to an argument (D-169).
+/// The first eight bytes of block `lba`, different in every block on purpose.
+/// Identical bytes cannot tell a read of block three from a read of block zero.
 pub const fn nvme_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
 
 /// Where the FAT32 volume begins on the namespace, in sectors.
-///
-/// A megabyte in, which is where a partition table would put it. The reader
-/// takes a base sector rather than assuming zero for exactly this reason: a
-/// volume is rarely the first thing on a disk, and a reader that could not be
-/// given an offset is one nothing can be put in front of (D-170).
+/// A megabyte in, where a partition table would put it: the reader takes a base rather than assuming zero.
 pub const NVME_VOLUME_SECTOR: u64 = 2048;
 
 /// Bytes of the NVMe backing file.
-///
-/// The first megabyte carries signed blocks the block-layer checks read, and
-/// the FAT32 corpus follows it. Two things on one namespace rather than two
-/// namespaces, because that is also what a real disk looks like.
+/// Signed blocks occupy the first megabyte and the FAT32 corpus follows, on one namespace as on a real disk.
 const NVME_BYTES: u64 =
     NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64 + crate::image::corpus::VOLUME_BYTES as u64;
 
 /// Build the streamed NVMe namespace shared by the QEMU and VMware runners.
-///
-/// The namespace is machine state rather than boot-image content; its distinct
-/// block signatures and FAT corpus expose wrong-block and missing-read paths.
-///
-/// # Errors
-///
-/// If the file cannot be written, or the corpus cannot be built.
+/// Distinct block signatures and the FAT corpus expose wrong-block and missing-read paths.
 pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     let (parent, backing) = storage_paths(root)?;
     publish_namespace(&parent, &backing, write_nvme_namespace)?;
@@ -1001,7 +959,7 @@ fn storage(root: &Path) -> Result<Vec<OsString>> {
     let [drive_flag, drive_spec] = snapshot_drive_file("if=none,id=wizardnvm,format=raw", &backing);
     Ok(vec![
         // First in PCI enumeration order and deliberately namespace-less: the
-        // kernel must retire it before selecting the usable sibling (D-199).
+        // kernel must retire it before selecting the usable sibling.
         OsString::from("-device"),
         OsString::from("nvme,serial=wizard-empty"),
         drive_flag,
@@ -1017,10 +975,7 @@ const SELFTEST_PASSED: i32 = 33;
 const SELFTEST_FAILED: i32 = 35;
 
 /// An optimization-stable payload marker shared with `kernel/src/selftest.rs`.
-///
-/// The formatted verdict is not a sound build-identity marker: optimized Rust
-/// may split its literal around formatting placeholders. This fixed record is
-/// emitted only by a self-test kernel and remains one contiguous byte string.
+/// A formatted verdict can be split around placeholders; this record stays one contiguous string.
 pub(crate) const SELFTEST_IMAGE_MARKER: &str = "selftest: image marker v1";
 
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
@@ -1036,9 +991,8 @@ const SELFTEST_QEMU_TCG_ISOLATION_MARKER: &str =
 const SHIPPED_QEMU_TCG_ISOLATION_MARKER: &str =
     "cpu: user isolation shared kernel mappings: qemu_tcg";
 const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
-/// Checks the self-test kernel must report, held independently of its own
-/// tally so a deleted or skipped one turns the verdict red.
-/// Changes require mutation evidence (D-28, D-119).
+/// Checks the self-test kernel must report, independent of its own tally.
+/// A deleted or skipped check turns the verdict red.
 const EXPECTED_SELFTEST_CHECKS: usize = 294;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
@@ -1056,10 +1010,8 @@ const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
 
-/// Line the self-test prints before its second wait, with the controller made
-/// to translate. Kept in step with `kernel/src/selftest.rs`.
-///
-/// A second round reaches the distinct set-1 translation path (D-179).
+/// Line printed before the second wait, with the controller made to translate.
+/// Kept in step with `kernel/src/selftest.rs`. That wait is the set-1 translation path.
 const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 
 /// Line the shipped kernel prints once it has finished booting and is doing
@@ -1088,14 +1040,8 @@ const SHIPPED_CHALLENGE_QCODE: &str = "a";
 const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
-/// What a kernel that has given up says. Watched for rather than inferred
-/// from an exit code: a panicking kernel halts, it does not exit.
-/// How a red self-test reports itself, and how a dead one does.
-///
-/// Named rather than written twice because `cargo xtask mutate` has to tell a
-/// kernel that *noticed* a deliberate defect from one that would not build —
-/// the first is the mutation being caught and the second proves nothing
-/// (D-119).
+/// Serial text for a red self-test, and for a panic. A halted kernel does not exit.
+/// Two constants so a binary that failed to build is not credited as a caught mutation.
 pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
 pub const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 
@@ -1176,7 +1122,7 @@ struct SerialObservation {
     qemu_tcg_isolation: bool,
     strict_dma_handoff: bool,
     /// Ordered failures, so mutation grading cannot accept an unrelated red
-    /// (D-134).
+    /// .
     failed: Vec<String>,
     panic: Option<String>,
     panic_complete: bool,
@@ -1360,13 +1306,13 @@ fn is_settled_record(line: &str) -> bool {
         .is_some()
 }
 
-// Cover ordinary input and both editing paths (D-51).
+// Cover ordinary input and both editing paths.
 const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 
 const STORAGE_DELAY_QCODES: &[&str] = &["c"];
 
 // A distinct second key prevents a queued first-round key satisfying the
-// translated-path check (D-155, D-179).
+// translated-path check.
 const TRANSLATED_QCODES: &[&str] = &["b"];
 
 const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
@@ -1735,7 +1681,7 @@ fn report_hang(qmp: Option<&mut Qmp>) {
 }
 
 /// QMP on the child's own standard streams, which only the harness holds
-/// (D-346). Serial output therefore uses a separate private OS transport.
+/// . Serial output therefore uses a separate private OS transport.
 const QMP_ON_STDIO: [&str; 2] = ["-qmp", "stdio"];
 
 /// Negotiate QMP over the piped standard streams of a freshly spawned QEMU.
@@ -1746,12 +1692,7 @@ fn attach_qmp(child: &mut Child, deadline: Instant, cancelled: &AtomicBool) -> R
 }
 
 /// One run's private, backpressured serial transport.
-///
-/// Windows QEMU creates a duplex named pipe. Its default DACL and a fresh
-/// 256-bit name keep the endpoint private to this run; the kernel's output
-/// can fill only the operating system's bounded pipe buffer. Unix QEMU uses
-/// a socket beneath the private run directory. Neither route writes guest
-/// bytes to an unbounded host file (D-367).
+/// A Windows pipe or a Unix socket under the run directory; guest bytes never go to an unbounded host file.
 struct SerialChannel {
     #[cfg(windows)]
     name: String,
@@ -1916,9 +1857,8 @@ const SERIAL_POLL: Duration = Duration::from_millis(10);
 /// premature; the parent polls every 50 ms.
 const SERIAL_CLOSE_GRACE: Duration = Duration::from_millis(250);
 
-/// One guest record and one complete run are separately bounded. Once the
-/// reader refuses the aggregate, OS backpressure bounds any bytes QEMU can
-/// still write before the parent terminates it.
+/// One guest record and one complete run are separately bounded.
+/// After the aggregate is refused, OS backpressure limits whatever QEMU can still write.
 const MAX_SERIAL_LINE_BYTES: usize = 64 * 1024;
 const MAX_SERIAL_BYTES: usize = 16 * 1024 * 1024;
 
@@ -2001,22 +1941,16 @@ const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long QEMU has to greet and accept capabilities after it starts.
 const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A kernel that neither passes nor fails within `timeout` is a hang, which is
-/// itself a failure — so the emulator is killed rather than left running.
-///
-/// QMP uses the owned child's standard streams; serial uses a private named
-/// pipe on Windows or a private Unix socket. The injector presses keys after
-/// their serial markers. The owner cancels, stops QEMU and bounds worker joins
-/// on every result path, including when a control write stops making progress.
+/// A kernel that neither passes nor fails within `timeout` is a hang, so the emulator is killed.
+/// QMP uses the child's standard streams; keys are injected after their serial markers.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
     let (outcome, _) =
         observe_selftest_run(paths, image, timeout, true, InteractiveMarkerOrder::Strict)?;
     require_selftest(outcome)
 }
 
-/// Boot `image` headless and preserve a valid red or panic outcome for a
-/// mutation caller. A missing earlier interaction may be skipped so its later
-/// exact verdict remains observable; ordinary self-test boots stay strict.
+/// Boot `image` headless and preserve a valid red or panic outcome for a mutation caller.
+/// A missing earlier interaction may be skipped so the later verdict stays observable.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
     observe_selftest_run(
         paths,
@@ -2268,10 +2202,7 @@ fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
     }
 }
 
-/// Forward every serial line to the console, flagging the ready marker.
-///
-/// A kernel that dies mid-line still shows its last words: the unterminated
-/// remainder at end-of-stream is forwarded too.
+/// Forward every serial line, including a final unterminated line at end-of-stream.
 fn forward_serial(
     serial: impl Read + Send + 'static,
     markers_seen: Arc<AtomicUsize>,
@@ -2336,9 +2267,8 @@ fn finish_selftest_serial(
     join_qemu_worker(forwarder, deadline, "self-test serial reader")?
 }
 
-/// Inject each key after its marker without letting a QMP stall delay the boot
-/// deadline. The owner stops QEMU before bounded joins so a blocked control
-/// write cannot hold cleanup; a finished thread can supply hang diagnostics.
+/// Inject each key after its marker without letting a QMP stall move the boot deadline.
+/// Stop QEMU before joining workers so a blocked control write cannot hold cleanup.
 fn inject_on_marker(
     child: &mut Child,
     markers_seen: Arc<AtomicUsize>,
@@ -2499,11 +2429,8 @@ fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
     irq_count(&report, 1).context("QEMU monitor returned no IRQ statistics")
 }
 
-/// Boot the image the kernel ships and require it to reach its steady state.
-///
-/// The self-test build exits at the debug-exit device, so nothing it does
-/// covers what the shipped kernel does afterwards. The serial verdict requires
-/// the settled marker, a call from ring 3 and every platform marker, with no panic.
+/// Boot the image the kernel ships and require its steady state.
+/// The self-test build exits at the debug device, so it never covers what the shipped kernel does afterwards.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -2617,35 +2544,28 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     Ok(())
 }
 
-/// How long to allow for a cold start before the marker must have appeared.
-///
-/// Three human keystroke rounds fit inside it with room to spare, so a round
-/// nobody answers ends as the kernel's own red check rather than as this
-/// killing the machine — the verdict stays the kernel's (D-240).
+/// How long a cold start has before the marker must have appeared.
+/// Long enough that an unanswered keystroke fails in the kernel instead of as a killed machine.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// A processor with no x2APIC or optional SMEP/SMAP/UMIP hardening.
-///
-/// The last `-cpu` wins, so this overrides [`MACHINE`]'s.
+/// A processor with no x2APIC and without optional SMEP/SMAP/UMIP.
+/// The last `-cpu` wins, so this overrides the ordinary machine profile.
 const DEGRADED_CPU: [&str; 2] = [
     "-cpu",
     "qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on",
 ];
 
 /// What the kernel must say when it finds no x2APIC.
-///
-/// The refusal D-33 chose and D-90 made a gate check: xAPIC needs page tables
-/// that do not exist when the APIC is brought up, so there is no fallback —
-/// only a diagnosis.
+/// xAPIC needs page tables that do not exist yet, so there is a diagnosis and no fallback.
 const NO_X2APIC_DIAGNOSIS: &str = "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off";
 const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC_DIAGNOSIS);
 
 /// The entry boundary must stop before memory initialization when even one
-/// requester cannot be fenced (D-390).
+/// requester cannot be fenced.
 pub const NO_PCI_HANDOFF_PANIC: &str =
     "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable";
 
-/// The hardware-free namespace witness targeted by the PW-207 mutation.
+/// The hardware-free namespace witness.
 pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
 
 /// Both device names must resolve through devfs without a bus.
@@ -2674,15 +2594,13 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::warning(DEGRADED_USER_MARKER),
 ];
 
-/// What a storage candidate says when no remapping unit can isolate it (D-357).
+/// What a storage candidate says when no remapping unit can isolate it.
 pub const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
 
 /// With every candidate refused, selection ends with no controller.
 pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 
-/// The unisolated boot must refuse every candidate and still settle; the
-/// first candidate's clean retirement proves the refusal path returns the
-/// lease exactly.
+/// The unisolated boot must refuse every candidate, return that lease, and still settle.
 const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),
@@ -2721,17 +2639,8 @@ const UNISOLATED_PROFILE: DegradedProfile = DegradedProfile {
     required: UNISOLATED_REQUIRED_MARKERS,
 };
 
-/// Boot with two independent platform prerequisites absent and require both.
-///
-/// The negative half of D-32 and D-33: every other boot in the gate runs on
-/// `-cpu max` with live PCI configuration, so nothing exercises what the
-/// kernel does when either is missing. A precondition that is only ever met is
-/// indistinguishable from one that is never checked (D-90, D-198).
-///
-/// The bar is deliberately not "it works": the kernel reports both refusals,
-/// exercises the namespaces which need neither facility, and still reaches
-/// its steady state rather than triple-faulting on a missing register.
-/// Boot the degraded image while preserving an exact terminal panic.
+/// Boot with PCI configuration and x2APIC both absent and require both refusals.
+/// Preserve an exact terminal panic. A precondition only ever met is never shown to be checked.
 pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_PCI_PROFILE)
 }
@@ -2742,7 +2651,7 @@ pub fn observe_no_x2apic(paths: &Paths, image: &Path, settle: Duration) -> Resul
 }
 
 /// Boot the shipped image on a machine with no remapping unit and require
-/// storage to refuse every candidate rather than run unisolated (D-357).
+/// storage to refuse every candidate rather than run unisolated.
 pub fn observe_unisolated(
     paths: &Paths,
     image: &Path,
@@ -2880,9 +2789,7 @@ fn watch_degraded_window(
 }
 
 /// Watch the serial flags for `window`, failing on a panic or an early exit.
-///
-/// With `until`, the window is a deadline that flag must beat; without one,
-/// the whole window is watched.
+/// With `until`, the flag must arrive before the deadline; otherwise the whole window is watched.
 fn watch(
     child: &mut Child,
     panicked: &AtomicBool,
@@ -4767,9 +4674,7 @@ mod tests {
             Instant::now() + Duration::from_secs(20),
             "blocked QMP writer",
         );
-        // A cancellation-aware QMP caller may finish before the writer. Always
-        // release the fake peer, even for the missing-stop mutant, then collect
-        // independent stop and completion evidence before any assertion.
+        // A QMP caller may finish before the writer. Release the fake peer, then collect stop and completion evidence.
         let _ = fallback_stop.send(false);
         let stop_seen = stop_observed.recv_timeout(Duration::from_secs(20));
         let completed = write_completed.recv_timeout(Duration::from_secs(20));
@@ -9282,7 +9187,7 @@ const LIVE: u32 = 7;
         let timepage = &timepage_source;
 
         // Compare complete layouts: address drift can unmap the page, and field
-        // drift changes the wire ABI (D-166).
+        // drift changes the wire ABI.
         let constants_fields = c_struct_fields(&header, "wiz_time_constants");
         let clock_fields = c_struct_fields(&header, "wiz_time_clock");
         assert_eq!(

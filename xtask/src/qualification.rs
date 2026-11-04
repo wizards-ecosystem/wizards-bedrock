@@ -808,7 +808,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
 const DEFERRED: &str = "deferred";
 
 /// The grade and Deep run continuously against `main`, so a release bundle
-/// carries either their exact-source record or an explicit deferral (D-425).
+/// carries either their exact-source record or an explicit deferral.
 const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3750,7 +3750,7 @@ enum DatabaseBinding {
     /// The run fetched, so cargo-audit itself names the commit it audited.
     Fetched,
     /// The run was `--no-fetch`; cargo-audit learns the commit only from a
-    /// fetch, so the report carries null identity and Git binds it (D-297).
+    /// fetch, so the report carries null identity and Git binds it.
     Pinned,
 }
 

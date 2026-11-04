@@ -1,7 +1,4 @@
-//! Argument parsing.
-//!
-//! Hand-rolled rather than `clap`: a dozen tasks and six flags are a `match`
-//! that is itself unit-testable, and this runs on every `cargo xtask`.
+//! Argument parsing, hand-rolled so the match stays unit-testable.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -224,10 +221,8 @@ pub enum CleanScope {
     Everything,
 }
 
-/// Every task [`parse`] accepts, in the order of its match.
-///
-/// Suggestions and the help-coverage test both read this list, so a new arm
-/// has to be named here before it can be offered to a user.
+/// Every task [`parse`] accepts, in match order.
+/// Help and suggestions both read this list, so a new arm has to be named here.
 const TASK_NAMES: &[&str] = &[
     "build",
     "image",
@@ -259,8 +254,7 @@ const TASK_NAMES: &[&str] = &[
     "clean",
 ];
 
-/// Parse the arguments after the task separator.
-///
+/// Parse arguments after the task separator.
 /// Empty input is refused so a mistyped task cannot default to booting a VM.
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut args = args.into_iter();

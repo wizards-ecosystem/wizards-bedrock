@@ -1,14 +1,5 @@
-//! Reading the linked kernel back, and checking it is the image we meant.
-//!
-//! A linker script fails loudly when it is malformed and quietly when it is
-//! merely incomplete: an unnamed section becomes an *orphan*, placed by a
-//! heuristic rather than by the script, and the result still links. So the
-//! properties `kernel/linker.ld` is written to produce are asserted here
-//! against the bytes it produced, after every build.
-//!
-//! Just enough ELF64 to do that — program headers, section headers, and their
-//! names. Hand-rolled on the `sha256.rs` precedent rather than taking on a
-//! dependency for four `u64`s per record.
+//! Check the linked kernel against the image `kernel/linker.ld` was written to produce.
+//! An unnamed section is placed as an orphan and still links, so the bytes are checked after every build.
 
 use std::fmt;
 use std::fs::File;
@@ -259,10 +250,7 @@ impl fmt::Display for ImageError {
 impl std::error::Error for ImageError {}
 
 /// Sections the image cannot boot without.
-///
-/// `.requests` is where `wost::entry!` puts the Limine request block; without
-/// it the bootloader answers nothing and the kernel faults reading a response
-/// that was never filled in.
+/// `.requests` holds the Limine request block; without it the kernel faults on an unfilled response.
 const REQUIRED: &[&str] = &[
     ".text",
     ".requests",
@@ -281,10 +269,7 @@ const KPTI_SECTIONS: &[(&str, bool, bool)] = &[
 
 impl Image {
     /// Check every property `kernel/linker.ld` is written to produce.
-    ///
-    /// Reports all of them rather than the first: a linker-script change that
-    /// breaks one usually breaks several, and finding out one at a time is how
-    /// a script gets fixed into a different wrong shape.
+    /// Report all of them: fixing one failure at a time settles into a different wrong shape.
     pub fn verify(&self) -> Vec<ImageError> {
         let mut faults = Vec::new();
 
@@ -299,7 +284,7 @@ impl Image {
                 });
             }
             // Reported, not saturated: `covers` checks only `vaddr +
-            // memory_size`, so an oversized `p_filesz` reached an unchecked add (D-105).
+            // memory_size`, so an oversized `p_filesz` reached an unchecked add.
             if segment.file_size > segment.memory_size
                 || segment.vaddr.checked_add(segment.file_size).is_none()
             {
@@ -320,7 +305,7 @@ impl Image {
                 continue;
             };
             // Any file-backed byte past the section's start puts it in the
-            // file; the unchecked add panicked on `p_filesz = u64::MAX` (D-105).
+            // file; the unchecked add panicked on `p_filesz = u64::MAX`.
             let file_end = segment.vaddr.saturating_add(segment.file_size);
             if section.is_nobits() && section.addr < file_end {
                 faults.push(ImageError::NobitsInFile {
@@ -456,16 +441,7 @@ impl Image {
 }
 
 /// Parse the ELF64 headers of `bytes`.
-///
-/// The file header and the program headers come from `libs/elf64` — the crate
-/// the kernel loads programs with — so the verifier and the loader agree about
-/// the format by construction rather than by two transcriptions being kept in
-/// step. D-105 recorded that duplication as owed and D-124 found what it costs:
-/// a repair to one copy left the other two validations short (D-158).
-///
-/// The section-entry and string-table parser stays here. `elf64` exposes the
-/// four file-header fields so this verifier does not privately transcribe the
-/// header, but a loader never needs the host-only entry walk (D-213).
+/// Program headers come from `libs/elf64`, the loader's crate; section names stay here.
 pub fn parse(bytes: &[u8]) -> Result<Image> {
     ensure!(
         u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
@@ -492,11 +468,7 @@ pub fn parse(bytes: &[u8]) -> Result<Image> {
 }
 
 /// Where entry `index` of a header table starts, refusing rather than wrapping.
-///
-/// Every operand is a header field, so every one is the file's to choose. The
-/// unchecked form panicked the build on `e_shoff = u64::MAX` — the verifier
-/// stopping the build for the wrong reason, which is precisely what D-40 said
-/// it must not do (D-105).
+/// Every operand is a header field; an unchecked add panicked the build on `e_shoff = u64::MAX`.
 fn entry_at(table: usize, index: usize, stride: usize) -> Result<usize> {
     index
         .checked_mul(stride)
@@ -549,7 +521,7 @@ fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Secti
         sections.push(Section {
             name: name.to_owned(),
             // Check each field offset directly instead of relying on an
-            // earlier initializer to reject a large `at` (D-105, D-124).
+            // earlier initializer to reject a large `at`.
             kind: read_u32(bytes, field(at, 0x04)?)?,
             flags: read_u64(bytes, field(at, 0x08)?)?,
             addr: read_u64(bytes, field(at, 0x10)?)?,
@@ -672,9 +644,7 @@ mod tests {
         }
     }
 
-    /// The shape `kernel/linker.ld` is written to produce: exact enclave
-    /// segments followed by the three ordinary protection classes, with
-    /// `.bss` last and costing no file space.
+    /// The shape `kernel/linker.ld` produces: enclave segments, three protection classes, `.bss` last and file-free.
     fn good_image() -> Image {
         let data = Segment {
             kind: elf64::SegmentKind::Load.bits(),
@@ -1149,9 +1119,7 @@ mod tests {
         );
     }
 
-    /// The subtler shape of the same defect: file bytes reach only part-way
-    /// into `.bss`, so `memsz > filesz` still holds and the whole-segment
-    /// comparison would look fine.
+    /// File bytes reach only part-way into `.bss`, so `memsz > filesz` still holds and a whole-segment compare looks fine.
     #[test]
     fn a_partially_file_backed_bss_is_caught() {
         let mut image = good_image();
@@ -1289,11 +1257,7 @@ mod tests {
         assert!(messages.iter().any(|m| m.contains(".requests")));
     }
 
-    // --- the reader ---
-
-    /// Assemble a minimal but genuine ELF64 file from `segments` and
-    /// `sections`, so the parser is tested against bytes rather than against
-    /// the struct it is supposed to produce.
+    /// Assemble a real ELF64 file so the parser is tested against bytes, not its own structs.
     fn encode(image: &Image) -> Vec<u8> {
         const HEADER: usize = elf64::HEADER_BYTES;
         const PH_STRIDE: usize = elf64::PROGRAM_HEADER_BYTES;
@@ -1397,7 +1361,7 @@ mod tests {
         assert!(parse(b"").is_err());
         assert!(parse(b"MZ\x90\x00 a PE executable").is_err());
         // Full headers make rejection reach class/endianness; shorter fixtures
-        // stop at truncation (D-105).
+        // stop at truncation.
         let mut thirty_two = encode(&good_image());
         thirty_two[4] = 1;
         let message = parse(&thirty_two).expect_err("32-bit").to_string();
@@ -1421,11 +1385,7 @@ mod tests {
     }
 
     /// A header field near the top of the range is refused, not added to.
-    ///
-    /// Truncation shrinks the buffer and never produces a large offset, so the
-    /// sweep above cannot reach the arithmetic. These inputs panicked the
-    /// build — `xtask` builds in the dev profile, so the overflow checks are
-    /// on, and `verify_file` runs after every kernel build (D-105).
+    /// Truncation never yields a huge offset, so these inputs are what reach the arithmetic.
     #[test]
     fn a_header_field_near_the_top_of_the_range_is_refused() {
         let mut section_table = encode(&good_image());
@@ -1445,7 +1405,7 @@ mod tests {
     }
 
     /// Keep the verifier's machine and header-shape refusals aligned with the
-    /// loader because `verify_file` judges every kernel image (D-105, D-124).
+    /// loader because `verify_file` judges every kernel image.
     #[test]
     fn an_image_for_another_machine_or_of_another_shape_is_refused() {
         let mut aarch64 = encode(&good_image());
@@ -1461,7 +1421,7 @@ mod tests {
         assert!(message.contains("program headers"), "said {message:?}");
 
         // Shared constants prevent reader drift; literal anchors still catch a
-        // crate-wide typo that would move both readers together (D-158).
+        // crate-wide typo that would move both readers together.
         assert_eq!(elf64::PROGRAM_HEADER_BYTES, 56);
         assert_eq!(elf64::MACHINE_X86_64, 62);
     }
@@ -1499,9 +1459,7 @@ mod tests {
             .to_string();
         assert!(message.contains("aggregate limit"), "said {message:?}");
 
-        // Exercise the parser seam, not only the budget helper: every header
-        // names the same long string, so a parser that forgets to carry the
-        // running total would clone more than the admitted aggregate.
+        // Every header names the same long string, so dropping the running total clones past the cap.
         let repeated_name = "n".repeat(257);
         let mut repeated_image = good_image();
         repeated_image.sections = (0..MAX_SECTION_COUNT - 1)
@@ -1550,11 +1508,8 @@ mod tests {
         );
     }
 
-    /// A segment whose file size runs off the end does not overflow the
-    /// nobits comparison.
-    ///
-    /// `covers` checks `vaddr + memory_size`, so a huge `p_filesz` walks past
-    /// it and reaches the addition in `verify` (D-105).
+    /// A segment whose file size runs off the end does not overflow the nobits comparison.
+    /// `covers` checks `vaddr + memory_size`, so a huge `p_filesz` reaches the addition in `verify`.
     #[test]
     fn a_segment_that_claims_the_whole_range_is_refused_rather_than_panicking() {
         let mut image = good_image();

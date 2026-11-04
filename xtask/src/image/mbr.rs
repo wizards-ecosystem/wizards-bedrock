@@ -1,7 +1,5 @@
 //! The 512-byte master boot record.
-//!
-//! UEFI firmware boots an MBR-partitioned disk carrying a single 0xEF partition
-//! directly. GPT can come later, when the OS grows its own partitioning story.
+//! UEFI firmware boots an MBR disk carrying a single 0xEF partition directly.
 
 use std::io::{Seek, SeekFrom, Write};
 
@@ -75,10 +73,7 @@ impl PartitionEntry {
 }
 
 /// Lay out a master boot record holding `partitions`.
-///
-/// # Panics
-///
-/// Panics if more than four partitions are given — the table has no room.
+/// Panics if more than four partitions are given; the table has no room.
 pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     assert!(
         partitions.len() <= ENTRY_COUNT,

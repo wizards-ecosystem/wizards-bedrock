@@ -1,8 +1,5 @@
 //! Verifying vendored binaries against recorded digests.
-//!
-//! `boot/limine/BOOTX64.EFI` is a prebuilt binary from another project. Pinning
-//! its digest is what makes "update the bootloader" a reviewable change rather
-//! than an opaque one.
+//! Pinning the digest makes replacing a prebuilt binary a reviewable change.
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -28,9 +25,7 @@ pub struct Entry {
 }
 
 /// Parse a `sha256sum` listing.
-///
-/// Accepts both the text (`digest  name`) and binary (`digest *name`) forms,
-/// ignoring blank lines and `#` comments.
+/// Accepts text (`digest  name`) and binary (`digest *name`) forms, and ignores blanks and `#` comments.
 pub fn parse(listing: &str) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     let mut names = BTreeSet::new();
@@ -74,12 +69,8 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Files a vendored directory carries as its own paperwork rather than as
-/// payload, and which therefore need no digest.
-///
-/// Everything else in the directory must be listed. A digest catches a file
-/// being *changed*; only this catches one being *added*, which is the easier
-/// of the two to slip past a reviewer.
+/// Paperwork a vendored directory carries, which needs no digest.
+/// A digest catches a change; only this list catches a file being added.
 const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
 /// Names in a vendored directory that neither an entry nor the directory's own
@@ -188,9 +179,7 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
 }
 
 /// Verify one already-read vendored payload against its sole checksum entry.
-///
-/// The caller can write `bytes` after this returns without reopening `payload`,
-/// so authentication and consumption name the same snapshot.
+/// The caller may write `bytes` afterwards without reopening `payload`.
 pub(crate) fn verify_payload_bytes(listing: &Path, payload: &Path, bytes: &[u8]) -> Result<()> {
     let directory = listing
         .parent()
@@ -289,10 +278,7 @@ where
 }
 
 /// Verify everything vendored in the repository.
-///
-/// Every listing, not the first one: a directory added and not added *here* is
-/// a directory nothing checks, which is the drift `paths.rs`'s
-/// `default-members` test exists to prevent one layer up (D-105).
+/// A directory added and not listed here is a directory nothing checks.
 pub fn verify(paths: &Paths) -> Result<()> {
     for listing in [
         paths.limine_checksums(),
@@ -576,14 +562,7 @@ mod tests {
     }
 
     /// Every vendored directory is one `verify` checks.
-    ///
-    /// `verify` walks a hand-written array, and its own doc says why that is
-    /// the wrong shape: *"a directory added and not added here is a directory
-    /// nothing checks."* The `unaccounted` machinery closes "a file was added"
-    /// *within* a listed directory and leaves the outer case open (D-124).
-    ///
-    /// A vendored directory is one holding a `CHECKSUMS`, which is the same
-    /// definition `verify` uses — so this finds what it should have listed.
+    /// A directory is one that holds `CHECKSUMS`, the same definition `verify` uses.
     #[test]
     fn every_vendored_directory_is_verified() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

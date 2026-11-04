@@ -1,9 +1,5 @@
 //! TLC qualification for the queue protocol models.
-//!
-//! `Ring.tla` checks anonymous admission; `RingMemory.tla` checks weak-memory
-//! publication through normal, cancelled and retired operations (D-79, D-221,
-//! D-229). The task remains outside `ci` because its JVM cannot be vendored;
-//! phase-close qualification records the external execution instead.
+//! Outside `ci`: the JVM cannot be vendored, so qualification records the external run.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -20,10 +16,7 @@ use crate::sha256;
 /// The pinned TLA+ tools jar, relative to the workspace root.
 pub const JAR: &str = "tools/tla/tla2tools.jar";
 
-/// Its SHA-256, pinned the way `boot/limine`'s binaries are (D-25).
-///
-/// TLC is a tool that decides whether a design is correct, so a silently
-/// swapped one is a silently swapped answer.
+/// Pinned SHA-256 of the jar. A swapped TLC would silently swap the verdict.
 pub const JAR_DIGEST: &str = "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a";
 
 /// The model directory, relative to the workspace root.
@@ -144,12 +137,6 @@ impl RunTranscript {
 }
 
 /// Check both models and require every deliberate mutation to fail exactly.
-///
-/// # Errors
-///
-/// If the jar is missing or its digest has changed, if `java` cannot be run,
-/// or if TLC reports anything other than the expected clean or exact-mutant
-/// verdict.
 pub fn check(paths: &Paths) -> Result<()> {
     let qualification_attempt = qualification::begin_model(paths)?;
     let jar = paths.root().join(JAR);
@@ -720,7 +707,7 @@ mod tests {
     }
 
     /// Every model invariant must appear in its TLC configuration; otherwise
-    /// TLC can report a clean run without checking it (D-148).
+    /// TLC can report a clean run without checking it.
     #[test]
     fn every_invariant_the_model_defines_is_checked() {
         let root = root();

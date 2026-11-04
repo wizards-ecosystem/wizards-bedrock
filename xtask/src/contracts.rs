@@ -52,7 +52,7 @@ struct Probe {
 
 impl Probe {
     // A probe directory is created exclusively inside this checkout's target
-    // tree, so no other account can pre-place or redirect it (D-344).
+    // tree, so no other account can pre-place or redirect it.
     fn create(paths: &Paths, label: &str, source: &str) -> Self {
         let target = crate::mutation_workspace::canonical_existing_real_directory(
             paths.target_dir(),
@@ -465,10 +465,8 @@ fn type_names_the_space(ty: &Type) -> bool {
     names.0
 }
 
-/// Every item `mem` exposes to the rest of the kernel whose type surface names
-/// the running `AddressSpace`. Function bodies are excluded on purpose: a body
-/// may reach the space through the private helper, but only a crossing
-/// signature or an accessible field hands it out (D-189).
+/// Items `mem` exposes whose type surface names the running `AddressSpace`.
+/// A body may use the private helper; only a crossing signature or field hands the type out.
 #[derive(Default)]
 struct AddressSpaceSurface(Vec<String>);
 
@@ -528,11 +526,8 @@ impl<'ast> Visit<'ast> for AddressSpaceSurface {
     }
 }
 
-/// D-189: the running `AddressSpace` carries reclaim and arbitrary-unmap
-/// authority, so nothing `mem` exposes to the rest of the kernel may name it.
-/// A rename of the private borrow helper fails compilation; a second borrow
-/// route under any other name is caught here, where the old name search could
-/// not see it (PW-552).
+/// The running `AddressSpace` can reclaim and unmap, so `mem` must not expose that type.
+/// A second borrow route under any other name is caught here.
 #[test]
 fn no_item_mem_exposes_names_the_running_address_space() {
     let paths = Paths::discover().expect("workspace paths");
@@ -1002,7 +997,7 @@ fn pci_configuration_writes_require_function_authority() {
         |diagnostics| panic!("NVMe bus-master authority became forgeable:\n{diagnostics}"),
     );
 
-    // The domain proof is minted only by a programmed unit (D-357).
+    // The domain proof is minted only by a programmed unit.
     let forged_domain = "#![no_std]\n\
         fn forge(function: pci_config::Address) -> wost::arch::current::vtd::DmaDomain<'static> {\n\
             wost::arch::current::vtd::DmaDomain { function, _unit: core::marker::PhantomData }\n\
@@ -1115,7 +1110,7 @@ fn pci_configuration_writes_require_function_authority() {
     });
 }
 
-/// Types whose values are PCI function authority (D-335, D-342).
+/// Types whose values are PCI function authority.
 const PCI_AUTHORITY_ROOTS: [&str; 2] = ["FunctionAuthority", "FunctionClaim"];
 /// The only doors that may produce authority without consuming any.
 const PCI_AUTHORITY_MINTS: [(&str, &str); 2] = [
@@ -1959,7 +1954,7 @@ fn the_pci_authority_inventory_counts_every_door_and_channel() {
     );
 }
 
-/// Checks that refuse a link or non-file at a path (D-344).
+/// Checks that refuse a link or non-file at a path.
 const PATH_CHECKS: [&str; 7] = [
     "canonical_existing_real_directory",
     "require_confined_file",
@@ -2057,9 +2052,9 @@ fn checked_reopens(relative: &str, source: &str) -> Vec<String> {
 }
 
 /// Record builders whose source is established again when their record is
-/// qualified, so the Git that answered is the qualifying run's (D-344).
+/// qualified, so the Git that answered is the qualifying run's.
 const SOURCE_WITHOUT_GIT: [&str; 1] = ["generation_record_from_digests"];
-/// Publishers that must re-measure Git after its last answer (D-344).
+/// Publishers that must re-measure Git after its last answer.
 const GIT_PUBLISHERS: [(&str, &str, &str); 2] = [
     ("xtask/src/evidence.rs", "create", "write_manifest"),
     ("xtask/src/qualification.rs", "commit_record", "rename"),
@@ -3447,11 +3442,8 @@ impl RawPortClaims {
     }
 }
 
-/// Production kernel code names a device, never a raw port number (D-351).
-///
-/// A driver asks `port::i8042()` or `port::com1()`, not `port::claim(0x60)`.
-/// Only the self-test harness may probe the registry with a raw claim, so a
-/// component cannot reserve hardware it does not own.
+/// Production kernel code names a device, never a raw port number.
+/// Only the self-test harness may probe the registry with a raw claim.
 #[test]
 fn production_kernel_code_claims_no_port_by_number() {
     let paths = Paths::discover().expect("workspace paths");
