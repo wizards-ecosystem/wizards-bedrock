@@ -1,19 +1,11 @@
-//! The filesystem, such as it is: a FAT32 volume on the one controller.
+//! FAT32 on the one controller, read through `libs/fat32`.
 //!
-//! `libs/fat32` is the reader and it is generic over a source of sectors. This
-//! is that source, backed by the NVMe driver — and the *same* reader runs on
-//! the host over a byte slice, which is what makes the oracle possible (D-170).
-//!
-//! This path is read-only: the third-party volume therefore carries no
-//! on-disk-write risk, and nothing here writes (`014`).
+//! Read-only: nothing here writes the volume.
 
 use fat32::{DirectoryChunk, DirectoryCursor, Entry, FatError, Sectors, Volume};
 
-/// Where the volume begins on the namespace, in sectors.
-///
-/// A megabyte in, which is where a partition table would put it. Transcribed
-/// from `xtask`, which writes the volume there, and a host test compares the
-/// two (D-158).
+/// Where the volume begins on the namespace, in sectors. A megabyte in, which is where a partition
+/// table would put it.
 pub(crate) const VOLUME_SECTOR: u64 = 2048;
 
 struct Blocks;
@@ -104,14 +96,10 @@ impl Mounted {
     }
 }
 
-/// Mount the retained controller's volume.
-///
-/// Mounted per call rather than kept, which is the same decision as "no cache"
-/// and for the same reason: a boot sector is one sector, the volume is not
-/// going anywhere, and holding a mounted volume in a `static` would mean
-/// holding the controller's borrow for the life of the boot.
-///
-/// `None` means no controller; `Some(Err(..))` means a malformed volume.
+/// Mount the retained controller's volume. Mounted per call rather than kept, which is the same
+/// decision as "no cache" and for the same reason: a boot sector is one sector, the volume is not
+/// going anywhere, and holding a mounted volume in a `static` would mean holding the controller's
+/// borrow for the life of the boot.
 pub(crate) fn mount() -> Option<Result<Mounted, FatError>> {
     if !crate::nvme::has_controller() {
         return None;

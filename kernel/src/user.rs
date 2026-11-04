@@ -1,9 +1,7 @@
-//! The first thing that runs in ring 3.
+//! The first ring-3 thread.
 //!
-//! Not a program and not a process: a page of instructions, a page of stack,
-//! and a thread that stops being the kernel's. What it proves is the boundary
-//! — that the descriptors, the gate, the privilege stack and the return path
-//! all agree — before a loader makes disagreement harder to diagnose (D-96).
+//! A code page, a stack page, and the gate that enters them, so the privilege boundary is proven
+//! before a loader can hide a disagreement.
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -30,10 +28,6 @@ use crate::wait::WaitQueue;
 use crate::{info, queue, thread, warn};
 
 /// Where the first user program's page of code goes.
-///
-/// Low half, far from anything the kernel maps: an address a user mapping can
-/// occupy is by definition one the kernel does not, and the split is bit 63
-/// (`010` §10's LASS note).
 #[cfg(feature = "selftest")]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
@@ -41,40 +35,27 @@ pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
 
 /// Where its ring's shared pages go.
-///
-/// Every program gets one at the same address in its own space, which is what
-/// having a space of its own buys: a fixed ABI address costs nothing when no
-/// two programs share a table (D-113).
 pub(crate) const RING: u64 = 0x0000_2000_0000_0000;
 
-/// How far apart two programs' pages sit *within* their own spaces.
-///
-/// Page tables enforce isolation; this offset keeps neighbouring programs'
-/// recorded addresses distinct without re-reading those tables (D-106).
+/// How far apart two programs' pages sit *within* their own spaces. Page tables enforce isolation;
+/// this offset keeps neighbouring programs' recorded addresses distinct without re-reading those
+/// tables.
 const APART: u64 = 0x1_0000;
 
-/// Bytes of the *program*'s stack, which is one page: it makes one call and
-/// never returns. Named apart from `thread::STACK_BYTES`, which is the
-/// thirty-two kilobytes a *kernel* thread gets — one name for two sizes reads
-/// like one size (D-124).
+/// Bytes of the *program*'s stack, which is one page: it makes one call and never returns. Named
+/// apart from `thread::STACK_BYTES`, which is the thirty-two kilobytes a *kernel* thread gets — one
+/// name for two sizes reads like one size.
 const USER_STACK_BYTES: u64 = PAGE_SIZE;
 
-/// The program's first four bytes, for the check that reads them back across
-/// the boundary.
-///
-/// `pop rcx` and the start of its version comparison — the program reading and
-/// validating the entry ABI before either payload word (D-102, D-182). Written
-/// by `xtask` into the image (D-100) rather than by the kernel, so this is a
-/// statement about the initrd and not a copy of something the kernel placed.
+/// The program's first four bytes, for the check that reads them back across the boundary. `pop
+/// rcx` and the start of its version comparison — the program reading and validating the entry ABI
+/// before either payload word.
 #[cfg(feature = "selftest")]
 pub(crate) const PROGRAM: [u8; 4] = [0x59, 0x48, 0x83, 0xF9];
 
-/// Map the program and its stack, and report where to enter.
-///
-/// Both pages are user-accessible and neither is both writable and executable:
-/// the code page is read-only and executable, the stack is writable and never
-/// executable. W^X is not relaxed for user memory — it is the reason user
-/// memory exists (D-12).
+/// Map the program and its stack, and report where to enter. Both pages are user-accessible and
+/// neither is both writable and executable: the code page is read-only and executable, the stack is
+/// writable and never executable.
 fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
     let pages = usize::try_from(USER_STACK_BYTES / PAGE_SIZE).ok()?;
@@ -82,15 +63,14 @@ fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     if !stack.zero() {
         return None;
     }
-    // Untyped from here: the program writes this stack, so nothing the kernel
-    // later reads out of these frames may be believed (D-107).
+    // Untyped from here: the program writes this stack, so nothing the kernel later reads out of
+    // these frames may be believed.
     space
         .map_user(at, stack.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .ok()?;
     Some(at)
 }
 
-/// Where the boot handoff left the program, kept for the loader.
 static IMAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
 /// The initrd's bytes, for the checks that doctor a copy of them.
@@ -191,28 +171,17 @@ impl core::fmt::Display for LoadError {
 
 impl core::error::Error for LoadError {}
 
-/// Load the initrd's program into the running address space, at `shift` pages
-/// above where it asks to be.
-///
-/// Every segment is checked before *any* page is taken: inside the image,
-/// inside user memory, never both writable and executable, and never
-/// overlapping another segment's pages. **W^X is not relaxed for a program
-/// that asks nicely** — an image wanting a writable executable page is
-/// refused, because an image that needs one does not work without it and
-/// pretending otherwise loads something that will fault later and blame the
-/// kernel (D-100).
-///
-/// The pages are filled *before* they are mapped, so a segment that is
-/// executable is never writable even for the instant it is being written.
+/// Load the initrd's program into the running address space, at `shift` pages above where it asks
+/// to be. W^X is not relaxed for a program that asks nicely — an image wanting a writable
+/// executable page is refused, because an image that needs one does not work without it and
+/// pretending otherwise loads something that will fault later and blame the kernel.
 fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
     load_image(space, bytes, shift)
 }
 
-/// One image load and the exact ranges it installed.
-///
-/// Placement is transaction data rather than global last-call state, so two
-/// constructions cannot take each other's cleanup record (D-191).
+/// One image load and the exact ranges it installed. Placement is transaction data rather than
+/// global last-call state, so two constructions cannot take each other's cleanup record.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoadedImage {
     entry: u64,
@@ -220,7 +189,6 @@ pub(crate) struct LoadedImage {
 }
 
 impl LoadedImage {
-    /// Address at which execution begins.
     const fn entry(&self) -> u64 {
         self.entry
     }
@@ -231,7 +199,6 @@ impl LoadedImage {
     }
 }
 
-/// Fill and map one validated placement.
 fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
     let mut run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
     if !run.zero() {
@@ -325,19 +292,15 @@ fn undo(space: &mut AddressSpace, done: &[Option<Placement>]) -> Result<usize, U
     )
 }
 
-/// Whether two validated placements want any page in common.
 fn overlaps(a: &Placement, b: &Placement) -> bool {
     a.at < b.mapped_end && b.at < a.mapped_end
 }
 
-/// The most segments this loader will place.
-///
-/// A bound rather than a heap allocation, because the validation pass has to
-/// hold every placement before the first page is taken, and an image with more
-/// than this is refused rather than partly loaded (D-105).
+/// The most segments this loader will place. A bound rather than a heap allocation, because the
+/// validation pass has to hold every placement before the first page is taken, and an image with
+/// more than this is refused rather than partly loaded.
 const MAX_SEGMENTS: usize = 8;
 
-/// Where one validated segment goes, and what it is allowed to be.
 #[derive(Clone, Copy)]
 struct Placement {
     at: u64,
@@ -349,14 +312,8 @@ struct Placement {
     flags: Flags,
 }
 
-/// Load `bytes`, which need not be the initrd's.
-///
-/// Split out so the checks can hand it a doctored image: the refusals below
-/// are the load-bearing half of a loader, and a refusal that is never
-/// exercised is a claim (D-100).
-///
-/// Preflight every placement before mapping so a later refusal cannot abandon
-/// earlier user mappings and their frames (D-105).
+/// Load `bytes`, which need not be the initrd's. Preflight every placement before mapping so a
+/// later refusal cannot abandon earlier user mappings and their frames.
 pub(crate) fn load_image(
     space: &mut AddressSpace,
     bytes: &[u8],
@@ -371,8 +328,8 @@ pub(crate) fn load_image(
         .filter(|segment| segment.kind() == SegmentKind::Load)
     {
         let placement = placement_for(segment, bytes.len(), shift)?;
-        // Two segments sharing one page would collide in `map_owned` after
-        // the first is mapped; caught here, before anything is taken.
+        // Two segments sharing one page would collide in `map_owned` after the first is mapped;
+        // caught here, before anything is taken.
         if placements
             .iter()
             .flatten()
@@ -434,8 +391,8 @@ fn placement_for(
         });
     }
 
-    // Checked: a `p_vaddr` near the top wraps past the refusal below, and
-    // a debug build would panic on bytes a program supplied (D-101).
+    // Checked: a `p_vaddr` near the top wraps past the refusal below, and a debug build would panic
+    // on bytes a program supplied.
     let at = segment
         .address()
         .checked_add(shift)
@@ -478,7 +435,6 @@ fn placement_for(
     })
 }
 
-/// Map every validated placement, walking back the ones already installed.
 fn install_placements(
     space: &mut AddressSpace,
     bytes: &[u8],
@@ -488,8 +444,8 @@ fn install_placements(
         match place(space, bytes, placement) {
             Ok(()) => {}
             Err(error) => {
-                // Validation cannot rule out a frame shortage or a collision,
-                // so the pass walks back exactly what it mapped (D-94).
+                // Validation cannot rule out a frame shortage or a collision, so the pass walks
+                // back exactly what it mapped.
                 if let Err(refusal) = undo(space, &placements[..done]) {
                     return Err(LoadError::Rollback {
                         reason: refusal.reason,
@@ -503,10 +459,9 @@ fn install_placements(
     Ok(())
 }
 
-/// What a thread needs to find when it wakes up in a space of its own.
-///
-/// Arranged by [`spawn`] while the slot is still `Reserved`, so it is there
-/// before the thread's first instruction rather than racing it.
+/// What a thread needs to find when it wakes up in a space of its own. Arranged by [`spawn`] while
+/// the slot is still `Reserved`, so it is there before the thread's first instruction rather than
+/// racing it.
 #[derive(Clone, Copy)]
 struct Launch {
     entry: u64,
@@ -523,7 +478,6 @@ pub(crate) const ENTRY_VERSION: u64 = 1;
 /// Bytes in the versioned entry block.
 pub(crate) const ENTRY_BYTES: usize = 24;
 
-/// Byte offsets in the versioned entry block.
 mod entry {
     /// The entry ABI version.
     pub(super) const VERSION: usize = 0;
@@ -533,7 +487,6 @@ mod entry {
     pub(super) const BOOTSTRAP_HANDLE: usize = 16;
 }
 
-/// Stack tail occupied so the initial pointer remains sixteen-byte aligned.
 const ENTRY_STACK_BYTES: u64 = (ENTRY_BYTES as u64 + 15) & !15;
 
 /// One per thread slot. A leaf: nothing is called while it is held.
@@ -584,8 +537,8 @@ pub(crate) fn maximum_cleanup_ledger_is_total_for_test() -> bool {
 }
 
 struct Bootstrap {
-    /// Its tables, kept so they can be given back. `bind` borrows rather than
-    /// consumes for exactly this reason (D-117).
+    /// Its tables, kept so they can be given back. `bind` borrows rather than consumes for exactly
+    /// this reason.
     space: AddressSpace,
     /// The task table's one-shot authority to release these tables.
     authority: Option<BootstrapAuthority>,
@@ -594,16 +547,12 @@ struct Bootstrap {
     mapped: usize,
     returned_pages: usize,
     abandoned: usize,
-    /// Its handle table, behind an `Arc` for the reason [`Bootstrap::ring`] is:
-    /// `kind_of` takes the global arena's lock, and taking it under this
-    /// table's leaf guard is what `lock_leaf` forbids (D-121, D-124).
+    /// Its handle table, behind an `Arc` for the reason [`Bootstrap::ring`] is: `kind_of` takes the
+    /// global arena's lock, and taking it under this table's leaf guard is what `lock_leaf`
+    /// forbids.
     table: alloc::sync::Arc<HandleTable>,
-    /// Its ring. Held here because the shared pages are the kernel's and must
-    /// outlive the mapping that shows them to the program (D-113).
-    ///
-    /// Behind an `Arc` so serving can release `BOOTSTRAPS`' guard before
-    /// reading user memory, taking other locks and waking threads (D-121,
-    /// D-124).
+    /// Its ring. Held here because the shared pages are the kernel's and must outlive the mapping
+    /// that shows them to the program.
     ring: alloc::sync::Arc<queue::Queue>,
     /// The birth handle retained for lifecycle checks.
     #[cfg(feature = "selftest")]
@@ -809,14 +758,9 @@ impl PreparedProcess {
     }
 }
 
-/// One per thread slot, alongside its [`Launch`].
 static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
 
-/// Handles a process may hold at once.
-///
-/// A quota, and the answer to kernel-memory exhaustion at the handle layer
-/// (D-78). Small enough to bound kernel memory and large enough for delegation.
 const HANDLE_QUOTA: usize = 64;
 
 /// Identity of a spawned program.
@@ -1050,23 +994,11 @@ fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {
     Ok(())
 }
 
-/// Start a program in an address space of its own.
-///
-/// The order is forced and each step is why the next one is possible: a space
-/// that shares only the kernel's higher half (D-104), the image loaded into
-/// *that* space rather than into the running one, a stack, the binding that
-/// proves the space is installable, and a thread whose tables are set before
-/// anything can schedule it (D-106).
-///
-/// Until the reserved thread is made runnable, [`ProcessConstruction`] owns
-/// every mapped region and the tables that reach it. Any refusal drops that
-/// transaction, retires a partially fabricated task if necessary and returns
-/// every resource before the error escapes (D-191).
+/// Admit a user address space, or name which launch precondition refused.
 ///
 /// # Errors
 ///
-/// [`SpawnError`], naming which of those steps refused.
-/// Admit a user address space, or name which launch precondition refused.
+/// [`SpawnError`] names the precondition that refused.
 fn open_user_space() -> Result<AddressSpace, SpawnError> {
     if !crate::maskable_interrupts_are_ready() {
         return Err(SpawnError::NoInterruptAdmission);
@@ -1110,10 +1042,8 @@ struct MappedProgram {
     root: Paddr,
 }
 
-/// Load the image, stack, clock page and ring into `construction`.
-///
-/// Time before the ring: a process is refused rather than launched with a
-/// hole in its ABI (D-166). Ring pages stay the ring's, not the ledger's (D-113).
+/// Load the image, stack, clock page and ring into `construction`. Time before the ring: a process
+/// is refused rather than launched with a hole in its ABI.
 fn map_program_and_ring(
     construction: &mut ProcessConstruction,
     which: u64,
@@ -1288,7 +1218,6 @@ fn arrange_and_spawn(
     }
 }
 
-/// Whether the CPU will enforce every non-executable user mapping.
 fn no_execute_is_enabled() -> bool {
     let enabled = cpu::Protections::enabled().nx;
     #[cfg(feature = "selftest")]
@@ -1489,10 +1418,8 @@ impl ZombieTable {
     }
 }
 
-/// Programs whose threads are gone and whose resources are not.
 static ZOMBIES: SpinLock<ZombieTable> = SpinLock::new(ZombieTable::new());
 
-/// What every reclaim so far gave back.
 #[cfg(feature = "selftest")]
 static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
@@ -1545,11 +1472,8 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
     RITES.lock_leaf().get(slot).copied().flatten()
 }
 
-/// Mark `slot`'s program dead, without freeing anything.
-///
-/// Called from trap context on the retiring thread itself, so it must not
-/// allocate, block, or touch the space it is running on. Moving one `Option`
-/// between two arrays does none of those.
+/// Mark `slot`'s program dead, without freeing anything. Called from trap context on the retiring
+/// thread itself, so it must not allocate, block, or touch the space it is running on.
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
     let stored = taken.is_some();
@@ -1586,8 +1510,7 @@ pub(crate) fn orphan(slot: usize) {
         );
         *room = Some(bootstrap);
     }
-    // Cleared, so a slot reused by a later program never finds the previous
-    // one's entry point (D-117).
+    // Cleared, so a slot reused by a later program never finds the previous one's entry point.
     let mut launches = LAUNCHES.lock_leaf();
     let Some(room) = launches.get_mut(slot) else {
         panic!("a retiring process slot remains in range");
@@ -1599,16 +1522,12 @@ pub(crate) fn orphan(slot: usize) {
     }
 }
 
-/// Collect one dead program's resources, if there are any.
-///
-/// One per call rather than all of them: this runs where the machine had
-/// nothing better to do, and a loop that frees sixteen processes with
-/// interrupts on is a loop that can be preempted halfway through anyway. One
-/// at a time makes that unremarkable instead of something to reason about.
-///
+/// Collect one dead program's resources, if there are any. One per call rather than all of them:
+/// this runs where the machine had nothing better to do, and a loop that frees sixteen processes
+/// with interrupts on is a loop that can be preempted halfway through anyway.
 pub(crate) fn collect() -> CollectOutcome {
-    // The owner stays in the zombie table until its ring is quiet, so a
-    // refused terminal completion retries rather than reusing live pages (D-192).
+    // The owner stays in the zombie table until its ring is quiet, so a refused terminal completion
+    // retries rather than reusing live pages.
     let (found, another_collector) = {
         let mut zombies = ZOMBIES.lock_leaf();
         let another_collector = zombies.settling.iter().any(|owned| *owned)
@@ -1642,14 +1561,14 @@ pub(crate) fn collect() -> CollectOutcome {
         COLLECTION_IS_SETTLING.store(false, Ordering::Release);
     }
 
-    // Before the ring's pages go anywhere: every outstanding operation gets
-    // its terminal completion while the zombie still owns them (D-167, D-192).
+    // Before the ring's pages go anywhere: every outstanding operation gets its terminal completion
+    // while the zombie still owns them.
     let abandoned = ring.abandon();
     if !ring.is_quiet() {
         return retain_unquiet_ring(slot, &ring, abandoned);
     }
-    // Taken out under the guard and reclaimed outside it: `reclaim` frees
-    // frames, which reaches the allocator, and this lock is a leaf (D-85).
+    // Taken out under the guard and reclaimed outside it: `reclaim` frees frames, which reaches the
+    // allocator, and this lock is a leaf.
     let bootstrap = match take_collecting_owner(slot, &ring) {
         Ok(bootstrap) => bootstrap,
         Err(outcome) => return outcome,
@@ -1666,7 +1585,6 @@ pub(crate) fn collect() -> CollectOutcome {
     finish_collection(slot, bootstrap, abandoned)
 }
 
-/// Keep a zombie whose ring could not be made quiet, and say why if the books disagree.
 fn retain_unquiet_ring(
     slot: usize,
     ring: &alloc::sync::Arc<queue::Queue>,
@@ -1905,34 +1823,20 @@ pub(crate) fn process_records_for_test() -> (usize, usize, usize) {
     (launches, bootstraps, zombies)
 }
 
-/// What a program asked for, in `rax`.
-///
-/// The synchronous plane (`002` pillar 2): retirement, ring service and wait,
-/// and thread-local setup. The *data* path is still the ring: Enter and Wait
-/// serve work already posted there rather than transferring data in the trap
-/// (D-116, D-164).
-///
-/// Four, and the surface stays small on purpose. `io_uring`'s exploit record is
-/// a warning about surface growth, and every call added here is one a hostile
-/// program can reach.
+/// What a program asked for, in `rax`. The *data* path is still the ring: Enter and Wait serve work
+/// already posted there rather than transferring data in the trap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Call {
     /// End this thread. The only one that does not return.
     Exit,
     /// Serve what has been submitted, and report how many completed.
     RingEnter,
-    /// Wait until an operation in flight comes due, then serve it.
-    ///
-    /// The first call in this ABI whose honest answer is *not yet*. It gives
-    /// the CPU up rather than spinning, which is what makes a deferred
-    /// completion worth having (D-164).
+    /// Wait until an operation in flight comes due, then serve it. It gives the CPU up rather than
+    /// spinning, which is what makes a deferred completion worth having.
     RingWait,
-    /// Point this thread's local storage at `rdi`.
-    ///
-    /// mlibc's `sys_tcb_set`. Its body is WIRED and the platform route WORKS:
-    /// writing the sysdeps found that `FS_BASE` is a fourth thing that must
-    /// follow a thread, and a call that sets it is worth nothing until it does
-    /// (D-114, D-118, D-181).
+    /// Point this thread's local storage at `rdi`. Its body is WIRED and the platform route WORKS:
+    /// writing the sysdeps found that `FS_BASE` is a fourth thing that must follow a thread, and a
+    /// call that sets it is worth nothing until it does.
     ThreadBase,
     /// Anything else.
     Unknown(u64),
@@ -1953,13 +1857,8 @@ impl Call {
 /// Calls refused because this kernel does not serve them.
 static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-/// The last such number, so a report can say *what* was asked for.
 static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 
-/// Call answers that could not be written back.
-///
-/// Should stay at zero: the frame a handler is running on is the innermost
-/// live one by construction.
 static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 
 /// `RingEnter` calls whose completion wake armed the timer in that trap.
@@ -1972,7 +1871,7 @@ static REPORTED: AtomicUsize = AtomicUsize::new(0);
 static EXECUTED: AtomicBool = AtomicBool::new(false);
 static EXECUTION_REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Report one observed user call from ordinary thread context (D-427).
+/// Report one observed user call from ordinary thread context.
 pub(crate) fn report_execution() -> bool {
     if !EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap(true, Ordering::AcqRel) {
         return false;
@@ -1981,13 +1880,8 @@ pub(crate) fn report_execution() -> bool {
     true
 }
 
-/// Say what the syscall handler could not, if there is anything new.
-///
-/// Called from the idle thread because a kernel thread may take the console's
-/// lock and the handler may not (D-122). Reports at most once per boot and
-/// then falls quiet, so a program in a loop cannot turn refusals into a flood.
-///
-/// `true` if something was said, so the caller knows it did work.
+/// Say what the syscall handler could not, if there is anything new. Called from the idle thread
+/// because a kernel thread may take the console's lock and the handler may not.
 pub(crate) fn report_refusals() -> bool {
     let refused = REFUSED_CALLS.load(Ordering::Acquire);
     if refused == 0 || REPORTED.swap(1, Ordering::AcqRel) != 0 {
@@ -1998,11 +1892,9 @@ pub(crate) fn report_refusals() -> bool {
     true
 }
 
-/// Calls this kernel refused, and the last number asked for.
-///
-/// Read from outside trap context, which is the whole point: the handler
-/// cannot take the console's lock, so it leaves a number for something that
-/// can (D-122).
+/// Calls this kernel refused, and the last number asked for. Read from outside trap context, which
+/// is the whole point: the handler cannot take the console's lock, so it leaves a number for
+/// something that can.
 #[cfg(feature = "selftest")]
 pub(crate) fn refusals() -> (usize, usize, usize) {
     (
@@ -2024,10 +1916,8 @@ pub(crate) fn ring_enter_arms_for_test() -> usize {
     RING_ENTER_ARMS.load(Ordering::Acquire)
 }
 
-/// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
 
-/// `-EINVAL`, likewise.
 const EINVAL: u64 = (-22i64) as u64;
 
 fn answer_call(frame: &TrapFrame, value: u64) {
@@ -2038,16 +1928,8 @@ fn answer_call(frame: &TrapFrame, value: u64) {
     assert!(answered, "the live syscall frame could not be answered");
 }
 
-/// Serve one call from ring 3.
-///
-/// Runs in trap context, so ordinary work here may not allocate, enter a
-/// `ThreadContext` blocking path, or take a lock a handler cannot (D-55, D-63).
-/// D-200's `wait_from_trap` is the narrow audited exception: it yields through
-/// the saved trap frame. `Queue::serve` takes leaf locks only around bounded
-/// state transitions and defers file service to the worker.
-///
-/// **Only `Exit` does not return.** Other calls preserve the caller so it can
-/// act on the result (D-116).
+/// Serve one call from ring 3. Runs in trap context, so ordinary work here may not allocate, enter
+/// a `ThreadContext` blocking path, or take a lock a handler cannot.
 pub(crate) fn call(frame: &TrapFrame) {
     let slot = task::current();
     if frame.code_selector() & 0b11 == 3 {
@@ -2075,8 +1957,8 @@ pub(crate) fn call(frame: &TrapFrame) {
             answer_call(frame, completed);
         }
         Call::ThreadBase => {
-            // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP`
-            // in kernel context, a program crashing the handler.
+            // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel context, a
+            // program crashing the handler.
             let answer = if task::set_thread_base(frame.rdi()) {
                 0
             } else {
@@ -2085,11 +1967,9 @@ pub(crate) fn call(frame: &TrapFrame) {
             answer_call(frame, answer);
         }
         Call::Unknown(number) => {
-            // Refused with an answer: a program that gets nothing back cannot
-            // tell a wrong call from a dropped one.
+            // Refused with an answer: a program that gets nothing back cannot tell a wrong call
+            // from a dropped one.
             answer_call(frame, ENOSYS);
-            // Counted, not logged: trap context cannot take the console lock,
-            // and once did (D-63, D-122); the idle thread reports these.
             REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
             let stored = usize::try_from(number).unwrap_or(usize::MAX);
             LAST_REFUSED.store(stored, Ordering::Relaxed);
@@ -2097,34 +1977,28 @@ pub(crate) fn call(frame: &TrapFrame) {
     }
 }
 
-/// Serve the calling thread's own ring, and count the completions.
-///
-/// The ring is reached through the thread's `Bootstrap`, which is where its
-/// authority lives — a program cannot name another's, because there is no
-/// argument here that could say which.
+/// Serve the calling thread's own ring, and count the completions. The ring is reached through the
+/// thread's `Bootstrap`, which is where its authority lives — a program cannot name another's,
+/// because there is no argument here that could say which.
 fn serve_ring(slot: usize) -> u64 {
-    // Cloned out before anything is served: `serve` takes four more locks,
-    // which `lock_leaf` forbids under this guard (D-121, D-124).
+    // Cloned out before anything is served: `serve` takes four more locks, which `lock_leaf`
+    // forbids under this guard.
     let Some((ring, table)) = authority_of(slot) else {
         return ENOSYS;
     };
 
-    // The program's own claim about what it has reaped, taken once and bounded
-    // inside (D-113, D-115).
+    // The program's own claim about what it has reaped, taken once and bounded inside.
     let head = ring.completion_head();
     ring.reap_up_to(head);
-    // Due operations complete before new ones are admitted, so finished work
-    // never costs the next submission a slot the kernel already owes.
+    // Due operations complete before new ones are admitted, so finished work never costs the next
+    // submission a slot the kernel already owes.
     ring.expire(crate::time::now_ns());
     ring.serve(&table) as u64
 }
 
-/// The ring and the handle table of the thread in `slot`.
-///
-/// Both are cloned out and the guard dropped before either is used. `serve`
-/// reads the program's memory, performs each operation and wakes whatever was
-/// waiting, and `install` takes the handle arena's leaf — doing any of that
-/// under this table's guard is what `lock_leaf` forbids (D-121, D-124).
+/// The ring and the handle table of the thread in `slot`. `serve` reads the program's memory,
+/// performs each operation and wakes whatever was waiting, and `install` takes the handle arena's
+/// leaf — doing any of that under this table's guard is what `lock_leaf` forbids.
 fn authority_of(
     slot: usize,
 ) -> Option<(
@@ -2139,17 +2013,8 @@ fn authority_of(
     ))
 }
 
-/// Wait for an operation in flight, then serve what came due.
-///
-/// Three answers, and they are different things. **Nothing in flight** returns
-/// zero at once — there is nothing to wait for, and blocking would be a hang.
-/// **Something already due** is completed without sleeping. Otherwise the
-/// thread sleeps until the soonest deadline and completes what it finds when
-/// it wakes, which may be later than the deadline and never earlier.
-///
-/// The completion is posted by the timer path or file worker, not by the
-/// program asking again: a woken program finds the entry already in its queue.
-/// That is what makes this a wait rather than a poll (D-164, D-200).
+/// Wait for an operation in flight, then serve what came due. Nothing in flight returns zero at
+/// once — there is nothing to wait for, and blocking would be a hang.
 fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
     let Some((ring, _)) = authority_of(slot) else {
         return ENOSYS;
@@ -2157,20 +2022,12 @@ fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
 
     ring.wait_from_trap(frame) as u64
 
-    // May return having done nothing (no peer, or no clock); the answer is
-    // still the truth about what is due now.
+    // May return having done nothing (no peer, or no clock); the answer is still the truth about
+    // what is due now.
 }
 
-/// Cross into ring 3, and never come back on this thread.
-///
-/// Runs as an ordinary kernel thread until its last instruction, and is retired
-/// by the syscall handler from the far side of the boundary.
-///
-/// No stack is arranged for the trap out: the context switch that scheduled
-/// this thread already pointed `RSP0` at its own kernel stack, and will point
-/// it somewhere else the moment another thread runs (D-99). The same switch
-/// installed this thread's tables, which is what makes the copy below reach
-/// *its* stack and no other program's (D-106).
+/// Cross into ring 3, and never come back on this thread. Runs as an ordinary kernel thread until
+/// its last instruction, and is retired by the syscall handler from the far side of the boundary.
 fn cross() {
     let slot = task::current();
     let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
@@ -2185,15 +2042,14 @@ fn cross() {
         CROSS_GATE.wait_unless(&mut context, || CROSS_MAY_ENTER.load(Ordering::Acquire));
     }
 
-    // Checked, not assumed: a missed switch would put one program's argument
-    // on another's stack.
+    // Checked, not assumed: a missed switch would put one program's argument on another's stack.
     if cpu::page_table_base() != launch.root {
         warn!("user {which}: running on tables that are not its own");
         refuse_cross(slot);
     }
 
-    // Version, argument and bootstrap handle, written with the checked copy
-    // (D-97, D-182); the tail keeps the initial pointer aligned.
+    // Version, argument and bootstrap handle, written with the checked copy; the tail keeps the
+    // initial pointer aligned.
     let top = launch.stack + USER_STACK_BYTES - ENTRY_STACK_BYTES;
     if usercopy::copy_to_user(top + entry::VERSION as u64, &ENTRY_VERSION.to_le_bytes()).is_err()
         || usercopy::copy_to_user(top + entry::ARGUMENT as u64, &launch.argument.to_le_bytes())
@@ -2256,14 +2112,12 @@ pub(crate) fn run_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
     spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS)
 }
 
-/// The argument that makes the program ask for an unserved call.
-///
-/// Must match the behaviour `xtask/src/image/program.rs` emits for it.
+/// The argument that makes the program ask for an unserved call. Must match the behaviour
+/// `xtask/src/image/program.rs` emits for it.
 #[cfg(feature = "selftest")]
 const PROBE: u64 = 2;
 
-/// Must match the hostile return behaviours emitted by
-/// `xtask/src/image/program.rs`.
+/// Must match the hostile return behaviours emitted by `xtask/src/image/program.rs`.
 #[cfg(feature = "selftest")]
 const INVALID_RETURN_STACK: u64 = 6;
 #[cfg(feature = "selftest")]
@@ -2325,13 +2179,9 @@ pub(crate) fn release_gated_cross() -> usize {
     CROSS_GATE.wake_all()
 }
 
-/// A sixth, which jumps into the kernel's user-copy window from ring 3.
-///
-/// The argument *is* the address: the program jumps to anything it is given in
-/// the kernel's half (D-126). Ring 3 cannot execute kernel memory, so this is
-/// an instruction-fetch fault whose `RIP` is inside the window the recovery
-/// arm looks at — which is the state that arm accepted without ever checking
-/// who faulted.
+/// A sixth, which jumps into the kernel's user-copy window from ring 3. Ring 3 cannot execute
+/// kernel memory, so this is an instruction-fetch fault whose `RIP` is inside the window the
+/// recovery arm looks at — which is the state that arm accepted without ever checking who faulted.
 #[cfg(feature = "selftest")]
 pub(crate) fn run_into_the_copy_window() -> Result<Spawned, SpawnError> {
     let (start, _) = usercopy::fault_window();
@@ -2344,22 +2194,17 @@ pub(crate) fn run_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT)
 }
 
-/// The argument that makes the program call the kernel.
 const BEHAVE: u64 = 0;
 
-/// The argument that makes it execute `ud2` instead.
 #[cfg(feature = "selftest")]
 const FAULT: u64 = 1;
 
-/// The argument that makes it submit Duplicate for its bootstrap handle.
 #[cfg(feature = "selftest")]
 const DUPLICATE: u64 = 3;
 
-/// The argument that makes it submit a Timer and enter `RingWait`.
 #[cfg(feature = "selftest")]
 const WAIT: u64 = 4;
 
-/// The argument that brackets Echo's `RingEnter` with timestamp reads.
 #[cfg(feature = "selftest")]
 const MEASURE: u64 = 5;
 
@@ -2367,7 +2212,6 @@ const MEASURE: u64 = 5;
 #[cfg(feature = "selftest")]
 static GATE_NEXT_CROSS: AtomicBool = AtomicBool::new(false);
 
-/// The condition paired with [`CROSS_GATE`].
 #[cfg(feature = "selftest")]
 static CROSS_MAY_ENTER: AtomicBool = AtomicBool::new(true);
 

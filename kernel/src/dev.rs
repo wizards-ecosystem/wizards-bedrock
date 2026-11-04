@@ -1,8 +1,7 @@
 //! The kernel's output devices.
 //!
-//! Locked singletons keep the panic path independent of call-site plumbing.
-//! Their locks keep interrupts on because framebuffer scrolling can be slow;
-//! trap handlers therefore use only the non-blocking accessors (D-31, D-63).
+//! Locks stay interruptible because scrolling is slow; trap handlers use only the non-blocking
+//! accessors.
 
 use wost::boot::Framebuffer;
 use wost::sync::{SpinLock, ThreadLock};
@@ -84,11 +83,9 @@ pub(crate) fn framebuffer_bytes() -> Option<usize> {
     CONSOLE.lock().as_ref().map(Console::framebuffer_bytes)
 }
 
-/// What the console holds at (`x`, `y`), and the marks a check compares to.
-///
-/// Returns the pixel, the packed foreground, and the line height — read under
-/// one guard, because three separate calls would let a log line land between
-/// them and move what the first answered about.
+/// What the console holds at (`x`, `y`), and the marks a check compares to. Returns the pixel, the
+/// packed foreground, and the line height — read under one guard, because three separate calls
+/// would let a log line land between them and move what the first answered about.
 #[cfg(feature = "selftest")]
 pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
     let guard = CONSOLE.lock();
@@ -98,13 +95,11 @@ pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
     Some((pixel, foreground, console.line_height()))
 }
 
-/// Give the console's framebuffer a shadow in RAM.
-///
-/// Separate from [`init_console`] because the heap does not yet exist when the
-/// boot handoff installs the console.
+/// Give the console's framebuffer a shadow in RAM. Separate from [`init_console`] because the heap
+/// does not yet exist when the boot handoff installs the console.
 pub(crate) fn attach_back_buffer() {
-    // Logging takes UART's lock, so report only after releasing CONSOLE and
-    // avoid adding an otherwise-unchecked CONSOLE → UART order (D-105).
+    // Logging takes UART's lock, so report only after releasing CONSOLE and avoid adding an
+    // otherwise-unchecked CONSOLE → UART order.
     let attached = {
         let mut guard = CONSOLE.lock();
         let Some(console) = guard.as_mut() else {
@@ -119,9 +114,8 @@ pub(crate) fn attach_back_buffer() {
     }
 }
 
-/// Whether the console has RAM for every framebuffer word it may scroll.
-///
-/// Read only by the boot-time check, so it exists only where that does.
+/// Whether the console has RAM for every framebuffer word it may scroll. Read only by the boot-time
+/// check, so it exists only where that does.
 #[cfg(feature = "selftest")]
 pub(crate) fn console_has_complete_back_buffer() -> bool {
     CONSOLE
@@ -130,16 +124,12 @@ pub(crate) fn console_has_complete_back_buffer() -> bool {
         .is_some_and(Console::has_complete_back_buffer)
 }
 
-/// The I/O APIC, once a line has been routed through it.
-///
-/// Kept because the controller owns its register window for the life of the
-/// kernel and the boot-time checks read routing back out of it.
+/// The I/O APIC, once a line has been routed through it. Kept because the controller owns its
+/// register window for the life of the kernel and the boot-time checks read routing back out of it.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
-/// Keep the controller the keyboard was just routed through.
-///
-/// Self-test also retains the chosen GSI so readback follows firmware routing
-/// rather than assuming the legacy identity.
+/// Keep the controller the keyboard was just routed through. Self-test also retains the chosen GSI
+/// so readback follows firmware routing rather than assuming the legacy identity.
 pub(crate) fn keep_io_apic(io_apic: IoApic, #[cfg(feature = "selftest")] gsi: u32) {
     *IO_APIC.lock_leaf() = Some(io_apic);
     #[cfg(feature = "selftest")]
@@ -156,10 +146,8 @@ pub(crate) fn keyboard_gsi() -> u32 {
 #[cfg(feature = "selftest")]
 static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// How the I/O APIC routes one global system interrupt.
-///
-/// Returns a value instead of letting a closure escape under a leaf guard.
-/// `None` means either no controller or no route for `gsi` (D-105, D-121).
+/// How the I/O APIC routes one global system interrupt. Returns a value instead of letting a
+/// closure escape under a leaf guard.
 #[cfg(feature = "selftest")]
 pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
     let mut guard = IO_APIC.lock_leaf();

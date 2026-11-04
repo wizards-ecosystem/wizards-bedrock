@@ -1,10 +1,6 @@
-//! 8254 interval timer driver — the calibration reference.
+//! 8254 interval timer, the calibration reference.
 //!
-//! The kernel measures the APIC timer against a crystal whose rate has been
-//! fixed since 1981, then retains the claimed chip to validate APIC-delivered
-//! clock windows. It is never an interrupt source: counter 0's output goes to
-//! a masked legacy controller, so each bounded window can count without
-//! generating an interrupt.
+//! Never an interrupt source: counter 0 feeds a masked legacy controller.
 
 use core::fmt;
 
@@ -12,20 +8,15 @@ use wost::arch::current::port::{self, PortBlock};
 use x86_pit::STATUS_NULL_COUNT;
 use x86_pit::command::{Access, Channel, ControlWord, OperatingMode};
 
-/// Ports occupied by the chip: three counters, then the control register.
 const REGISTER_COUNT: usize = 4;
 
-/// Register offsets from the port base.
 mod register {
     pub(super) const CHANNEL_0: usize = 0;
     pub(super) const CONTROL: usize = 3;
 }
 
-/// The longest countdown the sixteen-bit counter holds.
 const FULL_SPAN: u16 = 0xFFFF;
 
-/// The one word this driver programs with: counter 0, both count bytes,
-/// mode 0, binary.
 const MEASURE: ControlWord = ControlWord::binary(
     Channel::Zero,
     Access::LowHigh,
@@ -64,20 +55,11 @@ impl Pit {
         Ok(Self { registers })
     }
 
-    /// Start counter 0 counting down through its full span, and wait until
-    /// the count has actually reached the counting element.
-    ///
-    /// Mode 0 decrements by one, monotonically, and keeps counting through
-    /// zero — no reload to reason about inside a measurement window, and the
-    /// single output edge at zero lands on a masked controller.
-    ///
-    /// The wait exists for real hardware: the chip loads a written count on
-    /// the crystal edge after the high byte, up to 838 ns later, and a
-    /// baseline latched before that reads the stale pre-load value — a
-    /// corruption both hypervisors are immune to, because their virtual
-    /// counters load instantly. Bounded, like every wait in this kernel: a
-    /// chip whose null-count flag never clears simply yields a baseline the
-    /// measurement guards will judge.
+    /// Start counter 0 counting down through its full span, and wait until the count has actually
+    /// reached the counting element. The wait exists for real hardware: the chip loads a written
+    /// count on the crystal edge after the high byte, up to 838 ns later, and a baseline latched
+    /// before that reads the stale pre-load value — a corruption both hypervisors are immune to,
+    /// because their virtual counters load instantly.
     pub(crate) fn start_measurement(&mut self) {
         const LOAD_ATTEMPTS: u32 = 1_000;
 
@@ -111,12 +93,9 @@ impl Pit {
         u16::from_le_bytes([low, high])
     }
 
-    /// Halt the counter for good.
-    ///
-    /// A control word stops the count, and nothing counts again until an
-    /// initial count is written — which never comes: this consumes the
-    /// driver, and the port claim it held is permanent, so nothing can ever
-    /// program the chip again.
+    /// Halt the counter for good. A control word stops the count, and nothing counts again until an
+    /// initial count is written — which never comes: this consumes the driver, and the port claim
+    /// it held is permanent, so nothing can ever program the chip again.
     pub(crate) fn park(mut self) {
         PortBlock::write(&mut self.registers, register::CONTROL, MEASURE.bits());
     }

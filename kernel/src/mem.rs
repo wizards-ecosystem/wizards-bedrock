@@ -1,8 +1,6 @@
-//! Physical memory: what the bootloader reported, and what the kernel took.
+//! Physical memory the bootloader reported, and what the kernel took.
 //!
-//! The frame allocator itself lives in `wost::mm` — owning a frame needs a raw
-//! pointer, so it is `wost`'s (D-43). What is here is the part that needs no
-//! privilege: deciding whether the handoff is usable at all, and saying so.
+//! The frame allocator lives in `wost::mm`: owning a frame needs a raw pointer.
 
 use alloc::vec::Vec;
 use stack_layout::StackLayout;
@@ -29,15 +27,12 @@ use crate::iommu::EarlyDmaBoundary;
 use crate::thread::ThreadContext;
 use crate::{debug, info, thread, warn};
 
-/// Bytes in a page frame.
 #[cfg(feature = "selftest")]
 const FRAME_SIZE: u64 = 4096;
 
-/// Bring the frame allocator up over the bootloader's memory map.
-///
-/// Declines rather than panics when either half of the handoff is missing: a
-/// kernel that cannot allocate is still worth booting far enough to say why,
-/// and the checks that follow report the absence rather than faulting on it.
+/// Bring the frame allocator up over the bootloader's memory map. Declines rather than panics when
+/// either half of the handoff is missing: a kernel that cannot allocate is still worth booting far
+/// enough to say why, and the checks that follow report the absence rather than faulting on it.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the boot handoff moves its memory map into the allocator once"
@@ -73,9 +68,8 @@ pub(crate) fn init(
     info!("memory: {report}");
 }
 
-/// The kernel's own address space, kept live after the switch.
-///
-/// Retained so mappings can be changed after activation (D-45, D-86).
+/// The kernel's own address space, kept live after the switch. Retained so mappings can be changed
+/// after activation.
 static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
 /// BAR owners whose exact retirement failed after register access ended.
@@ -83,10 +77,8 @@ static RETAINED_PCI_BARS: SpinLock<
     [Option<PciBarQuarantine>; crate::pci::FUNCTION_AUTHORITY_LIMIT * pci_config::BARS],
 > = SpinLock::new([const { None }; crate::pci::FUNCTION_AUTHORITY_LIMIT * pci_config::BARS]);
 
-/// One controller whose rollback could not safely begin.
 static RETAINED_ROUTING: SpinLock<Option<Routing>> = SpinLock::new(None);
 
-/// One unexposed mapping and every earlier routing candidate still owned.
 static RETAINED_ROUTING_MAPPING: SpinLock<
     Option<(paging::DeviceMapping, Vec<IoApic<ReleasableDevice>>)>,
 > = SpinLock::new(None);
@@ -98,9 +90,8 @@ static RETAINED_ROUTING_REGISTERS: SpinLock<
 
 /// Run one operation owned by this module against the live address space.
 ///
-/// Private because `AddressSpace` also carries reclaim and arbitrary unmap
-/// authority over the tables the CPU is using. Callers get only the operations
-/// below, while this token-bearing acquisition preserves D-85's lock order.
+/// Private because `AddressSpace` can also reclaim the live tables. The token-bearing lock keeps
+/// this off any leaf guard.
 fn with_active_space<T>(
     context: &mut ThreadContext,
     f: impl FnOnce(&mut AddressSpace) -> T,
@@ -144,7 +135,6 @@ pub(crate) enum PciBarMapFailure {
     Mapping(BarMapFailure),
 }
 
-/// The exact remaining owner of a PCI BAR whose cleanup could not finish.
 #[derive(Debug)]
 enum PciBarQuarantine {
     /// Pages are installed, but register access was never exposed.
@@ -354,10 +344,8 @@ pub(crate) fn active_kernel_topology_is_frozen(context: &mut ThreadContext) -> O
     with_active_space(context, AddressSpace::kernel_topology_is_frozen_for_test)
 }
 
-/// A live owned mapping made by a machine check.
-///
-/// The fields are private and the value is not copyable: the only removal
-/// door below consumes exactly the mapping this module just created.
+/// A live owned mapping made by a machine check. The fields are private and the value is not
+/// copyable: the only removal door below consumes exactly the mapping this module just created.
 #[cfg(feature = "selftest")]
 pub(crate) struct ActiveMapping {
     base: u64,
@@ -535,11 +523,8 @@ pub(crate) fn invalid_unmaps_are_refused(context: &mut ThreadContext) -> Option<
     })
 }
 
-/// Move the double-fault handler onto a guarded stack.
-///
-/// Mapping this stack after kernel page-table activation makes its guard page
-/// genuinely absent (D-89). Pinning keeps a live hardware pointer from being
-/// unmapped (D-86).
+/// Move the double-fault handler onto a guarded stack. Mapping this stack after kernel page-table
+/// activation makes its guard page genuinely absent.
 #[expect(
     clippy::panic_in_result_fn,
     reason = "a pinned fault stack that is not the active one is a terminal invariant"
@@ -548,8 +533,7 @@ fn guard_the_fault_stack() -> Result<u64, StackMapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
 
-    // `map_stack` verifies the guard is absent even outside self-test builds
-    // (D-94).
+    // `map_stack` verifies the guard is absent even outside self-test builds.
     let mut context = ThreadContext::require();
     let stack = with_active_space(&mut context, |space| space.map_pinned_stack(&slot))
         .ok_or(MapError::OutOfMemory)??;
@@ -573,22 +557,17 @@ pub(crate) fn unmap_fault_stack_for_test(
     })
 }
 
-/// Map the boot thread's own guarded stack.
-///
-/// `None` rather than an error when it cannot be had: kernel services can
-/// still report and degrade on the bootloader's stack, but the user boundary
-/// remains closed (D-193).
+/// Map the boot thread's own guarded stack. `None` rather than an error when it cannot be had:
+/// kernel services can still report and degrade on the bootloader's stack, but the user boundary
+/// remains closed.
 pub(crate) fn map_boot_stack() -> Option<MappedStack> {
     let mut context = ThreadContext::require();
     map_guarded_stack(&mut context, thread::boot_stack_layout()?)
 }
 
-/// Map the one guarded stack `layout` describes.
-///
-/// The shared half of every stack this kernel maps after the switch: allocate,
-/// zero, map writable and never executable, and verify the guard below is
-/// absent — the last of which is `map_stack`'s and is why it is used rather
-/// than open-coded (D-94).
+/// Map the one guarded stack `layout` describes. The shared half of every stack this kernel maps
+/// after the switch: allocate, zero, map writable and never executable, and verify the guard below
+/// is absent — the last of which is `map_stack`'s and is why it is used rather than open-coded.
 pub(crate) fn map_guarded_stack(
     context: &mut ThreadContext,
     layout: StackLayout,
@@ -613,12 +592,10 @@ pub(crate) fn direct_map_base() -> Option<u64> {
     mm::direct_map()?.virtual_address(0)
 }
 
-/// Log every region the bootloader described.
-///
-/// At debug level because it runs to a few dozen lines, and worth having at
-/// all because it is the only place an unrecognised region type becomes
-/// visible — the pinned `limine` crate has no constant for the one base
-/// revision 4 added, so it arrives here as `unknown type N` (D-42).
+/// Log every region the bootloader described. At debug level because it runs to a few dozen lines,
+/// and worth having at all because it is the only place an unrecognised region type becomes visible
+/// — the pinned `limine` crate has no constant for the one base revision 4 added, so it arrives
+/// here as `unknown type N`.
 fn describe(map: &MemoryMap) {
     for region in map.regions() {
         debug!(
@@ -633,20 +610,12 @@ fn describe(map: &MemoryMap) {
     }
 }
 
-/// Whether a region type is one this kernel has no name for.
 fn unrecognised(kind: &MemoryKind) -> bool {
     matches!(kind, MemoryKind::Unknown(_))
 }
 
-/// Build the kernel's own page tables and switch to them.
-///
-/// Every decision here is policy — which ranges exist and what each may do —
-/// and policy is safe Rust. `wost` owns the table writes and the one `mov cr3`
-/// underneath; this function cannot express an unsafe operation and does not
-/// need to (D-13, D-45).
-///
-/// Handoff and allocation failures keep the bootloader's tables. A cleanup
-/// contradiction is fatal because continuing would discard live ownership.
+/// Build the kernel's own page tables and switch to them. `wost` owns the table writes and the one
+/// `mov cr3` underneath; this function cannot express an unsafe operation and does not need to.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the boot handoff moves its memory map into paging once"
@@ -662,8 +631,7 @@ pub(crate) fn init_paging(
         return None;
     };
 
-    // Read ACPI before building tables while the bootloader's direct map
-    // already covers it (D-45, D-49, D-86).
+    // Read ACPI before building tables while the bootloader's direct map already covers it.
     let interrupts = match rsdp {
         Ok(rsdp) => crate::acpi::interrupts(rsdp),
         Err(reason) => {
@@ -744,8 +712,8 @@ pub(crate) fn init_paging(
         }
     };
 
-    // Kept, which is the whole of D-86: a mapping can arrive with the thread
-    // that needs it instead of being guessed while the tables are built.
+    // Kept: a mapping can arrive with the thread that needs it instead of being guessed while the
+    // tables are built.
     *SPACE.lock_leaf() = Some(space);
 
     match guard_the_fault_stack() {
@@ -827,11 +795,8 @@ impl ExternalControllersMasked {
     }
 }
 
-/// Probe every described I/O APIC and return the unique removable owner of `gsi`.
-///
-/// Called before interrupts are enabled. Every controller is therefore masked
-/// before firmware state could deliver an unowned vector, while the active
-/// address space lets all temporary mappings be returned after selection.
+/// Probe every described I/O APIC and return the unique removable owner of `gsi`. Called before
+/// interrupts are enabled.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the MADT inventory is consumed by the one routing selection"
@@ -903,8 +868,8 @@ pub(crate) fn prepare_routing(
         return RoutingPreparation::unproven();
     };
 
-    // The selected controller is rebuilt only after every probe mapping is
-    // gone, so temporary inventory state cannot survive into its ownership.
+    // The selected controller is rebuilt only after every probe mapping is gone, so temporary
+    // inventory state cannot survive into its ownership.
     if release_io_apics(context, &mut controllers).is_none() {
         warn!("ioapic: candidate mappings did not retire exactly; interrupts stay off");
         return RoutingPreparation::unproven();
@@ -1002,8 +967,8 @@ fn release_io_apics(
     Some(ControllersReleased { _private: () })
 }
 
-/// Bytes of register window an I/O APIC occupies. The index/data pair sits in
-/// the first 32; a page is the smallest thing worth mapping.
+/// Bytes of register window an I/O APIC occupies. The index/data pair sits in the first 32; a page
+/// is the smallest thing worth mapping.
 const IO_APIC_WINDOW: u64 = 4096;
 
 /// The interrupt controller ACPI described, ready to route lines.
@@ -1106,10 +1071,8 @@ fn build(
     }
 }
 
-/// Map the kernel image sections and record the physical ranges they occupy.
-///
-/// Read-only and executable; read-only and not; writable and not. No fourth
-/// combination exists, which is the whole of W^X.
+/// Map the kernel image sections and record the physical ranges they occupy. Read-only and
+/// executable; read-only and not; writable and not.
 fn map_kernel_sections(
     space: &mut AddressSpace,
     image: ImageAddress,
@@ -1165,7 +1128,6 @@ fn map_kernel_sections(
     Ok(image_ranges)
 }
 
-/// Map the direct map, keeping kernel-image permissions where the ranges overlap.
 fn map_direct_runs(
     space: &mut AddressSpace,
     map: &MemoryMap,

@@ -1,13 +1,6 @@
-//! Finding the interrupt controllers ACPI describes.
+//! Interrupt controllers described by ACPI.
 //!
-//! Enough of the table tree to find every bounded I/O APIC and learn which
-//! global system interrupt a legacy IRQ arrives on. Parsing and inventory are
-//! `acpi_tables`, host-tested; the bytes come through `wost`'s ACPI-only
-//! physical reader.
-//!
-//! Read before the page tables are built because the bootloader's direct map
-//! already covers them without adding a mapping dependency (D-45, D-49,
-//! D-86).
+//! Read before page tables exist: the bootloader direct map already covers the tables.
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
 use alloc::vec::Vec;
@@ -20,11 +13,10 @@ use crate::{debug, warn};
 /// I/O APIC descriptions this boot may temporarily map at once.
 const MAX_IO_APICS: usize = 16;
 
-/// A corrupt firmware length must not turn table discovery into an unbounded
-/// allocation. Real ACPI tables are far smaller than this ceiling.
+/// A corrupt firmware length must not turn table discovery into an unbounded allocation. Real ACPI
+/// tables are far smaller than this ceiling.
 const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
 
-/// Maximum fixed root table extent: its header plus 256 XSDT pointers.
 const EARLY_ROOT_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
 
 /// Why an allocation-free unique ACPI authority lookup failed.
@@ -147,12 +139,9 @@ pub(crate) fn find_unique_early<const N: usize>(
 pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 
 /// Walk the ACPI tables from the root pointer and report interrupt routing.
-///
-/// `rsdp` is the *virtual* address the bootloader reported, which base
-/// revision 4 guarantees is inside the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
-    // Each refusal says so: a boot that lost its routing to the ACPI-only
-    // reader is otherwise a keyboard that stopped for no stated reason.
+    // Each refusal says so: a boot that lost its routing to the ACPI-only reader is otherwise a
+    // keyboard that stopped for no stated reason.
     let (firmware, root) = parse_root(rsdp)?;
     let Some(madt) = find_table(firmware, root, Sdt::MADT) else {
         warn!("acpi: no madt among the tables listed");
@@ -186,8 +175,8 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     (interrupts.io_apic_count() != 0).then_some(interrupts)
 }
 
-/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a
-/// stated reason. Shared by every table walk (D-45).
+/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a stated reason.
+/// Shared by every table walk.
 pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
     let Some(firmware) = mm::firmware_memory() else {
         warn!("acpi: no reader for firmware memory");
@@ -206,8 +195,8 @@ pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
     }
 }
 
-/// The first table with `signature`, found by walking whichever root table the
-/// RSDP offers. The caller names the table it wanted when this returns `None`.
+/// The first table with `signature`, found by walking whichever root table the RSDP offers. The
+/// caller names the table it wanted when this returns `None`.
 pub(crate) fn find_table(
     firmware: FirmwareMemory,
     root: Rsdp,
@@ -236,8 +225,8 @@ fn find_table_with_multiplicity(
     require_unique: bool,
 ) -> Option<Vec<u8>> {
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
-        // The XSDT wherever it exists: the RSDT's entries are 32-bit and
-        // cannot name a table above 4 GiB.
+        // The XSDT wherever it exists: the RSDT's entries are 32-bit and cannot name a table above
+        // 4 GiB.
         (Some(xsdt), _) => (xsdt, true),
         (None, Some(legacy_root)) => (legacy_root, false),
         (None, None) => {
@@ -290,11 +279,9 @@ fn find_table_with_multiplicity(
     found
 }
 
-/// A whole table at a physical address, read in two steps.
-///
-/// The header must be read before the length is known, and the length is what
-/// says how much to read — so a header is fetched first and then the whole
-/// table, which is also what lets `Sdt::parse` checksum every byte.
+/// A whole table at a physical address, read in two steps. The header must be read before the
+/// length is known, and the length is what says how much to read — so a header is fetched first and
+/// then the whole table, which is also what lets `Sdt::parse` checksum every byte.
 fn read_table(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
     let mut header = [0; Sdt::LEN];
     if !FirmwareMemory::read(&firmware, address, &mut header) {
@@ -305,7 +292,6 @@ fn read_table(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
     FirmwareMemory::read(&firmware, address, &mut table).then_some(table)
 }
 
-/// Read the variable-length root pointer from its direct-map address.
 fn read_root_pointer(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
     let offset = mm::direct_map()?.offset();
     let physical = address.checked_sub(offset)?;

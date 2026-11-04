@@ -1,24 +1,17 @@
-//! 16550 UART driver — the kernel's serial console.
+//! 16550 UART driver, the kernel's serial console.
 //!
-//! QEMU maps `COM1` to stdio (`-serial stdio`); `VMware` maps it to `vm/serial.log`.
+//! QEMU maps `COM1` to stdio; `VMware` maps it to `vm/serial.log`.
 
 use core::fmt;
 
 use wost::arch::current::port::{self, PortBlock};
 
 /// I/O port base of the first serial controller.
-///
-/// `wost::arch::current::port::com1` owns this number for the driver; the
-/// self-test keeps it to probe that the driver's ports are exclusively held.
 #[cfg(feature = "selftest")]
 pub(crate) const COM1: u16 = 0x3F8;
 
-/// Ports occupied by one controller.
 const REGISTER_COUNT: usize = 8;
 
-/// Register offsets from the port base.
-///
-/// Registers 0 and 1 change meaning while [`line_control::DIVISOR_LATCH`] is set.
 mod register {
     pub(crate) const DATA: usize = 0;
     pub(crate) const DIVISOR_LOW: usize = 0;
@@ -48,8 +41,8 @@ mod modem_control {
     pub(crate) const DATA_TERMINAL_READY: u8 = 0x01;
     pub(crate) const REQUEST_TO_SEND: u8 = 0x02;
     pub(crate) const OUT1: u8 = 0x04;
-    /// Gates the controller's interrupt line through to the PIC. Nothing is
-    /// actually delivered until the interrupt-enable register is non-zero.
+    /// Gates the controller's interrupt line through to the PIC. Nothing is actually delivered
+    /// until the interrupt-enable register is non-zero.
     pub(crate) const OUT2: u8 = 0x08;
     /// Route transmitted bytes straight back into the receiver.
     pub(crate) const LOOPBACK: u8 = 0x10;
@@ -60,13 +53,10 @@ mod line_status {
     pub(crate) const TRANSMIT_HOLDING_EMPTY: u8 = 0x20;
 }
 
-/// Baud divisor for 115200 baud from the 1.8432 MHz reference clock.
 const DIVISOR_115200: u16 = 1;
 
-/// Byte written and read back to prove a controller is present.
 const PROBE_BYTE: u8 = 0xAE;
 
-/// Normal operating state of the modem-control register.
 const MODEM_ONLINE: u8 =
     modem_control::DATA_TERMINAL_READY | modem_control::REQUEST_TO_SEND | modem_control::OUT2;
 
@@ -101,12 +91,8 @@ pub(crate) struct Uart {
 }
 
 impl Uart {
-    /// Claim and configure the first serial controller for 115200 baud, 8N1.
-    ///
-    /// Interrupts stay masked: this is a polled driver until the kernel has an
-    /// IDT. The probe runs after configuration, so a machine without a
-    /// controller reports [`UartError::NotPresent`] rather than silently
-    /// swallowing every log line.
+    /// Claim and configure the first serial controller for 115200 baud, 8N1. Interrupts stay
+    /// masked: this is a polled driver until the kernel has an IDT.
     pub(crate) fn new() -> Result<Self, UartError> {
         let registers = port::com1().ok_or(UartError::PortsUnavailable)?;
         let mut uart = Self { registers };
@@ -144,7 +130,6 @@ impl Uart {
         PortBlock::write(&mut self.registers, register::MODEM_CONTROL, MODEM_ONLINE);
     }
 
-    /// Loop the transmitter back to the receiver and check a byte survives.
     fn probe(&mut self) -> bool {
         PortBlock::write(
             &mut self.registers,
@@ -168,8 +153,8 @@ impl Uart {
         Ok(())
     }
 
-    /// Poll the line-status register until `flags` are set, giving up rather
-    /// than hanging the kernel on a controller that has stopped answering.
+    /// Poll the line-status register until `flags` are set, giving up rather than hanging the
+    /// kernel on a controller that has stopped answering.
     fn wait_for(&mut self, flags: u8) -> bool {
         const ATTEMPTS: u32 = 100_000;
         (0..ATTEMPTS)

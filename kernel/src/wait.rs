@@ -1,16 +1,7 @@
-//! Waiting for something that has not happened yet.
+//! Waiting on an event rather than a deadline.
 //!
-//! A [`WaitQueue`] is the other half of `thread::sleep_ms`: a sleep names a
-//! time to come back at, this names an event. A waiting thread is not
-//! runnable and nothing is armed for it, so a machine whose only outstanding
-//! business is a wait takes no interrupts until the event arrives.
-//!
-//! The waiter set is a bitmask of slots in the queue itself: the waker is an
-//! interrupt handler, where D-55 forbids the heap.
-//!
-//! A queue's lock and `THREADS` are never held together. What makes
-//! registering and blocking one step is the interrupt flag, clear across
-//! both; SMP owes this pair a second look.
+//! The waiter set is a bitmask: the waker runs in interrupt context and cannot allocate. This lock
+//! and `THREADS` are never held together.
 
 use wost::sync::SpinLock;
 
@@ -37,10 +28,8 @@ impl WaitQueue {
         }
     }
 
-    /// Wait until [`wake_all`](Self::wake_all) is called.
-    ///
-    /// A wake may be someone else's, so every caller re-checks in a loop. The
-    /// [`ThreadContext`] is what a handler cannot mint (D-62).
+    /// Wait until [`wake_all`](Self::wake_all) is called. The [`ThreadContext`] is what a handler
+    /// cannot mint.
     ///
     /// # Panics
     ///
@@ -49,22 +38,9 @@ impl WaitQueue {
         self.wait_unless(context, || false);
     }
 
-    /// Re-check `ready` under this queue's lock, register if it is still false,
-    /// and only then block.
-    ///
-    /// The check comes before the bit is set, and both happen before the lock
-    /// is released. [`wake_all`](Self::wake_all) takes that same lock, so it
-    /// cannot observe "not ready, and not registered": either `ready` is
-    /// already true, or the bit is set before any wake runs. Checking outside
-    /// the lock would lose the wakeup permanently (D-95).
-    ///
-    /// The interrupt flag stays clear across the section, which on one CPU
-    /// means the waker cannot run until the bit is published. Under SMP the
-    /// flag excludes nothing; the lock is what orders the check with the wake
-    /// (D-70).
-    ///
-    /// `ready` runs with interrupts off and the queue lock held, so it must
-    /// read state and nothing else.
+    /// Re-check `ready` under this queue's lock, register if it is still false, and only then
+    /// block. [`wake_all`](Self::wake_all) takes that same lock, so it cannot observe "not ready,
+    /// and not registered": either `ready` is already true, or the bit is set before any wake runs.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
         let slot = thread::current_slot();
         let mut saved = wost::arch::current::interrupt::disable();
@@ -72,8 +48,8 @@ impl WaitQueue {
         let registered = {
             let mut waiters = self.waiters.lock(context);
             if ready() {
-                // Nothing to wait for after all, and nothing registered — so
-                // no stale bit is left behind for a later wake to trip over.
+                // Nothing to wait for after all, and nothing registered — so no stale bit is left
+                // behind for a later wake to trip over.
                 false
             } else {
                 *waiters |= 1 << slot;
@@ -83,19 +59,17 @@ impl WaitQueue {
 
         if registered {
             thread::block(context, &mut saved);
-            // Woken, or never left the CPU; either way a bit left set would
-            // name this thread in someone else's wake.
+            // Woken, or never left the CPU; either way a bit left set would name this thread in
+            // someone else's wake.
             let mut waiters = self.waiters.lock(context);
             *waiters &= !(1 << slot);
         }
         saved.restore();
     }
 
-    /// Wait through a syscall frame until an event or deadline.
-    ///
-    /// Registration uses the same lock order as [`wait_unless`](Self::wait_unless):
-    /// `ready` is sampled under the waiter lock, and the bit is set before
-    /// that lock is released. `ready` has the same atomic-only contract.
+    /// Wait through a syscall frame until an event or deadline. Registration uses the same lock
+    /// order as [`wait_unless`](Self::wait_unless): `ready` is sampled under the waiter lock, and
+    /// the bit is set before that lock is released.
     pub(crate) fn wait_from_trap_until(
         &self,
         frame: &TrapFrame,
@@ -122,9 +96,8 @@ impl WaitQueue {
         switched
     }
 
-    /// Make every thread waiting here runnable, and report how many.
-    ///
-    /// Safe from a trap handler, and meant to be.
+    /// Make every thread waiting here runnable, and report how many. Safe from a trap handler, and
+    /// meant to be.
     pub(crate) fn wake_all(&self) -> usize {
         let waiting = {
             let mut waiters = self.waiters.lock_leaf();

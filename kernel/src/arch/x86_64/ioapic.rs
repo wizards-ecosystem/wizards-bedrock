@@ -1,11 +1,6 @@
-//! The I/O APIC: where a device's interrupt line becomes a vector.
+//! The I/O APIC, where a device line becomes a vector.
 //!
-//! A redirection entry says which vector a device's line becomes, which
-//! processor takes it, and how the line is read electrically.
-//!
-//! Safe kernel code over a `wost::MmioRegion` mapped during table construction
-//! (D-49). The registers are an index/data pair, so every access is two writes
-//! deep and the driver lives behind one lock.
+//! Registers are an index/data pair, so the driver sits behind one lock.
 
 use core::fmt;
 use wost::arch::current::apic;
@@ -16,7 +11,6 @@ use x86_apic::vector::InterruptVector;
 
 use crate::debug;
 
-/// Offsets into the register window.
 mod window {
     /// Selects which indexed register [`DATA`] addresses.
     pub(super) const SELECT: usize = 0x00;
@@ -24,7 +18,6 @@ mod window {
     pub(super) const DATA: usize = 0x10;
 }
 
-/// Indices of the registers behind that window.
 mod index {
     /// Version, and the number of redirection entries this controller has.
     pub(super) const VERSION: u32 = 0x01;
@@ -32,7 +25,6 @@ mod index {
     pub(super) const REDIRECTION: u32 = 0x10;
 }
 
-/// Bits of a redirection entry's low word.
 mod entry {
     /// Interrupt is read as active-low rather than active-high.
     pub(super) const ACTIVE_LOW: u32 = 1 << 13;
@@ -42,11 +34,9 @@ mod entry {
     pub(super) const MASKED: u32 = 1 << 16;
 }
 
-/// How firmware said a legacy interrupt is wired.
-///
-/// The MPS INTI encoding an interrupt source override carries: two bits of
-/// polarity and two of trigger mode, each of which may say "conforms to the
-/// bus", and the bus here is always ISA — active-high and edge-triggered.
+/// How firmware said a legacy interrupt is wired. The MPS INTI encoding an interrupt source
+/// override carries: two bits of polarity and two of trigger mode, each of which may say "conforms
+/// to the bus", and the bus here is always ISA — active-high and edge-triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Wiring {
     active_low: bool,
@@ -57,8 +47,7 @@ impl Wiring {
     /// Read the MPS INTI flags of an interrupt source override.
     pub(crate) const fn from_flags(flags: u16) -> Self {
         Self {
-            // 00 conforms to the bus (ISA: active high), 01 active high,
-            // 11 active low.
+            // 00 conforms to the bus (ISA: active high), 01 active high, 11 active low.
             active_low: flags & 0b11 == 0b11,
             // 00 conforms (ISA: edge), 01 edge, 11 level.
             level_triggered: (flags >> 2) & 0b11 == 0b11,
@@ -73,7 +62,6 @@ impl Wiring {
         }
     }
 
-    /// The entry bits this wiring contributes.
     const fn bits(self) -> u32 {
         let mut bits = 0;
         if self.active_low {
@@ -89,21 +77,15 @@ impl Wiring {
 /// Why a redirection entry could not be reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RoutingError {
-    /// The interrupt is not one this controller routes.
-    ///
-    /// Separate from an access failure, and checked before the subtraction
-    /// rather than after: the arithmetic that finds a line subtracts the base,
-    /// which below the base would wrap in release and panic in debug. The
-    /// `handles` guard is what stops it reaching either.
+    /// The interrupt is not one this controller routes. Separate from an access failure, and
+    /// checked before the subtraction rather than after: the arithmetic that finds a line subtracts
+    /// the base, which below the base would wrap in release and panic in debug.
     NotOurs(u32),
     /// The registers refused the access.
     Registers(MmioError),
-    /// This processor's APIC ID does not fit the redirection entry.
-    ///
-    /// The entry's destination field is eight bits. This kernel requires
-    /// x2APIC, so `apic::id()` is the full thirty-two-bit register rather than
-    /// the xAPIC 31:24 form — and shifting one of 256 or more left by
-    /// twenty-four silently routed the line to `id & 0xFF` (D-124).
+    /// This processor's APIC ID does not fit the redirection entry. This kernel requires x2APIC, so
+    /// `apic::id()` is the full thirty-two-bit register rather than the xAPIC 31:24 form — and
+    /// shifting one of 256 or more left by twenty-four silently routed the line to `id & 0xFF`.
     UnroutableProcessor(u32),
     /// A line did not retain the exact masked entry written during rollback.
     MaskRefused { low: u32, high: u32 },
@@ -244,12 +226,10 @@ pub(crate) struct IoApic<R = MmioRegion> {
 }
 
 impl<R: RegisterAccess> IoApic<R> {
-    /// Take over a controller whose registers are at `registers`.
-    ///
-    /// Masks every line it owns before returning: firmware leaves them in
-    /// whatever state its own drivers wanted, and a kernel that unmasks one
-    /// line while another is still live from before takes an interrupt it has
-    /// no handler for.
+    /// Take over a controller whose registers are at `registers`. Masks every line it owns before
+    /// returning: firmware leaves them in whatever state its own drivers wanted, and a kernel that
+    /// unmasks one line while another is still live from before takes an interrupt it has no
+    /// handler for.
     pub(crate) fn take(mut registers: R, gsi_base: u32) -> Result<Self, TakeFailure<R>> {
         let version = match read(&mut registers, index::VERSION) {
             Ok(version) => version,
@@ -260,8 +240,8 @@ impl<R: RegisterAccess> IoApic<R> {
                 });
             }
         };
-        // A window firmware pointed at another device reports an implausible
-        // version or entry count; refuse it before any redirection write.
+        // A window firmware pointed at another device reports an implausible version or entry
+        // count; refuse it before any redirection write.
         let Some(entries) = entries_from_version(version) else {
             return Err(TakeFailure {
                 registers,
@@ -294,12 +274,10 @@ impl<R: RegisterAccess> IoApic<R> {
         Ok(io_apic)
     }
 
-    /// The lowest global system interrupt this controller routes.
-    ///
-    /// Reported so a check can say whether "below the base" is even a place —
-    /// on a machine whose base is zero it is not, and a check that required a
-    /// refusal there would be requiring one for an address that does not exist
-    /// (D-121).
+    /// The lowest global system interrupt this controller routes. Reported so a check can say
+    /// whether "below the base" is even a place — on a machine whose base is zero it is not, and a
+    /// check that required a refusal there would be requiring one for an address that does not
+    /// exist.
     #[cfg(feature = "selftest")]
     pub(crate) const fn base(&self) -> u32 {
         self.range.first()
@@ -315,19 +293,17 @@ impl<R: RegisterAccess> IoApic<R> {
         self.range
     }
 
-    /// The line `gsi` occupies on this controller.
-    ///
-    /// Every entry below goes through this rather than subtracting for itself.
+    /// The line `gsi` occupies on this controller. Every entry below goes through this rather than
+    /// subtracting for itself.
     fn line_for(&self, gsi: u32) -> Result<u32, RoutingError> {
         self.handles(gsi)
             .then(|| gsi - self.range.first())
             .ok_or(RoutingError::NotOurs(gsi))
     }
 
-    /// Route `gsi` to `vector` on this processor, and unmask it.
-    ///
-    /// The line remains masked until the destination has been read back, so a
-    /// refused high-word write cannot briefly deliver to a stale processor.
+    /// Route `gsi` to `vector` on this processor, and unmask it. The line remains masked until the
+    /// destination has been read back, so a refused high-word write cannot briefly deliver to a
+    /// stale processor.
     pub(crate) fn route(
         &mut self,
         gsi: u32,
@@ -447,18 +423,15 @@ impl IoApic<ReleasableDevice> {
     }
 }
 
-/// The first of the two register indices holding `line`'s redirection entry.
 const fn redirection(line: u32) -> u32 {
     index::REDIRECTION + line * 2
 }
 
-/// Read the indexed register `index`.
 fn read<R: RegisterAccess>(registers: &mut R, index: u32) -> Result<u32, MmioError> {
     <R as RegisterAccess>::write_u32(registers, window::SELECT, index)?;
     <R as RegisterAccess>::read_u32(registers, window::DATA)
 }
 
-/// Write the indexed register `index`.
 fn write<R: RegisterAccess>(registers: &mut R, index: u32, value: u32) -> Result<(), MmioError> {
     <R as RegisterAccess>::write_u32(registers, window::SELECT, index)?;
     <R as RegisterAccess>::write_u32(registers, window::DATA, value)
@@ -639,11 +612,9 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && destination_refused_before_unmask
 }
 
-/// A window that does not report an I/O APIC version is never taken over.
-///
-/// Firmware controls where the register window points; a version register that
-/// is not an I/O APIC's means it points at something else, and no redirection
-/// is written to it (D-350).
+/// A window that does not report an I/O APIC version is never taken over. Firmware controls where
+/// the register window points; a version register that is not an I/O APIC's means it points at
+/// something else, and no redirection is written to it.
 #[cfg(feature = "selftest")]
 pub(crate) fn an_implausible_version_is_refused_for_test() -> bool {
     // A zeroed window, a text-console MMIO byte, and a count no part can hold.

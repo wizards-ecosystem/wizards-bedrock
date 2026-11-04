@@ -1,27 +1,7 @@
-//! What is on the bus, and who is allowed to touch it.
+//! PCI functions and the windows they decode.
 //!
-//! D-77 left half an authority debt open: a port claim proves *exclusivity* —
-//! nobody else drives these ports — and says nothing about *entitlement*, about
-//! whether the claimant is the driver for the thing behind them. The port
-//! registry cannot answer that, because a port range is not a device.
-//!
-//! This is the other half. A driver claims a **function** — a bus, device and
-//! function triple — and the claim carries the windows that function decodes
-//! with it. Two drivers cannot claim one function, and a bare port claim
-//! inside a claimed device's I/O window is refused because the device already
-//! has it (D-168).
-//!
-//! Fixed driver claims are permanent, exactly as port claims are and for the
-//! same reason (D-138). Storage selection additionally has a transient lease:
-//! it can advance only after restoring the command word and returning every
-//! dynamic I/O span and registry slot as one retirement (D-199).
-//!
-//! **Enumeration recurses.** A scan of bus zero is not enough — `VMware` places
-//! functions behind `pciBridge0`–`pciBridge7`, and QEMU's q35 puts a
-//! DMI-to-PCI bridge at `00:1e.0` — so a controller can sit on a bus that
-//! nothing on bus zero mentions except a bridge (`012` §2). The walk is
-//! iterative over a worklist rather than recursive, because kernel stacks are
-//! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
+//! A function claim owns its I/O windows, so a bare port claim inside one is refused. Enumeration
+//! walks bridges iteratively: kernel stacks are 32 KiB and a bridge cycle must not recurse.
 
 use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, FunctionObservation,
@@ -43,17 +23,14 @@ pub(crate) const BARS: usize = pci_config::BARS;
 /// Function authorities the platform PCI registry can hold concurrently.
 pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
-/// Buses the walk will visit before giving up.
-///
-/// There are 256 and a correct topology visits each at most once. The bound is
-/// here because a bridge that reports itself as its own secondary bus is a
-/// cycle, and a kernel that trusts the machine's numbering hangs on it.
+/// Buses the walk will visit before giving up. The bound is here because a bridge that reports
+/// itself as its own secondary bus is a cycle, and a kernel that trusts the machine's numbering
+/// hangs on it.
 const MAX_BUSES: usize = 256;
 
-/// Complete segment-zero function and bridge inventory used by VT-d lookup.
-///
-/// The roughly ten-kibibyte snapshot stays in static storage so proving a
-/// hostile topology never consumes the candidate's fixed boot stack.
+/// Complete segment-zero function and bridge inventory used by VT-d lookup. The roughly
+/// ten-kibibyte snapshot stays in static storage so proving a hostile topology never consumes the
+/// candidate's fixed boot stack.
 static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
 
 /// One function found on the bus.
@@ -73,21 +50,12 @@ pub(crate) struct Function {
     class_bits: u32,
     /// Command word observed after the entry-time fence.
     command: u16,
-    /// Whether the rest of its header is a bridge's, and whether it has
-    /// siblings.
+    /// Whether the rest of its header is a bridge's, and whether it has siblings.
     pub(crate) header: HeaderType,
 }
 
-/// Walk every bus reachable from bus zero, reporting each function found.
-///
-/// Iterative over a worklist of buses. Each bus number is queued at most
-/// once and visited at most once: a bridge that names a bus already queued
-/// or already seen is ignored rather than followed. Queuing duplicates used
-/// to fill the 256-entry worklist while still scanning bus zero, so a later
-/// bridge on that bus never ran and the devices behind it were invisible.
-///
-/// Returns what the walk covered, or `None` if configuration space cannot be
-/// reached at all.
+/// Walk every bus reachable from bus zero, reporting each function found. Returns what the walk
+/// covered, or `None` if configuration space cannot be reached at all.
 pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     if !pci::is_available() {
         return None;
@@ -114,8 +82,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
         for device in 0..pci_config::DEVICES {
             for function in 0..pci_config::FUNCTIONS {
                 let Some(entry) = read_function(bus, device, function) else {
-                    // Function zero absent means the whole device is; the
-                    // specification allows gaps but never a missing first function.
+                    // Function zero absent means the whole device is; the specification allows gaps
+                    // but never a missing first function.
                     if function == 0 {
                         break;
                     }
@@ -128,8 +96,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     survey.bridges += 1;
                 }
 
-                // Both tests: the class says what the function is for and the
-                // header type says what its registers mean.
+                // Both tests: the class says what the function is for and the header type says what
+                // its registers mean.
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
@@ -143,8 +111,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     );
                 }
 
-                // A single-function device answers every function with its own
-                // header; bit 7 of the header type says how many there are.
+                // A single-function device answers every function with its own header; bit 7 of the
+                // header type says how many there are.
                 if function == 0 && !entry.header.is_multifunction() {
                     break;
                 }
@@ -155,12 +123,9 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     Some(survey)
 }
 
-/// What one walk of the bus covered.
-///
-/// Buses rather than only functions, and that is the point: a kernel that
-/// scans bus zero and stops finds every function q35 has and reports a
-/// perfectly plausible number. Only the *bus* count says whether it went
-/// through the bridge (D-168).
+/// What one walk of the bus covered. Buses rather than only functions, and that is the point: a
+/// kernel that scans bus zero and stops finds every function q35 has and reports a perfectly
+/// plausible number.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Survey {
     /// Functions reported.
@@ -173,12 +138,11 @@ pub(crate) struct Survey {
     pub(crate) highest_bus: u8,
 }
 
-/// Read one function's identity, or `None` if nothing is there.
 fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     let at = Address::new(bus, device, function, header::VENDOR)?;
     let identity = pci::read(at)?;
-    // Vendor id is the low half of the vendor/device dword. The high half is
-    // the device id and is not part of this value.
+    // Vendor id is the low half of the vendor/device dword. The high half is the device id and is
+    // not part of this value.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "vendor id is the low 16 bits of the vendor/device dword"
@@ -215,15 +179,14 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     })
 }
 
-/// Probe every function number and seal one rooted, immutable PCI topology.
-///
-/// Unlike ordinary enumeration, this proof never trusts multifunction hints
-/// and probes buses which a malformed bridge may have made unreachable.
+/// Probe every function number and seal one rooted, immutable PCI topology. Unlike ordinary
+/// enumeration, this proof never trusts multifunction hints and probes buses which a malformed
+/// bridge may have made unreachable.
 ///
 /// # Errors
 ///
-/// Returns [`TopologyError`] when bridge identity or routing cannot form one
-/// unambiguous tree rooted at bus zero.
+/// Returns [`TopologyError`] when bridge identity or routing cannot form one unambiguous tree
+/// rooted at bus zero.
 pub(crate) fn snapshot_topology(
     mut non_requester: Option<QualifiedNonRequester>,
     mut quiesced: Option<QuiescedIsaRequester>,
@@ -295,10 +258,9 @@ pub(crate) fn topology_is_sealed() -> bool {
     TOPOLOGY.lock_leaf().is_sealed()
 }
 
-/// Whether the PCI requester inventory is unavailable, empty, or populated.
-///
-/// Security decisions must distinguish an empty sealed inventory from a probe
-/// that observed functions but failed before it could seal their topology.
+/// Whether the PCI requester inventory is unavailable, empty, or populated. Security decisions must
+/// distinguish an empty sealed inventory from a probe that observed functions but failed before it
+/// could seal their topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TopologyPresence {
     Unsealed,
@@ -356,12 +318,8 @@ pub(crate) fn topology_hierarchy_contains(root: Address, target: Address) -> boo
     TOPOLOGY.lock_leaf().hierarchy_contains(root, target)
 }
 
-/// Queue `behind` unless that bus number is already queued, already visited,
-/// or the worklist has no free slot.
-///
-/// The slot check is unreachable when every bus number is queued once: there
-/// are exactly [`MAX_BUSES`] numbers and bus zero already occupies one slot.
-/// It stays so a counter bug cannot write past `pending`.
+/// Queue `behind` unless that bus number is already queued, already visited, or the worklist has no
+/// free slot. It stays so a counter bug cannot write past `pending`.
 fn enqueue_secondary(
     seen: &mut [bool; MAX_BUSES],
     queued_bus: &mut [bool; MAX_BUSES],
@@ -380,10 +338,6 @@ fn enqueue_secondary(
 }
 
 /// Repeated secondaries must not consume the worklist before a distinct bus.
-///
-/// Two hundred and fifty-five bridges that all name bus 1 used to occupy
-/// every slot after bus zero. The bridge that then named bus 5 was dropped,
-/// and enumeration never visited it.
 #[cfg(feature = "selftest")]
 pub(crate) fn duplicate_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
     let mut seen = [false; MAX_BUSES];
@@ -413,13 +367,11 @@ pub(crate) fn duplicate_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
         && pending[2] == 5
 }
 
-/// The bus behind a bridge.
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
     Some(pci_config::secondary_bus(pci::read(at)?))
 }
 
-/// A committed controller whose command word no longer matched its lease.
 static RETAINED_COMMAND: SpinLock<Option<Device>> = SpinLock::new(None);
 
 /// An uncertain BAR restoration retained after its bounded retry refused.
@@ -433,7 +385,6 @@ static RETAINED_RELEASES: SpinLock<[Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
 static RETAINED_FUNCTIONS: SpinLock<[Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
 
-/// Make the first real DMA admission exercise the post-disable rollback path.
 #[cfg(feature = "selftest")]
 static FORCED_BUS_MASTER_REFUSALS: AtomicUsize = AtomicUsize::new(1);
 
@@ -455,8 +406,7 @@ pub(crate) enum ClaimError {
     Taken,
     /// The registry is full, which bounds devices ever claimed.
     NoRoom,
-    /// An I/O window the function decodes is already claimed by something that
-    /// is not a device — the bare-port path D-77 said proves the wrong thing.
+    /// An I/O window the function decodes is already claimed by a bare port, which is not a device.
     WindowTaken,
     /// A BAR consumes another header field or reports an impossible window.
     InvalidWindow,
@@ -466,8 +416,7 @@ pub(crate) enum ClaimError {
     FunctionRetained,
 }
 
-/// A sibling requester held unable to bus-master for a unit-wide VT-d
-/// transition.
+/// A sibling requester held unable to bus-master for a unit-wide VT-d transition.
 #[derive(Debug)]
 pub(crate) struct DmaFence {
     function: Option<pci::FunctionClaim>,
@@ -553,11 +502,9 @@ impl DmaFence {
     }
 }
 
-/// Claim one declared sibling requester and verify BME clear.
-///
-/// The one entry-quiesced ISA requester cannot clear BME; it is held instead
-/// by its exclusive claim, its unchanged identity and command, and a fresh
-/// remask of its 8237 controllers with no request pending (D-426).
+/// Claim one declared sibling requester and verify BME clear. The one entry-quiesced ISA requester
+/// cannot clear BME; it is held instead by its exclusive claim, its unchanged identity and command,
+/// and a fresh remask of its 8237 controllers with no request pending.
 pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
     let function = match pci::claim_function(at) {
         Ok(function) => function,
@@ -863,11 +810,8 @@ impl ReleaseOutcome {
     }
 }
 
-/// A claimed function, and the evidence for touching it.
-///
-/// Not `Clone` and not `Copy`: it *is* the claim, and a copy would be a second
-/// driver for one device with nothing to say so. A fixed claim outlives the
-/// boot; a selection lease has an explicit all-or-stop release (D-199).
+/// A claimed function, and the evidence for touching it. Not `Clone` and not `Copy`: it *is* the
+/// claim, and a copy would be a second driver for one device with nothing to say so.
 #[derive(Debug)]
 #[expect(
     clippy::struct_field_names,
@@ -879,7 +823,7 @@ pub(crate) struct Device {
     vendor: u16,
     device: u16,
     bars: ProbedBars,
-    // Keep port and function authority inseparable (D-77).
+    // Keep port and function authority inseparable.
     ports: [Option<wost::arch::current::port::PortSpan>; BARS],
     /// Whether selection may still retire this function.
     lifetime: ClaimLifetime,
@@ -928,13 +872,13 @@ impl Device {
             .map_err(BarAdmissionError::Bind)
     }
 
-    /// Admit bus mastering with fresh proof from this function's mapped BAR,
-    /// behind a DMA domain established for this exact function (D-357).
+    /// Admit bus mastering with fresh proof from this function's mapped BAR, behind a DMA domain
+    /// established for this exact function.
     ///
     /// # Errors
     ///
-    /// [`EnableError`] after an exact rollback, or when rollback could not be
-    /// verified. The command restoration authority remains in this device.
+    /// [`EnableError`] after an exact rollback, or when rollback could not be verified. The command
+    /// restoration authority remains in this device.
     pub(crate) fn admit_bus_master(
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
@@ -965,11 +909,9 @@ impl Device {
         Ok(())
     }
 
-    /// Verify BME off and make that restriction survive transient release.
-    ///
-    /// The exact command/function owner stays in `self` on every refusal, so
-    /// the caller can retry once or quarantine the complete device beside its
-    /// DMA domain.
+    /// Verify BME off and make that restriction survive transient release. The exact
+    /// command/function owner stays in `self` on every refusal, so the caller can retry once or
+    /// quarantine the complete device beside its DMA domain.
     pub(crate) fn disable_bus_master_for_retirement(&mut self) -> Result<(), EnableError> {
         let Some(function) = self.function.as_ref() else {
             self.uncertain = true;
@@ -991,11 +933,8 @@ impl Device {
         }
     }
 
-    /// Restore the now-safe command word while retaining function authority.
-    ///
-    /// Retirement calls this before a unit-wide VT-d disable. The command
-    /// lease is settled, but the enclosing [`Device`] continues to exclude
-    /// every other configuration writer until the unit transition finishes.
+    /// Restore the now-safe command word while retaining function authority. Retirement calls this
+    /// before a unit-wide VT-d disable.
     pub(crate) fn settle_bus_master_fence_for_retirement(&mut self) -> Result<(), EnableError> {
         let Some(state) = self.command_state.take() else {
             return if self.uncertain {
@@ -1014,8 +953,8 @@ impl Device {
         Ok(())
     }
 
-    /// Freshly prove that this exact command owner still has BME clear before
-    /// a unit-wide VT-d transition.
+    /// Freshly prove that this exact command owner still has BME clear before a unit-wide VT-d
+    /// transition.
     pub(crate) fn verify_bus_master_fence(&self) -> Result<(), EnableError> {
         let Some(function) = self.function.as_ref() else {
             return Err(EnableError::Stale);
@@ -1065,10 +1004,6 @@ impl Device {
     }
 
     /// Restore and return every resource held by a transient lease.
-    ///
-    /// Any uncertainty leaves the function recorded and forbids selection from
-    /// advancing. Successful return is the proof that the next candidate may
-    /// be touched (D-199).
     pub(crate) fn release(mut self, _context: &mut ThreadContext) -> ReleaseOutcome {
         if self.lifetime == ClaimLifetime::Permanent {
             return ReleaseOutcome::refused(ReleaseError::Permanent, self);
@@ -1153,18 +1088,14 @@ fn retain_failed_function(function: pci::FunctionClaim) {
     *slot = Some(function);
 }
 
-/// Claim the function at `at`, with every window it decodes.
-///
-/// The claim is what makes touching the device legitimate, and it carries the
-/// I/O runs with it — so a later bare port claim inside one of them is refused
-/// by the port registry, which is D-77's entitlement half answered by making
-/// the device the claimant (D-168).
+/// Claim the function at `at`, with every window it decodes. The claim is what makes touching the
+/// device legitimate, and it carries the I/O runs with it — so a later bare port claim inside one
+/// of them is refused by the port registry.
 ///
 /// # Errors
 ///
-/// See [`ClaimError`]. Clean refusals record nothing. An uncertain BAR restore
-/// returns its exclusive retry owner rather than releasing the function.
-/// Lease one function while storage selection determines whether to keep it.
+/// See [`ClaimError`]. Clean refusals record nothing. An uncertain BAR restore returns its
+/// exclusive retry owner rather than releasing the function.
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     claim_as(at, ClaimLifetime::Selection)
 }

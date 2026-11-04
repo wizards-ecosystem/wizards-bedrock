@@ -1,9 +1,8 @@
-//! The Wizard's Bedrock kernel — entry point.
+//! The Wizard's Bedrock kernel entry point.
 //!
-//! Booted by Limine (base revision 4, D-42) on `x86_64`, higher-half. Every privileged
-//! operation goes through `wost`; this crate contains no hand-written `unsafe`.
-//! `deny` rather than `forbid` because [`wost::entry!`] expands its own
-//! `#[allow(unsafe_code)]` glue here — see D-21.
+//! Limine base revision 4, `x86_64`, higher-half. Privileged work goes through `wost`.
+//! `deny(unsafe_code)` rather than `forbid`, because [`wost::entry!`] expands
+//! `#[allow(unsafe_code)]` glue here.
 
 #![no_std]
 #![no_main]
@@ -13,9 +12,8 @@
     deny(clippy::expect_used, clippy::unwrap_used)
 )]
 
-/// The heap `wost::mm::heap` provides. Nothing in the kernel may allocate
-/// before `mem::init` has run, which is why the boot order in `kernel_main`
-/// puts it before everything that might.
+/// The heap `wost::mm::heap` provides. Nothing in the kernel may allocate before `mem::init` has
+/// run, which is why the boot order in `kernel_main` puts it before everything that might.
 extern crate alloc;
 
 mod acpi;
@@ -73,8 +71,8 @@ fn kernel_main(boot: BootInfo) -> ! {
         Err(reason) => warn!("framebuffer: {reason}"),
     }
 
-    // Checked only once both consoles are up, so that a machine with neither a
-    // serial cable nor a supported bootloader still shows why it stopped.
+    // Checked only once both consoles are up, so that a machine with neither a serial cable nor a
+    // supported bootloader still shows why it stopped.
     let mut early_dma = match early_dma {
         Ok(boundary) => boundary,
         Err(reason) => panic!("DMA-safe boot handoff refused: {reason}"),
@@ -101,16 +99,15 @@ fn kernel_main(boot: BootInfo) -> ! {
         count => panic!("DMA-safe boot handoff quiesced {count} ISA requesters"),
     }
 
-    // The fault path exists before anything that can fault, so a wrong
-    // assumption prints a report instead of resetting (`006`).
+    // The fault path exists before anything that can fault, so a wrong assumption prints a report
+    // instead of resetting.
     segment::init();
     arch::current::trap::init();
     info!("cpu: descriptor tables installed");
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
 
-    // Before any thread but this one exists, because every switch saves and
-    // restores from here on (D-108).
+    // Before any thread but this one exists, because every switch saves and restores from here on.
     match xstate::init() {
         Some(extended) => info!(
             "cpu: extended state {} bytes, xcr0 {:#x}{}",
@@ -125,8 +122,8 @@ fn kernel_main(boot: BootInfo) -> ! {
         None => warn!("cpu: extended state unavailable; ring 3 stays closed"),
     }
 
-    // Before ring 3 exists: `AC` survives interrupt delivery and is writable
-    // at CPL 3, so a trap could otherwise arrive with SMAP off (D-101).
+    // Before ring 3 exists: `AC` survives interrupt delivery and is writable at CPL 3, so a trap
+    // could otherwise arrive with SMAP off.
     if protections.smap {
         interrupt::arm_access_clear();
     }
@@ -134,16 +131,16 @@ fn kernel_main(boot: BootInfo) -> ! {
     let dma_non_requester = early_dma.take_non_requester();
     let dma_quiesced = early_dma.take_quiesced_requester();
 
-    // After the fault path, because this is the first write through an
-    // address the bootloader chose; before everything else, which may want a frame.
+    // After the fault path, because this is the first write through an address the bootloader
+    // chose; before everything else, which may want a frame.
     mem::init(boot.memory_map, boot.direct_map, early_dma);
     let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }
 
-    // The bootloader's stack has nothing below it and sits inside the
-    // unsplittable direct map, so the only guard is to leave it (D-92).
+    // The bootloader's stack has nothing below it and sits inside the unsplittable direct map, so
+    // the only guard is to leave it.
     *HANDOFF.lock_leaf() = Some(Handoff {
         serial,
         interrupts,
@@ -159,15 +156,14 @@ fn kernel_main(boot: BootInfo) -> ! {
     }
 }
 
-/// What the boot thread carries across the change of stack.
-///
-/// A static rather than an argument because the old stack is abandoned: a
-/// pointer into it would be a pointer into memory nothing owns any more.
+/// What the boot thread carries across the change of stack. A static rather than an argument
+/// because the old stack is abandoned: a pointer into it would be a pointer into memory nothing
+/// owns any more.
 struct Handoff {
     serial: Result<(), UartError>,
     interrupts: Option<acpi::Interrupts>,
-    /// The initrd, which the boot thread reads before it changes stacks and
-    /// the loader reads long after.
+    /// The initrd, which the boot thread reads before it changes stacks and the loader reads long
+    /// after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -275,8 +271,8 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
         panic!("the boot handoff is gone; boot_continue ran twice");
     };
 
-    // The heap exists from here; the console's shadow is its first consumer,
-    // so scrolling stops reading uncached device memory (D-48).
+    // The heap exists from here; the console's shadow is its first consumer, so scrolling stops
+    // reading uncached device memory.
     dev::attach_back_buffer();
     let routing = prepare_keyboard_routing(interrupts).into_masked();
 
@@ -305,12 +301,12 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run(serial);
 
-    // After interrupts are on, because a halting thread needs them to wake;
-    // idempotent, because the self-checks start it earlier.
+    // After interrupts are on, because a halting thread needs them to wake; idempotent, because the
+    // self-checks start it earlier.
     thread::start_idle();
 
-    // The shipped path must exercise user entry too (D-116). A refusal is
-    // diagnostic rather than fatal, so the kernel remains interactive.
+    // The shipped path must exercise user entry too. A refusal is diagnostic rather than fatal, so
+    // the kernel remains interactive.
     match user::run() {
         Ok(program) => info!("user: program running in slot {}", program.slot),
         Err(reason) => warn!("user: no program: {reason}"),
@@ -322,14 +318,8 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     echo_keystrokes()
 }
 
-/// The boot thread's last job: block on the keyboard, and draw what arrives.
-///
-/// Nothing polls and nothing spins: this thread is not runnable until a
-/// keystroke wakes it (D-61), the idle thread halts meanwhile, and no timer
-/// is armed — so a kernel at a prompt takes one interrupt per keystroke.
-///
-/// Drawing is here rather than in the handler because a glyph can cost a
-/// scroll (D-63).
+/// The boot thread's last job: block on the keyboard, and draw what arrives. Drawing is here rather
+/// than in the handler because a glyph can cost a scroll.
 fn echo_keystrokes() -> ! {
     let mut context = thread::ThreadContext::require();
     loop {
@@ -343,18 +333,9 @@ fn echo_keystrokes() -> ! {
     }
 }
 
-/// Bring up the interrupt controller, start the clock, and accept interrupts.
-///
-/// Each step is a precondition for the next, and every one of them can decline:
-/// a kernel that cannot take interrupts is worth far more than one that takes
-/// them into a controller it never configured. In order — stop the legacy
-/// controllers delivering anything, give the local APIC its vectors and turn
-/// it on, measure the clocks, and only then set the flag. Calibration sits
-/// where it does for both of its neighbours: it needs the APIC's registers
-/// answering, and running before the `sti` is what makes the measurement
-/// unpreemptible. It arms nothing — the timer is the scheduler's to arm, and
-/// nothing has asked it for anything yet. Alone among the steps, its failure
-/// vetoes nothing: a kernel without a clock still wants its keyboard.
+/// Bring up the interrupt controller, start the clock, and accept interrupts. Each step is a
+/// precondition for the next, and every one of them can decline: a kernel that cannot take
+/// interrupts is worth far more than one that takes them into a controller it never configured.
 fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -362,8 +343,8 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     }
     info!("pic: legacy controllers remapped and masked");
 
-    // One MSR write at boot (D-81); the report matters as much, because this
-    // is the only place a machine's speculation claims are visible.
+    // One MSR write at boot; the report matters as much, because this is the only place a machine's
+    // speculation claims are visible.
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
     select_user_isolation(cpu::shared_kernel_mapping_reason(&speculation));
@@ -407,15 +388,14 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     info!("cpu: accepting interrupts");
 }
 
-/// Choose shared or paired user roots from the speculation controls just read.
 fn select_user_isolation(reason: Option<impl core::fmt::Display>) {
     if let Some(reason) = reason {
         SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
         let isolation = if cfg!(feature = "selftest")
             && wost::arch::current::kpti_entry_path_is_implemented()
         {
-            // Qualification must execute the paired path even on QEMU,
-            // whose exact TCG tuple independently admits shared roots.
+            // Qualification must execute the paired path even on QEMU, whose exact TCG tuple
+            // independently admits shared roots.
             UserIsolation::Paired
         } else {
             UserIsolation::Shared
@@ -440,16 +420,13 @@ fn select_user_isolation(reason: Option<impl core::fmt::Display>) {
     }
 }
 
-/// Whether the processor reported `MDS_NO`.
 enum MdsImmunity {
     /// The processor reports `mds_no`, so the flush buys nothing.
     Reported,
-    /// Flush on every return to ring 3. An unreadable `MD_CLEAR` takes this
-    /// path (D-98).
+    /// Flush on every return to ring 3. An unreadable `MD_CLEAR` takes this path.
     Absent,
 }
 
-/// Arm `verw` unless `MDS_NO` makes it pointless.
 fn arm_return_buffer_clear(immunity: &MdsImmunity) {
     if matches!(immunity, MdsImmunity::Reported) {
         info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
@@ -467,14 +444,13 @@ fn arm_return_buffer_clear(immunity: &MdsImmunity) {
     }
 }
 
-/// Log the clock measurement. Failure does not veto interrupts.
 fn report_clock(started: Result<time::Calibration, time::TimeError>) {
     match started {
         Ok(report) => {
             let apic_source_hz = report.apic_source_hz();
             info!("time: apic source at {apic_source_hz} hz; {report}");
-            // Loud: this is the one clock property the kernel cannot check,
-            // and a machine without the promise may be throttling underneath.
+            // Loud: this is the one clock property the kernel cannot check, and a machine without
+            // the promise may be throttling underneath.
             if !report.counter_is_invariant() {
                 warn!(
                     "time: the counter is not advertised invariant; the clock is only as steady as this machine's power management"
@@ -486,9 +462,6 @@ fn report_clock(started: Result<time::Calibration, time::TimeError>) {
 }
 
 /// Publish the shared time page, or say that every reader must call.
-///
-/// The page exists whether or not the clock does: a program reading `TIME`
-/// must find `MODE_NONE`, not a page fault (D-166).
 fn publish_boot_time_page() {
     if timepage::init(time::counter_hz()) {
         let mode = if time::is_calibrated() {
@@ -535,15 +508,9 @@ fn refuse_pci_for_degraded_boot() {
     );
 }
 
-/// Claim configuration space and say what is on the bus.
-///
-/// Declines rather than fails: a machine whose configuration ports are already
-/// spoken for has no PCI as far as this kernel is concerned, and everything
-/// built so far works without it.
-///
-/// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
-/// at `00:1e.0` and `VMware` places functions behind `pciBridge0`–`pciBridge7`,
-/// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
+/// Claim configuration space and say what is on the bus. Declines rather than fails: a machine
+/// whose configuration ports are already spoken for has no PCI as far as this kernel is concerned,
+/// and everything built so far works without it.
 fn survey_the_bus(
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -564,9 +531,9 @@ fn survey_the_bus(
         Err(reason) => warn!("pci: DMA topology refused: {reason}"),
     }
 
-    // These checks need an ordinary unclaimed function. Run them before a
-    // complete VT-d requester inventory deliberately owns every function in
-    // the unit, and cache only their verdicts for the later report.
+    // These checks need an ordinary unclaimed function. Run them before a complete VT-d requester
+    // inventory deliberately owns every function in the unit, and cache only their verdicts for the
+    // later report.
     #[cfg(feature = "selftest")]
     selftest::prepare_pci_claim_checks();
 
@@ -607,7 +574,6 @@ fn survey_the_bus(
     }
 }
 
-/// Whether enumeration should try another storage function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StorageSelection {
     Seeking,
@@ -615,11 +581,10 @@ enum StorageSelection {
     Halted,
 }
 
-/// Where a storage candidate stands between the stages of [`try_controller`].
 #[derive(Debug)]
 enum CandidateStage {
-    /// Leased, mapped and verified disabled, with bus mastering still off;
-    /// the flag records whether the sibling isolation stage has completed.
+    /// Leased, mapped and verified disabled, with bus mastering still off; the flag records whether
+    /// the sibling isolation stage has completed.
     Prepared(pci::Device, nvme::DisabledController, bool),
     /// Bus mastering admitted behind the installed domain.
     Admitted(pci::Device, nvme::BusMasterAdmittedController),
@@ -635,7 +600,6 @@ impl CandidateStage {
         core::mem::replace(self, Self::Settled(StorageSelection::Halted))
     }
 
-    /// The owners of a prepared candidate; any other stage stays in place.
     fn take_prepared(&mut self) -> Option<(pci::Device, nvme::DisabledController)> {
         match self.take() {
             Self::Prepared(device, prepared, true) => Some((device, prepared)),
@@ -646,7 +610,6 @@ impl CandidateStage {
         }
     }
 
-    /// The owners of an admitted candidate; any other stage stays in place.
     fn take_admitted(&mut self) -> Option<(pci::Device, nvme::BusMasterAdmittedController)> {
         match self.take() {
             Self::Admitted(device, admitted) => Some((device, admitted)),
@@ -658,12 +621,9 @@ impl CandidateStage {
     }
 }
 
-/// Claim one storage candidate and either commit or retire it.
-///
-/// Selection advances only after the failed candidate has stopped DMA,
-/// unmapped its registers, returned its queues, restored its command word and
-/// released its function and I/O claims (D-199). Every stage returns its
-/// owners here, so one stage frame at a time sits on the boot stack (D-359).
+/// Claim one storage candidate and either commit or retire it. Selection advances only after the
+/// failed candidate has stopped DMA, unmapped its registers, returned its queues, restored its
+/// command word and released its function and I/O claims.
 fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     #[cfg(feature = "selftest")]
     let stack = nvme::CandidateStackMeasurement::begin();
@@ -677,8 +637,8 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     #[cfg(feature = "selftest")]
     NVME_CANDIDATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
-    // Stages borrow the candidate, so the debug frame holds one copy of its
-    // owners rather than one per stage call.
+    // Stages borrow the candidate, so the debug frame holds one copy of its owners rather than one
+    // per stage call.
     let mut stage = claim_candidate(at, ordinal, &mut context);
     let device = loop {
         if matches!(&stage, CandidateStage::Prepared(_, _, false)) {
@@ -752,8 +712,8 @@ fn claim_candidate(
     CandidateStage::Prepared(device, prepared, false)
 }
 
-/// Establish unit-wide isolation without moving the prepared controller into
-/// the same debug frame as VT-d's bounded inventory and table construction.
+/// Establish unit-wide isolation without moving the prepared controller into the same debug frame
+/// as VT-d's bounded inventory and table construction.
 fn isolate_candidate(stage: &mut CandidateStage) {
     let outcome = match stage {
         CandidateStage::Prepared(device, _, false) => iommu::establish(device),
@@ -773,8 +733,8 @@ fn isolate_candidate(stage: &mut CandidateStage) {
     *isolated = true;
 }
 
-/// Move uncertain isolation owners into their permanent quarantine only after
-/// the VT-d establishment frame has returned.
+/// Move uncertain isolation owners into their permanent quarantine only after the VT-d
+/// establishment frame has returned.
 fn quarantine_isolation(stage: &mut CandidateStage) {
     let CandidateStage::Prepared(device, prepared, false) = stage.take() else {
         panic!("an isolation quarantine lost its prepared candidate");
@@ -834,7 +794,6 @@ fn refused_lease(at: pci_config::Address, reason: pci::ClaimError) -> StorageSel
     }
 }
 
-/// Keep an uncertain preparation with its lease, or hand the lease back.
 fn failed_preparation(
     failure: nvme::PrepareFailure,
     device: pci::Device,
@@ -852,7 +811,6 @@ fn failed_preparation(
     CandidateStage::Settled(StorageSelection::Halted)
 }
 
-/// Admit bus mastering for a prepared candidate behind its installed domain.
 fn admit_candidate(
     stage: &mut CandidateStage,
     context: &mut thread::ThreadContext,
@@ -891,7 +849,6 @@ fn allocate_cleared_startup_buffer() -> Option<wost::mm::DmaSegment> {
     Some(wost::mm::DmaSegment::from(segment))
 }
 
-/// Start an admitted controller, read block 0 through it, and keep it.
 fn start_candidate(
     stage: &mut CandidateStage,
     context: &mut thread::ThreadContext,
@@ -918,8 +875,8 @@ fn start_candidate(
         }
     };
 
-    // One block, to prove the whole path: queue built, command submitted,
-    // doorbell rung, phase tag recognised, completion matched by identifier.
+    // One block, to prove the whole path: queue built, command submitted, doorbell rung, phase tag
+    // recognised, completion matched by identifier.
     let Some(mut buffer) = allocate_cleared_startup_buffer() else {
         warn!("nvme: no cleared memory for a read buffer");
         match controller.retire(&mut device, context) {
@@ -961,7 +918,6 @@ fn start_candidate(
     CandidateStage::Settled(StorageSelection::Selected)
 }
 
-/// Finish one failed lease, stopping selection unless restoration is exact.
 fn retire_candidate(
     mut device: pci::Device,
     context: &mut thread::ThreadContext,
@@ -988,8 +944,8 @@ fn retire_candidate(
             return StorageSelection::Halted;
         }
     }
-    // BME is verified off, excluded from the restored command word and still
-    // protected by the selected function claim while translation goes away.
+    // BME is verified off, excluded from the restored command word and still protected by the
+    // selected function claim while translation goes away.
     if !iommu::release_candidate(context) {
         warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
         pci::retain_failed_release(device);
@@ -1089,8 +1045,8 @@ fn admit_controller_window(
     device: &mut pci::Device,
     context: &mut thread::ThreadContext,
 ) -> ControllerWindowAdmission {
-    // BAR0 is the register file; a controller whose first window is not
-    // memory is one this driver cannot reach.
+    // BAR0 is the register file; a controller whose first window is not memory is one this driver
+    // cannot reach.
     let Some(window) = device.window(0) else {
         warn!("nvme: no bar0; nothing to map");
         return ControllerWindowAdmission::Refused;
@@ -1165,8 +1121,6 @@ fn refused_bus_master_retires_before_nvme_start() -> bool {
     pci::bus_master_refusal_was_observed() && NVME_BME_REFUSAL_PROVED.load(Ordering::Acquire)
 }
 
-/// Mount through the VFS so the shipped path exercises its abstraction.
-/// An absent volume is a valid empty machine, not a boot failure (D-171).
 fn mount_the_volume() {
     let shape = fs::mount().map(|result| result.map(|volume| volume.shape()));
     match shape {
@@ -1187,8 +1141,8 @@ fn mount_the_volume() {
         return;
     };
 
-    // The controller's ThreadLock is non-reentrant across this callback, so
-    // names are resolved only after enumeration releases it (D-200).
+    // The controller's ThreadLock is non-reentrant across this callback, so names are resolved only
+    // after enumeration releases it.
     let mut files = 0usize;
     let mut directories = 0usize;
     let mut first = [0u8; 16];
@@ -1226,19 +1180,15 @@ fn mount_the_volume() {
             }
         }
         Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
-        // A FAT volume has no devices, and the compiler says so: a new node
-        // kind is an error in every match (D-171).
+        // A FAT volume has no devices, and the compiler says so: a new node kind is an error in
+        // every match.
         Ok(vfs::Node::Device(_)) => warn!("fat32: a listed file resolved to a device"),
         Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
     }
 }
 
-/// Say what the other two backends hold.
-///
-/// `014` asks for more than one backend before the VFS's abstraction is worth
-/// believing, and this is the shipped kernel exercising all three through the
-/// same three operations. It is an unconditional sibling of bus discovery,
-/// because neither backend needs a device (D-172, D-198).
+/// Say what the other two backends hold. It is an unconditional sibling of bus discovery, because
+/// neither backend needs a device.
 fn survey_the_filesystems() {
     tmpfs::init();
 
@@ -1272,10 +1222,8 @@ fn survey_the_filesystems() {
     }
 }
 
-/// Route the keyboard's line through the I/O APIC, so keystrokes interrupt.
-///
-/// The polled path is safe only after every described controller was proven
-/// masked. An incomplete inventory also vetoes `sti`.
+/// Route the keyboard's line through the I/O APIC, so keystrokes interrupt. The polled path is safe
+/// only after every described controller was proven masked.
 fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {
     let Some(routing) = routing else {
         warn!("keyboard: external controllers are unproven; interrupts and routing stay off");
@@ -1443,10 +1391,9 @@ pub(crate) fn keyboard_routing_rollback_is_exact() -> bool {
     ROUTING_ROLLBACK_PROVED.load(Ordering::Acquire)
 }
 
-/// Map and select the controller which owns the keyboard's resolved GSI.
-///
-/// This runs before [`start_interrupts`], so probing masks every described
-/// controller while the CPU still refuses external delivery.
+/// Map and select the controller which owns the keyboard's resolved GSI. This runs before
+/// [`start_interrupts`], so probing masks every described controller while the CPU still refuses
+/// external delivery.
 #[expect(
     clippy::large_types_passed_by_value,
     reason = "the MADT inventory is consumed by the one keyboard-routing selection"
@@ -1464,5 +1411,4 @@ fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> mem::Routin
     mem::prepare_routing(&mut context, interrupts, gsi)
 }
 
-/// The legacy line the keyboard controller has always used.
 const KEYBOARD_IRQ: u8 = 1;

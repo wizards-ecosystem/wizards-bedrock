@@ -1,11 +1,6 @@
-//! QEMU's `isa-debug-exit` device.
+//! QEMU `isa-debug-exit`: a port write ends the test as `(value << 1) | 1`.
 //!
-//! Writing to it makes QEMU terminate with `(value << 1) | 1`, which is how a
-//! kernel running under test reports its verdict to the harness. Present only
-//! when QEMU is started with `-device isa-debug-exit`, so this is compiled in
-//! with the `selftest` feature and never ships in a real image.
-//!
-//! Nothing here is privileged: a claimed `Port` writes in safe code.
+//! Compiled only for `selftest`. A missing device ignores the write.
 
 use wost::arch::current::port::{self, Port};
 
@@ -15,11 +10,8 @@ const PASSED: u32 = 0x10;
 /// Written when any check failed. QEMU then exits with 35.
 const FAILED: u32 = 0x11;
 
-/// Tell the harness whether the run passed.
-///
-/// Under QEMU with the device present this terminates the emulator and never
-/// returns. Anywhere else the write goes nowhere and the caller carries on, so
-/// a self-test kernel booted on real hardware still reaches its idle loop.
+/// Tell the harness whether the run passed. Under QEMU with the device present this terminates the
+/// emulator and never returns.
 #[expect(
     clippy::fn_params_excessive_bools,
     reason = "the harness verdict is one pass-or-fail bit"
