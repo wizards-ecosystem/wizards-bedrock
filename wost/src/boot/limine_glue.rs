@@ -16,12 +16,10 @@ use crate::boot::{
 };
 use crate::mmio::MmioRegion;
 
-/// The boot protocol revision this kernel requests (D-42).
+/// The boot protocol revision this kernel requests.
 ///
-/// A function rather than a `const` of the tag type: `BaseRevision` holds
-/// `UnsafeCell`s, and a `const` containing one is what
-/// `clippy::declare_interior_mutable_const` exists to catch.
-/// Revision 4 admits device holes and maps ACPI tables; see D-42.
+/// A function rather than a `const` of the tag type: `BaseRevision` holds `UnsafeCell`s, and a
+/// `const` containing one is what `clippy::declare_interior_mutable_const` exists to catch.
 pub const fn base_revision() -> BaseRevision {
     BaseRevision::with_revision(4)
 }
@@ -72,11 +70,8 @@ fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress
 
 /// The first module the bootloader loaded, as bytes.
 ///
-/// One, not all: the initrd is a single program (D-100), and an API that
-/// returned a list would be shaped for a filesystem this kernel does not have.
-/// The slice borrows memory the bootloader owns, which is why it is `'static`
-/// and why nothing may write it — it lives in a reclaimable region that stays
-/// mapped for the life of the boot.
+/// One, not all: the initrd is a single program, and an API that returned a list would be shaped
+/// for a filesystem this kernel does not have.
 fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], HandoffError> {
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
     let module = response.modules().first().ok_or(HandoffError::Empty)?;
@@ -85,8 +80,8 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     if address.is_null() || size == 0 {
         return Err(HandoffError::Empty);
     }
-    // `from_raw_parts` additionally requires an `isize` length and a
-    // non-wrapping range, neither guaranteed by the handoff type (D-105).
+    // `from_raw_parts` additionally requires an `isize` length and a non-wrapping range, neither
+    // guaranteed by the handoff type.
     let len = usize::try_from(size)
         .ok()
         .filter(|len| isize::try_from(*len).is_ok())
@@ -94,9 +89,9 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     if (address as usize).checked_add(len).is_none() {
         return Err(HandoffError::Empty);
     }
-    // SAFETY: the bootloader reports this range as a module it loaded and
-    // keeps mapped, and the protocol makes it ours to read for the life of the
-    // boot. Nothing else holds a reference to it, and it is never written.
+    // SAFETY: the bootloader reports this range as a module it loaded and keeps mapped, and the
+    // protocol makes it ours to read for the life of the boot. Nothing else holds a reference to
+    // it, and it is never written.
     Ok(unsafe { core::slice::from_raw_parts(address.cast_const(), len) })
 }
 
@@ -109,17 +104,10 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
     }
 }
 
-/// Every request the entry glue places, gathered so the handoff is one
-/// argument rather than a list that grows with each protocol feature.
+/// Every request the entry glue places, gathered so the handoff is one argument rather than a list
+/// that grows with each protocol feature.
 ///
-/// The fields are the bootloader's types, which is why this lives here: it is
-/// the only file that names them (`005`, and swapping bootloaders touches one
-/// file).
-///
-/// No `Debug`, unusually for this codebase (`005`, C-DEBUG): the bootloader's
-/// request types do not implement it, and a hand-written impl here would print
-/// the addresses of static requests, which is not information anyone wants and
-/// is exactly what a KASLR ledger would rather not see in a log.
+/// The fields are the bootloader's types, so this is the only file that names them.
 #[expect(
     missing_debug_implementations,
     reason = "Limine request types have no Debug, and printing their addresses would leak the KASLR slide"
@@ -138,7 +126,7 @@ pub struct Requests {
     pub image: &'static ExecutableAddressRequest,
     /// The ACPI root pointer.
     pub rsdp: &'static RsdpRequest,
-    /// The modules, of which this kernel reads the first (D-100).
+    /// The modules, of which this kernel reads the first.
     pub modules: &'static ModuleRequest,
 }
 
@@ -156,12 +144,8 @@ fn take_memory_map(request: &'static MemoryMapRequest) -> Result<MemoryMap, Hand
 
 /// Translate one protocol entry type.
 ///
-/// The known types are compared against the crate's own constants rather than
-/// against numbers, so a value moving underneath us is a compile error. The raw
-/// value is read only to *report* a type we do not know: base revision 4 adds
-/// one (`RESERVED_MAPPED`) that the pinned 0.5.0 crate has no constant for, and
-/// D-42 requires that such a type be nameable in the log rather than folded
-/// silently into `Reserved`.
+/// Known types are matched on the crate's constants, so a moved value is a compile error. An
+/// unknown type is reported rather than folded into `Reserved`.
 fn kind_of(entry_type: EntryType) -> MemoryKind {
     match entry_type {
         EntryType::USABLE => MemoryKind::Usable,
@@ -172,9 +156,9 @@ fn kind_of(entry_type: EntryType) -> MemoryKind {
         EntryType::ACPI_NVS => MemoryKind::AcpiNvs,
         EntryType::BAD_MEMORY => MemoryKind::BadMemory,
         EntryType::RESERVED => MemoryKind::Reserved,
-        // SAFETY: `EntryType` is `#[repr(transparent)]` over `u64`, so the two
-        // have identical layout and every bit pattern of one is valid for the
-        // other. The crate provides no accessor for the value.
+        // SAFETY: `EntryType` is `#[repr(transparent)]` over `u64`, so the two have identical
+        // layout and every bit pattern of one is valid for the other. The crate provides no
+        // accessor for the value.
         other => MemoryKind::Unknown(unsafe { core::mem::transmute::<EntryType, u64>(other) }),
     }
 }
@@ -217,10 +201,10 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         format,
     };
 
-    // SAFETY: the bootloader reports a live linear mapping that nothing else
-    // owns after handoff, and `layout` checked its span and alignment. Paging
-    // activation verifies this direct-map extent before switching; later user
-    // roots share the frozen higher-half topology containing that mapping.
+    // SAFETY: the bootloader reports a live linear mapping that nothing else owns after handoff,
+    // and `layout` checked its span and alignment. Paging activation verifies this direct-map
+    // extent before switching; later user roots share the frozen higher-half topology containing
+    // that mapping.
     let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };
 
     Ok(Framebuffer::new(region, info, layout))

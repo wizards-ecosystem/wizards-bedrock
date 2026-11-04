@@ -1,9 +1,5 @@
-//! Bootloader handoff.
-//!
-//! [`entry!`](crate::entry) defines the kernel's entry point and the bootloader
-//! request block. Everything the bootloader tells us arrives as [`BootInfo`],
-//! whose types name no bootloader at all — swapping Limine out is a change to
-//! `limine_glue.rs` and nothing else.
+//! Bootloader handoff. [`entry!`](crate::entry) defines the kernel's entry point and the bootloader
+//! request block.
 
 mod limine_glue;
 
@@ -33,8 +29,7 @@ pub struct FramebufferInfo {
     pub width: usize,
     /// Visible height in pixels.
     pub height: usize,
-    /// Distance between the starts of consecutive rows, in bytes. Not always
-    /// `width * bytes_per_pixel`.
+    /// Distance between row starts, in bytes. Not always `width * bytes_per_pixel`.
     pub pitch: usize,
     /// Bytes occupied by one pixel.
     pub bytes_per_pixel: usize,
@@ -44,22 +39,15 @@ pub struct FramebufferInfo {
 
 /// A linear framebuffer the bootloader has already mapped for us.
 ///
-/// Once [`attach_back_buffer`](Self::attach_back_buffer) has been called, every
-/// write goes to both the device and a shadow copy in RAM, and every *read*
-/// comes from the shadow. That is what retires the scroll read-back
-/// `001-boot.md` recorded as a limitation: framebuffer memory is uncached, so
-/// reading a screen's worth of it to move rows up costs far more than the same
-/// bytes in ordinary RAM — and it is the precondition for ever marking the
-/// mapping write-combining, where reads are worse still (D-48).
-/// A checked MMIO refusal after construction is internal geometry corruption
-/// and fails stopped before the shadow can diverge from the device (D-249).
+/// Once [`attach_back_buffer`](Self::attach_back_buffer) has been called, every write goes to both
+/// the device and a shadow copy in RAM, and every *read* comes from the shadow.
 #[derive(Debug)]
 pub struct Framebuffer {
     region: MmioRegion,
     info: FramebufferInfo,
     layout: FramebufferLayout,
-    /// One `u32` per pixel of the visible area, at the device's own stride, or
-    /// empty before a back buffer is attached.
+    /// One `u32` per pixel of the visible area, at the device's own stride, or empty before a back
+    /// buffer is attached.
     back: alloc::vec::Vec<u32>,
 }
 
@@ -85,13 +73,11 @@ impl Framebuffer {
 
     /// Give the framebuffer a shadow copy in RAM.
     ///
-    /// Separate from construction because the framebuffer is built during the
-    /// boot handoff, long before there is a heap to build a shadow in. Called
-    /// once the heap exists; idempotent, and `false` if the allocation failed,
-    /// in which case the framebuffer keeps working exactly as it did before.
+    /// Separate from construction because the framebuffer is built during the boot handoff, long
+    /// before there is a heap to build a shadow in.
     ///
-    /// The shadow starts as a copy of what is on screen, so attaching it
-    /// mid-boot does not lose the lines already printed.
+    /// The shadow starts as a copy of what is on screen, so attaching it mid-boot does not lose the
+    /// lines already printed.
     #[must_use = "a refused framebuffer shadow was not attached"]
     pub fn attach_back_buffer(&mut self) -> bool {
         if !self.back.is_empty() {
@@ -144,8 +130,7 @@ impl Framebuffer {
         *word = value;
     }
 
-    /// The word at `offset`, from the shadow if there is one and from the
-    /// device otherwise.
+    /// The word at `offset`, from the shadow if there is one and from the device otherwise.
     fn word_at(&self, offset: usize) -> u32 {
         if self.back.is_empty() {
             framebuffer_access(MmioRegion::read_u32(&self.region, offset))
@@ -163,19 +148,17 @@ impl Framebuffer {
 
     /// The pixel at (`x`, `y`), or `None` outside the visible area.
     ///
-    /// Read from the shadow to avoid an uncached device read and make stray
-    /// cursor marks observable (D-137).
+    /// Read from the shadow to avoid an uncached device read and make stray cursor marks
+    /// observable.
     #[cfg(feature = "selftest")]
     pub fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
         Some(self.word_at(self.layout.offset(x, y)?))
     }
 
-    /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible
-    /// area.
+    /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible area.
     ///
-    /// Clipping is deliberate: a glyph drawn near the right or bottom edge
-    /// legitimately runs off it. Anything that survives the clip is still
-    /// bounds-checked by the underlying region.
+    /// Clipping is deliberate: a glyph drawn near the right or bottom edge legitimately runs off
+    /// it.
     pub fn write_pixel(&mut self, x: usize, y: usize, colour: Rgb) {
         let Some(offset) = self.layout.offset(x, y) else {
             return;
@@ -205,14 +188,13 @@ impl Framebuffer {
 
     /// Copy `rows` of pixels from `from_y` up to `to_y`.
     ///
-    /// Pixels move as raw words rather than through [`Rgb`], so nothing is lost
-    /// on a display whose channels are narrower than eight bits. Rows exposed
-    /// at the bottom are left for the caller to clear.
+    /// Pixels move as raw words rather than through [`Rgb`], so nothing is lost on a display whose
+    /// channels are narrower than eight bits.
     ///
     /// # Panics
     ///
-    /// Panics if `to_y > from_y`. Source and destination may overlap, but only
-    /// upward: copying down would read rows this call had already overwritten.
+    /// Panics if `to_y > from_y`. Source and destination may overlap, but only upward: copying down
+    /// would read rows this call had already overwritten.
     #[expect(
         clippy::manual_assert,
         reason = "the refusal is a let-else; the condition is the missing plan, not a boolean assert"
@@ -251,8 +233,8 @@ impl Framebuffer {
                 let Some(to) = self.layout.offset(column, to_y) else {
                     continue;
                 };
-                // From the shadow where there is one. Reading device memory to
-                // scroll is what this exists to stop.
+                // From the shadow where there is one. Reading device memory to scroll is what this
+                // exists to stop.
                 let word = self.word_at(from);
                 self.write_word(to, word);
             }
@@ -301,9 +283,9 @@ impl core::error::Error for FramebufferError {}
 
 /// The bootloader's direct map of physical memory into the higher half.
 ///
-/// Every physical address the memory map lists is readable at
-/// `physical + offset` before the kernel has page tables of its own — which is
-/// what makes the first page table walkable and the first frame writable.
+/// Every physical address the memory map lists is readable at `physical + offset` before the kernel
+/// has page tables of its own — which is what makes the first page table walkable and the first
+/// frame writable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirectMap {
     offset: u64,
@@ -328,9 +310,8 @@ impl DirectMap {
 
 /// Where the bootloader placed the kernel image.
 ///
-/// The pair is what lets the kernel map its own sections: the linker gives
-/// their virtual addresses, and the difference between these two turns any of
-/// them into the physical frame behind it.
+/// The pair is what lets the kernel map its own sections: the linker gives their virtual addresses,
+/// and the difference between these two turns any of them into the physical frame behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageAddress {
     physical: u64,
@@ -343,8 +324,8 @@ impl ImageAddress {
         Self { physical, virtual_ }
     }
 
-    /// The frame behind a virtual address inside the image, or `None` if the
-    /// address is below its base.
+    /// The frame behind a virtual address inside the image, or `None` if the address is below its
+    /// base.
     pub const fn to_physical(self, address: u64) -> Option<u64> {
         match address.checked_sub(self.virtual_) {
             Some(offset) => self.physical.checked_add(offset),
@@ -365,8 +346,8 @@ pub struct Section {
 impl Section {
     /// Bytes from `start` to the end of the page `end` falls in.
     ///
-    /// Rounded up because a mapping covers whole pages: the tail of the last
-    /// page belongs to this section whether or not anything is in it.
+    /// Rounded up because a mapping covers whole pages: the tail of the last page belongs to this
+    /// section whether or not anything is in it.
     pub const fn mapped_len(self) -> u64 {
         let len = self.end.saturating_sub(self.start);
         len.next_multiple_of(4096)
@@ -380,19 +361,16 @@ pub struct Sections {
     pub text: Section,
     /// Constants. Mapped read-only and never executable.
     pub rodata: Section,
-    /// Everything writable — `.requests`, `.data` and `.bss`, which the linker
-    /// script keeps contiguous in one segment. Mapped writable and never
-    /// executable.
+    /// Everything writable — `.requests`, `.data` and `.bss`, which the linker script keeps
+    /// contiguous in one segment.
     pub data: Section,
-    /// The page-exact D-407 entry ranges, outside the ordinary image classes.
+    /// The page-exact entry ranges, outside the ordinary image classes.
     pub entry_enclave: EntryEnclaveSections,
 }
 
 /// Linker-owned ranges from which the x86 entry enclave is validated.
 ///
-/// The two guard ranges are deliberately not part of any mapping list. Their
-/// named addresses let the page-table owner prove absence instead of deriving
-/// a hole from adjacent stack arithmetic.
+/// The two guard ranges are deliberately not part of any mapping list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryEnclaveSections {
     /// Interrupt stubs and common entry/exit assembly.
@@ -417,14 +395,11 @@ pub struct EntryEnclaveSections {
 
 /// Where the linker put each protection class of this kernel.
 ///
-/// `entry!` already ties `wost` to the linker script through `ENTRY(kmain)`
-/// and the `.requests` section; the six symbols read here are the rest of that
-/// contract. A script that does not define them fails to link, which is the
-/// failure mode to want — the alternative is a kernel that maps its own text
-/// writable because a symbol silently resolved to zero.
+/// `entry!` already ties `wost` to the linker script through `ENTRY(kmain)` and the `.requests`
+/// section; the six symbols read here are the rest of that contract.
 pub fn sections() -> Sections {
-    // Linker symbols with no storage: only their addresses are taken, which
-    // is what makes `u8` harmless and `&raw const` safe where a read is not.
+    // Linker symbols with no storage: only their addresses are taken, which is what makes `u8`
+    // harmless and `&raw const` safe where a read is not.
     unsafe extern "C" {
         static __text_start: u8;
         static __text_end: u8;
@@ -451,10 +426,9 @@ pub fn sections() -> Sections {
         static __kpti_ist_stack_end: u8;
     }
 
-    // Distinct linker symbols may deliberately resolve to the same boundary.
-    // Keep their numeric addresses opaque until runtime: otherwise an
-    // optimizer may fold equality between two distinct extern statics to
-    // false even though the linker aliases their final addresses.
+    // Distinct linker symbols may deliberately resolve to the same boundary. Keep their numeric
+    // addresses opaque until runtime: otherwise an optimizer may fold equality between two distinct
+    // extern statics to false even though the linker aliases their final addresses.
     fn linker_address(symbol: *const u8) -> u64 {
         core::hint::black_box(symbol).addr() as u64
     }
@@ -528,11 +502,10 @@ pub struct BootInfo {
     pub image: Result<ImageAddress, HandoffError>,
     /// The address of the ACPI root pointer, or why there is none.
     ///
-    /// Virtual from base revision 4, which is one of the reasons D-42 asked
-    /// for it: the table tree is readable before the kernel maps anything.
+    /// Virtual from base revision 4, so the ACPI table tree is readable before the kernel maps
+    /// anything.
     pub rsdp: Result<u64, HandoffError>,
-    /// The first module the bootloader loaded — this kernel's initrd, which is
-    /// one program (D-100).
+    /// The first module the bootloader loaded — this kernel's initrd, which is one program.
     pub module: Result<&'static [u8], HandoffError>,
 }
 
@@ -562,8 +535,8 @@ impl core::error::Error for HandoffError {}
 
 /// Items [`entry!`](crate::entry) names in the calling crate.
 ///
-/// Not a stable interface; re-exported only so downstream crates never depend
-/// on the bootloader protocol crate directly.
+/// Not a stable interface; re-exported only so downstream crates never depend on the bootloader
+/// protocol crate directly.
 #[doc(hidden)]
 pub mod __macro {
     pub use limine::BaseRevision;
@@ -577,21 +550,12 @@ pub mod __macro {
 
 /// Define the kernel entry point.
 ///
-/// Expands to the bootloader request block and the `kmain` symbol named by
-/// `ENTRY()` in the linker script, then calls `$path`, which must be
-/// `fn(BootInfo) -> !`.
+/// Expands to the bootloader request block and the `kmain` symbol named by `ENTRY` in the linker
+/// script, then calls `$path`, which must be `fn(BootInfo) -> !`.
 ///
-/// The expansion lands in the calling crate rather than in `wost` on purpose:
-/// `#[used]` statics inside an rlib can be dropped wholesale by the linker,
-/// because nothing references the archive member holding them
-/// (rust-lang/rust#47384). Every `-rt` crate in the ecosystem does it this way.
-/// The `#[allow(unsafe_code)]` attributes are what let the calling crate carry
-/// `#![deny(unsafe_code)]`; they cover `wost`-authored code that merely expands
-/// there, which is why that crate uses `deny` rather than `forbid`.
-///
-/// **`allow`, not `expect`:** `unfulfilled_lint_expectations` does not fire for
-/// attributes inside a macro expansion, so `expect` would falsely appear
-/// checked (D-131).
+/// The expansion lands in the calling crate rather than in `wost` on purpose: `#[used]` statics
+/// inside an rlib can be dropped wholesale by the linker, because nothing references the archive
+/// member holding them (rust-lang/rust#47384).
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {

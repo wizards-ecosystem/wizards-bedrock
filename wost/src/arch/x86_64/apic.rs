@@ -1,7 +1,5 @@
-//! The local advanced programmable interrupt controller.
-//!
-//! The x2APIC register encoding needs no mapping. Initialization freezes each
-//! local source's vector, and EOI requires authority read from live ISR state.
+//! The local advanced programmable interrupt controller. The x2APIC register encoding needs no
+//! mapping.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
@@ -123,9 +121,8 @@ fn controller() -> Controller<'static> {
 /// Whether one live token already owns the current EOI opportunity.
 static EOI_CLAIMED: AtomicBool = AtomicBool::new(false);
 
-/// Accept every priority class. The APIC will not deliver an interrupt whose
-/// class is at or below the task priority, and this kernel has no priorities to
-/// express.
+/// Accept every priority class. The APIC will not deliver an interrupt whose class is at or below
+/// the task priority, and this kernel has no priorities to express.
 const ACCEPT_EVERYTHING: u64 = 0;
 
 /// Error delivery is entry five and is required by this controller contract.
@@ -145,14 +142,12 @@ pub enum ApicError {
     InterruptsEnabled,
     /// `cpuid` reports no local APIC on this processor.
     Absent,
-    /// The processor has a local APIC but no x2APIC mode, which is the only
-    /// one implemented.
+    /// The processor has a local APIC but no x2APIC mode, which is the only one implemented.
     NoExtendedMode,
-    /// The hardware enable bit did not stick. Some processors make clearing it
-    /// permanent until reset, and this is what that looks like from software.
+    /// The hardware enable bit did not stick. Some processors make clearing it permanent until
+    /// reset, and this is what that looks like from software.
     Disabled,
-    /// The processor accepted the switch to x2APIC mode and then reported
-    /// itself not to be in it.
+    /// The processor accepted the switch to x2APIC mode and then reported itself not to be in it.
     ModeRefused,
     /// The version or final software-enable value is not a usable APIC.
     NotResponding,
@@ -228,8 +223,8 @@ impl core::error::Error for PendingInterruptError {}
 /// The complete local-source assignment, frozen by [`init`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vectors {
-    /// Delivered when the APIC has committed to delivering something and then
-    /// found it had nothing to say. Its low four bits must all be set.
+    /// Delivered when the APIC has committed to delivering something and then found it had nothing
+    /// to say.
     pub spurious: InterruptVector,
     /// Delivered when the APIC records an error.
     pub error: InterruptVector,
@@ -484,24 +479,21 @@ impl fmt::Display for Local {
 
 /// Bring the local APIC up and start accepting what it delivers.
 ///
-/// Firmware-programmable sources are masked, kernel-owned hardware sources are
-/// configured, and the exact software-enable value is read back before source
-/// identities or readiness become public.
+/// Firmware-programmable sources are masked, kernel-owned hardware sources are configured, and the
+/// exact software-enable value is read back before source identities or readiness become public.
 ///
-/// This does not set the interrupt flag; [`interrupt::enable`] has the separate
-/// legacy-controller precondition. Reinitialization is refused so live source
-/// identities cannot change.
+/// This does not set the interrupt flag; [`interrupt::enable`] has the separate legacy-controller
+/// precondition.
 ///
 /// # Errors
 ///
-/// Returns an [`ApicError`] if a cold transaction cannot begin, its internally
-/// owned interrupt exclusion is lost, x2APIC mode cannot be read back, or the
-/// final software-enable value does not stick exactly.
+/// Returns an [`ApicError`] if a cold transaction cannot begin, its internally owned interrupt
+/// exclusion is lost, x2APIC mode cannot be read back, or the final software-enable value does not
+/// stick exactly.
 ///
 /// # Panics
 ///
-/// Panics before changing hardware if the spurious vector's low four bits are
-/// not all set.
+/// Panics before changing hardware if the spurious vector's low four bits are not all set.
 pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
     let controller = controller();
     controller.lifecycle().admit().map_err(admission_error)?;
@@ -527,16 +519,13 @@ pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
 
 /// Audit every local-APIC IRR bank and perform the first `sti` as one door.
 ///
-/// A PCI function can have placed a compatibility-format MSI in IRR before
-/// VT-d interrupt remapping was taken over. Once IRE is live, new such writes
-/// are denied, but the already accepted request would survive until `sti`.
-/// This door therefore refuses any pending vector while interrupts are still
-/// excluded and enables them only after all eight banks read empty.
+/// A PCI function can have placed a compatibility-format MSI in IRR before VT-d interrupt remapping
+/// was taken over.
 ///
 /// # Errors
 ///
-/// Returns [`PendingInterruptError`] if the APIC is unavailable, interrupts
-/// were already enabled, or any vector is pending.
+/// Returns [`PendingInterruptError`] if the APIC is unavailable, interrupts were already enabled,
+/// or any vector is pending.
 pub fn enable_after_pending_audit() -> Result<(), PendingInterruptError> {
     if interrupt::are_enabled() {
         return Err(PendingInterruptError::InterruptsEnabled);
@@ -593,9 +582,9 @@ pub fn pending_audit_refuses_queued_self_interrupt_for_test(
         core::hint::spin_loop();
         ready_registers().is_some_and(|access| is_pending(&access, expected))
     });
-    // A timer may become pending after exclusion. The production door must
-    // refuse whichever vector is highest, while `queued` above proves that
-    // the self-IPI this witness sent is independently present in IRR.
+    // A timer may become pending after exclusion. The production door must refuse whichever vector
+    // is highest, while `queued` above proves that the self-IPI this witness sent is independently
+    // present in IRR.
     let refusal = matches!(
         enable_after_pending_audit(),
         Err(PendingInterruptError::Pending(_))
@@ -687,8 +676,8 @@ fn initialize<R: InitializationRegisters>(
 
     initialization.enter(InitStage::ConfigureSources)?;
     InitializationRegisters::write(&registers, register::LVT_ERROR, error.bits().into());
-    // The error register latches on write, so this discards whatever accrued
-    // while the APIC belonged to the firmware rather than reporting it as ours.
+    // The error register latches on write, so this discards whatever accrued while the APIC
+    // belonged to the firmware rather than reporting it as ours.
     InitializationRegisters::write(&registers, register::ERROR_STATUS, 0);
     let _ = InitializationRegisters::read(&registers, register::ERROR_STATUS);
 
@@ -779,8 +768,8 @@ pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<
 ///
 /// # Errors
 ///
-/// Returns `token` when the in-service register no longer names its vector,
-/// so the write is skipped.
+/// Returns `token` when the in-service register no longer names its vector, so the write is
+/// skipped.
 pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
     if !x86_apic::in_service::may_complete(
         interrupt_state(),
@@ -797,14 +786,13 @@ pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
 
 /// Deliver the configured self-interrupt source to this CPU.
 ///
-/// With the interrupt flag clear, delivery remains pending until `sti`. The
-/// vector is frozen by [`init`] so callers cannot select another local source.
+/// With the interrupt flag clear, delivery remains pending until `sti`.
 ///
 /// # Errors
 ///
-/// Returns [`DeliveryError::Unavailable`] before a complete initialization,
-/// or [`DeliveryError::InvalidConfiguration`] if the frozen source assignment
-/// cannot encode a delivery.
+/// Returns [`DeliveryError::Unavailable`] before a complete initialization, or
+/// [`DeliveryError::InvalidConfiguration`] if the frozen source assignment cannot encode a
+/// delivery.
 pub fn send_self_interrupt() -> Result<(), DeliveryError> {
     controller().send_self_interrupt()
 }
@@ -819,12 +807,11 @@ pub fn set_timer_divide(divide: Divide) {
 /// Start the timer's countdown from `count` without touching its delivery.
 ///
 /// The programmed entry determines whether expiry is masked or one-shot.
-/// Does nothing before [`init`].
 ///
 /// # Panics
 ///
-/// Panics if `count` is zero, which stops the timer rather than arming it —
-/// [`disarm_timer`] is how a caller says that on purpose.
+/// Panics if `count` is zero, which stops the timer rather than arming it — [`disarm_timer`] is how
+/// a caller says that on purpose.
 pub fn arm_timer(count: u32) {
     assert!(count != 0, "a zero initial count stops the timer");
     write(register::INITIAL_COUNT, count.into());
@@ -854,13 +841,13 @@ pub fn disarm_timer() -> Result<DisarmedTimer, TimerError> {
 
 /// Make each expiry deliver the configured timer source once, and stop.
 ///
-/// The consumed proof requires a successful disarm, and the immediate
-/// readback closes the gap between that proof and the unmasking write.
+/// The consumed proof requires a successful disarm, and the immediate readback closes the gap
+/// between that proof and the unmasking write.
 ///
 /// # Errors
 ///
-/// Returns [`TimerError`] without writing the entry if the source is
-/// unavailable or the countdown is no longer stopped.
+/// Returns [`TimerError`] without writing the entry if the source is unavailable or the countdown
+/// is no longer stopped.
 pub fn set_timer_one_shot(_disarmed: DisarmedTimer) -> Result<(), TimerError> {
     let controller = controller();
     let Some(vector) = controller.published_vector(controller.timer_vector) else {
@@ -886,8 +873,8 @@ pub fn timer_current_count() -> u32 {
     crate::u32_from_u64(read(register::CURRENT_COUNT))
 }
 
-/// The timer's local vector entry, read back from the hardware rather than
-/// remembered from what was written.
+/// The timer's local vector entry, read back from the hardware rather than remembered from what was
+/// written.
 #[cfg(feature = "selftest")]
 pub fn timer_entry() -> Entry {
     Entry::from_bits(crate::u32_from_u64(read(register::LVT_TIMER)))
@@ -895,9 +882,8 @@ pub fn timer_entry() -> Entry {
 
 /// Errors the local APIC has recorded since this was last called.
 ///
-/// The register latches on write and holds that value until the next one, which
-/// is the only way a single read of it can be trusted (SDM Vol. 3A §11.5.3).
-/// So this writes first, and clears what it reports.
+/// The register latches on write and holds that value until the next one, which is the only way a
+/// single read of it can be trusted (SDM Vol. 3A §11.5.3).
 pub fn error_status() -> u32 {
     // Zero specifically: the architecture faults on any other value here.
     write(register::ERROR_STATUS, 0);
@@ -906,10 +892,7 @@ pub fn error_status() -> u32 {
 
 /// This processor's local APIC identifier.
 ///
-/// What an I/O APIC redirection entry names as an interrupt's destination in
-/// physical mode. Reads as zero before the controller is up — which is also
-/// the boot processor's usual identifier — so this value does not prove
-/// controller readiness.
+/// What an I/O APIC redirection entry names as an interrupt's destination in physical mode.
 pub fn id() -> u32 {
     crate::u32_from_u64(read(register::ID))
 }
@@ -1199,10 +1182,8 @@ impl<DeliveryCount: FnMut() -> usize> InitializationObserver
 
 /// Exercise the production APIC transaction with isolated failure state.
 ///
-/// Register reads and writes use bounded counters because replaying controller
-/// setup would disturb the live singleton. The transaction owner, stage
-/// runner, public-operation gates, interrupt flag and queued self-IPI are the
-/// production paths; `delivery_count` observes that real interrupt arriving.
+/// Register reads and writes use bounded counters because replaying controller setup would disturb
+/// the live singleton.
 #[cfg(feature = "selftest")]
 pub fn initialization_failures_for_test(
     vectors: Vectors,
@@ -1520,10 +1501,9 @@ impl Registers {
         reason = "x2APIC writes the named MSR; Registers is only the published-mode token"
     )]
     fn write(&self, register: Register, value: u64) {
-        // SAFETY: `Registers` is created only after x2APIC mode is read back,
-        // and operations outside initialization obtain it only after the
-        // lifecycle publishes `Ready`. Values come from `x86_apic` encodings,
-        // defined timer counts, or architecturally required zero writes.
+        // SAFETY: `Registers` is created only after x2APIC mode is read back, and operations
+        // outside initialization obtain it only after the lifecycle publishes `Ready`. Values come
+        // from `x86_apic` encodings, defined timer counts, or architecturally required zero writes.
         unsafe { msr::write(register.msr(), value) };
     }
 
@@ -1542,21 +1522,20 @@ fn ready_registers() -> Option<Registers> {
 
 /// Put the APIC into x2APIC mode, and report the register as it now stands.
 ///
-/// Two writes, in this order, because the architecture's state machine has no
-/// edge from disabled straight to extended mode: a single write setting both
-/// bits from a disabled APIC raises a general protection fault.
+/// Two writes, in this order, because the architecture's state machine has no edge from disabled
+/// straight to extended mode: a single write setting both bits from a disabled APIC raises a
+/// general protection fault.
 fn enter_extended_mode() -> Result<(Base, Registers), ApicError> {
     let mut base = Base::from_bits(msr::read(base::MSR));
 
     if !base.is_enabled() {
-        // SAFETY: the register named is `IA32_APIC_BASE`, which `cpuid` has
-        // just reported this processor implements, and the only change to what
-        // it already held is the enable bit. The address field is written back
-        // unaltered, so nothing moves.
+        // SAFETY: the register named is `IA32_APIC_BASE`, which `cpuid` has just reported this
+        // processor implements, and the only change to what it already held is the enable bit. The
+        // address field is written back unaltered, so nothing moves.
         unsafe { msr::write(base::MSR, base.enabled().bits()) };
 
-        // Read back rather than assume: on some processors a disabled APIC
-        // stays disabled until reset, and the write is simply ignored.
+        // Read back rather than assume: on some processors a disabled APIC stays disabled until
+        // reset, and the write is simply ignored.
         base = Base::from_bits(msr::read(base::MSR));
         if !base.is_enabled() {
             return Err(ApicError::Disabled);
@@ -1564,9 +1543,9 @@ fn enter_extended_mode() -> Result<(Base, Registers), ApicError> {
     }
 
     if !base.is_x2apic() {
-        // SAFETY: the same register, now with the extended-mode bit added to an
-        // APIC already enabled — the one transition the architecture permits
-        // into this mode. `cpuid` reported the mode as implemented.
+        // SAFETY: the same register, now with the extended-mode bit added to an APIC already
+        // enabled — the one transition the architecture permits into this mode. `cpuid` reported
+        // the mode as implemented.
         unsafe { msr::write(base::MSR, base.x2apic().bits()) };
 
         base = Base::from_bits(msr::read(base::MSR));
