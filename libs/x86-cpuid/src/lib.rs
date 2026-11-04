@@ -1,11 +1,5 @@
 //! What `cpuid` and the capability MSRs say, decoded.
 //!
-//! The pattern D-30 and D-43 set and `010` §8 asks for again: the arithmetic
-//! that reads a hardware answer lives where `cargo test` can reach it, and the
-//! privileged crate keeps only the instruction. QEMU's TCG does not emulate
-//! `IA32_ARCH_CAPABILITIES`, so synthetic capability words are the only way
-//! the enhanced-IBRS branch is checked before it meets real hardware.
-//!
 //! # Examples
 //!
 //! ```
@@ -167,10 +161,8 @@ impl ExecutionEnvironment {
 
     /// Bind a qualified DMA-handoff profile to CPU-resident platform evidence.
     ///
-    /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
-    /// rewritten by a PCI requester. The exact QEMU TCG and `VMware` profiles
-    /// are the only release platforms permitted to assert the DMA-safe
-    /// handoff contract.
+    /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be rewritten by
+    /// a PCI requester.
     pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {
         match self.kind {
             ExecutionEnvironmentKind::QemuTcg => Some(DmaHandoffPlatform::QemuTcg),
@@ -205,11 +197,6 @@ impl core::fmt::Display for SharedKernelMappingReason {
 }
 
 /// Frequency information reported by the basic `cpuid` leaves.
-///
-/// Leaf 0x15 is an architectural ratio to a crystal and can name the TSC's
-/// rate exactly enough to build a conversion. Leaf 0x16 is only the nominal
-/// processor base frequency, so it remains separate diagnostic evidence and
-/// is never silently promoted into a clock rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrequencyHints {
     tsc_hz: Option<u64>,
@@ -218,10 +205,6 @@ pub struct FrequencyHints {
 
 impl FrequencyHints {
     /// Decode optional leaf 0x15 and leaf 0x16 answers.
-    ///
-    /// `ratio` is `(denominator, numerator, crystal_hz)`. Zero fields mean the
-    /// processor did not provide a usable ratio. Only the low sixteen bits of
-    /// `base_mhz` are defined by leaf 0x16.
     #[expect(
         clippy::similar_names,
         reason = "the names are the two values this check is distinguishing"
@@ -263,11 +246,6 @@ impl FrequencyHints {
 }
 
 /// What a processor says about speculative-execution mitigation.
-///
-/// Absence and safety are deliberately different states. A processor with no
-/// `IA32_ARCH_CAPABILITIES` is saying nothing, not saying it is safe, and
-/// treating the two alike is how a mitigation gets skipped on the machines
-/// that need it most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Speculation {
     capabilities: Option<u64>,
@@ -287,10 +265,6 @@ impl Speculation {
     }
 
     /// Decode from the raw `cpuid` answer and a reader for the MSR.
-    ///
-    /// The MSR is read only when the feature bit says it exists, which is the
-    /// whole reason this is one function rather than two: reading it
-    /// unconditionally is a `#GP` on every processor made before 2018.
     pub fn read(leaf_7_edx: u32, read_msr: impl FnOnce(u32) -> u64) -> Self {
         if leaf_7_edx & ARCH_CAPABILITIES_BIT == 0 {
             return Self::undescribed();
@@ -299,19 +273,11 @@ impl Speculation {
     }
 
     /// `RDCL_NO` — the processor claims immunity to Meltdown.
-    ///
-    /// The fact D-81 rests on when it declines KPTI: a mitigation whose cost
-    /// scales with syscall rate is not worth paying on a machine that says it
-    /// does not need it.
     pub const fn rdcl_no(&self) -> bool {
         self.has(1 << 0)
     }
 
     /// `IBRS_ALL` — enhanced IBRS, so one write at boot lasts.
-    ///
-    /// Where it is present, branch-target isolation is a mode the hardware
-    /// stays in rather than something the kernel re-asserts on every entry,
-    /// which is why enabling it is a boot-time write and not an entry cost.
     pub const fn enhanced_ibrs(&self) -> bool {
         self.has(1 << 1)
     }
@@ -328,18 +294,14 @@ impl Speculation {
     }
 
     /// Whether the kernel should write `IBRS` into `IA32_SPEC_CTRL` at boot.
-    ///
-    /// Only with enhanced IBRS. Without it the alternative is per-entry IBRS,
-    /// which is a real cost and a decision for a phase that can measure it —
-    /// so the answer here is "no", not "do it the expensive way".
     pub const fn wants_boot_ibrs(&self) -> bool {
         self.enhanced_ibrs()
     }
 
     /// `IA32_SPEC_CTRL` as it should be left, given its current value.
     ///
-    /// Every other bit is preserved: a mitigation firmware enabled is not the
-    /// kernel's to clear.
+    /// Every other bit is preserved: a mitigation firmware enabled is not the kernel's
+    /// to clear.
     pub const fn spec_ctrl_after(&self, current: u64) -> u64 {
         if self.wants_boot_ibrs() {
             current | SPEC_CTRL_IBRS
@@ -485,11 +447,6 @@ mod tests {
     }
 
     /// Saying nothing is not the same as saying safe.
-    ///
-    /// The distinction this type exists for. A processor with no capability
-    /// word is every AMD part before Zen 2 and every Intel part before 2018 —
-    /// treating its silence as `RDCL_NO` would skip a mitigation on exactly
-    /// the machines that need one.
     #[test]
     fn silence_is_not_safety() {
         let silent = Speculation::undescribed();
@@ -598,10 +555,6 @@ mod tests {
     }
 
     /// The MSR is not read unless the feature bit says it exists.
-    ///
-    /// Reading `IA32_ARCH_CAPABILITIES` on a processor that does not have it
-    /// is a general-protection fault, so this is the one property here that is
-    /// a crash rather than a wrong answer.
     #[test]
     fn the_capability_msr_is_not_read_when_absent() {
         let posture = Speculation::read(0, |_| panic!("read the msr without the feature bit"));
@@ -616,8 +569,8 @@ mod tests {
 
     /// Enabling IBRS preserves every other bit of `IA32_SPEC_CTRL`.
     ///
-    /// Firmware may have enabled a mitigation of its own; clearing it would be
-    /// the kernel silently weakening the machine it booted on.
+    /// Firmware may have enabled a mitigation of its own; clearing it would be the
+    /// kernel silently weakening the machine it booted on.
     #[test]
     fn enabling_ibrs_preserves_what_firmware_set() {
         let enhanced = Speculation::described(1 << 1);
@@ -664,12 +617,6 @@ mod tests {
     }
 
     /// The four numbers the SDM fixes, transcribed.
-    ///
-    /// Every test above spells them by name on both sides of its comparison,
-    /// so each reduces to an identity: `msr == ARCH_CAPABILITIES_MSR` where
-    /// the value *is* that constant; `bit & bit != 0`, true of every single
-    /// bit; `x | IBRS == x | IBRS`. All four survived being changed, and
-    /// `SPEC_CTRL_MSR` was referenced by no test at all (D-124).
     #[test]
     fn the_speculation_constants_are_the_manual_s() {
         // SDM Vol. 4 table 2-2: IA32_SPEC_CTRL is MSR 0x48, and

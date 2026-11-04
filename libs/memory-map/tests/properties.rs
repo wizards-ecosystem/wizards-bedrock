@@ -1,14 +1,7 @@
 //! Property tests over the map's stated contracts.
 //!
-//! Unit tests pin hand-checkable examples; these properties quantify the
-//! documented contracts over arbitrary, overlapping region sets (D-241).
-//!
-//! Every property here cites the sentence it was transcribed from, which is
-//! D-242's admissibility rule: a check whose text could be recovered by reading
-//! the function body would be a restatement of the implementation.
-//!
-//! Limine promises a narrower non-overlapping input, but this tier checks the
-//! crate's public claims rather than one caller's stronger precondition.
+//! Limine promises a narrower non-overlapping input, but this tier checks the crate's
+//! public claims rather than one caller's stronger precondition.
 
 use memory_map::{DirectMapCache, MAX_REGIONS, MemoryKind, MemoryMap, MemoryRegion};
 use proptest::prelude::*;
@@ -31,9 +24,7 @@ fn kind() -> impl Strategy<Value = MemoryKind> {
     ]
 }
 
-/// Small bases and lengths, so generated regions overlap one another. Spread
-/// over the whole address space they would never share a cursor, and the
-/// contradictions D-241 repaired live exactly where they do.
+/// Small bases and lengths, so generated regions overlap.
 fn region() -> impl Strategy<Value = MemoryRegion> {
     (0u64..0x8000, 0u64..0x8000, kind()).prop_map(|(base, len, kind)| MemoryRegion {
         base,
@@ -376,10 +367,6 @@ fn every_small_first_memory_run_matches_an_independent_page_oracle() {
 proptest! {
     /// A run `first_memory_run` names is page-aligned, nonzero, and memory by
     /// the map's own other answer.
-    ///
-    /// Transcribed from "Find a page-aligned, nonzero memory run of at least
-    /// `len` bytes". Two contracts about one address must agree even when a
-    /// reserved region overlaps a direct-mapped one (D-241).
     #[test]
     fn a_found_run_is_aligned_nonzero_and_agrees_with_covers_memory(
         regions in regions(),
@@ -402,11 +389,6 @@ proptest! {
     }
 
     /// Covering does not depend on the order the regions arrived in.
-    ///
-    /// Transcribed from "Input order is not assumed, so each bounded step
-    /// searches the complete map". A walk that took the first region holding
-    /// the cursor made this false whenever two regions shared a base, and the
-    /// stride depended on the order too.
     #[test]
     fn covering_does_not_depend_on_the_order_regions_arrived(
         regions in regions(),
@@ -451,11 +433,6 @@ proptest! {
     }
 
     /// A handoff is taken whole or refused whole, never as a prefix.
-    ///
-    /// Transcribed from the module doc: "A fixed bound is safe only when
-    /// overflow refuses the whole handoff rather than returning a useful-looking
-    /// prefix." D-224 established it on three hand-written cases; this asks it
-    /// of every region count either side of the bound.
     #[test]
     fn a_handoff_is_taken_whole_or_refused_whole(
         regions in prop::collection::vec(region(), 1..200),
@@ -468,11 +445,7 @@ proptest! {
     }
 }
 
-/// The properties above skip a refused map, so this states how often they do
-/// not — D-242 requires the rate rather than an assumption about it.
-///
-/// A suite whose guards almost always fire passes vacuously and is
-/// indistinguishable from one that works, which is the failure this measures.
+/// How often the properties above accept a map.
 #[test]
 fn the_properties_reach_a_constructed_map_and_a_found_run() {
     const SAMPLES: usize = 4096;

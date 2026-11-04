@@ -1,13 +1,5 @@
 //! What a trap was, decoded from the vector and error code the CPU pushed.
 //!
-//! The entry path saves one frame shape for every vector (D-29). Central
-//! decoding keeps architectural meaning out of call sites and preserves the
-//! page-fault error code.
-//!
-//! The pure decode lives outside `wost` so host tests can reach it; handlers
-//! consume one decoded cause instead of reinterpreting vector numbers (D-41,
-//! D-81).
-//!
 //! # Examples
 //!
 //! ```
@@ -40,9 +32,6 @@ pub enum TrapCause {
     /// An architectural exception the CPU raised.
     Fault(Fault),
     /// A vector the architecture reserves but does not define.
-    ///
-    /// Kept distinct from an interrupt: a reserved vector arriving is a
-    /// statement about the machine, not about a device.
     Reserved(u8),
     /// A device or software interrupt, by vector.
     Interrupt(u8),
@@ -50,9 +39,6 @@ pub enum TrapCause {
 
 impl TrapCause {
     /// Decode `vector` and the error code the CPU pushed with it.
-    ///
-    /// `error_code` is ignored for every vector that does not push one, so a
-    /// caller that always passes the saved word is correct.
     pub const fn decode(vector: u8, error_code: u64) -> Self {
         if vector >= exception::COUNT {
             return Self::Interrupt(vector);
@@ -122,11 +108,11 @@ pub enum Fault {
     BoundRange,
     /// `#UD` — an opcode the CPU does not implement in this mode.
     InvalidOpcode,
-    /// `#NM` — floating-point state is unavailable. Reserved for a future
-    /// XFD-based allocator (D-82); nothing raises it today.
+    /// `#NM` — floating-point state is unavailable. Reserved for a future XFD-based
+    /// allocator; nothing raises it today.
     DeviceNotAvailable,
-    /// `#DF` — an exception raised while handling one. It has a stack of its
-    /// own because the usual one is overwhelmingly why it happened (D-89).
+    /// `#DF` — an exception raised while handling one. It has a stack of its own
+    /// because the usual one is overwhelmingly why it happened.
     DoubleFault,
     /// `#TS` — a task-state segment the CPU would not load.
     InvalidTaskState,
@@ -151,8 +137,8 @@ pub enum Fault {
     SimdFloatingPoint,
     /// `#VE` — an EPT violation delivered to the guest.
     Virtualisation,
-    /// `#CP` — a control-flow violation. What CET raises, so this is the
-    /// vector shadow stacks will arrive on (`010` §10).
+    /// `#CP` — a control-flow violation. What CET raises, so this is the vector shadow
+    /// stacks will arrive on.
     ControlProtection,
     /// `#HV` — hypervisor injection.
     HypervisorInjection,
@@ -193,10 +179,6 @@ impl Fault {
     }
 
     /// What to call this in a report.
-    ///
-    /// Falls back to a generic word rather than panicking, which cannot
-    /// happen: every variant's vector is named in `x86_tables::exception`, and
-    /// a host test walks all of them to keep that true.
     pub const fn name(self) -> &'static str {
         match exception::name(self.vector()) {
             Some(name) => name,
@@ -207,25 +189,17 @@ impl Fault {
 
 /// Why a page fault happened, from the error code the CPU pushed.
 ///
-/// Bit meanings are Intel SDM Vol. 3A §4.7. The useful reading is usually the
-/// first bit: clear means nothing was mapped there, set means something was and
-/// the access was not allowed. A miss and a refusal are very different bugs,
-/// and until this crate existed a fault report could not tell them apart.
+/// Bit meanings are Intel SDM Vol. 3A §4.7.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PageFault(u64);
 
 impl PageFault {
     /// Whether the error code describes a ring-0 data access.
-    ///
-    /// Present/missing and read/write may vary. Every privilege, fetch,
-    /// reserved, key, shadow-stack, SGX, or future bit is refused.
     pub const fn is_supervisor_data_access(self) -> bool {
         self.0 & !0b11 == 0
     }
 
     /// A page was present, and the access violated its permissions.
-    ///
-    /// Clear means the translation was absent — a miss rather than a refusal.
     pub const fn was_present(self) -> bool {
         self.0 & 1 != 0
     }
@@ -366,15 +340,7 @@ mod tests {
 
     /// Every vector decodes to something that reports its own number back.
     ///
-    /// The round trip is the point. Two hundred and fifty-six stubs each
-    /// knowing their own vector made this true by construction; a decode can
-    /// get it wrong, and a fault report naming the wrong exception is the kind
-    /// of error that costs an afternoon.
-    /// Every vector decodes to the variant the architecture assigns it.
-    ///
-    /// **Transcribed from SDM Vol. 3A table 6-1**, not derived. Bidirectional
-    /// implementation checks admit a consistent permutation, while fault
-    /// containment relies on the decoded variant (D-136).
+    /// **Transcribed from SDM Vol. 3A table 6-1**, not derived.
     #[test]
     fn every_fault_sits_on_the_vector_the_manual_gives_it() {
         // SDM Vol. 3A, table 6-1. The numbers are the architecture's, so they
@@ -463,9 +429,6 @@ mod tests {
     }
 
     /// A vector this crate calls reserved is one `x86_tables` has no name for.
-    ///
-    /// Two tables of the architecture's vectors exist now, and this is what
-    /// stops them drifting apart.
     #[test]
     fn reserved_vectors_are_the_ones_with_no_name() {
         for vector in 0..exception::COUNT {
@@ -690,12 +653,6 @@ mod tests {
     }
 
     /// Every fault reports the name `x86_tables` gives its vector.
-    ///
-    /// `Fault::name` is `exception::name(self.vector()).unwrap_or("exception")`
-    /// and the `if let` guard fires only where that is `Some`, so the equality
-    /// alone cannot fail. The transcribed names below are what makes it a
-    /// check: two crates naming the same table is why `trap-cause` exists
-    /// (D-105).
     #[test]
     fn a_faults_name_is_its_vectors_name() {
         for vector in 0..exception::COUNT {

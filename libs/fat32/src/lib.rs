@@ -1,9 +1,4 @@
 //! A read-only FAT32 reader over any source of sectors.
-//!
-//! The sector source is a trait so the same parser runs over a host corpus and
-//! a kernel controller (D-170). The reader allocates nothing and treats disk
-//! bytes as hostile: layouts and cluster numbers are checked, reserved FAT bits
-//! are masked, and every chain walk is bounded.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -16,12 +11,6 @@
 )]
 
 /// Bytes in the only sector size this reader supports.
-///
-/// Five hundred and twelve, and a volume that says otherwise is refused rather
-/// than misread. It is what lets every buffer here be a fixed array on the
-/// stack, which is what "no allocation" costs: a reader that supported 4096
-/// would need either a caller-supplied buffer everywhere or an allocator, and
-/// no volume this project builds or boots uses one.
 pub const SECTOR_BYTES: usize = 512;
 
 /// Bytes in one directory entry.
@@ -29,8 +18,8 @@ pub const ENTRY_BYTES: usize = 32;
 
 /// The lowest cluster number that names data.
 ///
-/// Zero is the media descriptor and one is the end-of-chain marker, so the
-/// data area begins at two and every cluster is biased by it.
+/// Zero is the media descriptor and one is the end-of-chain marker, so the data area
+/// begins at two and every cluster is biased by it.
 pub const FIRST_DATA_CLUSTER: u32 = 2;
 
 /// A FAT32 entry is twenty-eight bits; the top four are reserved.
@@ -48,9 +37,7 @@ const MAX_FAT32_CLUSTERS: u64 = FIRST_RESERVED_CLUSTER as u64 - FIRST_DATA_CLUST
 
 /// The most entries one FAT directory may hold.
 ///
-/// The specification caps a directory at 65,536 entries. Past the clusters
-/// that hold them, a chain that has not ended is malformed, so this bounds a
-/// directory walk independently of the volume's size (D-352).
+/// The specification caps a directory at 65,536 entries.
 const MAX_DIRECTORY_ENTRIES: u32 = 65_536;
 const MIRRORING_DISABLED: u16 = 1 << 7;
 const ACTIVE_FAT_MASK: u16 = 0x000F;
@@ -74,16 +61,10 @@ pub mod attribute {
     /// Archive.
     pub const ARCHIVE: u8 = 0x20;
     /// The combination that marks a long-name fragment rather than an entry.
-    ///
-    /// All four of read-only, hidden, system and volume-label at once, which
-    /// no real entry ever is. A reader that did not skip these would return
-    /// fragments of UCS-2 as though they were 8.3 names.
     pub const LONG_NAME: u8 = READ_ONLY | HIDDEN | SYSTEM | VOLUME_LABEL;
 }
 
 /// Where sectors come from.
-///
-/// Host fixtures and kernel controllers implement the same boundary (D-170).
 pub trait Sectors {
     /// What can go wrong down there.
     type Error;
@@ -281,8 +262,6 @@ impl Bpb {
     }
 
     /// The first sector of the data area.
-    ///
-    /// Past the reserved sectors and every copy of the table.
     pub const fn first_data_sector(self) -> u64 {
         self.reserved_sectors as u64 + self.fats as u64 * self.sectors_per_fat as u64
     }
@@ -298,12 +277,6 @@ impl Bpb {
     }
 
     /// The most clusters a directory chain may span before it must have ended.
-    ///
-    /// A directory holds at most [`MAX_DIRECTORY_ENTRIES`] entries, so it needs
-    /// at most that many entry slots' worth of clusters. This does not grow
-    /// with the volume, so a cyclic or oversized directory on a large volume
-    /// cannot drive an unbounded read; the chain length is the tighter of this
-    /// and the data area (D-352).
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the value is bounded to the thirty-two-bit field"
@@ -319,10 +292,6 @@ impl Bpb {
     }
 
     /// Whether `cluster` names data in this volume.
-    ///
-    /// Both ends: below two is a marker rather than data, and past the count
-    /// is off the volume. A chain that walks off the end is what a corrupt or
-    /// hostile table produces, and following it reads whatever is there.
     pub const fn holds(self, cluster: u32) -> bool {
         cluster >= FIRST_DATA_CLUSTER && cluster < FIRST_DATA_CLUSTER + self.clusters()
     }
@@ -373,11 +342,6 @@ pub enum Next {
 }
 
 /// Decode one table entry.
-///
-/// **Twenty-eight bits.** The top four are reserved, and a reader that
-/// compared all thirty-two against the end-of-chain marker would follow a
-/// chain that has ended — into whatever those bits happened to be.
-///
 const fn decode_entry(raw: u32) -> Next {
     let value = raw & ENTRY_MASK;
     if value == 0 {
@@ -421,8 +385,6 @@ impl Entry {
     }
 
     /// An entry that names contents and nothing else.
-    ///
-    /// Its name is empty because the caller retained only cluster and size.
     pub const fn for_contents(cluster: u32, size: u32) -> Self {
         Self {
             name: [0u8; 12],
@@ -439,9 +401,6 @@ impl Entry {
     }
 
     /// Whether the name matches, ignoring case.
-    ///
-    /// FAT stores 8.3 names upper-cased, so a caller that asked for `hello.txt`
-    /// and compared byte for byte would never find `HELLO.TXT`.
     pub fn is_named(&self, wanted: &[u8]) -> bool {
         if wanted.len() != self.name_len {
             return false;
@@ -562,10 +521,9 @@ pub enum Slot {
 
 /// Decode one directory slot.
 ///
-/// The two markers are different things and confusing them is the classic
-/// mistake: **zero ends the directory**, and `0xE5` is one deleted entry with
-/// live entries possibly after it. A reader that stopped on `0xE5` loses files;
-/// one that continued past zero reads whatever the rest of the cluster holds.
+/// The two markers are different things and confusing them is the classic mistake:
+/// **zero ends the directory**, and `0xE5` is one deleted entry with live entries
+/// possibly after it.
 const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
     if slot[0] == 0x00 {
         return Slot::End;
@@ -675,10 +633,6 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
 pub struct Volume<S: Sectors> {
     source: S,
     /// Where the volume begins on the source, in sectors.
-    ///
-    /// A partition offset, because a volume is rarely at sector zero and a
-    /// reader that assumed it was would be one a partition table could not be
-    /// put in front of.
     base: u64,
     bpb: Bpb,
 }
@@ -758,10 +712,6 @@ impl<S: Sectors> Volume<S> {
     }
 
     /// Read at most one sector of directory entries and advance `cursor`.
-    ///
-    /// The returned entries own their names. No borrow of the sector source
-    /// survives this call, so callers may release a device or controller lock
-    /// before inspecting them.
     ///
     /// # Errors
     ///
@@ -847,13 +797,7 @@ impl<S: Sectors> Volume<S> {
         }
     }
 
-    /// Read up to `into.len()` bytes of `entry`, starting `offset` bytes in.
-    ///
-    /// Returns how many bytes were read, which is fewer than asked for at the
-    /// end of the file and zero past it.
-    ///
-    /// **Offsets are per call**, which is D-152's rule arriving here: there is
-    /// no cursor on anything, and a caller that wants one keeps it.
+    /// Read up to `into.len` bytes of `entry`, starting `offset` bytes in.
     ///
     /// # Errors
     ///
@@ -948,10 +892,6 @@ impl<S: Sectors> Volume<S> {
     }
 
     /// Resolve a path of components from the root, and return what it names.
-    ///
-    /// Every component but the last must be a directory. There is **no
-    /// leading separator and no `..`** — callers provide already-validated
-    /// components (`012` §5).
     ///
     /// # Errors
     ///
@@ -1086,7 +1026,7 @@ mod tests {
 
     #[test]
     fn the_boot_sector_is_read_where_the_layout_puts_its_fields() {
-        // Pairwise-distinct fields expose swaps in the decoder (D-136).
+        // Pairwise-distinct fields expose swaps in the decoder.
         let bpb = Bpb::parse(&boot_sector()).expect("a valid boot sector");
 
         assert_eq!(bpb.sectors_per_cluster(), 8);
@@ -2153,9 +2093,9 @@ mod tests {
         reason = "the value is bounded to the thirty-two-bit field"
     )]
     fn a_file_skip_past_the_volume_is_refused_before_walking() {
-        // The chain is acyclic, so the hare never fires: only the volume
-        // bound can refuse a skip whose offset names more clusters than the
-        // volume holds, and it refuses before reading the table (D-238).
+        // The chain is acyclic, so the hare never fires: only the volume bound can
+        // refuse a skip whose offset names more clusters than the volume holds, and it
+        // refuses before reading the table.
         let bpb = tiny(62);
         assert_eq!(bpb.clusters(), 62);
         let mut volume = Volume {

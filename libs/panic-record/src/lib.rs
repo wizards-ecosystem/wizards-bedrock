@@ -1,9 +1,4 @@
 //! Allocation-free framing for a terminal kernel panic record.
-//!
-//! A panic body is arbitrary formatted text, so it can contain the physical
-//! line breaks used to frame the record that follows it. [`write_record`]
-//! makes those breaks and their escape introducer visible, and publishes
-//! completion only after every prior write succeeds.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -58,9 +53,6 @@ impl<W: fmt::Write> fmt::Write for SingleLine<'_, W> {
 }
 
 /// Write one complete terminal panic record.
-///
-/// The completion line is withheld unless the body and its physical newline
-/// were both accepted by `writer`.
 ///
 /// # Examples
 ///

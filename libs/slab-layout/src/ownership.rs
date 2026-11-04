@@ -1,12 +1,6 @@
 //! Heap and frame-pool ownership accounting.
 
 /// Counts that determine whether an allocator preserved ownership.
-///
-/// The receiver in [`is_preserved_since`](Self::is_preserved_since) is the
-/// later snapshot. Live allocations must return exactly to their earlier
-/// count. Slab frames may increase because the heap retains empty slabs; large
-/// frames may move when a still-live allocation changes capacity. Every heap
-/// frame must leave the free pool so the total physical account is conserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocatorOwnership {
     free_frames: usize,

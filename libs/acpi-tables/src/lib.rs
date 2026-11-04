@@ -1,13 +1,5 @@
 //! Parsing for the ACPI tables this kernel reads.
 //!
-//! The RSDP points at the XSDT, the XSDT lists tables by signature, the
-//! MADT describes the interrupt controllers, and the DMAR describes the
-//! VT-d IOMMU hardware. Nothing more, until something reads it.
-//!
-//! Works on `&[u8]` and validates before it trusts. Firmware is the least
-//! trustworthy input the kernel has, so a malformed table must produce an
-//! error — never a panic, never a read past the buffer.
-//!
 //! ```
 //! use acpi_tables::{Rsdp, Sdt};
 //!
@@ -158,8 +150,6 @@ fn checksum_is_valid(bytes: &[u8]) -> bool {
 
 /// Set `bytes[index]` so the whole slice sums to zero.
 ///
-/// For building tables in tests and doctests; firmware does this for us.
-///
 /// # Panics
 ///
 /// Panics if `index` is outside `bytes`.
@@ -205,10 +195,6 @@ impl Rsdp {
 
     /// Read the extent a root pointer declares without allocating it.
     ///
-    /// Revision zero has the fixed twenty-byte form. Revision two carries a
-    /// length field so compatible extensions remain inside the checksum.
-    /// Other revision values have no defined layout and are refused.
-    ///
     /// # Errors
     ///
     /// [`AcpiError::TooShort`] if the bytes do not reach the needed field,
@@ -250,10 +236,8 @@ impl Rsdp {
 
     /// Validate and read an RSDP.
     ///
-    /// Both checksums are checked: revision 0 covers the first 20 bytes, and
-    /// revision 2 adds a second covering all 36. A table that fails either is
-    /// refused — firmware that miscomputes a checksum is firmware whose
-    /// pointers are not worth following.
+    /// Both checksums are checked: revision 0 covers the first 20 bytes, and revision 2
+    /// adds a second covering all 36.
     ///
     /// # Errors
     ///
@@ -304,8 +288,8 @@ impl Rsdp {
 
     /// The 64-bit XSDT address, if this RSDP has one.
     ///
-    /// Preferred over the RSDT wherever present: the RSDT's entries are 32-bit
-    /// and cannot name a table above 4 GiB.
+    /// Preferred over the RSDT wherever present: the RSDT's entries are 32-bit and
+    /// cannot name a table above 4 GiB.
     pub const fn xsdt(self) -> Option<u64> {
         if self.revision >= 2 && self.xsdt != 0 {
             Some(self.xsdt)
@@ -355,11 +339,10 @@ impl Sdt {
 
     /// The length a header claims, without validating anything else.
     ///
-    /// The one field that has to be read before a table can be validated at
-    /// all: the checksum covers exactly `length` bytes, so a reader must learn
-    /// `length` from an unvalidated header in order to fetch the bytes
-    /// [`parse`](Self::parse) will then check. `limit` is the reader's explicit
-    /// allocation budget, applied before any allocation follows this result.
+    /// The one field that has to be read before a table can be validated at all: the
+    /// checksum covers exactly `length` bytes, so a reader must learn `length` from an
+    /// unvalidated header in order to fetch the bytes [`parse`](Self::parse) will then
+    /// check.
     ///
     /// # Errors
     ///
@@ -391,10 +374,8 @@ impl Sdt {
 
     /// Validate and read a table header.
     ///
-    /// `bytes` must span the *whole* table, not merely its header: the
-    /// checksum covers every byte the length field claims, and a header alone
-    /// cannot be validated. That is deliberate — it makes it impossible to
-    /// accept a table on the strength of a header whose body was never read.
+    /// `bytes` must span the *whole* table, not merely its header: the checksum covers
+    /// every byte the length field claims, and a header alone cannot be validated.
     ///
     /// # Errors
     ///
@@ -437,11 +418,6 @@ impl Sdt {
 }
 
 /// A platform attestation that one exact VT-d unit covers a complete segment.
-///
-/// This vendor table is useful when a hypervisor's standards-defined DMAR
-/// describes only its boot-time device scopes even though its one emulated
-/// unit intercepts the whole segment. It does not replace the DMAR: consumers
-/// must corroborate this segment and register base against one RMRR-free DRHD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaCoverage {
     segment: u16,
@@ -542,10 +518,6 @@ impl DmaCoverage {
 }
 
 /// A platform attestation that PCI DMA is safe at kernel handoff.
-///
-/// The table is deliberately separate from [`DmaCoverage`]. Coverage names a
-/// remapping unit; this contract says the platform kept one PCI segment
-/// quiescent before the kernel can establish any unit of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaHandoff {
     segment: u16,
@@ -663,15 +635,9 @@ mod handoff {
 }
 
 /// The most table pointers a root table may list.
-///
-/// A valid root can otherwise choose unbounded pre-interrupt reads and
-/// allocations. Real machines list only a few dozen tables, so 256 preserves
-/// ample headroom while bounding firmware-controlled work.
 const MAX_TABLES: usize = 256;
 
 /// The table addresses an XSDT or RSDT lists.
-///
-/// Construction refuses a root above the fixed boot-discovery bound.
 #[derive(Debug)]
 pub struct SdtPointers<'a> {
     body: &'a [u8],
@@ -742,10 +708,6 @@ impl Iterator for SdtPointers<'_> {
 }
 
 /// An entry of the Multiple APIC Description Table.
-///
-/// Only the kinds this kernel acts on are named. Everything else is
-/// [`Other`](Self::Other) with its type byte, so an unrecognised controller is
-/// reportable rather than invisible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MadtEntry {
@@ -770,8 +732,8 @@ pub enum MadtEntry {
     /// A legacy IRQ that does not arrive on the interrupt line sharing its
     /// number.
     ///
-    /// The reason IRQ routing cannot assume `irq == gsi`: firmware commonly
-    /// remaps the timer, and may remap anything.
+    /// The reason IRQ routing cannot assume `irq == gsi`: firmware commonly remaps the
+    /// timer, and may remap anything.
     InterruptSourceOverride {
         /// The legacy bus, always 0 (ISA) in practice.
         bus: u8,
@@ -802,10 +764,6 @@ impl<'a> MadtEntries<'a> {
     const HEADER: usize = Sdt::LEN + 8;
 
     /// Validate a MADT and walk its entries.
-    ///
-    /// Validation covers the MADT-specific header and every variable-length
-    /// entry before iteration starts. That makes a corrupt tail invalidate the
-    /// table as a whole instead of leaving callers with a trusted prefix.
     ///
     /// # Errors
     ///
@@ -1075,8 +1033,7 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
 /// A remapping structure of the DMA Remapping Reporting table.
 ///
 /// Only the kinds a VT-d driver acts on are named; everything else is
-/// [`Other`](Self::Other) with its type word, the same shape as
-/// [`MadtEntry::Other`].
+/// [`Other`](Self::Other) with its type word, the same shape as [`MadtEntry::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DmarStructure<'a> {
@@ -1141,11 +1098,6 @@ impl<'a> DmarEntries<'a> {
 
     /// Validate a DMAR and walk its remapping structures.
     ///
-    /// Validation covers every variable-length structure — and any device
-    /// scope nested inside a DRHD, RMRR, or ATSR — before iteration starts,
-    /// so a corrupt tail invalidates the table as a whole instead of
-    /// leaving callers with a trusted prefix.
-    ///
     /// # Errors
     ///
     /// If the table is not a valid DMAR, or a structure or a nested device
@@ -1209,8 +1161,8 @@ impl<'a> DmarEntries<'a> {
 /// Bounds-check every device scope nested in a DRHD, RMRR, or ATSR
 /// structure.
 ///
-/// `base` is the scope list's absolute offset in the table, so a refusal
-/// names the byte a firmware author would need to fix.
+/// `base` is the scope list's absolute offset in the table, so a refusal names the byte
+/// a firmware author would need to fix.
 fn validate_device_scopes(base: usize, scopes: &[u8]) -> Result<(), AcpiError> {
     let mut offset = 0;
     while offset < scopes.len() {
@@ -1358,15 +1310,11 @@ impl<'a> DeviceScope<'a> {
     }
 
     /// What this scope names in `segment`, walked through the live topology.
-    ///
-    /// Each hop before the last must be a bridge, and the next hop lies on
-    /// its secondary bus. `None` for a kind that names no PCI function, an
-    /// empty path, or a hop the topology does not vouch for.
     fn walk(self, segment: u16, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<Named> {
         let hierarchy = match self.kind() {
             DeviceScopeKind::PciEndpoint => false,
             DeviceScopeKind::PciSubHierarchy => true,
-            // No PCI function: I/O APIC and HPET scopes serve interrupt remapping (PW-710).
+            // No PCI function: I/O APIC and HPET scopes serve interrupt remapping.
             DeviceScopeKind::IoApic
             | DeviceScopeKind::Hpet
             | DeviceScopeKind::AcpiNamespaceDevice
@@ -1582,9 +1530,6 @@ pub struct GoverningUnit {
 }
 
 /// Every live PCI requester proved to belong to one remapping unit.
-///
-/// The fixed storage is deliberate: callers must choose and enforce their
-/// ownership bound before a unit-wide hardware transition can begin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequesterInventory<const N: usize> {
     unit: GoverningUnit,
@@ -1870,9 +1815,6 @@ impl<'a> Dmar<'a> {
     }
 
     /// Segment of the one and only DRHD, or `None` for zero or multiple units.
-    ///
-    /// A consumer that can enumerate only one PCI segment must reject every
-    /// other shape before claiming complete requester coverage.
     pub fn sole_unit_segment(&self) -> Option<u16> {
         let mut units = self.entries().filter_map(|structure| match structure {
             DmarStructure::Drhd { segment, .. } => Some(segment),
@@ -1883,9 +1825,6 @@ impl<'a> Dmar<'a> {
     }
 
     /// Register base of the sole DRHD for an RMRR-free `segment`.
-    ///
-    /// This proves that a coverage attestation names the same one unit as the
-    /// standards-defined DMAR; it does not itself prove catch-all coverage.
     pub fn sole_rmrr_free_unit_register_base(&self, segment: u16) -> Option<u64> {
         if self.entries().any(
             |structure| matches!(structure, DmarStructure::Rmrr { segment: reserved, .. } if reserved == segment),
@@ -1906,11 +1845,6 @@ impl<'a> Dmar<'a> {
     }
 
     /// Register base of the sole catch-all DRHD for an RMRR-free `segment`.
-    ///
-    /// This is the static proof needed to establish a deny-all owner before
-    /// requester discovery: one unit must govern every possible requester in
-    /// the segment, not just every function a mutable presence scan observed.
-    /// Any RMRR for the segment refuses early ownership before a unit write.
     pub fn sole_complete_unit_register_base(&self, segment: u16) -> Option<u64> {
         let register_base = self.sole_rmrr_free_unit_register_base(segment)?;
         self.entries()
@@ -1928,14 +1862,6 @@ impl<'a> Dmar<'a> {
     }
 
     /// The DRHD unit that governs `bdf`, and the scope that decided it.
-    ///
-    /// Scopes resolve through one sealed topology: `bridge` reports the buses
-    /// behind a function and `hierarchy` proves that its first function is an
-    /// ancestor of the second. The most specific scope wins: an endpoint
-    /// scope naming `bdf` outranks a bridge scope enclosing it, an inner
-    /// bridge outranks the bridges above it, and an `INCLUDE_PCI_ALL` unit
-    /// governs only what no scope in its segment names. Equal-specificity
-    /// claims from distinct units are ambiguous and fail closed as `None`.
     pub fn unit_for(
         &self,
         bdf: Bdf,
@@ -2023,17 +1949,6 @@ impl<'a> Dmar<'a> {
 
     /// Inventory every live PCI requester governed by the selected function's
     /// exact DRHD.
-    ///
-    /// Endpoint paths are resolved exactly. Sub-hierarchy scopes are expanded
-    /// across every bus, device and function number in their bounded range;
-    /// `present` must report whether that exact requester currently exists.
-    /// Each result is checked through [`Self::unit_for`] again so a scope
-    /// shadowed by a provably more-specific unit cannot enter the inventory.
-    /// Overlapping sibling hierarchies are ambiguous, and a fixed scope budget
-    /// bounds hostile duplicate scans. A sole RMRR-free catch-all unit instead
-    /// scans the complete, fixed segment requester-ID space through `present`,
-    /// even when a more-specific scope names `selected`; the caller's fixed
-    /// inventory capacity remains the admission bound.
     ///
     /// # Errors
     ///
@@ -2183,10 +2098,6 @@ impl<'a> Dmar<'a> {
 
     /// Every reserved memory region a device at `bdf` must have
     /// identity-mapped rather than translated.
-    ///
-    /// An RMRR's scopes resolve through `bridge` as [`Self::unit_for`]'s do,
-    /// and its region applies when any of them names `bdf`, as itself or
-    /// behind a named bridge.
     pub fn reserved_regions_for<F: Fn(Bdf) -> Option<BusRange>, H: Fn(Bdf, Bdf) -> bool>(
         &self,
         bdf: Bdf,
@@ -2355,8 +2266,8 @@ mod tests {
 
     #[test]
     fn a_madt_entry_shorter_than_its_fields_is_refused_not_read() {
-        // Independent minima from ACPI 6.5 table 5-22 keep the bounds from
-        // merely restating the parser (D-142).
+        // Independent minima from ACPI 6.5 table 5-22 keep the bounds from merely
+        // restating the parser.
         for (kind, minimum) in [(0u8, 8usize), (1, 12), (2, 10), (0x80, 2)] {
             let short = minimum - 1;
             let mut madt = madt_with_entry(kind, short);
@@ -2778,7 +2689,7 @@ mod tests {
     fn a_madt_yields_the_entries_this_kernel_acts_on() {
         let mut body = Vec::new();
         body.extend_from_slice(&0xfee0_0000u32.to_le_bytes()); // local APIC
-        body.extend_from_slice(&1u32.to_le_bytes()); // flags
+        body.extend_from_slice(&1u32.to_le_bytes());
         body.extend_from_slice(&[0, 8, 3, 7, 1, 0, 0, 0]); // local APIC entry
         body.extend_from_slice(&[1, 12, 2, 0]); // I/O APIC entry
         body.extend_from_slice(&0xfec0_0000u32.to_le_bytes());
@@ -3439,9 +3350,9 @@ mod tests {
 
     #[test]
     fn a_dmar_structure_shorter_than_its_fields_is_refused_not_read() {
-        // Independent field widths from the Intel VT-d specification's
-        // DRHD, RMRR, ATSR, and RHSA structure layouts keep the bounds from
-        // merely restating the parser (D-142).
+        // Independent field widths from the Intel VT-d specification's DRHD, RMRR,
+        // ATSR, and RHSA structure layouts keep the bounds from merely restating the
+        // parser.
         for (kind, minimum) in [(0u16, 16usize), (1, 24), (2, 8), (3, 20), (0x80, 4)] {
             let short_len = minimum - 1;
             let mut short = vec![0u8; short_len];
@@ -4180,7 +4091,6 @@ mod tests {
 
     #[test]
     fn a_long_endpoint_path_still_outranks_another_units_outer_hierarchy() {
-        // Nine valid hops exceed the retired bridge-path array's old bound.
         // Dropping the endpoint would let the less-specific outer unit win.
         const HOPS: usize = 9;
         let bridges = (0..u8::try_from(HOPS - 1).expect("fits"))

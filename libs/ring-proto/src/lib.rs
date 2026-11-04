@@ -1,10 +1,5 @@
 //! Submission/completion ring arithmetic and overflow-safe admission.
 //!
-//! Each accepted submission reserves a completion. The completion queue is a
-//! power of two and at least twice the submission queue, while free-running
-//! counters distinguish full from empty across wrap (D-79). This crate accepts
-//! copied values, never references to user-writable shared memory (D-221).
-//!
 //! # Examples
 //!
 //! ```
@@ -34,8 +29,6 @@
 use core::mem::{align_of, size_of};
 
 /// The version every ring structure carries.
-///
-/// Bumped whenever a reader-visible layout changes.
 pub const VERSION: u32 = 1;
 
 /// Bytes in one shared-memory publication word.
@@ -85,10 +78,6 @@ impl core::fmt::Display for SharedLayoutError {
 impl core::error::Error for SharedLayoutError {}
 
 /// A complete payload/publication partition of one shared ring allocation.
-///
-/// The listed naturally aligned words are the only offsets usable for
-/// synchronized publication. Every other byte is payload; a payload range
-/// intersecting any listed word is refused whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SharedLayout<const WORDS: usize> {
     bytes: usize,
@@ -208,10 +197,6 @@ pub struct Capacity(u32);
 
 impl Capacity {
     /// The largest a ring may be.
-    ///
-    /// Half the counter range, so that `tail - head` is always a count and
-    /// never an ambiguity: with a larger ring, a producer far enough ahead of
-    /// a consumer would wrap into looking behind it.
     pub const MAX: u32 = 1 << 31;
 
     /// A capacity of `entries`, or why not.
@@ -219,9 +204,6 @@ impl Capacity {
     /// # Errors
     ///
     /// [`CapacityError::NotAPowerOfTwo`] for zero or a non-power of two.
-    ///
-    /// [`CapacityError::TooLarge`] guards a wider future index type; no `u32`
-    /// power of two exceeds [`MAX`](Self::MAX).
     pub const fn new(entries: u32) -> Result<Self, CapacityError> {
         if entries == 0 || !entries.is_power_of_two() {
             return Err(CapacityError::NotAPowerOfTwo(entries));
@@ -263,9 +245,6 @@ impl Ring {
 
     /// A ring whose counters came from somewhere else, if they are consistent.
     ///
-    /// This is the validation half of read-once-then-validate: occupancy greater
-    /// than capacity is refused before indexing (D-79).
-    ///
     /// # Errors
     ///
     /// `None` when the counters describe more outstanding entries than the
@@ -284,8 +263,8 @@ impl Ring {
     /// How many entries are waiting.
     ///
     /// A wrapping subtraction, which is what keeps this a count rather than a
-    /// comparison: it is correct across the wrap at `u32::MAX`, where `tail`
-    /// is numerically below `head` and the ring is not empty at all.
+    /// comparison: it is correct across the wrap at `u32::MAX`, where `tail` is
+    /// numerically below `head` and the ring is not empty at all.
     pub const fn occupied(&self) -> u32 {
         self.tail.wrapping_sub(self.head)
     }
@@ -366,9 +345,6 @@ impl core::fmt::Display for PairError {
 impl core::error::Error for PairError {}
 
 /// A submission queue and the completion queue it reports into.
-///
-/// Admission reserves report capacity, making completion overflow
-/// unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Queues {
     submission: Ring,
@@ -400,11 +376,6 @@ impl Queues {
     }
 
     /// Admit one operation, reserving the completion slot it will need.
-    ///
-    /// `None` when the submission queue is full **or** when every completion
-    /// slot is already spoken for. The second is the case that matters: it is
-    /// where a ring that would otherwise have to drop a completion instead
-    /// declines the work.
     pub const fn submit(&mut self) -> Option<usize> {
         // Posted and reserved completions both own slots; ignoring either can
         // admit work with nowhere to report its result.
@@ -421,19 +392,11 @@ impl Queues {
     }
 
     /// Take the oldest submission for processing.
-    ///
-    /// Its reservation stays held: the operation is in flight, and the slot it
-    /// will report into is still its own.
     pub const fn take(&mut self) -> Option<usize> {
         self.submission.consume()
     }
 
     /// Report one operation's terminal completion, spending its reservation.
-    ///
-    /// `None` only when nothing is outstanding, which is a caller bug rather
-    /// than a full queue — the reservation taken at [`submit`](Self::submit)
-    /// is what guarantees the room. **Every operation posts exactly one of
-    /// these, always**, cancelled ones included (D-79).
     pub const fn complete(&mut self) -> Option<usize> {
         if self.reserved == 0 {
             return None;
@@ -486,8 +449,6 @@ impl Queues {
     }
 
     /// Whether the reservation invariant still holds.
-    ///
-    /// Outstanding and posted completions together must fit the completion queue.
     pub const fn is_consistent(&self) -> bool {
         (self.reserved as u64) + (self.completion.occupied() as u64)
             <= self.completion.capacity().entries() as u64
@@ -502,7 +463,7 @@ mod tests {
         Capacity::new(entries).expect("a usable capacity")
     }
 
-    /// Pin the externally visible version independently of its users (D-148).
+    /// Pin the externally visible version independently of its users.
     #[test]
     fn the_wire_version_is_one() {
         assert_eq!(VERSION, 1, "the ring layout has not changed");
@@ -708,9 +669,6 @@ mod tests {
 
     /// **Full and empty are different states**, which is the whole reason the
     /// counters count operations rather than slots.
-    ///
-    /// A ring that stored slot indices would have `head == tail` for both, and
-    /// would have to sacrifice an entry to tell them apart.
     #[test]
     fn full_and_empty_are_not_the_same_state() {
         let mut ring = Ring::new(capacity(4));
@@ -893,8 +851,8 @@ mod tests {
 
     #[test]
     fn every_power_of_two_a_u32_holds_is_accepted() {
-        // Checked rather than reasoned: nothing a `u32` holds survives the
-        // power-of-two refusal and then exceeds `MAX` (D-105).
+        // Checked rather than reasoned: nothing a `u32` holds survives the power-of-two
+        // refusal and then exceeds `MAX`.
         for shift in 0..u32::BITS {
             let entries = 1u32 << shift;
             assert!(Capacity::new(entries).is_ok(), "{entries} was refused");

@@ -1,12 +1,5 @@
 //! PS/2 keyboard scancode set 2 decoding.
 //!
-//! Byte-stream decoding has no hardware dependency, so it is host-tested here;
-//! the kernel driver only feeds controller bytes into it.
-//!
-//! Wire protocol is separate from layout policy: [`Decoder`] produces
-//! [`KeyEvent`]s naming physical keys, and the [`us`] module turns events
-//! into characters for one layout.
-//!
 //! # Examples
 //!
 //! ```
@@ -19,9 +12,6 @@
 //! let release = decoder.feed(0x1C).expect("the break completes");
 //! assert_eq!((release.key, release.state), (Key::A, KeyState::Released));
 //! ```
-//!
-//! Sequences follow the IBM PS/2 keyboard specification's scan code set 2
-//! tables, as transcribed by the `OSDev` wiki's "Keyboard Scan Codes" page.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

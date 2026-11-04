@@ -1,18 +1,8 @@
 //! Scan code set 2's two lookup tables.
-//!
-//! The base table for bare make codes, and the extended table for codes
-//! arriving behind an `E0` prefix. Values are the IBM PS/2 specification's
-//! set 2 assignment. An unknown code maps to nothing: multimedia and
-//! vendor keys are swallowed upstream rather than being errors, because a
-//! keyboard is allowed to have buttons this kernel has no name for.
 
 use crate::key::Key;
 
 /// The key a bare set 2 make code names.
-///
-/// Note F7: `0x83`, the one assignment above `0x7F`, which is why this table
-/// is over the full byte and why break codes need their `F0` prefix rather
-/// than a high bit.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::F9,
@@ -134,18 +124,7 @@ pub(crate) fn extended_key_for(code: u8) -> Option<Key> {
 mod tests {
     use super::*;
 
-    /// Spot anchors transcribed from the set 2 table, one from every region:
-    /// letters, digits, punctuation, function row, modifiers, keypad, and the
-    /// one code above `0x7F`.
-    /// Every single-byte set 2 make code, transcribed from the specification.
-    ///
-    /// Source: Andries Brouwer, *Keyboard scancodes*, section 10, "Scan code
-    /// set 2" — the table Linux's own documentation points at. The numbers are
-    /// the specification's, so they are written out rather than derived.
-    ///
-    /// Brouwer's correspondence table gives backslash as `0x5D` in set 2 and
-    /// `0x5C` in set 3; Vetra's translation table independently agrees
-    /// (D-156, D-162).
+    /// Every single-byte set 2 make code, as the specification lists it.
     #[test]
     fn every_single_byte_make_code_is_the_specification_s() {
         const SET_2: [(u8, Key); 69] = [
@@ -305,8 +284,8 @@ mod tests {
         for table in [key_for, extended_key_for] {
             for code in 0..=u8::MAX {
                 let Some(key) = table(code) else { continue };
-                // Widened: `code + 1` overflows at `0xFF`, and the test would
-                // panic in its own arithmetic rather than report (D-105).
+                // Widened: `code + 1` overflows at `0xFF`, and the test would panic in
+                // its own arithmetic rather than report.
                 for other in (u16::from(code) + 1)..=u16::from(u8::MAX) {
                     let other = other as u8;
                     assert_ne!(table(other), Some(key), "{code:#04x} vs {other:#04x}");

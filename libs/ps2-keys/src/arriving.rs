@@ -1,28 +1,4 @@
 //! Which numbering the bytes arriving are in, read from the bytes themselves.
-//!
-//! Every other way of asking has been observed to lie. A controller that
-//! translates while reporting the bit clear is one real machine (D-178); a
-//! controller that reports a translated identity *and* a translated set query
-//! while delivering set 2 is another (D-239). The two disagree about which
-//! probe is honest, so no probe is.
-//!
-//! The stream cannot lie, because the encodings are distinguishable:
-//!
-//! - Set 2 prefixes every release with `F0`. Set 1 has no `70` key, so `F0`
-//!   is not a release it can produce either — `F0` means set 2 wherever it
-//!   appears, including inside Pause and after `E0`.
-//! - Set 1 marks a release by setting the high bit, and its makes stop at
-//!   `5D`, so its releases run to `DD`. Set 2's makes stop at `83`. A byte
-//!   above `83` that is not a reply either set can send is therefore set 1.
-//!
-//! Two bytes are excluded for being both: `AA`, set 2's self-test reply and
-//! set 1's left-shift release, and `AB`, the first byte of every identity
-//! reply and set 1's backslash release. Letting a reply answer this would
-//! reinstate the probe the stream is here to replace.
-//!
-//! Both bounds are read off the tables in `set1` and `table` rather than
-//! chosen, and `the_two_tables_still_bound_this_probe` fails if either grows
-//! past them.
 
 /// What the bytes so far have proved about their numbering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,20 +26,9 @@ const SET_1_HIGHEST_BREAK: u8 = 0xDD;
 
 /// Bytes in set 1's release range that set 2 can also send, so they decide
 /// nothing.
-///
-/// `AA` is set 2's self-test reply and set 1's left-shift release;
-/// [`Decoder`](crate::Decoder) documents the same collision from the other
-/// side. `AB` is the first byte of every identity reply — the very probe whose
-/// dishonesty this exists to route around — and set 1's backslash release. A
-/// reply that reaches the stream must not be allowed to answer the question
-/// the stream is being asked.
 const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];
 
 /// Reads the numbering off the stream without consuming it.
-///
-/// Stateless on purpose: every rule above holds for a byte in any position,
-/// so there is no sequence to track and no state that could disagree with the
-/// decoder's.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SetProbe;
 
@@ -104,11 +69,6 @@ mod tests {
     use crate::{set1, table};
 
     /// The probe's two bounds are the tables', not numbers chosen beside them.
-    ///
-    /// This is the check that makes the rule an argument rather than a claim:
-    /// if either table grows a code past the bound the probe assumes, the
-    /// discriminator stops being sound and this fails before a machine can
-    /// mis-decode a keystroke.
     #[test]
     fn the_two_tables_still_bound_this_probe() {
         for code in 0..=u8::MAX {
@@ -134,12 +94,6 @@ mod tests {
     }
 
     /// An identity reply that reaches the stream answers nothing.
-    ///
-    /// `AB 41` and `AB 83` are the replies whose dishonesty this probe exists
-    /// to route around, so letting the first byte of either decide would put
-    /// that answer straight back in the stream's mouth. `AB` is also a real
-    /// set 1 backslash release, which is why it has to be excluded rather than
-    /// argued away.
     #[test]
     fn an_identity_reply_in_the_stream_decides_nothing() {
         for reply in [[0xABu8, 0x41], [0xAB, 0x83]] {
@@ -173,10 +127,6 @@ mod tests {
     }
 
     /// A real keystroke from each set decides, and decides correctly.
-    ///
-    /// The exact bytes the two machines delivered: `VMware`'s `c` arrived as
-    /// set 2 while its identity claimed set 1, and the same key under a
-    /// controller that really translates arrives as set 1.
     #[test]
     fn one_keystroke_from_either_machine_decides_it() {
         let set_2 = [0x21u8, 0xF0, 0x21];

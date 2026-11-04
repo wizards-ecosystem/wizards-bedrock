@@ -1,10 +1,5 @@
 //! PCI configuration-space addressing and BAR decoding.
 //!
-//! `wost` owns the CF8/CFC instructions; this crate owns their host-tested
-//! arithmetic. Offsets are dword-aligned, BAR masks are complemented in their
-//! register width, and 64-bit BARs consume two slots. CF8/CFC is the common
-//! mechanism on the QEMU i440fx and `VMware` 440BX targets (`012` §2).
-//!
 //! # Examples
 //!
 //! ```
@@ -44,23 +39,15 @@ pub const DEVICES: u8 = 32;
 pub const FUNCTIONS: u8 = 8;
 
 /// Bytes of the configuration header this addressing reaches.
-///
-/// The original mechanism sees 256; the extended space ECAM adds is not
-/// reachable through CF8/CFC at all, and a driver that needs it needs ECAM.
 pub const HEADER_BYTES: u16 = 256;
 
 /// Base address registers a type 0 header has.
 pub const BARS: usize = 6;
 
 /// Base address registers a type 1 header has.
-///
-/// The third slot in a bridge header is its bus-number register, not a BAR.
 pub const BRIDGE_BARS: usize = 2;
 
 /// Byte offsets in the configuration header.
-///
-/// Type 0 (a device) and type 1 (a bridge) share everything up to `0x0F`, and
-/// the header type at `0x0E` is what says which the rest is.
 pub mod header {
     /// Vendor id, and device id in the high half. `0xFFFF` means nothing is
     /// there — the bus returns all ones for an absent function.
@@ -84,8 +71,8 @@ pub mod command {
     pub const IO_SPACE: u16 = 1;
     /// Respond to memory-space accesses.
     pub const MEMORY_SPACE: u16 = 1 << 1;
-    /// **Bus master.** Without it the controller cannot DMA, queues never
-    /// advance, and there is no device error to read (`012` §2).
+    /// **Bus master. ** Without it the controller cannot DMA, queues never advance, and
+    /// there is no device error to read.
     pub const BUS_MASTER: u16 = 1 << 2;
 }
 
@@ -131,9 +118,6 @@ impl Address {
     }
 
     /// The same function at a different offset.
-    ///
-    /// The common move — walk a header — expressed so the bus, device and
-    /// function are not re-encoded and cannot be re-encoded differently.
     pub const fn at(self, offset: u16) -> Option<Self> {
         if offset >= HEADER_BYTES || !offset.is_multiple_of(4) {
             return None;
@@ -142,10 +126,6 @@ impl Address {
     }
 
     /// The identity of this function, with no register offset attached.
-    ///
-    /// Device ownership is a bus/device/function claim. Treating two offsets
-    /// in the same header as different identities would let two drivers claim
-    /// the same function.
     #[must_use]
     pub const fn function_base(self) -> Self {
         Self(self.0 & !0xFF)
@@ -172,10 +152,6 @@ impl Address {
 }
 
 /// The exclusive right to mutate one PCI function.
-///
-/// Its registry identity, generation and address are opaque. A token minted by
-/// another registry therefore cannot authorize a hardware adapter backed by
-/// this one, even when both name the same bus/device/function tuple.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "dropping function authority permanently retains its claim"]
 pub struct FunctionAuthority {
@@ -228,8 +204,8 @@ impl<const N: usize> FunctionClaims<N> {
 
     /// Claim one function whose header layout was read from that function.
     ///
-    /// The returned token is bound to this registry, a non-repeating
-    /// generation and the canonical function address.
+    /// The returned token is bound to this registry, a non-repeating generation and the
+    /// canonical function address.
     ///
     /// # Errors
     ///
@@ -389,18 +365,14 @@ impl Class {
 
     /// Whether this is an NVM Express controller.
     ///
-    /// All three bytes, not two: `01:08` is "non-volatile memory controller"
-    /// and `01:08:01` is NVMHCI, a different and older interface this driver
-    /// would misprogram.
+    /// All three bytes, not two: `01:08` is "non-volatile memory controller" and
+    /// `01:08:01` is NVMHCI, a different and older interface this driver would
+    /// misprogram.
     pub const fn is_nvme(self) -> bool {
         self.code == 0x01 && self.subclass == 0x08 && self.interface == 0x02
     }
 
     /// Whether this is a PCI-to-PCI bridge, and so a bus to descend into.
-    ///
-    /// **Enumeration must recurse.** `VMware` places functions behind
-    /// `pciBridge0`–`pciBridge7`, so a scan of bus zero alone may never find
-    /// the controller (`012` §2).
     pub const fn is_bridge(self) -> bool {
         self.code == 0x06 && self.subclass == 0x04
     }
@@ -418,9 +390,7 @@ impl HeaderType {
 
     /// Whether the device has functions past zero.
     ///
-    /// Bit 7. A walk that ignores it and probes all eight anyway is not wrong,
-    /// only slower; a walk that *reads* it and gets the bit wrong misses every
-    /// function of a multi-function device.
+    /// Bit 7. Misreading it skips every function of a multi-function device.
     pub const fn is_multifunction(self) -> bool {
         self.0 & 0x80 != 0
     }
@@ -436,9 +406,6 @@ impl HeaderType {
     }
 
     /// BAR register slots defined by this header layout.
-    ///
-    /// `None` for layouts this kernel cannot safely size: their registers do
-    /// not have either the type-0 device or type-1 bridge meaning.
     pub const fn bar_registers(self) -> Option<usize> {
         match self.layout() {
             0 => Some(BARS),
@@ -461,10 +428,9 @@ pub enum Bar {
         address: u64,
         /// Whether it took two register slots.
         wide: bool,
-        /// Whether the device tolerates speculative reads. **Not** whether the
-        /// kernel should map it that way: a register file is mapped
-        /// uncacheable whatever this says, and mapping it write-back is a
-        /// silent, hard-to-debug bug (`012` §2).
+        /// Whether the device tolerates speculative reads. **Not** whether the kernel
+        /// should map it that way: a register file is mapped uncacheable whatever this
+        /// says, and mapping it write-back is a silent, hard-to-debug bug.
         prefetchable: bool,
     },
     /// An I/O port window.
@@ -492,9 +458,9 @@ impl Bar {
 
     /// Decode one supported slot, given the slot after it when it is wide.
     ///
-    /// `high` is read unconditionally by the caller because it must be read
-    /// *before* this can say whether it was needed, and reading it costs one
-    /// configuration cycle.
+    /// `high` is read unconditionally by the caller because it must be read *before*
+    /// this can say whether it was needed, and reading it costs one configuration
+    /// cycle.
     ///
     /// # Errors
     ///
@@ -561,8 +527,7 @@ pub enum MemoryWidth {
 
 /// The size of a **memory** window, from the all-ones probe.
 ///
-/// The size is the two's complement of the returned address mask. `width`
-/// keeps complementation in the register's actual width (D-168).
+/// The size is the two's complement of the returned address mask.
 ///
 /// # Errors
 ///
@@ -607,13 +572,10 @@ pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Opti
 
 /// The size of an **I/O** window, from the same probe.
 ///
-/// I/O masks stay 32-bit and must describe a run within the 16-bit port space.
-///
 /// # Errors
 ///
 /// `None` when the mask decodes nothing, or when the size will not fit the
 /// port space it claims to describe.
-///
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the register is the low sixteen bits of the dword"
@@ -670,29 +632,16 @@ pub const ISA_DMA_PENDING_REQUESTS: u32 = 0xf0f0;
 
 /// Function authorities the platform PCI registry and kernel can hold at once.
 ///
-/// A unit-wide VT-d fence claims every live requester the unit governs. The
-/// default `VMware` machine alone presents 42, 32 of them root ports, so the
-/// bound is sized by the qualified platform rather than by the test machine.
+/// A unit-wide VT-d fence claims every live requester the unit governs.
 pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;
 
 /// Platform-bound policy for the entry-time DMA fence.
-///
-/// The `VMware` profile recognizes one exact emulated 440BX host bridge whose
-/// command bit 2 is a read-only chipset control rather than a PCI requester
-/// bus-master enable, and one exact PIIX4 ISA bridge whose read-only bit 2 does
-/// govern a requester: its 8237 controllers. That requester stays in every
-/// inventory and is quiesced at the controllers instead. The caller must select
-/// the profile only from requester-inaccessible `VMware` CPU evidence; every
-/// other function and every near miss remains under the strict BME-off rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffFencePolicy {
     kind: HandoffFencePolicyKind,
 }
 
 /// Exact platform evidence that one present function is not a DMA requester.
-///
-/// Construction is private to [`HandoffFencePolicy`], so topology code cannot
-/// remove an arbitrary function from the requester inventory.
 #[derive(Debug)]
 #[must_use = "qualified non-requester evidence must constrain requester inventory"]
 pub struct QualifiedNonRequester {
@@ -704,10 +653,6 @@ pub struct QualifiedNonRequester {
 
 /// Exact platform evidence that one requester's bus mastering is held off at
 /// its DMA engines because its command bit 2 cannot be cleared.
-///
-/// Construction is private to the entry fence, after the exact `VMware` PIIX4
-/// profile matched and both 8237 controllers were masked with no request
-/// pending. The function remains a requester in every inventory.
 #[derive(Debug)]
 #[must_use = "quiesced requester evidence must reach the topology snapshot"]
 pub struct QuiescedIsaRequester {
@@ -750,10 +695,6 @@ impl QuiescedRequester {
 }
 
 /// One untrusted later observation checked against non-requester authority.
-///
-/// Construction proves nothing by itself. [`PciTopology::observe_non_requester`]
-/// consumes the earlier entry-fence authority and compares every security-
-/// relevant field before excluding the function from requester inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionObservation {
     at: Address,
@@ -1029,11 +970,6 @@ impl core::error::Error for HandoffFenceError {}
 
 /// Clear and verify BME on every present function in the legacy PCI segment.
 ///
-/// Every bus, device and function number is probed independently; no header
-/// hint or bridge route can shrink the inventory. The caller must already own
-/// the one configuration mechanism used by `access` and hold trusted platform
-/// authority that its visibility and requester identities remain static.
-///
 /// # Errors
 ///
 /// Returns the exact unavailable cycle, refused command readback or changing
@@ -1199,10 +1135,6 @@ enum Retained {
 }
 
 /// The exclusive right to finish one function's command-register transition.
-///
-/// The function identity, original word, installed word and registry
-/// generation are deliberately opaque. Restoration therefore cannot be aimed
-/// at another function or replayed over a later lease.
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "dropping command state permanently retains its function lease"]
 pub struct CommandState {
@@ -1557,9 +1489,6 @@ impl core::error::Error for EnableError {}
 
 /// Enable memory decode while explicitly withholding bus mastering.
 ///
-/// This is the safe first stage for a memory-mapped controller whose firmware
-/// DMA state must be disabled before bus mastering is admitted.
-///
 /// # Errors
 ///
 /// [`EnableFailure`] when the lease is stale, configuration access fails, or
@@ -1578,11 +1507,6 @@ pub fn enable_memory_space<const N: usize>(
 
 /// Exclusively fence one requester's bus mastering for a unit-wide DMA
 /// transition.
-///
-/// The returned command owner records every captured bit except BME as its
-/// restoration target. It must therefore remain attached to the remapping
-/// unit until the unit transition is complete; restoring it can never revive
-/// unisolated DMA.
 ///
 /// # Errors
 ///
@@ -1612,7 +1536,6 @@ pub fn fence_bus_master<const N: usize>(
 /// Freshly verify that one live command owner still has BME clear.
 ///
 /// This is the last selected-function check before a unit-wide VT-d write.
-/// It neither changes nor consumes the command owner.
 ///
 /// # Errors
 ///
@@ -1833,14 +1756,6 @@ fn admit_bus_master_with_leases<const N: usize>(
 }
 
 /// Permanently withhold bus mastering from a transient function lease.
-///
-/// The command word is read and the BME-clear result is verified while the
-/// exact function and command generations remain live. Only a successful
-/// readback removes BME from the word a later [`restore_command`] will write;
-/// every other captured bit is still restored normally. An interrupted prior
-/// command change is accepted only at one of its two recorded words, which
-/// lets teardown settle an uncertain bus-master admission without inventing a
-/// third state.
 ///
 /// # Errors
 ///
@@ -2065,10 +1980,6 @@ fn commit_command_with_leases<const N: usize>(
 }
 
 /// One configuration-space cycle in a BAR-probe transaction.
-///
-/// A platform adapter implements these against its configuration mechanism.
-/// Keeping the sequence here makes its ordering and rollback host-testable;
-/// the adapter only has to keep its hardware lock for the closure's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     clippy::exhaustive_enums,
@@ -2391,10 +2302,6 @@ pub fn release_memory_bar<const N: usize>(
 
 /// Re-read a mapped BAR and require its exact decoded identity to be unchanged.
 ///
-/// The closure performs only reads. A caller can therefore compose this check
-/// and a command transaction under one hardware lock without any write before
-/// identity validation succeeds.
-///
 /// # Errors
 ///
 /// Refuses a stale or foreign mapping authority, an inaccessible BAR half, or
@@ -2443,9 +2350,6 @@ fn verify_memory_bar<const N: usize>(
 }
 
 /// Enable memory decode from a staged probe after its BAR identity is re-proven.
-///
-/// BAR reads and the command transition share one closure so a platform
-/// adapter can hold its configuration lock across the complete sequence.
 ///
 /// # Errors
 ///
@@ -2642,13 +2546,6 @@ pub struct ProbeRetry {
 }
 
 /// Probe every BAR under one exclusive decode-off transaction.
-///
-/// The closure is called for configuration cycles while the platform adapter
-/// holds its configuration lock. I/O decode, memory decode and bus mastering
-/// are cleared and read back before the first BAR write. BARs are restored
-/// while that state remains verified; the successful result retains exclusive
-/// authority to restore the original command later. A 64-bit BAR has both
-/// halves filled with ones before either half is read.
 ///
 /// # Errors
 ///
@@ -3103,9 +3000,8 @@ fn decode_windows<E>(
 
 /// Whether a vendor word means "nothing is here".
 ///
-/// An absent function does not fail a configuration read; the bus returns all
-/// ones, so `0xFFFF` is the answer and not an error. A driver that treats it
-/// as a vendor id enumerates 256 buses of imaginary devices.
+/// An absent function does not fail a configuration read; the bus returns all ones, so
+/// `0xFFFF` is the answer and not an error.
 pub const fn is_absent(vendor: u16) -> bool {
     vendor == 0xFFFF
 }
@@ -3304,14 +3200,6 @@ impl core::fmt::Display for TopologyError {
 impl core::error::Error for TopologyError {}
 
 /// A fixed, allocation-free snapshot of one rooted legacy PCI segment.
-///
-/// Each non-root bus is indexed by its unique direct parent bridge. Queries
-/// return nothing until [`Self::seal`] proves that all present functions reach
-/// bus zero, child ranges stay inside their parents, and unrelated branches
-/// do not overlap. An error from any observation door invalidates the snapshot
-/// and is returned by every later observation and seal until [`Self::reset`].
-/// Observe each function once per snapshot; successful observations are not
-/// replacement transactions.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PciTopology {
     parent: [u32; BUSES],
@@ -3749,8 +3637,6 @@ pub const fn primary_bus(bits: u32) -> u8 {
 }
 
 /// A bridge's secondary bus number, out of the word at [`header::BUS_NUMBERS`].
-///
-/// The bus behind it, which is the number a recursive enumeration descends to.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the field occupies one byte of the register"
@@ -3760,9 +3646,6 @@ pub const fn secondary_bus(bits: u32) -> u8 {
 }
 
 /// A bridge's subordinate bus number, out of the word at [`header::BUS_NUMBERS`].
-///
-/// The highest bus behind it: the bridge forwards to every bus from its
-/// secondary through this one.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the field occupies one byte of the register"
@@ -5780,7 +5663,7 @@ mod tests {
         reason = "the register is the low sixteen bits of the dword"
     )]
     fn an_address_puts_every_field_where_the_manual_says() {
-        // Pairwise-distinct fields expose every accidental swap (D-136).
+        // Pairwise-distinct fields expose every accidental swap.
         let at = Address::new(0x12, 0x1A, 0x05, 0x3C).expect("a valid address");
 
         assert_eq!(at.bits() >> 31, 1, "the enable bit");
@@ -6362,8 +6245,7 @@ mod tests {
             );
         }
         assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
-        // The same windows with bits 31:16 hardwired to zero. Complementing
-        // the full dword used to call these too big to be ports.
+        // The same windows with bits 31:16 hardwired to zero.
         assert_eq!(io_window_size(0x0000_FFFC), Some(4));
         assert_eq!(io_window_size(0x0000_FFE0), Some(32));
     }

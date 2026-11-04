@@ -1,9 +1,6 @@
 //! Experimental reading aid for the foundation register.
 //!
-//! The Markdown register in `docs/016-pre-wizzy-foundation.md` is the
-//! authority. This crate only prints and checks the rows it can parse. It is
-//! outside the kernel workspace, outside `cargo xtask ci`, and outside the
-//! register itself.
+//! `docs/016-pre-wizzy-foundation.md` is the authority.
 
 use std::path::{Path, PathBuf};
 

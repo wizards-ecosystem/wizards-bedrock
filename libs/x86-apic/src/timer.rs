@@ -1,11 +1,4 @@
 //! The timer's divide encoding and the count it is armed with.
-//!
-//! Two pieces, both hardware-free. The divide-configuration register scatters
-//! a four-bit value across bits 0, 1 and 3 (Intel SDM Vol. 3A §11.5.4), which
-//! is exactly the kind of layout that earns a transcribed table and a test.
-//! And a one-shot timer is armed by writing a count, which the architecture
-//! bounds at both ends: zero stops the hardware rather than firing it soon,
-//! and thirty-two bits is as far ahead as it can be asked to look.
 
 use crate::local_vector::{DeliverableVector, Entry};
 
@@ -98,14 +91,6 @@ impl Divide {
 
 /// The count to arm a one-shot timer with, for a wait of `ticks` of the
 /// divided clock.
-///
-/// Clamped at both ends, because both ends mean something the caller did not
-/// ask for. Zero is the architecture's way of spelling "stopped", so a wait
-/// of no time at all becomes the soonest the hardware can be asked for — one
-/// tick — rather than a timer that never fires. And a wait further ahead than
-/// the counter's thirty-two bits becomes the furthest it can express, which
-/// is a caller that must re-arm when it expires rather than one that has been
-/// silently given a wrapped-around count.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value is bounded to the thirty-two-bit field"
@@ -152,12 +137,6 @@ mod tests {
     ];
 
     /// `ALL` is every `Divide` there is.
-    ///
-    /// The match is the check and the compiler runs it: a ninth variant makes
-    /// it non-exhaustive and the crate stops building. The length is asserted
-    /// after it because a variant can be added to the enum *and* to the match
-    /// and still be missing from the list the other tests iterate — which
-    /// would quietly shrink their coverage rather than fail (D-161).
     #[test]
     fn all_is_every_divide_the_enum_has() {
         for divide in ALL {
@@ -176,9 +155,8 @@ mod tests {
         assert_eq!(ALL.len(), 8, "ALL has fallen behind the enum");
     }
 
-    /// SDM Vol. 3A §11.5.4's divide-value table, transcribed rather than
-    /// derived: bits 1:0 carry the low half of the value and bit 3 the high
-    /// bit, with divide-by-one the all-set case.
+    /// SDM Vol. 3A §11.5.4: bits 1:0 are the low half of the divide value and bit 3 the
+    /// high bit. Divide-by-one is the all-set case.
     #[test]
     fn every_divide_encoding_matches_the_manual() {
         for (divide, bits, factor) in [

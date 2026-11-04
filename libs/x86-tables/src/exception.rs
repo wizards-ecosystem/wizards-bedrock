@@ -1,9 +1,7 @@
 //! The architectural exception vectors.
 //!
-//! Vectors 0–31 are reserved by the architecture; everything above them is a
-//! hardware or software interrupt. Two facts about each vector matter to the
-//! entry path: what to call it in a fault report, and whether the CPU pushes an
-//! error code before the handler runs.
+//! Vectors 0–31 are reserved by the architecture; everything above them is a hardware
+//! or software interrupt.
 
 /// Vectors the architecture reserves.
 pub const COUNT: u8 = 32;
@@ -25,10 +23,6 @@ pub const DOUBLE_FAULT: u8 = 8;
 pub const PAGE_FAULT: u8 = 14;
 
 /// One bit per vector that the CPU pushes an error code for.
-///
-/// The entry stubs push a zero for every other vector so that the saved frame
-/// has one shape. This constant is what the stub generator in
-/// `wost::arch::current::interrupt` assembles against, so the two cannot drift.
 pub const ERROR_CODE_VECTORS: u32 = 0x6022_7D00;
 
 /// Whether the CPU pushes an error code before entering `vector`'s handler.
@@ -37,9 +31,6 @@ pub const fn pushes_error_code(vector: u8) -> bool {
 }
 
 /// What to call `vector` in a fault report.
-///
-/// Returns `None` for the vectors the architecture reserves without defining,
-/// and for everything above the architectural range.
 pub const fn name(vector: u8) -> Option<&'static str> {
     Some(match vector {
         0 => "divide error",
@@ -79,13 +70,9 @@ mod tests {
     const WITH_ERROR_CODE: [u8; 10] = [8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
 
     /// The named constants are the vectors `name` answers for.
-    ///
-    /// Index with each named constant so a literal-only lookup cannot leave the
-    /// constant itself unchecked; pin `COUNT` at its exact boundary (D-148).
     #[test]
     fn the_named_vectors_are_the_ones_the_table_names() {
-        // SDM Vol. 3A table 6-1, transcribed. Each constant is used to *index*
-        // the table, so a wrong constant gives the wrong name.
+        // SDM Vol. 3A table 6-1, transcribed.
         for (constant, expected) in [
             (BREAKPOINT, "breakpoint"),
             (INVALID_OPCODE, "invalid opcode"),

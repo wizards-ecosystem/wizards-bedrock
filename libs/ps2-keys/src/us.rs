@@ -1,10 +1,4 @@
 //! The US layout: from key identity to character.
-//!
-//! Layout is policy over the decoder's facts, kept apart from it so a second
-//! layout is a sibling module rather than a decoder change. Keys that type
-//! nothing — modifiers, navigation, function keys — map to `None`; the
-//! keypad maps as its digits, because nothing tracks `NumLock` yet and the
-//! digits are the useful half.
 
 use crate::key::Key;
 use crate::shift::Shift;

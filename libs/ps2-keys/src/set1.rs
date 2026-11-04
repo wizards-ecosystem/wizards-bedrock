@@ -1,21 +1,8 @@
 //! Scan code set 1's two lookup tables.
-//!
-//! The set a translating controller delivers. Same shape as [`crate::table`] —
-//! a base table and an `E0` table — over different numbers, and with the
-//! release encoded in the high bit rather than an `F0` prefix, which is the
-//! decoder's problem rather than this module's.
-//!
-//! Source: Andries Brouwer, *Keyboard scancodes*, "Scan code set 1", the same
-//! reference [`crate::table`] is transcribed from. The correspondence D-162
-//! settled is one of the entries here: backslash is `0x2B` in set 1 where it
-//! is `0x5D` in set 2.
 
 use crate::key::Key;
 
 /// The key a bare set 1 make code names.
-///
-/// Codes run `0x01..=0x58` with gaps; everything above is a release, which
-/// never reaches here.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::Escape,
@@ -138,14 +125,6 @@ mod tests {
     use crate::table;
 
     /// Every key one set names, the other names too.
-    ///
-    /// The check that makes a second transcription worth more than the sum of
-    /// two transcriptions: set 1 and set 2 are different numbers for the same
-    /// hundred-odd keys, so a key present in one table and absent from the
-    /// other is a hole in whichever is newer, and there is no third table to
-    /// ask. A dropped entry, a duplicated arm shadowing its neighbour, and a
-    /// key spelled into the wrong half — base where it belongs behind `E0` —
-    /// are all caught here, and none of them by reading (D-179).
     #[test]
     fn both_sets_name_the_same_keys() {
         let mut only_in_set_1 = Vec::new();
@@ -182,9 +161,6 @@ mod tests {
     }
 
     /// No code names two keys, and no key has two codes.
-    ///
-    /// Repeated codes make a later match arm unreachable; this independent
-    /// direction catches a key reachable through two codes.
     #[test]
     fn no_key_is_named_twice_within_a_table() {
         for table in [
@@ -201,11 +177,7 @@ mod tests {
         }
     }
 
-    /// The correspondence `004`'s D-162 settled, as an anchor.
-    ///
-    /// That entry cost a research pass and two independent sources to resolve,
-    /// and it names both sets — so it is the one pair in this table that
-    /// arrives already verified, and it is asserted rather than trusted.
+    /// Set 1 and set 2 both name backslash, at different codes.
     #[test]
     fn backslash_is_the_correspondence_d162_settled() {
         assert_eq!(key_for(0x2B), Some(Key::Backslash));
@@ -213,10 +185,6 @@ mod tests {
     }
 
     /// The rows a QWERTY keyboard lays out contiguously, in set 1.
-    ///
-    /// Set 1's numbering follows the physical rows, which is the property that
-    /// makes a single mistyped entry visible: every letter row is a run with
-    /// no gaps, so a swapped pair breaks the run.
     #[test]
     fn the_letter_rows_are_contiguous_runs() {
         for (start, row) in [

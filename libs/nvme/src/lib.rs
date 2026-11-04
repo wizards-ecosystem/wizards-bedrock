@@ -1,28 +1,5 @@
 //! Register layout, queue arithmetic and command encoding for NVM Express.
 //!
-//! Everything about talking to an NVMe controller that is not an instruction.
-//! `wost` keeps the memory-mapped accesses; the kernel keeps the queues' pages
-//! and the waiting. What is here is arithmetic, where `cargo test`, a doctest
-//! and a mutation can all reach it.
-//!
-//! **The ring parallel is a trap** (`012` §3). This kernel already has a
-//! submission/completion ring with a doorbell, and two research passes
-//! independently concluded: *share the arithmetic, never the structure*. The
-//! invariant does generalise — Base 2.2 §3.3.1.2.1 puts the same obligation on
-//! a host that D-79 puts on the kernel, never admit work whose completion has
-//! nowhere to go — but four things differ and every one of them is a bug if
-//! assumed away:
-//!
-//! - **The completion tail is not visible to the host.** New entries are found
-//!   by their **phase tag**, which flips each time the queue wraps.
-//! - **Completions are correlated by command identifier**, not by slot. A
-//!   controller may complete out of order, and does.
-//! - **Capacity is `size - 1`.** A full queue and an empty one are the same
-//!   head and tail, so one entry is always left unused. The symptom of getting
-//!   it wrong is a **hang**, not an error.
-//! - **The doorbell is write-only.** The tail the controller believes is not
-//!   readable, so the host shadows it.
-//!
 //! # Examples
 //!
 //! ```
@@ -64,9 +41,6 @@ pub const IOCQES: u32 = 4;
 pub const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
 
 /// A hardware poll bounded either by monotonic time or by boot-time attempts.
-///
-/// Re-exported from `timebase`, which is where the rule lives now that the
-/// keyboard's human wait needs the same one (D-240).
 pub use timebase::PollLimit;
 
 /// Logical-block size the current storage caller can consume.
@@ -91,21 +65,12 @@ pub const NAMESPACE_IDENTIFY_BYTES: usize =
     LBA_FORMATS_OFFSET + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
 
 /// Publication state for the controller's sole outstanding command.
-///
-/// This type records only events which a hardware-free caller can prove. A
-/// matching completion returns to idle, while [`DmaState::close`] permanently
-/// closes publication. Whether a stopped device makes memory recyclable is a
-/// hardware authority and remains at the register-observation boundary.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DmaState {
     state: DmaOwnership,
 }
 
 /// Proof that a prepared DMA command has become device-owned.
-///
-/// Only [`DmaState::publish_with`] can mint this proof, after changing the
-/// reservation to the in-flight state. An MMIO adapter consumes it while
-/// ringing the matching submission doorbell.
 #[derive(Debug)]
 pub struct DmaPublication<'a> {
     _state: &'a DmaState,
@@ -128,9 +93,6 @@ impl DmaState {
     }
 
     /// Reserve the sole command slot before preparing its queue entry.
-    ///
-    /// False while another reservation or command exists, or after controller
-    /// shutdown made the ownership decision terminal.
     pub fn reserve(&mut self) -> bool {
         if self.state != DmaOwnership::Idle {
             return false;
@@ -140,10 +102,6 @@ impl DmaState {
     }
 
     /// Cancel a reservation that was never published to the controller.
-    ///
-    /// False unless a caller had successfully reserved the one in-flight
-    /// slot. Once a doorbell has been rung, only completion or quiescence may
-    /// return ownership instead.
     pub fn cancel_unpublished(&mut self) -> bool {
         if self.state != DmaOwnership::Reserved {
             return false;
@@ -153,11 +111,6 @@ impl DmaState {
     }
 
     /// Make a prepared command device-owned before invoking its handoff.
-    ///
-    /// The callback is the only publication window: it receives an opaque
-    /// proof after ownership changed, so an MMIO adapter can require that
-    /// proof instead of relying on a separately maintained source-order
-    /// convention.
     pub fn publish_with<T>(&mut self, handoff: impl FnOnce(DmaPublication<'_>) -> T) -> Option<T> {
         if self.state != DmaOwnership::Reserved {
             return None;
@@ -189,8 +142,7 @@ impl DmaState {
 
 /// Byte offsets of the controller registers, from Base 2.2 §3.1.
 pub mod register {
-    /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
-    /// §11 records that `VMware`'s values are unmeasured.
+    /// Controller capabilities. 64 bits, read from the device, never assumed.
     pub const CAP: usize = 0x00;
     /// Controller configuration.
     pub const CC: usize = 0x14;
@@ -228,9 +180,6 @@ pub mod status {
 }
 
 /// Register values that describe a controller unable to execute DMA.
-///
-/// This value classifies bits; it does not prove where they were observed.
-/// Hardware authority must also retain the exact register mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisabledRegisters {
     cc: u32,
@@ -286,9 +235,6 @@ impl core::fmt::Display for ControllerStateError {
 impl core::error::Error for ControllerStateError {}
 
 /// Exclusive register ownership while controller quiescence is unverified.
-///
-/// Each fallible access consumes and returns this value, so an error cannot
-/// discard the authority needed to retry or quarantine the controller.
 #[derive(Debug)]
 #[must_use = "unverified controller ownership must be advanced or retained"]
 pub struct ControllerPreparation<T> {
@@ -394,9 +340,6 @@ impl<P, E> PreparationFailure<P, E> {
 }
 
 /// What `CAP` says, decoded.
-///
-/// **Read, never assumed.** Every field here changes what a correct driver
-/// does, and `012` §11 records that `VMware`'s values have not been measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     bits: u64,
@@ -421,9 +364,6 @@ impl Capabilities {
     }
 
     /// `TO`: the timeout, in units of 500 milliseconds.
-    ///
-    /// How long the controller may take to become ready. A driver that waits
-    /// a fixed time instead is a driver that works on one machine.
     pub const fn timeout_ms(self) -> u64 {
         ((self.bits >> 24) & 0xFF) * 500
     }
@@ -434,10 +374,6 @@ impl Capabilities {
     }
 
     /// Bytes between one doorbell and the next.
-    ///
-    /// `4 << DSTRD`. A driver that assumes four bytes works on every controller
-    /// that reports zero and silently writes the wrong register on any that
-    /// does not.
     pub const fn doorbell_bytes(self) -> usize {
         4usize << self.doorbell_stride()
     }
@@ -461,9 +397,8 @@ impl Capabilities {
 
     /// Whether the NVM command set is supported.
     ///
-    /// `CSS` bit 0. A controller without it is not one this driver can read
-    /// from, and finding out at the first command rather than at
-    /// initialisation is finding out from a hang.
+    /// `CSS` bit 0. Without it the first command hangs instead of failing at
+    /// initialisation.
     pub const fn supports_nvm_command_set(self) -> bool {
         self.bits & (1 << 37) != 0
     }
@@ -471,10 +406,8 @@ impl Capabilities {
 
 /// How many entries a queue holds, and how many commands may be outstanding.
 ///
-/// The `size - 1` rule, in a type, because it is the off-by-one whose symptom
-/// is a hang rather than an error (`012` §3). A queue's head and tail are equal
-/// when it is empty, so a producer that filled the last slot could not tell the
-/// two apart — one entry is always left unused, on every queue, for ever.
+/// The `size - 1` rule, in a type, because it is the off-by-one whose symptom is a hang
+/// rather than an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     entries: u32,
@@ -533,9 +466,6 @@ impl Capacity {
     }
 
     /// Whether a queue with this head and tail can take another entry.
-    ///
-    /// The `size - 1` rule applied: the tail may advance to one short of the
-    /// head and no further, because equal means empty.
     pub const fn has_room(self, head: u32, tail: u32) -> Option<bool> {
         if head >= self.entries {
             return None;
@@ -562,8 +492,8 @@ pub enum Doorbell {
 
 /// Where a queue's doorbell lives, relative to the register file.
 ///
-/// The formula from Base 2.2 §3.1.24: submission and completion doorbells
-/// alternate, and the stride comes from `CAP.DSTRD` rather than being four.
+/// The formula from Base 2.2 §3.1.24: submission and completion doorbells alternate,
+/// and the stride comes from `CAP.DSTRD` rather than being four.
 ///
 /// # Errors
 ///
@@ -796,10 +726,6 @@ impl Completion {
     }
 
     /// Whether this completion proves the expected command was consumed.
-    ///
-    /// This driver publishes only one command at a time, so the controller's
-    /// submission head must equal the tail published for that command. Queue
-    /// identity and command identity are part of the same provenance check.
     pub const fn matches_submission(
         self,
         queue: u16,
@@ -887,10 +813,6 @@ impl core::error::Error for NamespaceError {}
 impl Namespace {
     /// Parse the Identify Namespace prefix this driver negotiated.
     ///
-    /// The high `FLBAS` index bits are ignored because this host does not
-    /// enable the 64-format extension. Metadata capability fields are likewise
-    /// not settings; the selected format and `DPS` decide the transfer shape.
-    ///
     /// # Errors
     ///
     /// [`NamespaceError`] names an empty, malformed or unsupported format.
@@ -946,9 +868,6 @@ impl Namespace {
     }
 
     /// Bytes in each logical block.
-    ///
-    /// Every namespace this kernel admits is 512-byte blocks. The method
-    /// takes `self` so a later format can vary it without a new call shape.
     pub const fn block_bytes(self) -> u32 {
         let _ = self.blocks;
         SUPPORTED_BLOCK_BYTES
@@ -956,10 +875,6 @@ impl Namespace {
 }
 
 /// A read whose command extent and DMA capacity have both been validated.
-///
-/// The fields stay private so command construction cannot accidentally return
-/// to raw counts after this boundary. D-195 makes this the only value the
-/// kernel's read submission path accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadTransfer {
     lba: u64,
@@ -1303,10 +1218,8 @@ mod tests {
 
     /// A queue holds one fewer command than it has entries.
     ///
-    /// `012` §3 singles this out: a full queue and an empty one have the same
-    /// head and tail, so one slot is always unused — and **the symptom of
-    /// getting it wrong is a hang**, not an error. There is no controller
-    /// response and nothing to log.
+    /// A full queue and an empty one share head and tail, so one slot stays unused; filling
+    /// it hangs.
     #[test]
     fn a_queue_holds_one_fewer_command_than_it_has_entries() {
         for entries in [2u32, 3, 8, 64, 1024, 65536] {
@@ -1317,9 +1230,6 @@ mod tests {
     }
 
     /// The last slot is never taken, whatever the head is.
-    ///
-    /// Exhaustive over every head and tail of a small queue, because the rule
-    /// is about one specific pair out of every pair and a sample misses it.
     #[test]
     fn a_queue_refuses_the_entry_that_would_make_full_look_empty() {
         let capacity = Capacity::new(4).expect("four entries");
@@ -1374,10 +1284,6 @@ mod tests {
     }
 
     /// Every capability field is read from its own bits.
-    ///
-    /// Pairwise distinct values so no two fields can be swapped with this
-    /// still passing (D-136), and every one of them changes what a correct
-    /// driver does.
     #[test]
     fn every_capability_field_is_read_from_its_own_bits() {
         let bits = 0x0000_0000_0000_00FFu64
@@ -1407,8 +1313,8 @@ mod tests {
 
     /// A controller that says nothing supports nothing.
     ///
-    /// The zeroed register, which is what a driver reads from an address it
-    /// mapped wrongly — and it must not look like a working controller.
+    /// The zeroed register, which is what a driver reads from an address it mapped
+    /// wrongly — and it must not look like a working controller.
     #[test]
     fn a_silent_controller_supports_nothing() {
         let cap = Capabilities::from_bits(0);
@@ -1420,9 +1326,8 @@ mod tests {
 
     /// Doorbells alternate, and the stride is the controller's.
     ///
-    /// A driver that assumes four bytes works on every controller reporting a
-    /// stride of zero and silently writes a *different queue's* doorbell on
-    /// any that does not.
+    /// A driver that assumes four bytes works on every controller reporting a stride of
+    /// zero and silently writes a *different queue's* doorbell on any that does not.
     #[test]
     fn doorbells_alternate_and_use_the_controllers_stride() {
         let narrow = Capabilities::from_bits(0);
@@ -1475,10 +1380,6 @@ mod tests {
     }
 
     /// A completion is decoded field by field, and the phase tag is one bit.
-    ///
-    /// The phase is how a new entry is recognised at all — there is no tail to
-    /// read — so a decoder that took it from the wrong bit would see either
-    /// every entry or none.
     #[test]
     fn a_completion_is_decoded_field_by_field() {
         let mut bytes = [0u8; COMPLETION_ENTRY_BYTES];

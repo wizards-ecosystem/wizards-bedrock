@@ -1,22 +1,7 @@
 //! Intel VT-d DMA and interrupt-remapping register, table and invalidation encoding.
 //!
-//! Pure arithmetic over the register window and the kernel-owned root, context
-//! and second-level tables. No hardware behind it: `wost`'s VT-d unit maps the
-//! register window as MMIO and writes the frames this crate encodes, on the
-//! `x86-paging`/`frame-space` precedent (D-30, D-43) that puts checkable bit
-//! layout where `cargo test` can reach it.
-//!
-//! Transcribed from the Intel Virtualization Technology for Directed I/O
-//! Architecture Specification, rev 3.x/4.x: the Capability, Extended
-//! Capability, Global Command/Status, Root Table Address, Context Command,
-//! IOTLB, Fault Status and Fault Recording registers, and the root, context and
-//! second-level table entries. Only the register-based invalidation interface
-//! is encoded; the unit disables queued invalidation before it uses the
-//! Context Command and IOTLB registers, because the specification reserves them
-//! while queued invalidation is enabled (D-358). Every field's shift and mask is
-//! a named constant, and the tests restate each bit position from the
-//! specification rather than from these constants, so a transcription error
-//! fails a test instead of agreeing with itself.
+//! The specification reserves Context Command and IOTLB while queued invalidation is
+//! enabled.
 //!
 //! ```
 //! use vtd::{AddressWidth, Capability, ContextEntry, RootEntry, enable_translation, gcmd, second_level};
@@ -53,16 +38,7 @@
 )]
 
 /// Physical-address field of a table entry: bits 63:12, page-aligned.
-///
-/// Every root, context and second-level pointer stores a 4-KiB-aligned
-/// physical address in these bits; the low twelve carry flags. Masking with
-/// this keeps the address and clears the flag bits, so a caller cannot smuggle
-/// a flag through a misaligned pointer.
 const ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
-
-// ---------------------------------------------------------------------------
-// Register offsets, in bytes from the unit's register base.
-// ---------------------------------------------------------------------------
 
 /// Version register (32-bit).
 pub const VERSION: u64 = 0x00;
@@ -117,10 +93,6 @@ impl Version {
     }
 
     /// Whether this architecture version executes register-based invalidation.
-    ///
-    /// Major versions six and later require queued invalidation and treat the
-    /// register commands as invalid. Zero is not an implemented architecture
-    /// version, so rejecting it keeps malformed register windows fail-closed.
     pub const fn register_invalidation_supported(self) -> bool {
         matches!(self.major(), 1..=5)
     }
@@ -128,9 +100,8 @@ impl Version {
 
 /// Fault Event Control register bits.
 ///
-/// VT-d fault events are compatibility-format messages that do not traverse
-/// interrupt remapping. The owner therefore keeps the event source masked for
-/// its complete lifetime and polls the fault records instead.
+/// VT-d fault events are compatibility-format messages that do not traverse interrupt
+/// remapping.
 pub mod fault_event_control {
     /// A fault event is pending while delivery is masked (IP, read-only).
     pub const PENDING: u32 = 1 << 30;
@@ -150,10 +121,6 @@ pub mod fault_event_control {
 pub const fn root_table_address(rtaddr: u64) -> u64 {
     rtaddr & ADDRESS_MASK
 }
-
-// ---------------------------------------------------------------------------
-// Capability register (CAP).
-// ---------------------------------------------------------------------------
 
 /// The Capability register: what the remapping unit can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -269,10 +236,6 @@ impl Capability {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Extended Capability register (ECAP).
-// ---------------------------------------------------------------------------
-
 /// The Extended Capability register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExtendedCapability(u64);
@@ -303,9 +266,9 @@ impl ExtendedCapability {
 
     /// Whether page-table walks are coherent with processor caches (C).
     ///
-    /// When clear, the unit may read a table entry from memory before the
-    /// processor's cached write reaches it, so every entry write must be
-    /// followed by a cache-line flush before the unit can be relied on.
+    /// When clear, the unit may read a table entry from memory before the processor's
+    /// cached write reaches it, so every entry write must be followed by a cache-line
+    /// flush before the unit can be relied on.
     pub const fn page_walk_coherent(self) -> bool {
         (self.0 & Self::C) != 0
     }
@@ -326,22 +289,12 @@ impl ExtendedCapability {
     }
 
     /// Byte offset of the IOTLB register block: IRO times sixteen.
-    ///
-    /// Within that block the IOTLB Invalidate register (`IOTLB_REG`) sits at
-    /// [`iotlb_command::COMMAND_REGISTER`].
     pub const fn iotlb_register_offset_bytes(self) -> u64 {
         ((self.0 >> Self::IRO_SHIFT) & Self::IRO_MASK) * 16
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global Command / Global Status.
-// ---------------------------------------------------------------------------
-
 /// Global Command register bits.
-///
-/// GCMD is driven from a software-preserved shadow: each write sets one command
-/// bit while leaving the other enable bits in their intended state.
 pub mod gcmd {
     /// Translation Enable, bit 31.
     pub const TE: u32 = 1 << 31;
@@ -423,27 +376,14 @@ pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
 }
 
 /// Whether every firmware-owned remapping facility is already inactive.
-///
-/// An early kernel owner may program a non-identical root only from this
-/// state. It refuses active translation instead of attempting a live SRTP,
-/// and refuses active queued or interrupt remapping instead of guessing that
-/// firmware completed their architectural quiescence protocols.
 pub const fn takeover_ready(status: u32) -> bool {
     status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0
 }
-
-// ---------------------------------------------------------------------------
-// Interrupt remapping and queued invalidation.
-// ---------------------------------------------------------------------------
 
 /// Address bits carried by IRTA and IQA.
 const REMAPPING_ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
 
 /// Encode a two-entry, 128-bit interrupt-remapping table at `address`.
-///
-/// Size zero means two entries. EIME is set because this kernel admits only
-/// x2APIC interrupt delivery; extended mode also blocks compatibility-format
-/// requests independently of CFI.
 pub const fn interrupt_table_address(address: u64) -> Option<u64> {
     if address & !REMAPPING_ADDRESS_MASK != 0 {
         return None;
@@ -505,10 +445,6 @@ impl InvalidationDescriptor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Address width, AGAW selection, and paging-structure indexing.
-// ---------------------------------------------------------------------------
-
 /// A supported adjusted guest address width and its page-table depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
@@ -544,9 +480,6 @@ impl AddressWidth {
     }
 
     /// Whether `address` can be named by a walk of this width.
-    ///
-    /// An address above the width would alias into the top table's index bits
-    /// if it were mapped, so a caller refuses it instead.
     pub const fn covers(self, address: u64) -> bool {
         address >> self.address_bits() == 0
     }
@@ -567,10 +500,6 @@ impl AddressWidth {
     }
 
     /// Choose the widest modelled table depth supported by SAGAW.
-    ///
-    /// MGAW independently limits usable addresses through [`Self::covers_on`];
-    /// it does not prohibit a deeper supported table. The 2-level width is not
-    /// modelled here.
     pub const fn choose(cap: Capability) -> Option<Self> {
         if cap.sagaw_supports(5) {
             return Some(Self::Level5);
@@ -585,23 +514,12 @@ impl AddressWidth {
     }
 
     /// The 9-bit index `iova` selects at paging-structure `level`.
-    ///
-    /// Level 0 is the leaf page table; each level up is nine bits higher. The
-    /// split points (12, 21, 30, 39, 48) are the standard x86-style ones and do
-    /// not depend on the width, which only bounds how many levels a walk uses,
-    /// so a caller iterates `0..self.levels()`.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
-        // The shift does not depend on the width. Reading it keeps this an
-        // instance method, which is how a walk names `0..self.levels()`.
         let _ = self.address_bits();
         let shift = 12 + 9 * (level as u32);
         ((iova >> shift) & 0x1FF) as u16
     }
 }
-
-// ---------------------------------------------------------------------------
-// Root and context table entries.
-// ---------------------------------------------------------------------------
 
 /// A root-table entry: the low and high 64-bit words a root entry occupies.
 ///
@@ -621,9 +539,8 @@ impl RootEntry {
 
     /// A present root entry naming a context table.
     ///
-    /// `context_table_paddr` must be 4-KiB aligned; its low twelve bits are
-    /// masked off, so a misaligned pointer silently loses them. Use
-    /// [`try_present`](Self::try_present) to reject a misaligned pointer.
+    /// `context_table_paddr` must be 4-KiB aligned; its low twelve bits are masked off,
+    /// so a misaligned pointer silently loses them.
     #[must_use]
     pub const fn present(context_table_paddr: u64) -> Self {
         Self {
@@ -671,10 +588,8 @@ impl ContextEntry {
 
     /// A present context entry for legacy second-level-only translation.
     ///
-    /// The translation-type field (bits 3:2 of the low qword) is left zero,
-    /// which selects second-level-only translation. `second_level_root_paddr`
-    /// must be 4-KiB aligned; its low twelve bits are masked off. Use
-    /// [`try_present`](Self::try_present) to reject a misaligned pointer.
+    /// The translation-type field (bits 3:2 of the low qword) is left zero, which
+    /// selects second-level-only translation.
     #[must_use]
     pub const fn present(second_level_root_paddr: u64, aw: AddressWidth, domain_id: u16) -> Self {
         Self {
@@ -722,16 +637,10 @@ impl ContextEntry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Second-level (page table) entries.
-// ---------------------------------------------------------------------------
-
 /// Second-level page-table entries: leaves and table pointers.
 ///
 /// A second-level structure encodes read/write permission in bits 1:0 and a
-/// 4-KiB-aligned physical address in bits 63:12. A leaf and a non-leaf pointer
-/// share that layout, so an intermediate
-/// [`table_pointer`](second_level::table_pointer) is `R | W | addr`.
+/// 4-KiB-aligned physical address in bits 63:12.
 pub mod second_level {
     use super::ADDRESS_MASK;
 
@@ -744,8 +653,6 @@ pub mod second_level {
     pub const NOT_PRESENT: u64 = 0;
 
     /// Read and write bits of one second-level leaf.
-    ///
-    /// Closed: these four are the only combinations of the two permission bits.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[expect(
         clippy::exhaustive_enums,
@@ -764,9 +671,6 @@ pub mod second_level {
 
     impl Permission {
         /// The permission named by a mapper's directional const parameters.
-        ///
-        /// Const parameters keep the direction in the type of the caller
-        /// (`DEVICE_READS`, `DEVICE_WRITES`) instead of two `bool` arguments.
         pub const fn from_directions<const READ: bool, const WRITE: bool>() -> Self {
             match (READ, WRITE) {
                 (false, false) => Self::None,
@@ -787,16 +691,11 @@ pub mod second_level {
     }
 
     /// A leaf entry mapping `paddr` with `permission`.
-    ///
-    /// `paddr`'s low twelve bits are masked off.
     pub const fn pte(paddr: u64, permission: Permission) -> u64 {
         (paddr & ADDRESS_MASK) | permission.bits()
     }
 
     /// A non-leaf entry pointing at the next-level table at `paddr`.
-    ///
-    /// Read and write are both set, so the walk's permission is decided at the
-    /// leaves. `paddr`'s low twelve bits are masked off.
     pub const fn table_pointer(paddr: u64) -> u64 {
         (paddr & ADDRESS_MASK) | READ | WRITE
     }
@@ -811,10 +710,6 @@ pub mod second_level {
         entry & ADDRESS_MASK
     }
 }
-
-// ---------------------------------------------------------------------------
-// Register-based invalidation: Context Command (CCMD) and IOTLB.
-// ---------------------------------------------------------------------------
 
 /// Context-cache invalidation through the Context Command register (CCMD).
 pub mod context_command {
@@ -847,10 +742,6 @@ pub mod context_command {
 }
 
 /// IOTLB invalidation through the IOTLB Invalidate register (`IOTLB_REG`).
-///
-/// The register sits at [`COMMAND_REGISTER`](iotlb_command::COMMAND_REGISTER)
-/// within the IOTLB register block that
-/// [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
 pub mod iotlb_command {
     /// Offset of the IOTLB Invalidate register (`IOTLB_REG`) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;
@@ -877,8 +768,6 @@ pub mod iotlb_command {
 
     /// A global invalidation that completes only after older DMA reads and
     /// writes have drained.
-    ///
-    /// The caller must first require the matching DRD and DWD capability bits.
     pub const fn global_with_drain() -> u64 {
         global() | DRAIN_READS | DRAIN_WRITES
     }
@@ -894,10 +783,6 @@ pub mod iotlb_command {
         completed(value) && ((value >> IAIG_SHIFT) & IAIG_MASK) == ACTUAL_GLOBAL
     }
 }
-
-// ---------------------------------------------------------------------------
-// Fault decoding: Fault Status (FSTS) and Fault Recording registers.
-// ---------------------------------------------------------------------------
 
 /// The Fault Status register (FSTS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -945,8 +830,7 @@ impl FaultStatus {
 
 /// A 16-byte fault-recording register: the low and high 64-bit words.
 ///
-/// Bit numbering is over the whole 128 bits: `lo` holds bits 63:0 and `hi` bits
-/// 127:64.
+/// Bit numbering is over the whole 128 bits: `lo` holds bits 63:0 and `hi` bits 127:64.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FaultRecording {
     /// Low qword: bits 63:0 of the record, including the faulted address.
@@ -962,9 +846,8 @@ impl FaultRecording {
     const TYPE: u64 = 1 << 62;
     /// Fault reason, bits 103:96 (bits 39:32 of the high qword).
     ///
-    /// Bits 123:104 are the PASID value. Reading FR from bit 104 reports that
-    /// field, which is zero on hardware without PASID, so every fault looks
-    /// like reason 0.
+    /// Bits 123:104 are the PASID value. Starting the reason at bit 104 reads that
+    /// field instead.
     const REASON_SHIFT: u32 = 32;
     /// Eight fault-reason bits.
     const REASON_MASK: u64 = 0xFF;
@@ -993,18 +876,16 @@ impl FaultRecording {
 
     /// Whether the faulting request was a read (the T bit).
     ///
-    /// The T field (bit 126) distinguishes the request type; this crate reads a
-    /// set bit as a read request, so a clear bit is a device write into host
-    /// memory. Some specification revisions also define an address-type field
-    /// in the neighbouring bits, which is not decoded here.
+    /// The T field (bit 126) distinguishes the request type; this crate reads a set bit
+    /// as a read request, so a clear bit is a device write into host memory.
     pub const fn is_read_request(self) -> bool {
         (self.hi & Self::TYPE) != 0
     }
 
     /// The value to write back to clear a recorded fault.
     ///
-    /// The fault bit is write-1-to-clear, so writing this (the high qword with
-    /// bit 127 set) clears F; the other fields are read-only and ignored.
+    /// The fault bit is write-1-to-clear, so writing this (the high qword with bit 127
+    /// set) clears F; the other fields are read-only and ignored.
     pub const fn clear() -> Self {
         Self {
             lo: 0,
@@ -1224,7 +1105,6 @@ mod tests {
         assert_eq!(enable_translation(0), gcmd::TE);
         assert_eq!(set_interrupt_table_pointer(0), 1 << 24);
         assert_eq!(enable_interrupt_remapping(gcmd::CFI), 1 << 25);
-        // The preserved bits survive.
         assert_eq!(enable_translation(gcmd::IRE) & gcmd::IRE, gcmd::IRE);
     }
 

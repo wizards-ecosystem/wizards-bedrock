@@ -1,12 +1,4 @@
 //! Turning one measurement window into a clock's rate.
-//!
-//! A window is a pair: cycles some other clock counted while the 8254 counted
-//! `pit_ticks` of its crystal. One window can be shared by every clock read
-//! across it — the kernel measures the APIC timer and the timestamp counter
-//! in the same one — so this is a single function, applied once per clock.
-//!
-//! Rounding is to nearest, from the raw numbers, exactly once. Deriving
-//! anything from an already-rounded rate would compound two floors.
 
 use crate::CRYSTAL_HZ;
 
@@ -23,13 +15,6 @@ pub enum WatchdogVerdict {
 }
 
 /// Judge one APIC expiry against a simultaneously started PIT window.
-///
-/// The caller bounds `expected_pit_ticks` below one PIT span. An expiry later
-/// than the ordinary agreement window is inconclusive rather than a failure:
-/// interrupt latency and a slow APIC look identical after the counter reaches
-/// zero. An early expiry has no such innocent explanation. TSC progress is
-/// compared only while its own elapsed count proves the PIT window could not
-/// have folded.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the register is the low sixteen bits of the dword"
@@ -72,9 +57,8 @@ pub const fn watchdog_verdict(
 
 /// The measured clock's rate in hertz, from one window against the crystal.
 ///
-/// Zero when the window is empty or the product overflows — both are readings
-/// no real measurement produces, and zero fails any plausibility bound the
-/// caller applies.
+/// Zero when the window is empty or the product overflows — both are readings no real
+/// measurement produces, and zero fails any plausibility bound the caller applies.
 pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     if pit_ticks == 0 {
         return 0;
@@ -158,10 +142,6 @@ mod tests {
     }
 
     /// Inputs at the top of the space must answer, not overflow.
-    ///
-    /// These lines exercise the product's `checked_mul`. No input reaches a
-    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is `958_759` and the
-    /// largest addend is `u16::MAX / 2` (D-105).
     #[test]
     fn the_product_at_the_top_of_the_space_cannot_overflow() {
         let largest_counted = u64::MAX / u64::from(CRYSTAL_HZ);
@@ -188,11 +168,8 @@ mod tests {
         assert_eq!(measured_hz(0, 20_000), 0);
     }
 
-    /// The numbers the two real machines produce, for both clocks a window is
-    /// now shared by. QEMU models the APIC clock at a gigahertz and passes
-    /// the host's timestamp counter through; `VMware` has traditionally
-    /// advertised a sixty-six megahertz bus. All measured over a genuine
-    /// 20 ms window.
+    /// The numbers the two real machines produce, for both clocks a window is now
+    /// shared by.
     #[test]
     fn qemu_and_vmware_shaped_numbers_land_in_sane_bounds() {
         let window = 23_863;

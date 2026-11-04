@@ -1,6 +1,6 @@
 //! Print foundation-register rows for assignment.
 //!
-//! The register file is authoritative. This binary is an experimental index.
+//! The register file is authoritative.
 
 use std::path::Path;
 use std::process::ExitCode;

@@ -1,20 +1,5 @@
 //! Earliest eligible virtual deadline first, as arithmetic.
 //!
-//! The policy D-15 chose and D-53 keeps separable: every runnable thread has
-//! a *virtual runtime* that advances as it runs, slower the heavier its
-//! weight; the queue's weighted average of those is the point a fair share
-//! would have reached; a thread behind that point is *eligible*, one ahead of
-//! it is owed nothing yet. Among the eligible, the one whose *virtual
-//! deadline* — where its current slice ends — comes first runs. That is the
-//! whole of it, and because it is arithmetic it is all here, where the host
-//! can run it.
-//!
-//! Virtual time wraps. Every comparison is the signed difference of two
-//! `u64`s, the `vruntime` idiom Linux uses, so a clock that has been running
-//! for longer than a `u64` holds keeps ordering correctly. Related times must
-//! stay less than half the ring apart; exactly half is deliberately unordered,
-//! and slice construction caps its distance before it can cross that boundary.
-//!
 //! # Examples
 //!
 //! ```
@@ -38,25 +23,12 @@
 #![warn(clippy::cast_possible_truncation)]
 
 /// The weight at which one unit of real time is one unit of virtual time.
-///
-/// Linux's `NICE_0_LOAD`; a thread of twice this weight pays half.
 pub const BASE_WEIGHT: u32 = 1024;
 
 /// Virtual-time units per unit of real time, at [`BASE_WEIGHT`].
-///
-/// Real time is charged in whatever unit the caller keeps, and a single one
-/// of those at twice the base weight would truncate to nothing. Scaling by
-/// this first is what keeps a heavy thread's clock moving; the fairness test
-/// below is the one that found it standing still. It also buys the headroom
-/// [`Entity::remaining_slice`] converts back through: the round trip loses at
-/// most one unit of real time, at any weight up to [`MAX_WEIGHT`].
 pub const RESOLUTION: u64 = 1024;
 
 /// The largest weight a thread may carry — [`RESOLUTION`] × [`BASE_WEIGHT`].
-///
-/// Past it a one-unit charge truncates to no virtual time at all: the clock
-/// stops, the thread is always eligible, and everyone else starves.
-/// [`Entity::new`] clamps to it.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value is bounded to the thirty-two-bit field"
@@ -67,10 +39,6 @@ pub const MAX_WEIGHT: u32 = RESOLUTION as u32 * BASE_WEIGHT;
 const MAX_ORDERED_DELTA: u64 = i64::MAX as u64;
 
 /// Whether virtual time `a` comes before `b`, across a wrap.
-///
-/// Times exactly half the `u64` ring apart are ambiguous, so neither comes
-/// before the other. Scheduler state keeps every meaningful comparison inside
-/// that open half-range.
 pub const fn before(a: u64, b: u64) -> bool {
     let difference = a.wrapping_sub(b);
     difference != 1u64 << 63 && (difference as i64) < 0
@@ -86,10 +54,6 @@ pub struct Entity {
 
 impl Entity {
     /// A thread of `weight` at virtual time zero, with no slice yet.
-    ///
-    /// A zero weight is taken as one, and a weight above [`MAX_WEIGHT`] as
-    /// [`MAX_WEIGHT`]: outside that range the arithmetic stops meaning
-    /// anything.
     pub const fn new(weight: u32) -> Self {
         Self {
             vruntime: 0,
@@ -142,12 +106,6 @@ impl Entity {
 
     /// Real time this thread may still run before its deadline, in whatever
     /// unit its slice was given in.
-    ///
-    /// What a tickless kernel arms its timer for: the answer says when this
-    /// thread stops being the earliest deadline, so there is no reason to
-    /// interrupt it before then. Zero once the slice is spent, which is the
-    /// honest answer to "how long until now". May under-report by one unit at
-    /// weights that do not divide the scale — an early wake, never a late one.
     pub const fn remaining_slice(&self) -> u64 {
         if self.slice_is_spent() {
             return 0;
@@ -156,12 +114,6 @@ impl Entity {
     }
 
     /// Account `ran` units of real time the thread has just spent running.
-    ///
-    /// Clamped, like `place` and `renew_deadline`, rather than truncated.
-    /// `virtual_units` narrows the widened product with `as`, so a charge whose
-    /// virtual value is a multiple of `2^64` advanced the clock by *nothing* —
-    /// the outcome `MAX_WEIGHT`'s own doc says it exists to prevent, reached
-    /// by the other door (D-105).
     pub fn charge(&mut self, ran: u64) {
         self.vruntime = self.vruntime.wrapping_add(self.ordered_virtual_units(ran));
     }
@@ -179,13 +131,6 @@ impl Entity {
 
     /// Put the thread on the queue at `average` adjusted by `lag`, and give
     /// it a fresh slice.
-    ///
-    /// The lag is clamped to one `slice` either way. A slice too large for the
-    /// wrapping order is itself capped at `i64::MAX` virtual units. That clamp is the
-    /// anti-gaming rule `008-research-notes-2.md` §4.4 warns is easy to omit:
-    /// a thread that sleeps cannot bank unbounded credit, and one that sleeps
-    /// briefly does not shed a debt — it comes back exactly as far behind as
-    /// it left.
     pub fn place(&mut self, average: u64, lag: i64, slice: u64) {
         let bound = self.ordered_virtual_units(slice) as i64;
         let lag = lag.clamp(-bound, bound);
@@ -199,9 +144,6 @@ impl Entity {
     }
 
     /// Start a new slice from where the thread now stands.
-    ///
-    /// A duration reaching half the virtual-time ring is capped just below it,
-    /// where the wrapping order remains unambiguous.
     pub fn renew_deadline(&mut self, slice: u64) {
         self.deadline = self
             .vruntime
@@ -210,9 +152,6 @@ impl Entity {
 }
 
 /// The weighted average virtual runtime of a queue, or `None` if it is empty.
-///
-/// Computed relative to the first entity so that a queue straddling a wrap
-/// still averages correctly.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the widened value was range-checked before this narrowing"
@@ -235,10 +174,6 @@ pub fn average_vruntime<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> O
 }
 
 /// The eligible entity with the earliest deadline, by the key it was given.
-///
-/// `None` only for an empty queue: the entity with the smallest virtual
-/// runtime is never ahead of the average, so a non-empty queue always has
-/// someone eligible — a property the tests assert rather than assume.
 pub fn pick<'a, K: Copy>(
     entities: impl IntoIterator<Item = (K, &'a Entity)>,
     average: u64,
@@ -263,13 +198,6 @@ mod tests {
     const SLICE: u64 = 30;
 
     /// A thread that has overrun its slice has none of it left.
-    ///
-    /// Every test that looked like it covered this landed the thread
-    /// *exactly* on its deadline, where `wrapping_sub` gives zero anyway. Run
-    /// one past, and deleting the `slice_is_spent` guard survives the suite —
-    /// `deadline.wrapping_sub(vruntime)` then wraps to near `u64::MAX`, and
-    /// `kernel/src/thread.rs` arms the tickless timer with it. The thread is
-    /// never preempted again (D-136).
     #[test]
     fn a_thread_past_its_deadline_has_no_slice_left() {
         const SLICE: u64 = 3_000_000;
@@ -521,8 +449,7 @@ mod tests {
     fn a_slice_of_nanoseconds_survives_the_round_trip() {
         const NANOSECONDS: u64 = 3_000_000;
 
-        // Include `MAX_WEIGHT`, where the documented one-unit bound is made
-        // (D-124).
+        // Include `MAX_WEIGHT`, where the documented one-unit bound is made.
         for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT, MAX_WEIGHT] {
             let mut entity = Entity::new(weight);
             entity.place(0, 0, NANOSECONDS);
@@ -623,8 +550,8 @@ mod tests {
 
     #[test]
     fn a_huge_charge_still_moves_the_clock() {
-        // At weight one, 2^44 real units is exactly 2^64 virtual, which a `u64`
-        // narrows to zero: a thread whose clock never moves starves the rest (D-105).
+        // At weight one, 2^44 real units is exactly 2^64 virtual, which a `u64` narrows
+        // to zero: a thread whose clock never moves starves the rest.
         let mut entity = Entity::new(1);
         let before = entity.vruntime();
         entity.charge(1 << 44);
@@ -651,9 +578,6 @@ mod tests {
 
     /// The two scale constants, transcribed, and the round trip exercised at
     /// the weight the doc bounds it at.
-    ///
-    /// Other tests let `BASE_WEIGHT` and `RESOLUTION` cancel, so literal anchors
-    /// and a `MAX_WEIGHT` round trip independently check both scales (D-124).
     #[test]
     fn the_scale_constants_are_what_the_doc_says() {
         assert_eq!(BASE_WEIGHT, 1024);
@@ -666,8 +590,6 @@ mod tests {
         at_base.charge(100);
         assert_eq!(at_base.vruntime(), 102_400);
 
-        // And the round trip holds at the heaviest weight the doc bounds it
-        // at, which the sweep beside it stops a factor of sixteen short of.
         for slice in [1u64, 3, 3_000_000] {
             let mut entity = Entity::new(MAX_WEIGHT);
             entity.place(0, 0, slice);

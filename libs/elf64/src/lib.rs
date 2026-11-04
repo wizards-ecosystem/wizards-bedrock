@@ -1,25 +1,5 @@
 //! Just enough ELF64 to load a program: the header, and the segments.
 //!
-//! The kernel loads a *user program* and cares about program headers and an
-//! entry point, in `no_std`, with no allocator and no ability to panic on
-//! hostile input. `xtask`'s image builder round-trips what it writes through
-//! this crate, which is the other caller.
-//!
-//! `xtask/src/elf.rs` verifies the linked kernel after every build (D-40) and
-//! now reads the file header and the program headers through this crate
-//! (D-158). It carried its own transcription of the magic, the class byte and
-//! every header offset for two phases; they agreed, nothing checked that they
-//! did, and a repair to one copy left the other two validations short — which
-//! is how `x86-tables` and `trap-cause` came to disagree about vector 28.
-//! What stays there is the **section-entry** and string-table parser: a loader
-//! never walks either. This crate exposes only their four file-header fields,
-//! so the host verifier does not privately transcribe part of the header.
-//!
-//! **Nothing here allocates, indexes unchecked, or panics.** The bytes may
-//! come from an initrd a program supplied, so every read is bounds-checked
-//! against the slice and every field that could be a length is checked against
-//! what remains.
-//!
 //! # Examples
 //!
 //! ```
@@ -110,18 +90,10 @@ pub enum ElfError {
     /// The file-header version is not `EV_CURRENT`.
     WrongVersion(u32),
     /// Not built for this machine.
-    ///
-    /// An aarch64 or i386 ELF64 parses cleanly by every other rule here and
-    /// yields segments full of instructions this CPU would fault on. The image
-    /// builder writes `EM_X86_64` and nothing read it back (D-105).
     WrongMachine(u16),
     /// The file-header size is not [`HEADER_BYTES`].
     WrongHeaderSize(u16),
     /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`].
-    ///
-    /// Refused rather than honoured: a different size means a different
-    /// format, and walking it with this one's field offsets would read
-    /// whatever happened to be there.
     WrongProgramHeaderSize(u16),
     /// The program-header table does not fit inside the image.
     ProgramHeadersOutOfRange {
@@ -210,10 +182,6 @@ impl SegmentKind {
     }
 
     /// The `p_type` field this decodes from.
-    ///
-    /// The inverse of [`from_bits`](Self::from_bits), which makes the pair
-    /// round-trippable and so testable: a decode table with no encode side is
-    /// a table nothing can check against itself.
     pub const fn bits(self) -> u32 {
         match self {
             Self::Null => 0,
@@ -254,9 +222,6 @@ impl Segment {
     }
 
     /// The raw `p_flags` field.
-    ///
-    /// The three predicates below are what a loader wants. This is for a
-    /// *verifier*, which has to report the value it objected to.
     pub const fn flags(self) -> u32 {
         self.flags
     }
@@ -276,8 +241,8 @@ impl Segment {
         self.file_size
     }
 
-    /// Bytes to occupy in memory. Anything past `file_size` is zero — which is
-    /// how `.bss` costs no file space (D-40).
+    /// Bytes to occupy in memory. Anything past `file_size` is zero — which is how
+    /// `.bss` costs no file space.
     pub const fn memory_size(self) -> u64 {
         self.memory_size
     }
@@ -310,19 +275,11 @@ impl Segment {
     }
 
     /// Whether it asks to be both writable and executable.
-    ///
-    /// The one combination this kernel never maps (D-12, D-32). A loader is
-    /// expected to refuse the image rather than drop a permission, because an
-    /// image that wants W+X is not an image that works without it.
     pub const fn is_write_execute(self) -> bool {
         self.is_writable() && self.is_executable()
     }
 
     /// Whether its file contents fit inside an image of `bytes` bytes.
-    ///
-    /// Separate from parsing because a header is well formed whatever it
-    /// points at: this is the question a *loader* must ask before copying, and
-    /// it is checked here so no caller has to remember the overflow.
     pub const fn contents_fit(self, bytes: usize) -> bool {
         match self.offset.checked_add(self.file_size) {
             Some(end) => end <= bytes as u64,
@@ -331,18 +288,12 @@ impl Segment {
     }
 
     /// Whether it claims more file bytes than memory to put them in.
-    ///
-    /// Malformed, and worth its own question: a loader that copied
-    /// `file_size` into a `memory_size` region would write past the mapping.
     pub const fn is_oversized(self) -> bool {
         self.file_size > self.memory_size
     }
 }
 
 /// The file header's description of the section table.
-///
-/// This is metadata, not a validated table. Program loading never needs to
-/// walk sections; the host image verifier does, and owns that parser (D-213).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SectionTable {
     offset: u64,
@@ -386,16 +337,10 @@ pub struct Elf<'a> {
 impl<'a> Elf<'a> {
     /// Read the file header, or say why it is not one.
     ///
-    /// Validates the identification, current format versions, executable type,
-    /// machine, file-header size, program-header entry size, and that the
-    /// program-header table lies inside the image. It does **not** validate the
-    /// segments: a caller that only wants the entry point should not pay for a
-    /// walk, and a loader has to look at each one anyway.
-    ///
     /// # Errors
     ///
-    /// See [`ElfError`] — including [`ElfError::WrongMachine`], which this
-    /// checks and this block did not name (D-145).
+    /// See [`ElfError`] — including [`ElfError::WrongMachine`], which this checks and
+    /// this block did not name.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ElfError> {
         let header = take(bytes, 0, HEADER_BYTES)?;
         if header.get(..4) != Some(&MAGIC) {
@@ -490,10 +435,6 @@ impl<'a> Elf<'a> {
     }
 
     /// Every program header, in order.
-    ///
-    /// Infallible by then: `parse` already established that the whole table is
-    /// inside the image, so the walk cannot run off the end and needs no
-    /// per-entry error.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the value was bounded to a length that fits the address width"
@@ -550,10 +491,6 @@ mod tests {
     use super::*;
 
     /// Every `p_type` survives a decode and an encode unchanged.
-    ///
-    /// Exhaustive over the named range and its edges rather than a sample:
-    /// the whole risk in a decode table is one arm returning a neighbour's
-    /// value, and a sample that skips the neighbour cannot see it.
     #[test]
     fn every_segment_type_round_trips_through_the_decode_table() {
         for bits in (0..24).chain([u32::MAX, u32::MAX - 1, 0x6474_E551, 0x7000_0000]) {
@@ -622,9 +559,6 @@ mod tests {
     }
 
     /// The header's fields land where the format says.
-    ///
-    /// Offsets transcribed from the ELF64 specification rather than taken from
-    /// the parser, so a field read from the wrong place fails here.
     #[test]
     fn the_header_fields_are_where_the_format_puts_them() {
         let bytes = image(&[(1, 5, 0, 0x40_0000, 0x100, 0x200)]);
@@ -788,10 +722,6 @@ mod tests {
 
     /// **A program-header table running past the image is refused, and the
     /// check cannot be overflowed past.**
-    ///
-    /// The shape of a hostile image: an offset near the top of the range with
-    /// a plausible count, so `offset + count * size` wraps to something small
-    /// and looks like it fits. An initrd is where these bytes come from.
     #[test]
     fn a_table_that_runs_past_the_image_is_refused() {
         let mut bytes = image(&[(1, 5, 0, 0x40_0000, 0, 0)]);
@@ -936,8 +866,8 @@ mod tests {
 
     #[test]
     fn an_elf_for_another_architecture_is_refused() {
-        // Well-formed by every other rule and full of instructions this CPU
-        // would fault on; nothing read `EM_X86_64` back before this (D-105).
+        // Well-formed by every other rule and full of instructions this CPU would fault
+        // on; nothing read `EM_X86_64` back before this.
         let mut aarch64 = image(&[]);
         aarch64[18..20].copy_from_slice(&183u16.to_le_bytes());
         assert_eq!(
@@ -949,16 +879,10 @@ mod tests {
         i386[18..20].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(Elf::parse(&i386).err(), Some(ElfError::WrongMachine(3)));
 
-        // And the fixture itself says x86-64.
         assert!(Elf::parse(&image(&[])).is_ok());
     }
 
     /// The two structure sizes, against the format rather than each other.
-    ///
-    /// The fixture builds its headers *from* these constants, so every test
-    /// using it stays self-consistent when they move together. Literal format
-    /// values keep this host check independent; `xtask` separately validates
-    /// every linked kernel immediately after building it (D-105).
     #[test]
     fn the_structure_sizes_are_the_format_s() {
         // ELF64 header: 16 ident + 2 + 2 + 4 + 8 entry + 8 phoff + 8 shoff

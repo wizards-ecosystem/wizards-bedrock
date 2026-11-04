@@ -1,15 +1,6 @@
 //! How a heap request maps onto a size class, and how a frame is carved into
 //! slots of it.
 //!
-//! The arithmetic half of the kernel heap; `wost::mm::heap` holds the free
-//! lists and the frames (D-47).
-//!
-//! Classes are powers of two from 16 to 2048 bytes. A frame is 4096-aligned
-//! and a class's slots sit at multiples of the class size, so every slot is
-//! aligned to its own class — which is why
-//! [`SizeClass::for_size_align`] meets an alignment by choosing a larger
-//! class rather than by padding.
-//!
 //! ```
 //! use slab_layout::{SizeClass, Placement, place};
 //!
@@ -118,12 +109,6 @@ impl SizeClass {
     /// The smallest class holding `size` bytes at `align`, or `None` if no
     /// class is large enough.
     ///
-    /// Alignment is satisfied by *choosing a class*, never by padding: because
-    /// a frame is [`FRAME_SIZE`]-aligned and slots sit at multiples of the
-    /// class size, a slot is always aligned to its own class. So a request
-    /// needing 64-byte alignment takes the 64-byte class at least, whatever
-    /// its size.
-    ///
     /// # Errors
     ///
     /// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power
@@ -166,12 +151,6 @@ pub enum Placement {
 
 /// Decide where a request of `size` bytes at `align` is served from.
 ///
-/// A zero-sized request is given the smallest slot that meets its alignment
-/// rather than refused: `Layout` permits a size of zero, `GlobalAlloc`
-/// requires a unique non-null address back, and one slot is the cheapest way
-/// to provide one. An alignment too large for any class takes a frame, which
-/// is the same answer one byte at that alignment would get.
-///
 /// # Errors
 ///
 /// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power of
@@ -206,10 +185,6 @@ mod tests {
     }
 
     /// A size class reports the free list it uses, and the bytes follow it.
-    ///
-    /// Check every index independently because `wost/src/mm/heap.rs` uses it
-    /// directly and an offset largest class would index past the array
-    /// (D-136).
     #[test]
     fn a_size_class_reports_its_own_index_and_bytes() {
         // Against the documented arithmetic, not the type itself: class `i`
@@ -223,8 +198,8 @@ mod tests {
                 "class {index} holds the wrong slot size"
             );
         }
-        // And there is no class past the last, so `index()` can never be used
-        // to reach beyond the free-list array.
+        // And there is no class past the last, so `index` can never be used to reach
+        // beyond the free-list array.
         assert!(SizeClass::from_index(CLASSES).is_none());
     }
 
@@ -301,12 +276,6 @@ mod tests {
 
     /// A frame divides evenly into every class, and each class's slots run to
     /// the frame's end and no further.
-    ///
-    /// `offset_of(slot)` is `slot * bytes()`, so `offset % bytes() == 0` is
-    /// `(n·b) % b == 0` — true of every implementation. D-94 deleted this
-    /// exact shape from the neighbouring test and left this one (D-105). The
-    /// divisibility of `FRAME_SIZE` is the real half, and the coverage claim
-    /// is what the arithmetic actually needs to hold.
     #[test]
     fn every_class_divides_the_frame_and_its_slots_fill_it() {
         for index in 0..CLASSES {
@@ -414,14 +383,6 @@ mod tests {
 
     /// Every slot a frame is carved into is distinct, ordered, and wholly
     /// inside the frame.
-    ///
-    /// **Against transcribed numbers, not against the formula.** The counts and
-    /// offsets below are worked out from `FRAME_SIZE` by hand, so a broken
-    /// `offset_of` or `slots_per_frame` disagrees with them instead of agreeing
-    /// with itself.
-    ///
-    /// It runs on the host because breaking this invariant on the machine can
-    /// corrupt the allocator that later checks depend on (D-28, D-85).
     #[test]
     fn no_two_slots_of_any_class_overlap() {
         // (class size, slots in a 4096-byte frame, offset of the last slot),

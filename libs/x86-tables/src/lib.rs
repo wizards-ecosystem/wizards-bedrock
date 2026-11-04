@@ -1,13 +1,7 @@
 //! `x86_64` descriptor table encoding.
 //!
-//! Which bit of a segment descriptor means present, where a 64-bit gate splits
-//! its handler address, what a task-state segment looks like in memory: all of
-//! it is arithmetic over bits with no hardware behind it, so it lives here and
-//! is unit-tested on the host. `wost` builds descriptors from this crate and
-//! does nothing to them but load them — see `docs/006-cpu-fundamentals.md`.
-//!
-//! Bit positions follow Intel SDM Vol. 3A ch. 3 (segment descriptors), ch. 6
-//! (gate descriptors) and ch. 7 (the 64-bit TSS).
+//! Bit positions follow Intel SDM Vol. 3A ch. 3 (segment descriptors), ch. 6 (gate
+//! descriptors) and ch. 7 (the 64-bit TSS).
 //!
 //! # Examples
 //!
@@ -35,9 +29,6 @@ pub mod return_state;
 pub mod tss;
 
 /// A reference to one descriptor table entry, as loaded into a segment register.
-///
-/// The low two bits are the requested privilege level and the third selects the
-/// local descriptor table, which this kernel never uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selector(u16);
 
@@ -100,8 +91,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "descriptor index does not fit a selector")]
     fn an_index_past_thirteen_bits_is_refused() {
-        // `index << 3` would drop the top bits and name a different
-        // descriptor; nothing tested this assert (D-105).
+        // `index << 3` would drop the top bits and name a different descriptor; nothing
+        // tested this assert.
         let _ = Selector::new(0x2000, 0);
     }
 

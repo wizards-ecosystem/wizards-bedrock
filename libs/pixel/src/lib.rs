@@ -1,10 +1,5 @@
 //! Colour and framebuffer address arithmetic.
 //!
-//! Pure logic with no hardware behind it: this is the layer that decides which
-//! byte a pixel lands on and what value goes into it. It lives in its own crate
-//! so it can be unit-tested on the host, which is where arithmetic like this
-//! actually gets verified — see `docs/005-code-conventions.md`.
-//!
 //! # Examples
 //!
 //! ```
@@ -93,13 +88,6 @@ impl Channel {
     }
 
     /// Scale an 8-bit intensity to this channel's width and shift it into place.
-    ///
-    /// The scaling is proportional — full intensity lands on full scale at
-    /// every width — which is what makes a ten-bit channel reach white instead
-    /// of stopping a quarter short of it. Total on every `shift` and `size` a
-    /// bootloader could report, including ones no framebuffer has: a channel
-    /// that does not fit a 32-bit pixel contributes nothing rather than
-    /// shifting past the end of one.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "each narrowing is into a register field or a value already bounded to that width"
@@ -122,9 +110,6 @@ impl Channel {
 }
 
 /// How a framebuffer packs colour channels into a word.
-///
-/// Reading this from the bootloader rather than assuming `0xRRGGBB` is what
-/// makes the console correct on a BGR or reduced-depth display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PixelFormat {
     red: Channel,
@@ -279,9 +264,9 @@ const fn channel_mask(channel: Channel, name: ColourChannel) -> Result<u32, Pixe
 
 /// Checked geometry for a linear framebuffer accessed as 32-bit pixels.
 ///
-/// Construction proves that every visible pixel begins at a 4-byte-aligned
-/// offset, every row fits within its pitch, and the complete mapping span can
-/// be represented without wrapping either its length or its address range.
+/// Construction proves that every visible pixel begins at a 4-byte-aligned offset,
+/// every row fits within its pitch, and the complete mapping span can be represented
+/// without wrapping either its length or its address range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FramebufferLayout {
     width: usize,
@@ -315,9 +300,6 @@ pub struct RowCopySpan {
 
 impl RowCopySpan {
     /// Borrow the source words after checking the complete shadow bound.
-    ///
-    /// Returns `None` when `shadow` is shorter than the layout that produced
-    /// this span.
     pub fn source(self, shadow: &[u32]) -> Option<&[u32]> {
         if !self.fits(shadow.len()) {
             return None;
@@ -326,9 +308,6 @@ impl RowCopySpan {
     }
 
     /// Copy this row after checking the complete shadow bound.
-    ///
-    /// Returns `None` without changing `shadow` when it is shorter than the
-    /// layout that produced this span.
     pub fn copy_within(self, shadow: &mut [u32]) -> Option<()> {
         if !self.fits(shadow.len()) {
             return None;
@@ -526,9 +505,6 @@ impl FramebufferLayout {
     }
 
     /// Plan an upward copy of visible rows, clipped to this framebuffer.
-    ///
-    /// Padding determines row starts but is not copied. Returns `None` when
-    /// `to_y` is below `from_y`; overlapping copies are safe in yielded order.
     pub fn copy_rows_up(self, from_y: usize, to_y: usize, rows: usize) -> Option<RowCopyPlan> {
         if to_y > from_y {
             return None;
@@ -569,9 +545,6 @@ impl FramebufferLayout {
 }
 
 /// Byte offset of the pixel at (`x`, `y`), or `None` if it does not fit.
-///
-/// `pitch` is the distance between the starts of consecutive rows, which is not
-/// always `width * bytes_per_pixel`.
 pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) -> Option<usize> {
     let Some(row) = y.checked_mul(pitch) else {
         return None;
@@ -608,13 +581,6 @@ mod tests {
     }
 
     /// A padded framebuffer spans its **pitch**, not its visible width.
-    ///
-    /// Every other test here uses geometry where `pitch == width *
-    /// bytes_per_pixel`, so the two are interchangeable and
-    /// `row_bytes.checked_mul(height)` survives. On any framebuffer whose
-    /// rows are padded — which is most real hardware, and what `pitch` exists
-    /// to express — that maps short by `(pitch - row_bytes) * height` bytes,
-    /// and the bottom of the screen is off the end of the mapping (D-155).
     #[test]
     fn a_padded_framebuffer_spans_its_pitch() {
         const WIDTH: usize = 1024;
@@ -1169,10 +1135,6 @@ mod tests {
     }
 
     /// The modulus is four, not merely even.
-    ///
-    /// Include an even value not divisible by four so a weaker modulus cannot
-    /// satisfy the check. Otherwise later rows are misaligned and `write_u32`
-    /// refuses the kernel's only output (D-105).
     #[test]
     fn a_misaligned_mapping_base_is_refused() {
         assert_eq!(
@@ -1250,9 +1212,6 @@ mod tests {
 
     /// A channel that exactly fills the word is accepted, and one bit more is
     /// refused — at *both* copies of the bound.
-    ///
-    /// Exercise the boundary in both `channel_mask` and `encode` so the
-    /// duplicated checks cannot drift while refusing legal `RGBx8888` (D-105).
     #[test]
     fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
         // 24 + 8 == 32: the top channel of a standard `RGBx8888` report.
@@ -1276,11 +1235,6 @@ mod tests {
     }
 
     /// Blending really reads both operands.
-    ///
-    /// The endpoints `0x000000` and `0xFFFFFF` make `mix(0, 255, t) == t`, so
-    /// the monotonicity sweep asserted `t >= t - 1` and multiplied the `from`
-    /// operand by literal zero every iteration — it passed with `from` dropped
-    /// from `mix` entirely (D-105).
     #[test]
     fn blending_reads_the_background_as_well_as_the_foreground() {
         let from = Rgb::from_hex(0x0040_80C0);
