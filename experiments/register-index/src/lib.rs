@@ -69,7 +69,7 @@ pub fn rows(document: &str) -> Vec<Row> {
     document.lines().filter_map(parse_row).collect()
 }
 
-/// `true` when the state still names kernel work an agent might pick up.
+/// `true` when the state still names live kernel work.
 pub fn is_live(state: &str) -> bool {
     LIVE_STATES.contains(&state)
 }

@@ -1,7 +1,7 @@
 # register-index (experimental)
 
 Host-only reader for [`docs/016-pre-wizzy-foundation.md`](../../docs/016-pre-wizzy-foundation.md).
-It prints the rows an agent can assign, and it checks that the v0.2.0 close
+It prints the rows that are still open, and it checks that the v0.2.0 close
 still leaves PW-006 and PW-010 as the live rows.
 
 This directory is its own Cargo workspace. It is not a member of the kernel
