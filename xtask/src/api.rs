@@ -420,6 +420,11 @@ const REVIEWED_DEPENDENCY_BUILD_SCRIPTS: &[(&str, &str, &str)] = &[
         "43a49c392881ce6d5c3b8cb70f98717b7c07aabbdff06687b9030dbfbe2725f8",
     ),
     (
+        "libc",
+        "0.2.189",
+        "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+    ),
+    (
         "num-traits",
         "0.2.19",
         "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
