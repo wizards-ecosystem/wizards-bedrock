@@ -1,8 +1,11 @@
-//! Shared filesystem fixtures for host tests.
+//! Shared filesystem fixtures and source lookups for host tests.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 const RESERVATION_ATTEMPTS: usize = 4096;
@@ -54,9 +57,92 @@ fn reserve_file(parent: &Path, label: &str, next: &AtomicU64) -> (PathBuf, File)
     panic!("could not reserve a unique {label} test fixture file")
 }
 
+pub(crate) fn function_after<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
+    source_through(source, opening, opening)
+}
+
+pub(crate) fn source_through<'a>(source: &'a str, start: &str, last: &str) -> Option<&'a str> {
+    let from = source.find(start)?;
+    let end = function_end(source, from + source[from..].find(last)?)?;
+    Some(&source[from + start.len()..end])
+}
+
+pub(crate) fn function_end(source: &str, start: usize) -> Option<usize> {
+    let rest = &source[start..];
+    let mut ends = FunctionEnd {
+        at: start + rest.len() - rest.trim_start().len(),
+        end: None,
+    };
+    ends.visit_file(&syn::parse_file(source).ok()?);
+    ends.end
+}
+
+struct FunctionEnd {
+    at: usize,
+    end: Option<usize>,
+}
+
+impl FunctionEnd {
+    fn consider(&mut self, function: &impl Spanned, block: &syn::Block) {
+        let braces = block.brace_token.span;
+        let header = function.span().byte_range().start..braces.open().byte_range().start;
+        if header.contains(&self.at) {
+            self.end = Some(braces.close().byte_range().end);
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for FunctionEnd {
+    fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+        self.consider(function, &function.block);
+        visit::visit_item_fn(self, function);
+    }
+
+    fn visit_impl_item_fn(&mut self, function: &'ast syn::ImplItemFn) {
+        self.consider(function, &function.block);
+        visit::visit_impl_item_fn(self, function);
+    }
+
+    fn visit_trait_item_fn(&mut self, function: &'ast syn::TraitItemFn) {
+        if let Some(block) = &function.default {
+            self.consider(function, block);
+        }
+        visit::visit_trait_item_fn(self, function);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_function_slice_ends_at_its_own_block_whatever_the_comments_say() {
+        let source = "impl Queue {\n    /// Claim one entry.\n    pub fn claim(&self) -> &str {\n        fn nested() {}\n        // }\n        \"} fn settle(\"\n    }\n    fn settle(&self) {}\n}\n\ntrait Owner {\n    fn owned(&self) -> bool { true }\n}\n";
+        let claim = "    pub fn claim(";
+
+        assert_eq!(
+            function_after(source, claim),
+            Some(
+                "&self) -> &str {\n        fn nested() {}\n        // }\n        \"} fn settle(\"\n    }"
+            )
+        );
+        assert_eq!(function_after(source, "fn nested("), Some(") {}"));
+        assert_eq!(
+            function_after(source, "fn owned("),
+            Some("&self) -> bool { true }")
+        );
+        assert_eq!(
+            source_through(source, claim, "\n    fn settle(")
+                .map(|slice| slice.ends_with("fn settle(&self) {}")),
+            Some(true)
+        );
+        let start = source.find(claim).expect("claim method");
+        assert_eq!(
+            function_end(source, start),
+            Some(source.find("\n    fn settle(").expect("settle method"))
+        );
+        assert_eq!(function_after(source, "impl Queue"), None);
+    }
 
     #[test]
     fn stale_candidates_are_skipped_without_touching_their_bytes() {
