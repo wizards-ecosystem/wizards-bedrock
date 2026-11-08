@@ -5,7 +5,7 @@
 //! explicit exemption with its reason, making drift reviewable (D-124).
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -57,17 +57,30 @@ pub const ABSENT: &[Absent] = &[
 ///
 /// If `docs/` cannot be read.
 pub fn named_in_docs(root: &Path) -> Result<BTreeSet<String>> {
-    let docs = root.join("docs");
     let mut found = BTreeSet::new();
-    for entry in crate::paths::directory_entries(&docs)? {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
+    for path in markdown_in_docs(root)? {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         found.extend(mentions(&text));
     }
+    Ok(found)
+}
+
+/// Every Markdown file anywhere under `docs/`, in path order.
+fn markdown_in_docs(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.join("docs")];
+    while let Some(directory) = pending.pop() {
+        for entry in crate::paths::directory_entries(&directory)? {
+            let path = entry.path();
+            if entry.is_dir() {
+                pending.push(path);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
     Ok(found)
 }
 
@@ -96,7 +109,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
-    use std::path::PathBuf;
 
     fn root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -119,13 +131,7 @@ mod tests {
         .iter()
         .map(|relative| root.join(relative))
         .collect::<Vec<_>>();
-        let paths = crate::paths::directory_entries(&root.join("docs"))
-            .expect("complete docs directory listing")
-            .into_iter()
-            .map(|entry| entry.path());
-        documents.extend(paths.into_iter().filter(|path| {
-            path.extension().and_then(|extension| extension.to_str()) == Some("md")
-        }));
+        documents.extend(markdown_in_docs(root).expect("complete docs listing"));
         documents.sort();
         documents
     }
@@ -375,15 +381,11 @@ mod tests {
             "the mutation row makes mutable prose authoritative for sweep verdicts"
         );
 
-        let decisions =
-            std::fs::read_to_string(root.join("docs/004-decision-log.md")).expect("decision log");
-        let latest_decision = decisions
-            .lines()
-            .filter_map(|line| line.strip_prefix("## D-"))
-            .filter_map(|rest| core::iter::Iterator::next(&mut rest.split_ascii_whitespace()))
-            .filter_map(|number| <usize as core::str::FromStr>::from_str(number).ok())
-            .max()
-            .expect("a decision heading");
+        let latest_decision = crate::decisions::defined(&root)
+            .expect("reading the decision log")
+            .last()
+            .map(|&number| usize::try_from(number).expect("a decision number fits"))
+            .expect("a decision");
         let claimed_decision = table_numbers(&storage, "Decisions")
             .into_iter()
             .max()
@@ -597,7 +599,10 @@ mod tests {
         let multitasking = read("docs/009-multitasking.md");
         let userspace = read("docs/011-userspace.md");
         let research = read("docs/012-research-notes-4.md");
-        let decisions = read("docs/004-decision-log.md");
+        let decision = |number| {
+            crate::decisions::decision_text(&root, number)
+                .unwrap_or_else(|error| panic!("reading D-{number:02}: {error:#}"))
+        };
         let ports = read("wost/src/arch/x86_64/port.rs");
         let readme = read("README.md");
         let instructions = read("AGENTS.md");
@@ -643,7 +648,7 @@ mod tests {
             "the roadmap reschedules the declined own-bootloader project"
         );
         assert!(
-            decisions.contains("**Amended by D-219.** Limine remains the boot boundary"),
+            decision(3).contains("**Amended by D-219.** Limine remains the boot boundary"),
             "D-03 does not name its current bootloader amendment"
         );
         assert!(
@@ -651,7 +656,7 @@ mod tests {
             "the contributor gate can authorize scaffolding without a runtime seam"
         );
         assert!(
-            decisions.contains(
+            decision(183).contains(
                 "scaffolding remains stopped until both a pinned draft artifact and its runtime\nseam exist"
             ),
             "D-183 can be read as authorizing OS scaffolding before PW-601"
@@ -739,6 +744,30 @@ mod tests {
             failures.extend(local_markdown_failures(&root, &source, &document));
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn a_broken_link_below_the_top_of_docs_is_found() {
+        let root = crate::test_support::reserve_temp_directory("wizard-prose-docs");
+        std::fs::create_dir_all(root.join("docs/decisions")).expect("creating nested docs");
+        std::fs::write(
+            root.join("docs/000-top.md"),
+            "[next](decisions/0001-first.md)\n",
+        )
+        .expect("writing a top-level doc");
+        std::fs::write(
+            root.join("docs/decisions/0001-first.md"),
+            "[gone](missing.md)\n",
+        )
+        .expect("writing a nested doc");
+        let mut failures = Vec::new();
+        for source in markdown_in_docs(&root).expect("listing docs") {
+            let document = std::fs::read_to_string(&source).expect("reading a doc");
+            failures.extend(local_markdown_failures(&root, &source, &document));
+        }
+        std::fs::remove_dir_all(&root).expect("removing the docs fixture");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("missing.md"), "{failures:?}");
     }
 
     #[test]

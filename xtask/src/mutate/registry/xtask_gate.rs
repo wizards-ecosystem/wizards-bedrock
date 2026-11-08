@@ -927,4 +927,70 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "cli::tests::help_and_repeated_ordinary_options_keep_their_existing_precedence",
         },
     },
+    Mutation {
+        id: 2445,
+        file: "xtask/src/decisions.rs",
+        find: "    if directory\n        .try_exists()\n        .with_context(|| format!(\"probing {}\", directory.display()))?\n    {",
+        replace: "    if false {",
+        breaks: "a split decision directory is ignored in favour of the index",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::the_split_layout_defines_one_decision_per_file",
+        },
+    },
+    Mutation {
+        id: 2446,
+        file: "xtask/src/decisions.rs",
+        find: "        listed == expected,",
+        replace: "        listed.len() == expected.len(),",
+        breaks: "the decision index may list its files out of order or under other titles",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::an_index_that_disagrees_with_the_files_is_refused",
+        },
+    },
+    Mutation {
+        id: 2447,
+        file: "xtask/src/decisions.rs",
+        find: "number == filed && title",
+        replace: "title",
+        breaks: "a decision file may carry another decision's number in its heading",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::a_decision_file_out_of_shape_is_refused",
+        },
+    },
+    Mutation {
+        id: 2448,
+        file: "xtask/src/decisions.rs",
+        find: "        && lines\n            .next()\n            .is_some_and(|line| line.starts_with(\"Status: \"))",
+        replace: "        && lines.next().is_some()",
+        breaks: "a decision file may omit its status line",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::a_decision_file_out_of_shape_is_refused",
+        },
+    },
+    Mutation {
+        id: 2449,
+        file: "xtask/src/decisions.rs",
+        find: ".strip_suffix(\".md\")?",
+        replace: "",
+        breaks: "a decision file need not be Markdown",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::a_decision_file_out_of_shape_is_refused",
+        },
+    },
+    Mutation {
+        id: 2450,
+        file: "xtask/src/prose.rs",
+        find: "                pending.push(path);\n            } else if path.extension()",
+        replace: "                let _ = path;\n            } else if path.extension()",
+        breaks: "documents below the top of docs escape the prose checks",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::a_broken_link_below_the_top_of_docs_is_found",
+        },
+    },
 ];
