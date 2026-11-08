@@ -1,8 +1,9 @@
 //! The decision log, checked against the code that cites it.
 //!
 //! `docs/004-decision-log.md` is the authority on why this kernel is shaped the
-//! way it is. Host tests enforce two text properties where `cargo test` can
-//! reach them (D-41):
+//! way it is, either as one log of `## D-N` entries or as the index of one file
+//! per decision under `docs/decisions/`. Host tests enforce two text properties
+//! where `cargo test` can reach them (D-41):
 //!
 //! - the entries run from `D-01` upward with no gap and no repeat, so a number
 //!   cannot be skipped when one is minted;
@@ -10,27 +11,157 @@
 //!
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 /// Where the log lives, relative to the workspace root.
 pub const LOG: &str = "docs/004-decision-log.md";
+
+/// Where the decisions live once split one per file; the log is then their index.
+pub const DIRECTORY: &str = "docs/decisions";
+
+struct Entry {
+    number: Option<u32>,
+    text: String,
+}
 
 /// Every decision number the log defines, in order.
 ///
 /// # Errors
 ///
-/// If the log cannot be read.
+/// If the log cannot be read, or a split layout is malformed.
 pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
-    let path = root.join(LOG);
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(text
-        .lines()
-        .filter_map(|line| line.strip_prefix("## D-"))
-        .filter_map(|rest| number(rest).map(|(number, _)| number))
+    Ok(entries(root)?
+        .into_iter()
+        .filter_map(|entry| entry.number)
         .collect())
+}
+
+/// The whole text of one decision.
+///
+/// # Errors
+///
+/// If the log cannot be read, a split layout is malformed, or the decision is
+/// not defined.
+pub fn decision_text(root: &Path, decision: u32) -> Result<String> {
+    entries(root)?
+        .into_iter()
+        .find(|entry| entry.number == Some(decision))
+        .map(|entry| entry.text)
+        .with_context(|| format!("D-{decision:02} is not defined"))
+}
+
+fn entries(root: &Path) -> Result<Vec<Entry>> {
+    let directory = root.join(DIRECTORY);
+    if directory
+        .try_exists()
+        .with_context(|| format!("probing {}", directory.display()))?
+    {
+        split_entries(root, &directory)
+    } else {
+        Ok(log_entries(&read(&root.join(LOG))?))
+    }
+}
+
+fn read(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+fn log_entries(text: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut inside = false;
+    for line in text.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("## D-") {
+            entries.push(Entry {
+                number: number(rest).map(|(number, _)| number),
+                text: String::new(),
+            });
+            inside = true;
+        } else if line.starts_with("## ") {
+            inside = false;
+        }
+        if inside && let Some(entry) = entries.last_mut() {
+            entry.text.push_str(line);
+        }
+    }
+    entries
+}
+
+fn split_entries(root: &Path, directory: &Path) -> Result<Vec<Entry>> {
+    let mut paths: Vec<PathBuf> = crate::paths::directory_entries(directory)?
+        .iter()
+        .map(crate::paths::DirectoryEntry::path)
+        .collect();
+    paths.sort();
+    let mut entries = Vec::new();
+    let mut expected = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let filed = file_number(name)
+            .with_context(|| format!("{} is not a `NNNN-slug.md` decision", path.display()))?;
+        let text = read(&path)?;
+        ensure!(
+            opens_as_decision(&text, filed),
+            "{} must open with `# D-{filed:02} <title>`, a blank line and a `Status:` line",
+            path.display()
+        );
+        let heading = text
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("# "))
+            .unwrap_or_default();
+        expected.push((heading.to_owned(), format!("decisions/{name}")));
+        entries.push(Entry {
+            number: Some(filed),
+            text,
+        });
+    }
+    let listed = index_rows(&read(&root.join(LOG))?);
+    ensure!(
+        listed == expected,
+        "{LOG} must link every decision file once, in order, under its own heading"
+    );
+    Ok(entries)
+}
+
+fn opens_as_decision(text: &str, filed: u32) -> bool {
+    let mut lines = text.lines();
+    let titled = lines
+        .next()
+        .and_then(|line| line.strip_prefix("# D-"))
+        .and_then(number)
+        .is_some_and(|(number, title)| {
+            number == filed && title.len() > 1 && title.starts_with(' ')
+        });
+    titled
+        && lines.next() == Some("")
+        && lines
+            .next()
+            .is_some_and(|line| line.starts_with("Status: "))
+}
+
+fn file_number(name: &str) -> Option<u32> {
+    let (digits, rest) = name.split_at_checked(4)?;
+    let slug = rest.strip_prefix('-')?.strip_suffix(".md")?;
+    if slug.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    <u32 as core::str::FromStr>::from_str(digits).ok()
+}
+
+fn index_rows(index: &str) -> Vec<(String, String)> {
+    index
+        .lines()
+        .filter_map(|line| {
+            let (label, rest) = line.strip_prefix("| [")?.split_once("](")?;
+            let (target, _) = rest.split_once(')')?;
+            Some((label.to_owned(), target.to_owned()))
+        })
+        .collect()
 }
 
 /// The decision number a `D-`-stripped string starts with, and what follows.
@@ -142,11 +273,7 @@ mod tests {
         );
 
         // A repeat cannot survive the set above, so it is counted separately.
-        let text = std::fs::read_to_string(root().join(LOG)).expect("reading the log");
-        let headings = text
-            .lines()
-            .filter(|line| line.starts_with("## D-"))
-            .count();
+        let headings = entries(&root()).expect("reading the decision log").len();
         assert_eq!(
             headings,
             numbers.len(),
@@ -179,6 +306,102 @@ mod tests {
             "{} citation(s) name a decision the log does not define:\n  {}",
             dangling.len(),
             dangling.join("\n  ")
+        );
+    }
+
+    const FIRST: (&str, &str) = (
+        "0001-first.md",
+        "# D-01 First\n\nStatus: Accepted\n\nBody.\n",
+    );
+    const SECOND: (&str, &str) = (
+        "0002-second.md",
+        "# D-2 Second\n\nStatus: Accepted, 2026-10-25.\n\nAmends D-01.\n",
+    );
+    const FIRST_ROW: &str = "| [D-01 First](decisions/0001-first.md) | Accepted | 2026-07-18 |";
+    const SECOND_ROW: &str = "| [D-2 Second](decisions/0002-second.md) | Accepted | 2026-10-25 |";
+
+    fn split_tree(files: &[(&str, &str)], rows: &[&str]) -> std::path::PathBuf {
+        let root = crate::test_support::reserve_temp_directory("wizard-decisions");
+        std::fs::create_dir_all(root.join(DIRECTORY)).expect("creating the decision directory");
+        for (name, text) in files {
+            std::fs::write(root.join(DIRECTORY).join(name), text).expect("writing a decision");
+        }
+        let index = format!(
+            "# 004 - Decision log\n\n| Decision | Status | Date |\n|---|---|---|\n{}\n",
+            rows.join("\n")
+        );
+        std::fs::write(root.join(LOG), index).expect("writing the index");
+        root
+    }
+
+    fn refused(files: &[(&str, &str)], rows: &[&str]) -> bool {
+        let root = split_tree(files, rows);
+        let refused = defined(&root).is_err();
+        std::fs::remove_dir_all(&root).expect("removing the decision fixture");
+        refused
+    }
+
+    #[test]
+    fn the_split_layout_defines_one_decision_per_file() {
+        let root = split_tree(&[FIRST, SECOND], &[FIRST_ROW, SECOND_ROW]);
+        let numbers = defined(&root).expect("reading the split layout");
+        let second = decision_text(&root, 2).expect("reading D-2");
+        let count = entries(&root).expect("reading the split layout").len();
+        std::fs::remove_dir_all(&root).expect("removing the decision fixture");
+        assert_eq!(numbers, BTreeSet::from([1, 2]));
+        assert_eq!(count, 2);
+        assert_eq!(second, SECOND.1);
+    }
+
+    #[test]
+    fn an_index_that_disagrees_with_the_files_is_refused() {
+        assert!(
+            refused(&[FIRST, SECOND], &[SECOND_ROW, FIRST_ROW]),
+            "out of order"
+        );
+        assert!(refused(&[FIRST, SECOND], &[FIRST_ROW]), "a file left out");
+        assert!(
+            refused(&[FIRST, SECOND], &[FIRST_ROW, SECOND_ROW, SECOND_ROW]),
+            "a file listed twice"
+        );
+        assert!(
+            refused(
+                &[FIRST, SECOND],
+                &[
+                    FIRST_ROW,
+                    "| [D-2 Other](decisions/0002-second.md) | Accepted | 2026-10-25 |"
+                ]
+            ),
+            "a title that is not the file's"
+        );
+    }
+
+    #[test]
+    fn a_decision_file_out_of_shape_is_refused() {
+        assert!(
+            !refused(&[FIRST], &[FIRST_ROW]),
+            "the well-formed fixture is accepted"
+        );
+        assert!(
+            refused(
+                &[("0001-first.md", "# D-3 First\n\nStatus: Accepted\n")],
+                &["| [D-3 First](decisions/0001-first.md) | Accepted | |"]
+            ),
+            "a heading that disagrees with its file name"
+        );
+        assert!(
+            refused(
+                &[("0001-first.md", "# D-01 First\n\nBody.\n")],
+                &[FIRST_ROW]
+            ),
+            "no status line"
+        );
+        assert!(
+            refused(
+                &[("0001-first.txt", FIRST.1)],
+                &["| [D-01 First](decisions/0001-first.txt) | Accepted | |"]
+            ),
+            "a decision that is not Markdown"
         );
     }
 
