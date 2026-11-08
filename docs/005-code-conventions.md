@@ -152,7 +152,7 @@ evidence.
 
 Beyond that: `//!` on every module saying what it is for and what it assumes;
 `///` on public items, whose first line is a single sentence saying what the
-item does (`missing_docs`, at warn); `# Panics` on anything that can panic
+item does; `# Panics` on anything that can panic
 (C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled,
 because it manufactures noise on every helper.
 

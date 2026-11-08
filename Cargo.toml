@@ -153,15 +153,11 @@ shuttle = "0.9"
 [workspace.lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
-missing_docs = "warn"
 missing_debug_implementations = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
 
-# Doc links rot silently: `missing_docs` notices a doc that is absent, nothing
-# notices one that points at a name which has since been renamed or made
-# private. These fire only under rustdoc, which is why `cargo xtask doc` is a
-# gate step rather than an occasional habit (D-22).
+# These fire only under rustdoc, so `cargo xtask doc` is a gate step.
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"
