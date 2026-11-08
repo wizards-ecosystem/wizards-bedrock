@@ -1704,6 +1704,7 @@ fn assert_rejected(cases: &[(&str, &str)]) {
     }
 }
 
+#[cfg(windows)]
 fn assert_advisory_non_gating(modes: &[&str]) {
     for mode in modes {
         let run = run_fake(mode).unwrap();
@@ -1716,6 +1717,7 @@ fn assert_advisory_non_gating(modes: &[&str]) {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_mcp_exchange_emits_the_exact_five_step_protocol_and_handles_server_messages() {
     let run = run_fake("happy").unwrap();
@@ -1768,6 +1770,7 @@ fn owned_mcp_initialization_and_tool_authority_are_exact() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_daybreak_advisory_is_once_immediately_before_start_and_non_gating() {
     assert_advisory_non_gating(&[
@@ -1801,6 +1804,7 @@ fn owned_daybreak_advisory_is_once_immediately_before_start_and_non_gating() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_daybreak_wire_and_error_envelopes_fail_closed() {
     assert_rejected(&[
@@ -1969,6 +1973,7 @@ fn owned_mcp_server_messages_have_strict_envelopes() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_mcp_response_correlation_and_transport_fail_closed() {
     assert_rejected(&[
@@ -1984,6 +1989,7 @@ fn owned_mcp_response_correlation_and_transport_fail_closed() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_mcp_start_receipt_is_exact_source_bound_and_actionable() {
     assert_rejected(&[
@@ -2050,6 +2056,7 @@ fn owned_mcp_start_receipt_is_exact_source_bound_and_actionable() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_mcp_completion_is_exact_source_bound_and_clean() {
     assert_rejected(&[
@@ -2154,6 +2161,7 @@ fn owned_mcp_completion_is_exact_source_bound_and_clean() {
     ]);
 }
 
+#[cfg(windows)]
 #[test]
 fn owned_mcp_completion_workspace_is_an_exact_fresh_results_clone() {
     assert_rejected(&[

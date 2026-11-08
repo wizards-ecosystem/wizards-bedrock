@@ -2966,17 +2966,6 @@ mod tests {
         std::os::windows::fs::symlink_file(target, link).expect("creating file symlink");
     }
 
-    fn remove_directory_symlink(path: &Path) {
-        if let Err(file_error) = std::fs::remove_file(path) {
-            std::fs::remove_dir(path).unwrap_or_else(|directory_error| {
-                panic!(
-                    "removing directory redirect {}: {file_error}; {directory_error}",
-                    path.display()
-                )
-            });
-        }
-    }
-
     #[test]
     fn initial_copy_refuses_a_nested_redirect_before_creating_outside_paths() {
         let tree = TempTree::new("nested-copy-redirect");
@@ -3007,7 +2996,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).unwrap(),
             b"outside authority"
         );
-        remove_directory_symlink(&redirect);
+        crate::test_support::remove_directory_link(&redirect);
     }
 
     #[test]
@@ -3029,7 +3018,7 @@ mod tests {
             std::fs::read(outside.join("deeper/tracked")).unwrap(),
             b"same bytes"
         );
-        remove_directory_symlink(&redirect);
+        crate::test_support::remove_directory_link(&redirect);
     }
 
     fn contaminate(workspace: &Path) {
@@ -3210,7 +3199,7 @@ mod tests {
             b"outside workspace authority"
         );
 
-        remove_directory_symlink(&workspace_parent);
+        crate::test_support::remove_directory_link(&workspace_parent);
         std::fs::create_dir(&workspace_parent).expect("recreating workspace parent");
         let outside_file = outside.join("direct-file");
         std::fs::write(&outside_file, b"outside file authority").expect("outside file");

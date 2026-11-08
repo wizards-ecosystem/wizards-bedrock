@@ -363,16 +363,6 @@ mod tests {
         std::os::windows::fs::symlink_file(target, link).expect("creating image file symlink");
     }
 
-    #[cfg(unix)]
-    fn remove_directory_symlink(path: &Path) {
-        std::fs::remove_file(path).expect("removing image directory symlink");
-    }
-
-    #[cfg(windows)]
-    fn remove_directory_symlink(path: &Path) {
-        std::fs::remove_dir(path).expect("removing image directory symlink");
-    }
-
     fn test_root(label: &str) -> PathBuf {
         crate::test_support::reserve_temp_directory(&format!("wizard-image-{label}"))
     }
@@ -430,7 +420,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).unwrap(),
             b"outside authority"
         );
-        remove_directory_symlink(&run_root);
+        crate::test_support::remove_directory_link(&run_root);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -459,7 +449,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).unwrap(),
             b"outside authority"
         );
-        remove_directory_symlink(&target);
+        crate::test_support::remove_directory_link(&target);
         std::fs::remove_dir_all(root).unwrap();
     }
 

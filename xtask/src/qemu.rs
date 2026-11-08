@@ -3365,16 +3365,6 @@ mod tests {
         std::os::windows::fs::symlink_dir(target, link).expect("creating QEMU directory symlink");
     }
 
-    #[cfg(unix)]
-    fn remove_directory_symlink(path: &Path) {
-        std::fs::remove_file(path).expect("removing QEMU directory symlink");
-    }
-
-    #[cfg(windows)]
-    fn remove_directory_symlink(path: &Path) {
-        std::fs::remove_dir(path).expect("removing QEMU directory symlink");
-    }
-
     fn publish_fixture(parent: &Path, bytes: &'static [u8]) -> Result<PathBuf> {
         let backing = parent.join("nvme.img");
         publish_namespace(parent, &backing, |file| {
@@ -4027,7 +4017,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).unwrap(),
             b"outside authority"
         );
-        remove_directory_symlink(&run_root);
+        crate::test_support::remove_directory_link(&run_root);
     }
 
     #[test]
@@ -4149,7 +4139,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).unwrap(),
             b"outside authority"
         );
-        remove_directory_symlink(&storage);
+        crate::test_support::remove_directory_link(&storage);
     }
 
     #[test]

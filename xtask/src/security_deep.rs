@@ -99,6 +99,7 @@ const PRIVATE_DESCENDANT_PROBE_ARGUMENT: &str =
 const PRIVATE_CREDENTIAL_DENIED_EXIT: i32 = 73;
 const PRIVATE_CREDENTIAL_READABLE_EXIT: i32 = 74;
 const PRIVATE_CREDENTIAL_ERROR_EXIT: i32 = 75;
+#[cfg(windows)]
 const FILE_READ_DATA_ACCESS: u32 = 0x0000_0001;
 const WORKER_ALLOWED_CANARY_NAME: &str = "worker-allowed-read-canary";
 const WORKER_DENIED_CANARY_NAME: &str = "worker-denied-read-canary";
@@ -10938,7 +10939,7 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
     crate::mutate::workspace::canonical_existing_real_directory(path, label)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod config_tests;
 
 #[cfg(test)]
@@ -12485,6 +12486,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn owned_metadata_names_the_exact_managed_read_only_parent() {
         let source = source();
@@ -12563,6 +12565,7 @@ mod tests {
         assert!(!rendered.contains("worker-denied-read-canary"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn named_permission_profiles_separate_provider_and_effective_authority() {
         let policy = test_worker_policy(
@@ -12826,6 +12829,7 @@ mod tests {
 
     #[test]
     fn credential_probe_is_exact_content_open_only_and_fails_closed() {
+        #[cfg(windows)]
         assert_eq!(FILE_READ_DATA_ACCESS, 1);
         assert_eq!(
             private_credential_probe_exit(Err(std::io::Error::from(
@@ -13154,6 +13158,7 @@ mod tests {
         remove_entry_no_follow(&outer, &metadata).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn credential_probe_command_uses_the_exact_owned_worker_sandbox() {
         let repository = std::env::temp_dir().join("credential-probe-repository");
@@ -13546,6 +13551,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn managed_worker_policy_is_an_executable_default_deny_allowlist() {
         let (outer, scratch) = test_owned_scratch();
@@ -13858,6 +13864,17 @@ mod tests {
         assert!(windows_file_url(Path::new("relative")).is_err());
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn the_owned_campaign_refuses_off_windows() {
+        let paths = Paths::new(PathBuf::from("unused-repository"), None);
+        let error = run(&paths, SecurityDeepAction::Run)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires Windows Job ownership"), "{error}");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn worker_shell_environment_uses_only_qualified_paths() {
         let root = unique_test_directory("wizard-security-deep-shell-environment");
@@ -13959,6 +13976,7 @@ mod tests {
         remove_entry_no_follow(&root, &metadata).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn codex_runtime_inventory_is_exact_and_complete() {
         assert_eq!(CODEX_RUNTIME_FILES.len(), 4);
@@ -14029,6 +14047,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn private_child_command_specs_pin_arguments_and_strip_wrapper_controls() {
         let executable = Path::new(r"C:\runtime\tool.exe");
@@ -14146,6 +14165,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn wrapper_environment_propagates_both_exact_permission_profiles() {
         let (outer, scratch) = test_owned_scratch();
@@ -14190,6 +14210,7 @@ mod tests {
         remove_entry_no_follow(&outer, &metadata).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         assert_eq!(WINDOWS_SANDBOX_OVERRIDE, "windows.sandbox=\"mxc\"");
@@ -14821,6 +14842,7 @@ mod tests {
         remove_entry_no_follow(&root, &metadata).unwrap();
     }
 
+    #[cfg(windows)]
     #[test]
     fn python_runtime_policy_and_resource_bounds_detect_drift() {
         let outer = unique_test_directory("wizard-security-deep-python-runtime-test");
