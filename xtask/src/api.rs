@@ -7870,6 +7870,41 @@ fn read_bounded_authority_text(path: &Path, label: &str) -> Result<String> {
         .with_context(|| format!("{label} {} is not UTF-8", path.display()))
 }
 
+fn host_linker(
+    host_target: &str,
+    sysroot: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
+    if !host_target.contains("-windows-") {
+        return platform_c_driver(search_path);
+    }
+    let linker = std::fs::canonicalize(
+        sysroot
+            .join("lib/rustlib")
+            .join(host_target)
+            .join("bin")
+            .join("rust-lld.exe"),
+    )
+    .context("resolving the API audit host linker inside the compiler sysroot")?;
+    ensure!(
+        linker.starts_with(sysroot),
+        "the API audit host linker escaped the compiler sysroot"
+    );
+    Ok(linker)
+}
+
+fn platform_c_driver(search_path: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    let driver = search_path
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join("cc"))
+        .find(|candidate| candidate.is_file())
+        .context("the API audit host linker `cc` is not in an absolute PATH directory")?;
+    std::fs::canonicalize(&driver)
+        .with_context(|| format!("resolving the API audit host linker {}", driver.display()))
+}
+
 fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
     let cargo = std::fs::canonicalize(env!("CARGO"))
         .with_context(|| format!("resolving API audit Cargo executable {}", env!("CARGO")))?;
@@ -7949,23 +7984,7 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
         sysroot == toolchain,
         "the API audit compiler reported a sysroot outside its exact toolchain"
     );
-    let linker_name = if cfg!(windows) {
-        "rust-lld.exe"
-    } else {
-        "rust-lld"
-    };
-    let host_linker = std::fs::canonicalize(
-        sysroot
-            .join("lib/rustlib")
-            .join(*target)
-            .join("bin")
-            .join(linker_name),
-    )
-    .context("resolving the API audit host linker inside the compiler sysroot")?;
-    ensure!(
-        host_linker.starts_with(&sysroot),
-        "the API audit host linker escaped the compiler sysroot"
-    );
+    let host_linker = host_linker(target, &sysroot, std::env::var_os("PATH").as_deref())?;
     let host_linker = crate::cargo::child_process_path(&host_linker);
     let tool_path = std::env::join_paths([compiler
         .parent()
@@ -9389,10 +9408,16 @@ macro_rules! entry {
             environment.get(std::ffi::OsStr::new("PATH")),
             Some(&Some(compiler.tool_path.clone()))
         );
-        assert!(command.get_args().any(|argument| {
-            argument.to_string_lossy().contains(".linker=")
-                && argument.to_string_lossy().contains("rust-lld")
-        }));
+        let linker = format!(
+            "target.{}.linker={:?}",
+            compiler.host_target,
+            compiler.host_linker.display().to_string()
+        );
+        assert!(
+            command
+                .get_args()
+                .any(|argument| argument == linker.as_str())
+        );
         assert_eq!(
             environment.get(std::ffi::OsStr::new("CARGO_ENCODED_RUSTFLAGS")),
             Some(&Some(kernel_rustflags))
@@ -15085,6 +15110,40 @@ fn main() {}
             !compile_graph.contains("bounded_process::output_with_limit("),
             "API compiler still stages its complete structured output"
         );
+    }
+
+    #[test]
+    fn windows_hosts_link_with_sysroot_lld_and_other_hosts_with_cc() {
+        let root = crate::test_support::reserve_temp_directory("wizard-api-host-linker");
+        let sysroot = std::fs::canonicalize(&root).unwrap();
+        let windows = "x86_64-pc-windows-gnu";
+        let lld_directory = sysroot.join("lib/rustlib").join(windows).join("bin");
+        let driver_directory = sysroot.join("drivers");
+        std::fs::create_dir_all(&lld_directory).unwrap();
+        std::fs::create_dir(&driver_directory).unwrap();
+        std::fs::write(lld_directory.join("rust-lld.exe"), b"lld").unwrap();
+        std::fs::write(driver_directory.join("cc"), b"cc").unwrap();
+        let search_path =
+            std::env::join_paths([Path::new("drivers"), driver_directory.as_path()]).unwrap();
+
+        assert_eq!(
+            host_linker(windows, &sysroot, Some(&search_path)).unwrap(),
+            std::fs::canonicalize(lld_directory.join("rust-lld.exe")).unwrap()
+        );
+        assert_eq!(
+            host_linker("x86_64-unknown-linux-gnu", &sysroot, Some(&search_path)).unwrap(),
+            std::fs::canonicalize(driver_directory.join("cc")).unwrap()
+        );
+        assert!(
+            host_linker(
+                "x86_64-unknown-linux-gnu",
+                &sysroot,
+                Some(std::ffi::OsStr::new("drivers"))
+            )
+            .is_err()
+        );
+        assert!(host_linker("x86_64-unknown-linux-gnu", &sysroot, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
