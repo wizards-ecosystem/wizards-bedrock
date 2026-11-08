@@ -11791,7 +11791,7 @@ harness = false
             "a top-level redirected source directory was accepted"
         );
         assert!(!copied_redirected_directory.exists());
-        std::fs::remove_dir(&redirected_source_directory).unwrap();
+        crate::test_support::remove_directory_link(&redirected_source_directory);
 
         create_directory_symlink(&outside_directory, &redirected_directory);
         assert!(copy_tree(&source, &redirected_directory).is_err());
@@ -11799,7 +11799,7 @@ harness = false
             !outside_directory.join("input").exists(),
             "API audit recursion wrote through a redirected directory"
         );
-        std::fs::remove_dir(&redirected_directory).unwrap();
+        crate::test_support::remove_directory_link(&redirected_directory);
 
         copy_file(&source.join("input"), &copied).unwrap();
         assert_eq!(std::fs::read(&copied).unwrap(), b"copied source");

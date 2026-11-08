@@ -511,16 +511,6 @@ mod tests {
         std::os::windows::fs::symlink_file(target, link).expect("creating cleanup file symlink");
     }
 
-    #[cfg(unix)]
-    fn remove_directory_symlink(path: &std::path::Path) {
-        std::fs::remove_file(path).expect("removing cleanup directory symlink");
-    }
-
-    #[cfg(windows)]
-    fn remove_directory_symlink(path: &std::path::Path) {
-        std::fs::remove_dir(path).expect("removing cleanup directory symlink");
-    }
-
     fn clean_fixture(label: &str) -> std::path::PathBuf {
         crate::test_support::reserve_temp_directory(&format!("wizard-clean-{label}"))
     }
@@ -779,7 +769,7 @@ mod tests {
             std::fs::read(&runner).unwrap(),
             b"outside target executable"
         );
-        remove_directory_symlink(&target);
+        crate::test_support::remove_directory_link(&target);
         std::fs::remove_dir_all(fixture).unwrap();
     }
 
@@ -800,7 +790,7 @@ mod tests {
             std::fs::read(&runner).unwrap(),
             b"outside profile executable"
         );
-        remove_directory_symlink(&profile);
+        crate::test_support::remove_directory_link(&profile);
         std::fs::remove_dir_all(fixture).unwrap();
     }
 
@@ -857,7 +847,7 @@ mod tests {
 
         assert!(remove_vm_directory(&repository, &repository.join("vm")).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
-        remove_directory_symlink(&repository.join("vm"));
+        crate::test_support::remove_directory_link(&repository.join("vm"));
         std::fs::create_dir(repository.join("vm")).unwrap();
         create_directory_symlink(&redirected, &repository.join("vm/redirected"));
 
@@ -869,7 +859,7 @@ mod tests {
         create_directory_symlink(&repository, &linked_repository);
         assert!(remove_vm_directory(&linked_repository, &linked_repository.join("vm")).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
-        remove_directory_symlink(&linked_repository);
+        crate::test_support::remove_directory_link(&linked_repository);
 
         let linked_parent = fixture.join("repository-parent-link");
         create_directory_symlink(&fixture, &linked_parent);
@@ -878,7 +868,7 @@ mod tests {
             remove_vm_directory(&repository_below_link, &repository_below_link.join("vm")).is_err()
         );
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
-        remove_directory_symlink(&linked_parent);
+        crate::test_support::remove_directory_link(&linked_parent);
         std::fs::remove_dir_all(fixture).unwrap();
     }
 

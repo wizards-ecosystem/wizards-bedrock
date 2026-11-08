@@ -6799,7 +6799,7 @@ mod tests {
             require_exact_vmware_directory(&paths, Kind::VmwareSelfTest, &selector).is_err(),
             "an authoritative selector name accepted another in-root directory"
         );
-        std::fs::remove_dir(&selector).unwrap();
+        crate::test_support::remove_directory_link(&selector);
         create_directory_symlink(&outside, &selector);
         assert!(
             require_exact_vmware_directory(&paths, Kind::VmwareSelfTest, &selector).is_err(),

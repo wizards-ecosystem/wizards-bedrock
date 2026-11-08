@@ -22,6 +22,22 @@ pub(crate) fn reserve_temp_file(label: &str) -> (PathBuf, File) {
     reserve_file(&std::env::temp_dir(), label, &NEXT_DIRECTORY)
 }
 
+pub(crate) fn absolute_root(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    let filesystem_root = Path::new(r"C:\");
+    #[cfg(not(windows))]
+    let filesystem_root = Path::new("/");
+    filesystem_root.join(name)
+}
+
+pub(crate) fn remove_directory_link(path: &Path) {
+    #[cfg(windows)]
+    let removed = std::fs::remove_dir(path);
+    #[cfg(not(windows))]
+    let removed = std::fs::remove_file(path);
+    removed.unwrap_or_else(|error| panic!("remove directory link {}: {error}", path.display()));
+}
+
 fn reserve_directory_with(parent: &Path, label: &str, next: &AtomicU64) -> PathBuf {
     for _ in 0..RESERVATION_ATTEMPTS {
         let sequence = next.fetch_add(1, Ordering::Relaxed);

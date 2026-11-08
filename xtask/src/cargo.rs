@@ -326,23 +326,29 @@ mod tests {
 
     #[test]
     fn kernel_builds_use_the_exact_codegen_and_virtual_path_contract() {
-        let source = Path::new(r"C:\source checkout");
-        let toolchain = Path::new(r"C:\rust toolchain");
-        let cargo_home = Path::new(r"C:\cargo home");
+        let source = &crate::test_support::absolute_root("source checkout");
+        let toolchain = &crate::test_support::absolute_root("rust toolchain");
+        let cargo_home = &crate::test_support::absolute_root("cargo home");
         let encoded = kernel_encoded_rustflags(source, toolchain, cargo_home).unwrap();
         assert_eq!(
             encoded,
-            OsString::from(
+            OsString::from(format!(
                 "-C\u{1f}code-model=kernel\u{1f}-C\u{1f}relocation-model=static\u{1f}\
-                 --remap-path-prefix\u{1f}C:\\source checkout=/wizard/source\u{1f}\
-                 --remap-path-prefix\u{1f}C:\\rust toolchain=/wizard/toolchain\u{1f}\
-                 --remap-path-prefix\u{1f}C:\\cargo home=/wizard/cargo"
-            )
+                 --remap-path-prefix\u{1f}{}=/wizard/source\u{1f}\
+                 --remap-path-prefix\u{1f}{}=/wizard/toolchain\u{1f}\
+                 --remap-path-prefix\u{1f}{}=/wizard/cargo",
+                source.display(),
+                toolchain.display(),
+                cargo_home.display()
+            ))
         );
         assert!(kernel_encoded_rustflags(source, source, cargo_home).is_err());
         assert!(kernel_encoded_rustflags(Path::new("bad=root"), toolchain, cargo_home).is_err());
 
-        let paths = Paths::new(source.to_path_buf(), Some(Path::new(r"C:\target")));
+        let paths = Paths::new(
+            source.to_path_buf(),
+            Some(&crate::test_support::absolute_root("target")),
+        );
         let command = kernel_command_with_roots(
             &paths,
             [
@@ -374,7 +380,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             std::env::split_paths(path).next().as_deref(),
-            Some(Path::new(r"C:\rust toolchain\bin"))
+            Some(toolchain.join("bin").as_path())
         );
     }
 
