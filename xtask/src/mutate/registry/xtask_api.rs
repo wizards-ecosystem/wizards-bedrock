@@ -2314,4 +2314,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "api::tests::concurrent_graphs_stay_bounded_ordered_and_isolate_the_alone_graph",
         },
     },
+    Mutation {
+        id: 2452,
+        file: "xtask/src/api.rs",
+        find: "    if !host_target.contains(\"-windows-\") {",
+        replace: "    if host_target.contains(\"-windows-\") {",
+        breaks: "a Windows host audits with the platform C driver instead of the sysroot linker",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::windows_hosts_link_with_sysroot_lld_and_other_hosts_with_cc",
+        },
+    },
 ];
