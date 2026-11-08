@@ -403,31 +403,31 @@ impl RunVars {
         after_reservation(&path);
         let copied = (|| -> Result<()> {
             let mut source =
-                crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?;
+                crate::mutate::workspace::open_real_file(template, "QEMU variable firmware")?;
             std::io::copy(&mut source, &mut destination)
                 .with_context(|| format!("copying {} to {}", template.display(), path.display()))?;
             destination
                 .sync_all()
                 .with_context(|| format!("flushing {}", path.display()))?;
             drop(destination);
-            crate::mutation_workspace::require_direct_file(
+            crate::mutate::workspace::require_direct_file(
                 &directory,
                 &path,
                 "private QEMU variable store",
             )?;
             ensure!(
-                crate::mutation_workspace::canonical_existing_real_directory(
+                crate::mutate::workspace::canonical_existing_real_directory(
                     &directory,
                     "QEMU private run directory",
                 )? == directory,
                 "QEMU private run directory changed while copying firmware"
             );
-            let source = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+            let source = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
                 template,
                 "QEMU variable firmware",
             )?)
             .with_context(|| format!("hashing private firmware {}", template.display()))?;
-            let copied = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+            let copied = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
                 &path,
                 "private QEMU variable store",
             )?)
@@ -435,7 +435,7 @@ impl RunVars {
             ensure!(copied == source, "private firmware copy changed bytes");
             Ok(())
         })();
-        crate::mutation_workspace::finish_staged_operation(
+        crate::mutate::workspace::finish_staged_operation(
             &directory,
             &path,
             "private QEMU variable store",
@@ -528,13 +528,13 @@ fn write_run_acpi_table(target: &Path, stem: &str, bytes: &[u8], label: &str) ->
             .sync_all()
             .with_context(|| format!("flushing {}", path.display()))?;
         drop(destination);
-        crate::mutation_workspace::require_direct_file(
+        crate::mutate::workspace::require_direct_file(
             &directory,
             &path,
             &format!("private QEMU {label}"),
         )?;
         ensure!(
-            crate::mutation_workspace::canonical_existing_real_directory(
+            crate::mutate::workspace::canonical_existing_real_directory(
                 &directory,
                 "QEMU private run directory",
             )? == directory,
@@ -542,7 +542,7 @@ fn write_run_acpi_table(target: &Path, stem: &str, bytes: &[u8], label: &str) ->
         );
         Ok(())
     })();
-    crate::mutation_workspace::finish_staged_operation(
+    crate::mutate::workspace::finish_staged_operation(
         &directory,
         &path,
         &format!("private QEMU {label}"),
@@ -644,7 +644,7 @@ fn storage_paths(root: &Path) -> Result<(PathBuf, PathBuf)> {
         .parent()
         .context("NVMe image has no parent")?
         .to_path_buf();
-    crate::mutation_workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;
+    crate::mutate::workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;
     Ok((parent, backing))
 }
 
@@ -706,7 +706,7 @@ fn open_storage_lock_with(
     after_open(path);
     require_storage_lock_path(parent, path, true)?;
     ensure!(
-        crate::mutation_workspace::canonical_existing_real_directory(
+        crate::mutate::workspace::canonical_existing_real_directory(
             parent,
             "QEMU storage directory",
         )? == canonical_parent,
@@ -720,7 +720,7 @@ fn require_storage_lock_path(parent: &Path, path: &Path, must_exist: bool) -> Re
         path == parent.join("nvme.lock"),
         "storage build lock is not the exact allowlisted path"
     );
-    let present = crate::mutation_workspace::require_direct_file_if_present(
+    let present = crate::mutate::workspace::require_direct_file_if_present(
         parent,
         path,
         "storage build lock",
@@ -742,20 +742,20 @@ fn publish_namespace(
         backing == parent.join("nvme.img"),
         "NVMe image is not the exact allowlisted storage path"
     );
-    let canonical_parent = crate::mutation_workspace::canonical_existing_real_directory(
+    let canonical_parent = crate::mutate::workspace::canonical_existing_real_directory(
         parent,
         "QEMU storage directory",
     )?;
     let lock_path = parent.join("nvme.lock");
     let _lock = acquire_storage_lock(parent, &lock_path, &canonical_parent)?;
-    crate::mutation_workspace::require_direct_file_if_present(
+    crate::mutate::workspace::require_direct_file_if_present(
         parent,
         backing,
         "existing NVMe image",
     )?;
 
     let staging = parent.join(STORAGE_STAGING_NAME);
-    if crate::mutation_workspace::require_direct_file_if_present(
+    if crate::mutate::workspace::require_direct_file_if_present(
         parent,
         &staging,
         "NVMe staging image",
@@ -775,28 +775,28 @@ fn publish_namespace(
             .with_context(|| format!("syncing NVMe staging image {}", staging.display()))?;
         drop(file);
 
-        crate::mutation_workspace::require_direct_file(parent, &staging, "NVMe staging image")?;
+        crate::mutate::workspace::require_direct_file(parent, &staging, "NVMe staging image")?;
         ensure!(
-            crate::mutation_workspace::canonical_existing_real_directory(
+            crate::mutate::workspace::canonical_existing_real_directory(
                 parent,
                 "QEMU storage directory",
             )? == canonical_parent,
             "QEMU storage directory changed during image construction"
         );
-        let expected = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+        let expected = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
             &staging,
             "NVMe staging image",
         )?)
         .with_context(|| format!("hashing NVMe staging image {}", staging.display()))?;
 
-        crate::mutation_workspace::publish_staged_file(
+        crate::mutate::workspace::publish_staged_file(
             parent,
             &staging,
             backing,
             "NVMe image",
             |published| {
                 let digest = crate::sha256::digest_reader(
-                    crate::mutation_workspace::open_real_file(published, "published NVMe image")?,
+                    crate::mutate::workspace::open_real_file(published, "published NVMe image")?,
                 )
                 .with_context(|| format!("hashing published NVMe image {}", published.display()))?;
                 ensure!(
@@ -808,7 +808,7 @@ fn publish_namespace(
         )?;
         Ok(())
     })();
-    crate::mutation_workspace::finish_staged_operation(
+    crate::mutate::workspace::finish_staged_operation(
         parent,
         &staging,
         "NVMe staging image",
@@ -4034,7 +4034,7 @@ mod tests {
     fn storage_construction_is_serialized_across_runners() {
         let fixture = QemuFixture::create();
         let lock_path = fixture.root.join("nvme.lock");
-        let canonical = crate::mutation_workspace::canonical_existing_real_directory(
+        let canonical = crate::mutate::workspace::canonical_existing_real_directory(
             &fixture.root,
             "storage fixture",
         )
@@ -4070,7 +4070,7 @@ mod tests {
     fn an_open_storage_lock_must_remain_at_its_name() {
         let fixture = QemuFixture::create();
         let lock_path = fixture.root.join("nvme.lock");
-        let canonical = crate::mutation_workspace::canonical_existing_real_directory(
+        let canonical = crate::mutate::workspace::canonical_existing_real_directory(
             &fixture.root,
             "storage fixture",
         )

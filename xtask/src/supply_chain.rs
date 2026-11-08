@@ -197,9 +197,9 @@ where
     );
     let directory = destination.parent().context("SPDX path has no parent")?;
     let canonical_root =
-        crate::mutation_workspace::canonical_existing_real_directory(root, "SPDX repository root")?;
+        crate::mutate::workspace::canonical_existing_real_directory(root, "SPDX repository root")?;
     let canonical_directory =
-        crate::mutation_workspace::canonical_existing_real_directory(directory, "SPDX directory")?;
+        crate::mutate::workspace::canonical_existing_real_directory(directory, "SPDX directory")?;
     ensure!(
         canonical_directory.parent() == Some(canonical_root.as_path()),
         "SPDX directory escaped its canonical repository root"
@@ -228,29 +228,27 @@ where
         file.sync_all()
             .with_context(|| format!("syncing SPDX staging file {}", staging.display()))?;
         drop(file);
-        crate::mutation_workspace::require_direct_file(directory, &staging, "SPDX staging file")?;
+        crate::mutate::workspace::require_direct_file(directory, &staging, "SPDX staging file")?;
         ensure!(
-            crate::mutation_workspace::canonical_existing_real_directory(
+            crate::mutate::workspace::canonical_existing_real_directory(
                 directory,
                 "SPDX directory",
             )? == canonical_directory,
             "SPDX directory changed during publication"
         );
-        crate::mutation_workspace::publish_staged_file(
+        crate::mutate::workspace::publish_staged_file(
             directory,
             &staging,
             destination,
             "SPDX document",
             |published| {
-                let mut file = crate::mutation_workspace::open_real_file(
-                    published,
-                    "published SPDX document",
-                )?;
+                let mut file =
+                    crate::mutate::workspace::open_real_file(published, "published SPDX document")?;
                 let (length, digest) =
                     sha256::digest_reader((&mut file).take(bytes.len() as u64 + 1)).with_context(
                         || format!("hashing published SPDX document {}", published.display()),
                     )?;
-                crate::mutation_workspace::require_direct_file(
+                crate::mutate::workspace::require_direct_file(
                     directory,
                     published,
                     "published SPDX document",
@@ -274,7 +272,7 @@ where
             },
         )
     })();
-    crate::mutation_workspace::finish_staged_operation(
+    crate::mutate::workspace::finish_staged_operation(
         directory,
         &staging,
         "SPDX staging file",
@@ -293,9 +291,9 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutation_workspace::require_direct_file(parent, &path, label)?;
-    let mut file = crate::mutation_workspace::open_real_file(&path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::mutate::workspace::require_direct_file(parent, &path, label)?;
+    let mut file = crate::mutate::workspace::open_real_file(&path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -323,7 +321,7 @@ where
             == bytes.len() as u64,
         "{label} changed length while it was read"
     );
-    crate::mutation_workspace::require_direct_file(parent, &path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, &path, label)?;
     String::from_utf8(bytes).with_context(|| format!("{label} {} is not UTF-8", path.display()))
 }
 
@@ -842,13 +840,13 @@ fn verify_artifacts(paths: &Paths, inventory: &Inventory) -> Result<()> {
                 .with_context(|| format!("{} is outside the repository", file.display()))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            crate::mutation_workspace::require_direct_file(
+            crate::mutate::workspace::require_direct_file(
                 parent,
                 &file,
                 "vendored supply-chain artifact",
             )?;
             let mut input =
-                crate::mutation_workspace::open_real_file(&file, "vendored supply-chain artifact")?;
+                crate::mutate::workspace::open_real_file(&file, "vendored supply-chain artifact")?;
             let length = input
                 .metadata()
                 .with_context(|| format!("measuring vendored artifact {}", file.display()))?
@@ -860,7 +858,7 @@ fn verify_artifacts(paths: &Paths, inventory: &Inventory) -> Result<()> {
             );
             let (observed, digest) = sha256::digest_reader((&mut input).take(length + 1))
                 .with_context(|| format!("hashing vendored artifact {}", file.display()))?;
-            crate::mutation_workspace::require_direct_file(
+            crate::mutate::workspace::require_direct_file(
                 parent,
                 &file,
                 "vendored supply-chain artifact",

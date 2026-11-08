@@ -34,7 +34,6 @@ pub mod machine;
 pub mod model;
 mod mutants_grade;
 pub mod mutate;
-pub mod mutation_workspace;
 pub mod paths;
 mod platform_acpi;
 pub mod prose;

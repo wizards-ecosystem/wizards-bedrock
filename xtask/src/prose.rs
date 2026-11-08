@@ -353,15 +353,15 @@ mod tests {
         let claimed_mutations = table_number(&storage, "Mutations");
         assert_eq!(
             claimed_mutations,
-            crate::mutate::MUTATIONS.len(),
+            crate::mutate::mutations().count(),
             "`014`'s closing table says {claimed_mutations} mutations and there are {}",
-            crate::mutate::MUTATIONS.len()
+            crate::mutate::mutations().count()
         );
 
         let mutation_numbers = table_numbers(&storage, "Mutations");
         assert_eq!(
             mutation_numbers,
-            [crate::mutate::MUTATIONS.len()],
+            [crate::mutate::mutations().count()],
             "the mutation row must state only its source-derived registry count"
         );
         let mutation_cell = table_cell(&storage, "Mutations");
@@ -399,8 +399,7 @@ mod tests {
     #[test]
     fn every_living_mutation_citation_names_a_registered_identity() {
         let root = root();
-        let registered = crate::mutate::MUTATIONS
-            .iter()
+        let registered = crate::mutate::mutations()
             .map(|mutation| u64::from(mutation.id))
             .collect::<BTreeSet<_>>();
         let retired = crate::mutate::RETIRED_MUTATION_IDS
@@ -455,8 +454,7 @@ mod tests {
                 claims.len()
             );
         };
-        let machine = crate::mutate::MUTATIONS
-            .iter()
+        let machine = crate::mutate::mutations()
             .filter(|mutation| {
                 !matches!(
                     mutation.reddens,

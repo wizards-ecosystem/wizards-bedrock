@@ -411,11 +411,11 @@ fn prepare_scratch(paths: &Paths, run: &Run) -> Result<PathBuf> {
         ) && core::iter::Iterator::next(&mut components).is_none(),
         "model configuration is not one safe scratch selector"
     );
-    let target = crate::mutation_workspace::prepare_real_directory_tree(
+    let target = crate::mutate::workspace::prepare_real_directory_tree(
         paths.target_dir(),
         "model-check target directory",
     )?;
-    let root = crate::mutation_workspace::prepare_real_child(
+    let root = crate::mutate::workspace::prepare_real_child(
         &target,
         &target.join("model-check"),
         "model-check state directory",
@@ -432,11 +432,11 @@ fn prepare_scratch(paths: &Paths, run: &Run) -> Result<PathBuf> {
             return Err(error).with_context(|| format!("inspecting {}", scratch.display()));
         }
     }
-    crate::mutation_workspace::prepare_real_child(&root, &scratch, "model-check scratch directory")
+    crate::mutate::workspace::prepare_real_child(&root, &scratch, "model-check scratch directory")
 }
 
 fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         scratch,
         "model-check scratch directory",
     )

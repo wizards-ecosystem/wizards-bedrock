@@ -212,7 +212,7 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     let qualifications = qualification::snapshot(
         paths,
         &registry,
-        mutate::MUTATIONS.len(),
+        mutate::mutations().count(),
         &qualified_source,
         relation_requires_current_mutation(relation.policy),
     )?;
@@ -337,7 +337,7 @@ fn reproduce_release(paths: &Paths, target: &Path, label: &str) -> Result<Reprod
             host_roots: crate::cargo::active_kernel_remap_roots(&copied)?,
         })
     };
-    crate::mutation_workspace::with_clean_source_copy(paths, build)
+    crate::mutate::workspace::with_clean_source_copy(paths, build)
 }
 
 fn reproduce_release_alternate(
@@ -384,7 +384,7 @@ fn reproduce_release_alternate(
             }
         }
 
-        crate::mutation_workspace::with_clean_source_copy(paths, |source| {
+        crate::mutate::workspace::with_clean_source_copy(paths, |source| {
             run_alternate_release_build(source, target, &toolchain, &cargo_home)?;
             let copied = Paths::new(source.to_path_buf(), Some(target));
             let image = copied.image();
@@ -395,15 +395,15 @@ fn reproduce_release_alternate(
                 image,
                 kernel,
                 host_roots: [
-                    crate::mutation_workspace::canonical_existing_real_directory(
+                    crate::mutate::workspace::canonical_existing_real_directory(
                         source,
                         "alternate release source root",
                     )?,
-                    crate::mutation_workspace::canonical_existing_real_directory(
+                    crate::mutate::workspace::canonical_existing_real_directory(
                         &toolchain,
                         "alternate release toolchain root",
                     )?,
-                    crate::mutation_workspace::canonical_existing_real_directory(
+                    crate::mutate::workspace::canonical_existing_real_directory(
                         &cargo_home,
                         "alternate release Cargo home",
                     )?,
@@ -653,7 +653,7 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
         root,
         &qualified_source,
         &mutate::registry_fingerprint(),
-        mutate::MUTATIONS.len(),
+        mutate::mutations().count(),
         &campaigns,
     )?;
     require_pass_results(record)?;
@@ -1347,9 +1347,9 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
-    let file = crate::mutation_workspace::open_real_file(path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
+    let file = crate::mutate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1370,9 +1370,9 @@ where
         "{label} changed length while it was hashed"
     );
     after_hash()?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
-        crate::mutation_workspace::open_real_file(path, label)?
+        crate::mutate::workspace::open_real_file(path, label)?
             .metadata()
             .with_context(|| format!("remeasuring {label} {}", path.display()))?
             .len()
@@ -1403,9 +1403,9 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
-    let file = crate::mutation_workspace::open_real_file(path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
+    let file = crate::mutate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1416,7 +1416,7 @@ where
     );
     let mut limited = file.take(expected + 1);
     let digest = hash(&mut limited)?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
         digest.bytes == expected,
         "{label} hashed {} bytes, expected exactly {expected}",
@@ -1448,7 +1448,7 @@ fn byte_identical(first: &Digest, second: &Digest) -> bool {
 }
 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
-    let mut input = crate::mutation_workspace::open_real_file(source, "evidence source artifact")?;
+    let mut input = crate::mutate::workspace::open_real_file(source, "evidence source artifact")?;
     let mut output_options = OpenOptions::new();
     OpenOptions::create_new(&mut output_options, true);
     OpenOptions::write(&mut output_options, true);
@@ -1512,7 +1512,7 @@ fn checked_bundle_file(root: &Path, relative: &str, label: &str) -> Result<PathB
 }
 
 fn require_real_directory(path: &Path, label: &str) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;
     Ok(())
 }
 
@@ -1577,7 +1577,7 @@ fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Resu
         require_real_directory(&current, label)?;
     }
     let parent = path.parent().context("bundle file has no parent")?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("canonicalizing {}", root.display()))?;
     let canonical_path = std::fs::canonicalize(path)
@@ -1590,7 +1590,7 @@ fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Resu
 }
 
 fn invalidate_manifest(paths: &Paths) -> Result<PathBuf> {
-    let root = crate::mutation_workspace::prepare_real_directory_tree(
+    let root = crate::mutate::workspace::prepare_real_directory_tree(
         &evidence_root(paths),
         "evidence root",
     )?;
@@ -1783,11 +1783,11 @@ mod tests {
             + reproduce;
         assert!(
             implementation[reproduce..absent]
-                .contains("mutation_workspace::with_clean_source_copy(paths, build)")
+                .contains("mutate::workspace::with_clean_source_copy(paths, build)")
         );
         assert_eq!(
             implementation[reproduce..absent]
-                .matches("mutation_workspace::with_clean_source_copy(paths")
+                .matches("mutate::workspace::with_clean_source_copy(paths")
                 .count(),
             2
         );

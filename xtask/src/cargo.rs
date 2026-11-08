@@ -108,7 +108,7 @@ fn kernel_command_with_roots(paths: &Paths, roots: [PathBuf; 3]) -> Result<Comma
 
 pub(crate) fn active_kernel_remap_roots(paths: &Paths) -> Result<[PathBuf; 3]> {
     Ok([
-        crate::mutation_workspace::canonical_existing_real_directory(
+        crate::mutate::workspace::canonical_existing_real_directory(
             paths.root(),
             "kernel source root",
         )?,
@@ -170,7 +170,7 @@ fn active_toolchain_root() -> Result<PathBuf> {
         .parent()
         .and_then(Path::parent)
         .context("Cargo executable is outside a toolchain root")?;
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         root,
         "kernel compiler toolchain root",
     )
@@ -182,7 +182,7 @@ fn active_cargo_home() -> Result<PathBuf> {
         Some(home) => PathBuf::from(home),
         None => platform_home()?.join(".cargo"),
     };
-    crate::mutation_workspace::canonical_existing_real_directory(&home, "kernel Cargo home")
+    crate::mutate::workspace::canonical_existing_real_directory(&home, "kernel Cargo home")
 }
 
 #[cfg(windows)]

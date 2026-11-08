@@ -3633,7 +3633,7 @@ mod tests {
         let mut child = Command::new(std::env::current_exe().expect("current test executable"))
             .args([
                 "--exact",
-                "mutation_workspace::tests::interruption_child",
+                "mutate::workspace::tests::interruption_child",
                 "--ignored",
             ])
             .env(CHILD_STATE, state)
