@@ -50,12 +50,6 @@ pub fn clippy(paths: &Paths) -> Result<()> {
 }
 
 /// Build the documentation, so the doc-link lints have something to fire on.
-///
-/// `missing_docs` notices a doc comment that is absent; nothing notices one
-/// that points at a name since renamed or made private, because
-/// `rustdoc::broken_intra_doc_links` only fires under rustdoc — which no other
-/// gate step runs. The lints themselves are declared in `[workspace.lints]`,
-/// so an editor reports them too; this is what makes them a gate.
 pub fn doc(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
