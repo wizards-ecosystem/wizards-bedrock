@@ -993,4 +993,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "prose::tests::a_broken_link_below_the_top_of_docs_is_found",
         },
     },
+    Mutation {
+        id: 2451,
+        file: "xtask/src/test_support.rs",
+        find: "        let header = function.span().byte_range().start..braces.open().byte_range().start;",
+        replace: "        let header = 0..braces.open().byte_range().start;",
+        breaks: "a source-contract slice ends at a nested function instead of its own closing brace",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "test_support::tests::a_function_slice_ends_at_its_own_block_whatever_the_comments_say",
+        },
+    },
 ];

@@ -645,6 +645,7 @@ pub fn verify_file(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::function_after;
 
     /// A `.text`-shaped section: allocated, with contents.
     const SHT_PROGBITS: u32 = 1;
@@ -979,13 +980,8 @@ mod tests {
             .expect("route publication");
         assert!(begin < publish && publish < stacks && stacks < activate && activate < finish);
 
-        let finish_function = kpti
-            .split_once("pub(super) fn finish_route_update")
-            .expect("route finisher")
-            .1
-            .split_once("/// Whether the enclave")
-            .expect("route finisher end")
-            .0;
+        let finish_function =
+            function_after(kpti, "pub(super) fn finish_route_update").expect("route finisher");
         let active_root = finish_function
             .find("cpu::page_table_base() != roots.full_root()")
             .expect("active full-root check");

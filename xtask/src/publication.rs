@@ -4,6 +4,8 @@
 mod tests {
     use std::path::PathBuf;
 
+    use crate::test_support::{function_end, source_through};
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Order {
         Relaxed,
@@ -41,13 +43,9 @@ mod tests {
     }
 
     fn method_at(source: &str, start: usize) -> &str {
-        let rest = &source[start..];
-        let end = ["\n    ///", "\n///"]
-            .into_iter()
-            .filter_map(|marker| rest.find(marker))
-            .min()
-            .unwrap_or(rest.len());
-        &rest[..end]
+        let end = function_end(source, start)
+            .unwrap_or_else(|| panic!("no function body at byte {start}"));
+        &source[start..end]
     }
 
     fn publication_source() -> String {
@@ -293,11 +291,12 @@ mod tests {
     fn publication_words_cross_the_hostile_alias_boundary_without_a_rust_object() {
         let (shared, _) = sources();
         let primitive = publication_source();
-        let boundary = between(
+        let boundary = source_through(
             &shared,
             "    pub fn load_acquire_u32",
-            "    /// Retain the allocation without exposing its bytes.",
-        );
+            "    fn publication_address(",
+        )
+        .expect("publication word boundary");
         let load = method(&shared, "load_acquire_u32");
         let store = method(&shared, "store_release_u32");
         let address = method(&shared, "publication_address");

@@ -11,6 +11,7 @@ use syn::{
 };
 
 use crate::paths::{KERNEL_TARGET, Paths};
+use crate::test_support::function_after;
 
 #[derive(Default)]
 struct BooleanType(bool);
@@ -757,10 +758,8 @@ fn apic_ready_publication_precedes_dependent_vector_reads() {
         configure < publish,
         "APIC readiness can publish before vector configuration returns"
     );
-    let initialization = between(
-        "fn initialize<R: InitializationRegisters>",
-        "/// Claim the exact APIC dismissal",
-    );
+    let initialization = function_after(&source, "fn initialize<R: InitializationRegisters>")
+        .expect("APIC initialization");
     assert!(
         initialization.contains(".self_interrupt_vector\n        .store(")
             && initialization.contains(".timer_vector\n        .store(")

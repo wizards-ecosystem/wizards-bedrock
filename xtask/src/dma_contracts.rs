@@ -7,6 +7,8 @@ use syn::{
     Item, ItemFn, ItemImpl, Pat, ReturnType, Stmt, Type, Visibility, visit::Visit,
 };
 
+use crate::test_support::{function_after, source_through};
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -382,13 +384,8 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(fence.contains("if current != identity"));
     assert!(fence.contains("if current_class != class"));
 
-    let profile = pci
-        .split_once("fn classify_non_requester(")
-        .expect("qualified non-requester profile")
-        .1
-        .split_once("/// What an exhaustive entry-time DMA fence observed")
-        .expect("qualified non-requester profile end")
-        .0;
+    let profile = function_after(&pci, "fn classify_non_requester(")
+        .expect("qualified non-requester profile");
     for exact in [
         "at.bus() == 0",
         "at.device() == 0",
@@ -426,15 +423,11 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(!pci.contains("impl Copy for QualifiedNonRequester"));
 
     let kernel_pci = source("kernel/src/pci.rs");
-    let snapshot = kernel_pci
-        .split_once(
-            "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n    mut quiesced: Option<QuiescedIsaRequester>,\n)",
-        )
-        .expect("entry-proof-bound topology snapshot")
-        .1
-        .split_once("/// Whether the complete segment-zero topology passed its rooted-tree proof")
-        .expect("policy-bound topology snapshot end")
-        .0;
+    let snapshot = function_after(
+        &kernel_pci,
+        "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n    mut quiesced: Option<QuiescedIsaRequester>,\n)",
+    )
+    .expect("entry-proof-bound topology snapshot");
     assert!(!snapshot.contains("classify_non_requester("));
     assert!(snapshot.contains("authority.address() == entry.at"));
     assert!(snapshot.contains("topology.observe_non_requester("));
@@ -446,13 +439,12 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     // D-426: the entry-quiesced ISA requester stays in every inventory, so a
     // unit-wide fence must hold it by exact identity, command and a fresh
     // 8237 remask rather than by a BME clear it cannot perform.
-    let requester_fence = kernel_pci
-        .split_once("pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {")
-        .expect("sibling requester fence")
-        .1
-        .split_once("/// One uncertain BAR restoration")
-        .expect("sibling requester fence end")
-        .0;
+    let requester_fence = source_through(
+        &kernel_pci,
+        "pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {",
+        "fn fence_quiesced_requester(",
+    )
+    .expect("sibling requester fence");
     let quiesced_lookup = requester_fence
         .find("TOPOLOGY.lock_leaf().quiesced_requester(at)")
         .expect("quiesced requester lookup");
@@ -1947,13 +1939,8 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         2,
         "read-only takeover preflight must be repeated after table allocation and before the first unit write"
     );
-    let establishment = vtd_source
-        .split_once("    pub fn establish_deny_all(")
-        .expect("deny-all establishment")
-        .1
-        .split_once("    /// Build one selected context")
-        .expect("deny-all establishment end")
-        .0;
+    let establishment = function_after(&vtd_source, "    pub fn establish_deny_all(")
+        .expect("deny-all establishment");
     let allocation = establishment
         .find("IommuTable::new(TABLE_LIMIT, walks)")
         .expect("final deny-all table allocation");
@@ -2027,13 +2014,8 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "both early fabric establishment and sealed-topology lookup must refuse missing interrupt-remapping authority or x2APIC opt-out"
     );
     assert_eq!(iommu.matches("Vtd::establish_deny_all(").count(), 1);
-    let early_register = iommu
-        .split_once("fn early_register_base(")
-        .expect("static early VT-d authority")
-        .1
-        .split_once("/// The remapping unit firmware says")
-        .expect("static early VT-d authority end")
-        .0;
+    let early_register =
+        function_after(&iommu, "fn early_register_base(").expect("static early VT-d authority");
     assert!(
         early_register
             .contains("coverage.segment() == SEGMENT && coverage.register_base() == register_base")
@@ -2043,24 +2025,22 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "INSTALLED\n        .lock()\n        .as_ref()\n        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())"
     ));
     let acpi = source("libs/acpi-tables/src/lib.rs");
-    let early_unit = acpi
-        .split_once("pub fn sole_rmrr_free_unit_register_base(")
-        .expect("static whole-fabric unit query")
-        .1
-        .split_once("/// The DRHD unit that governs `bdf`")
-        .expect("static whole-fabric unit query end")
-        .0;
+    let early_unit = source_through(
+        &acpi,
+        "pub fn sole_rmrr_free_unit_register_base(",
+        "pub fn sole_complete_unit_register_base(",
+    )
+    .expect("static whole-fabric unit query");
     assert!(early_unit.contains("DmarStructure::Rmrr { segment: reserved, .. }"));
     assert!(early_unit.contains("include_pci_all: true"));
 
     let acpi = source("kernel/src/acpi.rs");
-    let unique = acpi
-        .split_once("pub(crate) fn find_unique_table(")
-        .expect("unique ACPI authority lookup")
-        .1
-        .split_once("/// A whole table at a physical address")
-        .expect("unique ACPI authority lookup end")
-        .0;
+    let unique = source_through(
+        &acpi,
+        "pub(crate) fn find_unique_table(",
+        "fn find_table_with_multiplicity(",
+    )
+    .expect("unique ACPI authority lookup");
     assert!(unique.contains("if require_unique {"));
     assert!(unique.contains("return None;"));
 
@@ -4066,13 +4046,8 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     assert_eq!(names, ["register_base", "isolation", "fences", "state"]);
 
     let iommu_source = source("kernel/src/iommu.rs");
-    let early = iommu_source
-        .split_once("pub(crate) fn establish_fabric_boundary(")
-        .expect("early VT-d establishment")
-        .1
-        .split_once("/// The remapping unit firmware says")
-        .expect("early VT-d establishment end")
-        .0;
+    let early = function_after(&iommu_source, "pub(crate) fn establish_fabric_boundary(")
+        .expect("early VT-d establishment");
     let retained_takeover = early
         .split_once("Establishment::Retained { reason, isolation } => {")
         .expect("retained early takeover")
@@ -4083,13 +4058,11 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     assert!(retained_takeover.contains("state: InstalledState::Quarantined"));
     assert!(!retained_takeover.contains("state: InstalledState::Ready"));
 
-    let candidate = iommu_source
-        .split_once("pub(crate) fn establish(device: &pci::Device)")
-        .expect("candidate VT-d establishment")
-        .1
-        .split_once("/// Verify every live PCI requester")
-        .expect("candidate VT-d establishment end")
-        .0;
+    let candidate = function_after(
+        &iommu_source,
+        "pub(crate) fn establish(device: &pci::Device)",
+    )
+    .expect("candidate VT-d establishment");
     let quarantine_guard = candidate
         .find("if owner.state != InstalledState::Ready {")
         .expect("permanent early-owner quarantine");
@@ -4158,13 +4131,8 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
             .any(|call| call == "switch_translation")
     );
 
-    let release = iommu_source
-        .split_once("pub(crate) fn release_candidate(")
-        .expect("candidate release")
-        .1
-        .split_once("/// Clear one inventory-bounded fault batch")
-        .expect("candidate release end")
-        .0;
+    let release = function_after(&iommu_source, "pub(crate) fn release_candidate(")
+        .expect("candidate release");
     assert!(release.contains("unit.isolation.park()"));
     assert!(!release.contains("unmap_device_exact"));
 
@@ -4437,13 +4405,7 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
     );
 
     let iommu_source = source("kernel/src/iommu.rs");
-    let lookup = iommu_source
-        .split_once("fn look_up(")
-        .expect("DMAR lookup")
-        .1
-        .split_once("/// Whether this one unit covers")
-        .expect("DMAR lookup end")
-        .0;
+    let lookup = function_after(&iommu_source, "fn look_up(").expect("DMAR lookup");
     let coverage = lookup
         .find("covers_every_present_requester(&requesters)")
         .expect("complete requester coverage");
