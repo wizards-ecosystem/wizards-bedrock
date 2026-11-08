@@ -108,7 +108,7 @@ static NEXT_RUN_IMAGE: AtomicU64 = AtomicU64::new(0);
 static NEXT_IMAGE_STAGE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
-    crate::mutation_workspace::prepare_real_directory_tree(
+    crate::mutate::workspace::prepare_real_directory_tree(
         &target.join(paths::QEMU_RUN_DIRECTORY),
         "QEMU private run directory",
     )
@@ -154,12 +154,12 @@ fn publish_image(
         destination == parent.join(paths::IMAGE_NAME),
         "boot image is not the exact configured target child"
     );
-    let canonical_parent = crate::mutation_workspace::prepare_real_directory_tree(
+    let canonical_parent = crate::mutate::workspace::prepare_real_directory_tree(
         parent,
         "boot-image target directory",
     )?;
     let published_path = canonical_parent.join(paths::IMAGE_NAME);
-    crate::mutation_workspace::require_direct_file_if_present(
+    crate::mutate::workspace::require_direct_file_if_present(
         &canonical_parent,
         &published_path,
         "existing boot image",
@@ -183,32 +183,32 @@ fn publish_image(
             .with_context(|| format!("syncing boot-image stage {}", staging.display()))?;
         drop(disk);
 
-        crate::mutation_workspace::require_direct_file(
+        crate::mutate::workspace::require_direct_file(
             &canonical_parent,
             &staging,
             "boot-image stage",
         )?;
         ensure!(
-            crate::mutation_workspace::canonical_existing_real_directory(
+            crate::mutate::workspace::canonical_existing_real_directory(
                 parent,
                 "boot-image target directory",
             )? == canonical_parent,
             "boot-image target directory changed before publication"
         );
-        let staged = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+        let staged = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
             &staging,
             "boot-image stage",
         )?)
         .with_context(|| format!("hashing boot-image stage {}", staging.display()))?;
 
-        crate::mutation_workspace::publish_staged_file(
+        crate::mutate::workspace::publish_staged_file(
             &canonical_parent,
             &staging,
             &published_path,
             "boot image",
             |published| {
                 let digest = crate::sha256::digest_reader(
-                    crate::mutation_workspace::open_real_file(published, "boot image")?,
+                    crate::mutate::workspace::open_real_file(published, "boot image")?,
                 )
                 .with_context(|| format!("hashing boot image {}", destination.display()))?;
                 ensure!(
@@ -220,7 +220,7 @@ fn publish_image(
         )?;
         Ok(())
     })();
-    crate::mutation_workspace::finish_staged_operation(
+    crate::mutate::workspace::finish_staged_operation(
         &canonical_parent,
         &staging,
         "boot-image stage",

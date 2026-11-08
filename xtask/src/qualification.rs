@@ -17,7 +17,7 @@ use crate::json::{
     JsonValue, json_array as parse_json_array, json_field as parse_json_field, json_object,
     json_string_array as parse_json_string_array, json_u64 as parse_json_u64, require_json_fields,
 };
-use crate::mutation_workspace::{CurrentPass, PassEvidence};
+use crate::mutate::workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
 use crate::sha256;
 
@@ -904,7 +904,7 @@ fn record_present(root: &Path, kind: Kind) -> Result<bool> {
         }
     }
     require_contained_real_directory(root, &directory, "qualification kind directory")?;
-    crate::mutation_workspace::require_direct_file_if_present(
+    crate::mutate::workspace::require_direct_file_if_present(
         &directory,
         &directory.join(RECORD),
         "qualification record",
@@ -1560,12 +1560,12 @@ pub(crate) fn snapshot(
 ) -> Result<Snapshot> {
     let root = qualification_root(paths);
     let mutation = if require_current_mutation {
-        crate::mutation_workspace::current_pass(paths, registry, mutation_count)?
+        crate::mutate::workspace::current_pass(paths, registry, mutation_count)?
     } else {
         let directory = checked_kind_directory(&root, Kind::Mutation)?;
         let record = read_record(&directory.join(RECORD), Kind::Mutation)?;
         require_source(&record, source)?;
-        crate::mutation_workspace::recorded_pass(
+        crate::mutate::workspace::recorded_pass(
             paths,
             &source.commit,
             registry,
@@ -1679,7 +1679,7 @@ fn verify_records_after_authority(
         match kind {
             Kind::Mutation => {
                 require_mutation_inputs(&record, registry, mutation_count, mutation)?;
-                crate::mutation_workspace::verify_recorded_pass(
+                crate::mutate::workspace::verify_recorded_pass(
                     &directory.join(MUTATION_REPORT),
                     record.get("source.commit")?,
                     registry,
@@ -2309,12 +2309,12 @@ fn require_generation_inventory(
 
 fn require_regular_file(path: &Path, label: &str) -> Result<()> {
     let parent = path.parent().context("regular file has no parent")?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)
+    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)
 }
 
 fn require_real_directory(path: &Path, label: &str) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;
     Ok(())
 }
 
@@ -2592,7 +2592,7 @@ fn require_source(record: &Record, source: &SourceIdentity) -> Result<()> {
 }
 
 fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {
-    let root = crate::mutation_workspace::prepare_real_directory_tree(
+    let root = crate::mutate::workspace::prepare_real_directory_tree(
         &qualification_root(paths),
         "qualification root",
     )?;
@@ -2618,7 +2618,7 @@ fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {
 }
 
 fn invalidate_record(paths: &Paths, kind: Kind) -> Result<()> {
-    let root = crate::mutation_workspace::prepare_real_directory_tree(
+    let root = crate::mutate::workspace::prepare_real_directory_tree(
         &qualification_root(paths),
         "qualification root",
     )?;
@@ -2639,7 +2639,7 @@ fn invalidate_record(paths: &Paths, kind: Kind) -> Result<()> {
     require_contained_real_directory(&root, &directory, "qualification kind directory")?;
     for name in [RECORD, RECORD_TEMP] {
         let path = directory.join(name);
-        if crate::mutation_workspace::require_direct_file_if_present(
+        if crate::mutate::workspace::require_direct_file_if_present(
             &directory,
             &path,
             "external qualification record",
@@ -3085,10 +3085,10 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     before_open()?;
-    let mut file = crate::mutation_workspace::open_real_file(path, label)?;
+    let mut file = crate::mutate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -3115,7 +3115,7 @@ where
             == bytes.len() as u64,
         "{label} changed length while being read"
     );
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     Ok(bytes)
 }
 
@@ -3177,7 +3177,7 @@ where
         | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false, "VMware text artifact"),
         _ => bail!("unregistered VMware artifact `{name}`"),
     };
-    let mut input = crate::mutation_workspace::open_real_file(source, label)?;
+    let mut input = crate::mutate::workspace::open_real_file(source, label)?;
     let initial = input
         .metadata()
         .with_context(|| format!("measuring {label} {}", source.display()))?
@@ -3377,7 +3377,7 @@ pub(crate) fn bundle_file_size_policy(spec: &BundleFile) -> Result<(u64, bool)> 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
     require_regular_file(source, "qualification source artifact")?;
     let mut input =
-        crate::mutation_workspace::open_real_file(source, "qualification source artifact")?;
+        crate::mutate::workspace::open_real_file(source, "qualification source artifact")?;
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
@@ -3453,7 +3453,7 @@ fn tracked_tree_digest(root: &Path, directory: &str) -> Result<TreeDigest> {
     for relative in &paths {
         let path = root.join(relative);
         require_contained_regular_file(root, &path, "tracked model input")?;
-        let mut file = crate::mutation_workspace::open_real_file(&path, "tracked model input")?;
+        let mut file = crate::mutate::workspace::open_real_file(&path, "tracked model input")?;
         let length = file
             .metadata()
             .with_context(|| format!("measuring model input {relative}"))?
@@ -7185,7 +7185,7 @@ mod tests {
         let begin = unique("let qualification_attempt = qualification::begin_mutation");
         let open = unique("let mut session = Session::open");
         let complete = unique("let outcomes = session.complete");
-        let current = unique("let pass = crate::mutation_workspace::current_pass");
+        let current = unique("let pass = workspace::current_pass");
         let pass = unique("qualification_attempt.pass(&pass)?;");
         assert!(begin < open && open < complete && complete < current && current < pass);
 

@@ -54,13 +54,13 @@ impl Probe {
     // A probe directory is created exclusively inside this checkout's target
     // tree, so no other account can pre-place or redirect it (D-344).
     fn create(paths: &Paths, label: &str, source: &str) -> Self {
-        let target = crate::mutation_workspace::canonical_existing_real_directory(
+        let target = crate::mutate::workspace::canonical_existing_real_directory(
             paths.target_dir(),
             "contract probe target",
         )
         .expect("contract probe target");
         std::fs::create_dir_all(target.join("contract-probes")).expect("contract probe parent");
-        let parent = crate::mutation_workspace::canonical_existing_real_directory(
+        let parent = crate::mutate::workspace::canonical_existing_real_directory(
             &target.join("contract-probes"),
             "contract probe parent",
         )
@@ -141,7 +141,7 @@ fn fresh_probe_directory(
 #[test]
 fn contract_probes_are_fresh_directories_inside_the_target_tree() {
     let paths = Paths::discover().expect("workspace paths");
-    let target = crate::mutation_workspace::canonical_existing_real_directory(
+    let target = crate::mutate::workspace::canonical_existing_real_directory(
         paths.target_dir(),
         "contract probe target",
     )

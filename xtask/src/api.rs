@@ -146,8 +146,8 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("xtask/src/contracts.rs", "contracts::Probe"),
     ("xtask/src/image/mod.rs", "image::RunImage"),
     (
-        "xtask/src/mutation_workspace.rs",
-        "mutation_workspace::tests::TempTree",
+        "xtask/src/mutate/workspace.rs",
+        "mutate::workspace::tests::TempTree",
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
     ("xtask/src/qemu.rs", "qemu::QemuLifetime"),
@@ -325,11 +325,11 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "image::RunImage",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/mutation_workspace.rs",
-        owner: "mutation_workspace::tests::TempTree",
+        relative: "xtask/src/mutate/workspace.rs",
+        owner: "mutate::workspace::tests::TempTree",
         member: "new",
         implemented_trait: None,
-        produced: "mutation_workspace::tests::TempTree",
+        produced: "mutate::workspace::tests::TempTree",
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",
@@ -1037,12 +1037,12 @@ fn validate_active_external_package_roots(
             "active non-workspace package {name} {version} is not a checksum-bound crates.io package"
         );
 
-        let registry_source = crate::mutation_workspace::canonical_existing_real_directory(
+        let registry_source = crate::mutate::workspace::canonical_existing_real_directory(
             registry_source,
             "API audit materialized registry source",
         )?;
         let package_root = registry_source.join(format!("{name}-{version}"));
-        let package_root = crate::mutation_workspace::canonical_existing_real_directory(
+        let package_root = crate::mutate::workspace::canonical_existing_real_directory(
             &package_root,
             "API audit materialized registry package",
         )?;
@@ -1064,7 +1064,7 @@ fn validate_active_external_package_roots(
             manifest == package_root.join("Cargo.toml"),
             "active package {name} {version} is outside the materialized registry source"
         );
-        crate::mutation_workspace::require_direct_file(
+        crate::mutate::workspace::require_direct_file(
             &package_root,
             &manifest,
             "API audit materialized registry manifest",
@@ -1097,7 +1097,7 @@ fn validate_active_external_package_roots(
             let parent = source
                 .parent()
                 .context("Cargo dependency target has no parent directory")?;
-            crate::mutation_workspace::require_direct_file(
+            crate::mutate::workspace::require_direct_file(
                 parent,
                 &source,
                 "API audit registry target source",
@@ -1138,7 +1138,7 @@ fn reject_custom_harness_manifests(root: &Path) -> Result<()> {
 }
 
 fn collect_named_files(directory: &Path, name: &str, files: &mut Vec<PathBuf>) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         directory,
         "API audit manifest directory",
     )?;
@@ -6654,7 +6654,7 @@ struct AuditWorkspace {
 }
 
 fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {
-    crate::mutation_workspace::prepare_real_directory_tree(
+    crate::mutate::workspace::prepare_real_directory_tree(
         paths.target_dir(),
         "API audit target directory",
     )
@@ -6662,12 +6662,12 @@ fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {
 
 impl AuditWorkspace {
     fn create(paths: &Paths) -> Result<Self> {
-        let source_root = crate::mutation_workspace::canonical_existing_real_directory(
+        let source_root = crate::mutate::workspace::canonical_existing_real_directory(
             paths.root(),
             "API audit source repository",
         )?;
         let target = prepare_audit_target(paths)?;
-        let state = crate::mutation_workspace::prepare_real_child(
+        let state = crate::mutate::workspace::prepare_real_child(
             &target,
             &target.join("api-audit"),
             "API audit state directory",
@@ -6683,12 +6683,12 @@ impl AuditWorkspace {
         for directory in COPY_DIRECTORIES {
             copy_tree(&source_root.join(directory), &root.join(directory))?;
         }
-        let cargo_home = crate::mutation_workspace::prepare_real_child(
+        let cargo_home = crate::mutate::workspace::prepare_real_child(
             &cargo,
             &cargo.join("home"),
             "API audit private Cargo home",
         )?;
-        let registry_source = crate::mutation_workspace::prepare_real_child(
+        let registry_source = crate::mutate::workspace::prepare_real_child(
             &cargo,
             &cargo.join("registry-source"),
             "API audit locked registry source",
@@ -6701,7 +6701,7 @@ impl AuditWorkspace {
             .with_context(|| format!("creating {}", config.display()))?;
         std::io::Write::write_all(&mut config_file, b"\n")
             .with_context(|| format!("writing {}", config.display()))?;
-        crate::mutation_workspace::require_direct_file(
+        crate::mutate::workspace::require_direct_file(
             &cargo_home,
             &config,
             "API audit private Cargo configuration",
@@ -6785,7 +6785,7 @@ impl AuditWorkspace {
 
 fn open_audit_lock(state: &Path) -> Result<File> {
     let lock_path = state.join("LOCK");
-    crate::mutation_workspace::require_direct_file_if_present(state, &lock_path, "API audit lock")?;
+    crate::mutate::workspace::require_direct_file_if_present(state, &lock_path, "API audit lock")?;
     let mut lock_options = OpenOptions::new();
     OpenOptions::create(&mut lock_options, true);
     OpenOptions::truncate(&mut lock_options, false);
@@ -6793,7 +6793,7 @@ fn open_audit_lock(state: &Path) -> Result<File> {
     OpenOptions::write(&mut lock_options, true);
     let lock = OpenOptions::open(&lock_options, &lock_path)
         .with_context(|| format!("opening {}", lock_path.display()))?;
-    crate::mutation_workspace::require_direct_file(state, &lock_path, "API audit lock")?;
+    crate::mutate::workspace::require_direct_file(state, &lock_path, "API audit lock")?;
     lock.try_lock()
         .context("another public API audit is already running")?;
     Ok(lock)
@@ -6811,7 +6811,7 @@ fn reset_audit_directory(state: &Path, name: &str) -> Result<PathBuf> {
     );
     match std::fs::symlink_metadata(&directory) {
         Ok(_) => {
-            let canonical = crate::mutation_workspace::canonical_existing_real_directory(
+            let canonical = crate::mutate::workspace::canonical_existing_real_directory(
                 &directory,
                 "API audit working directory",
             )?;
@@ -6827,18 +6827,18 @@ fn reset_audit_directory(state: &Path, name: &str) -> Result<PathBuf> {
             return Err(error).with_context(|| format!("inspecting {}", directory.display()));
         }
     }
-    crate::mutation_workspace::prepare_real_child(state, &directory, "API audit working directory")
+    crate::mutate::workspace::prepare_real_child(state, &directory, "API audit working directory")
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         source,
         "API audit source directory",
     )?;
     let parent = destination
         .parent()
         .context("API audit copy directory has no parent")?;
-    crate::mutation_workspace::prepare_real_child(parent, destination, "API audit copy directory")?;
+    crate::mutate::workspace::prepare_real_child(parent, destination, "API audit copy directory")?;
     for entry in
         std::fs::read_dir(source).with_context(|| format!("reading {}", source.display()))?
     {
@@ -6865,19 +6865,19 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     let source_parent = source
         .parent()
         .context("API audit source file has no parent")?;
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         source_parent,
         "API audit source-file parent",
     )?;
-    crate::mutation_workspace::require_direct_file(source_parent, source, "API audit source file")?;
+    crate::mutate::workspace::require_direct_file(source_parent, source, "API audit source file")?;
     let parent = destination
         .parent()
         .context("API audit copied file has no parent")?;
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         parent,
         "API audit copied-file parent",
     )?;
-    let mut input = crate::mutation_workspace::open_real_file(source, "API audit source file")?;
+    let mut input = crate::mutate::workspace::open_real_file(source, "API audit source file")?;
     let mut output_options = OpenOptions::new();
     OpenOptions::create_new(&mut output_options, true);
     OpenOptions::write(&mut output_options, true);
@@ -6892,7 +6892,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     })?;
     std::io::Write::flush(&mut output)
         .with_context(|| format!("flushing API audit copy {}", destination.display()))?;
-    crate::mutation_workspace::require_direct_file(parent, destination, "API audit copied file")?;
+    crate::mutate::workspace::require_direct_file(parent, destination, "API audit copied file")?;
     Ok(())
 }
 
@@ -7078,11 +7078,11 @@ fn reset_materialization_cargo_home(cargo_home: &Path) -> Result<()> {
     let parent = cargo_home
         .parent()
         .context("private Cargo home has no audit parent")?;
-    let canonical_parent = crate::mutation_workspace::canonical_existing_real_directory(
+    let canonical_parent = crate::mutate::workspace::canonical_existing_real_directory(
         parent,
         "API audit Cargo-state root",
     )?;
-    let canonical_home = crate::mutation_workspace::canonical_existing_real_directory(
+    let canonical_home = crate::mutate::workspace::canonical_existing_real_directory(
         cargo_home,
         "API audit materialization Cargo home",
     )?;
@@ -7092,14 +7092,14 @@ fn reset_materialization_cargo_home(cargo_home: &Path) -> Result<()> {
     );
     std::fs::remove_dir_all(&canonical_home)
         .with_context(|| format!("removing bootstrap Cargo home {}", canonical_home.display()))?;
-    let cargo_home = crate::mutation_workspace::prepare_real_child(
+    let cargo_home = crate::mutate::workspace::prepare_real_child(
         &canonical_parent,
         &canonical_parent.join("home"),
         "API audit private Cargo home",
     )?;
     let config = cargo_home.join("config.toml");
     std::fs::write(&config, b"\n").with_context(|| format!("writing {}", config.display()))?;
-    crate::mutation_workspace::require_direct_file(
+    crate::mutate::workspace::require_direct_file(
         &cargo_home,
         &config,
         "API audit private Cargo configuration",
@@ -7139,7 +7139,7 @@ fn prepare_relative_directory(root: &Path, relative: PathBuf, label: &str) -> Re
             bail!("{label} has unsafe relative path {}", relative.display());
         };
         let child = parent.join(name);
-        parent = crate::mutation_workspace::prepare_real_child(&parent, &child, label)?;
+        parent = crate::mutate::workspace::prepare_real_child(&parent, &child, label)?;
     }
     Ok(parent)
 }
@@ -7308,15 +7308,15 @@ fn cargo_input_snapshot(
     cargo_home: &Path,
     registry_source: &Path,
 ) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         cargo_root,
         "API audit Cargo-state root",
     )?;
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         cargo_home,
         "API audit private Cargo home",
     )?;
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         registry_source,
         "API audit private registry source",
     )?;
@@ -7347,14 +7347,14 @@ fn cargo_execution_root(repository: &Path) -> Result<PathBuf> {
             }
         }
     }
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         execution_root,
         "API audit Cargo execution root",
     )
 }
 
 fn source_snapshot(root: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
-    crate::mutation_workspace::canonical_existing_real_directory(root, "API audit snapshot root")?;
+    crate::mutate::workspace::canonical_existing_real_directory(root, "API audit snapshot root")?;
     let mut snapshot = BTreeMap::new();
     for relative in COPY_FILES {
         snapshot_file(root, &root.join(relative), &mut snapshot)?;
@@ -7370,7 +7370,7 @@ fn snapshot_tree(
     directory: &Path,
     snapshot: &mut BTreeMap<PathBuf, [u8; 32]>,
 ) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         directory,
         "API audit snapshot directory",
     )?;
@@ -7402,7 +7402,7 @@ fn snapshot_file(
     snapshot: &mut BTreeMap<PathBuf, [u8; 32]>,
 ) -> Result<()> {
     let parent = path.parent().context("snapshot file has no parent")?;
-    crate::mutation_workspace::require_direct_file(parent, path, "API audit snapshot file")?;
+    crate::mutate::workspace::require_direct_file(parent, path, "API audit snapshot file")?;
     let relative = path
         .strip_prefix(root)
         .with_context(|| format!("{} is outside the source snapshot", path.display()))?
@@ -7423,7 +7423,7 @@ fn snapshot_marker_free_file(
     label: &str,
 ) -> Result<()> {
     let parent = path.parent().context("snapshot file has no parent")?;
-    crate::mutation_workspace::require_direct_file(parent, path, label)?;
+    crate::mutate::workspace::require_direct_file(parent, path, label)?;
     let relative = path
         .strip_prefix(root)
         .with_context(|| format!("{} is outside the {label} snapshot", path.display()))?
@@ -7446,7 +7446,7 @@ fn stream_marker_free_digest_with_limit(
     label: &str,
     maximum_text_bytes: usize,
 ) -> Result<[u8; 32]> {
-    let mut file = crate::mutation_workspace::open_real_file(path, label)?;
+    let mut file = crate::mutate::workspace::open_real_file(path, label)?;
     let mut hasher = crate::sha256::Hasher::new();
     let mut buffer = [0u8; COMPILER_AUTHORITY_BUFFER_BYTES];
     let mut marker_window = Vec::with_capacity(COMPILER_AUTHORITY_BUFFER_BYTES + MARKER.len());
@@ -7538,7 +7538,7 @@ fn snapshot_marker_free_tree(
     snapshot: &mut BTreeMap<PathBuf, [u8; 32]>,
     label: &str,
 ) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(directory, label)?;
+    crate::mutate::workspace::canonical_existing_real_directory(directory, label)?;
     for entry in
         std::fs::read_dir(directory).with_context(|| format!("reading {}", directory.display()))?
     {
@@ -7850,7 +7850,7 @@ fn digest_compiler_executable(path: &Path, label: &str) -> Result<[u8; 32]> {
 }
 
 fn stream_file_digest(path: &Path, label: &str) -> Result<[u8; 32]> {
-    let file = crate::mutation_workspace::open_real_file(path, label)?;
+    let file = crate::mutate::workspace::open_real_file(path, label)?;
     let (_, digest) = crate::sha256::digest_reader(file)
         .with_context(|| format!("reading {label} {}", path.display()))?;
     Ok(digest)
@@ -8070,7 +8070,7 @@ fn compiler_runtime_snapshot(
     compiler: &Path,
     targets: &[String],
 ) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         sysroot,
         "API audit compiler sysroot",
     )?;
@@ -8090,7 +8090,7 @@ fn compiler_runtime_snapshot(
     }
 
     let bin = sysroot.join("bin");
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         &bin,
         "API audit compiler runtime directory",
     )?;
@@ -8126,7 +8126,7 @@ fn compiler_runtime_snapshot(
     }
 
     let top_level_lib = sysroot.join("lib");
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         &top_level_lib,
         "API audit compiler library directory",
     )?;
@@ -8168,7 +8168,7 @@ fn snapshot_compiler_target_runtime(
 ) -> Result<()> {
     for target in targets {
         let target_root = sysroot.join("lib/rustlib").join(target);
-        crate::mutation_workspace::canonical_existing_real_directory(
+        crate::mutate::workspace::canonical_existing_real_directory(
             &target_root,
             "API audit compiler target root",
         )?;
@@ -8212,7 +8212,7 @@ fn compiler_target_library_snapshot(
     sysroot: &Path,
     targets: &[String],
 ) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         sysroot,
         "API audit compiler sysroot",
     )?;
@@ -8972,7 +8972,7 @@ fn diagnostic_marker_id(message: &str) -> Result<Option<usize>> {
 
 fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {
     let directory = build.join(format!("graph-{graph}"));
-    let directory = crate::mutation_workspace::prepare_real_child(
+    let directory = crate::mutate::workspace::prepare_real_child(
         build,
         &directory,
         "API audit graph build directory",
@@ -8981,7 +8981,7 @@ fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {
 }
 
 fn build_script_authority_snapshot(root: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         root,
         "API audit compiler-graph build directory",
     )?;
@@ -9014,7 +9014,7 @@ fn collect_build_script_authority(
     directory: &Path,
     snapshot: &mut BTreeMap<PathBuf, [u8; 32]>,
 ) -> Result<()> {
-    crate::mutation_workspace::canonical_existing_real_directory(
+    crate::mutate::workspace::canonical_existing_real_directory(
         directory,
         "API audit build-script authority directory",
     )?;

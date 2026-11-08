@@ -308,7 +308,7 @@ fn read(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
-    crate::mutation_workspace::canonical_existing_real_directory(path, label)
+    crate::mutate::workspace::canonical_existing_real_directory(path, label)
 }
 
 fn parse_candidates(bytes: &[u8], label: &str) -> Result<BTreeMap<String, String>> {
@@ -1249,7 +1249,7 @@ fn apply_owned_environment(
             .chain(std::env::split_paths(&inherited_path)),
     )
     .context("constructing the pinned cargo-nextest-first PATH")?;
-    let cargo_home = crate::mutation_workspace::prepare_real_directory_tree(
+    let cargo_home = crate::mutate::workspace::prepare_real_directory_tree(
         &paths.target_dir().join(PRIVATE_CARGO_HOME),
         "private cargo-mutants Cargo home",
     )?;
@@ -1469,7 +1469,7 @@ fn reserve_campaign_directory(
     paths: &Paths,
     source: &SourceIdentity,
 ) -> Result<(PathBuf, PathBuf)> {
-    let parent = crate::mutation_workspace::prepare_real_directory_tree(
+    let parent = crate::mutate::workspace::prepare_real_directory_tree(
         &paths.target_dir().join(CAMPAIGN_ROOT),
         "cargo-mutants campaign root",
     )?;
@@ -1711,7 +1711,7 @@ mod tests {
     }
 
     fn fixture_private_temp(paths: &Paths) -> PathBuf {
-        crate::mutation_workspace::prepare_real_directory_tree(
+        crate::mutate::workspace::prepare_real_directory_tree(
             &paths
                 .target_dir()
                 .join("qualification/test-cargo-mutants-temp"),
@@ -2182,7 +2182,7 @@ mod tests {
         let fixture = crate::test_support::reserve_temp_directory("wizard-mutants-temp-discovery");
         let repository = fixture.join("repository");
         let target = repository.join("target");
-        crate::mutation_workspace::prepare_real_directory_tree(
+        crate::mutate::workspace::prepare_real_directory_tree(
             &target,
             "temp-discovery fixture target",
         )

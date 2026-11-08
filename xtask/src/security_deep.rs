@@ -2866,7 +2866,7 @@ fn require_owned_path(path: &Path, root: &Path, label: &str) -> Result<()> {
                 );
                 let is_final = index + 1 == components.len();
                 ensure!(
-                    crate::mutation_workspace::metadata_is_real_directory(&metadata)
+                    crate::mutate::workspace::metadata_is_real_directory(&metadata)
                         || (is_final && metadata.file_type().is_file()),
                     "{label} contains a special or non-directory ancestor"
                 );
@@ -4420,7 +4420,7 @@ fn prepare_owned_worker_repository(
     );
     let destination = canonical_directory(&destination, "owned Codex Security repository")?;
     let git_destination = crate::cargo::child_process_path(&destination);
-    crate::mutation_workspace::copy_clean_tracked_to(paths.root(), &destination)?;
+    crate::mutate::workspace::copy_clean_tracked_to(paths.root(), &destination)?;
     for (label, arguments) in [
         (
             "owned Codex Security repository index",
@@ -4629,9 +4629,9 @@ fn reserve_scratch() -> Result<OwnedScratch> {
         }
     }
     let root =
-        crate::mutation_workspace::prepare_real_child(&parent, &root, "Codex Security scratch")?;
+        crate::mutate::workspace::prepare_real_child(&parent, &root, "Codex Security scratch")?;
     let child = |name: &str, label: &str| {
-        crate::mutation_workspace::prepare_real_child(&root, &root.join(name), label)
+        crate::mutate::workspace::prepare_real_child(&root, &root.join(name), label)
     };
     child("codex-home", "private Codex home")?;
     let repository_parent = child("repository", "private Codex repository parent")?;
@@ -4669,7 +4669,7 @@ fn scrub_stale_credential_at_owned_root(root: &Path) -> Result<()> {
         )
     })?;
     ensure!(
-        crate::mutation_workspace::metadata_is_real_directory(&metadata)
+        crate::mutate::workspace::metadata_is_real_directory(&metadata)
             && canonical_directory(root, "retained Codex Security scratch")? == root,
         "retained Codex Security scratch is redirected"
     );
@@ -4677,7 +4677,7 @@ fn scrub_stale_credential_at_owned_root(root: &Path) -> Result<()> {
     let home_metadata =
         std::fs::symlink_metadata(&home).context("inspecting retained private Codex home")?;
     ensure!(
-        crate::mutation_workspace::metadata_is_real_directory(&home_metadata)
+        crate::mutate::workspace::metadata_is_real_directory(&home_metadata)
             && !metadata_is_reparse_point(&home_metadata)
             && canonical_directory(&home, "retained private Codex home")? == home,
         "retained private Codex home is redirected"
@@ -4806,7 +4806,7 @@ fn require_qualified_system_skills(root: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("inspecting private Codex system skills"),
         Ok(metadata) => ensure!(
-            crate::mutation_workspace::metadata_is_real_directory(&metadata)
+            crate::mutate::workspace::metadata_is_real_directory(&metadata)
                 && !metadata_is_reparse_point(&metadata)
                 && canonical_directory(root, "private Codex system skills")? == root,
             "private Codex system skills root is redirected"
@@ -4916,7 +4916,7 @@ fn collect_qualified_system_skill_entries(
         !relative.is_empty(),
         "private Codex system-skills entry has no name"
     );
-    let directory = crate::mutation_workspace::metadata_is_real_directory(&metadata);
+    let directory = crate::mutate::workspace::metadata_is_real_directory(&metadata);
     ensure!(
         directory || metadata.file_type().is_file(),
         "private Codex system skills contain a special entry"
@@ -5172,7 +5172,7 @@ fn prepare_file_parent(root: &Path, relative: &Path) -> Result<()> {
             bail!("Codex Security package parent is not relative");
         };
         let next = current.join(name);
-        current = crate::mutation_workspace::prepare_real_child(
+        current = crate::mutate::workspace::prepare_real_child(
             &current,
             &next,
             "Codex Security package directory",
@@ -5194,7 +5194,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
 
 fn require_worker_probe_file(path: &Path, label: &str) -> Result<()> {
     ensure!(path.is_absolute(), "{label} path is not absolute");
-    crate::mutation_workspace::open_real_file(path, label)?;
+    crate::mutate::workspace::open_real_file(path, label)?;
     Ok(())
 }
 
@@ -5272,7 +5272,7 @@ fn collect_python_policy_exclusions(
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path)
             .with_context(|| format!("inspecting Python policy entry {}", path.display()))?;
-        if !crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+        if !crate::mutate::workspace::metadata_is_real_directory(&metadata) {
             continue;
         }
         let excluded = entry.file_name().to_str().is_some_and(|name| {
@@ -5299,7 +5299,7 @@ fn first_python_policy_file(directory: &Path, depth: usize) -> Result<Option<Pat
         if metadata.file_type().is_file() {
             return canonical_probe_path(&path, "managed worker Python probe").map(Some);
         }
-        if crate::mutation_workspace::metadata_is_real_directory(&metadata)
+        if crate::mutate::workspace::metadata_is_real_directory(&metadata)
             && !entry.file_name().to_str().is_some_and(|name| {
                 name.eq_ignore_ascii_case("__pycache__")
                     || name.eq_ignore_ascii_case("site-packages")
@@ -5696,7 +5696,7 @@ fn collect_python_runtime_entries(
     }
     let relative = parts.join("/");
     ensure!(!relative.is_empty(), "Python runtime entry has no name");
-    let is_directory = crate::mutation_workspace::metadata_is_real_directory(&metadata);
+    let is_directory = crate::mutate::workspace::metadata_is_real_directory(&metadata);
     ensure!(
         is_directory || metadata.file_type().is_file(),
         "Python runtime contains a special entry"
@@ -5828,7 +5828,7 @@ fn single_line_output(stdout: &[u8], stderr: &[u8], label: &str) -> Result<Strin
 }
 
 fn measure_file(path: &Path, maximum: u64, label: &str) -> Result<(u64, [u8; 32])> {
-    let mut file = crate::mutation_workspace::open_real_file(path, label)?;
+    let mut file = crate::mutate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -6498,7 +6498,7 @@ fn read_codex_config_with_command(
 fn prepare_config_test_home(scratch: &OwnedScratch) -> Result<()> {
     let home = scratch.codex_home();
     if !home.exists() {
-        crate::mutation_workspace::prepare_real_child(
+        crate::mutate::workspace::prepare_real_child(
             &scratch.root,
             &home,
             "test private Codex home",
@@ -7451,7 +7451,7 @@ fn collect_mirror_entries(
             .strip_prefix(root)
             .context("plugin mirror entry escaped its root")?
             .to_path_buf();
-        if crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+        if crate::mutate::workspace::metadata_is_real_directory(&metadata) {
             directories.insert(relative);
             collect_mirror_entries(root, &path, depth + 1, files, directories)?;
         } else {
@@ -7471,7 +7471,7 @@ fn observe_scratch(root: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(root)
         .with_context(|| format!("inspecting Codex Security scratch {}", root.display()))?;
     ensure!(
-        crate::mutation_workspace::metadata_is_real_directory(&metadata),
+        crate::mutate::workspace::metadata_is_real_directory(&metadata),
         "Codex Security scratch root was redirected"
     );
     let mut entries = 0u64;
@@ -7513,7 +7513,7 @@ fn measure_scratch(
             *entries <= MAX_SCRATCH_ENTRIES,
             "Codex Security scratch exceeds its entry limit"
         );
-        if crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+        if crate::mutate::workspace::metadata_is_real_directory(&metadata) {
             measure_scratch(&path, depth + 1, entries, bytes)?;
         } else {
             ensure!(
@@ -7556,7 +7556,7 @@ fn remove_scratch(scratch: &OwnedScratch) -> Result<()> {
         )
     })?;
     ensure!(
-        crate::mutation_workspace::metadata_is_real_directory(&metadata),
+        crate::mutate::workspace::metadata_is_real_directory(&metadata),
         "refusing to remove redirected Codex Security scratch"
     );
     remove_entry_no_follow(&scratch.root, &metadata)
@@ -7573,7 +7573,7 @@ fn require_scratch_cleanup_target(root: &Path) -> Result<()> {
 }
 
 fn remove_entry_no_follow(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
-    if crate::mutation_workspace::metadata_is_real_directory(metadata) {
+    if crate::mutate::workspace::metadata_is_real_directory(metadata) {
         for entry in std::fs::read_dir(path)
             .with_context(|| format!("listing cleanup directory {}", path.display()))?
         {
@@ -8268,7 +8268,7 @@ fn call_start(
         manifest == scan_directory.join(MANIFEST),
         "Codex Security Deep start returned a noncanonical manifest path"
     );
-    crate::mutation_workspace::open_real_file(&manifest, "Codex Security start manifest")?;
+    crate::mutate::workspace::open_real_file(&manifest, "Codex Security start manifest")?;
     let instructions = nonempty_string(
         structured,
         "instructions",
@@ -8950,7 +8950,7 @@ fn require_completion_artifacts(
             actual == directory.join(name),
             "Codex Security completion returned a noncanonical {key} artifact"
         );
-        crate::mutation_workspace::open_real_file(&actual, "Codex Security completion artifact")?;
+        crate::mutate::workspace::open_real_file(&actual, "Codex Security completion artifact")?;
     }
     Ok(())
 }
@@ -10935,7 +10935,7 @@ fn read(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
-    crate::mutation_workspace::canonical_existing_real_directory(path, label)
+    crate::mutate::workspace::canonical_existing_real_directory(path, label)
 }
 
 #[cfg(test)]
@@ -11148,7 +11148,7 @@ mod tests {
     fn test_owned_scratch() -> (PathBuf, OwnedScratch) {
         let (outer, root) = private_test_root();
         let child = |name: &str, label: &str| {
-            crate::mutation_workspace::prepare_real_child(&root, &root.join(name), label).unwrap()
+            crate::mutate::workspace::prepare_real_child(&root, &root.join(name), label).unwrap()
         };
         child("codex-home", "test private Codex home");
         let repository_parent = child("repository", "test worker repository parent");
@@ -13549,7 +13549,7 @@ mod tests {
     #[test]
     fn managed_worker_policy_is_an_executable_default_deny_allowlist() {
         let (outer, scratch) = test_owned_scratch();
-        let repository = crate::mutation_workspace::prepare_real_child(
+        let repository = crate::mutate::workspace::prepare_real_child(
             &scratch.repository_parent,
             &scratch.repository_parent.join("wizards-bedrock"),
             "test owned worker repository",

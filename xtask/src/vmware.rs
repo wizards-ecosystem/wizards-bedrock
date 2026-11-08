@@ -754,7 +754,7 @@ fn reset_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
         root == paths.root().join("vm") && root.parent() == Some(paths.root()),
         "VMware root escaped the workspace"
     );
-    crate::mutation_workspace::prepare_real_directory_tree(&root, "VMware root")?;
+    crate::mutate::workspace::prepare_real_directory_tree(&root, "VMware root")?;
     require_canonical_child(paths.root(), &root, "VMware root")?;
 
     let directory = vm_directory(paths, kernel);
@@ -819,9 +819,9 @@ fn require_safe_existing_vm_directory(paths: &Paths, kernel: Kernel) -> Result<(
 
 fn require_canonical_child(parent: &Path, child: &Path, label: &str) -> Result<()> {
     let canonical_parent =
-        crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
+        crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
     let canonical_child =
-        crate::mutation_workspace::canonical_existing_real_directory(child, label)?;
+        crate::mutate::workspace::canonical_existing_real_directory(child, label)?;
     ensure!(
         canonical_child.parent() == Some(canonical_parent.as_path()),
         "{label} escaped its canonical parent"
@@ -870,13 +870,13 @@ fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
 
 fn create_new_output(path: &Path) -> Result<File> {
     let parent = path.parent().context("VMware output has no parent")?;
-    crate::mutation_workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
+    crate::mutate::workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
     let file = OpenOptions::open(&options, path)
         .with_context(|| format!("creating new VMware output {}", path.display()))?;
-    crate::mutation_workspace::require_direct_file(parent, path, "VMware output")?;
+    crate::mutate::workspace::require_direct_file(parent, path, "VMware output")?;
     Ok(file)
 }
 

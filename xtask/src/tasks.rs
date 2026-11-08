@@ -266,7 +266,7 @@ fn finish_cargo_clean(
     let current_executable =
         current_executable.context("failed clean has no running executable")?;
     let target =
-        crate::mutation_workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
+        crate::mutate::workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
     let profile = target.join("xtask");
     let executable = profile.join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
 
@@ -285,7 +285,7 @@ fn finish_cargo_clean(
     let profile_metadata = std::fs::symlink_metadata(&profile)
         .context("inspecting retained xtask profile directory")?;
     ensure!(
-        crate::mutation_workspace::metadata_is_real_directory(&profile_metadata)
+        crate::mutate::workspace::metadata_is_real_directory(&profile_metadata)
             && std::fs::canonicalize(&profile)
                 .context("canonicalizing retained xtask profile directory")?
                 == profile,
@@ -304,10 +304,8 @@ fn finish_cargo_clean(
         profile_entries[0].path() == executable,
         "failed Cargo clean left an unexpected xtask-profile name"
     );
-    let _running = crate::mutation_workspace::open_real_file(
-        &executable,
-        "retained running clean executable",
-    )?;
+    let _running =
+        crate::mutate::workspace::open_real_file(&executable, "retained running clean executable")?;
     let current_executable = std::fs::canonicalize(current_executable)
         .context("canonicalizing the running clean executable")?;
     ensure!(
@@ -333,7 +331,7 @@ fn remove_vm_directory_with(
         "VMware cleanup target is not the exact allowlisted repository child"
     );
     let repository =
-        crate::mutation_workspace::open_real_directory(root, "VMware cleanup repository root")?;
+        crate::mutate::workspace::open_real_directory(root, "VMware cleanup repository root")?;
     let mut options = fs_at::OpenOptions::default();
     options.read(true).follow(false);
     let mut directory_handle = match options.open_dir_at(&repository, "vm") {
@@ -380,7 +378,7 @@ fn empty_open_directory(
                 let metadata = child
                     .metadata()
                     .with_context(|| format!("inspecting opened {}", child_path.display()))?;
-                if crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+                if crate::mutate::workspace::metadata_is_real_directory(&metadata) {
                     empty_open_directory(&mut child, &child_path, depth + 1, remaining)?;
                     drop(child);
                     match options.rmdir_at(directory, &name) {
@@ -923,7 +921,7 @@ mod tests {
         let sentinel = directory.join("sentinel");
         std::fs::write(&sentinel, b"generated state").unwrap();
         let mut handle =
-            crate::mutation_workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+            crate::mutate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
         let mut remaining = 0;
 
         let error = empty_open_directory(&mut handle, &directory, 0, &mut remaining)
@@ -943,7 +941,7 @@ mod tests {
         let sentinel = directory.join("sentinel");
         std::fs::write(&sentinel, b"generated state").unwrap();
         let mut handle =
-            crate::mutation_workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+            crate::mutate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
         let mut remaining = MAX_VM_CLEANUP_ENTRIES;
 
         let error = empty_open_directory(
