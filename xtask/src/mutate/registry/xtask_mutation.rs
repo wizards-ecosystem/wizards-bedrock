@@ -92,9 +92,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 103,
         file: "xtask/src/mutate/tests.rs",
-        find: "    let mut impossible = *mutations().next().unwrap();\n    impossible.file = \"xtask/src/image/program.rs\";\n    impossible.reddens = Caught::Check(\"unused\");",
-        replace: "    let mut impossible = *mutations().next().unwrap();\n    impossible.file = \"xtask/src/image/program.rs\";\n    let _ = &mut impossible.reddens;",
-        breaks: "the mutation-driver safety test inherits an order-dependent witness class",
+        find: "    impossible.file = \"xtask/src/image/program.rs\";\n    impossible.reddens = Caught::Check(\"unused\");",
+        replace: "    impossible.file = \"xtask/src/image/program.rs\";\n    let _ = &mut impossible.reddens;",
+        breaks: "the mutation-driver safety test keeps a witness the running driver could rebuild",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "mutate::tests::a_mutation_cannot_target_the_running_driver",

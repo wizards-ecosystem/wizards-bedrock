@@ -255,7 +255,17 @@ fn a_mutation_cannot_target_the_running_driver() {
         ensure_target_is_rebuilt(mutation).unwrap_or_else(|error| panic!("{error}"));
     }
 
-    let mut impossible = *mutations().next().unwrap();
+    let mut impossible = *mutations()
+        .find(|mutation| {
+            matches!(
+                mutation.reddens,
+                Caught::HostTest {
+                    package: "xtask",
+                    ..
+                }
+            )
+        })
+        .unwrap();
     impossible.file = "xtask/src/image/program.rs";
     impossible.reddens = Caught::Check("unused");
     let error = ensure_target_is_rebuilt(&impossible).expect_err("the driver is already running");
