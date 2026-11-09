@@ -3493,4 +3493,18 @@ fn mint_stopped<'controller>(
         breaks: "a repeated bridge secondary takes a worklist slot again",
         reddens: Caught::Check("a repeated bridge secondary cannot hide a later bus"),
     },
+    Mutation {
+        id: 2463,
+        file: "kernel/src/arch/x86_64/i8042.rs",
+        find: "        discard();
+    }
+    !full()
+}",
+        replace: "        discard();
+    }
+    false
+}",
+        breaks: "a controller that drains on its last allowed read is reported absent",
+        reddens: Caught::Check("an 8042 backlog of exactly the flush bound drains"),
+    },
 ];

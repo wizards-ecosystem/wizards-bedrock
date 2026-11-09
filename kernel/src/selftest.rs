@@ -8511,7 +8511,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 295;
+const EXPECTED_CHECKS: usize = 296;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -9528,6 +9528,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a failed controller flush stops every following transaction",
         input::flush_refusals_are_visible(),
+    );
+    report.check(
+        "an 8042 backlog of exactly the flush bound drains",
+        crate::arch::current::i8042::a_backlog_of_the_flush_bound_drains_for_test(),
     );
     report.check(
         "a refused controller command is typed and consumes no reply",
