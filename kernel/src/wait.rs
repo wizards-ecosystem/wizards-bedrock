@@ -49,14 +49,9 @@ impl WaitQueue {
         self.wait_unless(context, || false);
     }
 
-    /// Register, re-check `ready`, and block only if it is still false.
+    /// Check `ready` under the lock `wake_all` takes, and set this thread's bit only if false.
     ///
-    /// **Register first, then check.** The other order loses wakeups, and the
-    /// loss is permanent: a waiter that reads its condition, is preempted, and
-    /// is signalled before it registers, blocks on a queue nothing will wake
-    /// again (D-95).
-    ///
-    /// The whole of registration and the re-check happens with the interrupt
+    /// The check and the registration both happen with the interrupt
     /// flag clear, which on one CPU makes them one step. Under SMP the flag
     /// excludes nothing; full barriers on both sides must replace it (D-70).
     ///
