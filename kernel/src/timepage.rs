@@ -249,6 +249,8 @@ impl core::fmt::Display for TimePageError {
     }
 }
 
+impl core::error::Error for TimePageError {}
+
 /// Read the page the way a program does, and say what it found.
 ///
 /// The kernel's copy of the reader protocol, and it exists so the check can be

@@ -525,6 +525,8 @@ impl core::fmt::Display for Refusal {
     }
 }
 
+impl core::error::Error for Refusal {}
+
 impl Refusal {
     /// What the last refusal was.
     pub(crate) fn last() -> Self {

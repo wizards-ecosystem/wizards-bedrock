@@ -588,6 +588,8 @@ impl core::fmt::Display for BusMasterAdmissionError {
     }
 }
 
+impl core::error::Error for BusMasterAdmissionError {}
+
 impl BusMasterAdmissionFailure {
     /// Why PCI refused bus-master admission.
     pub(crate) const fn reason(&self) -> BusMasterAdmissionError {
@@ -662,6 +664,8 @@ impl core::fmt::Display for BringUpError {
         }
     }
 }
+
+impl core::error::Error for BringUpError {}
 
 /// A bring-up failure paired with its exact cleanup disposition.
 #[derive(Debug)]

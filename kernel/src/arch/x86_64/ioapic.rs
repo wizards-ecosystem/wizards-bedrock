@@ -141,6 +141,8 @@ impl fmt::Display for RoutingError {
     }
 }
 
+impl core::error::Error for RoutingError {}
+
 impl From<MmioError> for RoutingError {
     fn from(error: MmioError) -> Self {
         Self::Registers(error)
@@ -198,6 +200,8 @@ impl fmt::Display for TakeError {
         }
     }
 }
+
+impl core::error::Error for TakeError {}
 
 /// A failed controller probe together with the mapping it did not consume.
 #[derive(Debug)]

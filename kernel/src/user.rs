@@ -188,6 +188,8 @@ impl core::fmt::Display for LoadError {
     }
 }
 
+impl core::error::Error for LoadError {}
+
 /// Load the initrd's program into the running address space, at `shift` pages
 /// above where it asks to be.
 ///
@@ -1001,6 +1003,8 @@ impl fmt::Display for SpawnError {
         }
     }
 }
+
+impl core::error::Error for SpawnError {}
 
 #[cfg(feature = "selftest")]
 fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {

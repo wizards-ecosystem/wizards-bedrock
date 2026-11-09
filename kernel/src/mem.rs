@@ -1051,6 +1051,8 @@ impl core::fmt::Display for BuildError {
     }
 }
 
+impl core::error::Error for BuildError {}
+
 fn rollback_build(mut space: AddressSpace, cause: MapError) -> BuildError {
     match space.reclaim(None) {
         Ok(_) => BuildError::Mapping(cause),

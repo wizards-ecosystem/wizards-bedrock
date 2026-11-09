@@ -148,6 +148,8 @@ impl fmt::Display for InterruptEnableError {
     }
 }
 
+impl core::error::Error for InterruptEnableError {}
+
 /// Why the keyboard could not be brought up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum I8042Error {
