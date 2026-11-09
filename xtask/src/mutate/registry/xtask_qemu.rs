@@ -1547,4 +1547,26 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "qemu::tests::installation_preserves_the_explicit_binary_and_its_firmware",
         },
     },
+    Mutation {
+        id: 2465,
+        file: "xtask/src/qemu.rs",
+        find: "    ensure!(path.is_file(), refusal);",
+        replace: "    ensure!(true, refusal);",
+        breaks: "a QEMU or QEMU_DIR setting that names no file is reported as missing firmware",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_missing_qemu_setting_is_not_blamed_on_firmware",
+        },
+    },
+    Mutation {
+        id: 2466,
+        file: "xtask/src/qemu.rs",
+        find: "qemu_dir.parent().filter(|_| qemu_dir.ends_with(\"bin\"))",
+        replace: "qemu_dir.parent().filter(|_| false)",
+        breaks: "firmware under an FHS prefix's share directory is not found",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::installation_finds_firmware_under_an_fhs_prefix",
+        },
+    },
 ];

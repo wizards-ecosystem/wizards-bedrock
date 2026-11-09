@@ -140,12 +140,17 @@ fn locate(
     directory: Option<PathBuf>,
     search: impl IntoIterator<Item = PathBuf>,
 ) -> Result<PathBuf> {
-    if let Some(binary) = binary {
-        return Ok(binary);
-    }
     let emulator = exe_name("qemu-system-x86_64");
+    if let Some(binary) = binary {
+        let refusal = format!("QEMU names {}, which is not a file", binary.display());
+        return require_emulator(binary, refusal);
+    }
     if let Some(dir) = directory {
-        return Ok(dir.join(&emulator));
+        let refusal = format!(
+            "QEMU_DIR names {}, which holds no {emulator}",
+            dir.display()
+        );
+        return require_emulator(dir.join(&emulator), refusal);
     }
 
     let default = PathBuf::from(WINDOWS_DEFAULT);
@@ -155,19 +160,43 @@ fn locate(
 
     match which_in(search, &emulator) {
         Some(found) => Ok(found),
-        None => bail!("QEMU not found: set QEMU_DIR, or put {emulator} on PATH"),
+        None => bail!(
+            "QEMU not found: looked for {emulator} in {WINDOWS_DEFAULT} and on PATH; \
+             set QEMU to the executable or QEMU_DIR to its installation"
+        ),
     }
 }
 
+fn require_emulator(path: PathBuf, refusal: String) -> Result<PathBuf> {
+    ensure!(path.is_file(), refusal);
+    Ok(path)
+}
+
+/// An FHS install keeps the emulator in `<prefix>/bin` and its firmware under
+/// `<prefix>/share`, so that prefix is searched after the emulator's directory.
 fn firmware(qemu_dir: &Path, name: &str) -> Result<PathBuf> {
-    FIRMWARE_DIRS
+    let prefix = qemu_dir.parent().filter(|_| qemu_dir.ends_with("bin"));
+    let candidates: Vec<PathBuf> = std::iter::once(qemu_dir)
+        .chain(prefix)
+        .flat_map(|root| {
+            FIRMWARE_DIRS
+                .iter()
+                .map(move |dir| root.join(dir).join(name))
+        })
+        .collect();
+    candidates
         .iter()
-        .map(|dir| qemu_dir.join(dir).join(name))
         .find(|candidate| candidate.is_file())
+        .cloned()
         .with_context(|| {
+            let searched: Vec<String> = candidates
+                .iter()
+                .map(|candidate| candidate.display().to_string())
+                .collect();
             format!(
-                "UEFI firmware {name} not found under {}",
-                qemu_dir.display()
+                "UEFI firmware {name} not found; QEMU needs the edk2 images {CODE_FIRMWARE} \
+                 and {VARS_FIRMWARE}. Searched:\n  {}",
+                searched.join("\n  ")
             )
         })
 }
@@ -3783,6 +3812,51 @@ mod tests {
         assert_eq!(selected.emulator, binary);
         assert_eq!(selected.code_firmware, code);
         assert_eq!(selected.vars_firmware, vars);
+    }
+
+    #[test]
+    fn installation_finds_firmware_under_an_fhs_prefix() {
+        let fixture = QemuFixture::create();
+        let binary_dir = fixture.root.join("bin");
+        let firmware_dir = fixture.root.join("share").join("qemu");
+        std::fs::create_dir_all(&binary_dir).unwrap();
+        std::fs::create_dir_all(&firmware_dir).unwrap();
+        let binary = binary_dir.join(exe_name("qemu-system-x86_64"));
+        let code = firmware_dir.join(CODE_FIRMWARE);
+        let vars = firmware_dir.join(VARS_FIRMWARE);
+        std::fs::write(&binary, b"fhs emulator").unwrap();
+        std::fs::write(&code, b"code firmware").unwrap();
+        std::fs::write(&vars, b"variable firmware").unwrap();
+        let selected =
+            installation_with(Some(binary.clone()), None, std::iter::empty::<PathBuf>()).unwrap();
+        assert_eq!(selected.emulator, binary);
+        assert_eq!(selected.code_firmware, code);
+        assert_eq!(selected.vars_firmware, vars);
+    }
+
+    #[test]
+    fn a_missing_qemu_setting_is_not_blamed_on_firmware() {
+        let fixture = QemuFixture::create();
+        let missing = fixture.root.join(exe_name("qemu-system-x86_64"));
+        let explicit = installation_with(Some(missing), None, std::iter::empty::<PathBuf>())
+            .unwrap_err()
+            .to_string();
+        assert!(explicit.starts_with("QEMU names "), "{explicit}");
+        let directory = installation_with(
+            None,
+            Some(fixture.root.clone()),
+            std::iter::empty::<PathBuf>(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            directory,
+            format!(
+                "QEMU_DIR names {}, which holds no {}",
+                fixture.root.display(),
+                exe_name("qemu-system-x86_64")
+            )
+        );
     }
 
     #[test]
