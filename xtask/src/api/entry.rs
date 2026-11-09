@@ -111,7 +111,7 @@ pub(super) fn resolve_entry_link(
             .filter(|node| {
                 node.macro_declaration
                     && node.symbol == "boot::entry"
-                    && files[node.file].relative == Path::new("wost/src/boot/mod.rs")
+                    && files[node.file].relative == Path::new("wost/src/boot.rs")
             })
             .collect(),
     )?;
@@ -183,7 +183,7 @@ fn entry_contract_use(
 }
 
 pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
-    let relative = Path::new("wost/src/boot/mod.rs");
+    let relative = Path::new("wost/src/boot.rs");
     let source =
         read_bounded_authority_text(&root.join(relative), "API audit wost entry-contract source")?;
     let syntax =

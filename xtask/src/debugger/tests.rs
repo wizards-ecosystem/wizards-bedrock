@@ -64,14 +64,14 @@ fn the_gdb_identity_probe_has_a_direct_child_return_deadline() {
 
 #[test]
 fn the_debugger_proof_requires_the_entry_marker_symbol_and_source() {
-    let proof = "Breakpoint 1, wizard_kernel::kmain () at wost\\src\\boot/mod.rs:526\n\
+    let proof = "Breakpoint 1, wizard_kernel::kmain () at wost\\src\\boot.rs:526\n\
                  wizard-debug: kernel-entry-hit\n\
-                 #0  wizard_kernel::kmain () at wost\\src\\boot/mod.rs:526\n";
+                 #0  wizard_kernel::kmain () at wost\\src\\boot.rs:526\n";
     require_proof(proof).unwrap();
 
     assert!(require_proof(&proof.replace(PROOF_MARKER, "wrong marker")).is_err());
     assert!(require_proof(&proof.replace("#0", "#1")).is_err());
     assert!(require_proof(&proof.replace("wizard_kernel::kmain", "kmain")).is_err());
-    assert!(require_proof(&proof.replace("wost\\src\\boot/mod.rs", "unknown.rs")).is_err());
+    assert!(require_proof(&proof.replace("wost\\src\\boot.rs", "unknown.rs")).is_err());
     assert!(require_proof(&format!("{proof}{PROOF_MARKER}\n")).is_err());
 }

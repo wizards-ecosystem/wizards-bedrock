@@ -126,7 +126,7 @@ mod tests {
     fn sources() -> (String, String) {
         let root = root();
         (
-            std::fs::read_to_string(root.join("wost/src/mm/mod.rs")).expect("wost mm source"),
+            std::fs::read_to_string(root.join("wost/src/mm.rs")).expect("wost mm source"),
             std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue source"),
         )
     }

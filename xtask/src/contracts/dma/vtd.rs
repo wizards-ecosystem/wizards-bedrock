@@ -203,8 +203,8 @@ fn vtd_revocation_drains_older_dma_before_recycling_frames() {
 
 #[test]
 fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
-    let memory = source("wost/src/mm/mod.rs");
-    let memory_syntax = parse("wost/src/mm/mod.rs");
+    let memory = source("wost/src/mm.rs");
+    let memory_syntax = parse("wost/src/mm.rs");
     let atomic = method(&memory_syntax, "DirectSpan", "write_u64_volatile_at")
         .expect("typed volatile qword publication primitive");
     let Some(FnArg::Typed(value)) = atomic.sig.inputs.iter().nth(2) else {
@@ -1159,7 +1159,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
         }
     }
     let vtd = parse("wost/src/arch/x86_64/vtd.rs");
-    let mm = parse("wost/src/mm/mod.rs");
+    let mm = parse("wost/src/mm.rs");
     let begin = method(&mm, "DmaSegment", "begin_mapping").expect("single-owner lease acquisition");
     assert_eq!(begin.block.stmts.len(), 3);
     let Stmt::Expr(Expr::If(gate), _) = &begin.block.stmts[0] else {

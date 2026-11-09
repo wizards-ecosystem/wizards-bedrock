@@ -370,8 +370,8 @@ fn speculative_and_callback_authority_does_not_regrow() {
         ("libs/pci-config/src", "pub const fn io_window_size"),
         ("libs/stack-layout/src", "fn stack_overlaps"),
         ("wost/src/arch/x86_64/pci.rs", "fn write_command"),
-        ("wost/src/mm/mod.rs", "fn first_region"),
-        ("wost/src/mm/mod.rs", "fn past_every_region"),
+        ("wost/src/mm.rs", "fn first_region"),
+        ("wost/src/mm.rs", "fn past_every_region"),
     ];
 
     for (relative, surface) in forbidden {
