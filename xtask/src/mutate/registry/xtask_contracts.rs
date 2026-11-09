@@ -496,4 +496,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "contracts::sources::a_checked_path_is_opened_only_without_following_links",
         },
     },
+    Mutation {
+        id: 2473,
+        file: "xtask/src/contracts/sources.rs",
+        find: "    sources\n        .into_iter()\n        .filter(|path| {\n            !test_modules\n                .iter()\n                .any(|module| path.starts_with(module) || *path == module.with_extension(\"rs\"))\n        })\n        .collect()\n}",
+        replace: "    sources\n}",
+        breaks: "the production source walk reads out-of-line test modules as production code",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::sources::an_out_of_line_test_module_is_read_as_test_code",
+        },
+    },
 ];
