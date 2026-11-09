@@ -2325,4 +2325,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "api::tests::windows_hosts_link_with_sysroot_lld_and_other_hosts_with_cc",
         },
     },
+    Mutation {
+        id: 2453,
+        file: "xtask/src/api.rs",
+        find: ".find(|directory| directory.join(\"cc\").is_file() && directory.join(\"ld\").is_file())",
+        replace: ".find(|directory| directory.join(\"cc\").is_file())",
+        breaks: "the audit takes a C driver directory with no linker beside it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::windows_hosts_link_with_sysroot_lld_and_other_hosts_with_cc",
+        },
+    },
 ];
