@@ -80,172 +80,172 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 26,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "        .args([\"--deny\", \"warnings\", \"--file\"])",
         replace: "        .args([\"--deny\", \"none\", \"--file\"])",
         breaks: "the RustSec run does not deny advisory warnings",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_refresh_and_review_commands_are_direct_exact_and_bounded",
+            name: "qualification::tests::advisory::advisory_refresh_and_review_commands_are_direct_exact_and_bounded",
         },
     },
     Mutation {
         id: 27,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    invalidate(paths, Kind::Advisory)?;",
         replace: "    let _preserved_advisory_pass = paths;",
         breaks: "a failed advisory attempt can preserve an older green record",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_invalidation_precedes_even_failed_tool_resolution",
+            name: "qualification::tests::advisory::advisory_invalidation_precedes_even_failed_tool_resolution",
         },
     },
     Mutation {
         id: 28,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    verify_advisory_qualification(paths, root, source)?;",
         replace: "    let _omitted_advisory_qualification = (source, root);",
         breaks: "offline evidence can omit the required advisory qualification",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::a_missing_advisory_record_is_rejected",
+            name: "qualification::tests::advisory::a_missing_advisory_record_is_rejected",
         },
     },
     Mutation {
         id: 29,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    require_source(&record, source)?;\n    require_advisory_inputs(paths, &record)?;",
         replace: "    let _unchecked_advisory_source = source;\n    require_advisory_inputs(paths, &record)?;",
         breaks: "an advisory result can be donated by another source commit and tree",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::an_advisory_record_bound_to_another_source_is_rejected",
+            name: "qualification::tests::advisory::an_advisory_record_bound_to_another_source_is_rejected",
         },
     },
     Mutation {
         id: 30,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    ensure!(\n        record.get(\"input.cargo-lock.bytes\")? == lock.bytes.to_string()\n            && record.get(\"input.cargo-lock.sha256\")? == lock.sha256,\n        \"advisory qualification belongs to another Cargo.lock\"\n    );",
         replace: "    let _unchecked_advisory_lock = (record, lock);",
         breaks: "a current source can reuse an advisory result for different locked bytes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::a_stale_advisory_record_cannot_describe_another_lockfile",
+            name: "qualification::tests::advisory::a_stale_advisory_record_cannot_describe_another_lockfile",
         },
     },
     Mutation {
         id: 31,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "            ensure!(\n                bytes == ADVISORY_POLICY.as_bytes(),\n                \"advisory policy differs from the no-ignore phase-close policy\"\n            );",
         replace: "            ensure!(!bytes.is_empty(), \"advisory policy is empty\");",
         breaks: "an ignored RustSec advisory can enter a phase-close result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_advisory_policy_and_result_bytes_are_rejected_semantically",
+            name: "qualification::tests::advisory::forged_advisory_policy_and_result_bytes_are_rejected_semantically",
         },
     },
     Mutation {
         id: 32,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        lines[1] == \"exit.code=0\",\n        \"cargo-audit transcript does not record a successful result\"\n    );",
         replace: "    ensure!(lines[1].starts_with(\"exit.code=\"), \"cargo-audit transcript has no result\");",
         breaks: "a failed cargo-audit execution can be reframed as a successful transcript",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_advisory_policy_and_result_bytes_are_rejected_semantically",
+            name: "qualification::tests::advisory::forged_advisory_policy_and_result_bytes_are_rejected_semantically",
         },
     },
     Mutation {
         id: 33,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: "            ADVISORY_TRANSCRIPT => (MAX_ADVISORY_TRANSCRIPT_BYTES, false),",
         replace: "            ADVISORY_TRANSCRIPT => (u64::MAX, false),",
         breaks: "an oversized advisory transcript reaches payload allocation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 34,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL\n                && is_git_id(record.get(\"database.revision\")?)\n                && is_git_id(record.get(\"database.tree\")?),",
         replace: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL,",
         breaks: "a malformed advisory database revision can enter the qualification record",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_schema_binds_database_time_command_and_tool_identity",
+            name: "qualification::tests::advisory::advisory_schema_binds_database_time_command_and_tool_identity",
         },
     },
     Mutation {
         id: 35,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "            record.get(\"execution.command\")? == ADVISORY_COMMAND\n                && record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
         replace: "            record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
         breaks: "an advisory record can name a weaker or stale command line",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_schema_binds_database_time_command_and_tool_identity",
+            name: "qualification::tests::advisory::advisory_schema_binds_database_time_command_and_tool_identity",
         },
     },
     Mutation {
         id: 36,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "            observed != 0 && observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
         replace: "            observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
         breaks: "an advisory record can carry no real UTC observation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_schema_binds_database_time_command_and_tool_identity",
+            name: "qualification::tests::advisory::advisory_schema_binds_database_time_command_and_tool_identity",
         },
     },
     Mutation {
         id: 37,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    let version = report\n        .strip_prefix(\"cargo-audit-audit \")\n        .or_else(|| report.strip_prefix(\"cargo-audit \"))\n        .context(\"cargo-audit printed no supported version identity\")?;",
         replace: "    let version = report;",
         breaks: "another executable can pose as the resolved RustSec scanner",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::cargo_audit_version_is_one_exact_resolved_identity",
+            name: "qualification::tests::advisory::cargo_audit_version_is_one_exact_resolved_identity",
         },
     },
     Mutation {
         id: 38,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        report == ADVISORY_TOOL_VERSION,\n        \"cargo-audit version differs from the report schema qualification\"\n    );",
         replace: "    let _unqualified_advisory_tool_version = report;",
         breaks: "an unqualified cargo-audit release can emit a different report schema",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::cargo_audit_version_is_one_exact_resolved_identity",
+            name: "qualification::tests::advisory::cargo_audit_version_is_one_exact_resolved_identity",
         },
     },
     Mutation {
         id: 39,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        origin == ADVISORY_DATABASE_URL,\n        \"advisory database origin differs from the RustSec authority\"\n    );",
         replace: "    let _unchecked_advisory_origin = origin;",
         breaks: "another Git remote can pose as the RustSec advisory database",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_database_identity_rejects_forged_origin_and_dirty_bytes",
+            name: "qualification::tests::advisory::advisory_database_identity_rejects_forged_origin_and_dirty_bytes",
         },
     },
     Mutation {
         id: 40,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(status.is_empty(), \"advisory database checkout is dirty\");",
         replace: "    let _unchecked_advisory_status = status;",
         breaks: "uncommitted advisory database bytes can escape the recorded Git identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_database_identity_rejects_forged_origin_and_dirty_bytes",
+            name: "qualification::tests::advisory::advisory_database_identity_rejects_forged_origin_and_dirty_bytes",
         },
     },
     Mutation {
         id: 41,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "        ensure!(\n            advisory_database_identity(&directory, &database)? == database_identity,\n            \"advisory database changed during the revision-pinned audit\"\n        );",
         replace: "        let _unchecked_database_after_review = &database_identity;",
         breaks: "the advisory database can change during the revision-pinned review",
@@ -256,7 +256,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 42,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "        ensure!(\n            advisory_database_identity(&directory, &database)? == database_identity,\n            \"advisory database changed after cargo-audit completed\"\n        );",
         replace: "        let _unchecked_database_before_commit = &database_identity;",
         breaks: "the advisory database can change before qualification publication",
@@ -267,134 +267,134 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 43,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    require_json_fields(\n        report,\n        &[\n            \"database\",\n            \"lockfile\",\n            \"settings\",\n            \"vulnerabilities\",\n            \"warnings\",\n        ],\n        \"cargo-audit report\",\n    )?;",
         replace: "    let _unchecked_advisory_report_schema = report;",
         breaks: "forged top-level cargo-audit fields can enter a clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 44,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    require_json_fields(\n        database,\n        &[\"advisory-count\", \"last-commit\", \"last-updated\"],\n        \"cargo-audit database\",\n    )?;",
         replace: "    let _unchecked_advisory_database_schema = database;",
         breaks: "forged advisory database fields can enter a clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 45,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        advisory_count != 0,\n        \"cargo-audit report names an empty advisory database\"\n    );",
         replace: "    let _unchecked_advisory_count = database;",
         breaks: "an empty advisory database can qualify a locked graph",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::an_empty_advisory_database_cannot_author_a_qualification",
+            name: "qualification::tests::advisory::an_empty_advisory_database_cannot_author_a_qualification",
         },
     },
     Mutation {
         id: 46,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "            ensure!(\n                commit == database_revision,\n                \"cargo-audit report belongs to another advisory database revision\"\n            );",
         replace: "            let _unchecked_report_revision = database_revision;",
         breaks: "a cargo-audit report can name another advisory database revision",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 47,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "            ensure!(\n                is_rfc3339_timestamp(updated),\n                \"cargo-audit report has no RFC3339 database update time\"\n            );",
         replace: "            let _unchecked_advisory_update_time = updated;",
         breaks: "an advisory report can omit a real database update time",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 48,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    require_json_fields(lockfile, &[\"dependency-count\"], \"cargo-audit lockfile\")?;",
         replace: "    let _unchecked_advisory_lock_schema = lockfile;",
         breaks: "forged lockfile report fields can enter a clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 49,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        json_u64(\n            json_field(lockfile, \"dependency-count\")?,\n            \"dependency-count\"\n        )? != 0,\n        \"cargo-audit report names an empty lockfile\"\n    );",
         replace: "    let _unchecked_advisory_dependency_count = lockfile;",
         breaks: "an empty reported lockfile can pose as the audited dependency graph",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 50,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    require_json_fields(\n        settings,\n        &[\n            \"ignore\",\n            \"informational_warnings\",\n            \"severity\",\n            \"target_arch\",\n            \"target_os\",\n        ],\n        \"cargo-audit settings\",\n    )?;",
         replace: "    let _unchecked_advisory_settings_schema = settings;",
         breaks: "forged cargo-audit setting fields can enter a clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 51,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        json_array(json_field(settings, \"target_arch\")?, \"target_arch\")?.is_empty()\n            && json_array(json_field(settings, \"target_os\")?, \"target_os\")?.is_empty()\n            && matches!(json_field(settings, \"severity\")?, JsonValue::Null)\n            && json_array(json_field(settings, \"ignore\")?, \"ignore\")?.is_empty()\n            && json_string_array(\n                json_field(settings, \"informational_warnings\")?,\n                \"informational_warnings\"\n            )? == [\"unmaintained\", \"unsound\", \"notice\"],\n        \"cargo-audit report was generated with different audit settings\"\n    );",
         replace: "    let _unchecked_advisory_settings = settings;",
         breaks: "ignored advisories can be hidden inside a forged clean report",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 52,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    require_json_fields(\n        vulnerabilities,\n        &[\"count\", \"found\", \"list\"],\n        \"cargo-audit vulnerabilities\",\n    )?;",
         replace: "    let _unchecked_vulnerability_schema = vulnerabilities;",
         breaks: "forged vulnerability fields can enter a clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 53,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        matches!(\n            json_field(vulnerabilities, \"found\")?,\n            JsonValue::Bool(false)\n        ) && json_u64(json_field(vulnerabilities, \"count\")?, \"vulnerability count\")? == 0\n            && json_array(json_field(vulnerabilities, \"list\")?, \"vulnerability list\")?.is_empty(),\n        \"cargo-audit report is not a consistent vulnerability-free result\"\n    );",
         replace: "    let _unchecked_vulnerability_result = vulnerabilities;",
         breaks: "a vulnerable or internally inconsistent report can pose as clean",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
         id: 54,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        warnings.is_empty(),\n        \"cargo-audit report contains a dependency warning\"\n    );",
         replace: "    let _unchecked_advisory_warnings = warnings;",
         breaks: "a dependency warning can enter a forged clean result",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::advisory::forged_green_advisory_json_is_rejected_semantically",
         },
     },
     Mutation {
@@ -443,13 +443,13 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 62,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    require_real_directory(directory, \"VMware selector directory\")?;",
         replace: "    let _unchecked_selector_directory = directory;",
         breaks: "a VMware selector name can substitute another in-root directory",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::a_vmware_selector_directory_cannot_be_substituted",
+            name: "qualification::tests::vmware::a_vmware_selector_directory_cannot_be_substituted",
         },
     },
     Mutation {
@@ -487,7 +487,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 66,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    require_current_source(paths, record)?;\n    std::fs::rename(&temporary, &final_path)",
         replace: "    std::fs::rename(&temporary, &final_path)",
         breaks: "a qualification record can commit after its source checkout changes",
@@ -498,7 +498,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 68,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        let observation = observe_running_vm(self.paths.root(), &self.vmrun, artifacts.vmx)?;",
         replace: "        let observation = format!(\"{VMRUN_LIST_HEADER}1\\n{}\", artifacts.vmx.display());",
         breaks: "VMware qualification fabricates availability text instead of executing vmrun",
@@ -515,95 +515,95 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VMware qualification invokes another vmrun operation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_list_requires_one_exact_running_machine",
+            name: "qualification::tests::vmware::vmrun_list_requires_one_exact_running_machine",
         },
     },
     Mutation {
         id: 70,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    let before = run(&tool.path, &[], ExitPolicy::Any)?;",
         replace: "    let before = tool.version.clone();",
         breaks: "the VMware observer can skip its immediate pre-execution tool identity probe",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_observation_executes_list_between_exact_tool_probes",
+            name: "qualification::tests::vmware::vmrun_observation_executes_list_between_exact_tool_probes",
         },
     },
     Mutation {
         id: 71,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    let after = run(&tool.path, &[], ExitPolicy::Any)?;",
         replace: "    let after = tool.version.clone();",
         breaks: "the VMware observer can skip its post-execution tool identity probe",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_observation_executes_list_between_exact_tool_probes",
+            name: "qualification::tests::vmware::vmrun_observation_executes_list_between_exact_tool_probes",
         },
     },
     Mutation {
         id: 72,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    ensure!(\n        !report.contains(['\\0', '\\r']),\n        \"vmrun list contains a forbidden control byte\"\n    );",
         replace: "    ensure!(!report.contains('\\0'), \"vmrun list contains a NUL byte\");",
         breaks: "the archived VMware observer can use noncanonical CR line endings",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_list_requires_one_exact_running_machine",
+            name: "qualification::tests::vmware::vmrun_list_requires_one_exact_running_machine",
         },
     },
     Mutation {
         id: 73,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        parsed == 1 && paths.len() == parsed,",
         replace: "        parsed >= 1 && paths.len() == parsed,",
         breaks: "another running VMware machine can share the qualification observation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_list_requires_one_exact_running_machine",
+            name: "qualification::tests::vmware::vmrun_list_requires_one_exact_running_machine",
         },
     },
     Mutation {
         id: 74,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        observed == expected,\n        \"vmrun reported another machine: {}\",",
         replace: "        observed != expected,\n        \"vmrun reported another machine: {}\",",
         breaks: "vmrun may report a foreign VMX instead of the generated selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_list_requires_one_exact_running_machine",
+            name: "qualification::tests::vmware::vmrun_list_requires_one_exact_running_machine",
         },
     },
     Mutation {
         id: 75,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        actual == expected,\n        \"VMware generation inventory differs: missing {:?}; unexpected {:?}\",",
         replace: "        actual.is_superset(&expected),\n        \"VMware generation inventory differs: missing {:?}; unexpected {:?}\",",
         breaks: "stale VMware firmware or suspend state survives generation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_receipt_binds_reset_source_selector_and_machine_bytes",
+            name: "qualification::tests::vmware::generation_receipt_binds_reset_source_selector_and_machine_bytes",
         },
     },
     Mutation {
         id: 76,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "                .is_file(),\n            \"VMware generation entry is not a regular file: {}\",",
         replace: "                .is_file() || true,\n            \"VMware generation entry is not a regular file: {}\",",
         breaks: "an authoritative VMware artifact name can be a directory or link",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_receipt_binds_reset_source_selector_and_machine_bytes",
+            name: "qualification::tests::vmware::generation_receipt_binds_reset_source_selector_and_machine_bytes",
         },
     },
     Mutation {
         id: 77,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    generation_transcript_name(&generation)",
         replace: "    Ok(VMWARE_TRANSCRIPT.to_string())",
         breaks: "successive VMware generations reuse one replayable transcript path",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::each_vmware_generation_owns_a_distinct_serial_file",
+            name: "qualification::tests::vmware::each_vmware_generation_owns_a_distinct_serial_file",
         },
     },
     Mutation {
@@ -630,9 +630,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 104,
-        file: "xtask/src/qualification.rs",
-        find: "        let mutation_start = mutation_source\n            .rfind(\"\\npub fn run(paths: &Paths) -> Result<()> {\")\n            .unwrap();",
-        replace: "        let mutation_start = 0;",
+        file: "xtask/src/qualification/tests.rs",
+        find: "    let mutation_start = mutation_source\n        .rfind(\"\\npub fn run(paths: &Paths) -> Result<()> {\")\n        .unwrap();",
+        replace: "    let mutation_start = 0;",
         breaks: "the exceptional-order check admits mutation registry fixtures as production markers",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -641,7 +641,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 119,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    ensure!(actual == expected, \"qualification checksum does not match\");",
         replace: "    ensure!(is_digest(expected), \"qualification checksum does not match\");",
         breaks: "a changed qualification record retains its old checksum",
@@ -652,7 +652,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 120,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    ensure!(\n        actual == expected,\n        \"qualification schema differs: missing {:?}; unknown {:?}\",",
         replace: "    ensure!(\n        expected.is_subset(&actual),\n        \"qualification schema differs: missing {:?}; unknown {:?}\",",
         breaks: "an invented qualification claim is accepted",
@@ -663,7 +663,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 121,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "        record.get(\"source.commit\")? == source.commit,",
         replace: "        is_git_id(record.get(\"source.commit\")?),",
         breaks: "qualification from another commit remains current",
@@ -674,7 +674,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 122,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "        record.get(\"source.tree\")? == source.tree,",
         replace: "        is_git_id(record.get(\"source.tree\")?),",
         breaks: "qualification from another tree remains current",
@@ -685,7 +685,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 123,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "            std::fs::remove_dir_all(&directory)\n                .with_context(|| format!(\"invalidating stale {} qualification\", kind.slug()))?;",
         replace: "            return Ok(());",
         breaks: "a new exceptional attempt leaves an older pass valid",
@@ -696,51 +696,51 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 124,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        receipt == generation_record(source, kind, directory, generation)?,",
         replace: "        receipt.get(\"input.kernel\")? == kind.slug(),",
         breaks: "a VMware receipt ignores its source and machine bytes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_receipt_binds_reset_source_selector_and_machine_bytes",
+            name: "qualification::tests::vmware::generation_receipt_binds_reset_source_selector_and_machine_bytes",
         },
     },
     Mutation {
         id: 125,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        transcript.bytes != 0 && transcript.sha256 != empty_digest(),",
         replace: "        transcript.bytes == 0 || transcript.sha256 != empty_digest(),",
         breaks: "an untouched VMware reset counts as execution",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_receipt_binds_reset_source_selector_and_machine_bytes",
+            name: "qualification::tests::vmware::generation_receipt_binds_reset_source_selector_and_machine_bytes",
         },
     },
     Mutation {
         id: 126,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        reset.bytes == 0 && reset.sha256 == empty_digest(),",
         replace: "        reset.bytes <= reset.bytes,",
         breaks: "a generation receipt can be issued over an old transcript",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_receipt_binds_reset_source_selector_and_machine_bytes",
+            name: "qualification::tests::vmware::generation_receipt_binds_reset_source_selector_and_machine_bytes",
         },
     },
     Mutation {
         id: 127,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    for path in [receipt.to_path_buf(), parent.join(VMWARE_GENERATION_TEMP)] {",
         replace: "    for path in std::iter::empty::<PathBuf>() {",
         breaks: "VMware generation preserves stale complete and partial receipts",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generation_start_invalidates_both_receipt_names",
+            name: "qualification::tests::vmware::generation_start_invalidates_both_receipt_names",
         },
     },
     Mutation {
         id: 128,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "            record.get(&format!(\"{prefix}.sha256\"))? == digest.sha256,",
         replace: "            digest.bytes == digest.bytes,",
         breaks: "inner qualification support can differ at equal length",
@@ -751,7 +751,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 129,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "        record.get(\"input.registry.sha256\")? == registry,",
         replace: "        is_digest(registry),",
         breaks: "mutation qualification accepts another registry",
@@ -762,7 +762,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 130,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "        record.get(\"input.mutations\")? == mutation_count.to_string(),",
         replace: "        mutation_count != 0,",
         breaks: "mutation qualification accepts another registry cardinality",
@@ -773,7 +773,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 131,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "            mutation.registry == registry",
         replace: "            true",
         breaks: "the newest mutation pass can name another registry",
@@ -784,7 +784,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 132,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "                && mutation.mutation_count == mutation_count",
         replace: "                && true",
         breaks: "the newest mutation pass can name another count",
@@ -795,7 +795,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 133,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "                && record.get(\"source.commit\")? == mutation.commit",
         replace: "                && is_git_id(&mutation.commit)",
         breaks: "the newest mutation pass can belong to another commit",
@@ -806,7 +806,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 134,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "                && record.get(\"input.source.sha256\")? == mutation.source_digest",
         replace: "                && is_digest(&mutation.source_digest)",
         breaks: "the newest mutation pass can describe other source bytes",
@@ -817,7 +817,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 135,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "                && record.get(\"input.index.sha256\")? == mutation.index_digest",
         replace: "                && is_digest(&mutation.index_digest)",
         breaks: "the newest mutation pass can describe another index",
@@ -828,7 +828,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 136,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "                && record.get(\"artifact.report.sha256\")? == mutation.report_digest,",
         replace: "                && is_digest(&mutation.report_digest),",
         breaks: "the newest mutation pass can point at another report",
@@ -839,7 +839,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 137,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.get(key)? == value,",
         replace: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.fields.contains_key(key),",
         breaks: "current TLC and VMware tool inputs are compared by name only",
@@ -1004,13 +1004,13 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 475,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    Ok(version.to_string())",
         replace: "    Ok(report.trim().to_string())",
         breaks: "vmrun usage text is recorded as part of its version identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmrun_version_is_separated_from_its_usage_text",
+            name: "qualification::tests::vmware::vmrun_version_is_separated_from_its_usage_text",
         },
     },
     Mutation {
@@ -1059,46 +1059,46 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 659,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "            transcript.source.file_name().and_then(|name| name.to_str())\n                == Some(generation_transcript_name(generation)?.as_str()),",
         replace: "            true,",
         breaks: "a transcript path from another valid VMware generation enters the capture",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
         id: 660,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "            receipt == generation_record_from_digests(source, kind, generation, &digests)?,",
         replace: "            generation_record_from_digests(source, kind, generation, &digests).is_ok(),",
         breaks: "machine bytes from multiple VMware generations share one captured receipt",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
         id: 661,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "                digest_file(&file.source)? == file.digest,",
         replace: "                true,",
         breaks: "a VMware source artifact can change after its immutable capture",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
         id: 662,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "            ensure!(\n                destination == file.captured && digest_file(&destination)? == file.digest,\n                \"captured VMware artifact changed during publication\"\n            );",
         replace: "            std::fs::copy(&file.source, &destination)\n                .with_context(|| format!(\"recopying {}\", file.source.display()))?;",
         breaks: "VMware publication reopens moving sources instead of using the immutable capture",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
@@ -1125,7 +1125,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 669,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = crate::mutate::workspace::prepare_real_directory_tree(\n        &qualification_root(paths),\n        \"qualification root\",\n    )?;",
         replace: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = qualification_root(paths);\n    std::fs::create_dir_all(&root).with_context(|| format!(\"creating {}\", root.display()))?;",
         breaks: "a redirected target receives qualification bytes before its ancestry is refused",
@@ -1158,7 +1158,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 702,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "            crate::model::verify_transcript(name, &bytes)?;",
         replace: "            let _unchecked_model_transcript = (name, &bytes);",
         breaks: "offline evidence can accept one valid TLC run donated under another identity",
@@ -1186,7 +1186,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a semantic qualification artifact can allocate from an already oversized length",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::semantic_artifacts_are_bounded_before_and_during_allocation",
+            name: "qualification::tests::size_policy::semantic_artifacts_are_bounded_before_and_during_allocation",
         },
     },
     Mutation {
@@ -1197,29 +1197,29 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a semantic qualification artifact can grow past its allocation cap during the read",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::semantic_artifacts_are_bounded_before_and_during_allocation",
+            name: "qualification::tests::size_policy::semantic_artifacts_are_bounded_before_and_during_allocation",
         },
     },
     Mutation {
         id: 728,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: "        ensure!(\n            length == maximum,\n            \"qualification artifact {name} is {length} bytes, expected exactly {maximum}\"\n        );",
         replace: "        ensure!(\n            length <= maximum,\n            \"qualification artifact {name} is {length} bytes, expected exactly {maximum}\"\n        );",
         breaks: "an undersized deterministic machine image can enter qualification evidence",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 729,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "            initial == maximum,\n            \"{label} is {initial} bytes, expected exactly {maximum}\"",
         replace: "            initial >= maximum,\n            \"{label} is {initial} bytes, expected exactly {maximum}\"",
         breaks: "an oversized sparse VMware image reaches the qualification capture stream",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmware_capture_preflights_image_size_before_streaming",
+            name: "qualification::tests::vmware::vmware_capture_preflights_image_size_before_streaming",
         },
     },
     Mutation {
@@ -1235,13 +1235,13 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 741,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    require_observed_vmx(&observed, &expected)\n}",
         replace: "    require_observed_vmx(&observed, &observed)\n}",
         breaks: "offline VMware evidence can substitute another absolute running VMX",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::offline_vmware_observer_is_bound_to_its_exact_selector",
+            name: "qualification::tests::vmware::offline_vmware_observer_is_bound_to_its_exact_selector",
         },
     },
     Mutation {
@@ -1252,7 +1252,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a generic qualification digest allocates from an oversized initial file",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generic_qualification_digests_have_a_streaming_ceiling",
+            name: "qualification::tests::size_policy::generic_qualification_digests_have_a_streaming_ceiling",
         },
     },
     Mutation {
@@ -1263,7 +1263,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a qualification digest can grow beyond its semantic ceiling after preflight",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generic_qualification_digest_growth_is_refused_after_measurement",
+            name: "qualification::tests::size_policy::generic_qualification_digest_growth_is_refused_after_measurement",
         },
     },
     Mutation {
@@ -1274,7 +1274,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one oversized tracked model input reaches the hashing stream",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::tracked_model_files_are_size_checked_before_streaming",
+            name: "qualification::tests::size_policy::tracked_model_files_are_size_checked_before_streaming",
         },
     },
     Mutation {
@@ -1285,7 +1285,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the tracked model tree has no aggregate byte ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::tracked_model_tree_has_an_independent_total_size_bound",
+            name: "qualification::tests::size_policy::tracked_model_tree_has_an_independent_total_size_bound",
         },
     },
     Mutation {
@@ -1296,7 +1296,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the model-tree digest omits its path-length frame",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::streamed_model_tree_digest_preserves_the_length_delimited_schema",
+            name: "qualification::tests::size_policy::streamed_model_tree_digest_preserves_the_length_delimited_schema",
         },
     },
     Mutation {
@@ -1312,7 +1312,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 898,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    ensure!(\n        before == after,\n        \"qualification source identity changed while it was captured\"\n    );",
         replace: "    ensure!(\n        before == before,\n        \"qualification source identity changed while it was captured\"\n    );",
         breaks: "qualification accepts two different clean source identities",
@@ -1360,7 +1360,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a qualification digest accepts truncation after its preflight measurement",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::generic_qualification_digest_truncation_is_refused_after_measurement",
+            name: "qualification::tests::size_policy::generic_qualification_digest_truncation_is_refused_after_measurement",
         },
     },
     Mutation {
@@ -1376,29 +1376,29 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1209,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: r#"    let text = read_bounded_text(path, MAX_RECORD_BYTES, "qualification record")?;"#,
         replace: r#"    let text = read_bounded_text(path, u64::MAX, "qualification record")?;"#,
         breaks: "qualification records are parsed without their caller-specific allocation ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::an_oversized_qualification_record_is_refused_before_parsing",
+            name: "qualification::tests::size_policy::an_oversized_qualification_record_is_refused_before_parsing",
         },
     },
     Mutation {
         id: 1210,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: r#"    let text = read_bounded_text(path, MAX_VMWARE_TEXT_BYTES, "VMware generation receipt")?;"#,
         replace: r#"    let text = read_bounded_text(path, u64::MAX, "VMware generation receipt")?;"#,
         breaks: "VMware generation receipts are parsed without their caller-specific allocation ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::an_oversized_generation_receipt_is_refused_before_parsing",
+            name: "qualification::tests::size_policy::an_oversized_generation_receipt_is_refused_before_parsing",
         },
     },
     Mutation {
         id: 1213,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: r#"    ensure!(
         length as u64 <= maximum,
         "cargo-audit transcript exceeds its bounded artifact limit"
@@ -1410,12 +1410,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "cargo-audit transcript construction allocates beyond its semantic artifact ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_transcript_rendering_refuses_output_beyond_its_ceiling",
+            name: "qualification::tests::advisory::advisory_transcript_rendering_refuses_output_beyond_its_ceiling",
         },
     },
     Mutation {
         id: 1214,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: r#"    ensure!(
         transcript.len() as u64 <= maximum,
         "cargo-audit transcript exceeds its bounded artifact limit"
@@ -1427,12 +1427,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "cargo-audit transcript verification ignores its semantic artifact ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_transcript_verification_refuses_bytes_beyond_its_ceiling",
+            name: "qualification::tests::advisory::advisory_transcript_verification_refuses_bytes_beyond_its_ceiling",
         },
     },
     Mutation {
         id: 1215,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: r#"    ensure!(
         copied <= maximum,
         "{label} grew beyond its {maximum}-byte capture limit while being copied"
@@ -1444,12 +1444,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a VMware source can grow past its capture ceiling after preflight",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmware_capture_refuses_growth_after_its_preflight_measurement",
+            name: "qualification::tests::vmware::vmware_capture_refuses_growth_after_its_preflight_measurement",
         },
     },
     Mutation {
         id: 1216,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: r#"    ensure!(
         !exact || copied == maximum,
         "{label} changed outside its exact {maximum}-byte capture extent"
@@ -1461,7 +1461,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an exact VMware source can truncate after preflight and still be captured",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmware_capture_refuses_truncation_after_exact_preflight",
+            name: "qualification::tests::vmware::vmware_capture_refuses_truncation_after_exact_preflight",
         },
     },
     Mutation {
@@ -1573,95 +1573,95 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1226,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"            ADVISORY_POLICY_PATH => (MAX_ADVISORY_POLICY_BYTES, false),"#,
         replace: r#"            ADVISORY_POLICY_PATH => (MAX_ADVISORY_POLICY_BYTES + 1, false),"#,
         breaks: "the advisory policy artifact selects a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1227,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        Kind::Mutation => (MAX_MUTATION_REPORT_BYTES, false),"#,
         replace: r#"        Kind::Mutation => (MAX_MUTATION_REPORT_BYTES + 1, false),"#,
         breaks: "the mutation report artifact selects a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1228,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES, false),"#,
         replace: r#"        Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES + 1, false),"#,
         breaks: "model transcript artifacts select a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1229,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"            VMWARE_IMAGE => (boot_image_bytes(), true),"#,
         replace: r#"            VMWARE_IMAGE => (boot_image_bytes() + 1, true),"#,
         breaks: "VMware boot images select the wrong exact artifact extent",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1230,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"            VMWARE_NAMESPACE => (namespace_bytes(), true),"#,
         replace: r#"            VMWARE_NAMESPACE => (namespace_bytes() + 1, true),"#,
         breaks: "VMware namespaces select the wrong exact artifact extent",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1231,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"            VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false),"#,
         replace: r#"            VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES + 1, false),"#,
         breaks: "VMware serial transcripts select a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1232,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"            | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false),"#,
         replace: r#"            | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES + 1, false),"#,
         breaks: "VMware text artifacts select a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1233,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        return Ok((MAX_RECORD_BYTES, false));"#,
         replace: r#"        return Ok((MAX_RECORD_BYTES + 1, false));"#,
         breaks: "qualification bundle records select a larger size policy than registered",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1234,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        ensure!(
             length <= maximum,
             "qualification artifact {name} is {length} bytes, exceeding its {maximum}-byte limit"
@@ -1673,12 +1673,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the artifact-size caller ignores every bounded artifact policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1235,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        ensure!(
             length == maximum,
             "qualification bundle file {} is {length} bytes, expected exactly {maximum}",
@@ -1692,12 +1692,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the bundle-size caller ignores every exact artifact policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1236,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/size_policy.rs",
         find: r#"        ensure!(
             length <= maximum,
             "qualification bundle file {} is {length} bytes, exceeding its {maximum}-byte limit",
@@ -1711,51 +1711,51 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the bundle-size caller ignores every bounded artifact policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
+            name: "qualification::tests::size_policy::every_qualification_size_policy_has_an_independent_sparse_caller_witness",
         },
     },
     Mutation {
         id: 1376,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "        (DatabaseBinding::Pinned, JsonValue::Null, JsonValue::Null) => None,",
         replace: "        (_, JsonValue::Null, JsonValue::Null) => None,",
         breaks: "a population report can omit the database identity cargo-audit fetched",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::a_population_transcript_without_database_identity_is_rejected",
+            name: "qualification::tests::advisory::a_population_transcript_without_database_identity_is_rejected",
         },
     },
     Mutation {
         id: 1377,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/advisory.rs",
         find: "    ensure!(\n        audited.advisory_count == fetched.advisory_count,\n        \"the pinned audit and the population run saw different advisory databases\"\n    );",
         replace: "    let _unchecked_database_agreement = (audited.advisory_count, fetched.advisory_count);",
         breaks: "the pinned audit can see a different advisory database than the population run attested",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::the_pinned_audit_must_see_the_population_runs_database",
+            name: "qualification::tests::advisory::the_pinned_audit_must_see_the_population_runs_database",
         },
     },
     Mutation {
         id: 1378,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "        ensure!(\n            is_rfc3339_timestamp(record.get(\"database.last-updated\")?),\n            \"advisory qualification names no RFC3339 database update time\"\n        );",
         replace: "        let _unchecked_database_update_time = record.get(\"database.last-updated\")?;",
         breaks: "an advisory record can carry a malformed database update time",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::advisory_schema_binds_database_time_command_and_tool_identity",
+            name: "qualification::tests::advisory::advisory_schema_binds_database_time_command_and_tool_identity",
         },
     },
     Mutation {
         id: 1379,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "        ensure!(\n            record.get(\"database.last-updated\")? == attestation.last_updated,\n            \"advisory record names another database update time\"\n        );",
         replace: "        let _unchecked_attested_update_time = attestation.last_updated;",
         breaks: "an advisory record can name an update time its population transcript does not attest",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::an_advisory_record_must_repeat_the_attested_database_update_time",
+            name: "qualification::tests::advisory::an_advisory_record_must_repeat_the_attested_database_update_time",
         },
     },
     Mutation {
@@ -1914,7 +1914,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1491,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    record.insert(\"source.tree\", &source.tree)?;\n    for (key, value) in crate::git::resolved()?.fields() {\n        record.insert(key, value)?;\n    }\n",
         replace: "    record.insert(\"source.tree\", &source.tree)?;\n",
         breaks: "a qualification record omits the Git that established its source",
@@ -1925,7 +1925,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1492,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "    validate_record(record, kind)?;\n    crate::git::resolved()?.require_unchanged()?;\n",
         replace: "    validate_record(record, kind)?;\n",
         breaks: "a qualification record commits without re-measuring Git",
@@ -1947,29 +1947,29 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1620,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    Ok(digest_bytes(generated.as_bytes()))",
         replace: "    Ok(digest_bytes(&runtime))",
         breaks: "runtime metadata replaces the source-generated input identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
         id: 1621,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "    crate::vmware::verify_runtime_vmx(generated.as_bytes(), &runtime)?;",
         replace: "    let _ = (generated.as_bytes(), &runtime);",
         breaks: "a captured VMX from a different generation is accepted as source-equivalent",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+            name: "qualification::tests::vmware::one_immutable_vmware_generation_is_captured_before_publication",
         },
     },
     Mutation {
         id: 1744,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;\n    }\n    verify_records_after_authority(",
         replace: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        let _unchecked_deep_authority = (paths, root, source);\n    }\n    verify_records_after_authority(",
         breaks: "offline release-bundle replay bypasses the owned Deep authority verifier",
@@ -1991,18 +1991,18 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1832,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/vmware.rs",
         find: "        bytes == expected,\n        \"VMware DMA handoff authority differs from the source-defined contract\"",
         replace: "        bytes.len() == expected.len(),\n        \"VMware DMA handoff authority differs from the source-defined contract\"",
         breaks: "VMware qualification accepts a foreign same-length DMA handoff authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::vmware_accepts_only_the_source_defined_dma_handoff_authority",
+            name: "qualification::tests::vmware::vmware_accepts_only_the_source_defined_dma_handoff_authority",
         },
     },
     Mutation {
         id: 1904,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/attempts.rs",
         find: "        _authority: crate::security_deep::DeepAuthority,",
         replace: "        _authority: impl std::borrow::Borrow<crate::security_deep::DeepAuthority>,",
         breaks: "Deep PASS publication can borrow rather than consume its one-shot capability",
@@ -2013,7 +2013,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1905,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/attempts.rs",
         find: "        let derived = crate::security_deep::verify_sealed(&self.paths, &directory, &self.source)?;",
         replace: "        let derived = fields.to_vec();",
         breaks: "owned Deep publication trusts caller fields instead of replaying the copied artifacts",
@@ -2024,7 +2024,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1906,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/attempts.rs",
         find: "        let derived = crate::security_deep::verify_sealed(&self.paths, &directory, &self.source)?;\n        require_external_fields(&record, &derived)?;\n        commit_record(&self.paths, Kind::CodexSecurityDeep, &record)",
         replace: "        let derived = crate::security_deep::verify_sealed(&self.paths, &directory, &self.source)?;\n        let _unchecked_derived = &derived;\n        commit_record(&self.paths, Kind::CodexSecurityDeep, &record)",
         breaks: "owned Deep publication does not compare recorded authority with replayed artifacts",
@@ -2035,7 +2035,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1907,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;\n    }\n    recorded_source_after_authority(paths, &campaigns)",
         replace: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        let _unchecked_deep_authority = (&root, &source);\n    }\n    recorded_source_after_authority(paths, &campaigns)",
         breaks: "online evidence construction bypasses the owned Deep authority verifier",
@@ -2046,9 +2046,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1908,
-        file: "xtask/src/qualification.rs",
-        find: "fn require_external_fields(record: &Record, expected: &[(String, String)]) -> Result<()> {\n    for (key, value) in expected {\n        ensure!(\n            record.get(key)? == value,",
-        replace: "fn require_external_fields(record: &Record, expected: &[(String, String)]) -> Result<()> {\n    for (key, value) in expected {\n        ensure!(\n            record.fields.contains_key(key) && !value.is_empty(),",
+        file: "xtask/src/qualification/verify.rs",
+        find: "fn require_external_fields(\n    record: &Record,\n    expected: &[(String, String)],\n) -> Result<()> {\n    for (key, value) in expected {\n        ensure!(\n            record.get(key)? == value,",
+        replace: "fn require_external_fields(\n    record: &Record,\n    expected: &[(String, String)],\n) -> Result<()> {\n    for (key, value) in expected {\n        ensure!(\n            record.fields.contains_key(key) && !value.is_empty(),",
         breaks: "a forged owned Deep authority value passes when its field name still exists",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2057,7 +2057,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1909,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "        lines.first().copied() == Some(FORMAT),",
         replace: "        lines\n            .first()\n            .is_some_and(|line| line.starts_with(\"wizard-qualification-v\")),",
         breaks: "a superseded qualification schema is accepted by its version prefix",
@@ -2079,7 +2079,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2005,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"tool.codex.runtime.root\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),\n                \"tool.python.runtime.bytes\".to_string(),",
         replace: "                \"tool.codex.runtime.root\".to_string(),\n                \"tool.python.runtime.bytes\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime digest",
@@ -2288,7 +2288,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2030,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.files\".to_string(),",
         replace: "                \"tool.codex.runtime.files\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime byte count",
@@ -2299,7 +2299,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2031,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),",
         replace: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime file count",
@@ -2310,7 +2310,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2032,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),",
         replace: "                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime root",
@@ -2321,7 +2321,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2182,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
         replace: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the effective-profile digest",
@@ -2332,7 +2332,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2183,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
         replace: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the parent-state digest",
@@ -2343,7 +2343,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2184,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
         replace: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the provider-profile digest",
@@ -2354,7 +2354,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2195,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/attempts.rs",
         find: "            (\"artifact.report\", \"report.md\", artifacts.report.as_slice()),\n            (\n                \"artifact.worker-transitions\",\n                \"worker-transitions\",\n                artifacts.worker_transitions.as_slice(),\n            ),",
         replace: "            (\"artifact.report\", \"report.md\", artifacts.report.as_slice()),",
         breaks: "owned Deep publication omits the replayable worker-transition artifact",
@@ -2376,7 +2376,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2199,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"execution.worker-transitions.exec-resumed\".to_string(),\n                \"findings.critical\".to_string(),",
         replace: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"findings.critical\".to_string(),",
         breaks: "qualification can admit owned Deep evidence without the resumed-transition count",
@@ -2387,7 +2387,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2200,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "            (\"artifact.report\", \"report.md\"),\n            (\"artifact.worker-transitions\", \"worker-transitions\"),",
         replace: "            (\"artifact.report\", \"report.md\"),",
         breaks: "qualification support verification does not replay the transition artifact's path and digest",
@@ -2398,7 +2398,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2218,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
         replace: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
         breaks: "qualification can omit the raw effective sandbox-state digest",
@@ -2409,7 +2409,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2219,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-preflight.allowed-reads\".to_string(),\n                \"execution.worker-preflight.denied-reads\".to_string(),",
         replace: "                \"execution.worker-preflight.denied-reads\".to_string(),",
         breaks: "qualification can omit the allowed-read preflight count",
@@ -2420,7 +2420,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2220,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-preflight.denied-write-creates\".to_string(),\n                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
         replace: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
         breaks: "qualification can omit the denied-create preflight count",
@@ -2431,7 +2431,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2221,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),\n                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
         replace: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
         breaks: "qualification can omit the denied existing-file mutation count",
@@ -2442,7 +2442,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2222,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),\n                \"execution.worker-preflight.denied-network-connections\".to_string(),",
         replace: "                \"execution.worker-preflight.denied-network-connections\".to_string(),",
         breaks: "qualification can omit the denied-listener preflight count",
@@ -2453,7 +2453,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2223,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/record.rs",
         find: "                \"execution.worker-preflight.denied-network-connections\".to_string(),\n                \"execution.worker-preflight.denied-descendants\".to_string(),",
         replace: "                \"execution.worker-preflight.denied-descendants\".to_string(),",
         breaks: "qualification can omit the denied outbound-connect preflight count",
@@ -2464,7 +2464,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2262,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "        if campaigns.deferred(kind) {\n            require_deferred(root, kind)?;\n        }",
         replace: "        if campaigns.deferred(kind) {\n            let _unchecked_deferral = (root, kind);\n        }",
         breaks: "a deferred continuous campaign can carry a stale qualification record",
@@ -2552,7 +2552,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2270,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;",
         replace: "    if campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, &root, &source)?;",
         breaks: "online evidence construction skips the owned Deep verifier for a passing Deep record",
@@ -2563,7 +2563,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2271,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/qualification/verify.rs",
         find: "    if !campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;",
         replace: "    if campaigns.deferred(Kind::CodexSecurityDeep) {\n        require_authenticated_deep_qualification(paths, root, source)?;",
         breaks: "offline release-bundle replay skips the owned Deep verifier for a passing Deep record",
