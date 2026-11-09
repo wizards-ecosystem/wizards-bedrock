@@ -50,7 +50,7 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ),
     ("xtask/src/bounded_process.rs", "bounded_process::Tree"),
     ("xtask/src/contracts.rs", "contracts::Probe"),
-    ("xtask/src/image/mod.rs", "image::RunImage"),
+    ("xtask/src/image.rs", "image::RunImage"),
     (
         "xtask/src/mutate/workspace/tests.rs",
         "mutate::workspace::tests::TempTree",
@@ -224,7 +224,7 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "contracts::Probe",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/image/mod.rs",
+        relative: "xtask/src/image.rs",
         owner: "image::RunImage",
         member: "reserve",
         implemented_trait: None,

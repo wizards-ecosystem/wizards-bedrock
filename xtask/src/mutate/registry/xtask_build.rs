@@ -25,7 +25,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 440,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: "            Self::SelfTest => &[paths::SELFTEST_FEATURE],",
         replace: "            Self::SelfTest => &[],",
         breaks: "the self-test image selector compiles the shipped kernel",
@@ -36,7 +36,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 441,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: "            .open_file(paths::KERNEL_ON_ESP)",
         replace: "            .open_file(paths::PROGRAM_ON_ESP)",
         breaks: "image verification reads another payload instead of the kernel",
@@ -80,7 +80,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 518,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: "            let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);",
         replace: "            let sequence = NEXT_RUN_IMAGE.load(Ordering::Relaxed);",
         breaks: "concurrent QEMU builds reserve one boot-image path",
@@ -135,7 +135,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 798,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: r#"pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
     crate::mutate::workspace::prepare_real_directory_tree(
         &target.join(paths::QEMU_RUN_DIRECTORY),
@@ -156,7 +156,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 804,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: r#"    let canonical_parent = crate::mutate::workspace::prepare_real_directory_tree(
         parent,
         "boot-image target directory",
@@ -171,7 +171,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 805,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: r#"        crate::mutate::workspace::publish_staged_file(
             &canonical_parent,
             &staging,
@@ -372,7 +372,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1182,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: "        build(&staging, &mut disk)?;",
         replace: "        let _ignored_construction_failure = build(&staging, &mut disk);",
         breaks: "a failed boot-image construction can publish its partial stage over the complete image",
@@ -720,7 +720,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2060,
-        file: "xtask/src/image/mod.rs",
+        file: "xtask/src/image.rs",
         find: "        let signature = crate::qemu::SELFTEST_IMAGE_MARKER.as_bytes();",
         replace: "        let signature = crate::qemu::SELFTEST_VERDICT_PREFIX.as_bytes();",
         breaks: "an optimizer-split verdict fragment can pose as self-test image identity",

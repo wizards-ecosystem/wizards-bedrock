@@ -432,7 +432,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1366,
-        file: "xtask/src/prose.rs",
+        file: "xtask/src/prose/tests.rs",
         find: "character.is_alphanumeric() || matches!(character, '_' | '-')",
         replace: "character.is_alphanumeric() || character == '_'",
         breaks: "a then-current historical count is mistaken for a current numeric claim",
@@ -511,8 +511,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1599,
-        file: "xtask/src/prose.rs",
-        find: "        Ok(if live { \"READY\" } else { \"CLOSED\" })",
+        file: "xtask/src/prose/tests.rs",
+        find: "    Ok(if live { \"READY\" } else { \"CLOSED\" })",
         replace: "        let _ = live;\n        Ok(\"READY\")",
         breaks: "completed historical handoff owners can never close their disposition",
         reddens: Caught::HostTest {
@@ -522,8 +522,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1600,
-        file: "xtask/src/prose.rs",
-        find: "        Ok(if live { \"READY\" } else { \"CLOSED\" })",
+        file: "xtask/src/prose/tests.rs",
+        find: "    Ok(if live { \"READY\" } else { \"CLOSED\" })",
         replace: "        let _ = live;\n        Ok(\"CLOSED\")",
         breaks: "a historical handoff closes while one finite owner is still live",
         reddens: Caught::HostTest {
@@ -533,9 +533,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1601,
-        file: "xtask/src/prose.rs",
-        find: "                _ => anyhow::bail!(\"historical handoff owner {owner} has invalid state {state}\"),",
-        replace: "                _ => live = true,",
+        file: "xtask/src/prose/tests.rs",
+        find: "            _ => anyhow::bail!(\"historical handoff owner {owner} has invalid state {state}\"),",
+        replace: "            _ => live = true,",
         breaks: "a stopped or invalid historical handoff owner is treated as ordinary live work",
         reddens: Caught::HostTest {
             package: "xtask",
