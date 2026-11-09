@@ -121,7 +121,7 @@ fn seed_frames<const WORDS: usize>(frames: &mut FrameSpace<WORDS>, map: &MemoryM
 #[cfg(feature = "selftest")]
 /// Check that a reserved overlap is never seeded into the frame allocator.
 pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
-    let map = match MemoryMap::try_from_regions([
+    let Ok(map) = MemoryMap::try_from_regions([
         MemoryRegion {
             base: FRAME_SIZE,
             len: FRAME_SIZE * 4,
@@ -132,9 +132,8 @@ pub fn overlapping_allocator_claims_are_arbitrated_for_test() -> bool {
             len: FRAME_SIZE,
             kind: MemoryKind::Reserved,
         },
-    ]) {
-        Ok(map) => map,
-        Err(_) => return false,
+    ]) else {
+        return false;
     };
     let mut frames = FrameSpace::<1>::new();
     let ignored = seed_frames(&mut frames, &map);

@@ -2672,7 +2672,7 @@ impl AddressSpace {
                 Some(_) => {}
             }
         }
-        if self.roots_are_active(roots, cpu::page_table_base()) {
+        if Self::roots_are_active(roots, cpu::page_table_base()) {
             return Err(ReclaimFailure {
                 reason: ReclaimError::Active(cpu::page_table_base()),
                 released,
@@ -2727,7 +2727,7 @@ impl AddressSpace {
         live
     }
 
-    fn roots_are_active(&self, roots: AddressSpaceRoots, current_root: Paddr) -> bool {
+    fn roots_are_active(roots: AddressSpaceRoots, current_root: Paddr) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
     }
 
@@ -2740,7 +2740,7 @@ impl AddressSpace {
     #[cfg(feature = "selftest")]
     pub fn permanent_root_blocks_reclaim_for_test(&self) -> bool {
         self.roots
-            .is_some_and(|roots| self.roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
+            .is_some_and(|roots| Self::roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
     }
 
     /// Whether the device ledger independently blocks table reclaim.
@@ -2842,10 +2842,9 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
-        if self
-            .roots
-            .is_some_and(|roots| self.bound || self.roots_are_active(roots, cpu::page_table_base()))
-            && !self.shared.is_empty()
+        if self.roots.is_some_and(|roots| {
+            self.bound || Self::roots_are_active(roots, cpu::page_table_base())
+        }) && !self.shared.is_empty()
         {
             let keepalives = core::mem::take(&mut self.shared);
             core::mem::forget(keepalives);
