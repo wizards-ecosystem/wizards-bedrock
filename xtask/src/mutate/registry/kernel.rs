@@ -995,7 +995,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             if ready() {",
         replace: "            let mut waiters = self.waiters.lock(context);
             if false && ready() {",
-        breaks: "a waiter blocks without rereading its condition after registration",
+        breaks: "a waiter registers and blocks without checking its condition under the queue lock",
         reddens: Caught::Check("a waiter rereads its condition before blocking"),
     },
     Mutation {
