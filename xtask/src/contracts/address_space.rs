@@ -359,13 +359,13 @@ fn speculative_and_callback_authority_does_not_regrow() {
         ("kernel/src/fs.rs", "fn with_volume"),
         ("kernel/src/nvme.rs", "fn with_controller"),
         ("kernel/src/tmpfs.rs", "fn walk("),
-        ("libs/acpi-tables/src/lib.rs", "pub fn checksum_is_valid"),
-        ("libs/acpi-tables/src/lib.rs", "pub fn fix_checksum"),
+        ("libs/acpi-tables/src", "pub fn checksum_is_valid"),
+        ("libs/acpi-tables/src", "pub fn fix_checksum"),
         ("libs/fat32/src/lib.rs", "pub const fn decode_entry"),
         ("libs/fat32/src/lib.rs", "pub const fn decode_slot"),
         ("libs/fat32/src/lib.rs", "pub const fn sector_of"),
         ("libs/fat32/src/lib.rs", "pub const fn table_position"),
-        ("libs/memory-map/src/lib.rs", "pub fn allocatable_bytes"),
+        ("libs/memory-map/src", "pub fn allocatable_bytes"),
         ("libs/path-walk/src/lib.rs", "pub fn is_a_name"),
         ("libs/pci-config/src/lib.rs", "pub const fn io_window_size"),
         ("libs/stack-layout/src/lib.rs", "fn stack_overlaps"),
@@ -375,12 +375,21 @@ fn speculative_and_callback_authority_does_not_regrow() {
     ];
 
     for (relative, surface) in forbidden {
-        let source = std::fs::read_to_string(paths.root().join(relative))
-            .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
-        assert!(
-            !source.contains(surface),
-            "{relative} regrew speculative/callback surface {surface:?}"
-        );
+        let root = paths.root().join(relative);
+        let sources = if root.is_dir() {
+            rust_sources_below(&root)
+        } else {
+            vec![root]
+        };
+        for path in sources {
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+            assert!(
+                !source.contains(surface),
+                "{} regrew speculative/callback surface {surface:?}",
+                path.display()
+            );
+        }
     }
 }
 
