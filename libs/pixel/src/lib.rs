@@ -53,6 +53,7 @@ impl Rgb {
     }
 
     /// Linear blend from `self` towards `other` by `intensity / 255`.
+    #[must_use]
     pub const fn blend(self, other: Self, intensity: u8) -> Self {
         Self {
             red: mix(self.red, other.red, intensity),

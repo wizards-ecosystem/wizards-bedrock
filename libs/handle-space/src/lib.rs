@@ -139,6 +139,7 @@ impl Slot {
     /// The next use of this slot, wrapping when the counter is exhausted.
     ///
     /// Saturation would make the last generation permanently reusable.
+    #[must_use]
     pub const fn reused(self) -> Self {
         Self {
             index: self.index,
