@@ -724,7 +724,15 @@ fn nvme_cleanup_and_bus_master_authority_precede_the_enable_write() {
         .parent()
         .expect("xtask sits below the workspace root");
     let source = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/nvme.rs")).expect("kernel nvme source"),
+        &[
+            "kernel/src/nvme/io.rs",
+            "kernel/src/nvme/preparation.rs",
+            "kernel/src/nvme/queues.rs",
+            "kernel/src/nvme/selftest.rs",
+            "kernel/src/nvme.rs",
+        ]
+        .map(|relative| std::fs::read_to_string(root.join(relative)).expect("kernel nvme source"))
+        .concat(),
     );
     let finish = source
         .split_once("fn finish_preparation(")

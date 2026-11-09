@@ -379,7 +379,7 @@ fn speculative_and_callback_authority_does_not_regrow() {
         let sources = if root.is_dir() {
             rust_sources_below(&root)
         } else {
-            vec![root]
+            super::module_sources(&root)
         };
         for path in sources {
             let source = std::fs::read_to_string(&path)

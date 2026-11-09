@@ -276,6 +276,29 @@ fn source_tree(directory: &std::path::Path) -> String {
         .collect()
 }
 
+fn module_sources(file: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let children = file.with_extension("");
+    let mut sources = vec![file.to_path_buf()];
+    if children.is_dir() {
+        sources.extend(rust_sources_below(&children));
+    }
+    sources
+}
+
+fn module_syntax(file: &std::path::Path) -> syn::File {
+    let mut sources = module_sources(file).into_iter().map(|path| {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()))
+    });
+    let mut syntax = sources.next().expect("a module has its root file");
+    for child in sources {
+        syntax.items.extend(child.items);
+    }
+    syntax
+}
+
 fn is_named_path(expression: &Expr, expected: &str) -> bool {
     matches!(expression, Expr::Path(path)
         if path.qself.is_none()

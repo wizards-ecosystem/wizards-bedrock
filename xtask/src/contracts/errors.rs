@@ -227,12 +227,15 @@ fn known_fallible_results_are_not_discarded() {
     ];
 
     for (relative, discarded) in forbidden {
-        let source = std::fs::read_to_string(paths.root().join(relative))
-            .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
-        assert!(
-            !source.contains(discarded),
-            "{relative} silently discards {discarded:?}"
-        );
+        for path in super::module_sources(&paths.root().join(relative)) {
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+            assert!(
+                !source.contains(discarded),
+                "{} silently discards {discarded:?}",
+                path.display()
+            );
+        }
     }
 
     for source in rust_sources_below(&paths.root().join("kernel/src")) {

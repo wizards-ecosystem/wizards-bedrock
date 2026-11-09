@@ -310,10 +310,7 @@ impl<'ast> Visit<'ast> for ObserverUses {
 }
 
 fn require_selftest_observers(root: &std::path::Path, relative: &str, expected: &[(&str, usize)]) {
-    let source = std::fs::read_to_string(root.join(relative))
-        .unwrap_or_else(|error| panic!("read {relative}: {error}"));
-    let syntax =
-        syn::parse_file(&source).unwrap_or_else(|error| panic!("parse {relative}: {error}"));
+    let syntax = super::module_syntax(&root.join(relative));
     let mut uses = ObserverUses::new(expected);
     uses.visit_file(&syntax);
 
@@ -831,13 +828,13 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
         (
             "kernel/src/nvme.rs",
             &[
-                ("BME_PRECEDING_CC", 3),
-                ("BME_PRECEDING_CSTS", 3),
-                ("REFUSED_BME_PRECEDING_CC", 3),
-                ("REFUSED_BME_PRECEDING_CSTS", 3),
-                ("START_ATTEMPTS", 3),
-                ("SUBMISSION_DOORBELLS", 3),
-                ("COMMAND_HELD", 4),
+                ("BME_PRECEDING_CC", 4),
+                ("BME_PRECEDING_CSTS", 4),
+                ("REFUSED_BME_PRECEDING_CC", 4),
+                ("REFUSED_BME_PRECEDING_CSTS", 4),
+                ("START_ATTEMPTS", 4),
+                ("SUBMISSION_DOORBELLS", 4),
+                ("COMMAND_HELD", 5),
                 ("published_commands", 5),
                 ("intercepted_read_submissions", 5),
                 ("intercepted_io_queue_creations", 5),
@@ -849,9 +846,9 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("STACK_CANDIDATES", 3),
                 ("STACK_MEASUREMENTS", 3),
                 ("STACK_MEASUREMENT_VALID", 3),
-                ("observe_candidate_stack", 3),
-                ("CandidateStackMeasurement", 4),
-                ("finish_candidate_stack", 1),
+                ("observe_candidate_stack", 4),
+                ("CandidateStackMeasurement", 5),
+                ("finish_candidate_stack", 2),
             ],
         ),
         (

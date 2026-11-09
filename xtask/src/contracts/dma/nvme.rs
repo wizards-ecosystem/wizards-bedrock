@@ -4,8 +4,8 @@ use syn::{
 };
 
 use super::{
-    by_value_named_input, exact_derives, field_chain_is, function, method, parse, path_ends,
-    path_expression_is,
+    by_value_named_input, exact_derives, field_chain_is, function, method, parse, parse_module,
+    path_ends, path_expression_is,
 };
 
 #[derive(Default)]
@@ -211,7 +211,7 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
     device.visit_block(&device_admission.block);
     assert_eq!(device.hardware_admissions, 1);
 
-    let kernel_nvme = parse("kernel/src/nvme.rs");
+    let kernel_nvme = parse_module("kernel/src/nvme.rs");
     assert!(
         !kernel_nvme
             .items
@@ -238,7 +238,7 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
 
 #[test]
 fn a_partial_queue_mapping_rolls_back_the_submission_queue() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let mapping = method(&syntax, "QueuePair", "map_into").expect("queue mapping boundary");
 
     struct SubmissionRollbacks(usize);
@@ -266,7 +266,7 @@ fn a_partial_queue_mapping_rolls_back_the_submission_queue() {
 
 #[test]
 fn uncertain_io_queue_mapping_stays_reachable_for_retirement() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let creation =
         method(&syntax, "Controller", "create_io_queues").expect("I/O queue creation boundary");
 
@@ -299,7 +299,7 @@ fn uncertain_io_queue_mapping_stays_reachable_for_retirement() {
 
 #[test]
 fn queue_mapping_state_conserves_every_reachable_segment() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let mapping = method(&syntax, "QueuePair", "map_into").expect("queue map boundary");
     let unmapping = method(&syntax, "QueuePair", "unmap_from").expect("queue unmap boundary");
     let retention =
