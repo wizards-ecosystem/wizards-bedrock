@@ -270,7 +270,7 @@ fn require_proof(transcript: &str) -> Result<()> {
         .lines()
         .find(|line| line.trim_start().starts_with("#0"))
         .context("GDB produced no frame zero")?;
-    if !frame.contains("wizard_kernel::kmain") || !frame.contains("wost/src/boot/mod.rs") {
+    if !frame.contains("wizard_kernel::kmain") || !frame.contains("wost/src/boot.rs") {
         bail!("GDB frame zero was not the symbolized kernel entry: {frame}");
     }
     Ok(())

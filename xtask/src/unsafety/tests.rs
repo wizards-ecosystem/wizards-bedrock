@@ -90,7 +90,7 @@ const AUDITED: &[AuditRecord] = &[
         "c0eabeea6f0a223d1b095c82b3511658fa82090757e09f55c22ee1bdc5a211b4",
     ),
     (
-        "wost/src/boot/mod.rs",
+        "wost/src/boot.rs",
         0,
         1,
         "ef4fd0dcbf2c1d6ca31501b4d60ed3d7386fbce18bea96b3c672d47ecd7556c1",
@@ -108,7 +108,7 @@ const AUDITED: &[AuditRecord] = &[
         "b2d97609f9612aced46b2c9d0becb825b12cb202fbe0357bdefc5c708a65a741",
     ),
     (
-        "wost/src/mm/mod.rs",
+        "wost/src/mm.rs",
         17,
         3,
         "66e17b25a7c89df8c26342a8f97f64cf1d974b7b6310aeba69805307c7c7b470",

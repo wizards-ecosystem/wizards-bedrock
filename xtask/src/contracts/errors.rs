@@ -220,9 +220,9 @@ fn known_fallible_results_are_not_discarded() {
             "kernel/src/thread.rs",
             "let _ = IDLE_STATE.compare_exchange",
         ),
-        ("wost/src/boot/mod.rs", "let _ = self.region.write_u32"),
-        ("wost/src/boot/mod.rs", "let _ = self.region.fill_u32"),
-        ("wost/src/boot/mod.rs", ".unwrap_or(0)"),
+        ("wost/src/boot.rs", "let _ = self.region.write_u32"),
+        ("wost/src/boot.rs", "let _ = self.region.fill_u32"),
+        ("wost/src/boot.rs", ".unwrap_or(0)"),
         ("kernel/src/user.rs", ".saturating_add(abandoned)"),
     ];
 
@@ -254,71 +254,71 @@ fn fallible_operation_bools_stay_must_use() {
     let paths = Paths::discover().expect("workspace paths");
     let required = [
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused firmware read copied no bytes\"]\n    pub fn read",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused frame fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused frame clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused segment fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused segment clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused segment write changed no bytes\"]\n    pub fn write_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused DMA-segment fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused DMA-segment clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused DMA-segment write changed no bytes\"]\n    pub fn write_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused DMA-segment read copied no bytes\"]\n    pub fn read_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused shared-memory write changed no bytes\"]\n    pub fn write_volatile_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused shared-memory read copied no bytes\"]\n    pub fn read_volatile_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused ring-payload write changed no bytes\"]\n    pub fn write_payload_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused ring-payload read copied no bytes\"]\n    pub fn read_payload_at",
         ),
         (
-            "wost/src/mm/mod.rs",
+            "wost/src/mm.rs",
             "#[must_use = \"a refused shared-memory publication stored no index\"]\n    pub fn store_release_u32",
         ),
         (
-            "wost/src/boot/mod.rs",
+            "wost/src/boot.rs",
             "#[must_use = \"a refused framebuffer shadow was not attached\"]\n    pub fn attach_back_buffer",
         ),
         (

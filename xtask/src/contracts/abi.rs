@@ -1539,7 +1539,7 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
         &std::fs::read_to_string(root.join("wost/src/arch/x86_64/paging.rs")).expect("paging.rs"),
     );
     let memory = rust_without_comments(
-        &std::fs::read_to_string(root.join("wost/src/mm/mod.rs")).expect("mm/mod.rs"),
+        &std::fs::read_to_string(root.join("wost/src/mm.rs")).expect("mm.rs"),
     );
     assert_eq!(remainder("sys_vm_unmap"), "PARTIAL");
     assert_eq!(remainder("sys_anon_free"), "PARTIAL");

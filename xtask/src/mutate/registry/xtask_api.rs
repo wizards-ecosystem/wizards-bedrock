@@ -1866,8 +1866,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1402,
         file: "xtask/src/api/entry.rs",
-        find: "                node.macro_declaration\n                    && node.symbol == \"boot::entry\"\n                    && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
-        replace: "                node.macro_declaration\n                    || node.symbol == \"boot::entry\"\n                        && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
+        find: "                node.macro_declaration\n                    && node.symbol == \"boot::entry\"\n                    && files[node.file].relative == Path::new(\"wost/src/boot.rs\")",
+        replace: "                node.macro_declaration\n                    || node.symbol == \"boot::entry\"\n                        && files[node.file].relative == Path::new(\"wost/src/boot.rs\")",
         breaks: "a same-symbol item without macro-declaration identity becomes the entry macro",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2229,7 +2229,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2365,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\"wost/src/mm/mod.rs\", \"mm::DmaSegment\"),\n",
+        find: "    (\"wost/src/mm.rs\", \"mm::DmaSegment\"),\n",
         replace: "",
         breaks: "the reviewed DmaSegment Drop boundary is absent from API reachability",
         reddens: Caught::HostTest {
@@ -2240,7 +2240,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2366,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm/mod.rs\",\n        owner: \"mm::DmaSegment\",\n        member: \"from\",\n        implemented_trait: Some(\"From\"),\n        produced: \"mm::DmaSegment\",\n    },\n",
+        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm.rs\",\n        owner: \"mm::DmaSegment\",\n        member: \"from\",\n        implemented_trait: Some(\"From\"),\n        produced: \"mm::DmaSegment\",\n    },\n",
         replace: "",
         breaks: "the exact DmaSegment owned producer no longer activates its reviewed Drop",
         reddens: Caught::HostTest {
@@ -2251,7 +2251,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2367,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\"wost/src/mm/mod.rs\", \"mm::PublishedIommuTable\"),\n",
+        find: "    (\"wost/src/mm.rs\", \"mm::PublishedIommuTable\"),\n",
         replace: "",
         breaks: "the reviewed PublishedIommuTable Drop boundary is absent from API reachability",
         reddens: Caught::HostTest {
@@ -2262,7 +2262,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2368,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm/mod.rs\",\n        owner: \"mm::PublishedIommuTable\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"mm::PublishedIommuTable\",\n    },\n",
+        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm.rs\",\n        owner: \"mm::PublishedIommuTable\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"mm::PublishedIommuTable\",\n    },\n",
         replace: "",
         breaks: "the exact PublishedIommuTable owned producer no longer activates its reviewed Drop",
         reddens: Caught::HostTest {

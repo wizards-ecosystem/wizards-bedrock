@@ -146,7 +146,7 @@ fn cross_crate_entry_diagnostics_require_the_exact_compiler_origin_bridge() {
     std::fs::write(root.join("wost/src/lib.rs"), "pub mod boot;\n")
         .expect("entry fixture wost root");
     std::fs::write(
-        root.join("wost/src/boot/mod.rs"),
+        root.join("wost/src/boot.rs"),
         validated_entry_fixture_source(),
     )
     .expect("entry fixture macro source");
@@ -527,7 +527,7 @@ fn wost_entry_contract_binds_the_handler_to_the_linker_entry() {
 
     let root = fixture("fn main() {}\n");
     std::fs::create_dir_all(root.join("wost/src/boot")).expect("entry fixture directory");
-    let source = include_str!("../../../../wost/src/boot/mod.rs");
+    let source = include_str!("../../../../wost/src/boot.rs");
     let with_decoy = source.replacen(
         "#[macro_export]\nmacro_rules! entry {",
         "macro_rules! unrelated { () => {}; }\n\n#[macro_export]\nmacro_rules! entry {",
@@ -537,14 +537,14 @@ fn wost_entry_contract_binds_the_handler_to_the_linker_entry() {
         source, with_decoy,
         "unrelated macro insertion did not apply"
     );
-    std::fs::write(root.join("wost/src/boot/mod.rs"), with_decoy)
+    std::fs::write(root.join("wost/src/boot.rs"), with_decoy)
         .expect("entry fixture with unrelated macro");
     validate_wost_entry_contract(&root).expect("an unrelated macro is not the entry contract");
 
     let reject = |find: &str, replace: &str, failure: &str, expected: &str| {
         let changed = source.replacen(find, replace, 1);
         assert_ne!(source, changed, "{failure}: mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), changed)
+        std::fs::write(root.join("wost/src/boot.rs"), changed)
             .expect("mutated entry-contract fixture");
         let error = validate_wost_entry_contract(&root).expect_err(failure);
         let report = format!("{error:#}");
@@ -608,7 +608,7 @@ fn exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens() 
     std::fs::create_dir_all(root.join("kernel/src")).expect("kernel fixture directory");
     std::fs::write(root.join("wost/src/lib.rs"), "pub mod boot;\n").expect("wost fixture root");
     std::fs::write(
-        root.join("wost/src/boot/mod.rs"),
+        root.join("wost/src/boot.rs"),
         format!(
             "{}\npub fn foundation() {{}}\n",
             validated_entry_fixture_source()

@@ -39,7 +39,7 @@ pub fn construct() {
     .expect("drop fixture constructors");
     std::fs::create_dir_all(root.join("wost/src/mm")).expect("drop fixture module");
     std::fs::write(
-        root.join("wost/src/mm/mod.rs"),
+        root.join("wost/src/mm.rs"),
         r#"pub fn dormant_drop() {}
 pub fn type_only_drop() {}
 pub fn static_drop() {}
@@ -190,7 +190,7 @@ pub extern "C" fn runtime() { mm::construct(); }
     )
     .expect("USegment producer fixture root");
     std::fs::write(
-        root.join("wost/src/mm/mod.rs"),
+        root.join("wost/src/mm.rs"),
         r#"pub fn drop_body_api() {}
 pub struct Segment;
 pub struct USegment;
@@ -259,7 +259,7 @@ pub extern "C" fn runtime() { mm::exercise(); }
                 format!("let _ = core::mem::size_of::<{owner}>();")
             };
             std::fs::write(
-                root.join("wost/src/mm/mod.rs"),
+                root.join("wost/src/mm.rs"),
                 format!("pub fn drop_body_api() {{}}\n{definition}\nimpl core::ops::Drop for {owner} {{ fn drop(&mut self) {{ drop_body_api(); }} }}\npub fn exercise() {{ {body} }}\n"),
             ).expect("DMA Drop fixture source");
             let inventory = Inventory::discover(&root).expect("reviewed DMA Drop inventory");

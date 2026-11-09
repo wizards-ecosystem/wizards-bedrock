@@ -54,7 +54,7 @@ const FRAMES_PER_WORD: usize = u64::BITS as usize;
 ///
 /// The const argument a [`FrameSpace`] takes: `FrameSpace<{ words_for(16 << 30) }>`
 /// covers 16 GiB and occupies 1 MiB of `.bss`, two bits per frame — two
-/// arrays of 65,536 `u64`, which is what `wost/src/mm/mod.rs` calls "one
+/// arrays of 65,536 `u64`, which is what `wost/src/mm.rs` calls "one
 /// megabyte" and this line called two.
 pub const fn words_for(bytes: u64) -> usize {
     (bytes.div_ceil(FRAME_SIZE) as usize).div_ceil(FRAMES_PER_WORD)

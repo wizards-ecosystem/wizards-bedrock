@@ -568,7 +568,7 @@ fn expression_is_ok_unit(expression: &Expr) -> bool {
 fn framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit() {
     let paths = Paths::discover().expect("workspace paths");
 
-    let boot_relative = "wost/src/boot/mod.rs";
+    let boot_relative = "wost/src/boot.rs";
     let boot_source = std::fs::read_to_string(paths.root().join(boot_relative))
         .unwrap_or_else(|error| panic!("reading {boot_relative}: {error}"));
     let boot = syn::parse_file(&boot_source)

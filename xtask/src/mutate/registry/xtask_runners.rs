@@ -235,8 +235,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 540,
         file: "xtask/src/debugger.rs",
-        find: "    if !frame.contains(\"wizard_kernel::kmain\") || !frame.contains(\"wost/src/boot/mod.rs\") {",
-        replace: "    if !frame.contains(\"wizard_kernel::kmain\") && !frame.contains(\"wost/src/boot/mod.rs\") {",
+        find: "    if !frame.contains(\"wizard_kernel::kmain\") || !frame.contains(\"wost/src/boot.rs\") {",
+        replace: "    if !frame.contains(\"wizard_kernel::kmain\") && !frame.contains(\"wost/src/boot.rs\") {",
         breaks: "a backtrace may omit either the entry symbol or its source location",
         reddens: Caught::HostTest {
             package: "xtask",
