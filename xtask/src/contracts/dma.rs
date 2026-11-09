@@ -27,6 +27,20 @@ fn parse(relative: &str) -> syn::File {
     syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"))
 }
 
+fn parse_module(relative: &str) -> syn::File {
+    super::module_syntax(&root().join(relative))
+}
+
+fn module_source(relative: &str) -> String {
+    super::module_sources(&root().join(relative))
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+        })
+        .collect()
+}
+
 fn path_ends(path: &syn::Path, names: &[&str]) -> bool {
     path.segments.len() >= names.len()
         && path

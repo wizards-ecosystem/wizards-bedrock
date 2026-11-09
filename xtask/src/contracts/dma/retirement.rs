@@ -5,7 +5,7 @@ use syn::{
 
 use super::{
     authority_alias_count, by_value_named_input, call_is, exact_derives, field_chain_is, function,
-    implemented_method, member_is, method, parse, path_ends, path_expression_is,
+    implemented_method, member_is, method, parse, parse_module, path_ends, path_expression_is,
 };
 
 fn dereferenced_path_is(expression: &Expr, names: &[&str]) -> bool {
@@ -918,7 +918,7 @@ fn readiness_poll_is_exact(function: &ItemFn) -> bool {
 
 #[test]
 fn controller_stop_evidence_has_one_hardware_mint() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let evidence = syntax
         .items
         .iter()
@@ -1098,7 +1098,7 @@ fn controller_stop_evidence_has_one_hardware_mint() {
 
 #[test]
 fn rejected_controller_retirement_fences_and_unmaps_every_queue() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let retirement = method(&syntax, "Controller", "retire").expect("controller retirement");
 
     #[derive(Default)]
@@ -1219,7 +1219,7 @@ fn rejected_controller_retirement_fences_and_unmaps_every_queue() {
 
 #[test]
 fn dma_disposition_cannot_move_between_controllers() {
-    let syntax = parse("kernel/src/nvme.rs");
+    let syntax = parse_module("kernel/src/nvme.rs");
     let disposition = syntax
         .items
         .iter()
@@ -1297,7 +1297,7 @@ fn dma_disposition_cannot_move_between_controllers() {
 
 #[test]
 fn proven_stop_consumes_evidence_before_recycling() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     assert!(method(&kernel, "DmaState", "quiesce").is_none());
     let quiesce = method(&kernel, "ControllerStopped", "quiesce")
         .expect("stop evidence must own the quiescence transition");
@@ -1376,7 +1376,7 @@ fn proven_stop_consumes_evidence_before_recycling() {
 
 #[test]
 fn unproven_stop_retains_every_reachable_run() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     let retain = method(&kernel, "DmaState", "retain_unquiesced")
         .expect("conservative retention transition");
     assert!(disposition_transition_is_exact(
@@ -1430,7 +1430,7 @@ fn unproven_stop_retains_every_reachable_run() {
 
 #[test]
 fn controller_retirement_returns_every_cleanup_owner() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     let retirement = kernel
         .items
         .iter()
@@ -1615,7 +1615,7 @@ fn controller_retirement_returns_every_cleanup_owner() {
 
 #[test]
 fn mapped_bar_cleanup_quarantine_cannot_be_reported_retired() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     let retire = function(&kernel, "retire_disabled");
     let [Stmt::Expr(Expr::Match(outcome), None)] = retire.block.stmts.as_slice() else {
         panic!("disabled preparation retirement must classify the mapped-BAR outcome");
@@ -1891,7 +1891,7 @@ fn bar_admission_quarantine_keeps_every_exact_owner() {
 
 #[test]
 fn failed_stop_retention_and_retirement_sinks_are_exact() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     let stop_dma = method(&kernel, "Controller", "stop_dma").expect("controller stop boundary");
     assert!(stop_dma_is_exact(stop_dma));
 
@@ -1905,6 +1905,6 @@ fn failed_stop_retention_and_retirement_sinks_are_exact() {
 
 #[test]
 fn controller_stop_waits_for_the_requested_hardware_state() {
-    let kernel = parse("kernel/src/nvme.rs");
+    let kernel = parse_module("kernel/src/nvme.rs");
     assert!(readiness_poll_is_exact(function(&kernel, "wait_for_ready")));
 }

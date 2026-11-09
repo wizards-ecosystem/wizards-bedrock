@@ -3,7 +3,7 @@ use super::{Caught, Mutation};
 pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 17,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/preparation.rs",
         find: "    match disabled.access(|registers| write(registers, offset, value)) {",
         replace: "    match disabled.access(|registers| {\n        #[cfg(debug_assertions)]\n        let stack_pressure = [0u8; 3072];\n        #[cfg(not(debug_assertions))]\n        let stack_pressure = [0u8; 16 * 1024];\n        core::hint::black_box(&stack_pressure);\n        let result = write(registers, offset, value);\n        core::hint::black_box(&stack_pressure);\n        result\n    }) {",
         breaks: "NVMe preparation consumes the two-page boot-stack safety margin",
@@ -66,7 +66,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // the submission interceptor catches it before any doorbell.
     Mutation {
         id: 247,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        let request = self.validate_read(lba, blocks, buffer_bytes)?;",
         replace: "        let request = self\n            .validate_read(lba, blocks, buffer_bytes)\n            .or_else(|_| {\n                ReadTransfer::new(\n                    0,\n                    1,\n                    self.blocks,\n                    u64::from(self.block_bytes),\n                    u64::MAX,\n                )\n                .map_err(BringUpError::InvalidTransfer)\n            })?;",
         breaks: "raw nvme reads cannot bypass controller-bound validation",
@@ -76,7 +76,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // self-test queue interceptor catches the bypass before allocation or MMIO.
     Mutation {
         id: 257,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        let namespace = Namespace::parse(identify).map_err(BringUpError::InvalidNamespace)?;",
         replace: "        let namespace = Namespace::parse(identify)\n            .or_else(|_| {\n                let mut accepted = [0u8; NAMESPACE_IDENTIFY_BYTES];\n                accepted[0] = 1;\n                accepted[128 + 2] = 9;\n                Namespace::parse(&accepted)\n            })\n            .map_err(BringUpError::InvalidNamespace)?;",
         breaks: "invalid namespace data cannot bypass io queue admission",
@@ -86,7 +86,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // must issue more commands than the queue has entries.
     Mutation {
         id: 260,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "                if completion_head == 0 {
                     queue.phase = !queue.phase;
                 }",
@@ -163,7 +163,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // Repair follows the red observation so the outstanding command remains observable.
     Mutation {
         id: 300,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)",
         replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
         breaks: "a command timeout settles dma before returning",
@@ -172,7 +172,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // Publish queue addresses before moving them into their cleanup owner.
     Mutation {
         id: 333,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/preparation.rs",
         find: "    // Cleanup owns every published queue address before the enable write.
     let controller = Controller {",
         replace: "    let _ = write(&mut registers, register::CC, cc);
@@ -185,7 +185,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 532,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        self.read_blocks(0, blocks, into).ok()?;",
         replace: "        self.read_blocks(self.blocks, blocks, into).ok()?;",
         breaks: "the storage baseline never submits inside the namespace",
@@ -193,7 +193,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 574,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "            self.stop_dma(Some(data));",
         replace: "            let _ = self.fail_submitted(BringUpError::NotReady, Some(data));",
         breaks: "NVMe self-test repair hides cleanup behind a guaranteed error",
@@ -398,7 +398,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 976,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        if self.dma.must_retain() {\n            self.admin.retain();\n            if let Some(queue) = self.io.as_mut() {\n                queue.retain();\n            }\n            if let Some(segment) = data {\n                segment.retain();\n            }\n        }",
         replace: "",
         breaks: "a failed controller stop retains none of its reachable DMA runs",
@@ -409,9 +409,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 977,
-        file: "kernel/src/nvme.rs",
-        find: "    fn retain(&mut self) {\n        self.submission.retain();\n        self.completion.retain();\n    }",
-        replace: "    fn retain(&mut self) {\n        self.submission.retain();\n    }",
+        file: "kernel/src/nvme/queues.rs",
+        find: "fn retain(&mut self) {\n        self.submission.retain();\n        self.completion.retain();\n    }",
+        replace: "fn retain(&mut self) {\n        self.submission.retain();\n    }",
         breaks: "failed controller cleanup recycles the completion queue while hardware may reach it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -420,7 +420,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 978,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        if !self.dma.is_quiesced() {\n            return quarantine_controller(self);\n        }",
         replace: "        if !self.dma.is_quiesced() {\n            return ControllerRetirement::Retired;\n        }",
         breaks: "an unverified controller stop drops its complete quarantine owner",
@@ -431,7 +431,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 979,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/preparation.rs",
         find: "        mem::MappedPciBarRetirement::Quarantined => PrepareFailure::memory_quarantine(reason),",
         replace: "        mem::MappedPciBarRetirement::Quarantined => PrepareFailure::Retired(reason),",
         breaks: "memory-owned BAR quarantine is misreported as successful retirement",
@@ -541,7 +541,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1590,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/preparation.rs",
         find: "fn finish_preparation(\n    registers: MappedBar,\n    capabilities: Capabilities,\n    admin: QueuePair,\n    capacity: Capacity,\n    #[cfg(feature = \"selftest\")] observed_window: u64,\n) -> PrepareOutcome {\n",
         replace: "#[inline(never)]\nfn finish_preparation(\n    registers: MappedBar,\n    capabilities: Capabilities,\n    admin: QueuePair,\n    capacity: Capacity,\n    #[cfg(feature = \"selftest\")] observed_window: u64,\n) -> PrepareOutcome {\n    #[cfg(debug_assertions)]\n    let stack_pressure = [0u8; 8 * 1024];\n    #[cfg(not(debug_assertions))]\n    let stack_pressure = [0u8; 16 * 1024];\n    core::hint::black_box(&stack_pressure);\n",
         breaks: "a frame below preparation's register accesses consumes the boot-stack margin unseen by the live-leaf meter",
@@ -560,7 +560,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1643,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "        if !completion_mapped {\n            if isolation.unmap_segment(&mut self.submission).is_ok() {\n                self.submission_mapped = false;\n            }\n            return false;\n        }",
         replace: "        if !completion_mapped {\n            return false;\n        }",
         breaks: "a completion-queue mapping refusal leaves the submission queue reachable",
@@ -571,7 +571,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1653,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        if !self.unmap_queues() {\n            warn!(\"nvme: a queue mapping stayed reachable during retirement\");\n            return quarantine_controller(self);\n        }",
         replace: "",
         breaks: "clean controller retirement drops queue owners without invalidating their domain leaves",
@@ -582,7 +582,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1654,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "        self.retain_mapped();",
         replace: "        let _still_mapped = self.has_mappings();",
         breaks: "an accidentally dropped mapped queue can recycle device-reachable frames",
@@ -593,7 +593,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1657,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "        self.io = Some(pair);",
         replace: "        let _orphaned_queue_owner = pair;",
         breaks: "an uncertain partial I/O queue map falls out of the controller retirement inventory",
@@ -604,7 +604,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1660,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "            Ok(()) => self.submission_mapped = true,",
         replace: "            Ok(()) => {}",
         breaks: "a successfully mapped submission queue is absent from conservative teardown state",
@@ -615,7 +615,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1661,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "        if self.submission_mapped {\n            self.submission.retain();\n        }",
         replace: "        let _submission_may_be_mapped = self.submission_mapped;",
         breaks: "the mapped-queue drop backstop omits a conservatively reachable submission segment",
@@ -626,7 +626,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1662,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "        if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {\n            self.submission_mapped = false;\n        }",
         replace: "        if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {\n            self.submission_mapped = true;\n        }",
         breaks: "a successfully invalidated submission queue stays marked live and forces false quarantine",
@@ -637,7 +637,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1792,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/io.rs",
         find: "            && isolation.map_segment_for_device_write(buffer).is_err()",
         replace: "            && isolation.map_segment(buffer).is_err()",
         breaks: "an NVMe read buffer gives the device read access to host residue",
@@ -648,7 +648,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1798,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "map_segment_for_device_read(&mut self.submission)",
         replace: "map_segment(&mut self.submission)",
         breaks: "the NVMe submission queue grants the device write access",
@@ -659,7 +659,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1799,
-        file: "kernel/src/nvme.rs",
+        file: "kernel/src/nvme/queues.rs",
         find: "map_segment_for_device_write(&mut self.completion)",
         replace: "map_segment(&mut self.completion)",
         breaks: "the NVMe completion queue grants the device read access",

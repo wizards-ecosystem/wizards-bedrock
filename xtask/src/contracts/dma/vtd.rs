@@ -6,7 +6,8 @@ use crate::test_support::function_after;
 
 use super::{
     CallNames, ReferencedPaths, call_is, call_position, field_chain_is, function,
-    integer_literal_is, member_is, method, parse, path_ends, path_expression_is, source,
+    integer_literal_is, member_is, method, module_source, parse, path_ends, path_expression_is,
+    source,
 };
 
 fn bool_literal_is(expression: &Expr, value: bool) -> bool {
@@ -366,7 +367,7 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             && path_expression_is(&pte.args[2], &["DEVICE_WRITES"]),
         "map_page's leaf publication widened or changed identity"
     );
-    let nvme = source("kernel/src/nvme.rs");
+    let nvme = module_source("kernel/src/nvme.rs");
     for mapping in [
         "map_segment_for_device_read(&mut self.submission)",
         "map_segment_for_device_write(&mut self.completion)",

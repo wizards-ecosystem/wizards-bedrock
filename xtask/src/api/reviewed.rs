@@ -2,7 +2,7 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("kernel/src/handle.rs", "handle::HandleTable"),
     ("kernel/src/handle.rs", "handle::SlotReservation"),
     ("kernel/src/nvme.rs", "nvme::Controller"),
-    ("kernel/src/nvme.rs", "nvme::QueuePair"),
+    ("kernel/src/nvme/queues.rs", "nvme::queues::QueuePair"),
     ("kernel/src/object.rs", "object::Channel"),
     ("kernel/src/queue.rs", "queue::Queue"),
     ("kernel/src/user.rs", "user::ProcessConstruction"),
@@ -115,11 +115,11 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "handle::HandleTable",
     },
     ReviewedDropProducer {
-        relative: "kernel/src/nvme.rs",
-        owner: "nvme::QueuePair",
+        relative: "kernel/src/nvme/queues.rs",
+        owner: "nvme::queues::QueuePair",
         member: "new",
         implemented_trait: None,
-        produced: "nvme::QueuePair",
+        produced: "nvme::queues::QueuePair",
     },
     ReviewedDropProducer {
         relative: "kernel/src/queue.rs",

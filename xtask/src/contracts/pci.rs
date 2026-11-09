@@ -1173,9 +1173,7 @@ fn pci_bar_mapping_requires_exact_linear_authority() {
         "PCI BAR admission used a raw mapping door"
     );
 
-    let nvme_source =
-        std::fs::read_to_string(paths.root().join("kernel/src/nvme.rs")).expect("read NVMe source");
-    let nvme_syntax = syn::parse_file(&nvme_source).expect("parse NVMe source");
+    let nvme_syntax = super::module_syntax(&paths.root().join("kernel/src/nvme.rs"));
     let prepare = nvme_syntax
         .items
         .iter()
