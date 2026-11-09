@@ -3485,4 +3485,12 @@ fn mint_stopped<'controller>(
             "a clock disagreement revokes time without stranding timers",
         ),
     },
+    Mutation {
+        id: 2462,
+        file: "kernel/src/pci.rs",
+        find: "if self.claimed[usize::from(bus)] || self.len == MAX_BUSES {",
+        replace: "if self.len == MAX_BUSES {",
+        breaks: "a repeated bridge secondary takes a worklist slot again",
+        reddens: Caught::Check("a repeated bridge secondary cannot hide a later bus"),
+    },
 ];

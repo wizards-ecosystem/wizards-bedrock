@@ -80,8 +80,8 @@ pub(crate) struct Function {
 
 /// Walk every bus reachable from bus zero, reporting each function found.
 ///
-/// Iterative over a worklist of buses, with each bus visited at most once: a
-/// bridge that names a bus already seen is ignored rather than followed, which
+/// Iterative over a worklist of buses, with each bus queued at most once: a
+/// bridge that names a bus already queued is ignored rather than followed, which
 /// is what keeps a broken topology from being a hang.
 ///
 /// Returns what the walk covered, or `None` if configuration space cannot be
@@ -91,19 +91,11 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
         return None;
     }
 
-    let mut seen = [false; MAX_BUSES];
-    let mut pending = [0u8; MAX_BUSES];
-    let mut queued = 1;
-    let mut next = 0;
+    let mut worklist = Worklist::new();
+    worklist.push(0);
     let mut survey = Survey::default();
 
-    while next < queued {
-        let bus = pending[next];
-        next += 1;
-        if seen[bus as usize] {
-            continue;
-        }
-        seen[bus as usize] = true;
+    while let Some(bus) = worklist.pop() {
         survey.buses += 1;
         survey.highest_bus = survey.highest_bus.max(bus);
 
@@ -129,11 +121,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
-                    && !seen[behind as usize]
-                    && queued < MAX_BUSES
                 {
-                    pending[queued] = behind;
-                    queued += 1;
+                    worklist.push(behind);
                 }
 
                 // A single-function device answers every function with its own
@@ -146,6 +135,56 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     }
 
     Some(survey)
+}
+
+/// Buses waiting to be walked, each claimed when it is queued.
+struct Worklist {
+    claimed: [bool; MAX_BUSES],
+    pending: [u8; MAX_BUSES],
+    len: usize,
+    next: usize,
+}
+
+impl Worklist {
+    const fn new() -> Self {
+        Self {
+            claimed: [false; MAX_BUSES],
+            pending: [0; MAX_BUSES],
+            len: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, bus: u8) -> bool {
+        if self.claimed[usize::from(bus)] || self.len == MAX_BUSES {
+            return false;
+        }
+        self.claimed[usize::from(bus)] = true;
+        self.pending[self.len] = bus;
+        self.len += 1;
+        true
+    }
+
+    fn pop(&mut self) -> Option<u8> {
+        let bus = *self.pending[..self.len].get(self.next)?;
+        self.next += 1;
+        Some(bus)
+    }
+}
+
+/// Whether a bus named by many bridges still leaves room for a later one.
+#[cfg(feature = "selftest")]
+pub(crate) fn repeated_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
+    let mut worklist = Worklist::new();
+    worklist.push(0);
+    for _ in 0..255 {
+        worklist.push(1);
+    }
+    worklist.push(5)
+        && worklist.pop() == Some(0)
+        && worklist.pop() == Some(1)
+        && worklist.pop() == Some(5)
+        && worklist.pop().is_none()
 }
 
 /// What one walk of the bus covered.
