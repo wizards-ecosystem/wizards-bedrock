@@ -52,6 +52,7 @@ impl Base {
     /// The same register with the hardware enable bit set.
     ///
     /// Every other register bit is preserved.
+    #[must_use]
     pub const fn enabled(self) -> Self {
         Self(self.0 | ENABLE)
     }
@@ -63,6 +64,7 @@ impl Base {
     /// combination in one step raises a general protection fault. A caller
     /// still has to make the two writes in order; this only ensures the second
     /// one is not also the first.
+    #[must_use]
     pub const fn x2apic(self) -> Self {
         Self(self.0 | ENABLE | X2APIC)
     }

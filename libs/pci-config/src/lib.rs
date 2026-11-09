@@ -137,6 +137,7 @@ impl Address {
     /// Device ownership is a bus/device/function claim. Treating two offsets
     /// in the same header as different identities would let two drivers claim
     /// the same function.
+    #[must_use]
     pub const fn function_base(self) -> Self {
         Self(self.0 & !0xFF)
     }

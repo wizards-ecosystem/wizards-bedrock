@@ -141,11 +141,13 @@ impl Flags {
     /// architecture grants `USER` and `WRITABLE` only where every level of the
     /// walk grants them, so the answer is a conjunction rather than the leaf's
     /// own opinion (D-103).
+    #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
     /// Both sets of flags together.
+    #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -212,6 +214,7 @@ impl Flags {
     pub const EVERYTHING_ALLOWED: Self = Self::NARROWED;
 
     /// This set without the flags in `other`.
+    #[must_use]
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
