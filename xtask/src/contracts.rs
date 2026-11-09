@@ -299,6 +299,22 @@ fn module_syntax(file: &std::path::Path) -> syn::File {
     syntax
 }
 
+fn module_source(root: &std::path::Path, relative: &str) -> String {
+    let file = root.join(relative);
+    let children = file.with_extension("");
+    let mut files = vec![file];
+    if children.is_dir() {
+        files.extend(rust_sources_below(&children));
+    }
+    files
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+        })
+        .collect()
+}
+
 fn is_named_path(expression: &Expr, expected: &str) -> bool {
     matches!(expression, Expr::Path(path)
         if path.qself.is_none()

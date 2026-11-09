@@ -3,7 +3,7 @@ use syn::{Expr, ExprCall, Item, Macro};
 
 use crate::paths::Paths;
 
-use super::{is_named_path, require_error};
+use super::{is_named_path, module_source, require_error};
 
 #[derive(Default)]
 struct InvalidationShape {
@@ -108,8 +108,7 @@ fn is_root_path(expression: &Expr) -> bool {
 #[test]
 fn paging_activation_loads_cr3_before_publishing_ready() {
     let paths = Paths::discover().expect("workspace paths");
-    let source = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/paging.rs"))
-        .expect("read paging source");
+    let source = module_source(paths.root(), "wost/src/arch/x86_64/paging.rs");
     let syntax = syn::parse_file(&source).expect("parse paging source");
     let activate = syntax
         .items

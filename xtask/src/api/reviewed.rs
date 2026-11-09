@@ -20,15 +20,15 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ),
     (
         "wost/src/arch/x86_64/paging.rs",
-        "arch::x86_64::paging::Activation",
-    ),
-    (
-        "wost/src/arch/x86_64/paging.rs",
         "arch::x86_64::paging::AddressSpace",
     ),
     (
         "wost/src/arch/x86_64/paging.rs",
         "arch::x86_64::paging::Unmapped",
+    ),
+    (
+        "wost/src/arch/x86_64/paging/activation.rs",
+        "arch::x86_64::paging::activation::Activation",
     ),
     (
         "wost/src/arch/x86_64/usercopy.rs",
@@ -144,13 +144,6 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
     },
     ReviewedDropProducer {
         relative: "wost/src/arch/x86_64/paging.rs",
-        owner: "arch::x86_64::paging::Activation",
-        member: "begin_with",
-        implemented_trait: None,
-        produced: "arch::x86_64::paging::Activation",
-    },
-    ReviewedDropProducer {
-        relative: "wost/src/arch/x86_64/paging.rs",
         owner: "arch::x86_64::paging::AddressSpace",
         member: "new",
         implemented_trait: None,
@@ -162,6 +155,13 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "for_user_roots",
         implemented_trait: None,
         produced: "arch::x86_64::paging::AddressSpace",
+    },
+    ReviewedDropProducer {
+        relative: "wost/src/arch/x86_64/paging/activation.rs",
+        owner: "arch::x86_64::paging::activation::Activation",
+        member: "begin_with",
+        implemented_trait: None,
+        produced: "arch::x86_64::paging::activation::Activation",
     },
     ReviewedDropProducer {
         relative: "wost/src/arch/x86_64/usercopy.rs",
