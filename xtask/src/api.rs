@@ -1499,7 +1499,8 @@ fn validate_workspace_build_script(root: &Path, package: &str, target: &CargoTar
     let actual = source_tokens(&source, main.block.span())?;
     let expected = <TokenStream as core::str::FromStr>::from_str(
         r#"{
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("Cargo sets CARGO_MANIFEST_DIR for build scripts");
         println!("cargo:rustc-link-arg=-T{manifest_dir}/linker.ld");
         println!("cargo:rerun-if-changed=linker.ld");
     }"#,
