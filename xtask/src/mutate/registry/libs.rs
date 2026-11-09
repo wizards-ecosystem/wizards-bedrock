@@ -5679,4 +5679,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::an_inverted_span_is_not_covered",
         },
     },
+    Mutation {
+        id: 2460,
+        file: "libs/fat32/src/lib.rs",
+        find: ".ok_or(FatError::Malformed)?;",
+        replace: ".ok_or(FatError::BadCluster(0))?;",
+        breaks: "a wrapped sector address is reported as cluster 0",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_partition_base_that_wraps_is_malformed",
+        },
+    },
 ];

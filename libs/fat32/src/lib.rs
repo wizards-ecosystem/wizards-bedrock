@@ -676,10 +676,7 @@ impl<S: Sectors> Volume<S> {
     }
 
     fn sector(&mut self, sector: u64, into: &mut [u8; SECTOR_BYTES]) -> Result<(), FatError> {
-        let at = self
-            .base
-            .checked_add(sector)
-            .ok_or(FatError::BadCluster(0))?;
+        let at = self.base.checked_add(sector).ok_or(FatError::Malformed)?;
         <S as Sectors>::read_sector(&mut self.source, at, into).map_err(|_| FatError::Unreadable)
     }
 
@@ -1296,6 +1293,16 @@ mod tests {
                 Err(FatError::BadCluster(reserved))
             );
         }
+    }
+
+    #[test]
+    fn a_partition_base_that_wraps_is_malformed() {
+        let mut volume = image_volume(1, 4);
+        volume.base = u64::MAX;
+        assert_eq!(
+            volume.next_cluster(FIRST_DATA_CLUSTER),
+            Err(FatError::Malformed)
+        );
     }
 
     #[derive(Debug)]
