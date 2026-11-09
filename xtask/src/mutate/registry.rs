@@ -1,7 +1,20 @@
-mod kernel;
-mod libs;
+mod kernel_boot;
+mod kernel_console;
+mod kernel_process;
+mod kernel_ring_time;
+mod kernel_selftest;
+mod kernel_storage;
+mod libs_firmware;
+mod libs_pci_config;
+mod libs_small;
+mod libs_storage;
+mod libs_translation;
+mod libs_x86;
 mod repository;
-mod wost;
+mod wost_cpu;
+mod wost_devices;
+mod wost_memory;
+mod wost_paging;
 mod xtask_api;
 mod xtask_build;
 mod xtask_contracts;
@@ -91,9 +104,22 @@ const SHARDS: &[&[Mutation]] = &[
     xtask_runners::MUTATIONS,
     xtask_build::MUTATIONS,
     xtask_gate::MUTATIONS,
-    kernel::MUTATIONS,
-    wost::MUTATIONS,
-    libs::MUTATIONS,
+    kernel_selftest::MUTATIONS,
+    kernel_storage::MUTATIONS,
+    kernel_process::MUTATIONS,
+    kernel_ring_time::MUTATIONS,
+    kernel_boot::MUTATIONS,
+    kernel_console::MUTATIONS,
+    wost_paging::MUTATIONS,
+    wost_memory::MUTATIONS,
+    wost_cpu::MUTATIONS,
+    wost_devices::MUTATIONS,
+    libs_pci_config::MUTATIONS,
+    libs_firmware::MUTATIONS,
+    libs_storage::MUTATIONS,
+    libs_translation::MUTATIONS,
+    libs_x86::MUTATIONS,
+    libs_small::MUTATIONS,
     repository::MUTATIONS,
 ];
 

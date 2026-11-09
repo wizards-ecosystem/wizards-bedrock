@@ -234,7 +234,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 382,
-        file: "xtask/src/mutate/registry/kernel.rs",
+        file: "xtask/src/mutate/registry/kernel_console.rs",
         find: "            marker: \"faulting address 0x0000600000000000\",",
         replace: "            marker: \"\",",
         breaks: "a terminal mutation can name no exact panic cause",
