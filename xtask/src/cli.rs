@@ -79,6 +79,11 @@ OPTIONS:
                       check only: forwarded to cargo
     -h, --help        print this help
     -- <ARGS>...      run only: pass ARGS through to QEMU
+
+ENVIRONMENT:
+    QEMU              path to qemu-system-x86_64; overrides QEMU_DIR and PATH
+    QEMU_DIR          directory containing that executable
+    GDB               path to the pinned WinLibs gdb used by debug
 ";
 
 /// Usage text, with CI composition rendered from the gate registry.
