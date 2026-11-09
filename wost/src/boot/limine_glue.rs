@@ -111,12 +111,10 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
 /// The fields are the bootloader's types, which is why this lives here: it is
 /// the only file that names them (`005`, and swapping bootloaders touches one
 /// file).
-///
-/// No `Debug`, unusually for this codebase (`005`, C-DEBUG): the bootloader's
-/// request types do not implement it, and a hand-written impl here would print
-/// the addresses of static requests, which is not information anyone wants and
-/// is exactly what a KASLR ledger would rather not see in a log.
-#[expect(missing_debug_implementations)]
+#[expect(
+    missing_debug_implementations,
+    reason = "the bootloader's request types have no Debug, and a hand-written one would only print static addresses, which stay out of logs"
+)]
 #[derive(Clone, Copy)]
 pub struct Requests {
     /// The protocol revision the kernel asked for.

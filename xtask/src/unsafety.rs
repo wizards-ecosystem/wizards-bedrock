@@ -218,7 +218,7 @@ mod tests {
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "1c2e8d9218d0d70befd4402a5440372ef39af823e1c5c83da4e6e4b19451d470",
+            "c0eabeea6f0a223d1b095c82b3511658fa82090757e09f55c22ee1bdc5a211b4",
         ),
         (
             "wost/src/boot/mod.rs",
@@ -408,7 +408,7 @@ mod tests {
 
         let wost = std::fs::read_to_string(root.join("wost/src/lib.rs")).expect("wost lib.rs");
         assert!(
-            wost.contains("#![allow(unsafe_code)]"),
+            wost.contains("#![allow(\n    unsafe_code,\n"),
             "wost no longer lifts the workspace deny; the boundary has moved"
         );
     }
