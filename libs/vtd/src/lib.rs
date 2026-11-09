@@ -907,8 +907,8 @@ impl FaultRecording {
     const FAULT: u64 = 1 << 63;
     /// Request type, bit 126 (bit 62 of the high qword).
     const TYPE: u64 = 1 << 62;
-    /// Fault reason, bits 111:104 (bits 47:40 of the high qword).
-    const REASON_SHIFT: u32 = 40;
+    /// Fault reason, bits 103:96 (bits 39:32 of the high qword).
+    const REASON_SHIFT: u32 = 32;
     /// Eight fault-reason bits.
     const REASON_MASK: u64 = 0xFF;
     /// Source identifier, bits 79:64 (bits 15:0 of the high qword).
@@ -1516,11 +1516,10 @@ mod tests {
     #[test]
     fn fault_recording_positions_match_the_spec() {
         // Positions restated relative to the 128-bit record: F bit 127, T bit
-        // 126, FR bits 111:104, SID bits 79:64, FI bits 63:12.
+        // 126, FR bits 103:96, SID bits 79:64, FI bits 63:12.
         assert_eq!(FaultRecording::FAULT, 1 << (127 - 64));
         assert_eq!(FaultRecording::TYPE, 1 << (126 - 64));
-        assert_eq!(FaultRecording::REASON_SHIFT, 104 - 64);
-        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 111:104");
+        assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 103:96");
         assert_eq!(FaultRecording::SID_MASK, 0xFFFF, "SID bits 79:64");
     }
 
@@ -1528,7 +1527,7 @@ mod tests {
     fn a_recorded_fault_decodes_its_source_reason_and_address() {
         let record = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (1 << 63) | (1 << 62) | (0x0C << 40) | 0xBEEF,
+            hi: (1 << 63) | (1 << 62) | (0x0C << (96 - 64)) | (0xA5 << (104 - 64)) | 0xBEEF,
         };
         assert!(record.is_fault());
         assert_eq!(record.source_id(), 0xBEEF);
@@ -1549,7 +1548,7 @@ mod tests {
     fn a_register_without_the_fault_bit_records_no_fault() {
         let clean = FaultRecording {
             lo: 0xDEAD_E000,
-            hi: (0x0C << 40) | 0xBEEF, // reason and SID set, but F clear
+            hi: (0x0C << (96 - 64)) | 0xBEEF, // reason and SID set, but F clear
         };
         assert!(!clean.is_fault());
 
