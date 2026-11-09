@@ -7834,10 +7834,18 @@ struct CompilerIdentity {
     path: PathBuf,
     host_target: String,
     host_linker: PathBuf,
+    link_editor: Option<LinkEditor>,
     tool_path: std::ffi::OsString,
     compiler_digest: [u8; 32],
     linker_digest: [u8; 32],
     input_authority: CompilerInputAuthority,
+}
+
+#[derive(Debug, Clone)]
+struct LinkEditor {
+    search_directory: PathBuf,
+    path: PathBuf,
+    digest: [u8; 32],
 }
 
 #[derive(Debug, Clone)]
@@ -7874,7 +7882,7 @@ fn host_linker(
     host_target: &str,
     sysroot: &Path,
     search_path: Option<&std::ffi::OsStr>,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, Option<PathBuf>)> {
     if !host_target.contains("-windows-") {
         return platform_c_driver(search_path);
     }
@@ -7890,19 +7898,22 @@ fn host_linker(
         linker.starts_with(sysroot),
         "the API audit host linker escaped the compiler sysroot"
     );
-    Ok(linker)
+    Ok((linker, None))
 }
 
-fn platform_c_driver(search_path: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
-    let driver = search_path
+fn platform_c_driver(search_path: Option<&std::ffi::OsStr>) -> Result<(PathBuf, Option<PathBuf>)> {
+    let directory = search_path
         .into_iter()
         .flat_map(std::env::split_paths)
         .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join("cc"))
-        .find(|candidate| candidate.is_file())
-        .context("the API audit host linker `cc` is not in an absolute PATH directory")?;
-    std::fs::canonicalize(&driver)
-        .with_context(|| format!("resolving the API audit host linker {}", driver.display()))
+        .find(|directory| directory.join("cc").is_file() && directory.join("ld").is_file())
+        .context(
+            "the API audit host linker `cc` and its `ld` are not in one absolute PATH directory",
+        )?;
+    let driver = directory.join("cc");
+    let driver = std::fs::canonicalize(&driver)
+        .with_context(|| format!("resolving the API audit host linker {}", driver.display()))?;
+    Ok((driver, Some(directory)))
 }
 
 fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
@@ -7984,7 +7995,8 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
         sysroot == toolchain,
         "the API audit compiler reported a sysroot outside its exact toolchain"
     );
-    let host_linker = host_linker(target, &sysroot, std::env::var_os("PATH").as_deref())?;
+    let (host_linker, link_editor_directory) =
+        host_linker(target, &sysroot, std::env::var_os("PATH").as_deref())?;
     let host_linker = crate::cargo::child_process_path(&host_linker);
     let tool_path = std::env::join_paths([compiler
         .parent()
@@ -7992,11 +8004,26 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
     .context("constructing the API audit tool PATH")?;
     let compiler_digest = digest_compiler_executable(&compiler, "compiler")?;
     let linker_digest = digest_compiler_executable(&host_linker, "linker")?;
+    let link_editor = link_editor_directory
+        .map(|search_directory| -> Result<_> {
+            let path = search_directory.join("ld");
+            let path = std::fs::canonicalize(&path).with_context(|| {
+                format!("resolving the API audit link editor {}", path.display())
+            })?;
+            let digest = digest_compiler_executable(&path, "link editor")?;
+            Ok(LinkEditor {
+                search_directory,
+                path,
+                digest,
+            })
+        })
+        .transpose()?;
     let input_authority = CompilerInputAuthority::capture(&sysroot, &cargo, &compiler, target)?;
     Ok(CompilerIdentity {
         path: compiler,
         host_target: target.to_string(),
         host_linker,
+        link_editor,
         tool_path,
         compiler_digest,
         linker_digest,
@@ -8263,6 +8290,12 @@ impl CompilerIdentity {
             digest_compiler_executable(&self.host_linker, "linker")? == self.linker_digest,
             "the API audit host linker changed while the audit was running"
         );
+        if let Some(link_editor) = &self.link_editor {
+            ensure!(
+                digest_compiler_executable(&link_editor.path, "link editor")? == link_editor.digest,
+                "the API audit link editor changed while the audit was running"
+            );
+        }
         Ok(())
     }
 
@@ -8328,6 +8361,9 @@ fn base_cargo_command(
             compiler.host_target,
             compiler.host_linker.to_string_lossy()
         ));
+    if let Some(link_editor) = &compiler.link_editor {
+        command.env("COMPILER_PATH", &link_editor.search_directory);
+    }
     command
 }
 
@@ -9407,6 +9443,14 @@ macro_rules! entry {
         assert_eq!(
             environment.get(std::ffi::OsStr::new("PATH")),
             Some(&Some(compiler.tool_path.clone()))
+        );
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new("COMPILER_PATH")),
+            compiler
+                .link_editor
+                .as_ref()
+                .map(|link_editor| Some(link_editor.search_directory.clone().into_os_string()))
+                .as_ref()
         );
         let linker = format!(
             "target.{}.linker={:?}",
@@ -15122,17 +15166,39 @@ fn main() {}
         std::fs::create_dir_all(&lld_directory).unwrap();
         std::fs::create_dir(&driver_directory).unwrap();
         std::fs::write(lld_directory.join("rust-lld.exe"), b"lld").unwrap();
+        let lone_driver_directory = sysroot.join("lone-driver");
+        std::fs::create_dir(&lone_driver_directory).unwrap();
+        std::fs::write(lone_driver_directory.join("cc"), b"cc").unwrap();
         std::fs::write(driver_directory.join("cc"), b"cc").unwrap();
-        let search_path =
-            std::env::join_paths([Path::new("drivers"), driver_directory.as_path()]).unwrap();
+        std::fs::write(driver_directory.join("ld"), b"ld").unwrap();
+        let search_path = std::env::join_paths([
+            Path::new("drivers"),
+            lone_driver_directory.as_path(),
+            driver_directory.as_path(),
+        ])
+        .unwrap();
 
         assert_eq!(
             host_linker(windows, &sysroot, Some(&search_path)).unwrap(),
-            std::fs::canonicalize(lld_directory.join("rust-lld.exe")).unwrap()
+            (
+                std::fs::canonicalize(lld_directory.join("rust-lld.exe")).unwrap(),
+                None
+            )
         );
         assert_eq!(
             host_linker("x86_64-unknown-linux-gnu", &sysroot, Some(&search_path)).unwrap(),
-            std::fs::canonicalize(driver_directory.join("cc")).unwrap()
+            (
+                std::fs::canonicalize(driver_directory.join("cc")).unwrap(),
+                Some(driver_directory.clone())
+            )
+        );
+        assert!(
+            host_linker(
+                "x86_64-unknown-linux-gnu",
+                &sysroot,
+                Some(lone_driver_directory.as_os_str())
+            )
+            .is_err()
         );
         assert!(
             host_linker(
@@ -15162,13 +15228,13 @@ fn main() {}
 
         assert_eq!(
             capture.matches("digest_compiler_executable(").count(),
-            2,
-            "compiler identity capture must stream both compiler executables"
+            3,
+            "compiler identity capture must stream every compiler executable"
         );
         assert_eq!(
             revalidation.matches("digest_compiler_executable(").count(),
-            2,
-            "compiler identity revalidation must stream both compiler executables"
+            3,
+            "compiler identity revalidation must stream every compiler executable"
         );
         assert!(
             !capture.contains("std::fs::read(") && !revalidation.contains("std::fs::read("),
