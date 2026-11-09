@@ -146,7 +146,7 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("xtask/src/contracts.rs", "contracts::Probe"),
     ("xtask/src/image/mod.rs", "image::RunImage"),
     (
-        "xtask/src/mutate/workspace.rs",
+        "xtask/src/mutate/workspace/tests.rs",
         "mutate::workspace::tests::TempTree",
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
@@ -325,7 +325,7 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "image::RunImage",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/mutate/workspace.rs",
+        relative: "xtask/src/mutate/workspace/tests.rs",
         owner: "mutate::workspace::tests::TempTree",
         member: "new",
         implemented_trait: None,
