@@ -2550,7 +2550,8 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         );
     }
     assert!(
-        memory.contains("destination.cast::<u64>().write_volatile(value.to_le())"),
+        memory.contains("let word = destination.cast::<u64>();")
+            && memory.contains("unsafe { word.write_volatile(value.to_le()) };"),
         "live VT-d entries must use one aligned qword publication"
     );
     let table_writer =
