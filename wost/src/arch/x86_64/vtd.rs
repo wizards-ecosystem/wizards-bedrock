@@ -756,17 +756,14 @@ impl Vtd {
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
     #[must_use]
     pub fn boundary_active(&self) -> bool {
-        let pointer = match read_u64(&self.registers, vtd::RTADDR) {
-            Ok(pointer) => pointer,
-            Err(_) => return false,
+        let Ok(pointer) = read_u64(&self.registers, vtd::RTADDR) else {
+            return false;
         };
-        let status = match read_u32(&self.registers, vtd::GSTS) {
-            Ok(status) => status,
-            Err(_) => return false,
+        let Ok(status) = read_u32(&self.registers, vtd::GSTS) else {
+            return false;
         };
-        let fault_control = match read_u32(&self.registers, vtd::FECTL) {
-            Ok(control) => control,
-            Err(_) => return false,
+        let Ok(fault_control) = read_u32(&self.registers, vtd::FECTL) else {
+            return false;
         };
         if !translation_enabled(status)
             || !interrupt_remapping_enabled(status)
@@ -780,9 +777,8 @@ impl Vtd {
         let Some(expected) = interrupt_table_address(self.interrupts.address()) else {
             return false;
         };
-        let observed = match read_u64(&self.registers, vtd::IRTA) {
-            Ok(observed) => observed,
-            Err(_) => return false,
+        let Ok(observed) = read_u64(&self.registers, vtd::IRTA) else {
+            return false;
         };
         if observed != expected
             || interrupt_table_base(observed) != self.interrupts.address()

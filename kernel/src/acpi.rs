@@ -154,12 +154,9 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     // Each refusal says so: a boot that lost its routing to the ACPI-only
     // reader is otherwise a keyboard that stopped for no stated reason.
     let (firmware, root) = parse_root(rsdp)?;
-    let madt = match find_table(firmware, root, Sdt::MADT) {
-        Some(madt) => madt,
-        None => {
-            warn!("acpi: no madt among the tables listed");
-            return None;
-        }
+    let Some(madt) = find_table(firmware, root, Sdt::MADT) else {
+        warn!("acpi: no madt among the tables listed");
+        return None;
     };
     let interrupts = match Interrupts::parse(&madt) {
         Ok(interrupts) => interrupts,
