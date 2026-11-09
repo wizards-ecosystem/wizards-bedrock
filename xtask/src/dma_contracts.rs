@@ -1896,7 +1896,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert_eq!(authority_alias_count(&vtd, &["InterruptIsolation"]), 0);
 
     for requirement in [
-        "if !platform_interrupt_remapping {",
+        "if !platform_interrupt_remapping.is_present() {",
         "if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
         "if !extended.extended_interrupt_mode() {",
         "VtdError::FirmwareFacilitiesActive { status }",
@@ -1996,7 +1996,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "DmaCoverage::new(&table)",
         "dmar.sole_complete_unit_register_base(SEGMENT)",
         "dmar.sole_rmrr_free_unit_register_base(SEGMENT)",
-        "Vtd::establish_deny_all(registers, true)",
+        "Vtd::establish_deny_all(registers, PlatformInterruptRemapping::Present)",
         "pub(crate) fn ensure_interrupt_boundary() -> bool {",
         "pci::TopologyPresence::Empty | pci::TopologyPresence::Present => {}",
         ".filter(|owner| owner.state == InstalledState::Ready && owner.boundary_active())",
@@ -4436,7 +4436,10 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
                     call.args.iter().collect::<Vec<_>>().as_slice(),
                     [registers, interrupts]
                         if path_expression_is(registers, &["registers"])
-                            && bool_literal_is(interrupts, true)
+                            && path_expression_is(
+                                interrupts,
+                                &["PlatformInterruptRemapping", "Present"],
+                            )
                 ));
             }
             syn::visit::visit_expr_call(self, call);

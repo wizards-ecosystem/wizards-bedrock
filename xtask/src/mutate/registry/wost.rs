@@ -2465,8 +2465,8 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     Mutation {
         id: 1707,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
-        replace: "        if false && !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        find: "        if !platform_interrupt_remapping.is_present() {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        replace: "        if false && !platform_interrupt_remapping.is_present() {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
         breaks: "VT-d takeover accepts firmware that reports no interrupt-remapping platform support",
         reddens: Caught::HostTest {
             package: "xtask",
