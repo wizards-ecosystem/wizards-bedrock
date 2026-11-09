@@ -5668,4 +5668,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::a_zero_length_region_does_not_occupy_its_address",
         },
     },
+    Mutation {
+        id: 2459,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        if start > end {\n            return false;\n        }",
+        replace: "        if false {\n            return false;\n        }",
+        breaks: "an inverted span reads as covered memory",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::an_inverted_span_is_not_covered",
+        },
+    },
 ];
