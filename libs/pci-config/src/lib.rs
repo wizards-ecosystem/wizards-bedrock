@@ -476,15 +476,19 @@ impl Bar {
     ///
     /// # Errors
     ///
-    /// `None` for the unsupported below-one-megabyte memory encoding or the
-    /// reserved memory encoding.
+    /// `None` for the unsupported below-one-megabyte memory encoding, the
+    /// reserved memory encoding, or an I/O address outside the 16-bit port space.
     pub const fn decode(low: u32, high: u32) -> Option<Self> {
         if low == 0 {
             return Some(Self::Absent);
         }
         if low & Self::IS_IO != 0 {
+            let address = low & !0x3;
+            if address >> 16 != 0 {
+                return None;
+            }
             return Some(Self::Io {
-                port: (low & !0x3) as u16,
+                port: address as u16,
             });
         }
         let memory_type = low & Self::TYPE_MASK;
@@ -2394,7 +2398,8 @@ pub enum ProbeError<E> {
     Restore(E),
     /// A restoration readback did not equal the captured register word.
     RestoreChanged,
-    /// The header layout, BAR slot use, or memory encoding is unsupported.
+    /// The header layout, BAR slot use, or memory encoding is unsupported, or
+    /// an I/O BAR address is outside the 16-bit port space.
     Malformed,
     /// A device returned a mask or base that cannot describe its window.
     InvalidWindow,
@@ -6027,6 +6032,9 @@ mod tests {
         assert_eq!(Bar::decode(0, 0), Some(Bar::Absent));
 
         assert_eq!(Bar::decode(0xC001, 0), Some(Bar::Io { port: 0xC000 }));
+        assert_eq!(Bar::decode(0xFFFF, 0), Some(Bar::Io { port: 0xFFFC }));
+        assert_eq!(Bar::decode(0x1_0001, 0), None);
+        assert_eq!(Bar::decode(0xFFFF_0001, 0), None);
 
         assert_eq!(
             Bar::decode(0xFEBF_0000, 0),
