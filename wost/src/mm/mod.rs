@@ -617,9 +617,10 @@ impl<'authority> DirectSpan<'authority> {
         if end > self.len || !(destination as usize).is_multiple_of(core::mem::align_of::<u64>()) {
             return false;
         }
+        let word = destination.cast::<u64>();
         // SAFETY: the span's authority keeps all eight checked bytes live, and
         // the alignment check makes this one indivisible x86-64 qword store.
-        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };
+        unsafe { word.write_volatile(value.to_le()) };
         true
     }
 

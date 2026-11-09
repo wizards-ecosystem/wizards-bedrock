@@ -82,10 +82,11 @@ impl Heap {
         let Some(live) = self.live.checked_sub(1) else {
             return false;
         };
+        let link = slot.cast::<usize>();
         // SAFETY: the caller guarantees `slot` is a slot of `class` this heap
         // owns, so its first word is ours to overwrite with the link — the
         // slot's contents are dead the moment it is freed.
-        unsafe { core::ptr::write(slot as *mut usize, self.free[class.index()]) };
+        unsafe { core::ptr::write(link, self.free[class.index()]) };
         self.free[class.index()] = slot as usize;
         self.live = live;
         true
@@ -106,12 +107,11 @@ impl Heap {
 
         for slot in 0..class.slots_per_frame() {
             let address = base.wrapping_add(class.offset_of(slot));
+            let link = address.cast::<usize>();
             // SAFETY: the caller supplies a uniquely owned direct-mapped frame,
             // and `offset_of` stays inside it. Writing the link is each slot's
             // first use; pointer formation alone proves no coverage (D-140).
-            unsafe {
-                core::ptr::write(address as *mut usize, self.free[class.index()]);
-            }
+            unsafe { core::ptr::write(link, self.free[class.index()]) };
             self.free[class.index()] = address as usize;
         }
         true
