@@ -1416,11 +1416,14 @@ fn unproven_stop_retains_every_reachable_run() {
     assert!(dma_call(&decision.arms[1].body, "retain_unquiesced", None));
 
     let pure = parse("libs/nvme/src/lib.rs");
+    let pure_tests = parse("libs/nvme/src/tests.rs");
     for forbidden in ["quiesce", "is_quiesced", "must_retain", "retain_unquiesced"] {
-        assert!(
-            implemented_method(&pure, "DmaState", forbidden).is_none(),
-            "pure DmaState recovered hardware authority through `{forbidden}`"
-        );
+        for syntax in [&pure, &pure_tests] {
+            assert!(
+                implemented_method(syntax, "DmaState", forbidden).is_none(),
+                "pure DmaState recovered hardware authority through `{forbidden}`"
+            );
+        }
     }
     assert!(method(&pure, "DmaState", "close").is_some());
 }
