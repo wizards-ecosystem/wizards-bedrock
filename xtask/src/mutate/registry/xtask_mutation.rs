@@ -961,7 +961,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the mutation sweep asks whatever `git` PATH names about its source",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_source_identity_names_the_git_that_established_it",
+            name: "contracts::sources::every_source_identity_names_the_git_that_established_it",
         },
     },
     Mutation {
@@ -1280,7 +1280,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "tracked source hashing follows a path after confinement validation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::a_checked_path_is_opened_only_without_following_links",
+            name: "contracts::sources::a_checked_path_is_opened_only_without_following_links",
         },
     },
 ];

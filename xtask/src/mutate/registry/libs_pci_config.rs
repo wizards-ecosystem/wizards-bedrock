@@ -612,7 +612,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "PCI memory-window width becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -623,7 +623,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "PCI I/O-window decoding regrows as speculative public arithmetic",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -634,7 +634,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure PCI function authority can be cloned",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -645,7 +645,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure PCI function authority can be copied",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -656,7 +656,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "callers can substitute a parallel PCI command-lease registry",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -667,7 +667,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "callers can release PCI function authority without settling its live subleases",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -832,7 +832,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one BAR reservation can be replayed into multiple mappings",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_bar_mapping_requires_exact_linear_authority",
+            name: "contracts::pci::pci_bar_mapping_requires_exact_linear_authority",
         },
     },
     Mutation {
@@ -854,7 +854,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a linear failure wrapper can be discarded without a compiler warning",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::public_failure_wrappers_are_must_use",
+            name: "contracts::errors::public_failure_wrappers_are_must_use",
         },
     },
     Mutation {
@@ -865,7 +865,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure PCI function authority exposes its private registry lease",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -876,7 +876,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure PCI function authority exposes a safe reissue door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -887,7 +887,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure PCI function authority can be retargeted through a mutable borrow",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -1261,7 +1261,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "callers outside the exhaustive entry fence can mint non-requester authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+            name: "contracts::dma::entry::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
         },
     },
     Mutation {
@@ -1316,7 +1316,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the exact non-requester authority can be duplicated and spent twice",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+            name: "contracts::dma::entry::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
         },
     },
     Mutation {
@@ -1470,7 +1470,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one request bit in each ISA DMA status word escapes the quiet predicate",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {

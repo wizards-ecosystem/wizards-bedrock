@@ -451,7 +451,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a checked vendor listing is reopened through a following open",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::a_checked_path_is_opened_only_without_following_links",
+            name: "contracts::sources::a_checked_path_is_opened_only_without_following_links",
         },
     },
     Mutation {

@@ -20,14 +20,10 @@ pub mod cli;
 mod contracts;
 mod debugger;
 pub mod decisions;
-#[cfg(test)]
-mod dma_contracts;
 pub mod elf;
 mod evidence;
 mod gate;
 mod git;
-#[cfg(test)]
-mod handoff;
 pub mod image;
 mod json;
 pub mod machine;
@@ -37,23 +33,15 @@ pub mod mutate;
 pub mod paths;
 mod platform_acpi;
 pub mod prose;
-#[cfg(test)]
-mod publication;
 pub mod qemu;
 pub mod qmp;
 mod qualification;
-#[cfg(test)]
-mod recovery_contracts;
-#[cfg(test)]
-mod routing_contracts;
 mod security_deep;
 pub mod sha256;
 pub mod supply_chain;
 pub mod tasks;
 #[cfg(test)]
 mod test_support;
-#[cfg(test)]
-mod typed_arguments;
 pub mod unsafety;
 pub mod vendor;
 pub mod vmware;

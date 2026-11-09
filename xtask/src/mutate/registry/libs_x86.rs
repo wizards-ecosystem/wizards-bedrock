@@ -416,7 +416,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "APIC interrupt-exclusion policy regains a boolean constructor",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_policy_observations_are_typed",
+            name: "contracts::apic::apic_policy_observations_are_typed",
         },
     },
     Mutation {
@@ -427,7 +427,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "APIC completion collapses three independent observations into positional booleans",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_policy_observations_are_typed",
+            name: "contracts::apic::apic_policy_observations_are_typed",
         },
     },
     Mutation {
@@ -482,7 +482,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "xstate component alignment becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {

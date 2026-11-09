@@ -207,7 +207,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "release page-table slot formation loses its index bound",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -322,7 +322,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "paging activation publishes readiness before loading its page-table root",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::paging_activation_loads_cr3_before_publishing_ready",
+            name: "contracts::paging::paging_activation_loads_cr3_before_publishing_ready",
         },
     },
     Mutation {
@@ -424,7 +424,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "device mapping rebuilds a maximum-sized ownership projection on the kernel stack",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::an_address_space_keeps_its_bounded_ledger_off_the_stack",
+            name: "contracts::address_space::an_address_space_keeps_its_bounded_ledger_off_the_stack",
         },
     },
     Mutation {
@@ -435,7 +435,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "device mapping keeps fallible extent construction after page-table commit",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::an_address_space_keeps_its_bounded_ledger_off_the_stack",
+            name: "contracts::address_space::an_address_space_keeps_its_bounded_ledger_off_the_stack",
         },
     },
     Mutation {
@@ -446,7 +446,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "dropping the task stack owner restores unmap authority over hardware-retained stacks",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::a_kernel_stack_top_cannot_outlive_its_pin",
+            name: "contracts::address_space::a_kernel_stack_top_cannot_outlive_its_pin",
         },
     },
     Mutation {
@@ -457,7 +457,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "kernel stack-top authority carries only an address and phantom pin instead of borrowing its identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::a_kernel_stack_top_cannot_outlive_its_pin",
+            name: "contracts::address_space::a_kernel_stack_top_cannot_outlive_its_pin",
         },
     },
     Mutation {
@@ -528,7 +528,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "device-ledger allocation can fail only after page-table mapping commits",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::an_address_space_keeps_its_bounded_ledger_off_the_stack",
+            name: "contracts::address_space::an_address_space_keeps_its_bounded_ledger_off_the_stack",
         },
     },
     Mutation {
@@ -571,7 +571,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the unmapped-range user-bit observer reaches shipped wost",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -582,7 +582,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shipped mapping loop carries a no-op test-refusal branch",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {
@@ -593,7 +593,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the paging panic door omits the task stack pin ledger",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_static_lock_in_wost_is_reclaimed_by_the_panic_path",
+            name: "contracts::doors::every_static_lock_in_wost_is_reclaimed_by_the_panic_path",
         },
     },
     Mutation {
@@ -644,7 +644,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the painted-stack type reaches the shipped wost API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {

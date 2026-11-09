@@ -157,7 +157,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an unverified controller stop retains its dma memory",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::unproven_stop_retains_every_reachable_run",
+            name: "contracts::dma::retirement::unproven_stop_retains_every_reachable_run",
         },
     },
     // Repair follows the red observation so the outstanding command remains observable.
@@ -199,7 +199,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "NVMe self-test repair hides cleanup behind a guaranteed error",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::known_fallible_results_are_not_discarded",
+            name: "contracts::errors::known_fallible_results_are_not_discarded",
         },
     },
     Mutation {
@@ -210,7 +210,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "NVMe ready-state polling becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -221,7 +221,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "controller-stop evidence is minted after observing the ready bit set",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -232,7 +232,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "controller-stop evidence substitutes a constant for its fresh configuration read",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -243,7 +243,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "controller-stop evidence substitutes a constant for its fresh status read",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -254,7 +254,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "controller-stop evidence classifies constants instead of its fresh register pair",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -265,7 +265,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "proven controller-stop evidence retains recyclable DMA ownership",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::proven_stop_consumes_evidence_before_recycling",
+            name: "contracts::dma::retirement::proven_stop_consumes_evidence_before_recycling",
         },
     },
     Mutation {
@@ -276,7 +276,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "controller-stop evidence loses mutable authority over the exact DMA state it retires",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -287,7 +287,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one controller-stop observation can authorize more than one DMA recycle transition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::proven_stop_consumes_evidence_before_recycling",
+            name: "contracts::dma::retirement::proven_stop_consumes_evidence_before_recycling",
         },
     },
     Mutation {
@@ -316,7 +316,7 @@ fn mint_stopped<'controller>(
         breaks: "stop evidence can bind a hardware observation and DMA state from different controllers",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -327,7 +327,7 @@ fn mint_stopped<'controller>(
         breaks: "a nested trait implementation can duplicate one observed controller stop into multiple recycle authorities",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -338,7 +338,7 @@ fn mint_stopped<'controller>(
         breaks: "a controller's DMA retirement disposition becomes freely copyable",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::dma_disposition_cannot_move_between_controllers",
+            name: "contracts::dma::retirement::dma_disposition_cannot_move_between_controllers",
         },
     },
     Mutation {
@@ -349,7 +349,7 @@ fn mint_stopped<'controller>(
         breaks: "controller-stop evidence gains an extra inherent transfer path",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -360,7 +360,7 @@ fn mint_stopped<'controller>(
         breaks: "controller-stop evidence gains a constructor alias",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -371,7 +371,7 @@ fn mint_stopped<'controller>(
         breaks: "controller-stop evidence gains an imported constructor alias",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_evidence_has_one_hardware_mint",
+            name: "contracts::dma::retirement::controller_stop_evidence_has_one_hardware_mint",
         },
     },
     Mutation {
@@ -382,7 +382,7 @@ fn mint_stopped<'controller>(
         breaks: "active DMA is reported settled before hardware quiescence",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::dma_disposition_cannot_move_between_controllers",
+            name: "contracts::dma::retirement::dma_disposition_cannot_move_between_controllers",
         },
     },
     Mutation {
@@ -393,7 +393,7 @@ fn mint_stopped<'controller>(
         breaks: "consumed stop evidence can rewrite an already terminal DMA disposition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::proven_stop_consumes_evidence_before_recycling",
+            name: "contracts::dma::retirement::proven_stop_consumes_evidence_before_recycling",
         },
     },
     Mutation {
@@ -404,7 +404,7 @@ fn mint_stopped<'controller>(
         breaks: "a failed controller stop retains none of its reachable DMA runs",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::failed_stop_retention_and_retirement_sinks_are_exact",
+            name: "contracts::dma::retirement::failed_stop_retention_and_retirement_sinks_are_exact",
         },
     },
     Mutation {
@@ -415,7 +415,7 @@ fn mint_stopped<'controller>(
         breaks: "failed controller cleanup recycles the completion queue while hardware may reach it",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::failed_stop_retention_and_retirement_sinks_are_exact",
+            name: "contracts::dma::retirement::failed_stop_retention_and_retirement_sinks_are_exact",
         },
     },
     Mutation {
@@ -426,7 +426,7 @@ fn mint_stopped<'controller>(
         breaks: "an unverified controller stop drops its complete quarantine owner",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_retirement_returns_every_cleanup_owner",
+            name: "contracts::dma::retirement::controller_retirement_returns_every_cleanup_owner",
         },
     },
     Mutation {
@@ -437,7 +437,7 @@ fn mint_stopped<'controller>(
         breaks: "memory-owned BAR quarantine is misreported as successful retirement",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::mapped_bar_cleanup_quarantine_cannot_be_reported_retired",
+            name: "contracts::dma::retirement::mapped_bar_cleanup_quarantine_cannot_be_reported_retired",
         },
     },
     Mutation {
@@ -448,7 +448,7 @@ fn mint_stopped<'controller>(
         breaks: "controller quarantine mints its token after dropping the controller owner",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_retirement_returns_every_cleanup_owner",
+            name: "contracts::dma::retirement::controller_retirement_returns_every_cleanup_owner",
         },
     },
     Mutation {
@@ -459,7 +459,7 @@ fn mint_stopped<'controller>(
         breaks: "dropping a controller skips the final DMA stop-or-retain boundary",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::failed_stop_retention_and_retirement_sinks_are_exact",
+            name: "contracts::dma::retirement::failed_stop_retention_and_retirement_sinks_are_exact",
         },
     },
     Mutation {
@@ -470,7 +470,7 @@ fn mint_stopped<'controller>(
         breaks: "a disable wait succeeds before observing the controller ready bit clear",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_waits_for_the_requested_hardware_state",
+            name: "contracts::dma::retirement::controller_stop_waits_for_the_requested_hardware_state",
         },
     },
     Mutation {
@@ -481,7 +481,7 @@ fn mint_stopped<'controller>(
         breaks: "the readiness poll reverses the controller's live ready-bit observation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::controller_stop_waits_for_the_requested_hardware_state",
+            name: "contracts::dma::retirement::controller_stop_waits_for_the_requested_hardware_state",
         },
     },
     Mutation {
@@ -492,7 +492,7 @@ fn mint_stopped<'controller>(
         breaks: "DMA retirement state can be swapped between two controllers",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::dma_disposition_cannot_move_between_controllers",
+            name: "contracts::dma::retirement::dma_disposition_cannot_move_between_controllers",
         },
     },
     Mutation {
@@ -503,7 +503,7 @@ fn mint_stopped<'controller>(
         breaks: "DMA state gains an unaudited whole-state access alias",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::dma_disposition_cannot_move_between_controllers",
+            name: "contracts::dma::retirement::dma_disposition_cannot_move_between_controllers",
         },
     },
     Mutation {
@@ -514,7 +514,7 @@ fn mint_stopped<'controller>(
         breaks: "filesystem volume ownership regrows a callback authority door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -525,7 +525,7 @@ fn mint_stopped<'controller>(
         breaks: "NVMe controller ownership regrows a callback authority door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -536,7 +536,7 @@ fn mint_stopped<'controller>(
         breaks: "tmpfs regrows a speculative internal pathname walker",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -555,7 +555,7 @@ fn mint_stopped<'controller>(
         breaks: "every shipped NVMe register read runs the stack meter's leaf hook",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {
@@ -566,7 +566,7 @@ fn mint_stopped<'controller>(
         breaks: "a completion-queue mapping refusal leaves the submission queue reachable",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::a_partial_queue_mapping_rolls_back_the_submission_queue",
+            name: "contracts::dma::nvme::a_partial_queue_mapping_rolls_back_the_submission_queue",
         },
     },
     Mutation {
@@ -577,7 +577,7 @@ fn mint_stopped<'controller>(
         breaks: "clean controller retirement drops queue owners without invalidating their domain leaves",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::rejected_controller_retirement_fences_and_unmaps_every_queue",
+            name: "contracts::dma::retirement::rejected_controller_retirement_fences_and_unmaps_every_queue",
         },
     },
     Mutation {
@@ -588,7 +588,7 @@ fn mint_stopped<'controller>(
         breaks: "an accidentally dropped mapped queue can recycle device-reachable frames",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::rejected_controller_retirement_fences_and_unmaps_every_queue",
+            name: "contracts::dma::retirement::rejected_controller_retirement_fences_and_unmaps_every_queue",
         },
     },
     Mutation {
@@ -599,7 +599,7 @@ fn mint_stopped<'controller>(
         breaks: "an uncertain partial I/O queue map falls out of the controller retirement inventory",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::uncertain_io_queue_mapping_stays_reachable_for_retirement",
+            name: "contracts::dma::nvme::uncertain_io_queue_mapping_stays_reachable_for_retirement",
         },
     },
     Mutation {
@@ -610,7 +610,7 @@ fn mint_stopped<'controller>(
         breaks: "a successfully mapped submission queue is absent from conservative teardown state",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+            name: "contracts::dma::nvme::queue_mapping_state_conserves_every_reachable_segment",
         },
     },
     Mutation {
@@ -621,7 +621,7 @@ fn mint_stopped<'controller>(
         breaks: "the mapped-queue drop backstop omits a conservatively reachable submission segment",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+            name: "contracts::dma::nvme::queue_mapping_state_conserves_every_reachable_segment",
         },
     },
     Mutation {
@@ -632,7 +632,7 @@ fn mint_stopped<'controller>(
         breaks: "a successfully invalidated submission queue stays marked live and forces false quarantine",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+            name: "contracts::dma::nvme::queue_mapping_state_conserves_every_reachable_segment",
         },
     },
     Mutation {
@@ -643,7 +643,7 @@ fn mint_stopped<'controller>(
         breaks: "an NVMe read buffer gives the device read access to host residue",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -654,7 +654,7 @@ fn mint_stopped<'controller>(
         breaks: "the NVMe submission queue grants the device write access",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -665,7 +665,7 @@ fn mint_stopped<'controller>(
         breaks: "the NVMe completion queue grants the device read access",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
 ];
