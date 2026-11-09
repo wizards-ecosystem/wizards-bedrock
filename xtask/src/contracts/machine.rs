@@ -6,7 +6,7 @@ use syn::{Expr, ExprCall, Item, ItemFn, Macro, Pat, Type};
 use crate::paths::Paths;
 
 use super::{
-    Probe, asm_tokens, cfg_not_selftest, diagnostic_codes, observer_expr_attributes,
+    Probe, asm_tokens, cfg_not_selftest, diagnostic_codes, module_source, observer_expr_attributes,
     observer_impl_item_attributes, observer_item_attributes, require_error, selftest_cfg,
 };
 
@@ -426,8 +426,7 @@ impl<'ast> Visit<'ast> for MappingResultLocals<'ast> {
 }
 
 fn require_split_mapping_write(root: &std::path::Path) {
-    let relative = "wost/src/arch/x86_64/paging.rs";
-    let source = std::fs::read_to_string(root.join(relative)).expect("read paging source");
+    let source = module_source(root, "wost/src/arch/x86_64/paging.rs");
     let syntax = syn::parse_file(&source).expect("parse paging source");
     let methods = syntax
         .items
@@ -854,11 +853,11 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
         (
             "wost/src/arch/x86_64/paging.rs",
             &[
-                ("RECLAIMED_REFUSALS", 6),
-                ("CLEARED_ON_DROP", 3),
+                ("RECLAIMED_REFUSALS", 7),
+                ("CLEARED_ON_DROP", 4),
                 ("PROBE_OBSERVATIONS", 7),
                 ("PROBE_PARTIAL_OBSERVATIONS", 4),
-                ("mapping_refusal", 3),
+                ("mapping_refusal", 4),
             ],
         ),
         ("wost/src/arch/x86_64/cpu.rs", &[("PAGE_INVALIDATIONS", 3)]),

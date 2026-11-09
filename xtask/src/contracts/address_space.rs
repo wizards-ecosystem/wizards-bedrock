@@ -7,8 +7,8 @@ use syn::{
 use crate::paths::Paths;
 
 use super::{
-    discarded_address_space_reclaims, expression_is_ident, is_named_path, path_ends_with,
-    require_error, require_success, rust_sources_below,
+    discarded_address_space_reclaims, expression_is_ident, is_named_path, module_source,
+    path_ends_with, require_error, require_success, rust_sources_below,
 };
 
 /// A type that names `mem`'s `AddressSpace`, however deeply it is nested.
@@ -461,8 +461,7 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
 ";
 
     let paths = Paths::discover().expect("workspace paths");
-    let paging = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/paging.rs"))
-        .expect("paging source");
+    let paging = module_source(paths.root(), "wost/src/arch/x86_64/paging.rs");
     let syntax = syn::parse_file(&paging).expect("parse paging source");
     let stack_top = syntax
         .items
@@ -511,7 +510,7 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
             .then_some(KernelStackTop(identity))"
     ));
     assert!(!paging.contains("impl Drop for TaskStackPin"));
-    assert_eq!(paging.matches("TASK_STACK_PIN").count(), 4);
+    assert_eq!(paging.matches("TASK_STACK_PIN").count(), 5);
     assert_eq!(paging.matches("TASK_STACK_PIN.lock_leaf()").count(), 2);
     assert_eq!(
         paging.matches("TASK_STACK_PIN.force_unlock(panic)").count(),
@@ -617,8 +616,7 @@ const _: () = assert!(size_of::<AddressSpace>() <= 256);
 ";
 
     let paths = Paths::discover().expect("workspace paths");
-    let paging = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/paging.rs"))
-        .expect("paging source");
+    let paging = module_source(paths.root(), "wost/src/arch/x86_64/paging.rs");
     let syntax = syn::parse_file(&paging).expect("parse paging source");
     let address_space = syntax
         .items
