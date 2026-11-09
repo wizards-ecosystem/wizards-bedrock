@@ -570,6 +570,14 @@ fn method_on(expression: &Expr, receiver: &str, method: &str) -> bool {
         if call.method == method && call.args.is_empty() && path_is(&call.receiver, receiver))
 }
 
+fn widened_method_on(expression: &Expr, receiver: &str, method: &str) -> bool {
+    matches!(expression, Expr::Call(call)
+        if call.args.len() == 1
+            && matches!(&*call.func, Expr::Path(path)
+                if path.qself.is_none() && path_is_exact(&path.path, &["u64", "from"]))
+            && method_on(&call.args[0], receiver, method))
+}
+
 fn call_path(expression: &Expr, segments: &[&str]) -> bool {
     matches!(expression, Expr::Call(call)
         if call.args.is_empty()
@@ -851,7 +859,7 @@ fn each_recovery_adapter_binds_the_live_architectural_values() {
             "faulting_address",
         ]
     ));
-    assert!(method_on(
+    assert!(widened_method_on(
         initialized_field(attempt, "vector"),
         "frame",
         "vector"
@@ -951,7 +959,7 @@ fn each_recovery_adapter_binds_the_live_architectural_values() {
             "faulting_address",
         ]
     ));
-    assert!(method_on(
+    assert!(widened_method_on(
         initialized_field(attempt, "vector"),
         "frame",
         "vector"

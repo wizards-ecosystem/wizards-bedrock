@@ -411,7 +411,7 @@ pub fn recover_write_protection_probe(
         return false;
     };
     let attempt = trap_cause::RecoveryAttempt {
-        vector: frame.vector(),
+        vector: u64::from(frame.vector()),
         frame_error_code: frame.error_code(),
         code_selector: frame.code_selector(),
         instruction_pointer: at,

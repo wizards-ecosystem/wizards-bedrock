@@ -54,7 +54,7 @@ fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
 fn on_trap(frame: &TrapFrame) {
     // Dispatched on the decoded cause, not the raw vector (D-81): the
     // architecture's meaning is read once, in `libs/trap-cause`, host-tested.
-    let cause = TrapCause::decode(frame.vector() as u8, frame.error_code());
+    let cause = TrapCause::decode(frame.vector(), frame.error_code());
     match cause {
         TrapCause::Fault(trap_cause::Fault::Breakpoint) => {
             #[cfg(feature = "selftest")]
@@ -408,7 +408,8 @@ impl Recorder {
         self.rax.store(frame.rax(), Ordering::Relaxed);
         self.frame_address
             .store(interrupt::live_frame_address(), Ordering::Relaxed);
-        self.vector.store(frame.vector(), Ordering::Relaxed);
+        self.vector
+            .store(u64::from(frame.vector()), Ordering::Relaxed);
         self.error_code.store(frame.error_code(), Ordering::Relaxed);
         self.code_selector
             .store(frame.code_selector(), Ordering::Relaxed);
