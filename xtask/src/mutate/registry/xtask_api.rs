@@ -1943,8 +1943,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1820,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu.rs\",\n        owner: \"qemu::RunDmaCoverage\",\n        member: \"create\",\n        implemented_trait: None,\n        produced: \"qemu::RunDmaCoverage\",\n    },",
-        replace: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu.rs\",\n        owner: \"qemu::RunDmaCoverage\",\n        member: \"arguments\",\n        implemented_trait: None,\n        produced: \"qemu::RunDmaCoverage\",\n    },",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu/run_files.rs\",\n        owner: \"qemu::run_files::RunDmaCoverage\",\n        member: \"create\",\n        implemented_trait: None,\n        produced: \"qemu::run_files::RunDmaCoverage\",\n    },",
+        replace: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu/run_files.rs\",\n        owner: \"qemu::run_files::RunDmaCoverage\",\n        member: \"arguments\",\n        implemented_trait: None,\n        produced: \"qemu::run_files::RunDmaCoverage\",\n    },",
         breaks: "the API audit activates DMA-attestation cleanup at a non-producing method",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2273,7 +2273,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2394,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\"xtask/src/qemu.rs\", \"qemu::QemuLifetime\"),",
+        find: "    (\"xtask/src/qemu/selftest.rs\", \"qemu::selftest::QemuLifetime\"),",
         replace: "",
         breaks: "the private QEMU lifetime destructor loses exact API review",
         reddens: Caught::HostTest {
@@ -2284,7 +2284,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2395,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu.rs\",\n        owner: \"qemu::QemuLifetime\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"qemu::QemuLifetime\",\n    },",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/qemu/selftest.rs\",\n        owner: \"qemu::selftest::QemuLifetime\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"qemu::selftest::QemuLifetime\",\n    },",
         replace: "",
         breaks: "the QEMU lifetime producer loses exact API review",
         reddens: Caught::HostTest {

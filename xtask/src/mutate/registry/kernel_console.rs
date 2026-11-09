@@ -82,7 +82,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "three unanswered keystroke rounds end as a red check, not a hang",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_human_wait_fits_the_harness_patience",
+            name: "qemu::tests::kernel_source::the_human_wait_fits_the_harness_patience",
         },
     },
     Mutation {
@@ -93,7 +93,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the kernel writes PanicInfo bytes around the single-line adapter",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -104,7 +104,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the UART reports a refused byte as transmitted",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_uart_reports_every_refused_byte_to_its_formatter",
+            name: "qemu::tests::kernel_source::the_uart_reports_every_refused_byte_to_its_formatter",
         },
     },
     Mutation {
@@ -115,7 +115,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the UART formatter hides a refused carriage return",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_uart_reports_every_refused_byte_to_its_formatter",
+            name: "qemu::tests::kernel_source::the_uart_reports_every_refused_byte_to_its_formatter",
         },
     },
     Mutation {
@@ -126,7 +126,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the UART formatter hides a refused payload byte",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_uart_reports_every_refused_byte_to_its_formatter",
+            name: "qemu::tests::kernel_source::the_uart_reports_every_refused_byte_to_its_formatter",
         },
     },
     Mutation {
@@ -306,7 +306,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the syscall gate aliases the local APIC timer's assigned vector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_c_header_and_the_kernel_agree_about_the_abi",
+            name: "contracts::abi::the_c_header_and_the_kernel_agree_about_the_abi",
         },
     },
     Mutation {

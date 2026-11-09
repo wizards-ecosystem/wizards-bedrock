@@ -73,7 +73,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the failed-check producer emits the wrong serial severity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -84,7 +84,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the kernel PASS verdict producer drifts from the parser contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -95,7 +95,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the kernel FAIL verdict producer drifts from the parser contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -106,7 +106,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the kernel performance-baseline producer drifts from the parser contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -119,7 +119,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shared interactive marker producer emits the wrong serial severity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -130,7 +130,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the storage-delay producer literal drifts from its injection enrollment",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -141,7 +141,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the injected-keystroke producer literal drifts from its injection enrollment",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -152,7 +152,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the translated-keystroke producer literal drifts from its injection enrollment",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
@@ -225,7 +225,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the polled-reader witness samples poller progress after an earlier condition ends its wait",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {
