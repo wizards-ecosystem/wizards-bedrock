@@ -433,7 +433,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "each clock update discards its fractional nanosecond carry",
         reddens: Caught::HostTest {
             package: "timebase",
-            name: "published_tests::a_thousand_updates_do_not_drift_from_one_conversion",
+            name: "tests::published::a_thousand_updates_do_not_drift_from_one_conversion",
         },
     },
     Mutation {
@@ -664,7 +664,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "unioning a held handle right removes it",
         reddens: Caught::HostTest {
             package: "handle-space",
-            name: "rights_tests::attenuation_only_narrows",
+            name: "tests::rights::attenuation_only_narrows",
         },
     },
     Mutation {
