@@ -77,7 +77,7 @@ before its abstraction is anything but a guess.
 | 7 | **The VFS.** A directory abstraction over resolve, read and enumerate (`modify` is reserved for a future write path), enum dispatch, and path resolution that cannot ascend | Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | Done |
 | 9 | **The file handle.** File `READ`, directory `TRAVERSE`/`ENUMERATE`, offsets per operation, and a `Read` submission later deferred by D-200 | Done |
-| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks, D-135), the adversarial audit, the roadmap and this file's closing section | Planned slices complete; the finite foundation register and current VMware close remain open |
+| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks, D-135), the adversarial audit, the roadmap and this file's closing section | Planned slices complete. v0.2.0 qualified the diagnostic image (D-449); the foundation stays open on PW-006 and PW-010 |
 
 ---
 
@@ -1389,5 +1389,5 @@ D-364 separates supported table depth from effective coverage: SAGAW chooses
 the walk and every mapped byte stays below both AGAW and MGAW. A supported
 deeper table may serve narrower addresses. Two 2026-10-07 VMware boots on
 `96c906d` refused width selection and each failed 61 of 271 checks; they are
-diagnostic evidence. Fresh hardware proof remains PW-578 and PW-571. D-365
-repairs CRLF and runtime VMX validation; the CPU discrepancy remains PW-580.
+diagnostic evidence. v0.2.0 closed PW-578 and PW-571 on `694061f` (D-449).
+D-365 repairs CRLF and runtime VMX validation; v0.2.0 also closed PW-580.

@@ -191,9 +191,10 @@ independently rendered effective-state digests and all seven plan-exact split
 probe counts. The identities prove every reported execution thread's validated
 default-profile wiring and the preflight proves the
 pinned resolver's enforcement; neither claims identical CLI shapes or that the
-proprietary model selected each negative operation. The route still needs its
-clean frozen qualification run. `PW-001` and the release remain open; D-425
-made that run a continuous campaign rather than a release prerequisite.
+proprietary model selected each negative operation. v0.2.0 qualified
+`694061f` with the curated sweep (PW-001) and declared the continuous Deep
+campaign `deferred` (D-425, D-449). A later bundle includes a Deep record only
+when that record names the release commit.
 
 ## Threat model and trust boundaries
 
@@ -300,9 +301,9 @@ That implementation maps the same lower-half user subtree in a full and stripped
 and maps only dedicated page-bounded assembly, hardware-read descriptors,
 non-secret routing state and guarded scrubbed entry stacks above it in the
 stripped root. The implementation, forced-paired machine checks and retained
-mutations are present, but release qualification remains open until the
-complete sweep and fresh VMware evidence close `PW-580` and `PW-706`; no
-absent architectural bit is inferred.
+mutations are present. v0.2.0 closed `PW-580` and `PW-706` on `694061f`:
+the fresh VMware qualifications read capabilities `0x44` and selected paired
+roots (D-449). No absent architectural bit is inferred.
 Ring 3 also needs enforced NX and a calibrated clock, while missing SMEP, SMAP
 or UMIP is a supported diagnostic fallback (D-201). Where an x2APIC MSR write
 offers no readback, the architecture is trusted (limit 2).

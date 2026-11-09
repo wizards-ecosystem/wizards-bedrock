@@ -88,7 +88,6 @@ docs/            design docs, one per subsystem
 supply-chain/    SPDX SBOM, third-party notices, license texts
 fixtures/abi-pressure/   native ABI transcription
 handoff/         route-neutral envelope fixtures
-experiments/     optional host tools outside the workspace and the gate
 ```
 
 | Crate | What it owns |

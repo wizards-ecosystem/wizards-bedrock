@@ -587,6 +587,9 @@ review limit states exactly what automation still cannot decide.
 
 ## What is left
 
+v0.2.0 closed every row its gate proved (D-449); the order below is for the
+next qualified release.
+
 The failed `f28428a`, `44e1c89`, `0dfcb76` and `20cf580` reports are
 historical repair inventories, not qualification. The `0dfcb76` run caught
 2,132 of 2,133 with no inconclusive outcome but left permanent mutation 2,036
