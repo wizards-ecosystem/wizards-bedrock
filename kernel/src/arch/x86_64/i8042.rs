@@ -610,13 +610,13 @@ impl Controller {
         if REFUSE_FLUSH.swap(false, Ordering::Relaxed) {
             return false;
         }
-        (0..FLUSH_LIMIT).any(|_| {
-            if Port::read(&mut self.control) & status::OUTPUT_FULL == 0 {
-                return true;
-            }
-            let _ = Port::read(&mut self.data);
-            false
-        })
+        drains(
+            FLUSH_LIMIT,
+            || Port::read(&mut self.control) & status::OUTPUT_FULL != 0,
+            || {
+                let _ = Port::read(&mut self.data);
+            },
+        )
     }
 
     fn write_data(&mut self, byte: u8) -> bool {
@@ -644,4 +644,29 @@ impl Controller {
     fn wait_writable(&mut self) -> bool {
         (0..RESPONSE_ATTEMPTS).any(|_| Port::read(&mut self.control) & status::INPUT_FULL == 0)
     }
+}
+
+/// Discard up to `limit` bytes, then whether the output buffer reads empty.
+fn drains(limit: u32, mut full: impl FnMut() -> bool, mut discard: impl FnMut()) -> bool {
+    for _ in 0..limit {
+        if !full() {
+            return true;
+        }
+        discard();
+    }
+    !full()
+}
+
+/// Whether a backlog of exactly the flush bound drains and one more does not.
+#[cfg(feature = "selftest")]
+pub(crate) fn a_backlog_of_the_flush_bound_drains_for_test() -> bool {
+    let drains_backlog = |backlog: u32| {
+        let waiting = core::cell::Cell::new(backlog);
+        drains(
+            FLUSH_LIMIT,
+            || waiting.get() != 0,
+            || waiting.set(waiting.get() - 1),
+        )
+    };
+    drains_backlog(FLUSH_LIMIT) && !drains_backlog(FLUSH_LIMIT + 1)
 }
