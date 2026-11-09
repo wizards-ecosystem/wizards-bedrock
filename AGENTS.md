@@ -1,9 +1,10 @@
 # Working in this repository
 
 This is The Wizard's Bedrock, a Rust kernel built design-first: **docs in `docs/` come before
-code**, and every choice is recorded in `docs/004-decision-log.md` with its
-alternatives and rationale. Read the relevant doc before changing a subsystem,
-and add an ADR when you make a decision worth remembering.
+code**, and every choice is recorded with its alternatives and rationale in a
+file in `docs/decisions/`, indexed by `docs/004-decision-log.md`. Read the relevant
+doc before changing a subsystem, and add a decision file when you make a decision
+worth remembering.
 
 ## Current roadmap gate
 
