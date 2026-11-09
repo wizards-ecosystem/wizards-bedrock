@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, ExprMethodCall, ImplItem, Item, Stmt};
 
@@ -84,6 +86,42 @@ fn production_bodies(syntax: &syn::File) -> Vec<(String, &syn::Block)> {
         }
     }
     found
+}
+
+/// Rust sources below `directory` outside out-of-line `#[cfg(test)] mod name;` modules.
+fn production_sources_below(directory: &Path) -> Vec<PathBuf> {
+    let sources = rust_sources_below(directory);
+    let mut test_modules = Vec::new();
+    for path in &sources {
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        let syntax = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
+        let children = if path
+            .file_name()
+            .is_some_and(|name| name == "mod.rs" || name == "lib.rs" || name == "main.rs")
+        {
+            path.parent().expect("source below its root").to_path_buf()
+        } else {
+            path.with_extension("")
+        };
+        for item in &syntax.items {
+            if let Item::Mod(module) = item
+                && module.content.is_none()
+                && cfg_test(&module.attrs)
+            {
+                test_modules.push(children.join(module.ident.to_string()));
+            }
+        }
+    }
+    sources
+        .into_iter()
+        .filter(|path| {
+            !test_modules
+                .iter()
+                .any(|module| path.starts_with(module) || *path == module.with_extension("rs"))
+        })
+        .collect()
 }
 
 fn checked_reopens(relative: &str, source: &str) -> Vec<String> {
@@ -205,7 +243,7 @@ fn every_source_identity_names_the_git_that_established_it() {
     let paths = Paths::discover().expect("workspace paths");
     let mut violations = Vec::new();
     let mut publishers = 0;
-    for path in rust_sources_below(&paths.root().join("xtask/src")) {
+    for path in production_sources_below(&paths.root().join("xtask/src")) {
         let relative = path
             .strip_prefix(paths.root())
             .expect("source below the workspace")
@@ -251,7 +289,7 @@ fn every_source_identity_names_the_git_that_established_it() {
 fn a_checked_path_is_opened_only_without_following_links() {
     let paths = Paths::discover().expect("workspace paths");
     let mut violations = Vec::new();
-    for path in rust_sources_below(&paths.root().join("xtask/src")) {
+    for path in production_sources_below(&paths.root().join("xtask/src")) {
         let relative = path
             .strip_prefix(paths.root())
             .expect("source below the workspace")
@@ -293,4 +331,32 @@ fn a_checked_path_is_opened_only_without_following_links() {
         let checked_open = fixture.replace("File::open(path)", "open_real_file(path, \"fixture\")");
         assert!(checked_reopens("fixture.rs", &checked_open).is_empty());
     }
+}
+
+#[test]
+fn an_out_of_line_test_module_is_read_as_test_code() {
+    let root = crate::test_support::reserve_temp_directory("wizard-production-sources");
+    std::fs::create_dir_all(root.join("tests")).expect("fixture test module directory");
+    std::fs::create_dir_all(root.join("kept")).expect("fixture production module directory");
+    for (relative, contents) in [
+        ("lib.rs", "mod kept;\n#[cfg(test)]\nmod tests;\n"),
+        ("kept.rs", "mod inner;\n#[cfg(test)]\nmod tests;\n"),
+        ("kept/inner.rs", "fn production() {}\n"),
+        ("kept/tests.rs", "fn fixture() {}\n"),
+        ("tests.rs", "mod nested;\n"),
+        ("tests/nested.rs", "fn fixture() {}\n"),
+    ] {
+        std::fs::write(root.join(relative), contents).expect("fixture source");
+    }
+    let found = production_sources_below(&root)
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .expect("source below the fixture")
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<Vec<_>>();
+    std::fs::remove_dir_all(&root).expect("removing production-source fixture");
+    assert_eq!(found, ["kept/inner.rs", "kept.rs", "lib.rs"]);
 }
