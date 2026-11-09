@@ -69,7 +69,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 14,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "        Ok(reports\n            .into_iter()\n            .max_by_key(|(_, report)| report.sequence))",
         replace: "        Ok(reports\n            .into_iter()\n            .min_by_key(|(_, report)| report.sequence))",
         breaks: "a historical passing mutation report can outrank a newer failed parent sweep",
@@ -135,7 +135,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 372,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    file.try_lock().with_context(|| {",
         replace: "    std::io::Result::<()>::Ok(()).with_context(|| {",
         breaks: "two mutation sweeps can use one sandbox concurrently",
@@ -146,7 +146,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 373,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "    write_source(&destination, &bytes)?;\n    ensure!(\n        read_bounded_bytes(\n            &destination,\n            MAX_TRACKED_FILE_BYTES,\n            \"restored mutation source\",\n        )? == bytes,",
         replace: "    ensure!(\n        read_bounded_bytes(\n            &destination,\n            MAX_TRACKED_FILE_BYTES,\n            \"restored mutation source\",\n        )? == bytes,",
         breaks: "resume leaves the interrupted mutation applied in its sandbox",
@@ -157,7 +157,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 374,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: ".max_by_key(|journal| journal.generation)",
         replace: ".min_by_key(|journal| journal.generation)",
         breaks: "resume chooses stale progress over the newest complete journal generation",
@@ -179,7 +179,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 376,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "            verdict: if survived == 0 && inconclusive == 0 {",
         replace: "            verdict: if true || survived == 0 && inconclusive == 0 {",
         breaks: "a failed mutation sweep is serialized as a passing report",
@@ -190,7 +190,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 377,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "            .max_by_key(|(_, report)| report.sequence))",
         replace: "            .min_by_key(|(_, report)| report.sequence))",
         breaks: "an older passing sweep hides the newest failed mutation report",
@@ -212,7 +212,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 379,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "            self.commit == baseline.commit\n                && self.registry == registry",
         replace: "            true\n                && self.registry == registry",
         breaks: "a passing mutation report is accepted for another commit",
@@ -223,7 +223,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 380,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "        ensure!(\n            report.encode_with_checksum() == text,\n            \"mutation report is not in its canonical encoding\"\n        );",
         replace: "        let _ = text;",
         breaks: "a checksummed mutation report has multiple accepted byte encodings",
@@ -335,7 +335,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // that inlined them can tell the two apart.
     Mutation {
         id: 543,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "    write_source(&destination, &bytes)?;\n    ensure!(",
         replace: "    std::fs::copy(&source, &destination)\n        .map(|_| ())\n        .with_context(|| format!(\"writing {}\", destination.display()))?;\n    ensure!(",
         breaks: "a restored mutation carries its snapshot timestamp backwards",
@@ -346,7 +346,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 544,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "        let bytes = read_bounded_bytes(&source, MAX_TRACKED_FILE_BYTES, \"tracked mutation file\")?;\n        write_source(&destination, &bytes)?;",
         replace: "        std::fs::copy(&source, &destination)\n            .map(|_| ())\n            .with_context(|| format!(\"copying {}\", source.display()))?;",
         breaks: "a re-copied workspace carries its snapshot timestamps backwards",
@@ -368,7 +368,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 635,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    let metadata = std::fs::symlink_metadata(child)\n        .with_context(|| format!(\"inspecting {}\", child.display()))?;\n    require_real_directory_metadata(child, &metadata, label)?;\n    require_canonical_child(parent, child, label)",
         replace: "    let metadata = std::fs::symlink_metadata(child)\n        .with_context(|| format!(\"inspecting {}\", child.display()))?;\n    let _unchecked_mutation_child = (metadata, label);\n    Ok(())",
         breaks: "a redirected mutation-state ancestor can reach recursive cleanup outside target",
@@ -401,7 +401,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 655,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    require_real_file_metadata(path, &metadata, label)?;\n    require_canonical_child(parent, path, label)?;",
         replace: "    let _unchecked_direct_file = (&metadata, label);",
         breaks: "a redirected tracked file can receive an isolated mutation outside the workspace",
@@ -412,7 +412,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 656,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "    fn require_directory(&self) -> Result<()> {\n        ensure!(\n            canonical_existing_real_directory(&self.directory, \"mutation journal directory\")?\n                == self.directory,\n            \"mutation journal directory changed after it was opened\"\n        );\n        Ok(())\n    }",
         replace: "    fn require_directory(&self) -> Result<()> { Ok(()) }",
         breaks: "a replaced journal directory can receive durable mutation state after store open",
@@ -423,7 +423,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 657,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "            if require_direct_file_if_present(&self.directory, path, label)? {\n                std::fs::remove_file(path)\n                    .with_context(|| format!(\"removing old {label} {}\", path.display()))?;\n            }\n            std::fs::rename(&temporary, path).with_context(|| {\n                format!(\n                    \"publishing {label} {} as {}\",\n                    temporary.display(),\n                    path.display()\n                )\n            })?;",
         replace: "            let _unchecked_destination =\n                require_direct_file_if_present(&self.directory, path, label)?;\n            std::fs::write(path, bytes)\n                .with_context(|| format!(\"overwriting {label} {}\", path.display()))?;",
         breaks: "a hard-linked report target can be overwritten instead of atomically replaced",
@@ -456,7 +456,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 675,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {\n    write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))\n}",
         replace: "fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {\n    std::fs::write(destination, bytes)\n        .with_context(|| format!(\"overwriting {}\", destination.display()))\n}",
         breaks: "a workspace mutation can overwrite an external hard-linked inode",
@@ -467,7 +467,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 677,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    Ok(SweepLock { _file: file })",
         replace: "    file.set_len(0)\n        .with_context(|| format!(\"truncating mutation lock {}\", path.display()))?;\n    Ok(SweepLock { _file: file })",
         breaks: "a mutation lock can truncate an external hard-linked inode",
@@ -511,7 +511,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 796,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(false);\n    for component in components {",
         replace: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(true);\n    for component in components {",
         breaks: "recursive cleanup accepts a real final directory behind a redirected repository ancestor",
@@ -522,7 +522,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 806,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"        let (_, destination) =
             prepare_confined_destination(&root, relative, "mutation copy destination")?;"#,
         replace: r#"        let destination = root.join(relative);
@@ -537,7 +537,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 807,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"    let (parent, destination) =
         prepare_confined_destination(&workspace, relative, "mutation restore destination")?;"#,
         replace: r#"    let destination = workspace.join(relative);
@@ -553,7 +553,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 808,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"    if let Err(error) = result {
         restore_previous_file(parent, destination, previous.as_deref(), label)
             .with_context(|| format!("{error:#}; rolling back failed {label} publication"))?;
@@ -570,7 +570,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 809,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"            if require_direct_file_if_present(parent, staging, label).with_context(|| {
                 format!(
                     "after {operation_error:#}; validating failed {label} {}",
@@ -594,7 +594,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 810,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"                remove(staging).with_context(|| {
                     format!(
                         "after {operation_error:#}; removing failed {label} {}",
@@ -621,7 +621,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 916,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "            length <= MAX_TRACKED_FILE_BYTES,",
         replace: "            true,",
         breaks: "one oversized tracked mutation source reaches the hashing stream",
@@ -632,7 +632,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 917,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "            total <= MAX_TRACKED_TREE_BYTES,",
         replace: "            true,",
         breaks: "the tracked mutation source tree has no aggregate byte ceiling",
@@ -643,7 +643,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 918,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "            .update(&(name.len() as u64).to_le_bytes())",
         replace: "            .update(&0u64.to_le_bytes())",
         breaks: "the tracked-source digest omits its path-length frame",
@@ -682,7 +682,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1217,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"    ensure!(
         initial <= maximum,
         "{label} is {initial} bytes, exceeding its {maximum}-byte limit"
@@ -699,7 +699,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1218,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"    ensure!(
         observed <= maximum,
         "{label} grew beyond its {maximum}-byte limit while being hashed"
@@ -716,7 +716,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1219,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: r#"    ensure!(
         observed == initial
             && file
@@ -735,7 +735,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1380,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "            ensure!(\n                previous < raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
         replace: "            ensure!(\n                previous != raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
         breaks: "a reversed Git tracked-path inventory is accepted as sorted",
@@ -790,7 +790,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1416,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/journal.rs",
         find: "            body.push_str(&format!(\"id {id} \"));",
         replace: "            let _ = id;",
         breaks: "the durable mutation report omits which mutation each outcome names",
@@ -955,7 +955,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1494,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "    let mut command = crate::git::resolved()?.command(root);\n    command.args(args);\n    let output = crate::bounded_process::output_with_limit(command, GIT_TIMEOUT, label, maximum)",
         replace: "    let mut command = std::process::Command::new(\"git\");\n    crate::bounded_process::isolate_git_environment(&mut command);\n    command.current_dir(root).args(args);\n    let output = crate::bounded_process::output_with_limit(command, GIT_TIMEOUT, label, maximum)",
         breaks: "the mutation sweep asks whatever `git` PATH names about its source",
@@ -966,7 +966,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1497,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)\n",
         replace: "",
         breaks: "a checked artifact is opened through a link swapped in after its check",
@@ -977,7 +977,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1498,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/tree.rs",
         find: "    require_real_file_metadata(path, &metadata, label)?;\n    require_opened_entry(path, &metadata, label)?;",
         replace: "    require_opened_entry(path, &metadata, label)?;",
         breaks: "an opened link is read without proving the handle names a real file",
@@ -1142,7 +1142,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2045,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "            [\"rev-parse\", \"--path-format=absolute\", \"--git-path\", \"index\"],",
         replace: "            [\"rev-parse\", \"--path-format=relative\", \"--git-path\", \"index\"],",
         breaks: "the hardened Git index query can return a process-directory-relative name to an absolute-only confinement boundary",
@@ -1153,7 +1153,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2046,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "    ensure!(\n        path.is_absolute(),\n        \"{label} is not an absolute path: {}\",\n        path.display()\n    );",
         replace: "    let _unchecked_absolute_path = path;",
         breaks: "a process-directory-relative Git control-file name can enter workspace confinement",
@@ -1164,7 +1164,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2047,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "    let relative_parent = parent\n        .strip_prefix(&root)\n        .with_context(|| format!(\"{label} is outside {}\", root.display()))?;",
         replace: "    let relative_parent = parent\n        .strip_prefix(&parent)\n        .with_context(|| format!(\"{label} is outside {}\", root.display()))?;",
         breaks: "an absolute Git control-file path outside the workspace can be rebound to a same-named file inside it",
@@ -1263,7 +1263,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2411,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "fn digest_file_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<String>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = open_real_file(path, label)?;\n",
         replace: "fn digest_file_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<String>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = File::open(path)?;\n",
         breaks: "digest_file_with admits a final-component link instead of a checked real-file handle",
@@ -1274,7 +1274,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2412,
-        file: "xtask/src/mutate/workspace.rs",
+        file: "xtask/src/mutate/workspace/source.rs",
         find: "        let mut file = open_real_file(&path, \"tracked mutation source\")?;",
         replace: "        let mut file = File::open(&path)?;",
         breaks: "tracked source hashing follows a path after confinement validation",
