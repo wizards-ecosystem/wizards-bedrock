@@ -159,10 +159,7 @@ fn on_trap(frame: &TrapFrame) {
     }
 }
 
-fn claim_eoi<'frame>(
-    frame: &'frame TrapFrame,
-    vector: x86_apic::vector::InterruptVector,
-) -> apic::EoiToken<'frame> {
+fn claim_eoi(frame: &TrapFrame, vector: x86_apic::vector::InterruptVector) -> apic::EoiToken<'_> {
     let Some(token) = apic::claim_eoi(frame, vector) else {
         panic!(
             "vector {:#x} has no matching APIC in-service authority",

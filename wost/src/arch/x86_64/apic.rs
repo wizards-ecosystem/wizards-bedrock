@@ -734,10 +734,7 @@ fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
 }
 
 /// Claim the exact APIC dismissal owned by the innermost live trap.
-pub fn claim_eoi<'frame>(
-    frame: &'frame TrapFrame,
-    vector: InterruptVector,
-) -> Option<EoiToken<'frame>> {
+pub fn claim_eoi(frame: &TrapFrame, vector: InterruptVector) -> Option<EoiToken<'_>> {
     if interrupt::are_enabled()
         || !interrupt::is_live_frame(frame)
         || frame.vector() != vector.get()
@@ -767,7 +764,7 @@ pub fn claim_eoi<'frame>(
 /// Dismiss the exact vector represented by `token`.
 ///
 /// A changed target returns the token unchanged and performs no write.
-pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<'frame>> {
+pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
     if !x86_apic::in_service::may_complete(
         interrupt_state(),
         frame_liveness(token.frame),
