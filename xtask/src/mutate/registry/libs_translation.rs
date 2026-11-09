@@ -402,7 +402,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "stack layout regrows a second speculative overlap policy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {

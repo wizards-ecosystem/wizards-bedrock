@@ -59,7 +59,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a published queue index can become visible before its payload",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::release_publication_excludes_an_old_payload",
+            name: "contracts::publication::tests::release_publication_excludes_an_old_payload",
         },
     },
     Mutation {
@@ -70,7 +70,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a shared payload read can move before its published index",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::acquire_consumption_excludes_an_early_payload_read",
+            name: "contracts::publication::tests::acquire_consumption_excludes_an_early_payload_read",
         },
     },
     Mutation {
@@ -81,7 +81,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a hostile ring-3 writer races a non-atomic volatile publication load",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -92,7 +92,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a hostile ring-3 writer races a non-atomic volatile publication store",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -103,7 +103,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the compiler can merge or elide shared payload writes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::every_shared_payload_copy_is_volatile",
+            name: "contracts::publication::tests::every_shared_payload_copy_is_volatile",
         },
     },
     Mutation {
@@ -120,7 +120,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a thread-lock guard cannot be released on another CPU",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::guard_types_do_not_cross_cpus",
+            name: "contracts::apic::guard_types_do_not_cross_cpus",
         },
     },
     Mutation {
@@ -131,7 +131,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a live spin guard keeps its thread-context borrow until Drop",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::a_live_spin_guard_keeps_the_thread_context_borrowed",
+            name: "contracts::address_space::a_live_spin_guard_keeps_the_thread_context_borrowed",
         },
     },
     Mutation {
@@ -194,7 +194,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a shared-memory operation refusal can become silently discardable",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::fallible_operation_bools_stay_must_use",
+            name: "contracts::errors::fallible_operation_bools_stay_must_use",
         },
     },
     Mutation {
@@ -237,7 +237,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an unpartitioned shared allocation retains a raw byte-write door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::shared_memory_access_requires_one_partition",
+            name: "contracts::apic::shared_memory_access_requires_one_partition",
         },
     },
     Mutation {
@@ -248,7 +248,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a shared ring payload write can enter its publication-word partition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::every_shared_payload_copy_is_volatile",
+            name: "contracts::publication::tests::every_shared_payload_copy_is_volatile",
         },
     },
     Mutation {
@@ -267,7 +267,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "spin-lock discipline becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -278,7 +278,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "physical-memory admission regrows a speculative first-region shortcut",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -289,7 +289,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "physical-memory admission regrows a speculative region-tail shortcut",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -300,7 +300,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an unpartitioned shared allocation can be cloned into overlapping access modes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::shared_memory_access_requires_one_partition",
+            name: "contracts::apic::shared_memory_access_requires_one_partition",
         },
     },
     Mutation {
@@ -311,7 +311,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a volatile-byte shared-memory partition can be duplicated",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::shared_memory_access_requires_one_partition",
+            name: "contracts::apic::shared_memory_access_requires_one_partition",
         },
     },
     Mutation {
@@ -322,7 +322,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a ring-partitioned shared allocation can be duplicated",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::shared_memory_access_requires_one_partition",
+            name: "contracts::apic::shared_memory_access_requires_one_partition",
         },
     },
     Mutation {
@@ -333,7 +333,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a publication load can address bytes outside its immutable word partition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -344,7 +344,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a publication store can address bytes outside its immutable word partition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -355,7 +355,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "publication-word end arithmetic can wrap into an apparently in-range address",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -366,7 +366,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a publication word can extend beyond its retained allocation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -377,7 +377,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "publication pointer arithmetic can wrap away from its checked direct-map base",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -388,7 +388,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a misaligned publication word reaches an indivisibility-dependent instruction",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
+            name: "contracts::publication::tests::publication_words_cross_the_hostile_alias_boundary_without_a_rust_object",
         },
     },
     Mutation {
@@ -399,7 +399,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the free-frame observer reaches the shipped wost API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -410,7 +410,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the owned-segment byte observer reaches shipped wost",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -421,7 +421,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the slab-evidence helper executes on the shipped refill path",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {
@@ -432,7 +432,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the panic path forgets to reclaim the PCI configuration lock",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_static_lock_in_wost_is_reclaimed_by_the_panic_path",
+            name: "contracts::doors::every_static_lock_in_wost_is_reclaimed_by_the_panic_path",
         },
     },
     Mutation {
@@ -443,7 +443,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "framebuffer shadow commits a row before device publication succeeds",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+            name: "contracts::doors::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
         },
     },
     Mutation {
@@ -454,7 +454,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a live VT-d entry is published through eight byte stores",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -465,7 +465,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a permission byte becomes visible before the atomic VT-d entry publication",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -476,7 +476,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the table writer exposes a permission byte before its atomic qword publication",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -527,7 +527,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "mapping acquisition returns success without recording its frame-retention lease",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -538,7 +538,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "proved revocation leaves the old segment mapping lease live",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -549,7 +549,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the dma_mapping_owner_drop_retains_for_test machine-only driver becomes a shipped public API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -560,7 +560,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the published_iommu_table_drop_retains_for_test machine-only driver becomes a shipped public API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {

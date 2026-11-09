@@ -196,7 +196,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the committed handoff payload cannot differ from its pinned digest",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "handoff::the_committed_handoff_fixture_is_self_contained",
+            name: "contracts::handoff::the_committed_handoff_fixture_is_self_contained",
         },
     },
     Mutation {
@@ -207,7 +207,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "platform ABI v1 cannot silently contain a version-two wire region",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "handoff::platform_v1_is_entry_ring_and_time_v1",
+            name: "contracts::handoff::platform_v1_is_entry_ring_and_time_v1",
         },
     },
     Mutation {

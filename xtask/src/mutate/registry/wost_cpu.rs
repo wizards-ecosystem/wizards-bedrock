@@ -33,7 +33,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a thread's address space is installed by the switch",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::task_switch_loads_cr3_under_its_guard_before_context_state",
+            name: "contracts::paging::task_switch_loads_cr3_under_its_guard_before_context_state",
         },
     },
     // A ring-3 copy-window target must retire rather than enter kernel recovery (D-126).
@@ -45,7 +45,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy recovery adapter fabricates its saved code selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -84,7 +84,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the buffer flush is the instruction, not its neighbour",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::buffer_clear_assembly_writes_are_guarded",
+            name: "contracts::machine::buffer_clear_assembly_writes_are_guarded",
         },
     },
     // A second fabricated launch reuses the stack address retired by the first.
@@ -147,7 +147,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a spin-lock guard cannot restore another CPU's interrupt flag",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::guard_types_do_not_cross_cpus",
+            name: "contracts::apic::guard_types_do_not_cross_cpus",
         },
     },
     Mutation {
@@ -182,7 +182,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "release TSS stack writes lose their alignment precondition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -224,7 +224,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "task initialization can publish and pin an arena it never validated",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::task_init_validates_the_arena_before_publication_and_pinning",
+            name: "contracts::paging::task_init_validates_the_arena_before_publication_and_pinning",
         },
     },
     Mutation {
@@ -243,7 +243,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy fault window reaches the shipped wost graph",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -254,7 +254,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the INVLPG door accepts a raw noncanonical address",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::invlpg_requires_canonical_address_authority",
+            name: "contracts::paging::invlpg_requires_canonical_address_authority",
         },
     },
     Mutation {
@@ -273,7 +273,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the write-protection recovery door loses its pinned must-use contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::fallible_operation_bools_stay_must_use",
+            name: "contracts::errors::fallible_operation_bools_stay_must_use",
         },
     },
     Mutation {
@@ -284,7 +284,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy adapter substitutes the trap vector for the saved error word",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -295,7 +295,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy adapter can rewrite its saved live instruction pointer",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -306,7 +306,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy recovery window starts at its exclusive end label",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -317,7 +317,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the write-protection adapter substitutes its expected target for live CR2",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -328,7 +328,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the write-protection recovery target end can wrap through zero",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+            name: "contracts::recovery::each_recovery_adapter_binds_the_live_architectural_values",
         },
     },
     Mutation {
@@ -339,7 +339,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy resume writer ignores its opaque fixup authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::every_instruction_pointer_writer_requires_its_opaque_authority",
+            name: "contracts::recovery::every_instruction_pointer_writer_requires_its_opaque_authority",
         },
     },
     Mutation {
@@ -350,7 +350,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "live-frame authority authenticates every origin except the active one",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
+            name: "contracts::recovery::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
         },
     },
     Mutation {
@@ -361,7 +361,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
+            name: "contracts::recovery::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
         },
     },
     Mutation {
@@ -372,7 +372,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the write-protection resume writer can reach a stale trap frame",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
+            name: "contracts::recovery::every_instruction_pointer_writer_refuses_a_non_live_frame_first",
         },
     },
     Mutation {
@@ -383,7 +383,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the user-copy fixup address field becomes constructible across its parent module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -394,7 +394,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority gains derived duplication",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -405,7 +405,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority gains an associated raw-address constructor",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -416,7 +416,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority gains a module-level typed forgery surface",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -427,7 +427,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority gains an imported constructor alias",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -438,7 +438,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the write-protection fixup field becomes constructible across its parent module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -449,7 +449,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority is minted from the end of the fault window instead of the linker fixup",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -460,7 +460,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "user-copy recovery authority observes a value other than its private address",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -471,7 +471,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a qualified inherent impl restores a raw user-copy recovery constructor",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -482,7 +482,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a nested module restores a raw user-copy recovery constructor",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -571,7 +571,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "recovery fixup authority escapes its validated adapter through a private helper",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "recovery_contracts::recovery_authority_cannot_be_built_from_a_raw_address",
+            name: "contracts::recovery::recovery_authority_cannot_be_built_from_a_raw_address",
         },
     },
     Mutation {
@@ -582,7 +582,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "per-CPU lock acquisition accounting becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -593,7 +593,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "per-CPU lock release accounting becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -604,7 +604,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the page-table-base instruction door is visible beyond its architecture module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -615,7 +615,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the extended-state save instruction door is visible beyond its architecture module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -626,7 +626,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the extended-state restore instruction door is visible beyond its architecture module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -637,7 +637,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the checked thread-base writer is visible outside its sole caller module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -648,7 +648,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the page-table-base raw instruction loses its explicit unsafe contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -659,7 +659,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the extended-state save instruction loses its explicit unsafe contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -670,7 +670,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the extended-state restore instruction loses its explicit unsafe contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -681,7 +681,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the checked thread-base writer becomes a second raw instruction door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -692,7 +692,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "an unreviewed unrestricted public unsafe instruction door enters wost",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::unsafe_instruction_doors_match_their_compiled_caller_scope",
+            name: "contracts::doors::unsafe_instruction_doors_match_their_compiled_caller_scope",
         },
     },
     Mutation {
@@ -711,7 +711,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the removed general unwalked user-copy door returns to the shipped API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -722,7 +722,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the fixed user-copy recovery driver reaches the shipped wost graph",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -765,7 +765,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "a machine-only hardware observer reaches the shipped wost API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+            name: "contracts::machine::machine_probes_are_absent_from_the_shipped_wost_graph",
         },
     },
     Mutation {
@@ -776,7 +776,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "buffer-clear evidence writes reach shipped return paths",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::buffer_clear_state_is_selftest_only",
+            name: "contracts::machine::buffer_clear_state_is_selftest_only",
         },
     },
     Mutation {
@@ -787,7 +787,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the trap-return buffer-clear tally ignores its self-test selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::buffer_clear_assembly_writes_are_guarded",
+            name: "contracts::machine::buffer_clear_assembly_writes_are_guarded",
         },
     },
     Mutation {
@@ -798,7 +798,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "the first-user-entry buffer-clear tally ignores its self-test selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::buffer_clear_assembly_writes_are_guarded",
+            name: "contracts::machine::buffer_clear_assembly_writes_are_guarded",
         },
     },
     Mutation {

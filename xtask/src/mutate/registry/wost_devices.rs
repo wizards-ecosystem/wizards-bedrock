@@ -67,7 +67,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a timer-disarm proof can be duplicated",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_completion_and_disarm_authorities_are_linear",
+            name: "contracts::apic::apic_completion_and_disarm_authorities_are_linear",
         },
     },
     Mutation {
@@ -99,7 +99,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one PCI command transaction does not hold the configuration port pair exactly once",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_command_transactions_hold_the_port_pair_once",
+            name: "contracts::pci::pci_command_transactions_hold_the_port_pair_once",
         },
     },
     Mutation {
@@ -110,7 +110,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an APIC consumer reads a dependent vector before acquiring Ready",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_ready_publication_precedes_dependent_vector_reads",
+            name: "contracts::apic::apic_ready_publication_precedes_dependent_vector_reads",
         },
     },
     Mutation {
@@ -121,7 +121,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "self-interrupt delivery reads its vector outside ordered Ready publication",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_ready_publication_precedes_dependent_vector_reads",
+            name: "contracts::apic::apic_ready_publication_precedes_dependent_vector_reads",
         },
     },
     Mutation {
@@ -132,7 +132,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "APIC readiness publishes after initialization interrupt exclusion unwinds",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_ready_publication_precedes_dependent_vector_reads",
+            name: "contracts::apic::apic_ready_publication_precedes_dependent_vector_reads",
         },
     },
     Mutation {
@@ -173,7 +173,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the PCI adapter regrows an unchecked command-register write helper",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -184,7 +184,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "hardware PCI function authority exposes a safe cloning route",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -195,7 +195,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "hardware PCI function authority exposes a safe duplication door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -206,7 +206,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "read-only PCI enumeration disappears behind crate visibility",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -217,7 +217,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the sole public PCI function-authority claim door disappears",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -228,7 +228,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an APIC completion authority can be cloned while its original remains live",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_completion_and_disarm_authorities_are_linear",
+            name: "contracts::apic::apic_completion_and_disarm_authorities_are_linear",
         },
     },
     Mutation {
@@ -239,7 +239,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a timer-disarm proof can be cloned without satisfying Copy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::apic_completion_and_disarm_authorities_are_linear",
+            name: "contracts::apic::apic_completion_and_disarm_authorities_are_linear",
         },
     },
     Mutation {
@@ -250,7 +250,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "NVMe DMA authority reads readiness twice instead of controller enable",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::nvme_bus_master_authority_is_fresh_linear_and_mapping_bound",
+            name: "contracts::dma::nvme::nvme_bus_master_authority_is_fresh_linear_and_mapping_bound",
         },
     },
     Mutation {
@@ -261,7 +261,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "one fresh NVMe observation can authorize more than one DMA transition",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -272,7 +272,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "safe callers can forge NVMe DMA authority from unrelated values",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -283,7 +283,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a raw PCI address can enable DMA without mapping or quiescence authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -294,7 +294,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the framebuffer MMIO base observer reaches shipped wost",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {
@@ -305,7 +305,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "hardware PCI function authority exposes its private claim identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -316,7 +316,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "framebuffer slice publication bypasses checked volatile MMIO with a raw copy",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+            name: "contracts::doors::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
         },
     },
     Mutation {
@@ -327,7 +327,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "checked MMIO publishes more words than the span it proved",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+            name: "contracts::doors::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
         },
     },
     Mutation {
@@ -338,7 +338,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "checked MMIO words are published with ordinary writes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+            name: "contracts::doors::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
         },
     },
     Mutation {
@@ -349,7 +349,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "hardware PCI function authority splits one claim into two",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -360,7 +360,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a static can hold hardware PCI function authority outside every claim",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -371,7 +371,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "hardware PCI function authority inherits a duplicating trait default",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -382,7 +382,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a renamed import hides a hardware PCI authority duplication door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     Mutation {
@@ -393,7 +393,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a macro can generate PCI authority doors the inventory cannot see",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+            name: "contracts::pci::pci_function_authority_has_audited_mints_and_no_duplication_door",
         },
     },
     // The unit caches the stale translation, so the device reaches the frame
@@ -422,7 +422,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a domain proof is minted while translation is off",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+            name: "contracts::dma::vtd::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
         },
     },
     Mutation {
@@ -433,7 +433,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the unit is programmed but translation is never switched on",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -452,7 +452,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a DMA domain proof can be forged without a unit",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -475,7 +475,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a DMA domain proof can be copied and outlive the release that invalidated it",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -486,7 +486,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a DMA domain proof can be cloned and kept past the admission it permits",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::pci_configuration_writes_require_function_authority",
+            name: "contracts::pci::pci_configuration_writes_require_function_authority",
         },
     },
     Mutation {
@@ -497,7 +497,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the production DMA mapping seam ignores the unit's MGAW",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_enforces_effective_coverage_before_the_walk",
+            name: "contracts::dma::vtd::vtd_mapping_enforces_effective_coverage_before_the_walk",
         },
     },
     Mutation {
@@ -516,7 +516,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an uncertain VT-d unmap returns device-reachable frames to safe ownership",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_enforces_effective_coverage_before_the_walk",
+            name: "contracts::dma::vtd::vtd_mapping_enforces_effective_coverage_before_the_walk",
         },
     },
     Mutation {
@@ -535,7 +535,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the bounded VT-d drain can inspect more live records than the hardware inventory",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+            name: "contracts::dma::nvme::device_fault_reporting_is_bounded_and_follows_retirement",
         },
     },
     Mutation {
@@ -546,7 +546,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the VT-d fault drain uses an unbounded constant instead of the hardware inventory",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+            name: "contracts::dma::nvme::device_fault_reporting_is_bounded_and_follows_retirement",
         },
     },
     Mutation {
@@ -557,7 +557,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the VT-d fault drain never spends its advertised record budget",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+            name: "contracts::dma::nvme::device_fault_reporting_is_bounded_and_follows_retirement",
         },
     },
     Mutation {
@@ -568,7 +568,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pre-boundary DMA is not drained after the empty root becomes active",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+            name: "contracts::dma::vtd::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
         },
     },
     Mutation {
@@ -579,7 +579,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d takeover accepts firmware that reports no interrupt-remapping platform support",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -590,7 +590,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d takeover accepts interrupt remapping without queued IEC invalidation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -601,7 +601,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d takeover accepts a unit that cannot isolate x2APIC interrupt destinations",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -612,7 +612,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "interrupt-table publication accepts a readback with unexpected mode or size bits",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -623,7 +623,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the invalidation queue is read back before the hardware enables queued invalidation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -634,7 +634,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an interrupt-isolation proof is minted while interrupt remapping is off",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -645,7 +645,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an interrupt-isolation proof is minted while compatibility-format interrupts bypass remapping",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -656,7 +656,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an interrupt-isolation proof is minted while the private invalidation queue is still live",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -667,7 +667,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an interrupt-isolation proof accepts present or otherwise nonzero remapping entries",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -678,7 +678,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "bus mastering accepts interrupt isolation minted for a different function",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -689,7 +689,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an interrupt-isolation proof can be forged without a live VT-d owner",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -700,7 +700,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "interrupt isolation is minted without reading back the deny-all table entries",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -711,7 +711,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "queued invalidation remains enabled after the private IEC flush completes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -722,7 +722,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "interrupt remapping is enabled without globally invalidating the interrupt-entry cache",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -733,7 +733,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the pre-sti audit ignores pending vectors in the highest local APIC IRR bank",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -752,7 +752,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d takeover leaves its non-remapped fault-event MSI armed",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -763,7 +763,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "interrupt isolation is minted while VT-d can inject its own fault-event vector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -774,7 +774,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "fault-event masking clears the register's preserved bits",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -785,7 +785,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "candidate retirement opens an unrestricted-DMA interval before fallback",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+            name: "contracts::dma::vtd::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
         },
     },
     Mutation {
@@ -836,7 +836,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "partial VT-d mapping rollback recycles frames without draining older DMA",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -847,7 +847,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "drained VT-d invalidation skips the unit's required write-buffer flush",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -858,7 +858,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the VT-d DMA drain command requests neither read nor write draining",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -869,7 +869,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d preflight accepts units whose register invalidations are architecturally ignored",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -880,7 +880,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a drained VT-d invalidation treats an ignored global request as complete",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -891,7 +891,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d context invalidation accepts an ignored global request",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -902,7 +902,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "ordinary VT-d IOTLB invalidation accepts an ignored global request",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+            name: "contracts::dma::vtd::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
     Mutation {
@@ -913,7 +913,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "device-read-only DMA authority also grants device writes",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -924,7 +924,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the range walk silently widens every leaf mapping",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -935,7 +935,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "device-write-only DMA authority also grants device reads",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -946,7 +946,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a leaf is transiently published with bidirectional DMA authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
     Mutation {
@@ -957,7 +957,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the post-allocation firmware-state preflight is removed before the first unit write",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {
@@ -968,7 +968,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the platform reports a quiet 8237 pair without masking it",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
+            name: "contracts::dma::entry::memory_initialization_requires_the_exhaustive_entry_dma_boundary",
         },
     },
     Mutation {
@@ -979,7 +979,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the entry ISA fence leaves the first controller's inherited DMA command state intact",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -990,7 +990,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the entry ISA fence leaves the second controller's inherited DMA command state intact",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1001,7 +1001,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA requester is accepted without masking the first controller's channels",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1012,7 +1012,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA requester is accepted without masking the second controller's channels",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1023,7 +1023,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA fence reads an address register instead of the first controller's status",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1034,7 +1034,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA fence reads an address register instead of the second controller's status",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1045,7 +1045,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the second controller's pending requests are replaced by the first controller's status",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1056,7 +1056,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the second controller's request bits miss the combined pending-request mask",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1067,7 +1067,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a later unit-wide ISA fence accepts a stale quiet result without remasking",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1078,7 +1078,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA quiet predicate accepts missing permanent controller ownership",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1089,7 +1089,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the entry ISA fence discards the controller capabilities instead of retaining them",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1100,7 +1100,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an uncertain entry fence loses its permanent ISA controller owner on refusal",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1111,7 +1111,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the permanent paired ISA claim reserves the wrong first-controller port window",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1122,7 +1122,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the ISA quiet predicate uses status sampled before both channel masks were written",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
+            name: "contracts::dma::isa::isa_dma_adapter_clears_masks_and_rechecks_both_controllers",
         },
     },
     Mutation {
@@ -1133,7 +1133,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "VT-d walks and publishes after the segment rejected its mapping lease",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1144,7 +1144,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "different VT-d units collapse onto one synthetic mapping-owner identity",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1155,7 +1155,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "successful mapping relinquishes its frame-retention lease while leaves remain live",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1166,7 +1166,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a proved mapping rollback keeps an otherwise reclaimable segment tagged",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1177,7 +1177,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "unmapping edits tables before proving that this unit owns the segment lease",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1188,7 +1188,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "unmapping releases the segment lease before clearing leaves or draining DMA",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1199,7 +1199,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "successful leaf revocation never releases its exact mapping lease",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
+            name: "contracts::dma::vtd::vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps",
         },
     },
     Mutation {
@@ -1210,7 +1210,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the DmaDomain admission proof escapes the live unit borrow",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::vtd_admission_proofs_borrow_the_exact_live_unit",
+            name: "contracts::doors::vtd_admission_proofs_borrow_the_exact_live_unit",
         },
     },
     Mutation {
@@ -1221,7 +1221,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the InterruptIsolation admission proof escapes the live unit borrow",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::vtd_admission_proofs_borrow_the_exact_live_unit",
+            name: "contracts::doors::vtd_admission_proofs_borrow_the_exact_live_unit",
         },
     },
     Mutation {

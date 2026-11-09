@@ -348,7 +348,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a later kernel completion can publish past an unwritten earlier slot",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::kernel_completion_producers_publish_in_tail_order",
+            name: "contracts::publication::tests::kernel_completion_producers_publish_in_tail_order",
         },
     },
     Mutation {
@@ -383,7 +383,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "two terminal paths can claim one pending operation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "publication::tests::every_terminal_path_claims_one_settlement_until_publication",
+            name: "contracts::publication::tests::every_terminal_path_claims_one_settlement_until_publication",
         },
     },
     Mutation {
@@ -394,7 +394,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a missing reserved completion wedges only release kernels",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -416,7 +416,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "release scheduler-time accounting stops proving its unconditional update",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -504,7 +504,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "OpenAt reaches filesystem and controller locks from RingEnter trap context",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::open_at_storage_work_is_deferred_out_of_trap_context",
+            name: "contracts::doors::open_at_storage_work_is_deferred_out_of_trap_context",
         },
     },
     Mutation {

@@ -189,7 +189,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the timer interrupt arm drops its completion authority without issuing EOI",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_interrupt_arm_has_explicit_completion_ownership",
+            name: "contracts::apic::every_interrupt_arm_has_explicit_completion_ownership",
         },
     },
     Mutation {
@@ -200,7 +200,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the keyboard interrupt arm drops its completion authority without issuing EOI",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_interrupt_arm_has_explicit_completion_ownership",
+            name: "contracts::apic::every_interrupt_arm_has_explicit_completion_ownership",
         },
     },
     Mutation {
@@ -251,7 +251,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "input translation policy becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -262,7 +262,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "i8042 translation policy becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -273,7 +273,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "cursor display regains a redundant unnamed visibility boolean",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -284,7 +284,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "cursor hiding regains a redundant unnamed visibility boolean",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -295,7 +295,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "cursor visibility regrows one boolean-shaped operation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -317,7 +317,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an I/O APIC programming door recovers a raw vector parameter",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::one_assignment_and_typed_signatures_own_every_vector_door",
+            name: "contracts::apic::one_assignment_and_typed_signatures_own_every_vector_door",
         },
     },
     Mutation {
@@ -336,7 +336,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the routed-GSI evidence parameter reaches the shipped helper",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {
@@ -347,7 +347,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shipped ping path wraps completion authority for test-only recovery",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_interrupt_arm_has_explicit_completion_ownership",
+            name: "contracts::apic::every_interrupt_arm_has_explicit_completion_ownership",
         },
     },
     Mutation {
@@ -366,7 +366,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a production driver claims a port by its number",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_kernel_code_claims_no_port_by_number",
+            name: "contracts::ports::production_kernel_code_claims_no_port_by_number",
         },
     },
     Mutation {
@@ -377,7 +377,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a production driver claims a port through an imported raw door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_kernel_code_claims_no_port_by_number",
+            name: "contracts::ports::production_kernel_code_claims_no_port_by_number",
         },
     },
     Mutation {
@@ -388,7 +388,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a production driver claims a port through a renamed raw door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_kernel_code_claims_no_port_by_number",
+            name: "contracts::ports::production_kernel_code_claims_no_port_by_number",
         },
     },
     Mutation {
@@ -399,7 +399,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a production driver claims a port through a renamed port module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_kernel_code_claims_no_port_by_number",
+            name: "contracts::ports::production_kernel_code_claims_no_port_by_number",
         },
     },
     Mutation {
@@ -410,7 +410,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a production driver claims a port through a glob import of the port module",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_kernel_code_claims_no_port_by_number",
+            name: "contracts::ports::production_kernel_code_claims_no_port_by_number",
         },
     },
     Mutation {
@@ -421,7 +421,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the keyboard poller sleeps forever when timer state exists but interrupts stay off",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+            name: "contracts::dma::entry::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
         },
     },
     Mutation {

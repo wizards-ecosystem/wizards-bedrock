@@ -9,7 +9,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a setup refusal discards address-space cleanup",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::known_fallible_results_are_not_discarded",
+            name: "contracts::errors::known_fallible_results_are_not_discarded",
         },
     },
     // The identity read as a translating controller would rewrite it, which is
@@ -163,7 +163,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an allocator ownership snapshot spans interrupt epochs",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::allocator_ledgers_hold_one_interrupt_epoch",
+            name: "contracts::machine::allocator_ledgers_hold_one_interrupt_epoch",
         },
     },
     Mutation {
@@ -174,7 +174,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a multi-owner spawn ledger spans interrupt epochs",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::allocator_ledgers_hold_one_interrupt_epoch",
+            name: "contracts::machine::allocator_ledgers_hold_one_interrupt_epoch",
         },
     },
     Mutation {

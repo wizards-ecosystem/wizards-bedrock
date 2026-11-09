@@ -1909,7 +1909,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the evidence manifest omits the Git that established its source",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_source_identity_names_the_git_that_established_it",
+            name: "contracts::sources::every_source_identity_names_the_git_that_established_it",
         },
     },
     Mutation {
@@ -1920,7 +1920,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a qualification record omits the Git that established its source",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_source_identity_names_the_git_that_established_it",
+            name: "contracts::sources::every_source_identity_names_the_git_that_established_it",
         },
     },
     Mutation {
@@ -1931,7 +1931,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a qualification record commits without re-measuring Git",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_source_identity_names_the_git_that_established_it",
+            name: "contracts::sources::every_source_identity_names_the_git_that_established_it",
         },
     },
     Mutation {
@@ -1942,7 +1942,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "an evidence manifest publishes without re-measuring Git",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::every_source_identity_names_the_git_that_established_it",
+            name: "contracts::sources::every_source_identity_names_the_git_that_established_it",
         },
     },
     Mutation {

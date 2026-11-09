@@ -52,7 +52,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a second production owner can bind one address space",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::one_production_owner_binds_and_retires_each_address_space",
+            name: "contracts::address_space::one_production_owner_binds_and_retires_each_address_space",
         },
     },
     Mutation {
@@ -63,7 +63,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a committed process discards its live address-space binding",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::one_production_owner_binds_and_retires_each_address_space",
+            name: "contracts::address_space::one_production_owner_binds_and_retires_each_address_space",
         },
     },
     Mutation {
@@ -74,7 +74,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "zombie reclamation skips release of a live address-space binding",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::one_production_owner_binds_and_retires_each_address_space",
+            name: "contracts::address_space::one_production_owner_binds_and_retires_each_address_space",
         },
     },
     Mutation {
@@ -85,7 +85,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "address-space reclamation withholds its exact release evidence",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::one_production_owner_binds_and_retires_each_address_space",
+            name: "contracts::address_space::one_production_owner_binds_and_retires_each_address_space",
         },
     },
     Mutation {
@@ -367,7 +367,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a broken handle commitment is terminal only in debug kernels",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -378,7 +378,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a release syscall can return with an unanswered stale register frame",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::production_invariants_are_not_debug_only",
+            name: "contracts::errors::production_invariants_are_not_debug_only",
         },
     },
     Mutation {
@@ -413,7 +413,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "zombie abandonment accounting silently saturates",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::known_fallible_results_are_not_discarded",
+            name: "contracts::errors::known_fallible_results_are_not_discarded",
         },
     },
     Mutation {
@@ -476,7 +476,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "scheduler current-thread eligibility becomes an unnamed boolean selector",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -527,7 +527,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "mapping-reclaim evidence state reaches the shipped kernel",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+            name: "contracts::machine::machine_evidence_writes_are_absent_from_shipped_paths",
         },
     },
     Mutation {

@@ -730,7 +730,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "DMA ownership authority can be duplicated before publication or completion",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::dma_ownership_and_publication_authorities_are_linear",
+            name: "contracts::apic::dma_ownership_and_publication_authorities_are_linear",
         },
     },
     Mutation {
@@ -741,7 +741,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "NVMe submission/completion doorbell selection becomes positional boolean state",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -752,7 +752,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure NVMe DMA state regains boolean hardware-quiescence authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -763,7 +763,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure NVMe DMA state regains boolean retention authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -774,7 +774,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "NVMe DMA closure regains a redundant unnamed state boolean",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -796,7 +796,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pure DMA state renames terminal closure into a hardware-recycling claim",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "typed_arguments::selected_state_selectors_use_semantic_types",
+            name: "contracts::typed_arguments::selected_state_selectors_use_semantic_types",
         },
     },
     Mutation {
@@ -807,7 +807,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "FAT cluster-to-sector internals regrow as speculative public arithmetic",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -818,7 +818,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "FAT table-position internals regrow as speculative public arithmetic",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -829,7 +829,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "raw FAT entry decoding regrows as a speculative public policy door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -840,7 +840,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "raw FAT directory-slot decoding regrows as a speculative public policy door",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -851,7 +851,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "pathname component policy regrows as a speculative public predicate",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -862,7 +862,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "DMA ownership state can be copied as well as cloned",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::dma_ownership_and_publication_authorities_are_linear",
+            name: "contracts::apic::dma_ownership_and_publication_authorities_are_linear",
         },
     },
     Mutation {
@@ -873,7 +873,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a device-publication proof can be cloned while its source remains live",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::dma_ownership_and_publication_authorities_are_linear",
+            name: "contracts::apic::dma_ownership_and_publication_authorities_are_linear",
         },
     },
     Mutation {
@@ -884,7 +884,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a device-publication proof can be copied without consuming its authority",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::dma_ownership_and_publication_authorities_are_linear",
+            name: "contracts::apic::dma_ownership_and_publication_authorities_are_linear",
         },
     },
     Mutation {
@@ -939,7 +939,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a public error enum can regain an exhaustive downstream variant contract",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::public_error_enums_have_stable_standard_contracts",
+            name: "contracts::errors::public_error_enums_have_stable_standard_contracts",
         },
     },
     Mutation {

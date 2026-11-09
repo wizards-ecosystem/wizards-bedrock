@@ -117,7 +117,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "ACPI checksum validation regrows as speculative public surface",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -128,7 +128,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the test-only ACPI checksum forger becomes a production API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
@@ -139,7 +139,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "memory-map allocation policy regrows a speculative aggregate API",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
+            name: "contracts::address_space::speculative_and_callback_authority_does_not_regrow",
         },
     },
     Mutation {
