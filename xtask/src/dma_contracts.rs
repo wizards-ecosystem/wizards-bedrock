@@ -1963,10 +1963,10 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("self.switch_queued_invalidation(true)?")
         .expect("QI enable");
     let queue_readback = invalidation
-        .find("let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;")
+        .find("let observed_queue = read_u64(&self.registers, vtd::IQA)?;")
         .expect("IQA readback");
     let tail = invalidation
-        .find("write_u64(&mut self.registers, vtd::IQT as usize, INVALIDATION_TAIL)?;")
+        .find("write_u64(&mut self.registers, vtd::IQT, INVALIDATION_TAIL)?;")
         .expect("QI tail publication");
     let queue_disable = invalidation
         .find("let disabled = self.switch_queued_invalidation(false);")
@@ -1979,7 +1979,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .split_once("fn switch_translation(")
         .expect("fault-event interrupt mask end")
         .0;
-    assert!(fault_mask.contains("let prior = read_u32(&self.registers, vtd::FECTL as usize)?;"));
+    assert!(fault_mask.contains("let prior = read_u32(&self.registers, vtd::FECTL)?;"));
     assert!(fault_mask.contains("prior | fault_event_control::MASK"));
     assert!(fault_mask.contains("fault_event_control::masked(observed)"));
 

@@ -13,6 +13,7 @@ use pci_config::{
     ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe,
     Window, header,
 };
+use register_bits::u16_halves;
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
 use crate::arch::current::vtd::{DmaDomain, InterruptIsolation};
@@ -447,7 +448,7 @@ impl FunctionClaim {
 
     /// The vendor and device word read while the function was claimed.
     pub const fn identity(&self) -> (u16, u16) {
-        (self.identity as u16, (self.identity >> 16) as u16)
+        u16_halves(self.identity)
     }
 }
 
@@ -505,12 +506,12 @@ pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
     let at = at.function_base();
     Port::write(address, at.bits());
     let identity = Port::read(data);
-    if pci_config::is_absent(identity as u16) {
+    if pci_config::is_absent(u16_halves(identity).0) {
         return Err(ClaimError::Absent);
     }
     let header_at = at.at(header::HEADER_TYPE).ok_or(ClaimError::Unavailable)?;
     Port::write(address, header_at.bits());
-    let header = HeaderType::from_bits((Port::read(data) >> 16) as u8);
+    let header = HeaderType::from_bits(Port::read(data).to_le_bytes()[2]);
     let authority = functions.claim(at, header).map_err(|reason| match reason {
         FunctionClaimError::Taken => ClaimError::Taken,
         FunctionClaimError::NoRoom => ClaimError::NoRoom,

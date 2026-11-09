@@ -108,6 +108,7 @@ experiments/     optional host tools outside the workspace and the gate
 | `pixel` | framebuffer pixel layout |
 | `port-space` | I/O port reservations, including wide `out`s |
 | `ps2-keys` | PS/2 set 2 scancodes and the US layout |
+| `register-bits` | register widths, with reserved high bits ignored on read |
 | `ring-proto` | ring admission and shared-memory layout |
 | `slab-layout` | heap size classes |
 | `stack-layout` | guarded stack geometry |

@@ -125,6 +125,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "pixel",
     "port-space",
     "ps2-keys",
+    "register-bits",
     "ring-proto",
     "slab-layout",
     "stack-layout",
