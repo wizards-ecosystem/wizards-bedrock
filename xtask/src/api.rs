@@ -425,6 +425,11 @@ const REVIEWED_DEPENDENCY_BUILD_SCRIPTS: &[(&str, &str, &str)] = &[
         "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
     ),
     (
+        "nix",
+        "0.29.0",
+        "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46",
+    ),
+    (
         "num-traits",
         "0.2.19",
         "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
