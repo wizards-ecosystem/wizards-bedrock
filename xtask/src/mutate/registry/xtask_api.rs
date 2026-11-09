@@ -2152,7 +2152,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2038,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\n        \"xtask/src/security_deep/config_tests.rs\",\n        \"security_deep::config_tests::Fixture\",\n    ),",
+        find: "    (\n        \"xtask/src/security_deep/tests/config.rs\",\n        \"security_deep::tests::config::Fixture\",\n    ),",
         replace: "",
         breaks: "the Deep configuration fixture destructor leaves the reviewed implicit-drop type boundary",
         reddens: Caught::HostTest {
@@ -2163,7 +2163,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2039,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\n        \"xtask/src/security_deep/config_tests.rs\",\n        \"security_deep::config_tests::ReservedRoot\",\n    ),",
+        find: "    (\n        \"xtask/src/security_deep/tests/config.rs\",\n        \"security_deep::tests::config::ReservedRoot\",\n    ),",
         replace: "",
         breaks: "the reserved Deep test root destructor leaves the reviewed implicit-drop type boundary",
         reddens: Caught::HostTest {
@@ -2174,7 +2174,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2040,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\n        \"xtask/src/security_deep/protocol_tests.rs\",\n        \"security_deep::protocol_tests::Fixture\",\n    ),",
+        find: "    (\n        \"xtask/src/security_deep/tests/protocol.rs\",\n        \"security_deep::tests::protocol::Fixture\",\n    ),",
         replace: "",
         breaks: "the Deep protocol fixture destructor leaves the reviewed implicit-drop type boundary",
         reddens: Caught::HostTest {
@@ -2196,7 +2196,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2042,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/config_tests.rs\",\n        owner: \"security_deep::config_tests::Fixture\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::config_tests::Fixture\",\n    },",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/tests/config.rs\",\n        owner: \"security_deep::tests::config::Fixture\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::tests::config::Fixture\",\n    },",
         replace: "",
         breaks: "the Deep configuration fixture constructor leaves the reviewed drop-producer boundary",
         reddens: Caught::HostTest {
@@ -2207,7 +2207,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2043,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/config_tests.rs\",\n        owner: \"security_deep::config_tests::ReservedRoot\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::config_tests::ReservedRoot\",\n    },",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/tests/config.rs\",\n        owner: \"security_deep::tests::config::ReservedRoot\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::tests::config::ReservedRoot\",\n    },",
         replace: "",
         breaks: "the reserved Deep test root constructor leaves the reviewed drop-producer boundary",
         reddens: Caught::HostTest {
@@ -2218,7 +2218,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2044,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/protocol_tests.rs\",\n        owner: \"security_deep::protocol_tests::Fixture\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::protocol_tests::Fixture\",\n    },",
+        find: "    ReviewedDropProducer {\n        relative: \"xtask/src/security_deep/tests/protocol.rs\",\n        owner: \"security_deep::tests::protocol::Fixture\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"security_deep::tests::protocol::Fixture\",\n    },",
         replace: "",
         breaks: "the Deep protocol fixture constructor leaves the reviewed drop-producer boundary",
         reddens: Caught::HostTest {

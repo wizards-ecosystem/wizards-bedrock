@@ -704,7 +704,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "private provider children pass through the ordinary task parser instead of the early wrapper dispatcher",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "security_deep::tests::wrapper_dispatch_is_early_and_strips_control_environment",
+            name: "security_deep::tests::wrapper::wrapper_dispatch_is_early_and_strips_control_environment",
         },
     },
     Mutation {

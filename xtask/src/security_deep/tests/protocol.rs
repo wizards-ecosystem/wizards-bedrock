@@ -1642,7 +1642,7 @@ fn run_fake(mode: &str) -> Result<FakeRun> {
     command
         .args([
             "--exact",
-            "security_deep::protocol_tests::fake_mcp_child",
+            "security_deep::tests::protocol::fake_mcp_child",
             "--ignored",
             "--nocapture",
             "--quiet",

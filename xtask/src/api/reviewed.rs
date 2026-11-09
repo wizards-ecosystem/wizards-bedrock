@@ -68,16 +68,16 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
         "security_deep::PrivateCodexCredential",
     ),
     (
-        "xtask/src/security_deep/config_tests.rs",
-        "security_deep::config_tests::Fixture",
+        "xtask/src/security_deep/tests/config.rs",
+        "security_deep::tests::config::Fixture",
     ),
     (
-        "xtask/src/security_deep/config_tests.rs",
-        "security_deep::config_tests::ReservedRoot",
+        "xtask/src/security_deep/tests/config.rs",
+        "security_deep::tests::config::ReservedRoot",
     ),
     (
-        "xtask/src/security_deep/protocol_tests.rs",
-        "security_deep::protocol_tests::Fixture",
+        "xtask/src/security_deep/tests/protocol.rs",
+        "security_deep::tests::protocol::Fixture",
     ),
 ];
 
@@ -287,25 +287,25 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "security_deep::PrivateCodexCredential",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/security_deep/config_tests.rs",
-        owner: "security_deep::config_tests::Fixture",
+        relative: "xtask/src/security_deep/tests/config.rs",
+        owner: "security_deep::tests::config::Fixture",
         member: "new",
         implemented_trait: None,
-        produced: "security_deep::config_tests::Fixture",
+        produced: "security_deep::tests::config::Fixture",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/security_deep/config_tests.rs",
-        owner: "security_deep::config_tests::ReservedRoot",
+        relative: "xtask/src/security_deep/tests/config.rs",
+        owner: "security_deep::tests::config::ReservedRoot",
         member: "new",
         implemented_trait: None,
-        produced: "security_deep::config_tests::ReservedRoot",
+        produced: "security_deep::tests::config::ReservedRoot",
     },
     ReviewedDropProducer {
-        relative: "xtask/src/security_deep/protocol_tests.rs",
-        owner: "security_deep::protocol_tests::Fixture",
+        relative: "xtask/src/security_deep/tests/protocol.rs",
+        owner: "security_deep::tests::protocol::Fixture",
         member: "new",
         implemented_trait: None,
-        produced: "security_deep::protocol_tests::Fixture",
+        produced: "security_deep::tests::protocol::Fixture",
     },
 ];
 

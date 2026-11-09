@@ -134,7 +134,7 @@ fn fake_command() -> Result<Command> {
     let mut command = Command::new(std::env::current_exe().context("finding test executable")?);
     command.args([
         "--exact",
-        "security_deep::config_tests::fake_codex_app_child",
+        "security_deep::tests::config::fake_codex_app_child",
         "--ignored",
         "--nocapture",
         "--quiet",
