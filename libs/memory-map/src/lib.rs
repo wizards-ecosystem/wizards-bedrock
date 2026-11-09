@@ -498,6 +498,9 @@ impl MemoryMap {
     }
 
     fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
+        if start > end {
+            return false;
+        }
         // A long admitted span can jump over a nested claim, so arbitrate every
         // region intersecting the requested range before walking its union.
         if start < end
@@ -1375,6 +1378,19 @@ mod tests {
             map.allows_device_mapping(0x1000, 0x3000),
             "an empty usable region blocked a range that contains no byte of it"
         );
+    }
+
+    #[test]
+    fn an_inverted_span_is_not_covered() {
+        let map = MemoryMap::try_from_regions([MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 4,
+            kind: MemoryKind::Usable,
+        }])
+        .expect("a usable run");
+
+        assert!(!map.covers_memory(0x3000, 0x1000));
+        assert_eq!(map.direct_map_cache(0x3000, 0x1000), None);
     }
 
     #[test]
