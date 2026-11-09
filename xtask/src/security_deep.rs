@@ -13976,7 +13976,6 @@ mod tests {
         remove_entry_no_follow(&root, &metadata).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
     fn codex_runtime_inventory_is_exact_and_complete() {
         assert_eq!(CODEX_RUNTIME_FILES.len(), 4);
@@ -14047,7 +14046,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn private_child_command_specs_pin_arguments_and_strip_wrapper_controls() {
         let executable = Path::new(r"C:\runtime\tool.exe");
