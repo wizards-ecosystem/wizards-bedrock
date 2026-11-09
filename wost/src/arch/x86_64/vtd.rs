@@ -359,21 +359,6 @@ pub enum Retargeting {
     Retained(VtdError),
 }
 
-/// Whether the DMAR table reports platform interrupt remapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformInterruptRemapping {
-    /// The DMAR table reports it.
-    Present,
-    /// The DMAR table does not report it.
-    Absent,
-}
-
-impl PlatformInterruptRemapping {
-    const fn is_present(self) -> bool {
-        matches!(self, Self::Present)
-    }
-}
-
 /// The ownership-preserving result of establishing one VT-d domain.
 #[derive(Debug)]
 #[must_use = "a post-transition VT-d owner must be installed or quarantined"]
@@ -434,7 +419,7 @@ impl Vtd {
     /// hardware does not accept the root-table pointer or translation.
     pub fn establish_deny_all(
         registers: ReleasableDevice,
-        platform_interrupt_remapping: PlatformInterruptRemapping,
+        platform_interrupt_remapping: bool,
     ) -> Establishment {
         let plan = match Plan::read(&registers, platform_interrupt_remapping) {
             Ok(plan) => plan,
@@ -1246,7 +1231,7 @@ impl Plan {
     /// guessing at firmware queue or interrupt-remapping quiescence (D-389).
     fn read(
         registers: &ReleasableDevice,
-        platform_interrupt_remapping: PlatformInterruptRemapping,
+        platform_interrupt_remapping: bool,
     ) -> Result<Self, VtdError> {
         let version = Version::from_bits(read_u32(registers, vtd::VERSION)?);
         if !version.register_invalidation_supported() {
@@ -1265,7 +1250,7 @@ impl Plan {
         if !capability.dma_draining() {
             return Err(VtdError::NoDmaDraining);
         }
-        if !platform_interrupt_remapping.is_present() {
+        if !platform_interrupt_remapping {
             return Err(VtdError::NoPlatformInterruptRemapping);
         }
         if !extended.interrupt_remapping() || !extended.queued_invalidation() {
