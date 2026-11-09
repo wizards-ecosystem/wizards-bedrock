@@ -79,7 +79,7 @@ impl Debugger {
         }
 
         bail!(
-            "the pinned native GDB is unavailable; install it with `winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact`, open a fresh terminal, or set GDB"
+            "the pinned native GDB `{GDB_IDENTITY}` is unavailable; install it with `winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact`, open a fresh terminal, or set GDB to that executable; another gdb is refused"
         )
     }
 
