@@ -324,6 +324,9 @@ dependencies = [
 [[package]]
 name = "pci-config"
 version = "0.2.0"
+dependencies = [
+ "register-bits",
+]
 
 [[package]]
 name = "pin-project-lite"

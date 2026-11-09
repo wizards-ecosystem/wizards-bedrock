@@ -572,26 +572,19 @@ pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Opti
 
 /// The size of an **I/O** window, from the same probe.
 ///
-/// I/O masks stay 32-bit and must describe a run within the 16-bit port space.
+/// The port mask is the low half of the probe: a 16-bit decoder reads back
+/// zero above it.
 ///
 /// # Errors
 ///
-/// `None` when the mask decodes nothing, or when the size will not fit the
-/// port space it claims to describe.
+/// `None` when the mask decodes nothing.
 ///
 const fn io_window_size(mask: u32) -> Option<u16> {
-    let mask = mask & !0x3;
+    let mask = register_bits::u16_halves(mask).0 & !0x3;
     if mask == 0 {
         return None;
     }
-    let size = (!mask).wrapping_add(1);
-    // A run that does not fit the sixteen-bit port space is a device
-    // misreporting, and claiming it would be claiming most of I/O space.
-    if size >> u16::BITS == 0 {
-        Some(size as u16)
-    } else {
-        None
-    }
+    Some((!mask).wrapping_add(1))
 }
 
 /// One command-register access in a verified enable transaction.
@@ -6139,6 +6132,8 @@ mod tests {
             );
         }
         assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
+        assert_eq!(io_window_size(0x0000_FFFC), Some(4));
+        assert_eq!(io_window_size(0x0000_FFE0), Some(32));
     }
 
     #[test]

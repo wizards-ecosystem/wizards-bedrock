@@ -332,9 +332,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 218,
         file: "libs/pci-config/src/lib.rs",
-        find: "    if size >> u16::BITS == 0 {",
-        replace: "    if true {",
-        breaks: "an io window must fit before it is narrowed to a port count",
+        find: "    let mask = register_bits::u16_halves(mask).0 & !0x3;\n    if mask == 0 {",
+        replace: "    let mask = register_bits::u16_halves(mask).0 & !0x3;\n    if false {",
+        breaks: "a probe that decodes no port bits sizes a 65,536-port window truncated to zero ports",
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::a_probe_that_decoded_nothing_is_refused",
@@ -5633,6 +5633,17 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::a_base_address_register_decodes_to_its_window",
+        },
+    },
+    Mutation {
+        id: 2456,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    let mask = register_bits::u16_halves(mask).0 & !0x3;\n",
+        replace: "    if mask >> 16 == 0 {\n        return None;\n    }\n    let mask = register_bits::u16_halves(mask).0 & !0x3;\n",
+        breaks: "a 16-bit I/O decoder's hardwired-zero upper half is sized as a window too large for port space",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::an_io_window_size_is_a_port_count",
         },
     },
 ];
