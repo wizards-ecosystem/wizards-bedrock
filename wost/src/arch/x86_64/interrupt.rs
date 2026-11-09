@@ -129,8 +129,9 @@ impl TrapFrame {
     }
 
     /// Which vector was raised.
-    pub const fn vector(&self) -> u64 {
-        self.raw.vector
+    pub const fn vector(&self) -> u8 {
+        // Lossless: the stub generator below pushes only IDT indices, asserted to fit a byte.
+        self.raw.vector as u8
     }
 
     /// The error code the CPU pushed, or zero for a vector that pushes none.
@@ -932,6 +933,8 @@ pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
     // assembly boundary, which consumes both values before changing roots.
     unsafe { wost_leave_for_user(entry, stack_top) }
 }
+
+const _: () = assert!(idt::TABLE_LEN <= 256);
 
 ::core::arch::global_asm!(
     ".pushsection .kpti.text,\"ax\",@progbits",

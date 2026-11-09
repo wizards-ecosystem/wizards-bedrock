@@ -90,7 +90,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     let start = core::ptr::addr_of!(wost_copy_fault_start) as u64;
     let end = core::ptr::addr_of!(wost_copy_fault_end) as u64;
     let attempt = trap_cause::RecoveryAttempt {
-        vector: frame.vector(),
+        vector: u64::from(frame.vector()),
         frame_error_code: frame.error_code(),
         code_selector: frame.code_selector(),
         instruction_pointer: at,

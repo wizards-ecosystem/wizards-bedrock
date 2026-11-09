@@ -140,19 +140,19 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "ac84d4dbf86600b1b3ce1b304991f9ec6f61227df6d1ad1f335eb3a781dad5f5",
+            "ccac6ad2969fd34331deb38baf8dda40b03604e6ac1871738b3d6aff04d06dc1",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             22,
             3,
-            "ff949f1cead5bf7ebf06c387cdfd673a4aeabc9699c4fa6c2a318c8334ccf0e3",
+            "e543e20b5f5a71452b09b1279ab85f426df40c0a74db1a4a3b5b2c768c4365c6",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
             23,
             2,
-            "d464094cc35edfa067d7d2ef3dfb55d06491769d7d1c9c7e97cdd2ce8eabb83f",
+            "b65481bcf111bb4b67107c1dd01fb03dd0a7a69fd5fcf690cfee4ce5e0c6d411",
         ),
         (
             "wost/src/arch/x86_64/kpti.rs",
@@ -206,7 +206,7 @@ mod tests {
             "wost/src/arch/x86_64/usercopy.rs",
             5,
             1,
-            "8aa48581c0a0c3c929b63982c6b53d8d11f6044d902142624f966110766a65d5",
+            "b1567748dea7bbee1d476f157165ec95632c2b7e7f519b95e7e38d32f5f45d4b",
         ),
         (
             "wost/src/arch/x86_64/xstate.rs",

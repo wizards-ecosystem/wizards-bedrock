@@ -1117,7 +1117,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 869,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "        frame_error_code: frame.error_code(),",
-        replace: "        frame_error_code: frame.vector(),",
+        replace: "        frame_error_code: u64::from(frame.vector()),",
         breaks: "the user-copy adapter substitutes the trap vector for the saved error word",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1346,7 +1346,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     let start = core::ptr::addr_of!(wost_copy_fault_start) as u64;
     let end = core::ptr::addr_of!(wost_copy_fault_end) as u64;
     let attempt = trap_cause::RecoveryAttempt {
-        vector: frame.vector(),
+        vector: u64::from(frame.vector()),
         frame_error_code: frame.error_code(),
         code_selector: frame.code_selector(),
         instruction_pointer: at,
@@ -1388,7 +1388,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     let start = core::ptr::addr_of!(wost_copy_fault_start) as u64;
     let end = core::ptr::addr_of!(wost_copy_fault_end) as u64;
     let attempt = trap_cause::RecoveryAttempt {
-        vector: frame.vector(),
+        vector: u64::from(frame.vector()),
         frame_error_code: frame.error_code(),
         code_selector: frame.code_selector(),
         instruction_pointer: at,

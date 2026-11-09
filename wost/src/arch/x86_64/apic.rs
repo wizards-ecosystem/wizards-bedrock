@@ -740,7 +740,7 @@ pub fn claim_eoi<'frame>(
 ) -> Option<EoiToken<'frame>> {
     if interrupt::are_enabled()
         || !interrupt::is_live_frame(frame)
-        || frame.vector() != u64::from(vector.get())
+        || frame.vector() != vector.get()
     {
         return None;
     }
@@ -771,7 +771,7 @@ pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<
     if !x86_apic::in_service::may_complete(
         interrupt_state(),
         frame_liveness(token.frame),
-        token.frame.vector(),
+        u64::from(token.frame.vector()),
         token.vector,
         dismissal_ownership(token.vector),
     ) {
