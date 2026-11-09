@@ -222,7 +222,7 @@ fn isa_dma_adapter_clears_masks_and_rechecks_both_controllers() {
     assert!(port_block_width(&windows.elems[0], 16));
     assert!(port_block_width(&windows.elems[1], 32));
 
-    let policy = parse("libs/pci-config/src/lib.rs");
+    let policy = parse("libs/pci-config/src/fence.rs");
     let mask = policy
         .items
         .iter()

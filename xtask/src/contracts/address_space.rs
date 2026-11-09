@@ -367,7 +367,7 @@ fn speculative_and_callback_authority_does_not_regrow() {
         ("libs/fat32/src/lib.rs", "pub const fn table_position"),
         ("libs/memory-map/src", "pub fn allocatable_bytes"),
         ("libs/path-walk/src/lib.rs", "pub fn is_a_name"),
-        ("libs/pci-config/src/lib.rs", "pub const fn io_window_size"),
+        ("libs/pci-config/src", "pub const fn io_window_size"),
         ("libs/stack-layout/src/lib.rs", "fn stack_overlaps"),
         ("wost/src/arch/x86_64/pci.rs", "fn write_command"),
         ("wost/src/mm/mod.rs", "fn first_region"),

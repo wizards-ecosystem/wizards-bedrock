@@ -265,6 +265,16 @@ fn rust_sources_below(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
     sources
 }
 
+fn source_tree(directory: &std::path::Path) -> String {
+    rust_sources_below(directory)
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+        })
+        .collect()
+}
+
 fn is_named_path(expression: &Expr, expected: &str) -> bool {
     matches!(expression, Expr::Path(path)
         if path.qself.is_none()

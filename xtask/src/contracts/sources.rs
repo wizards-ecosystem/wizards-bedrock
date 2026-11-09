@@ -89,7 +89,7 @@ fn production_bodies(syntax: &syn::File) -> Vec<(String, &syn::Block)> {
 }
 
 /// Rust sources below `directory` outside out-of-line `#[cfg(test)] mod name;` modules.
-fn production_sources_below(directory: &Path) -> Vec<PathBuf> {
+pub(super) fn production_sources_below(directory: &Path) -> Vec<PathBuf> {
     let sources = rust_sources_below(directory);
     let mut test_modules = Vec::new();
     for path in &sources {

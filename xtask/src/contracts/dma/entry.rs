@@ -1,10 +1,11 @@
 use syn::{Fields, Item, Type, Visibility, visit::Visit};
 
+use crate::contracts::source_tree;
 use crate::test_support::{function_after, source_through};
 
 use super::{
     CallNames, ReferencedPaths, authority_alias_count, call_position, exact_derives, function,
-    method, parse, source,
+    method, parse, root, source,
 };
 
 #[test]
@@ -91,14 +92,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .0;
     assert!(init.contains("_dma: EarlyDmaBoundary"));
 
-    let pci = source("libs/pci-config/src/lib.rs");
-    let fence = pci
-        .split_once("pub fn fence_dma_handoff(")
-        .expect("pure entry fence")
-        .1
-        .split_once("pub struct CommandState")
-        .expect("pure entry fence end")
-        .0;
+    let pci = source("libs/pci-config/src/fence.rs");
+    let pci_crate = source_tree(&root().join("libs/pci-config/src"));
+    let fence = function_after(&pci, "pub fn fence_dma_handoff(").expect("pure entry fence");
     assert!(fence.contains("for bus in 0..=u8::MAX"));
     assert!(fence.contains("for device in 0..DEVICES"));
     assert!(fence.contains("for function in 0..FUNCTIONS"));
@@ -124,7 +120,7 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         assert!(profile.contains(exact), "missing `{exact}`");
     }
     assert!(
-        !pci.contains("pub fn classify_non_requester("),
+        !pci_crate.contains("pub fn classify_non_requester("),
         "only the exhaustive entry fence may mint non-requester authority"
     );
     assert!(pci.contains("pub fn take_non_requester(&mut self)"));
@@ -145,8 +141,8 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             .iter()
             .all(|field| matches!(field.vis, Visibility::Inherited))
     );
-    assert!(!pci.contains("impl Clone for QualifiedNonRequester"));
-    assert!(!pci.contains("impl Copy for QualifiedNonRequester"));
+    assert!(!pci_crate.contains("impl Clone for QualifiedNonRequester"));
+    assert!(!pci_crate.contains("impl Copy for QualifiedNonRequester"));
 
     let kernel_pci = source("kernel/src/pci.rs");
     let snapshot = function_after(
