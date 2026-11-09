@@ -5650,7 +5650,12 @@ mod tests {
         let error = result
             .expect_err("a link swapped in after the path check was read")
             .to_string();
-        assert!(error.contains("is not a real file"), "{error}");
+        let refusal = if cfg!(windows) {
+            "is not a real file"
+        } else {
+            "was replaced while it was opened"
+        };
+        assert!(error.contains(refusal), "{error}");
         std::fs::remove_dir_all(root).unwrap();
     }
 
