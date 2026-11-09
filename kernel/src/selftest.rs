@@ -8511,7 +8511,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 294;
+const EXPECTED_CHECKS: usize = 295;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8834,6 +8834,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the bus walk descends through a bridge",
         the_bus_walk_descends_through_a_bridge(),
+    );
+    report.check(
+        "a repeated bridge secondary cannot hide a later bus",
+        pci::repeated_secondaries_do_not_hide_a_later_bus_for_test(),
     );
     report.check(
         "a device is claimed once and a refusal strands nothing",
