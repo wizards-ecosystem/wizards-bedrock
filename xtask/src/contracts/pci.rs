@@ -8,9 +8,10 @@ use syn::{
 
 use crate::paths::Paths;
 
+use super::sources::production_sources_below;
 use super::{
     cfg_test, observer_impl_item_attributes, observer_item_attributes, require_error,
-    require_success, rust_sources_below,
+    require_success,
 };
 
 #[test]
@@ -204,7 +205,7 @@ const PCI_AUTHORITY_ROOTS: [&str; 2] = ["FunctionAuthority", "FunctionClaim"];
 
 /// The only doors that may produce authority without consuming any.
 const PCI_AUTHORITY_MINTS: [(&str, &str); 2] = [
-    ("libs/pci-config/src/lib.rs", "FunctionClaims::claim"),
+    ("libs/pci-config/src/claims.rs", "FunctionClaims::claim"),
     ("wost/src/arch/x86_64/pci.rs", "claim_function"),
 ];
 
@@ -833,7 +834,7 @@ fn pci_function_authority_has_audited_mints_and_no_duplication_door() {
     let paths = Paths::discover().expect("workspace paths");
     let mut sources = Vec::new();
     for directory in ["libs/pci-config/src", "wost/src"] {
-        for path in rust_sources_below(&paths.root().join(directory)) {
+        for path in production_sources_below(&paths.root().join(directory)) {
             let relative = path
                 .strip_prefix(paths.root())
                 .expect("source below the workspace")
@@ -858,7 +859,7 @@ fn pci_function_authority_has_audited_mints_and_no_duplication_door() {
 
 #[test]
 fn the_pci_authority_inventory_counts_every_door_and_channel() {
-    const PURE: &str = "libs/pci-config/src/lib.rs";
+    const PURE: &str = "libs/pci-config/src/claims.rs";
     const HARDWARE: &str = "wost/src/arch/x86_64/pci.rs";
     let pure = "#[derive(Debug, PartialEq, Eq)]\n\
         pub struct FunctionAuthority { lease: u64 }\n\

@@ -143,7 +143,7 @@ fn assert_no_typed_parameters(signature: &Signature) {
 
 #[test]
 fn selected_state_selectors_use_semantic_types() {
-    let pci_config = parse("libs/pci-config/src/lib.rs");
+    let pci_config = parse("libs/pci-config/src/bar.rs");
     assert_named(
         function(&pci_config, "memory_window_size"),
         "width",
