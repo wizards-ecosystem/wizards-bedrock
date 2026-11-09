@@ -97,7 +97,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the measured ring behaviour never arms its timestamp path",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_c_header_and_the_kernel_agree_about_the_abi",
+            name: "contracts::abi::the_c_header_and_the_kernel_agree_about_the_abi",
         },
     },
     Mutation {

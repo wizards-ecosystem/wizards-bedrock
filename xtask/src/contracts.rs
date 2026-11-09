@@ -7,6 +7,7 @@ use syn::{Expr, ExprCall, Item, Pat};
 
 use crate::paths::{KERNEL_TARGET, Paths};
 
+pub(crate) mod abi;
 mod address_space;
 mod apic;
 mod dma;

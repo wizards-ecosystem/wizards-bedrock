@@ -570,7 +570,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shipped image reports no observation after a real user call",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -581,7 +581,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a call without saved CPL 3 can earn the shipped execution marker",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -592,7 +592,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the idle thread never publishes the shipped user execution observation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -603,7 +603,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shipped user execution marker is repeated on every idle pass",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -614,7 +614,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the idle thread publishes shipped execution without any user call",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -625,7 +625,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the sole shipped user execution producer drifts from both consumers",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {
@@ -636,7 +636,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the shipped execution observation starts earned before the first instruction",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
+            name: "qemu::tests::kernel_source::shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report",
         },
     },
     Mutation {

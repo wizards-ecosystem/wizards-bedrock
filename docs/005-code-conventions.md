@@ -235,7 +235,7 @@ every `D-NNN` cited anywhere to name an entry the log defines and the log to
 have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
 name to exist or be declared absent with a reason, and the README's marked CI
 table to match the typed registry execution reads; `xtask/src/unsafety.rs` pins `wost`'s
-unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
+unsafe line count rather than only capping it; `xtask/src/contracts/abi.rs` compares the
 C header against the kernel's own constants, discovers every active sysdep,
 checks its BODY evidence, and checks its two-axis source marker against the exact
 register in `fixtures/abi-pressure/README.md`. Prose that cannot be

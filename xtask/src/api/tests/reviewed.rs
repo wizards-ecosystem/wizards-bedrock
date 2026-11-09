@@ -368,11 +368,13 @@ fn a_private_generic_qemu_lifetime_has_one_reviewed_drop_producer() {
     let root = fixture("pub fn foundation() {}\nfn main() {}\n");
     std::fs::create_dir_all(root.join("xtask/src")).unwrap();
     std::fs::write(root.join("xtask/src/lib.rs"), "mod qemu;\n").unwrap();
+    std::fs::create_dir_all(root.join("xtask/src/qemu")).unwrap();
+    std::fs::write(root.join("xtask/src/qemu.rs"), "mod selftest;\n").unwrap();
     let source = r#"struct QemuLifetime<C> { child: C }
 impl<C> QemuLifetime<C> { fn new(child: C) -> Self { Self { child } } }
 impl<C> Drop for QemuLifetime<C> { fn drop(&mut self) {} }
 "#;
-    std::fs::write(root.join("xtask/src/qemu.rs"), source).unwrap();
+    std::fs::write(root.join("xtask/src/qemu/selftest.rs"), source).unwrap();
     let inventory = Inventory::discover(&root).expect("reviewed private generic owner");
     let producers = inventory
         .nodes
@@ -380,8 +382,8 @@ impl<C> Drop for QemuLifetime<C> { fn drop(&mut self) {} }
         .filter(|node| {
             node.reviewed_drop_producer.is_some_and(|index| {
                 let producer = &REVIEWED_IMPLICIT_DROP_PRODUCERS[index];
-                producer.relative == "xtask/src/qemu.rs"
-                    && producer.owner == "qemu::QemuLifetime"
+                producer.relative == "xtask/src/qemu/selftest.rs"
+                    && producer.owner == "qemu::selftest::QemuLifetime"
                     && producer.member == "new"
             })
         })
@@ -402,7 +404,7 @@ impl<C> Drop for QemuLifetime<C> { fn drop(&mut self) {} }
         matches!(activation.trigger, ImplicitTraitTrigger::LiveNode(node) if node == producers[0].id)
             && activation.implementation == drops[0].id
     }));
-    std::fs::write(root.join("xtask/src/qemu.rs"), format!(
+    std::fs::write(root.join("xtask/src/qemu/selftest.rs"), format!(
         "{source}impl<C> QemuLifetime<C> {{ fn alternate(child: C) -> Self {{ Self {{ child }} }} }}\n"
     )).unwrap();
     let error = Inventory::discover(&root).expect_err("alternate constructor is not reviewed");

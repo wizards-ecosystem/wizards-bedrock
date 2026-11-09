@@ -37,7 +37,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "the no-x2APIC attribution grammar drifts from the emitted warning",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+            name: "qemu::tests::kernel_source::the_serial_contract_matches_the_kernel_source",
         },
     },
     Mutation {

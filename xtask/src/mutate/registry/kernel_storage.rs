@@ -33,7 +33,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "a device variant is absent from the devfs listing",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::the_devfs_source_inventory_matches_every_variant",
+            name: "qemu::tests::kernel_source::the_devfs_source_inventory_matches_every_variant",
         },
     },
     Mutation {
@@ -180,7 +180,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "nvme cleanup owns every published queue before controller enable",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::nvme_cleanup_and_bus_master_authority_precede_the_enable_write",
+            name: "qemu::tests::kernel_source::nvme_cleanup_and_bus_master_authority_precede_the_enable_write",
         },
     },
     Mutation {
