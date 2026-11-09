@@ -447,7 +447,7 @@ impl MemoryMap {
     pub fn allows_device_mapping(&self, start: u64, end: u64) -> bool {
         start < end
             && self.regions().all(|region| {
-                let overlaps = start < region.end() && region.base < end;
+                let overlaps = region.len != 0 && start < region.end() && region.base < end;
                 !overlaps || region.kind.permits_device_mapping()
             })
     }
@@ -1359,6 +1359,21 @@ mod tests {
                 base: u64::MAX - 1,
                 len: 1,
             })
+        );
+    }
+
+    #[test]
+    fn a_zero_length_region_does_not_occupy_its_address() {
+        let map = MemoryMap::try_from_regions([MemoryRegion {
+            base: 0x2000,
+            len: 0,
+            kind: MemoryKind::Usable,
+        }])
+        .expect("a zero-length region is representable");
+
+        assert!(
+            map.allows_device_mapping(0x1000, 0x3000),
+            "an empty usable region blocked a range that contains no byte of it"
         );
     }
 
