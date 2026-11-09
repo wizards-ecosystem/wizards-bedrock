@@ -64,8 +64,8 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("xtask/src/qemu/run_files.rs", "qemu::run_files::RunVars"),
     ("xtask/src/qemu/serial.rs", "qemu::serial::SerialChannel"),
     ("xtask/src/qemu/tests.rs", "qemu::tests::QemuFixture"),
-    ("xtask/src/qmp.rs", "qmp::tests::ControlledWriter"),
-    ("xtask/src/qmp.rs", "qmp::tests::CountedWriter"),
+    ("xtask/src/qmp/tests.rs", "qmp::tests::ControlledWriter"),
+    ("xtask/src/qmp/tests.rs", "qmp::tests::CountedWriter"),
     (
         "xtask/src/security_deep.rs",
         "security_deep::PrivateCodexCredential",
