@@ -6,9 +6,9 @@ use syn::{Expr, ExprCall, ExprMatch, GenericArgument, Item, Pat, PathArguments, 
 use crate::paths::Paths;
 use crate::test_support::function_after;
 
+use super::sources::production_sources_below;
 use super::{
-    cfg_not_selftest, observer_expr_attributes, require_error, require_success, rust_sources_below,
-    selftest_cfg,
+    cfg_not_selftest, observer_expr_attributes, require_error, require_success, selftest_cfg,
 };
 
 #[derive(Default)]
@@ -309,7 +309,7 @@ fn one_assignment_and_typed_signatures_own_every_vector_door() {
 
     let mut assignments = Vec::new();
     for root in ["libs/x86-apic/src", "wost/src", "kernel/src"] {
-        for source in rust_sources_below(&paths.root().join(root)) {
+        for source in production_sources_below(&paths.root().join(root)) {
             let text = std::fs::read_to_string(&source)
                 .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
             let syntax = syn::parse_file(&text)
