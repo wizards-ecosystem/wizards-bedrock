@@ -22,6 +22,7 @@ nvme.workspace = true
 pci-config.workspace = true
 limine.workspace = true
 pixel.workspace = true
+register-bits.workspace = true
 slab-layout.workspace = true
 port-space.workspace = true
 ring-proto.workspace = true

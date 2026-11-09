@@ -7,6 +7,7 @@ use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use register_bits::low_u32;
 use x86_apic::Register;
 use x86_apic::base::{self, Base};
 use x86_apic::command::Command;
@@ -81,8 +82,11 @@ impl Controller<'_> {
         let Some(registers) = self.ready_registers() else {
             return false;
         };
-        Spurious::from_bits(Registers::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR) as u32)
-            .is_enabled()
+        Spurious::from_bits(low_u32(Registers::read(
+            &registers,
+            register::SPURIOUS_INTERRUPT_VECTOR,
+        )))
+        .is_enabled()
     }
 
     fn published_vector(self, source: &AtomicU8) -> Option<InterruptVector> {
@@ -546,7 +550,7 @@ fn pending_vector(access: &impl InitializationRegisters) -> Option<u8> {
 fn pending_requests(access: &impl InitializationRegisters) -> [u32; 8] {
     let mut requests = [0u32; 8];
     for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {
-        *bits = InitializationRegisters::read(access, register) as u32;
+        *bits = low_u32(InitializationRegisters::read(access, register));
     }
     requests
 }
@@ -637,8 +641,10 @@ fn initialize<R: InitializationRegisters>(
     )?;
 
     initialization.enter(InitStage::Version)?;
-    let version =
-        Version::from_bits(InitializationRegisters::read(&registers, register::VERSION) as u32);
+    let version = Version::from_bits(low_u32(InitializationRegisters::read(
+        &registers,
+        register::VERSION,
+    )));
     if !version.is_integrated() {
         return Err(ApicError::NotResponding);
     }
@@ -656,7 +662,8 @@ fn initialize<R: InitializationRegisters>(
 
     for &entry in local_sources {
         InitializationRegisters::write(&registers, entry, Entry::MASKED.bits().into());
-        if !Entry::from_bits(InitializationRegisters::read(&registers, entry) as u32).is_masked() {
+        if !Entry::from_bits(low_u32(InitializationRegisters::read(&registers, entry))).is_masked()
+        {
             return Err(ApicError::NotResponding);
         }
     }
@@ -705,7 +712,7 @@ fn initialize<R: InitializationRegisters>(
     initialization.enter(InitStage::Identity)?;
     let configured = Configured {
         local: Local {
-            id: InitializationRegisters::read(&registers, register::ID) as u32,
+            id: low_u32(InitializationRegisters::read(&registers, register::ID)),
             version: version.number(),
             is_bootstrap: base.is_bootstrap(),
         },
@@ -862,14 +869,14 @@ pub fn set_timer_one_shot(_disarmed: DisarmedTimer) -> Result<(), TimerError> {
 
 /// Where the timer's countdown currently stands. Zero before [`init`].
 pub fn timer_current_count() -> u32 {
-    read(register::CURRENT_COUNT) as u32
+    low_u32(read(register::CURRENT_COUNT))
 }
 
 /// The timer's local vector entry, read back from the hardware rather than
 /// remembered from what was written.
 #[cfg(feature = "selftest")]
 pub fn timer_entry() -> Entry {
-    Entry::from_bits(read(register::LVT_TIMER) as u32)
+    Entry::from_bits(low_u32(read(register::LVT_TIMER)))
 }
 
 /// Errors the local APIC has recorded since this was last called.
@@ -880,7 +887,7 @@ pub fn timer_entry() -> Entry {
 pub fn error_status() -> u32 {
     // Zero specifically: the architecture faults on any other value here.
     write(register::ERROR_STATUS, 0);
-    read(register::ERROR_STATUS) as u32
+    low_u32(read(register::ERROR_STATUS))
 }
 
 /// This processor's local APIC identifier.
@@ -890,7 +897,7 @@ pub fn error_status() -> u32 {
 /// the boot processor's usual identifier — so this value does not prove
 /// controller readiness.
 pub fn id() -> u32 {
-    read(register::ID) as u32
+    low_u32(read(register::ID))
 }
 
 /// Whether the APIC is software-enabled and therefore delivering.
@@ -1561,7 +1568,7 @@ fn owns_in_service(vector: InterruptVector) -> bool {
     };
     let mut registers = [0u32; 8];
     for (bits, register) in registers.iter_mut().zip(register::IN_SERVICE) {
-        *bits = Registers::read(&access, register) as u32;
+        *bits = low_u32(Registers::read(&access, register));
     }
     x86_apic::in_service::owns(&registers, vector)
 }

@@ -140,7 +140,7 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "3619e18a579da07b79774cc3aeaed42c41039218f7aaa7a82c2a7cb3cfe89604",
+            "ac84d4dbf86600b1b3ce1b304991f9ec6f61227df6d1ad1f335eb3a781dad5f5",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
@@ -164,7 +164,7 @@ mod tests {
             "wost/src/arch/x86_64/msr.rs",
             2,
             1,
-            "e1f019c6f2a2b6df61070d201c08f578a4fc02af943cdfed68a480687bfbddfb",
+            "2cb6c33ff4f764985b6e0f0fd7a5c1a8bfa1c923ab30f80cf55f233178632b31",
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
@@ -212,7 +212,7 @@ mod tests {
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "5d360ea2c8fd1276816d2bbc282f4550126f36050c3f001d181748948a105495",
+            "1ac37cdf30d686968286279f597fc64cb98a94194320de68f94dfa8d8bb3c527",
         ),
         (
             "wost/src/boot/limine_glue.rs",

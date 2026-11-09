@@ -5613,4 +5613,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::frame_identity_is_exact_at_zero_high_and_misaligned_boundaries",
         },
     },
+    Mutation {
+        id: 2454,
+        file: "libs/register-bits/src/lib.rs",
+        find: "pub const fn low_u32(value: u64) -> u32 {\n    value as u32\n}",
+        replace: "pub const fn low_u32(value: u64) -> u32 {\n    (value | value >> 32) as u32\n}",
+        breaks: "a reserved high bit set by the hardware leaks into a 32-bit register read",
+        reddens: Caught::HostTest {
+            package: "register-bits",
+            name: "tests::a_32_bit_read_ignores_the_reserved_high_half",
+        },
+    },
 ];
