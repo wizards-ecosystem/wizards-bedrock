@@ -278,7 +278,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1370,
-        file: "docs/004-decision-log.md",
+        file: "docs/decisions/0183-the-wizzy-compiler-gate-precedes-native-userland-product-work.md",
         find: "scaffolding remains stopped until both a pinned draft artifact and its runtime\nseam exist.",
         replace: "scaffolding may start once a draft artifact exists.",
         breaks: "D-183's current amendment authorizes OS scaffolding before PW-601",
@@ -340,6 +340,28 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "xtask",
             name: "prose::tests::the_sweep_guide_states_the_exact_machine_witness_count",
+        },
+    },
+    Mutation {
+        id: 2471,
+        file: "docs/004-decision-log.md",
+        find: "| [D-01 Kernel language: Rust](",
+        replace: "| [D-01 Kernel language](",
+        breaks: "the decision index lists a decision under a title its file does not carry",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::the_decisions_are_numbered_without_a_gap",
+        },
+    },
+    Mutation {
+        id: 2472,
+        file: "docs/decisions/0001-kernel-language-rust.md",
+        find: "# D-01 ",
+        replace: "# D-02 ",
+        breaks: "a decision file's heading names a number other than its file name's",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "decisions::tests::the_decisions_are_numbered_without_a_gap",
         },
     },
 ];
