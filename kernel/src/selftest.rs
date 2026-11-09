@@ -3918,8 +3918,6 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     let Some(deadline) = queue.earliest_deadline() else {
         return false;
     };
-    // Before the deadline nothing is due, however often it is asked.
-    let early = queue.expire(crate::time::now_ns()) == 0 && queue.in_flight() == 1;
 
     // A million reads: the deadline is two milliseconds out and the clock is
     // running, so a deadline this does not reach is not slow, it is wrong.
@@ -3927,6 +3925,8 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
         return false;
     }
 
+    // At the instant before the deadline nothing is due, even once the clock has passed it.
+    let early = queue.expire(deadline - 1) == 0 && queue.in_flight() == 1;
     let due = queue.expire(crate::time::now_ns());
     let completion = queue.read_completion(0);
 
