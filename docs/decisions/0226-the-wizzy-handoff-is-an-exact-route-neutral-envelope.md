@@ -1,6 +1,6 @@
 # D-226 The Wizzy handoff is an exact route-neutral envelope
 
-Status: Accepted (2026-08-29), closes PW-600
+Status: Accepted, 2026-08-29. Closes PW-600.
 
 **Context.** D-183 requires a versioned standalone artifact and separable
 runtime before product integration. `015` already said the artifact format,

@@ -1,6 +1,6 @@
 # D-216 Release evidence binds clean source and resolved inputs to reproducible, booted bytes
 
-Status: Accepted (2026-08-28), closes PW-508
+Status: Accepted, 2026-08-28. Closes PW-508.
 
 **Context.** The local gate proved ten ordered properties, image construction
 read the kernel back from its filesystem, and D-25 pinned vendored binaries.

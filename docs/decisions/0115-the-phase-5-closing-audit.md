@@ -1,6 +1,6 @@
 # D-115 The Phase 5 closing audit
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** Slice 11's instruction (D-77's pattern) is to re-attack the
 interfaces the phase froze: can a hostile ring-3 program reach UB through any

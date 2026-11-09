@@ -1,6 +1,6 @@
 # D-82 Extended state is eager, compacted, and sized at boot
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-29 deferred XSAVE until there was a scheduler. Ring 3 arrives in
 Phase 5, so the decision is due. It is not only a context-switch decision: the

@@ -1,6 +1,6 @@
 # D-350 The I/O APIC takeover proves the window is one before writing it
 
-Status: Accepted (2026-09-29), amends D-121; closes PW-560
+Status: Accepted, 2026-09-29. Amends D-121; closes PW-560.
 
 **Context.** Firmware's MADT supplies each I/O APIC's register-window address,
 and the takeover read the version register there to learn how many redirection

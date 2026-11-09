@@ -1,6 +1,6 @@
 # D-393 API audit reduces compiler evidence while it streams
 
-Status: Accepted (2026-10-12), amends D-391 and D-347; advances PW-595
+Status: Accepted, 2026-10-12. Amends D-391 and D-347; advances PW-595.
 
 **Context.** D-391 removed unused full human renderings from Cargo's
 structured diagnostics, but the expanded `xtask` CLI harness again crossed the

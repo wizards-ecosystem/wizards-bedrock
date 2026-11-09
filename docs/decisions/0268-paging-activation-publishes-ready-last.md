@@ -1,6 +1,6 @@
 # D-268 Paging activation publishes `Ready` last
 
-Status: Accepted (2026-08-31), amends D-86 and D-261; advances PW-127
+Status: Accepted, 2026-08-31. Amends D-86 and D-261; advances PW-127.
 
 **Context.** Activation stored a ready flag before CR3 and the active-root
 identity became authoritative. A safe observer could authenticate a mapping

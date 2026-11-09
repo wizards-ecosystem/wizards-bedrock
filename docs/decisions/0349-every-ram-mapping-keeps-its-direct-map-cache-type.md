@@ -1,6 +1,6 @@
 # D-349 Every RAM mapping keeps its direct-map cache type
 
-Status: Accepted (2026-09-29), amends D-283; closes PW-559
+Status: Accepted, 2026-09-29. Amends D-283; closes PW-559.
 
 **Context.** D-283 made the two shared-mapping doors refuse `NO_CACHE` and
 `WRITE_THROUGH`, because a shared allocation stays reachable through the

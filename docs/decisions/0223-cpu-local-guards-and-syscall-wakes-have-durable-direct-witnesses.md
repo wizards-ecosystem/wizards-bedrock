@@ -1,6 +1,6 @@
 # D-223 CPU-local guards and syscall wakes have durable direct witnesses
 
-Status: Accepted (2026-08-29), amends D-68 and D-133; closes PW-405
+Status: Accepted, 2026-08-29. Amends D-68 and D-133; closes PW-405.
 
 **Context.** Two compiler and machine facts had each been checked only once.
 D-68 manually observed `E0277` after making lock guards `!Send`, but `wost`

@@ -1,6 +1,6 @@
 # D-287 NVMe preparation preserves one linear owner across bounded stack stages
 
-Status: Accepted (2026-09-05), amends D-217, D-245 and D-278; advances PW-541
+Status: Accepted, 2026-09-05. Amends D-217, D-245 and D-278; advances PW-541.
 
 **Context.** A local guarded debug boot reproduced the storage-path double fault
 that D-245 had not reproduced. Local frame inspection reported a 16,200-byte

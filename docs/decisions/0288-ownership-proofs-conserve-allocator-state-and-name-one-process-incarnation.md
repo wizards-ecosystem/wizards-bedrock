@@ -1,6 +1,6 @@
 # D-288 Ownership proofs conserve allocator state and name one process incarnation
 
-Status: Accepted (2026-09-05), amends D-26, D-217, D-245 and D-261; advances PW-542
+Status: Accepted, 2026-09-05. Amends D-26, D-217, D-245 and D-261; advances PW-542.
 
 **Context.** Several cleanup checks compared raw free-frame counts. A correct
 slab refill may retain free frames without changing ownership, so those checks

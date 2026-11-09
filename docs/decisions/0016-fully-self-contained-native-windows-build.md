@@ -1,6 +1,6 @@
 # D-16 Fully self-contained native-Windows build
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Context.** Initial toolchain work assumed WSL2; Isaac rejected it:
 "I prefer to keep everything self contained."

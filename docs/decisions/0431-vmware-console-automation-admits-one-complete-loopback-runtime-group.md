@@ -1,6 +1,6 @@
 # D-431 VMware console automation admits one complete loopback runtime group
 
-Status: Accepted (2026-10-23); amends D-365; advances PW-579
+Status: Accepted, 2026-10-23. Amends D-365; advances PW-579.
 
 **Context.** The authorized VMware input rounds need a host console path
 without guest software. On this host, `vmrun` guest typing refuses and the

@@ -1,6 +1,6 @@
 # D-410 Codex initialization metadata is exact and home-bound
 
-Status: Accepted (2026-10-15), amends D-406
+Status: Accepted, 2026-10-15. Amends D-406.
 
 **Context.** After D-409 admitted the current login-status stream, the owned
 Deep qualifier reached its effective-configuration reader but rejected the

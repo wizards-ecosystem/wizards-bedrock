@@ -1,6 +1,6 @@
 # D-59 A thread's first interrupt flag comes from its creator
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** A thread resuming after a switch restores its own flag from its
 own stack. A thread running for the first time has no such record, and D-51's

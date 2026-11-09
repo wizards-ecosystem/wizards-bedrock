@@ -1,6 +1,6 @@
 # D-132 A public function nothing calls is a check nobody wrote
 
-Status: Accepted (2026-08-25), amends D-130
+Status: Accepted, 2026-08-25. Amends D-130.
 
 **Context.** D-129 swept `wost` for `pub fn`s nothing calls and found two. The
 same sweep over `libs/` is a different question with a different answer, and

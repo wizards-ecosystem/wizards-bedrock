@@ -1,6 +1,6 @@
 # D-356 Queue impossibility backstops are terminal, and the reachable one is witnessed
 
-Status: Accepted (2026-09-29), amends D-112; closes PW-566
+Status: Accepted, 2026-09-29. Amends D-112; closes PW-566.
 
 **Context.** The 2026-08-29 handoff left a finding without a register row. The
 queue's unreachable-branch backstops were `debug_assert!(false, ...)` arms, which

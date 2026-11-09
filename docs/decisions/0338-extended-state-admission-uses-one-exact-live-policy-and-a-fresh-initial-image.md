@@ -1,6 +1,6 @@
 # D-338 Extended-state admission uses one exact live policy and a fresh initial image
 
-Status: Accepted (2026-09-28), amends D-82, D-115, D-228, D-270 and D-333; closes PW-132
+Status: Accepted, 2026-09-28. Amends D-82, D-115, D-228, D-270 and D-333; closes PW-132.
 
 **Context.** The extended-state implementation already required x87, SSE and
 AVX, sized standard XSAVE from reported component extents, cleared every fresh

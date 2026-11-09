@@ -1,6 +1,6 @@
 # D-93 Waking a thread from thread context owes it a scheduling decision
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `kernel/src/thread.rs`'s module doc states the rule the tickless
 design rests on: *"Every path that changes who is runnable ends by arming the

@@ -1,6 +1,6 @@
 # D-307 Source-order witnesses are confined to the executable body
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutation 85 changed the mutation-lifecycle order
 test from its last `begin_mutation` marker to its first, but survived. The test

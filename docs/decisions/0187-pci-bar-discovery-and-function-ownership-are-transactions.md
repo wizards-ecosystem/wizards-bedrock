@@ -1,6 +1,6 @@
 # D-187 PCI BAR discovery and function ownership are transactions
 
-Status: Accepted (2026-08-27), amends D-119 and D-168, implements PW-201 and closes PW-202
+Status: Accepted, 2026-08-27. Amends D-119 and D-168, implements PW-201 and closes PW-202.
 
 **Context.** D-168 made a PCI function the authority for its decoded windows,
 but three implementation details contradicted the unchanged-on-refusal

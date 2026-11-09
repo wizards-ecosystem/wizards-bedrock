@@ -1,6 +1,6 @@
 # D-42 Limine base revision 4
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** The kernel asked for base revision 3, and it asked by accident:
 `wost::entry!` emits `BaseRevision::new()`, and in the pinned `limine` 0.5.0

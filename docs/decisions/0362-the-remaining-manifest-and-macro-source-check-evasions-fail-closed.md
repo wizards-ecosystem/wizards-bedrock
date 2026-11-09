@@ -1,6 +1,6 @@
 # D-362 The remaining manifest and macro source-check evasions fail closed
 
-Status: Accepted (2026-10-07), amends D-345, D-351 and D-360; closes PW-576
+Status: Accepted, 2026-10-07. Amends D-345, D-351 and D-360; closes PW-576.
 
 **Context.** D-360 left two observed proof gaps. The manifest line reader
 skips assignments outside a normal dependency section, including a root

@@ -1,6 +1,6 @@
 # D-314 The userland is designed before its compiler, as a specification
 
-Status: Accepted (2026-09-12), refines D-19, D-183 and D-184
+Status: Accepted, 2026-09-12. Refines D-19, D-183 and D-184.
 
 **Context.** D-183 closed the compiler-readiness gate and stopped Phase 7
 product implementation; D-184 made `016-pre-wizzy-foundation.md` the only

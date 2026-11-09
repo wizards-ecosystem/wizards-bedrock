@@ -1,6 +1,6 @@
 # D-62 The context token arrives with the API that needed it
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** D-55 built the trap-depth count and deferred the *token* —
 `008-research-notes-2.md` §4.2's idea — until there was an API that could

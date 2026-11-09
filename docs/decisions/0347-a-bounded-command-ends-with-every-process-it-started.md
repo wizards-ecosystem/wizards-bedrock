@@ -1,6 +1,6 @@
 # D-347 A bounded command ends with every process it started
 
-Status: Accepted (2026-09-28), amends D-264; closes PW-013
+Status: Accepted, 2026-09-28. Amends D-264; closes PW-013.
 
 **Context.** D-264 bounded each external child's capture and exit but stopped
 only the direct child, and left delegated process trees to PW-013's trigger.

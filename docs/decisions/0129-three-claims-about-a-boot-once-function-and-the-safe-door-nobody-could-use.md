@@ -1,6 +1,6 @@
 # D-129 Three claims about a boot-once function, and the safe door nobody could use
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-126 reordered `pic::silence` so its port claims happen outside
 both leaf guards. A peer session auditing the same window read the comment I

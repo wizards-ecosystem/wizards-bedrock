@@ -1,6 +1,6 @@
 # D-299 Canonical paths stop at the GNU process boundary
 
-Status: Accepted (2026-09-10), amends D-208; closes PW-031
+Status: Accepted, 2026-09-10. Amends D-208; closes PW-031.
 
 **Context.** The next clean mutation attempt reached its pristine host
 baseline, where every Rust build failed in MinGW's linker. The isolated

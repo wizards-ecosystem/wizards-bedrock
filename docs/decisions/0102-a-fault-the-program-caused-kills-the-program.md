@@ -1,6 +1,6 @@
 # D-102 A fault the program caused kills the program
 
-Status: Accepted (2026-08-24), amends D-31
+Status: Accepted, 2026-08-24. Amends D-31.
 
 **Context.** D-31 decided that a fault is terminal and reported, and that was
 right when it was written: every fault was a kernel bug, and a kernel that

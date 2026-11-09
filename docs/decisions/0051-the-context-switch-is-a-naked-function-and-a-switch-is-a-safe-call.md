@@ -1,6 +1,6 @@
 # D-51 The context switch is a naked function, and a switch is a safe call
 
-Status: Accepted (2026-08-22) (amended by D-59 and D-76)
+Status: Accepted, 2026-08-22. Amended by D-59 and D-76.
 
 **Context.** `008-research-notes-2.md` §1 verified `#[unsafe(naked)]` and
 `naked_asm!` against the pinned toolchain and named Phase 4's context switch

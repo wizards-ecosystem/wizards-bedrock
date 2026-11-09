@@ -1,6 +1,6 @@
 # D-117 A dead program's memory comes back, collected by whoever has nothing better to do
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** Phase 5 closed with nothing reclaimed. A retired thread kept its
 slot, its stack, its address space, its handle table and its ring for the life

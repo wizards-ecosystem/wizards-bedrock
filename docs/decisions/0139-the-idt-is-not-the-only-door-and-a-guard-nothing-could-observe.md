@@ -1,6 +1,6 @@
 # D-139 The IDT is not the only door, and a guard nothing could observe
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Three latent soundness findings from the Phase 0–5 audit, and one
 lesson learned by getting the checks for them wrong first.

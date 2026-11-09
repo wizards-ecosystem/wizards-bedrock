@@ -1,6 +1,6 @@
 # D-143 A tally beside an instruction, and a detector read too early
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Two checks that existed, passed, and could not fail — both about
 mechanisms this kernel's security rests on.

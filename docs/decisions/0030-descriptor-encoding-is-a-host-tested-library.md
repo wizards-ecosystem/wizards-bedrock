@@ -1,6 +1,6 @@
 # D-30 Descriptor encoding is a host-tested library
 
-Status: Accepted (2026-08-13)
+Status: Accepted, 2026-08-13.
 
 **Context.** `005-code-conventions.md` names "descriptor encoding" as a future
 `libs/` crate. Phase 2 is where it arrives.

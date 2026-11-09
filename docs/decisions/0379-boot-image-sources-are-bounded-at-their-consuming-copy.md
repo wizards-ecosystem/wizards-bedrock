@@ -1,6 +1,6 @@
 # D-379 Boot-image sources are bounded at their consuming copy
 
-Status: Accepted (2026-10-10), closes PW-588
+Status: Accepted, 2026-10-10. Closes PW-588.
 
 **Context.** Every public and private image route converges on the ESP
 population helper, but that helper copied the fixed `BOOTX64.EFI` and

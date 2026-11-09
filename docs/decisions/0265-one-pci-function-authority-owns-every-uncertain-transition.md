@@ -1,6 +1,6 @@
 # D-265 One PCI function authority owns every uncertain transition
 
-Status: Accepted (2026-08-31), amends D-187, D-197 and D-251; advances PW-118, PW-125 and PW-129
+Status: Accepted, 2026-08-31. Amends D-187, D-197 and D-251; advances PW-118, PW-125 and PW-129.
 
 **Context.** Address equality was not function authority. A command snapshot
 could be replayed through another function or another registry with the same

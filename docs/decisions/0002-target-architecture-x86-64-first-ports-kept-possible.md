@@ -1,6 +1,6 @@
 # D-02 Target architecture: x86_64 first, ports kept possible
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Context.** Host machine is an i7-13700KF (x86_64, UEFI) and testing
 happens in VMware/QEMU on it.

@@ -1,6 +1,6 @@
 # D-291 Generic trait dispatch is credited only at its exact declaration
 
-Status: Accepted (2026-09-06), amends D-275; advances PW-544
+Status: Accepted, 2026-09-06. Amends D-275; advances PW-544.
 
 **Context.** The first current full API audit refused valid generic calls such
 as `<T as Trait>::member` because rustc can identify the trait declaration but

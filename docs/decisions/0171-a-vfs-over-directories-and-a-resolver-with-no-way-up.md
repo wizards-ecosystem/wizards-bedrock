@@ -1,6 +1,6 @@
 # D-171 A VFS over directories, and a resolver with no way up
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `012` §7 was explicit that Linux's shape is the wrong one to copy:
 its five operation tables and the dcache exist to serve a global namespace with

@@ -1,6 +1,6 @@
 # D-377 CI reads its registry document through the bounded direct-file boundary
 
-Status: Accepted (2026-10-10), amends D-212 and D-344; closes PW-586
+Status: Accepted, 2026-10-10. Amends D-212 and D-344; closes PW-586.
 
 **Context.** Codex Security occurrence `occ_33f31e610855178e51859b01`
 found that `cargo xtask ci` read `README.md` with

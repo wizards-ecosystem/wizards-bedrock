@@ -1,6 +1,6 @@
 # D-331 External bytes clear before release, and mapping refusal retains their owner
 
-Status: Accepted (2026-09-28), amends D-107 and D-115; closes PW-117
+Status: Accepted, 2026-09-28. Amends D-107 and D-115; closes PW-117.
 
 **Context.** `USegment::reclaim` already cleared explicit ownership recovery,
 but the same invariant did not cover natural destruction. Dropping a

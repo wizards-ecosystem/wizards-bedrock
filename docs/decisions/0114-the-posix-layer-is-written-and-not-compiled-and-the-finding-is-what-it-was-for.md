@@ -1,6 +1,6 @@
 # D-114 The POSIX layer is written and not compiled, and the finding is what it was for
 
-Status: Accepted (2026-08-24) (amended by D-181), amends D-74
+Status: Accepted, 2026-08-24. Amended by D-181. Amends D-74.
 
 **Context.** D-74 asked for an mlibc sysdep "immediately after the ABI
 stabilises, not to run real software, but to find out whether a POSIX libc can

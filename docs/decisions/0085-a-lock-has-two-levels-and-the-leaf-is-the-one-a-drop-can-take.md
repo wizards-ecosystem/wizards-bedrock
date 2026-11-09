@@ -1,6 +1,6 @@
 # D-85 A lock has two levels, and the leaf is the one a `Drop` can take
 
-Status: Accepted (2026-08-24), implements D-69
+Status: Accepted, 2026-08-24. Implements D-69.
 
 **Context.** D-69 decided that `SpinLock::lock` would take `&'a mut
 ThreadContext` and return a guard borrowing it, so that blocking with a lock

@@ -1,6 +1,6 @@
 # D-65 The gate boots three kernels
 
-Status: Accepted (2026-08-23) (a fourth added by D-90)
+Status: Accepted, 2026-08-23. A fourth added by D-90.
 
 **Context.** The 2026-08-22 audit's other standing lesson was that a gate is
 only as wide as its configuration matrix. This one found the matrix two

@@ -1,6 +1,6 @@
 # D-421 VMware delayed-read verifier follows the kernel format literal
 
-Status: Accepted (2026-10-17), implemented with qualification OPEN; amends D-240 and D-372; advances PW-001 and PW-003
+Status: Accepted, 2026-10-17. Implemented with qualification OPEN; amends D-240 and D-372; advances PW-001 and PW-003.
 
 **Context.** A final VMware preflight on `5b66578` found that the kernel's
 delayed-read witness had changed under D-372 from

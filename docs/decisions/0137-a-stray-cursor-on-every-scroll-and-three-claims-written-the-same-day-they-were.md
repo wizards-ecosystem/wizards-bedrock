@@ -1,6 +1,6 @@
 # D-137 A stray cursor on every scroll, and three claims written the same day they were false
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The prose audit over Phases 0–5 was asked to find comments and
 documents that say what the code does not, on the standing that a false comment

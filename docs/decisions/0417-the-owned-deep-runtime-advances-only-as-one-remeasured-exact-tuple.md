@@ -1,6 +1,6 @@
 # D-417 The owned Deep runtime advances only as one remeasured exact tuple
 
-Status: Accepted (2026-10-17), implemented with qualification OPEN; amends D-406, D-411 and D-413; advances PW-026
+Status: Accepted, 2026-10-17. Implemented with qualification OPEN; amends D-406, D-411 and D-413; advances PW-026.
 
 **Context.** Before D-416's first owned scan could start, the ChatGPT Codex
 installation advanced and removed D-406's selected `0.162.0-alpha.17.2`

@@ -1,6 +1,6 @@
 # D-74 mlibc arrives with the ABI, not after the userland
 
-Status: Accepted (2026-08-23), amends D-10
+Status: Accepted, 2026-08-23. Amends D-10.
 
 **Context.** D-10 makes POSIX a userspace translation layer over mlibc, and the
 roadmap put it in Phase 9 — after a native userland in Phase 7. The

@@ -1,6 +1,6 @@
 # D-221 A queue index is the synchronization edge, not a volatile payload
 
-Status: Accepted (2026-08-29), amends D-79, D-84, D-112, D-113 and D-115; closes PW-401
+Status: Accepted, 2026-08-29. Amends D-79, D-84, D-112, D-113 and D-115; closes PW-401.
 
 **Context.** D-79 required `READ_ONCE()`-shaped access, D-113 copied each
 shared entry once, and the Phase 5 implementation put a spin lock around the

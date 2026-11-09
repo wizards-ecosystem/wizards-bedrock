@@ -1,6 +1,6 @@
 # D-163 The handle table works through a shared reference, and a promise is a value
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Phase 6 slice 1 owes D-151: a completion must be able to carry a
 handle. Two things stood in the way, and the second was not obvious until the

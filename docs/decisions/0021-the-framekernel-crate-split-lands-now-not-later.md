@@ -1,6 +1,6 @@
 # D-21 The framekernel crate split lands now, not later
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** D-13 committed to Asterinas-style framekernel discipline: all
 `unsafe` confined to a privileged framework crate, every other kernel crate

@@ -1,6 +1,6 @@
 # D-318 The bench is a strip with snap semantics and a complete rail
 
-Status: Accepted (2026-09-12), amends D-11
+Status: Accepted, 2026-09-12. Amends D-11.
 
 **Context.** D-11 chose an own compositor over a Wayland-shaped protocol and
 named a terminal as the first client, and said nothing about how windows are

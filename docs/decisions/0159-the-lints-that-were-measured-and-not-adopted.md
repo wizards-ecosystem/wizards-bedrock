@@ -1,6 +1,6 @@
 # D-159 The lints that were measured and not adopted
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `005` says **measure what a tool does; do not reason about it**.
 The workspace denies three clippy lints beyond the default set —

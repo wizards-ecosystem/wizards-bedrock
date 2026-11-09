@@ -1,6 +1,6 @@
 # D-345 Supply-chain records refuse what their line readers do not model
 
-Status: Accepted (2026-09-28), amends D-220; closes PW-556
+Status: Accepted, 2026-09-28. Amends D-220; closes PW-556.
 
 **Context.** Three retained Daybreak findings reproduce in D-220's offline
 supply-chain verification. The lock reader reduced a package's `source` to

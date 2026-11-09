@@ -1,6 +1,6 @@
 # D-222 A foreign handle has the same answer whether its slot is occupied or absent
 
-Status: Accepted (2026-08-29), amends D-78 and D-95; closes PW-403
+Status: Accepted, 2026-08-29. Amends D-78 and D-95; closes PW-403.
 
 **Context.** D-78 made one global arena safe through a final table-owner
 comparison, but gave that comparison its own `NotYours` result while empty and

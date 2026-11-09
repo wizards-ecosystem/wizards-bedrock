@@ -1,6 +1,6 @@
 # D-197 A refused PCI command enablement closes NVMe before a window exists
 
-Status: Accepted (2026-08-27), amends D-168 and D-169; advances PW-206
+Status: Accepted, 2026-08-27. Amends D-168 and D-169; advances PW-206.
 
 **Context.** The boot path asked the claimed PCI function to enable memory
 decode and bus mastering, logged when the command register refused, and then

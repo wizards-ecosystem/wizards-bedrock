@@ -1,6 +1,6 @@
 # D-207 A foreign FAT corpus is pinned as exact sparse sectors
 
-Status: Accepted (2026-08-28), amends D-16 and D-170; closes PW-210
+Status: Accepted, 2026-08-28. Amends D-16 and D-170; closes PW-210.
 
 **Context.** D-170's oracle has two readers but one writer: `fatfs` creates the
 volume which both it and `libs/fat32` read. Agreement catches a reader defect,

@@ -1,6 +1,6 @@
 # D-435 QEMU cleanup and QMP command waits have finite failure paths
 
-Status: Accepted (2026-10-23), qualification OPEN; amends D-227 and D-346; advances PW-716
+Status: Accepted, 2026-10-23. Qualification OPEN; amends D-227 and D-346; advances PW-716.
 
 The self-test observer held an ordinary child handle, whose Drop does not stop
 QEMU. Early polling/setup errors could skip termination. Timeout cleanup could

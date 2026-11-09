@@ -1,6 +1,6 @@
 # D-273 An empty repeated MMIO access touches nothing
 
-Status: Accepted (2026-08-31), amends D-105 and D-136; advances PW-522
+Status: Accepted, 2026-08-31. Amends D-105 and D-136; advances PW-522.
 
 **Context.** `AccessRange` claimed zero width was impossible while its own
 constructor admitted a zero count, then suppressed the lint which exposed that

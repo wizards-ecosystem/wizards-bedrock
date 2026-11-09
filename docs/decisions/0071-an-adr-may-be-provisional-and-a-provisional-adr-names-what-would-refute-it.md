@@ -1,6 +1,6 @@
 # D-71 An ADR may be Provisional, and a Provisional ADR names what would refute it
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** This log has two statuses: **Accepted**, and **Verified** for
 decisions supported by `003`'s adversarially-verified tier. The 2026-08-23

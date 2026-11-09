@@ -1,6 +1,6 @@
 # D-354 Two fault witnesses name the incarnation that faulted
 
-Status: Accepted (2026-09-29), amends D-217 and D-327; closes PW-564
+Status: Accepted, 2026-09-29. Amends D-217 and D-327; closes PW-564.
 
 **Context.** D-327 gave the first ring-three crossing witness an exact
 `(slot, table)` identity after a debug-only failure showed that a global syscall

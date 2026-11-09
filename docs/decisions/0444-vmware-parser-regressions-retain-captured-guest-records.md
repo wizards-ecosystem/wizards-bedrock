@@ -1,6 +1,6 @@
 # D-444 VMware parser regressions retain captured guest records
 
-Status: Accepted (2026-10-26), qualification OPEN; advances PW-003
+Status: Accepted, 2026-10-26. Qualification OPEN; advances PW-003.
 
 **Context.** Constructed transcript fixtures can repeat a verifier's mistaken
 marker ordering. The retained 2026-10-24 self-test and shipped captures from

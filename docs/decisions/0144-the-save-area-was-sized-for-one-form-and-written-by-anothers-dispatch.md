@@ -1,6 +1,6 @@
 # D-144 The save area was sized for one form and written by another's dispatch
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `xstate::init` decides whether this processor gets the compacted
 `XSAVEC` path or the plain `XSAVE` one, then stores two things: `BYTES`, the

@@ -1,6 +1,6 @@
 # D-235 VMware evidence starts from two identified, separate machines
 
-Status: Accepted (2026-08-29), advances PW-003 and PW-004
+Status: Accepted, 2026-08-29. Advances PW-003 and PW-004.
 
 **Context.** `cargo xtask vmware` could generate only the self-test image, while
 PW-004 separately requires the shipped image users boot. Regenerating `vm/`

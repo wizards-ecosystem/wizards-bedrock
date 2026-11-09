@@ -1,6 +1,6 @@
 # D-418 Windows cleanup admits only its exact live executable
 
-Status: Accepted (2026-10-17), amends D-382; closes the Windows completion defect in PW-016
+Status: Accepted, 2026-10-17. Amends D-382; closes the Windows completion defect in PW-016.
 
 **Context.** A release cleanup on Windows removed every compiled artifact but
 Cargo returned access-denied while deleting the `xtask.exe` that was executing

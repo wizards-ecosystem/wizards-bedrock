@@ -1,6 +1,6 @@
 # D-13 Framekernel discipline: all `unsafe` in one privileged crate
 
-Status: Provisional (2026-08-23; the containment property is verified, the published numbers are unreplicated — see D-71 and `010` §1)
+Status: Provisional, 2026-07-18. Provisional since 2026-08-23: the containment property is verified, the published numbers are unreplicated; see D-71 and `010` §1.
 
 **Context.** Research pass, strongest verified result (Asterinas,
 USENIX ATC'25).

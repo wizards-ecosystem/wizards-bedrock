@@ -1,6 +1,6 @@
 # D-332 Framebuffer scrolling keeps checked spans and interrupt progress
 
-Status: Accepted (2026-09-28), amends D-48, D-137, D-249 and D-329; closes PW-011
+Status: Accepted, 2026-09-28. Amends D-48, D-137, D-249 and D-329; closes PW-011.
 
 **Context.** Earlier debug boots spent more than a minute after the
 interrupt-progress scroll check, and an attempted speedup copied framebuffer

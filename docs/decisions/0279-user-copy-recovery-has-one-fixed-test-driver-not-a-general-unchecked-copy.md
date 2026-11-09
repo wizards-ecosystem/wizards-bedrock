@@ -1,6 +1,6 @@
 # D-279 User-copy recovery has one fixed test driver, not a general unchecked copy
 
-Status: Accepted (2026-09-04), amends D-120 and D-252; closes PW-538
+Status: Accepted, 2026-09-04. Amends D-120 and D-252; closes PW-538.
 
 **Context.** D-120 concluded that recovering a fault made any lower-half
 unwalked read safe. That range check proves neither user permission nor

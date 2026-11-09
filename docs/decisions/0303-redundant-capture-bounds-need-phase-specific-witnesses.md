@@ -1,6 +1,6 @@
 # D-303 Redundant capture bounds need phase-specific witnesses
 
-Status: Accepted (2026-09-12), amends D-264 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-264 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 870 and 871 replaced the caller's child
 output limit with the global ceiling during polling and final collection. Both

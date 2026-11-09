@@ -1,6 +1,6 @@
 # D-283 Shared allocator aliases keep one write-back cache policy
 
-Status: Accepted (2026-09-05), amends D-185 and D-269; advances PW-128
+Status: Accepted, 2026-09-05. Amends D-185 and D-269; advances PW-128.
 
 **Context.** A shared allocation remains reachable through the kernel's
 write-back direct map while ring 3 reaches a second mapping. The safe shared

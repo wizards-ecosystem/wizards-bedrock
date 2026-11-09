@@ -1,6 +1,6 @@
 # D-123 Four ways safe code reached undefined behaviour, and the road back that was not the only one
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** Two adversarial audits over Phases 0–5, held to D-105's two rules.
 D-122 took the critical finding; these are the rest of the high ones.

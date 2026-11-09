@@ -1,6 +1,6 @@
 # D-427 Shipped liveness requires a call from ring 3
 
-Status: Accepted (2026-10-23), qualification OPEN; amends D-116 and D-426; advances PW-004
+Status: Accepted, 2026-10-23. Qualification OPEN; amends D-116 and D-426; advances PW-004.
 
 **Context.** D-426's VMware diagnosis showed that the shipped image could
 print its launch and keyboard markers before halting on its first `iretq`.

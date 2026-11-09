@@ -1,6 +1,6 @@
 # D-320 Artifacts and packages are hash-addressed and reproducible, with generations, A/B images and a safe mode
 
-Status: Accepted (2026-09-12), refines D-73 and D-226
+Status: Accepted, 2026-09-12. Refines D-73 and D-226.
 
 **Context.** D-226 gave the Wizzy handoff a route-neutral envelope carrying a
 digest and provenance; `015` requires two clean builds to agree byte for byte

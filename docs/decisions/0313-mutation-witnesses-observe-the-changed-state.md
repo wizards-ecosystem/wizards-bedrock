@@ -1,6 +1,6 @@
 # D-313 Mutation witnesses observe the changed state
 
-Status: Accepted (2026-09-12), amends D-28, D-48, D-126, D-239, D-257, D-276 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-28, D-48, D-126, D-239, D-257, D-276 and D-301; advances PW-001.
 
 **Context.** The last six survivors mixed redundant defenses with witnesses
 which observed a different transaction phase. Fabricating user-copy `CS` still

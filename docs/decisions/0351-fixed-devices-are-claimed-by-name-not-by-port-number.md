@@ -1,6 +1,6 @@
 # D-351 Fixed devices are claimed by name, not by port number
 
-Status: Accepted (2026-09-29), amends D-138; closes PW-561
+Status: Accepted, 2026-09-29. Amends D-138; closes PW-561.
 
 **Context.** Each fixed-device driver reserved its I/O ports by naming the raw
 number through `port::claim` and its block and pair variants. The exclusive

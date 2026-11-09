@@ -1,6 +1,6 @@
 # D-391 API audit keeps structured evidence inside its fixed capture ceiling
 
-Status: Accepted (2026-10-12), amends D-213 and D-275
+Status: Accepted, 2026-10-12. Amends D-213 and D-275.
 
 **Context.** The semantic API audit deliberately causes one compiler warning
 per instrumented public item and consumes Cargo's structured JSON diagnostic

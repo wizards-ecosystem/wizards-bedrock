@@ -1,6 +1,6 @@
 # D-294 The audited registry is rebound once per compiler round
 
-Status: Accepted (2026-09-06), amends D-263 and D-275
+Status: Accepted, 2026-09-06. Amends D-263 and D-275.
 
 **Context.** The API audit materializes the locked registry into a private
 Cargo home and proves it unchanged by hashing every file it holds. D-275's

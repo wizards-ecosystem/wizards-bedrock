@@ -1,6 +1,6 @@
 # D-430 Leaf callback review follows authority, not a stale static count
 
-Status: Accepted (2026-10-23); clarifies D-121, D-126 and D-200; preserves PW-707
+Status: Accepted, 2026-10-23. Clarifies D-121, D-126 and D-200; preserves PW-707.
 
 **Context.** PW-707 still described three leaf-lock statics and a future fourth
 as the trigger for enforcement. D-126 had already found four and replaced

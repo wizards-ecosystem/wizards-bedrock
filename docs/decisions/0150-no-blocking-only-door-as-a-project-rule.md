@@ -1,6 +1,6 @@
 # D-150 No blocking-only door, as a project rule
 
-Status: Accepted (2026-08-25) (amended by D-166 and D-181)
+Status: Accepted, 2026-08-25. Amended by D-166 and D-181.
 
 **Context.** `013`'s first constraint: every operation that can wait gets a ring
 form. The question left open was whether that binds Phase 6 or the project.

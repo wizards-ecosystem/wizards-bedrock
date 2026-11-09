@@ -1,6 +1,6 @@
 # D-200 File reads leave trap context through one bounded worker, and NVMe waits use monotonic deadlines
 
-Status: Accepted (2026-08-27), amends D-153, D-164, D-169 and D-181; closes PW-205 and PW-209
+Status: Accepted, 2026-08-27. Amends D-153, D-164, D-169 and D-181; closes PW-205 and PW-209.
 
 **Context.** `Read` had the asynchronous ring entry but performed the complete
 VFS and polled NVMe path inside `RingEnter`. The syscall gate has interrupts

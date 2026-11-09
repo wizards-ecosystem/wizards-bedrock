@@ -1,6 +1,6 @@
 # D-87 A mapping carries its evidence: owned frames, or a range the handoff described
 
-Status: Accepted (2026-08-24), discharges D-76's first residue
+Status: Accepted, 2026-08-24. Discharges D-76's first residue.
 
 **Context.** D-76 audited `wost` for what a *safe* caller could reach and found
 `AddressSpace::map` taking a bare physical address. D-77 re-checked it, could

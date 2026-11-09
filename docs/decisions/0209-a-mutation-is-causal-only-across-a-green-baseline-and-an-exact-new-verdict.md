@@ -1,6 +1,6 @@
 # D-209 A mutation is causal only across a green baseline and an exact new verdict
 
-Status: Accepted (2026-08-28), amends D-119, D-134 and D-175; closes PW-504
+Status: Accepted, 2026-08-28. Amends D-119, D-134 and D-175; closes PW-504.
 
 **Context.** D-134 requires a mutation's named check to fail, but observes only
 the mutated run. A check already red in the pristine source therefore satisfies

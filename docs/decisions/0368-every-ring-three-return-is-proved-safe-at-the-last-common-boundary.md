@@ -1,6 +1,6 @@
 # D-368 Every ring-three return is proved safe at the last common boundary
 
-Status: Accepted (2026-10-09), amends D-102 and D-348
+Status: Accepted, 2026-10-09. Amends D-102 and D-348.
 
 **Context.** Deep Codex Security scan
 `32245094-b8b7-47d1-b6e7-a52554800772` of revision

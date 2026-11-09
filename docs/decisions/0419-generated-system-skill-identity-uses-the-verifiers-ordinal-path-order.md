@@ -1,6 +1,6 @@
 # D-419 Generated system-skill identity uses the verifier's ordinal path order
 
-Status: Accepted (2026-10-17), implemented with qualification OPEN; amends D-413 and D-417; advances PW-026
+Status: Accepted, 2026-10-17. Implemented with qualification OPEN; amends D-413 and D-417; advances PW-026.
 
 **Context.** The first owned Deep attempt on `71148f1` stopped before Daybreak
 or scan creation because the private system-skills tree had the expected 71

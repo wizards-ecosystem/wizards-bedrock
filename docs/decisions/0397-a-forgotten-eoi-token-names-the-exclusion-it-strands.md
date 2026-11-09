@@ -1,6 +1,6 @@
 # D-397 A forgotten EOI token names the exclusion it strands
 
-Status: Accepted (2026-10-13), amends D-322 and D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-322 and D-395; advances PW-001.
 
 **Context.** Permanent mutation 773 forgets the first ping delivery's
 `EoiToken` instead of dropping it before reclaim. The token owns both the

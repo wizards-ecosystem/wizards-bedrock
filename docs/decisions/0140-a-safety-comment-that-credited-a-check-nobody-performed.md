@@ -1,6 +1,6 @@
 # D-140 A `SAFETY` comment that credited a check nobody performed
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `mm::direct_pointer` turns a physical address into a direct-map
 pointer. Its own doc is unambiguous:

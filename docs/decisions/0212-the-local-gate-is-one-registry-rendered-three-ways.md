@@ -1,6 +1,6 @@
 # D-212 The local gate is one registry rendered three ways
 
-Status: Accepted (2026-08-28), amends D-22, D-124 and D-147; closes PW-501
+Status: Accepted, 2026-08-28. Amends D-22, D-124 and D-147; closes PW-501.
 
 **Context.** `PASSES` already drives the Cargo configurations used by check,
 clippy and rustdoc, but `ci` is a handwritten sequence. Two repository tests

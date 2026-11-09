@@ -1,6 +1,6 @@
 # D-316 Designation is authorization, and requirements and grants are two documents
 
-Status: Accepted (2026-09-12), refines D-111 and D-183; resolves the placement fork in `013-application-platform.md`
+Status: Accepted, 2026-09-12. Refines D-111 and D-183; resolves the placement fork in `013-application-platform.md`.
 
 **Context.** D-111 gives a program exactly one handle at birth. `013` reserved
 an ELF note namespace for what a program requires and left open whether a

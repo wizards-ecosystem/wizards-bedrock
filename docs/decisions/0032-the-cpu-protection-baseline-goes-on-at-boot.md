@@ -1,6 +1,6 @@
 # D-32 The CPU protection baseline goes on at boot
 
-Status: Accepted (2026-08-13)
+Status: Accepted, 2026-08-13.
 
 **Context.** D-12 requires SMEP, SMAP, UMIP and NX from day one rather than as a
 retrofit. Phase 2 is the first phase with a CPU to configure.

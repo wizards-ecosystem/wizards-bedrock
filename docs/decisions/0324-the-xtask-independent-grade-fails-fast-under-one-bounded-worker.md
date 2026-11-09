@@ -1,6 +1,6 @@
 # D-324 The `xtask` independent grade fails fast under one bounded worker
 
-Status: Accepted (2026-09-27), amends D-246; advances PW-025
+Status: Accepted, 2026-09-27. Amends D-246; advances PW-025.
 
 **Context.** D-246 left the large `xtask` grade open. Its current candidate
 set is 3,453 mutants and its host suite contains 649 unit tests, several

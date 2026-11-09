@@ -1,6 +1,6 @@
 # D-361 The NVMe stack meter paints the boot stack across each storage candidate, and its scan answers to the live leaf
 
-Status: Accepted (2026-10-03), amends D-120, D-290 and D-326; closes PW-575
+Status: Accepted, 2026-10-03. Amends D-120, D-290 and D-326; closes PW-575.
 
 **Context.** D-326 reads the stack pointer at every NVMe register access while
 `nvme::prepare` runs. A frame that is never live at an access stays invisible

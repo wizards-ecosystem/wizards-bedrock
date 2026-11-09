@@ -1,6 +1,6 @@
 # D-236 Restoring a target dependency invalidates everything linked against it
 
-Status: Accepted (2026-08-29), amends D-233; advances PW-001
+Status: Accepted, 2026-08-29. Amends D-233; advances PW-001.
 
 **Context.** The 283-entry successor on clean commit
 `095b624bd1601cb3e669b5ade7c614bc5e224405` made 21 outcomes durable before

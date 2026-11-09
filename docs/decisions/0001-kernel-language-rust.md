@@ -1,6 +1,6 @@
 # D-01 Kernel language: Rust
 
-Status: Verified
+Status: Verified, 2026-07-18.
 
 **Context.** Isaac's fluent language is C++; the project is a multi-year
 from-scratch OS. The question was posed as "what is absolute best practice

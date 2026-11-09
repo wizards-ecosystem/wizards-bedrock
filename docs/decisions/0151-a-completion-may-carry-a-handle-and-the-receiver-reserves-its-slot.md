@@ -1,6 +1,6 @@
 # D-151 A completion may carry a handle, and the receiver reserves its slot
 
-Status: Accepted (2026-08-25) (amended by D-181), amends D-111's provenance clause
+Status: Accepted, 2026-08-25. Amended by D-181. Amends D-111's provenance clause.
 
 **Context.** `011` closed Phase 5 owing this: *"no completion carries a handle,
 so the ring cannot be the delegation path the channels are."* Phase 6 makes it

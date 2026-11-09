@@ -1,6 +1,6 @@
 # D-48 The console scrolls out of RAM
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** `001-boot.md` has carried a known limitation since Phase 1: the
 framebuffer console reads uncached device memory back in order to scroll.

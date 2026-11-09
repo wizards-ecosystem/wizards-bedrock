@@ -1,6 +1,6 @@
 # D-274 A fresh advisory result binds one immutable database and one lock graph
 
-Status: Accepted (2026-08-31), amends D-220, D-244 and D-262; advances PW-028
+Status: Accepted, 2026-08-31. Amends D-220, D-244 and D-262; advances PW-028.
 
 **Context.** D-220 required a fresh RustSec review but did not bind freshness
 to one immutable database checkout. A default audit may fetch while it runs,

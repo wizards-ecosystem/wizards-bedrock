@@ -1,6 +1,6 @@
 # D-55 Trap context is a count the heap and the scheduler can ask
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** `008-research-notes-2.md` §4.2 named the bug class no lint
 here can catch — sleep-in-atomic-context, and its memory-safety cousin,

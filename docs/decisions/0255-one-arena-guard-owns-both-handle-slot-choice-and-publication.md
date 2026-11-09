@@ -1,6 +1,6 @@
 # D-255 One arena guard owns both handle-slot choice and publication
 
-Status: Accepted (2026-08-30), closes PW-027 and D-141's fired condition
+Status: Accepted, 2026-08-30. Closes PW-027 and D-141's fired condition.
 
 **Context.** PW-027 asked for a deterministic two-claimant schedule only if a
 free slot could be selected under one guard and filled under another.

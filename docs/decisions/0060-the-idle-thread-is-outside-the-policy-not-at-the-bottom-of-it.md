@@ -1,6 +1,6 @@
 # D-60 The idle thread is outside the policy, not at the bottom of it
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** Slice 3's sleep had a branch for "nobody else is runnable": the
 sleeping thread kept the CPU and halted on its own stack. Correct, but it

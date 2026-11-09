@@ -1,6 +1,6 @@
 # D-289 Every privilege entry installs the kernel stack selector before Rust
 
-Status: Accepted (2026-09-05), amends D-49 and D-96; advances PW-543
+Status: Accepted, 2026-09-05. Amends D-49 and D-96; advances PW-543.
 
 **Context.** A ring-3 interrupt changes privilege and leaves the live `SS`
 null in long mode even though the CPU frame contains the old user `SS:RSP`.

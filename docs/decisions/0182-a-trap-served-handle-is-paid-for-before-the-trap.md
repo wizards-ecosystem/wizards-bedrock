@@ -1,6 +1,6 @@
 # D-182 A trap-served handle is paid for before the trap
 
-Status: Accepted (2026-08-26), amends D-78, D-128, D-141, D-151, D-171, D-180 and D-181
+Status: Accepted, 2026-08-26. Amends D-78, D-128, D-141, D-151, D-171, D-180 and D-181.
 
 **Context.** D-181 made Duplicate and OpenAt reserve a table slot before
 validating the rest of their submissions, but that promise covered only the

@@ -1,6 +1,6 @@
 # D-376 Dynamic mapping admission rejects W+X before page-table preflight
 
-Status: Accepted (2026-10-10), amends D-12, D-44 and D-105; closes PW-585
+Status: Accepted, 2026-10-10. Amends D-12, D-44 and D-105; closes PW-585.
 
 **Context.** A Codex Security finding from scan
 `32245094-b8b7-47d1-b6e7-a52554800772` found that the safe dynamic mapping

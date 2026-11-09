@@ -1,6 +1,6 @@
 # D-292 The orchestrator binary is optimized; the graphs it audits are not
 
-Status: Accepted (2026-09-06), amends D-17 and D-213
+Status: Accepted, 2026-09-06. Amends D-17 and D-213.
 
 **Context.** `cargo xtask` built the orchestrator with the plain `dev`
 profile. The API audit hashes a 119 MB materialized registry and parses the

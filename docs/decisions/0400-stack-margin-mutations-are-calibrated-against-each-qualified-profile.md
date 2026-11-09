@@ -1,6 +1,6 @@
 # D-400 Stack-margin mutations are calibrated against each qualified profile
 
-Status: Accepted (2026-10-13), amends D-359, D-361 and D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-359, D-361 and D-395; advances PW-001.
 
 **Context.** Permanent mutation 1,679 adds a 4 KiB frame to the borrowing
 `isolate_candidate` stage to prove that unit-wide VT-d establishment remains a

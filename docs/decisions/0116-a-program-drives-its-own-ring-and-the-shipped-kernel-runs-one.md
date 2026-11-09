@@ -1,6 +1,6 @@
 # D-116 A program drives its own ring, and the shipped kernel runs one
 
-Status: Accepted (2026-08-24) (amended by D-181)
+Status: Accepted, 2026-08-24. Amended by D-181.
 
 **Context.** Phase 5 closed with the async ABI complete on the kernel's side
 and unreachable from ring 3. The gate at DPL 3 retired its caller

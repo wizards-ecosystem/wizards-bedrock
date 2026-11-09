@@ -1,6 +1,6 @@
 # D-437 Known CLI options belong to the task that consumes them
 
-Status: Accepted (2026-10-23), qualification OPEN; advances PW-718
+Status: Accepted, 2026-10-23. Qualification OPEN; advances PW-718.
 
 The parser accepted known options on unrelated tasks and silently discarded
 them. In particular `clean --check` dispatched cleanup, and `fmt -- --check`

@@ -1,6 +1,6 @@
 # D-297 The population run attests the advisory database; the pinned audit is bound by Git
 
-Status: Accepted (2026-09-06), amends D-274; advances PW-028
+Status: Accepted, 2026-09-06. Amends D-274; advances PW-028.
 
 **Context.** The first real `cargo xtask qualify-advisory` on a clean commit
 failed with "cargo-audit `last-commit` is not a string". D-274 required the

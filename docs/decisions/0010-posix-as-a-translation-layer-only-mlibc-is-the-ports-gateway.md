@@ -1,6 +1,6 @@
 # D-10 POSIX as a translation layer only; mlibc is the ports gateway
 
-Status: Accepted (amended by D-181)
+Status: Accepted, 2026-07-18. Amended by D-181.
 
 **Context.** CPython and NetSurf (D-05) require POSIX; the native ABI
 (D-06) is not POSIX.

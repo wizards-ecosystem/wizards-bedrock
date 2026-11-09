@@ -1,6 +1,6 @@
 # D-69 The lock discipline belongs in the borrow checker
 
-Status: Accepted (2026-08-23), implemented by D-85 with its shape corrected
+Status: Accepted, 2026-08-23. Implemented by D-85 with its shape corrected.
 
 **Context.** D-66 made "a spin lock is held" a runtime assert, checked at every
 point where the interrupt flag is set or a thread is switched. It works, and it

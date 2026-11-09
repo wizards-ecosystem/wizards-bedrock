@@ -1,6 +1,6 @@
 # D-434 The attenuation-refusal witness reaches attenuation
 
-Status: Accepted (2026-10-23), qualification OPEN; strengthens D-248; advances PW-715
+Status: Accepted, 2026-10-23. Qualification OPEN; strengthens D-248; advances PW-715.
 
 The third request in the reservation-cleanup machine fixture used a handle
 without `DUPLICATE`. It failed an earlier permission gate, so the test did not

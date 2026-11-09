@@ -1,6 +1,6 @@
 # D-424 Deep separately proves existing-file mutation and outbound connection denial
 
-Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-422 and D-423; advances PW-026
+Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-422 and D-423; advances PW-026.
 
 **Context.** Immutable-diff Codex Security scan
 `07b1e0b0-b33c-4e0b-9f63-00fbb1619bcf` completed against snapshot

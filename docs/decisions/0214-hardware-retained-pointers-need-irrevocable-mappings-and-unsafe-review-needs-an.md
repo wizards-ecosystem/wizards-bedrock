@@ -1,6 +1,6 @@
 # D-214 Hardware-retained pointers need irrevocable mappings, and unsafe review needs an exact revision
 
-Status: Accepted (2026-08-28), amends D-41, D-125 and D-139; closes PW-506
+Status: Accepted, 2026-08-28. Amends D-41, D-125 and D-139; closes PW-506.
 
 **Context.** The final `wost` review covered 169 unsafe block expressions and
 38 unsafe declarations across eighteen files. The 368-line measurement stayed

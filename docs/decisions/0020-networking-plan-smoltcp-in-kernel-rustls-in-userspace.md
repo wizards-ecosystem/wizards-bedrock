@@ -1,6 +1,6 @@
 # D-20 Networking plan: smoltcp in-kernel, rustls in userspace
 
-Status: Accepted (planned)
+Status: Accepted (planned), 2026-07-18.
 
 **Decision.** The TCP/IP stack is [smoltcp](https://github.com/smoltcp-rs/smoltcp)
 (production bare-metal Rust, also Asterinas's choice) integrated

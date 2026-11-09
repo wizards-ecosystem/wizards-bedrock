@@ -1,6 +1,6 @@
 # D-326 NVMe stack headroom is measured at the live register-access leaf
 
-Status: Accepted (2026-09-27), closes PW-541
+Status: Accepted, 2026-09-27. Closes PW-541.
 
 **Context.** D-287 split controller preparation after two nested debug frames
 overflowed the guarded 32 KiB boot stack. Its post-split 22,980-byte linked-path

@@ -1,6 +1,6 @@
 # D-191 Process construction owns one rollback transaction until the thread is runnable
 
-Status: Accepted (2026-08-27), amends D-100, D-106, D-115 and D-117; closes PW-103 and PW-109
+Status: Accepted, 2026-08-27. Amends D-100, D-106, D-115 and D-117; closes PW-103 and PW-109.
 
 **Context.** `user::spawn` created an `AddressSpace` and then used `?` through
 image, stack, time-page, ring, binding, channel, handle-table and thread

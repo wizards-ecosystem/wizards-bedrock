@@ -1,6 +1,6 @@
 # D-101 The third audit: ring 3 could switch SMAP off, and the flush was never executed
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** A third adversarial pass, over the privilege boundary itself —
 `enter_user`'s `iretq` frame, the user copy, the loader parsing initrd bytes,

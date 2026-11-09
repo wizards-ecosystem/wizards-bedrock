@@ -1,6 +1,6 @@
 # D-40 The linked image is verified, not assumed
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** The same audit read the built ELF back and found `.got` placed
 *after* `.bss`. It linked, it booted, and it was wrong: `linker.ld` named

@@ -1,6 +1,6 @@
 # D-145 Three claims the code had outrun, and one of them lost messages
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The prose audit's Tier 4 — comments that assert away a real
 behaviour, which makes them defects rather than untidiness.

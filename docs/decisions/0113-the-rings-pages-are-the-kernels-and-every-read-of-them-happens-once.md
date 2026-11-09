@@ -1,6 +1,6 @@
 # D-113 The ring's pages are the kernel's, and every read of them happens once
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-79 settled the queue's shape, D-112 checked the protocol against
 every reachable state before this code existed, and `libs/ring-proto` holds the

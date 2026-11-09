@@ -1,6 +1,6 @@
 # D-78 The handle table is one arena, and a handle is arithmetic
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `002-architecture.md` listed "handle table representation and
 rights taxonomy" as owed before Phase 5. `010` §3 answered the taxonomy half —

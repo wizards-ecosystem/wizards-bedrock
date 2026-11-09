@@ -1,6 +1,6 @@
 # D-304 Qualification parser invariants need pre-record witnesses
 
-Status: Accepted (2026-09-12), amends D-274, D-297 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-274, D-297 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutation 26 removed the nonempty advisory-database
 check but survived the integrated forged-report test. That fixture changed its

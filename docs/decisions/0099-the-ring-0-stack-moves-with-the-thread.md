@@ -1,6 +1,6 @@
 # D-99 The ring-0 stack moves with the thread
 
-Status: Accepted (2026-08-24), lifts D-96's limitation
+Status: Accepted, 2026-08-24. Lifts D-96's limitation.
 
 **Context.** D-96 set `RSP0` once, to a stack of its own, and wrote the
 consequence down rather than hiding it: **one thread may be in ring 3 at a

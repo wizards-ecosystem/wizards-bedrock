@@ -1,6 +1,6 @@
 # D-413 Runtime-generated Codex system skills are byte-bound
 
-Status: Accepted (2026-10-15), amends D-412 and D-406
+Status: Accepted, 2026-10-15. Amends D-412 and D-406.
 
 **Context.** After D-412 admitted the complete effective-config response, the
 qualified Codex app-server deterministically materialized its bundled system

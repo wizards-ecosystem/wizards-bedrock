@@ -1,6 +1,6 @@
 # D-201 Ring three opens only with enforced non-execution and a progressing clock
 
-Status: Accepted (2026-08-28), amends D-12, D-32, D-57, D-96, D-164 and D-166; advances PW-301 and closes PW-302
+Status: Accepted, 2026-08-28. Amends D-12, D-32, D-57, D-96, D-164 and D-166; advances PW-301 and closes PW-302.
 
 **Context.** Page-table construction marks data, stacks and shared pages
 non-executable, but `EFER.NXE` was enabled only when `CPUID` offered it and

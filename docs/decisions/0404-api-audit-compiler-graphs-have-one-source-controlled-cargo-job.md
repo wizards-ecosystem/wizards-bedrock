@@ -1,6 +1,6 @@
 # D-404 API-audit compiler graphs have one source-controlled Cargo job
 
-Status: Accepted (2026-10-13), amends D-213 and D-403; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-213 and D-403; advances PW-001.
 
 **Context.** The fresh complete sweep on `6045d10` proved its pristine host
 baseline and reached API-audit round 12, but the `xtask` test-harness compiler

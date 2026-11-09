@@ -1,6 +1,6 @@
 # D-408 Windows canonical path spelling cannot reject the owned Deep qualifier
 
-Status: Accepted (2026-10-15), amends D-406
+Status: Accepted, 2026-10-15. Amends D-406.
 
 **Context.** The first owned Deep attempt on the frozen D-407 candidate stopped
 before authentication or scan start with `ChatGPT Codex home is redirected`.

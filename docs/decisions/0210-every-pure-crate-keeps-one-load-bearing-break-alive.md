@@ -1,6 +1,6 @@
 # D-210 Every pure crate keeps one load-bearing break alive
 
-Status: Accepted (2026-08-28), amends D-28 and D-189; closes PW-503
+Status: Accepted, 2026-08-28. Amends D-28 and D-189; closes PW-503.
 
 **Context.** Host and `libs/` checks have always been broken once when written,
 but D-119 originally admitted only machine mutations. D-189 later admitted

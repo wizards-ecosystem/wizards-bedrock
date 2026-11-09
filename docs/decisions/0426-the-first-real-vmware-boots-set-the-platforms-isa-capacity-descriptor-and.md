@@ -1,6 +1,6 @@
 # D-426 The first real VMware boots set the platform's ISA, capacity, descriptor and transcript facts
 
-Status: Accepted (2026-10-20), implemented with qualification OPEN; amends D-392 and D-421; advances PW-003, PW-004, PW-596, PW-597, PW-598 and PW-599
+Status: Accepted, 2026-10-20. Implemented with qualification OPEN; amends D-392 and D-421; advances PW-003, PW-004, PW-596, PW-597, PW-598 and PW-599.
 
 **Context.** The first source-bound VMware self-test boot of candidate
 `65f0f89` failed closed before memory initialization:

@@ -1,6 +1,6 @@
 # D-72 WASI: `wasip1` is the target, and the Component Model is a watch item
 
-Status: Provisional (2026-08-23) (amended by D-181), amends D-09
+Status: Provisional, 2026-08-23. Amended by D-181. Amends D-09.
 
 **Context.** D-09 made WASI 0.3 components a first-class app format with
 **wasmi** as the runtime. WASI 0.3.0 did ship, on 2026-06-11. Everything else

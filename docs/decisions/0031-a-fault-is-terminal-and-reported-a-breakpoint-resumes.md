@@ -1,6 +1,6 @@
 # D-31 A fault is terminal and reported; a breakpoint resumes
 
-Status: Accepted (2026-08-13) (amended by D-77; narrowed to kernel faults by D-102)
+Status: Accepted, 2026-08-13. Amended by D-77; narrowed to kernel faults by D-102.
 
 **Context.** With an IDT installed, something has to decide what a fault means.
 

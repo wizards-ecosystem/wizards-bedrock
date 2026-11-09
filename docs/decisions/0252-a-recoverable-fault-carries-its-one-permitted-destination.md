@@ -1,6 +1,6 @@
 # D-252 A recoverable fault carries its one permitted destination
 
-Status: Accepted (2026-08-30), amends D-120 and D-186
+Status: Accepted, 2026-08-30. Amends D-120 and D-186.
 
 **Context.** Validating a page fault and then passing a raw resume address to
 the trap-frame writer left a second authority door: any safe in-module caller

@@ -1,6 +1,6 @@
 # D-166 The time is a page, not a call
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** D-152 settled the shape of a published clock and D-149 put it in
 this phase, before a filesystem exists to want it, because a call that becomes

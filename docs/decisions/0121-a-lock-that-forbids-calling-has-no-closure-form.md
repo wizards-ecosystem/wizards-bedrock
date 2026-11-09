@@ -1,6 +1,6 @@
 # D-121 A lock that forbids calling has no closure form
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-105 split the lock API in two. `lock(&mut ThreadContext)` takes
 a context, and the borrow checker then refuses a second acquisition while the

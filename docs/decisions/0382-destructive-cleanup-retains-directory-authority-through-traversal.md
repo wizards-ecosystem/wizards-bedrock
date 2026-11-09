@@ -1,6 +1,6 @@
 # D-382 Destructive cleanup retains directory authority through traversal
 
-Status: Accepted (2026-10-10), amends D-263; closes Codex Security occurrence `occ_b5eed8ca35b5d6b6379fb621`
+Status: Accepted, 2026-10-10. Amends D-263; closes Codex Security occurrence `occ_b5eed8ca35b5d6b6379fb621`.
 
 **Context.** D-263 made `cargo xtask clean --all` accept only the lexical
 repository `vm/` child, reject links and reparse points in the checked path,

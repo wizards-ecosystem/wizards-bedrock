@@ -1,6 +1,6 @@
 # D-380 ESP population authenticates the exact bootloader buffer
 
-Status: Accepted (2026-10-10), closes PW-589
+Status: Accepted, 2026-10-10. Closes PW-589.
 
 **Context.** `boot/limine/CHECKSUMS` pins the reviewed SHA-256 of
 `BOOTX64.EFI`, and the vendor gate verifies it, but image, run, boot and VMware

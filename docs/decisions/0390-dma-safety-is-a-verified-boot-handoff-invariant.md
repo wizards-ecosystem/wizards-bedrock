@@ -1,6 +1,6 @@
 # D-390 DMA safety is a verified boot-handoff invariant
 
-Status: Accepted (2026-10-11), amends D-42, D-45, D-357 through D-358 and D-389
+Status: Accepted, 2026-10-11. Amends D-42, D-45, D-357 through D-358 and D-389.
 
 **Context.** D-389 closes every unrestricted-DMA interval after the kernel
 owns its VT-d unit, but that owner was still constructed after the allocator,

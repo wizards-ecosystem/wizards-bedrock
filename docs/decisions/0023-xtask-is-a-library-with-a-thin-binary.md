@@ -1,6 +1,6 @@
 # D-23 xtask is a library with a thin binary
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** `xtask/src/main.rs` had grown to 254 lines in one file, with
 hardcoded paths, twelve fallible calls carrying no context, and no tests. The

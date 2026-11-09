@@ -1,6 +1,6 @@
 # D-172 A second backend, and a device that is not a file
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `014` is blunt about why this slice exists: *the VFS needs at least
 two backends before its abstraction is anything but a guess.* A directory trait

@@ -1,6 +1,6 @@
 # D-328 Deleted public APIs earn closure through exact compiler reintroduction
 
-Status: Accepted (2026-09-27), closes PW-519, PW-523 and D-136
+Status: Accepted, 2026-09-27. Closes PW-519, PW-523 and D-136.
 
 **Context.** D-275 made the public-API audit compiler-semantic and explicitly
 left the real PW-519 and PW-523 reintroduction runs unclaimed. Both APIs had

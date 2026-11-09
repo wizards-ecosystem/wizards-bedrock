@@ -1,6 +1,6 @@
 # D-110 Channels carry bytes and handles, and both ends declare the rights
 
-Status: Accepted design (2026-08-24); speculative implementation retired by D-248
+Status: Accepted design, 2026-08-24. Speculative implementation retired by D-248.
 
 **Context.** `002` named `Channel` as the IPC primitive and, at this decision,
 pillar 1 said a process received one bootstrap handle and every later handle

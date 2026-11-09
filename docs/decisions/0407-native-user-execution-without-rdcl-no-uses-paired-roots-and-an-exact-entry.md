@@ -1,6 +1,6 @@
 # D-407 Native user execution without RDCL_NO uses paired roots and an exact entry enclave
 
-Status: Accepted (2026-10-14), implemented with external qualification OPEN; amends D-45, D-81, D-88, D-106 and D-250; advances PW-580 and PW-706
+Status: Accepted, 2026-10-14. Implemented with external qualification OPEN; amends D-45, D-81, D-88, D-106 and D-250; advances PW-580 and PW-706.
 
 **Context.** D-81 declined kernel page-table isolation because the intended
 processor was expected to report `RDCL_NO`. D-250 corrected the authority

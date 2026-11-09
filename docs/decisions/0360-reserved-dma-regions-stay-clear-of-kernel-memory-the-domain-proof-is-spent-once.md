@@ -1,6 +1,6 @@
 # D-360 Reserved DMA regions stay clear of kernel memory, the domain proof is spent once, and four source checks close their evasions
 
-Status: Accepted (2026-10-03), amends D-345, D-351 and D-358; closes PW-573 and PW-574
+Status: Accepted, 2026-10-03. Amends D-345, D-351 and D-358; closes PW-573 and PW-574.
 
 **Context.** D-358 left two items of the VT-d domain owed. The regions the DMAR
 reserves for the storage function were identity-mapped as declared, with no

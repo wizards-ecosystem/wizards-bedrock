@@ -1,6 +1,6 @@
 # D-224 The boot memory map is complete or refused
 
-Status: Accepted (2026-08-29); closes PW-108
+Status: Accepted, 2026-08-29. Closes PW-108.
 
 **Context.** The boot handoff copied at most 128 physical-memory regions into
 a fixed array and counted every later entry as dropped. Logging that loss did

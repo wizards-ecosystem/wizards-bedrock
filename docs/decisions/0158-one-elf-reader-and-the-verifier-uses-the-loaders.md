@@ -1,6 +1,6 @@
 # D-158 One ELF reader, and the verifier uses the loader's
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-105 named it and left it: `xtask/src/elf.rs` carried its own
 transcription of the ELF magic, the class byte, the endianness byte, `PT_LOAD`,

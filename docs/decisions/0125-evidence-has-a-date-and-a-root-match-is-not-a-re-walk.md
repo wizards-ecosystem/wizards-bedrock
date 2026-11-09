@@ -1,6 +1,6 @@
 # D-125 Evidence has a date, and a root match is not a re-walk
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `MappedStack` is the value `map_stack` returns: a stack top, plus
 the root of the space that mapped it. It is not `Clone`, so exactly one caller

@@ -1,6 +1,6 @@
 # D-154 SMP stays at Phase 12; its seam is paid now
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Four entries carry debts that cannot be discharged on one CPU:
 D-126 owes `LEAVES_HELD` a move into `arch::percpu`; D-129 owes the two-caller

@@ -1,6 +1,6 @@
 # D-229 The ring model carries visibility through every terminal owner
 
-Status: Accepted (2026-08-29), closes PW-404
+Status: Accepted, 2026-08-29. Closes PW-404.
 
 **Context.** D-112's TLA+ model proves admission accounting over anonymous
 counts. D-221's four-event host litmus proves that one release tail and one

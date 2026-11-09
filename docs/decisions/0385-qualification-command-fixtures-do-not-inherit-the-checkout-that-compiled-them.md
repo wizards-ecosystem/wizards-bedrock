@@ -1,6 +1,6 @@
 # D-385 Qualification command fixtures do not inherit the checkout that compiled them
 
-Status: Accepted (2026-10-11), amends D-373
+Status: Accepted, 2026-10-11. Amends D-373.
 
 **Context.** The complete mutation sweep builds and tests a tracked copy under
 `target/mutate/<commit>-<registry>/workspace`. The cargo-mutants command tests

@@ -1,6 +1,6 @@
 # D-206 Hostile inputs end at typed refusal, while internal corruption remains fatal
 
-Status: Accepted (2026-08-28), amends D-41, D-115 and D-170; closes PW-400
+Status: Accepted, 2026-08-28. Amends D-41, D-115 and D-170; closes PW-400.
 
 **Context.** The pre-Wizzy audit found four target-side `expect` calls and a
 larger claim: malformed ring, image, firmware, filesystem and device data must

@@ -1,6 +1,6 @@
 # D-261 Entry-slot identity owns translation eviction
 
-Status: Accepted (2026-08-31), amends D-88, D-94 and D-214; closes PW-131
+Status: Accepted, 2026-08-31. Amends D-88, D-94 and D-214; closes PW-131.
 
 **Context.** Synchronous invalidation removed the lifetime hazard from
 `Unmapped`, but deciding from page-table-root identity was still wrong in both

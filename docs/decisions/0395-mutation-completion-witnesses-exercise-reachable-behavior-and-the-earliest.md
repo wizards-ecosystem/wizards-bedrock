@@ -1,6 +1,6 @@
 # D-395 Mutation completion witnesses exercise reachable behavior and the earliest causal verdict
 
-Status: Accepted (2026-10-13), amends D-322 and D-394; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-322 and D-394; advances PW-001.
 
 **Context.** The restarted complete sweep on `ed2641f` exposed five distinct
 registry problems rather than five equivalent escapes. Mutation 202 corrupts

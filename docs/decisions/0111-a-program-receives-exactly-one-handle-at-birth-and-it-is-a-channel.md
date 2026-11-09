@@ -1,6 +1,6 @@
 # D-111 A program receives exactly one handle at birth, and it is a channel
 
-Status: Accepted (2026-08-24) (provenance amended by D-151; opaque identity implementation amended by D-248), amends D-07
+Status: Accepted, 2026-08-24. Provenance amended by D-151; opaque identity implementation amended by D-248. Amends D-07.
 
 **Context.** `002`'s pillar 1 was amended once already, because its original
 wording — "channels are the sole delegation mechanism" — was false even of

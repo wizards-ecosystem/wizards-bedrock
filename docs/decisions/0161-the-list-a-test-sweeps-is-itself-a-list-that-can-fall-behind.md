@@ -1,6 +1,6 @@
 # D-161 The list a test sweeps is itself a list that can fall behind
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-157 said a check whose name quantifies must read its domain
 rather than restate it, and claimed a sweep of the other fifty-odd

@@ -1,6 +1,6 @@
 # D-188 Uncertain NVMe commands stop the controller or retain every DMA frame
 
-Status: Accepted (2026-08-27), amends D-169 and closes PW-200
+Status: Accepted, 2026-08-27. Amends D-169 and closes PW-200.
 
 **Context.** D-169 bounded every polled command, but its timeout returned while
 the command was still outstanding. The local Identify buffer then dropped;

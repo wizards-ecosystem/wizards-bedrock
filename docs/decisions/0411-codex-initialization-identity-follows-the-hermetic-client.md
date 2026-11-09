@@ -1,6 +1,6 @@
 # D-411 Codex initialization identity follows the hermetic client
 
-Status: Accepted (2026-10-15), amends D-410 and D-406
+Status: Accepted, 2026-10-15. Amends D-410 and D-406.
 
 **Context.** D-410 derived its user-agent framing from an ambient diagnostic.
 The owned qualifier clears inherited environment before starting the qualified

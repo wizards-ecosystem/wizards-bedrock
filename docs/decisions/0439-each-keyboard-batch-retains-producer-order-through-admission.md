@@ -1,6 +1,6 @@
 # D-439 Each keyboard batch retains producer order through admission
 
-Status: Accepted (2026-10-23), qualification OPEN; advances PW-720
+Status: Accepted, 2026-10-23. Qualification OPEN; advances PW-720.
 
 The debug boot in `pristine-dg4d95uw` completed 293 of 294 checks and failed
 the blocked reader's expected A key, while the armed A, editing and translated

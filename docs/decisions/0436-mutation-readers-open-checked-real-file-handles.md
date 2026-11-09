@@ -1,6 +1,6 @@
 # D-436 Mutation readers open checked real-file handles
 
-Status: Accepted (2026-10-23), qualification OPEN; strengthens D-344; advances PW-717
+Status: Accepted, 2026-10-23. Qualification OPEN; strengthens D-344; advances PW-717.
 
 Three mutation-workspace readers still used ordinary `File::open` for bounded
 reading or hashing. A final-component link, including one substituted after a

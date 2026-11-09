@@ -1,6 +1,6 @@
 # D-165 A check that could not fail, found by breaking it
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Slice 1's most important property is D-151's: **a promised handle
 slot is given back on every terminal path.** A leak there is not a crash. It is

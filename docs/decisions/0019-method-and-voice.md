@@ -1,6 +1,6 @@
 # D-19 Method and voice
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Decision.** *Design-first*: every subsystem gets a numbered doc in
 `docs/` before implementation, citing references (OSDev wiki,

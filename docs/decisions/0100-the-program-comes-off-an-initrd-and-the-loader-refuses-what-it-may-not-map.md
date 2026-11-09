@@ -1,6 +1,6 @@
 # D-100 The program comes off an initrd, and the loader refuses what it may not map
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-96 put four bytes of machine code in a page and jumped to them.
 That proved the privilege boundary and nothing about loading. The roadmap's

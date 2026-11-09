@@ -1,6 +1,6 @@
 # D-329 Device publication and closure prose keep exact source authority
 
-Status: Accepted (2026-09-28), amends D-249, D-265 and D-325; advances PW-010, PW-011 and PW-129
+Status: Accepted, 2026-09-28. Amends D-249, D-265 and D-325; advances PW-010, PW-011 and PW-129.
 
 **Context.** D-249 required framebuffer rows to pass through checked volatile
 MMIO before their RAM shadow changed, but its retained row-plan and cursor

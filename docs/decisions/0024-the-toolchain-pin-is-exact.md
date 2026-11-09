@@ -1,6 +1,6 @@
 # D-24 The toolchain pin is exact
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** D-17 recorded the toolchain as "pinned (1.97.x)" while
 `rust-toolchain.toml` actually said `channel = "stable"`.

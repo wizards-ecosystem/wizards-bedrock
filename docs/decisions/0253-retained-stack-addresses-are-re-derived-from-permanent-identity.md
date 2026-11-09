@@ -1,6 +1,6 @@
 # D-253 Retained stack addresses are re-derived from permanent identity
 
-Status: Accepted (2026-08-30), amends D-94, D-125 and D-245; advances PW-113 and PW-120
+Status: Accepted, 2026-08-30. Amends D-94, D-125 and D-245; advances PW-113 and PW-120.
 
 **Context.** A copied stack-top integer could outlive the mapping identity that
 justified it. Independently, a fixed device ledger and first-fit scratch arrays

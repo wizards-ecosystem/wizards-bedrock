@@ -1,6 +1,6 @@
 # D-372 PCI interrupts are default-deny behind VT-d remapping
 
-Status: Accepted (2026-10-09), amends D-358 and D-371; closes PW-710
+Status: Accepted, 2026-10-09. Amends D-358 and D-371; closes PW-710.
 
 **Context.** Codex Security occurrence `occ_66ce12f335b236e1daa2b291`
 identified a privilege-boundary gap separate from DMA reach. A hostile PCI

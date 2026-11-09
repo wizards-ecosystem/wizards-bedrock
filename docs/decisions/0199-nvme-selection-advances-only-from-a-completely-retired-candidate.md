@@ -1,6 +1,6 @@
 # D-199 NVMe selection advances only from a completely retired candidate
 
-Status: Accepted (2026-08-27), amends D-88, D-138, D-168 and D-188; closes PW-208
+Status: Accepted, 2026-08-27. Amends D-88, D-138, D-168 and D-188; closes PW-208.
 
 **Context.** Enumeration counted every NVMe function but remembered only the
 first. A malformed, unsupported or non-responsive controller therefore hid a

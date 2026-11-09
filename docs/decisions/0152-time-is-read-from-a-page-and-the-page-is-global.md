@@ -1,6 +1,6 @@
 # D-152 Time is read from a page, and the page is global
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** Phase 4 made the counter the clock (D-57). Reading it from ring 3
 currently means a trap. Every OS that cares eventually publishes a read-only

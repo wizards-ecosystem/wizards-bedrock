@@ -1,6 +1,6 @@
 # D-403 Compiler identity is authenticated without resident executable-sized allocations
 
-Status: Accepted (2026-10-13), amends D-213 and D-402; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-213 and D-402; advances PW-001.
 
 **Context.** The clean complete sweep on `dd6f145` passed its pristine host
 baseline but exhausted the Windows commit limit during the pristine API-audit

@@ -1,6 +1,6 @@
 # D-244 Exceptional evidence records executions, not installed tools
 
-Status: Accepted (2026-08-30), amends D-216, D-218 and D-235; closes PW-007 and PW-008; advances PW-009
+Status: Accepted, 2026-08-30. Amends D-216, D-218 and D-235; closes PW-007 and PW-008; advances PW-009.
 
 **Context.** The rejected phase handoff treated exceptional tools as though
 recording their identity recorded their work. Mutation's `last-run` journal

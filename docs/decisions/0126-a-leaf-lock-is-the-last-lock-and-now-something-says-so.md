@@ -1,6 +1,6 @@
 # D-126 A leaf lock is the last lock, and now something says so
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-121 wrote the rule down: a `lock_leaf` static may not expose a
 closure form, because a leaf guard's whole obligation is that **nothing is

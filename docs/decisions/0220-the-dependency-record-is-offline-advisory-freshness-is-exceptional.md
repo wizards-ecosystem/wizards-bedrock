@@ -1,6 +1,6 @@
 # D-220 The dependency record is offline; advisory freshness is exceptional
 
-Status: Accepted (2026-08-29), amends D-16, D-25 and D-26; closes PW-510
+Status: Accepted, 2026-08-29. Amends D-16, D-25 and D-26; closes PW-510.
 
 **Context.** The locked Rust graph had grown to 67 registry packages, three of
 which reach the shipped kernel, while the repository also carried three

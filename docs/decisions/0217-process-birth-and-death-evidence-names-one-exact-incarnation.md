@@ -1,6 +1,6 @@
 # D-217 Process birth and death evidence names one exact incarnation
 
-Status: Accepted (2026-08-29), pairing evidence removed by D-248; closes PW-515
+Status: Accepted, 2026-08-29. Pairing evidence removed by D-248; closes PW-515.
 
 **Context.** The clean evidence refresh after D-216 exposed an intermittent
 debug failure in `a spawned program holds exactly one handle`. The check made

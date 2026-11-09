@@ -1,6 +1,6 @@
 # D-79 The queue is one mechanism, and overflow is impossible by construction
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** The second doc `002` owed before Phase 5. D-06 chose
 submission/completion rings and `010` §2 refuted the rationale recorded for

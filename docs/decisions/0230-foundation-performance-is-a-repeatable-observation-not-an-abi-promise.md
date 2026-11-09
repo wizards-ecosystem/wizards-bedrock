@@ -1,6 +1,6 @@
 # D-230 Foundation performance is a repeatable observation, not an ABI promise
 
-Status: Accepted (2026-08-29), closes PW-511
+Status: Accepted, 2026-08-29. Closes PW-511.
 
 **Amended by D-384.** The original observed bands remain historical evidence;
 the current reviewed footprint and retained-state bands are recorded below.

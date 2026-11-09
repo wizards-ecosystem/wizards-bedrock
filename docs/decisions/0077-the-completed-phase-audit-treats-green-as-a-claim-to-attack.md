@@ -1,6 +1,6 @@
 # D-77 The completed-phase audit treats green as a claim to attack
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** A fresh adversarial pass covered every implemented Phase 0–4
 boundary: pure arithmetic, boot handoff, interrupt entry and return, physical

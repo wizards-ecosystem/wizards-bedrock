@@ -1,6 +1,6 @@
 # D-189 The running address space exposes operations, never its mutable owner
 
-Status: Accepted (2026-08-27), amends D-86 and closes PW-102
+Status: Accepted, 2026-08-27. Amends D-86 and closes PW-102.
 
 **Context.** D-86 retained the kernel's `AddressSpace` after activation so a
 later stack or device mapping could be added safely. Its access door was

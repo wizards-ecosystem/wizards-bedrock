@@ -1,6 +1,6 @@
 # D-346 QEMU control runs over the emulator's own standard streams
 
-Status: Accepted (2026-09-28), amends D-38, D-227 and D-231; closes PW-557
+Status: Accepted, 2026-09-28. Amends D-38, D-227 and D-231; closes PW-557.
 
 **Context.** D-227 made the harness listen on loopback before QEMU dialled its
 QMP and human-monitor connections. That removed a port race but left each

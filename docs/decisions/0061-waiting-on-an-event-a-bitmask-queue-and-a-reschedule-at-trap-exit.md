@@ -1,6 +1,6 @@
 # D-61 Waiting on an event: a bitmask queue, and a reschedule at trap exit
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** D-58 gave the kernel a wait for a *time*. The keyboard needs a
 wait for an *event*: D-49 routed the line and retired polling, and the debt it

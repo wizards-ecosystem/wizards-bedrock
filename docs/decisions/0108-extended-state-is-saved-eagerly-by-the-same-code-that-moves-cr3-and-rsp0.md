@@ -1,6 +1,6 @@
 # D-108 Extended state is saved eagerly, by the same code that moves `CR3` and `RSP0`
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-82 decided the shape — eager, compacted, boot-sized, out of
 line, arithmetic in `libs/` — and D-29 recorded the debt. `libs/x86-cpuid`'s

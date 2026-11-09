@@ -1,6 +1,6 @@
 # D-264 A child is complete only after bounded exit and capture
 
-Status: Accepted (2026-08-31), amends D-134 and D-244; advances PW-019 and PW-022
+Status: Accepted, 2026-08-31. Amends D-134 and D-244; advances PW-019 and PW-022.
 
 **Context.** A caller deadline did not bound a later blocking `wait`, and pipe
 capture could wait forever on an inherited writer. Mutation grading could then

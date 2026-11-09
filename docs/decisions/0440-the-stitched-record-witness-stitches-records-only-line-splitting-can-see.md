@@ -1,6 +1,6 @@
 # D-440 The stitched-record witness stitches records only line splitting can see
 
-Status: Accepted (2026-10-24); strengthens D-421 and D-426; advances PW-003
+Status: Accepted, 2026-10-24. Strengthens D-421 and D-426; advances PW-003.
 
 The complete sweep on `891f22d` reported mutation 110 survived. It replaces
 the VMware verifier's one-record-per-line reader with one that splits a line

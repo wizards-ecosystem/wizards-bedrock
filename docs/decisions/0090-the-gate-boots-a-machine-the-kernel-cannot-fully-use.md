@@ -1,6 +1,6 @@
 # D-90 The gate boots a machine the kernel cannot fully use
 
-Status: Accepted (2026-08-24), extends D-65
+Status: Accepted, 2026-08-24. Extends D-65.
 
 **Context.** D-65 made the gate boot three kernels — the self-test image in
 release and again in debug for overflow checks, and the shipped image — after an

@@ -1,6 +1,6 @@
 # D-133 A premise about every trap arm, kept in a different file from the arms
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `thread.rs` opens with the rule the whole tickless design rests
 on: *every path that changes who is runnable ends by arming the timer for the

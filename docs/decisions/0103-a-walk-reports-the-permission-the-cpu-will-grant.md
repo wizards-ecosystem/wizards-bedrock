@@ -1,6 +1,6 @@
 # D-103 A walk reports the permission the CPU will grant
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `paging::translate` returned the *leaf* entry's flags. The
 architecture does not: `USER` and `WRITABLE` are the conjunction down the whole

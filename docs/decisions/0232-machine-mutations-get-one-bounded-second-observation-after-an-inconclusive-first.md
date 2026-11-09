@@ -1,6 +1,6 @@
 # D-232 Machine mutations get one bounded second observation after an inconclusive first
 
-Status: Accepted (2026-08-29), advances PW-001
+Status: Accepted, 2026-08-29. Advances PW-001.
 
 **Context.** The first closing sweep of the 276-entry registry caught 270
 mutations through the exact witness each named and found no survivor. Six

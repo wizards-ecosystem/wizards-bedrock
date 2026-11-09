@@ -1,6 +1,6 @@
 # D-272 The Wizzy handoff has one line ending and one HTTPS authority grammar
 
-Status: Accepted (2026-08-31), amends D-226; advances PW-520
+Status: Accepted, 2026-08-31. Amends D-226; advances PW-520.
 
 **Context.** D-226 required a byte-stable envelope but its parser accepted both
 terminal-line forms and treated the `https://` prefix as sufficient provenance.

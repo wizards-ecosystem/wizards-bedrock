@@ -1,6 +1,6 @@
 # D-83 Two rules that cost nothing and keep three options open
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `010` §10 surveyed the 2026 hardware security features against
 what Phase 5 is about to freeze. Most need nothing. Three — PKS, LAM and its

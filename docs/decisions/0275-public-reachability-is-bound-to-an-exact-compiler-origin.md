@@ -1,6 +1,6 @@
 # D-275 Public reachability is bound to an exact compiler origin
 
-Status: Accepted (2026-09-01), amends D-213; advances PW-519, PW-523 and PW-532
+Status: Accepted, 2026-09-01. Amends D-213; advances PW-519, PW-523 and PW-532.
 
 **Context.** D-213's deprecation-marker direction was sound, but its claim that
 one host graph compiled all targets was not an exact root model. Target programs

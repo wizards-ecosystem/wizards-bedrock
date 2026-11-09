@@ -1,6 +1,6 @@
 # D-225 A retained PIT qualifies and can revoke public time
 
-Status: Accepted (2026-08-29), amends D-36, D-57, D-152, D-166, D-181 and D-201; closes PW-303
+Status: Accepted, 2026-08-29. Amends D-36, D-57, D-152, D-166, D-181 and D-201; closes PW-303.
 
 **Context.** Boot measured the timestamp counter and local-APIC timer against
 two agreeing PIT windows, then parked the PIT for the rest of the boot. The

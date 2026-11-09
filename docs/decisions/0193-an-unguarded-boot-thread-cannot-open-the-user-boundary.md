@@ -1,6 +1,6 @@
 # D-193 An unguarded boot thread cannot open the user boundary
 
-Status: Accepted (2026-08-27), amends D-92; closes PW-107
+Status: Accepted, 2026-08-27. Amends D-92; closes PW-107.
 
 **Context.** D-92 deliberately kept booting on the bootloader's unguarded
 stack when the guarded replacement could not be allocated. At that point no

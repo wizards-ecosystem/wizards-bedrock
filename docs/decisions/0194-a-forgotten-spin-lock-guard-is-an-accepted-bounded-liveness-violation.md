@@ -1,6 +1,6 @@
 # D-194 A forgotten spin-lock guard is an accepted, bounded liveness violation
 
-Status: Accepted (2026-08-27), amends D-66, D-69 and D-85; closes PW-105
+Status: Accepted, 2026-08-27. Amends D-66, D-69 and D-85; closes PW-105.
 
 **Context.** `SpinLockGuard::drop` releases the lock, decrements this CPU's
 held-lock state and restores the interrupt flag. Safe Rust does not promise

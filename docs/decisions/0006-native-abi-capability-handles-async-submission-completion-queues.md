@@ -1,6 +1,6 @@
 # D-06 Native ABI: capability handles + async submission/completion queues
 
-Status: Verified (handle model) (amended by D-181)
+Status: Verified (handle model), 2026-07-18. Amended by D-181.
 
 **Context.** Isaac directed the project to be "forward thinking, state of
 the art, lightweight end to end, ahead of our time, matching theoretical

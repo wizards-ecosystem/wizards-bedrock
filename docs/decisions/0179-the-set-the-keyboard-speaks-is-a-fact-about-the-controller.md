@@ -1,6 +1,6 @@
 # D-179 The set the keyboard speaks is a fact about the controller
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-178 established that VMware's controller translates set 2 into
 set 1 while reporting its translation bit clear. `libs/ps2-keys` is a set 2

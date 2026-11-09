@@ -1,6 +1,6 @@
 # D-433 DMA ownership survives safe owner destruction
 
-Status: Accepted (2026-10-23), qualification OPEN; amends D-357, D-367 and D-389; advances PW-714
+Status: Accepted, 2026-10-23. Qualification OPEN; amends D-357, D-367 and D-389; advances PW-714.
 
 Ordinary `IommuTable` and `DmaSegment` ownership allowed safe destruction to
 return frames that active or uncertain hardware could still reach. NVMe's

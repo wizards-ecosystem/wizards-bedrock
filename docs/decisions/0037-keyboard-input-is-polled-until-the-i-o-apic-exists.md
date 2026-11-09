@@ -1,6 +1,6 @@
 # D-37 Keyboard input is polled until the I/O APIC exists
 
-Status: Accepted (2026-08-20)
+Status: Accepted, 2026-08-20.
 
 **Context.** The i8042 works, but its interrupt has nowhere legal to go.
 IRQ 1's two routes to the CPU are the legacy 8259 pair — silenced in slice 2,

@@ -1,6 +1,6 @@
 # D-202 The idle-start latch reserves an attempt and commits only a live thread
 
-Status: Accepted (2026-08-28), amends D-61 and D-117; closes PW-306
+Status: Accepted, 2026-08-28. Amends D-61 and D-117; closes PW-306.
 
 **Context.** `start_idle` claimed a one-shot latch before asking the bounded
 thread table for a slot. If the table was transiently full, `spawn` returned

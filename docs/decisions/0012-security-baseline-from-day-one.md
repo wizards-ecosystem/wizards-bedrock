@@ -1,6 +1,6 @@
 # D-12 Security baseline from day one
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Decision.** W^X for every mapping, NX, SMEP + SMAP + UMIP in CR4
 during early boot, KASLR (via Limine) once addresses aren't hardcoded,

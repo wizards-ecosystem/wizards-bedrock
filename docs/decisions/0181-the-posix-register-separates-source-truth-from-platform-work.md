@@ -1,6 +1,6 @@
 # D-181 The POSIX register separates source truth from platform work
 
-Status: Accepted (2026-08-26), amends D-06, D-10, D-72, D-80, D-114, D-116, D-118, D-149, D-150, D-151, D-152, D-164, D-166, D-169 and D-173
+Status: Accepted, 2026-08-26. Amends D-06, D-10, D-72, D-80, D-114, D-116, D-118, D-149, D-150, D-151, D-152, D-164, D-166, D-169 and D-173.
 
 **Context.** The D-180 audit followed Phase 5's mlibc pressure test back to its
 evidence and found that the checked 5/10/1 tally was precise arithmetic over

@@ -1,6 +1,6 @@
 # D-323 Linear failure wrappers announce retained authority
 
-Status: Accepted (2026-09-14), advances PW-548
+Status: Accepted, 2026-09-14. Advances PW-548.
 
 **Context.** Public failure wrappers often carry the only token that can retry
 cleanup or release a fail-stopped reservation. The returned `Result` warned

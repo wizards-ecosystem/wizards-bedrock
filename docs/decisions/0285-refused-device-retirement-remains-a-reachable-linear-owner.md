@@ -1,6 +1,6 @@
 # D-285 Refused device retirement remains a reachable linear owner
 
-Status: Accepted (2026-09-05), amends D-199, D-245, D-251 and D-278; advances PW-533 and PW-536
+Status: Accepted, 2026-09-05. Amends D-199, D-245, D-251 and D-278; advances PW-533 and PW-536.
 
 **Context.** Several bounded cleanup paths preserved an exact owner on their
 first refusal but discarded it, panicked or returned an ownerless boolean on a

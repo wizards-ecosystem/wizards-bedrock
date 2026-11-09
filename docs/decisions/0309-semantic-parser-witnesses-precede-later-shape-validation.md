@@ -1,6 +1,6 @@
 # D-309 Semantic parser witnesses precede later shape validation
 
-Status: Accepted (2026-09-12), amends D-244, D-297 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244, D-297 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 448, 508 and 509 weakened three semantic
 rejections but survived integrated parser tests. A duplicate evidence key was

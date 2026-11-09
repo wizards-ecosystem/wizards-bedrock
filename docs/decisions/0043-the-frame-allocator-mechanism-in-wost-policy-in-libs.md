@@ -1,6 +1,6 @@
 # D-43 The frame allocator: mechanism in `wost`, policy in `libs/`
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** `007-memory.md` holds two questions open together, and they turn
 out to be one question. What shape should the physical frame allocator take —

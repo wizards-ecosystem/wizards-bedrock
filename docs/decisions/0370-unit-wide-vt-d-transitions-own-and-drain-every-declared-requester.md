@@ -1,6 +1,6 @@
 # D-370 Unit-wide VT-d transitions own and drain every declared requester
 
-Status: Accepted (2026-10-09), amends D-357, D-358, D-360 and D-369
+Status: Accepted, 2026-10-09. Amends D-357, D-358, D-360 and D-369.
 
 **Context.** Deep Codex Security scan
 `32245094-b8b7-47d1-b6e7-a52554800772` found that the storage lifecycle owns

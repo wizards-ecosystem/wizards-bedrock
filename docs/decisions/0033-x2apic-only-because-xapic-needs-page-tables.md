@@ -1,6 +1,6 @@
 # D-33 x2APIC only, because xAPIC needs page tables
 
-Status: Accepted (2026-08-14)
+Status: Accepted, 2026-08-14.
 
 **Context.** The local APIC has two encodings of the same registers. xAPIC is a
 page of memory-mapped words at the physical address `IA32_APIC_BASE` reports;

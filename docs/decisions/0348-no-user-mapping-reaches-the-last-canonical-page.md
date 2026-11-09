@@ -1,6 +1,6 @@
 # D-348 No user mapping reaches the last canonical page
 
-Status: Accepted (2026-09-29), amends D-102 and D-124; closes PW-558
+Status: Accepted, 2026-09-29. Amends D-102 and D-124; closes PW-558.
 
 **Context.** User memory ran to `USER_END` at `0x0000_8000_0000_0000`, the
 first address of the canonical hole. A ring-3 program could therefore hold

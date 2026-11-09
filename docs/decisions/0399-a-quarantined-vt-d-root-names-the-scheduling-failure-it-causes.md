@@ -1,6 +1,6 @@
 # D-399 A quarantined VT-d root names the scheduling failure it causes
 
-Status: Accepted (2026-10-13), amends D-358 and D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-358 and D-395; advances PW-001.
 
 **Context.** Permanent mutation 1,555 programs VT-d `RTADDR` with the
 context-table address and accepts that same wrong value on readback. Its

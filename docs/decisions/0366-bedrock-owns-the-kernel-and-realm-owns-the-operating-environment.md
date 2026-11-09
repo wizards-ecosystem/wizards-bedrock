@@ -1,6 +1,6 @@
 # D-366 Bedrock owns the kernel and Realm owns the operating environment
 
-Status: Accepted (2026-10-07)
+Status: Accepted, 2026-10-07.
 
 **Context.** Isaac requested the full rename of wizards-os to wizards-bedrock,
 the kernel/userland separation and takeover of both projects' handoffs. The

@@ -1,6 +1,6 @@
 # D-281 Kernel top-level topology freezes before user roots
 
-Status: Accepted (2026-09-05), amends D-45, D-104, D-106, D-139 and D-199; advances PW-540
+Status: Accepted, 2026-09-05. Amends D-45, D-104, D-106, D-139 and D-199; advances PW-540.
 
 **Context.** A user address space copied the kernel's present higher-half PML4
 entries once. Later device mapping was allowed to allocate an absent PML4

@@ -1,6 +1,6 @@
 # D-169 An NVMe controller, polled, and a disk with something on it
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** `012` §2 disqualified virtio-blk rather than deprioritising it:
 VMware exposes no virtio device of any kind, so under D-18 it could never close

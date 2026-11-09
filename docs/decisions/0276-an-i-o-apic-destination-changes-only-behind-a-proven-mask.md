@@ -1,6 +1,6 @@
 # D-276 An I/O APIC destination changes only behind a proven mask
 
-Status: Accepted (2026-09-04), amends D-205 and D-251; closes PW-130
+Status: Accepted, 2026-09-04. Amends D-205 and D-251; closes PW-130.
 
 **Context.** Controller takeover wrote the low redirection word's mask and then
 cleared its destination before reading either word back. An ignored mask write

@@ -1,6 +1,6 @@
 # D-35 Enabling interrupts is safe because both preconditions are checked
 
-Status: Accepted (2026-08-14)
+Status: Accepted, 2026-08-14.
 
 **Context.** `enable_interrupts` was written in Phase 1 and deleted unused, on
 the grounds recorded in `005`: an `unsafe fn` whose contract can only be stated

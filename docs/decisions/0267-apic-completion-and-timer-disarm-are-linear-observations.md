@@ -1,6 +1,6 @@
 # D-267 APIC completion and timer disarm are linear observations
 
-Status: Accepted (2026-08-31), amends D-251 and D-256; advances PW-122 and PW-123
+Status: Accepted, 2026-08-31. Amends D-251 and D-256; advances PW-122 and PW-123.
 
 **Context.** A non-`Copy` token can still be `Clone`, and a type alone does not
 make its constructor unique. One APIC delivery could therefore mint competing

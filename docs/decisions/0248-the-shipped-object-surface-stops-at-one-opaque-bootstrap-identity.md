@@ -1,6 +1,6 @@
 # D-248 The shipped object surface stops at one opaque bootstrap identity
 
-Status: Accepted (2026-08-30), amends D-95, D-110, D-111, D-127, D-130, D-181 and D-217; advances PW-532
+Status: Accepted, 2026-08-30. Amends D-95, D-110, D-111, D-127, D-130, D-181 and D-217; advances PW-532.
 
 **Context.** The pre-Wizzy caller audit asked D-184's question of every kernel
 surface: what concrete current caller forces this mechanism? `Event`, channel

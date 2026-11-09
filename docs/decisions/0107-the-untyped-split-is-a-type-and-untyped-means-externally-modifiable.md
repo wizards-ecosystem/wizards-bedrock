@@ -1,6 +1,6 @@
 # D-107 The untyped split is a type, and "untyped" means externally modifiable
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-44 adopted the untyped/typed split as a *type discipline* and
 rejected it as an accounting mechanism. `wost/src/mm/mod.rs` has said since

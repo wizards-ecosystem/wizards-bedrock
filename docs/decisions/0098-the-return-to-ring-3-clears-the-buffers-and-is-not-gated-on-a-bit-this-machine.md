@@ -1,6 +1,6 @@
 # D-98 The return to ring 3 clears the buffers, and is not gated on a bit this machine cannot read
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-81 listed `VERW` on exit-to-user as one of two one-liners worth
 taking before ring 3 exists, *"gated on `MD_CLEAR`"*, on the grounds that an

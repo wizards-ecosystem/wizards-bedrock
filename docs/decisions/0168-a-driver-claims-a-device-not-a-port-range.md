@@ -1,6 +1,6 @@
 # D-168 A driver claims a device, not a port range
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-77 closed half an authority debt and named the other half. A
 port claim proves **exclusivity** — nobody else drives these ports — and says

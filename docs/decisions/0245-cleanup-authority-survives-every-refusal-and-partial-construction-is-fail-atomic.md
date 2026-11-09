@@ -1,6 +1,6 @@
 # D-245 Cleanup authority survives every refusal, and partial construction is fail-atomic
 
-Status: Accepted (2026-08-30), amends D-106, D-117, D-190, D-191, D-206 and D-243; closes PW-527
+Status: Accepted, 2026-08-30. Amends D-106, D-117, D-190, D-191, D-206 and D-243; closes PW-527.
 
 **Context.** Re-auditing cleanup as hostile code found the same defect at four
 ownership layers. The process region ledger silently discarded its final entry

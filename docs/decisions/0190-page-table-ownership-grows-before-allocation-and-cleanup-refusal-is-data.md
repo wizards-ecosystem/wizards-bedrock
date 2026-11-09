@@ -1,6 +1,6 @@
 # D-190 Page-table ownership grows before allocation, and cleanup refusal is data
 
-Status: Accepted (2026-08-27), amends D-117 and closes PW-104
+Status: Accepted, 2026-08-27. Amends D-117 and closes PW-104.
 
 **Context.** D-117 made a retired program return its mappings and page tables,
 but `AddressSpace` remembered only thirty-two non-root table frames. Every later

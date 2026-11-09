@@ -1,6 +1,6 @@
 # D-219 Limine remains the boot boundary; current prose names current facts
 
-Status: Accepted (2026-08-29), amends D-03 and closes PW-514
+Status: Accepted, 2026-08-29. Amends D-03 and closes PW-514.
 
 **Context.** The post-audit register named a small but misleading residue in
 current-facing prose. Phase 5's close still presented closure-under-leaf-guard

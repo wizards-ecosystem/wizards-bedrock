@@ -1,6 +1,6 @@
 # D-81 The trap entry is FRED-shaped, and FRED is not implemented
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** FRED shipped on Panther Lake 2026-01-27 and is default-on in Linux
 7.1. It replaces IDT delivery and `IRET` with `ERETS`/`ERETU`, replaces IST

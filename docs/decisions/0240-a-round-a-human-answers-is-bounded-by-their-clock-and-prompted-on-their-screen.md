@@ -1,6 +1,6 @@
 # D-240 A round a human answers is bounded by their clock, and prompted on their screen
 
-Status: Accepted (2026-08-29), amends D-18, D-135 and D-145; advances PW-003
+Status: Accepted, 2026-08-29. Amends D-18, D-135 and D-145; advances PW-003.
 
 **Context.** D-239 fixed the decoder and PW-003's human round still failed. Four
 more VMware boots found four defects, none of them in the kernel's behaviour and

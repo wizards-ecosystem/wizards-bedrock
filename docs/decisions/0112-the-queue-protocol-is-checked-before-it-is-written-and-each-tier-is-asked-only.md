@@ -1,6 +1,6 @@
 # D-112 The queue protocol is checked before it is written, and each tier is asked only what it can answer
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-84 adopted two verification tiers for `libs/ring-proto`
 specifically, on the grounds that the queue ABI is the interface this kernel

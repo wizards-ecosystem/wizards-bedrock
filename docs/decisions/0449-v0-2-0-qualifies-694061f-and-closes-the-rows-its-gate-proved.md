@@ -1,6 +1,6 @@
 # D-449 v0.2.0 qualifies `694061f` and closes the rows its gate proved
 
-Status: Accepted (2026-10-28); applies D-425, D-441 and D-448
+Status: Accepted, 2026-10-28. Applies D-425, D-441 and D-448.
 
 **Context.** D-425 tags the qualified commit directly and closes, in the next
 commit, every register row its gate proves. `694061f` carries D-447's

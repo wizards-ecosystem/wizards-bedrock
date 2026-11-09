@@ -1,6 +1,6 @@
 # D-213 Stable rustc resolves the public foundation surface
 
-Status: Accepted (2026-08-28), amends D-41 and D-158; closes PW-505
+Status: Accepted, 2026-08-28. Amends D-41 and D-158; closes PW-505.
 
 **Context.** D-41 forbids speculative public API, but the last sweep searched
 source text for names. Text cannot distinguish two same-name methods, a real

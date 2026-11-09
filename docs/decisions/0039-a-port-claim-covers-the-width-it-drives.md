@@ -1,6 +1,6 @@
 # D-39 A port claim covers the width it drives
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** An adversarial audit of Phase 2 found `wost::arch::x86_64::port`
 recording one bit per claim whatever the access width. `port::claim::<u32>`

@@ -1,6 +1,6 @@
 # D-416 The owned Deep dialogue gives Daybreak one advisory read before scan start
 
-Status: Accepted (2026-10-16), implemented with qualification OPEN; amends D-406; advances PW-026
+Status: Accepted, 2026-10-16. Implemented with qualification OPEN; amends D-406; advances PW-026.
 
 **Context.** D-406 owns the full MCP process and scan dialogue, but its pinned
 sequence went directly from tool discovery to Deep start. Codex Security's

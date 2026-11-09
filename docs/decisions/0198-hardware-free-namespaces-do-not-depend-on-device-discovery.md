@@ -1,6 +1,6 @@
 # D-198 Hardware-free namespaces do not depend on device discovery
 
-Status: Accepted (2026-08-27), amends D-90 and D-172; closes PW-207
+Status: Accepted, 2026-08-27. Amends D-90 and D-172; closes PW-207.
 
 **Context.** `tmpfs` and `devfs` need neither a disk nor PCI, but the shipped
 boot surveyed them at the end of `survey_the_bus`. Failure to claim CF8/CFC or

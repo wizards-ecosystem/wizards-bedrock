@@ -1,6 +1,6 @@
 # D-330 External close records and one exact documentation child are replayable
 
-Status: Accepted (2026-09-28), amends D-218, D-244, D-246, D-262 and D-324; advances PW-009, PW-010, PW-025, PW-026 and PW-028
+Status: Accepted, 2026-09-28. Amends D-218, D-244, D-246, D-262 and D-324; advances PW-009, PW-010, PW-025, PW-026 and PW-028.
 
 **Context.** The final independent `xtask` mutation grade and managed Codex
 Security Deep campaign take external tools, human authority and potentially

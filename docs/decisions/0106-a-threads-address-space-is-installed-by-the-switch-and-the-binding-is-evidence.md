@@ -1,6 +1,6 @@
 # D-106 A thread's address space is installed by the switch, and the binding is evidence
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-104 built `AddressSpace::for_user`: a space sharing the kernel's
 higher half and empty below it. Nothing installed one. Every program ran on

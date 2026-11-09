@@ -1,6 +1,6 @@
 # D-282 Hostile publication words are architecture memory, not Rust atomic objects
 
-Status: Accepted (2026-09-05), amends D-221 and D-269; advances PW-128
+Status: Accepted, 2026-09-05. Amends D-221 and D-269; advances PW-128.
 
 **Context.** D-269 prevented safe kernel byte access from overlapping a ring's
 publication words, but the publication door still constructed `&AtomicU32`

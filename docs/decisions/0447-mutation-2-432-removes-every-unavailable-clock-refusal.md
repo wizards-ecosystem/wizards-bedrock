@@ -1,6 +1,6 @@
 # D-447 Mutation 2,432 removes every unavailable-clock refusal
 
-Status: Accepted (2026-10-27); amends D-438, advances PW-001
+Status: Accepted, 2026-10-27. Amends D-438, advances PW-001.
 
 **Context.** The complete 2,412-entry sweep on `62ee03a` caught 2,411 and
 mutation 2,432 survived. It disabled only `runs_until`'s entry refusal. D-446

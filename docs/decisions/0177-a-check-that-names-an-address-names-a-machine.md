@@ -1,6 +1,6 @@
 # D-177 A check that names an address names a machine
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** With D-176's controller in place the VMware boot went from
 `passed=117 failed=63` to `passed=172 failed=9`. Five of the nine were the

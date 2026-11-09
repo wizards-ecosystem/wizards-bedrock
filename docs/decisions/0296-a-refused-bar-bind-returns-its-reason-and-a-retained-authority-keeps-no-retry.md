@@ -1,6 +1,6 @@
 # D-296 A refused BAR bind returns its reason, and a retained authority keeps no retry accessor
 
-Status: Accepted (2026-09-06), amends D-249 and D-285; closes PW-546
+Status: Accepted, 2026-09-06. Amends D-249 and D-285; closes PW-546.
 
 **Context.** The first complete audit after D-291 and D-295, with every
 dispatch resolved, reported three public items with no caller:

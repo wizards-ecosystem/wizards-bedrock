@@ -1,6 +1,6 @@
 # D-335 PCI configuration changes consume one exact function authority
 
-Status: Accepted (2026-09-28), amends D-168, D-265 and D-329; closes PW-118, PW-125 and PW-129
+Status: Accepted, 2026-09-28. Amends D-168, D-265 and D-329; closes PW-118, PW-125 and PW-129.
 
 **Context.** D-265 implemented an exclusive PCI function claim and retained
 recovery, while D-329 proved that the claim identities remained opaque.

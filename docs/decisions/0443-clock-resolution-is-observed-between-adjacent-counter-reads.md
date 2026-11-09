@@ -1,6 +1,6 @@
 # D-443 Clock resolution is observed between adjacent counter reads
 
-Status: Accepted (2026-10-26), qualification OPEN; advances PW-721
+Status: Accepted, 2026-10-26. Qualification OPEN; advances PW-721.
 
 **Context.** The debug clock witness has failed its sub-microsecond check
 while its monotonic check passed. Its minimum step came from public clock

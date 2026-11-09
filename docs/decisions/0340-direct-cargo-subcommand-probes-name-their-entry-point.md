@@ -1,6 +1,6 @@
 # D-340 Direct Cargo-subcommand probes name their entry point
 
-Status: Accepted (2026-09-28), amends D-330; advances PW-025
+Status: Accepted, 2026-09-28. Amends D-330; advances PW-025.
 
 **Context.** The first current `qualify-mutants-grade --begin` attempt found
 the pinned `cargo-mutants 27.1.0` binary on `PATH` but stopped at its version

@@ -1,6 +1,6 @@
 # D-339 NVMe admission and DMA publication are causal ownership boundaries
 
-Status: Accepted (2026-09-28), amends D-197, D-251 and D-278; closes PW-206 and PW-213
+Status: Accepted, 2026-09-28. Amends D-197, D-251 and D-278; closes PW-206 and PW-213.
 
 **Context.** D-197's original pre-mapping refusal proof no longer reached the
 current storage order. The live driver now disables and prepares a controller,

@@ -1,6 +1,6 @@
 # D-325 Hostile-surface live classifications are checked in both directions
 
-Status: Accepted (2026-09-27), advances PW-010
+Status: Accepted, 2026-09-27. Advances PW-010.
 
 **Context.** The hostile-surface oracle required every live register row to
 appear somewhere in the census, but it did not prove that a row explicitly

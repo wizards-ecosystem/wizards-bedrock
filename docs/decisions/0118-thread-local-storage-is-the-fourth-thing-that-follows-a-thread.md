@@ -1,6 +1,6 @@
 # D-118 Thread-local storage is the fourth thing that follows a thread
 
-Status: Accepted (2026-08-24) (amended by D-181)
+Status: Accepted, 2026-08-24. Amended by D-181.
 
 **Context.** D-114 wrote mlibc's sixteen mandatory sysdeps against the native
 ABI and named four things the exercise surfaced that nothing native would have

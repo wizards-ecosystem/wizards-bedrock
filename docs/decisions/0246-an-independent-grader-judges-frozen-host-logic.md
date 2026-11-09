@@ -1,6 +1,6 @@
 # D-246 An independent grader judges frozen host logic
 
-Status: Accepted (2026-08-30), extends D-28 and D-119; qualification tracked by PW-025
+Status: Accepted, 2026-08-30. Extends D-28 and D-119; qualification tracked by PW-025.
 
 **Context.** The project-authored mutation registry and the checks named by it
 can share an assumption. Its last `cargo-mutants` experiment was an old blocked

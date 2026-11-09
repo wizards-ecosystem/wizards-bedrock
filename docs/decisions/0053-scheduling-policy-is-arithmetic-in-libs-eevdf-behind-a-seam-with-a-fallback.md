@@ -1,6 +1,6 @@
 # D-53 Scheduling policy is arithmetic in `libs/eevdf`, behind a seam with a fallback
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** D-15 chose EEVDF and wanted pluggable policy as "a cheap future
 door, not a v1 feature"; `008-research-notes-2.md` §4.4 took sched_ext's

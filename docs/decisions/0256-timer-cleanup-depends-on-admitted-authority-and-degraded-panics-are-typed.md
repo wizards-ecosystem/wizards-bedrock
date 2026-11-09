@@ -1,6 +1,6 @@
 # D-256 Timer cleanup depends on admitted authority, and degraded panics are typed
 
-Status: Accepted (2026-08-31), amends D-90, D-209 and D-249; advances PW-122 and PW-533
+Status: Accepted, 2026-08-31. Amends D-90, D-209 and D-249; advances PW-122 and PW-533.
 
 **Context.** Returning a typed error from local-timer disarm exposed a valid
 degraded path which the earlier infallible wrapper had hidden. With x2APIC

@@ -1,6 +1,6 @@
 # D-238 A chain walk is bounded by the volume that could hold it
 
-Status: Accepted (2026-08-29), amends D-170 and D-206; advances PW-006
+Status: Accepted, 2026-08-29. Amends D-170 and D-206; advances PW-006.
 
 **Context.** PW-006's hostile-input re-attack reached the chain walking in
 `libs/fat32`. Its bound was the fixed `MAX_CHAIN = 1 << 24`, and the comment

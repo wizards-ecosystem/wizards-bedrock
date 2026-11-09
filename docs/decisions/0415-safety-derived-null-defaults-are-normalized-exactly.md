@@ -1,6 +1,6 @@
 # D-415 Safety-derived null defaults are normalized exactly
 
-Status: Accepted (2026-10-15), amends D-412 and D-406
+Status: Accepted, 2026-10-15. Amends D-412 and D-406.
 
 **Context.** The first owned Deep attempt after D-413 passed the raw originless
 configuration digest, then failed before its access advisory when the same
