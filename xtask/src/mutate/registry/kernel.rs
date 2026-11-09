@@ -3507,4 +3507,12 @@ fn mint_stopped<'controller>(
         breaks: "a controller that drains on its last allowed read is reported absent",
         reddens: Caught::Check("an 8042 backlog of exactly the flush bound drains"),
     },
+    Mutation {
+        id: 2464,
+        file: "kernel/src/selftest.rs",
+        find: "    let early = queue.expire(deadline - 1) == 0 && queue.in_flight() == 1;",
+        replace: "    let early = queue.expire(crate::time::now_ns()) == 0 && queue.in_flight() == 1;",
+        breaks: "the early timer sweep reads the live clock, so a late sweep sees the deadline passed",
+        reddens: Caught::Check("an operation completes after its deadline and only once"),
+    },
 ];
