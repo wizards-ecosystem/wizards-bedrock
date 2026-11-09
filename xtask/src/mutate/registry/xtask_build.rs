@@ -729,4 +729,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "image::tests::a_formatted_verdict_fragment_cannot_pose_as_a_selftest_image",
         },
     },
+    Mutation {
+        id: 2470,
+        file: "xtask/src/cargo.rs",
+        find: "        ensure!(\n            path.is_file(),\n            \"the pinned toolchain has no {compiler} at {}; install the toolchain \\",
+        replace: "        ensure!(\n            true,\n            \"the pinned toolchain has no {compiler} at {}; install the toolchain \\",
+        breaks: "a kernel build whose pinned toolchain lacks rustc or rustdoc reaches cargo",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::a_missing_pinned_compiler_is_named_before_cargo_starts",
+        },
+    },
 ];
