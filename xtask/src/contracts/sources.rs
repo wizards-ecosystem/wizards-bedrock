@@ -147,7 +147,11 @@ const SOURCE_WITHOUT_GIT: [&str; 1] = ["generation_record_from_digests"];
 /// Publishers that must re-measure Git after its last answer (D-344).
 const GIT_PUBLISHERS: [(&str, &str, &str); 2] = [
     ("xtask/src/evidence.rs", "create", "write_manifest"),
-    ("xtask/src/qualification.rs", "commit_record", "rename"),
+    (
+        "xtask/src/qualification/record.rs",
+        "commit_record",
+        "rename",
+    ),
 ];
 
 #[derive(Default)]
