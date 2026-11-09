@@ -87,6 +87,15 @@ fn kernel_command_with_roots(paths: &Paths, roots: [PathBuf; 3]) -> Result<Comma
             name.to_string()
         })
     };
+    for compiler in ["rustc", "rustdoc"] {
+        let path = executable(compiler);
+        ensure!(
+            path.is_file(),
+            "the pinned toolchain has no {compiler} at {}; install the toolchain \
+             rust-toolchain.toml names",
+            path.display()
+        );
+    }
     let inherited = std::env::var_os("PATH").context("PATH is unavailable")?;
     let path = std::env::join_paths(
         std::iter::once(tool_bin.clone()).chain(std::env::split_paths(&inherited)),
@@ -349,6 +358,7 @@ mod tests {
             source.to_path_buf(),
             Some(&crate::test_support::absolute_root("target")),
         );
+        let toolchain = &pinned_toolchain(&["rustc", "rustdoc"]);
         let command = kernel_command_with_roots(
             &paths,
             [
@@ -382,6 +392,36 @@ mod tests {
             std::env::split_paths(path).next().as_deref(),
             Some(toolchain.join("bin").as_path())
         );
+        std::fs::remove_dir_all(toolchain).unwrap();
+    }
+
+    fn pinned_toolchain(compilers: &[&str]) -> PathBuf {
+        let root = crate::test_support::reserve_temp_directory("rust toolchain");
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        for compiler in compilers {
+            std::fs::write(bin.join(crate::qemu::exe_name(compiler)), b"compiler").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_missing_pinned_compiler_is_named_before_cargo_starts() {
+        let source = crate::test_support::absolute_root("source checkout");
+        let cargo_home = crate::test_support::absolute_root("cargo home");
+        let paths = Paths::new(source.clone(), None);
+        for (present, missing) in [("rustdoc", "rustc"), ("rustc", "rustdoc")] {
+            let toolchain = pinned_toolchain(&[present]);
+            let error = kernel_command_with_roots(
+                &paths,
+                [source.clone(), toolchain.clone(), cargo_home.clone()],
+            )
+            .unwrap_err()
+            .to_string();
+            let missing = toolchain.join("bin").join(crate::qemu::exe_name(missing));
+            assert!(error.contains(&missing.display().to_string()), "{error}");
+            std::fs::remove_dir_all(toolchain).unwrap();
+        }
     }
 
     #[cfg(windows)]
