@@ -34,7 +34,7 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::pci::DmaHandoffFenceError;
-use wost::arch::current::vtd::{Establishment, PlatformInterruptRemapping, Retargeting, Vtd};
+use wost::arch::current::vtd::{Establishment, Retargeting, Vtd};
 use wost::boot::BootInfo;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
@@ -286,7 +286,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    let isolation = match Vtd::establish_deny_all(registers, PlatformInterruptRemapping::Present) {
+    let isolation = match Vtd::establish_deny_all(registers, true) {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
             warn!("iommu: the early default-deny takeover refused: {reason}");
