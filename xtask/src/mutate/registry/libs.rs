@@ -5690,4 +5690,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::a_partition_base_that_wraps_is_malformed",
         },
     },
+    Mutation {
+        id: 2461,
+        file: "libs/fat32/src/lib.rs",
+        find: "Ok(Next::End | Next::Bad | Next::Free) | Err(FatError::BadCluster(_)) => None,",
+        replace: "Ok(Next::End | Next::Bad | Next::Free) => None,",
+        breaks: "the cycle check fails a read on a link the read never follows",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_reserved_link_beyond_the_last_cluster_does_not_hide_it",
+        },
+    },
 ];
