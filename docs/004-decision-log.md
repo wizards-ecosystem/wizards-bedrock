@@ -457,3 +457,4 @@ D-20 were made 2026-07-18.
 | [D-449 v0.2.0 qualifies `694061f` and closes the rows its gate proved](decisions/0449-v0-2-0-qualifies-694061f-and-closes-the-rows-its-gate-proved.md) | Accepted | 2026-10-28 |
 | [D-450 Linux hosts run the whole gate](decisions/0450-linux-hosts-run-the-whole-gate.md) | Accepted | 2026-11-07 |
 | [D-451 Decisions, documentation and code voice](decisions/0451-decisions-documentation-and-code-voice.md) | Accepted | 2026-11-09 |
+| [D-452 The roadmap after the foundation close](decisions/0452-the-roadmap-after-the-foundation-close.md) | Accepted | 2026-11-09 |
