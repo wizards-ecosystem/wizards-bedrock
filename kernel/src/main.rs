@@ -558,16 +558,14 @@ fn survey_the_bus(
         }
     });
 
-    match surveyed {
-        Some(survey) => info!(
-            "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
-            survey.functions, survey.buses, survey.bridges, survey.highest_bus
-        ),
-        None => {
-            warn!("pci: configuration space did not answer");
-            return;
-        }
-    }
+    let Some(survey) = surveyed else {
+        warn!("pci: configuration space did not answer");
+        return;
+    };
+    info!(
+        "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
+        survey.functions, survey.buses, survey.bridges, survey.highest_bus
+    );
 
     let interrupt_boundary = iommu::ensure_interrupt_boundary();
     if !interrupt_boundary {
