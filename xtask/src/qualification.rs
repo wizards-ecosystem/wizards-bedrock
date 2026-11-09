@@ -1269,7 +1269,10 @@ fn advisory_command(
 
 pub(crate) fn begin_model(paths: &Paths) -> Result<ModelAttempt> {
     invalidate(paths, Kind::Model)?;
-    let java = java(paths.root())?.context("Java is unavailable; put the JVM for TLC on PATH")?;
+    let java = java(paths.root())?.context(
+        "Java is unavailable; put the JVM that runs TLC (java) on PATH; \
+         tools/tla/tla2tools.jar is TLC itself, not a JVM",
+    )?;
     let record = model_record_with_tool(paths, &java)?;
     Ok(ModelAttempt {
         paths: paths.clone(),
@@ -2471,7 +2474,9 @@ fn model_record(paths: &Paths) -> Result<Record> {
 }
 
 fn model_record_for_source(paths: &Paths, source: &SourceIdentity) -> Result<Record> {
-    let java = java(paths.root())?.context("Java is unavailable; model evidence cannot verify")?;
+    let java = java(paths.root())?.context(
+        "Java is unavailable; model evidence cannot verify without a JVM (java) on PATH",
+    )?;
     model_record_with_tool_and_source(paths, &java, source)
 }
 
