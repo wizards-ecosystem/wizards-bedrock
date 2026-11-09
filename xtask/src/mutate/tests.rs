@@ -158,10 +158,13 @@ fn api_audit_mutations_require_the_current_structured_dead_item_verdict() {
 
 #[test]
 fn api_audit_commands_rebind_original_and_copied_sources_before_verdicts() {
-    let source = include_str!("../api.rs");
+    let source = concat!(
+        include_str!("../api/catalog.rs"),
+        include_str!("../api/compile.rs")
+    );
     let metadata = source
         .split_once("impl CargoCatalog {")
-        .and_then(|(_, source)| source.split_once("    fn parse("))
+        .and_then(|(_, source)| source.split_once("    pub(super) fn parse("))
         .map(|(source, _)| source)
         .expect("Cargo metadata command body");
     let compilation = source
