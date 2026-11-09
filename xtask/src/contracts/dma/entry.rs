@@ -435,7 +435,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(iommu.contains(
         "INSTALLED\n        .lock()\n        .as_ref()\n        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())"
     ));
-    let acpi = source("libs/acpi-tables/src/lib.rs");
+    let acpi = source("libs/acpi-tables/src/requesters.rs");
     let early_unit = source_through(
         &acpi,
         "pub fn sole_rmrr_free_unit_register_base(",
