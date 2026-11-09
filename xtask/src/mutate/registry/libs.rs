@@ -5646,4 +5646,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::an_io_window_size_is_a_port_count",
         },
     },
+    Mutation {
+        id: 2457,
+        file: "libs/vtd/src/lib.rs",
+        find: "const REASON_SHIFT: u32 = 32;",
+        replace: "const REASON_SHIFT: u32 = 40;",
+        breaks: "a fault record reports its PASID as the fault reason",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::a_recorded_fault_decodes_its_source_reason_and_address",
+        },
+    },
 ];
