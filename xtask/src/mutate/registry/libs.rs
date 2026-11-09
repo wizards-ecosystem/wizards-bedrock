@@ -2208,8 +2208,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 639,
         file: "libs/memory-map/src/lib.rs",
-        find: "                let overlaps = start < region.end() && region.base < end;",
-        replace: "                let overlaps = start < region.end() && region.base <= end;",
+        find: "                let overlaps = region.len != 0 && start < region.end() && region.base < end;",
+        replace: "                let overlaps = region.len != 0 && start < region.end() && region.base <= end;",
         breaks: "a device extent overlaps a RAM region beginning at its exclusive end",
         reddens: Caught::HostTest {
             package: "memory-map",
@@ -5655,6 +5655,17 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "vtd",
             name: "tests::a_recorded_fault_decodes_its_source_reason_and_address",
+        },
+    },
+    Mutation {
+        id: 2458,
+        file: "libs/memory-map/src/lib.rs",
+        find: "let overlaps = region.len != 0 && start < region.end() && region.base < end;",
+        replace: "let overlaps = start < region.end() && region.base < end;",
+        breaks: "an empty region blocks device mappings around its base",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_zero_length_region_does_not_occupy_its_address",
         },
     },
 ];
