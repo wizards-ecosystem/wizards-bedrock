@@ -137,7 +137,6 @@ remains required (`001`).
 | GPU device for Phase 16 | Before display work | VMware's SVGA against the laptop's Gen 9.5 |
 | Cloud NICs (virtio-net, ENA, gVNIC) | At a named deployment | That deployment |
 | Ring version 2: unsolicited records for signals and scheduler notices (D-80, D-181) | At Phase 13 | Coalescing and overflow rules |
-| The name | Before anything public | A trademark search; another project uses the same name for a deterministic hypervisor |
 
 ## 8. What stays out
 

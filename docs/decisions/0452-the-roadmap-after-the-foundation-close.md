@@ -89,8 +89,7 @@ order. `016` keeps PW-006 and PW-010 live and its `TRIGGER` rows become
 rows of `021`'s phases. Each phase closes with a multi-processor QEMU
 self-test, a VMware boot, a mutation per new check (D-28) and a model where
 it adds concurrency (D-112). Realm records its own position in its own log
-and is not cited here. The name collision with another deterministic
-hypervisor project is an open item before anything public.
+and is not cited here.
 
 **Alternatives.** Keeping the compiler gate on kernel work left the kernel
 idle until Wizzy's handoff and shaped mechanisms around guesses about a
