@@ -456,3 +456,4 @@ D-20 were made 2026-07-18.
 | [D-448 The first qualified release is v0.2.0 and the SBOM follows the workspace version](decisions/0448-the-first-qualified-release-is-v0-2-0-and-the-sbom-follows-the-workspace-version.md) | Accepted | 2026-10-27 |
 | [D-449 v0.2.0 qualifies `694061f` and closes the rows its gate proved](decisions/0449-v0-2-0-qualifies-694061f-and-closes-the-rows-its-gate-proved.md) | Accepted | 2026-10-28 |
 | [D-450 Linux hosts run the whole gate](decisions/0450-linux-hosts-run-the-whole-gate.md) | Accepted | 2026-11-07 |
+| [D-451 Decisions, documentation and code voice](decisions/0451-decisions-documentation-and-code-voice.md) | Accepted | 2026-11-09 |
