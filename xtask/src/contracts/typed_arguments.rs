@@ -152,11 +152,14 @@ fn selected_state_selectors_use_semantic_types() {
 
     let nvme = parse("libs/nvme/src/lib.rs");
     assert_no_typed_parameters(method(&nvme, "DmaState", "close"));
+    let nvme_tests = parse("libs/nvme/src/tests.rs");
     for forbidden in ["quiesce", "retain_unquiesced", "is_quiesced", "must_retain"] {
-        assert!(
-            optional_method(&nvme, "DmaState", forbidden).is_none(),
-            "pure DmaState recovered hardware authority through `{forbidden}`"
-        );
+        for syntax in [&nvme, &nvme_tests] {
+            assert!(
+                optional_method(syntax, "DmaState", forbidden).is_none(),
+                "pure DmaState recovered hardware authority through `{forbidden}`"
+            );
+        }
     }
     assert_named(function(&nvme, "doorbell"), "doorbell", "Doorbell");
 
