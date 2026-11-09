@@ -5624,4 +5624,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "tests::a_32_bit_read_ignores_the_reserved_high_half",
         },
     },
+    Mutation {
+        id: 2455,
+        file: "libs/pci-config/src/lib.rs",
+        find: "if address >> 16 != 0 {\n                return None;\n            }",
+        replace: "if false {\n                return None;\n            }",
+        breaks: "an I/O BAR above the port space decodes as a low port",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_base_address_register_decodes_to_its_window",
+        },
+    },
 ];
