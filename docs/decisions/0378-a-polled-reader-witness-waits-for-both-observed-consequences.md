@@ -1,6 +1,6 @@
 # D-378 A polled-reader witness waits for both observed consequences
 
-Status: Accepted (2026-10-10), closes PW-587
+Status: Accepted, 2026-10-10. Closes PW-587.
 
 **Context.** The exact-final-tree `cargo xtask ci` run reached release QEMU
 with 279 of 280 checks passing. The sole failure was `the blocked reader woke

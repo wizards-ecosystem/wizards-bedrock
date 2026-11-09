@@ -1,6 +1,6 @@
 # D-234 A terminal observation keeps exact failures that preceded it
 
-Status: Accepted (2026-08-29), amends D-209 and D-232; advances PW-001
+Status: Accepted, 2026-08-29. Amends D-209 and D-232; advances PW-001.
 
 **Context.** The complete 278-entry diagnostic successor to D-233 ran every
 mutation on clean commit `8de1d4de9c3740617999cfef9ac564b35f706f48` in

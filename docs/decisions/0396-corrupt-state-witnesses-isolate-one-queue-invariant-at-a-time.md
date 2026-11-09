@@ -1,6 +1,6 @@
 # D-396 Corrupt-state witnesses isolate one queue invariant at a time
 
-Status: Accepted (2026-10-13), amends D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-395; advances PW-001.
 
 **Context.** Permanent mutation 686 changes the file-work queue's exclusive
 head bound from `head >= WORK_DEPTH` to `head > WORK_DEPTH`. The existing

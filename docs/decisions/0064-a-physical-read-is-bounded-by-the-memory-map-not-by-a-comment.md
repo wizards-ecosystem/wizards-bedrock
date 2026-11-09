@@ -1,6 +1,6 @@
 # D-64 A physical read is bounded by the memory map, not by a comment
 
-Status: Accepted (2026-08-23) (amended by D-76 and D-77)
+Status: Accepted, 2026-08-23. Amended by D-76 and D-77.
 
 **Context.** The phase 0–4 audit found two `// SAFETY:` comments asserting
 checks that no code performed. `mm::read_physical` said `direct_pointer` had

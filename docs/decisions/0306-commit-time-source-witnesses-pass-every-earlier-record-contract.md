@@ -1,6 +1,6 @@
 # D-306 Commit-time source witnesses pass every earlier record contract
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutation 47 removed the final source recheck before
 a qualification record is renamed into authority, but its named test survived.

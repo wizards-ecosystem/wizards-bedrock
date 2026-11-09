@@ -1,6 +1,6 @@
 # D-375 Local APIC takeover masks every advertised source before publication
 
-Status: Accepted (2026-10-10), amends D-33 and D-336; closes PW-584
+Status: Accepted, 2026-10-10. Amends D-33 and D-336; closes PW-584.
 
 **Context.** Codex Security occurrence `occ_0569e6f2518e11797af06c04`
 found that local-APIC initialization promised to mask firmware-programmable

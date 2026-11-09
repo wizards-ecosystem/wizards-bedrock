@@ -1,6 +1,6 @@
 # D-130 An `allow` is unfalsifiable and an `expect` is not
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `kernel/` carried twenty-six `#[allow(dead_code)]`. Each one is an
 assertion — *this item has no caller in the shipped build, and that is

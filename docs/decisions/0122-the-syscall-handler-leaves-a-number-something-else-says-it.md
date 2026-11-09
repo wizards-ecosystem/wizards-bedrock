@@ -1,6 +1,6 @@
 # D-122 The syscall handler leaves a number; something else says it
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-116 gave the gate a dispatcher and made the shipped kernel run a
 program. The unknown-call arm answered `-ENOSYS` and then logged the refusal.

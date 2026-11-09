@@ -1,6 +1,6 @@
 # D-295 A type-qualified external-trait call is resolved by its callee type's one audited implementation
 
-Status: Accepted (2026-09-06), amends D-291; advances PW-544
+Status: Accepted, 2026-09-06. Amends D-291; advances PW-544.
 
 **Context.** The first optimized full audit refused thirteen live sites of
 the form `Type::from(value)`: `wost::mm::DmaSegment::from`,

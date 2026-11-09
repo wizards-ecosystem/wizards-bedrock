@@ -1,6 +1,6 @@
 # D-44 Untyped memory is a type discipline, not an accounting mechanism
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** `002-architecture.md` has carried an open question since the first
 research pass: *is seL4-style untyped-retype — callers donating memory for

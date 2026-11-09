@@ -1,6 +1,6 @@
 # D-109 The thread table and the run queue are separate structures
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `static THREADS` held one `Thread` per slot carrying both what a
 thread *is* — its name and entry point — and everything the policy needs about

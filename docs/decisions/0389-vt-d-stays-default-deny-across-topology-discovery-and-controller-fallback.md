@@ -1,6 +1,6 @@
 # D-389 VT-d stays default-deny across topology discovery and controller fallback
 
-Status: Accepted (2026-10-11), amends D-358, D-370 through D-372 and D-388
+Status: Accepted, 2026-10-11. Amends D-358, D-370 through D-372 and D-388.
 
 **Context.** The unit-wide requester inventory expanded a DMAR sub-hierarchy
 only through functions reported present by one sealed PCI snapshot. A function

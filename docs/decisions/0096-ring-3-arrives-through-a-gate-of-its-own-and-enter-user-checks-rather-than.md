@@ -1,6 +1,6 @@
 # D-96 Ring 3 arrives through a gate of its own, and `enter_user` checks rather than trusts
 
-Status: Accepted (2026-08-24) (its one-thread limit lifted by D-99; corrected and hardened by D-101)
+Status: Accepted, 2026-08-24. Its one-thread limit lifted by D-99; corrected and hardened by D-101.
 
 **Context.** D-81 shaped the entry path and left one question open on purpose:
 whether the synchronous call set arrives by `syscall`/`sysret` or a trap gate.

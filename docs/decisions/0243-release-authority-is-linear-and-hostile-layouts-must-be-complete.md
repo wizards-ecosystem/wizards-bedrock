@@ -1,6 +1,6 @@
 # D-243 Release authority is linear, and hostile layouts must be complete
 
-Status: Accepted (2026-08-30), amends D-87, D-106, D-117, D-123, D-177 and D-241; closes PW-110, PW-111, PW-112, PW-211 and PW-308
+Status: Accepted, 2026-08-30. Amends D-87, D-106, D-117, D-123, D-177 and D-241; closes PW-110, PW-111, PW-112, PW-211 and PW-308.
 
 **Context.** The post-handoff audit treated every earlier `DONE` claim as an
 unproved hypothesis. It found five safe-boundary failures.

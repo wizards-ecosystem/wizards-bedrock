@@ -1,6 +1,6 @@
 # D-146 Numbers in prose, checked against the code they describe
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The prose audit's Tier 2 was a table of thirteen numbers that
 disagree with the code beside them. None is a bug. Collectively they are the

@@ -1,6 +1,6 @@
 # D-446 An admitted self-test wait stops when its clock is revoked
 
-Status: Accepted (2026-10-26), qualification OPEN; advances PW-723
+Status: Accepted, 2026-10-26. Qualification OPEN; advances PW-723.
 
 **Context.** `runs_until` checks clock liveness before admitting a wait but
 then compares its deadline against public time without rechecking calibration.

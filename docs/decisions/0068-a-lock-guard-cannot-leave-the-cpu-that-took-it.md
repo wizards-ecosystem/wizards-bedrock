@@ -1,6 +1,6 @@
 # D-68 A lock guard cannot leave the CPU that took it
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** `SpinLockGuard` holds an `InterruptState` and restores it on drop;
 `ThreadLockGuard` holds a borrow of its lock. Both were `Send`, because

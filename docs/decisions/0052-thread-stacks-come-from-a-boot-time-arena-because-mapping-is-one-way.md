@@ -1,6 +1,6 @@
 # D-52 Thread stacks come from a boot-time arena, because mapping is one-way
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** D-45 made `activate` consume the address space, so nothing can
 map after the CR3 switch; D-49 deferred how the address space grows to

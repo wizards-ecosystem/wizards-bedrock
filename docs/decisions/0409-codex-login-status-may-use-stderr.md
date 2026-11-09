@@ -1,6 +1,6 @@
 # D-409 Codex login status may use stderr
 
-Status: Accepted (2026-10-15), amends D-406
+Status: Accepted, 2026-10-15. Amends D-406.
 
 **Context.** After D-408 admitted the ordinary Windows Codex home, the owned
 Deep qualifier reached its login probe but rejected an authenticated ChatGPT

@@ -1,6 +1,6 @@
 # D-254 APIC initialization owns exclusion, not the caller's entry flag
 
-Status: Accepted (2026-08-30), amends D-33, D-35 and D-49; advances PW-126
+Status: Accepted, 2026-08-30. Amends D-33, D-35 and D-49; advances PW-126.
 
 **Context.** The hardware-free lifecycle model rejected an IF-enabled caller,
 while production deliberately disables interrupts and restores the exact entry

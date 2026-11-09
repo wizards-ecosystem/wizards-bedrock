@@ -1,6 +1,6 @@
 # D-233 Restoring mutation source invalidates its compiled package
 
-Status: Accepted (2026-08-29), amends D-208 and D-232; advances PW-001
+Status: Accepted, 2026-08-29. Amends D-208 and D-232; advances PW-001.
 
 **Context.** The first successor run after D-232 reproduced the supposedly
 incidental user-boundary failures in a causal sequence. Mutation 12 removed

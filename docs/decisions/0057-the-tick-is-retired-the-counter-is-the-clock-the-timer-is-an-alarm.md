@@ -1,6 +1,6 @@
 # D-57 The tick is retired: the counter is the clock, the timer is an alarm
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** D-15 wanted tickless from the start and D-36 built a 100 Hz
 periodic tick anyway, calling it "explicitly disposable when D-15 lands" —

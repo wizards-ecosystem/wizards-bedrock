@@ -1,6 +1,6 @@
 # D-58 Sleeping: a deadline, a preserved lag, and a halt for the degenerate case
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** Tickless is only worth building if something wants to wait. D-53
 built lag-clamped placement — a sleeper keeps its debt and banks at most one

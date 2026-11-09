@@ -1,6 +1,6 @@
 # D-305 Parent-substitution witnesses isolate the claimed verification layer
 
-Status: Accepted (2026-09-12), amends D-244, D-301 and D-302; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244, D-301 and D-302; advances PW-001.
 
 **Context.** Complete-sweep mutations 42 and 44 removed the parent checks from
 outer evidence-bundle and qualification-snapshot verification, yet their named

@@ -1,6 +1,6 @@
 # D-178 Ask the device what it is, not what it is set to
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** With D-177's probes fixed, the VMware boot reached
 `passed=177 failed=5`. Four of the five need a human at the machine to press a

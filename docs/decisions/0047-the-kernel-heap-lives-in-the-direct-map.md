@@ -1,6 +1,6 @@
 # D-47 The kernel heap lives in the direct map
 
-Status: Accepted (2026-08-22) (the `HEAP` → `FRAMES` order it established is retired by D-85)
+Status: Accepted, 2026-08-22. The `HEAP` → `FRAMES` order it established is retired by D-85.
 
 **Context.** `007-memory.md` frames the heap decision as hand-rolled versus a
 vetted crate — "the first real test of the dependency policy against

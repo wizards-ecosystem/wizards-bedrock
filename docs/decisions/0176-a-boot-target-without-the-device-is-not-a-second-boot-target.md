@@ -1,6 +1,6 @@
 # D-176 A boot target without the device is not a second boot target
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Phase 6 closed green: 180 machine checks under QEMU, 64 mutations
 each caught, the model clean. Then the first VMware boot of that kernel came

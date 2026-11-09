@@ -1,6 +1,6 @@
 # D-08 Filesystem: custom WizFS, CoW from the start
 
-Status: Provisional (2026-08-23; see D-73, which moves it out of Phase 6)
+Status: Provisional, 2026-07-18. Provisional since 2026-08-23: see D-73, which moves it out of Phase 6.
 
 **Context.** Isaac chose a custom filesystem over adopting ext2, at the
 "straight to custom FS" level, then raised the bar to 2026 standards.

@@ -1,6 +1,6 @@
 # D-290 Machine evidence does not widen shipped hardware APIs
 
-Status: Accepted (2026-09-05), amends D-124, D-214 and D-248; advances PW-525 and PW-532
+Status: Accepted, 2026-09-05. Amends D-124, D-214 and D-248; advances PW-525 and PW-532.
 
 **Context.** Later machine witnesses left observer functions, constants and
 evidence tallies compiled into shipped `wost` and kernel paths. Their only

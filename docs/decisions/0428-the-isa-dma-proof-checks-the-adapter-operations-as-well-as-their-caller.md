@@ -1,6 +1,6 @@
 # D-428 The ISA DMA proof checks the adapter operations as well as their caller
 
-Status: Accepted (2026-10-23), qualification OPEN; strengthens D-426 and PW-597
+Status: Accepted, 2026-10-23. Qualification OPEN; strengthens D-426 and PW-597.
 
 **Context.** D-426's pure entry-fence tests correctly required an ISA quiesce
 operation, but its platform contract checked only that the operation called

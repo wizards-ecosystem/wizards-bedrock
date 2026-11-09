@@ -1,6 +1,6 @@
 # D-310 Mutation witnesses target one load-bearing predicate
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 426 and 446 survived because neither
 removed the invariant its named test asserted. Mutation 426 disabled a public

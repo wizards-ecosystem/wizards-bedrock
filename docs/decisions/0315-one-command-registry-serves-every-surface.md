@@ -1,6 +1,6 @@
 # D-315 One command registry serves every surface
 
-Status: Accepted (2026-09-12)
+Status: Accepted, 2026-09-12.
 
 **Context.** A desktop has at least six ways to invoke an action: a menu, a
 context menu, a shortcut, a launcher, a script and an assistive technology.

@@ -1,6 +1,6 @@
 # D-134 A mutation is caught when *its* check goes red, not when the boot does
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-119 made breaking the checks a task: apply a known defect, boot,
 require something to go red. The runner asked `boot_is_red` — whether the

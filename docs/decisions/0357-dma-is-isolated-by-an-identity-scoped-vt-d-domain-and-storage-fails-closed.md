@@ -1,6 +1,6 @@
 # D-357 DMA is isolated by an identity-scoped VT-d domain, and storage fails closed without one
 
-Status: Accepted (2026-09-29)
+Status: Accepted, 2026-09-29.
 
 **Context.** The storage controller bus-masters, so it reads and writes physical
 memory without the CPU and outside the page tables. Every DMA property the

@@ -1,6 +1,6 @@
 # D-227 QEMU runs own their writable state and every control endpoint
 
-Status: Accepted (2026-08-29), closes PW-512
+Status: Accepted, 2026-08-29. Closes PW-512.
 
 **Context.** QMP already avoided a bind/connect race by making `xtask` listen
 before QEMU dialled it, but the human monitor did not. Its port was found by

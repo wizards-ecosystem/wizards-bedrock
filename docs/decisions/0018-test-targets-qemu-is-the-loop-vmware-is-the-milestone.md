@@ -1,6 +1,6 @@
 # D-18 Test targets: QEMU is the loop, VMware is the milestone
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Context.** Isaac wanted VMware as the primary test target; QEMU's
 debugging story argued for a role.

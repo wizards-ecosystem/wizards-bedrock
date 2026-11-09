@@ -1,6 +1,6 @@
 # D-56 Per-CPU state is one word, shaped to widen
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** One CPU today; SMP is a later phase. The scheduler needs "which
 thread is on this CPU", and how that is stored decides whether SMP is a

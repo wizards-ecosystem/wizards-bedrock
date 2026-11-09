@@ -1,6 +1,6 @@
 # D-186 Supervisor writes obey read-only mappings by this kernel's act
 
-Status: Accepted (2026-08-27), amends D-12 and closes PW-300
+Status: Accepted, 2026-08-27. Amends D-12 and closes PW-300.
 
 **Context.** Kernel text and read-only data have read-only leaves, but x86
 allows supervisor writes through those leaves while `CR0.WP` is clear. The

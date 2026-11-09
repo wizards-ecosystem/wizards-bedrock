@@ -1,6 +1,6 @@
 # D-336 APIC initialization and completion each have one linear transaction
 
-Status: Accepted (2026-09-28), amends D-254, D-257, D-267 and D-313; closes PW-123 and PW-126
+Status: Accepted, 2026-09-28. Amends D-254, D-257, D-267 and D-313; closes PW-123 and PW-126.
 
 **Context.** A non-duplicable `EoiToken` did not by itself prove that one
 delivery could mint only one token or that abandoning one returned the live

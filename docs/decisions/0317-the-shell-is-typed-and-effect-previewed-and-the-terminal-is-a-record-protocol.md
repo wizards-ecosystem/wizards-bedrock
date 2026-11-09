@@ -1,6 +1,6 @@
 # D-317 The shell is typed and effect-previewed, and the terminal is a record protocol
 
-Status: Accepted (2026-09-12), refines D-10 and D-183
+Status: Accepted, 2026-09-12. Refines D-10 and D-183.
 
 **Context.** `015` slice 8 requires a TTY protocol, a line editor, a shell and
 pipelines made from explicit channels with no `fork` and no inherited

@@ -1,6 +1,6 @@
 # D-95 The second audit: a fix that introduced undefined behaviour, and a wait that could sleep for ever
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** A second adversarial pass, over slice 6 and over D-94's own
 repairs. The baseline was green — 94 machine checks, every host test passing —

@@ -1,6 +1,6 @@
 # D-342 The `xtask` grade seals what cargo-mutants writes and witnesses its own completeness
 
-Status: Accepted (2026-09-28), amends D-324, D-329 and D-330; advances PW-025; closes PW-551 and PW-552
+Status: Accepted, 2026-09-28. Amends D-324, D-329 and D-330; advances PW-025; closes PW-551 and PW-552.
 
 **Context.** An adversarial audit of D-330's grade workflow found that it
 could not seal a real run. Its published command passed

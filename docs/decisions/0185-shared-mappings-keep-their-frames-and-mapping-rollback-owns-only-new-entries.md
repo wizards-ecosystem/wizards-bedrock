@@ -1,6 +1,6 @@
 # D-185 Shared mappings keep their frames, and mapping rollback owns only new entries
 
-Status: Accepted (2026-08-27), amends D-113 and D-115, closes PW-100 and PW-101
+Status: Accepted, 2026-08-27. Amends D-113 and D-115, closes PW-100 and PW-101.
 
 **Context.** The D-184 foundation audit found two safe paging doors whose
 ownership claims were weaker than their signatures. `map_shared` borrowed a

@@ -1,6 +1,6 @@
 # D-175 A break that does not compile is not a break
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The Phase 6 close ran the full sweep and one of sixty-four
 mutations did not come back caught: *a device window is uncacheable*. The

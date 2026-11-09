@@ -1,6 +1,6 @@
 # D-192 A terminal completion retains its operation until publication succeeds
 
-Status: Accepted (2026-08-27), amends D-115 and D-167; closes PW-106
+Status: Accepted, 2026-08-27. Amends D-115 and D-167; closes PW-106.
 
 **Context.** Cancellation, timer expiry and process teardown removed a pending
 operation before posting its terminal completion. They treated a missing

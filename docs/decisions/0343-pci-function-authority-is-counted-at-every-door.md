@@ -1,6 +1,6 @@
 # D-343 PCI function authority is counted at every door
 
-Status: Accepted (2026-09-28), amends D-335; corrects PW-129
+Status: Accepted, 2026-09-28. Amends D-335; corrects PW-129.
 
 **Context.** D-335 recorded that a separate safe duplication door compiled and
 failed the exact hostile contract. The contract compiled one call to a method

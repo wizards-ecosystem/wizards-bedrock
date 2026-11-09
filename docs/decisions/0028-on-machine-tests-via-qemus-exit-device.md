@@ -1,6 +1,6 @@
 # D-28 On-machine tests via QEMU's exit device
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** The kernel had no automated check of any kind, and by construction
 could not have one: `cargo test` cannot host a `#![no_std] #![no_main]` binary,

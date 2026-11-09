@@ -1,6 +1,6 @@
 # D-353 D-189 containment is proven by a signature inventory, and two validated tests land
 
-Status: Accepted (2026-09-29), amends D-189; closes PW-563
+Status: Accepted, 2026-09-29. Amends D-189; closes PW-563.
 
 **Context.** The 2026-08-29 handoff left two validated test files unlanded and
 two audit findings on no register row. The first finding: D-189's containment,

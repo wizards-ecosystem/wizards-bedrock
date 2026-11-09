@@ -1,6 +1,6 @@
 # D-333 Final user entry is tested through the production xstate predicate
 
-Status: Accepted (2026-09-28), amends D-270; advances PW-132
+Status: Accepted, 2026-09-28. Amends D-270; advances PW-132.
 
 **Context.** D-270 requires early construction and the final ring-3 crossing
 to ask the same live extended-state predicate, but the final-door witness

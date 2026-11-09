@@ -1,6 +1,6 @@
 # D-91 The speculation posture is read, reported, and decided in a `libs/` crate
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-81 listed two entry-path items as one-liners worth taking now
 because they are near-impossible to retrofit: `VERW` on exit-to-user, and an

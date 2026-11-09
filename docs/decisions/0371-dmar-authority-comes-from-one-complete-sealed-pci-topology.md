@@ -1,6 +1,6 @@
 # D-371 DMAR authority comes from one complete sealed PCI topology
 
-Status: Accepted (2026-10-09), amends D-358 and D-370; closes PW-581
+Status: Accepted, 2026-10-09. Amends D-358 and D-370; closes PW-581.
 
 **Context.** Deep Codex Security scan
 `32245094-b8b7-47d1-b6e7-a52554800772` found two remaining ways firmware or

@@ -1,6 +1,6 @@
 # D-365 VMware qualification binds configuration and preserves runtime bytes
 
-Status: Accepted (2026-10-07), amends D-218, D-235 and D-244; advances PW-579
+Status: Accepted, 2026-10-07. Amends D-218, D-235 and D-244; advances PW-579.
 
 **Context.** The human boots also expose refusal of the UART's normal CRLF
 and of the runtime VMX's postboot digest. Workstation rewrites line endings

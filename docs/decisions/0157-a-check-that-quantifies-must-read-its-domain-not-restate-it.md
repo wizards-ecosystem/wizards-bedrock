@@ -1,6 +1,6 @@
 # D-157 A check that quantifies must read its domain, not restate it
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** A battery run over the finished Phases 0–5 — the gate, TLC, and
 all 29 mutations — passed on the first attempt. What it turned up was not in

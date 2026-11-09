@@ -1,6 +1,6 @@
 # D-432 A failed PCI observation revokes its snapshot until reset
 
-Status: Accepted (2026-10-23), qualification OPEN; amends D-371 and D-392; advances PW-713
+Status: Accepted, 2026-10-23. Qualification OPEN; amends D-371 and D-392; advances PW-713.
 
 The public topology API previously forgot an observation error. A caller could
 ignore the error and seal the remaining structurally valid snapshot, or retain

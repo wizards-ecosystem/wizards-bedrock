@@ -1,6 +1,6 @@
 # D-156 The scancode table is transcribed, and one code is deliberately unanchored
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The last of the Phase 0–5 audit's Tier 3 findings. `libs/ps2-keys`'
 set 2 table maps about eighty-nine make codes to keys, and twenty-one were

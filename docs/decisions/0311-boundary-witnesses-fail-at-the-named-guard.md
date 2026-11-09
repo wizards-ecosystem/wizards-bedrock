@@ -1,6 +1,6 @@
 # D-311 Boundary witnesses fail at the named guard
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 651, 659, 770 and 937 survived because
 their witnesses could pass without exercising the changed predicate. The API

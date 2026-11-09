@@ -1,6 +1,6 @@
 # D-266 Unsafe instruction doors expose only their checked caller scope
 
-Status: Accepted (2026-08-31), amends D-41 and D-123; advances PW-119 and PW-133
+Status: Accepted, 2026-08-31. Amends D-41 and D-123; advances PW-119 and PW-133.
 
 **Context.** A safe raw-address `invlpg` door admitted a faulting noncanonical
 operand, while CR3, XSAVE and FS-base instruction helpers were visible farther

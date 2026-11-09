@@ -1,6 +1,6 @@
 # D-203 Retired programs wake one mandatory service worker for bounded reclamation
 
-Status: Accepted (2026-08-28), amends D-117, D-133 and D-200; closes PW-307
+Status: Accepted, 2026-08-28. Amends D-117, D-133 and D-200; closes PW-307.
 
 **Context.** A retired program gave its thread slot back immediately but left
 its address space, mappings, ring, handles and objects in `ZOMBIES`. Only the

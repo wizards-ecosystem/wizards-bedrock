@@ -1,6 +1,6 @@
 # D-319 The works are a static, verified, supervised and lazily started component graph
 
-Status: Accepted (2026-09-12), refines D-14 and D-111
+Status: Accepted, 2026-09-12. Refines D-14 and D-111.
 
 **Context.** `002` pillar 4 says no daemons by default and pillar 6 says
 services are supervised, not unwound; D-14 chose supervision on Theseus's

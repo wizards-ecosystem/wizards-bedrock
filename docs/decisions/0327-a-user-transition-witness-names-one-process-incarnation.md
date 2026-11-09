@@ -1,6 +1,6 @@
 # D-327 A user-transition witness names one process incarnation
 
-Status: Accepted (2026-09-27), amends D-101 and D-288; closes PW-549
+Status: Accepted, 2026-09-27. Amends D-101 and D-288; closes PW-549.
 
 **Context.** A complete gate passed release QEMU at 262/262, then debug QEMU
 failed only `a thread crosses into ring three and calls back` at 261/262. An

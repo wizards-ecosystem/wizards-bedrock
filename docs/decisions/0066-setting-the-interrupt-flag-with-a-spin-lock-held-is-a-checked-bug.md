@@ -1,6 +1,6 @@
 # D-66 Setting the interrupt flag with a spin lock held is a checked bug
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** The self-test hung on roughly one boot in ten, always after the
 harness injected a keystroke, and always with the whole machine wedged. It

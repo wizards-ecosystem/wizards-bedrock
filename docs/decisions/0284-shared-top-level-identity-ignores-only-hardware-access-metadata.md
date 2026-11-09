@@ -1,6 +1,6 @@
 # D-284 Shared top-level identity ignores only hardware access metadata
 
-Status: Accepted (2026-09-05), amends D-281; advances PW-540
+Status: Accepted, 2026-09-05. Amends D-281; advances PW-540.
 
 **Context.** D-281 compared complete higher-half PML4 words when binding and
 switching a user root. Hardware may independently set `ACCESSED` in either

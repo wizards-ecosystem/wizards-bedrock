@@ -1,6 +1,6 @@
 # D-22 Lint, test, and CI policy
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Decision.** A `[workspace.lints]` table all kernel crates opt into:
 `unsafe_op_in_unsafe_fn`, `unused_must_use` denied; `missing_docs`,

@@ -1,6 +1,6 @@
 # D-29 Interrupt entry is generated assembly, not a nightly ABI
 
-Status: Accepted (2026-08-13)
+Status: Accepted, 2026-08-13.
 
 **Context.** Phase 2 needs 256 interrupt gates. Rust cannot express a handler
 directly: the calling convention that would let it, `extern "x86-interrupt"`,

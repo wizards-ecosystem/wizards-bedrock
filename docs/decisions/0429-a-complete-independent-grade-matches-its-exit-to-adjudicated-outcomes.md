@@ -1,6 +1,6 @@
 # D-429 A complete independent grade matches its exit to adjudicated outcomes
 
-Status: Accepted (2026-10-23), qualification OPEN; amends D-373; advances the PW-025 continuous campaign
+Status: Accepted, 2026-10-23. Qualification OPEN; amends D-373; advances the PW-025 continuous campaign.
 
 **Context.** The owned cargo-mutants grade rejected every nonzero process exit
 before reading its outcomes. The pinned 27.1.0 grader reports 2 for missed

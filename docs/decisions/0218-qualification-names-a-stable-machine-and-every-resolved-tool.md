@@ -1,6 +1,6 @@
 # D-218 Qualification names a stable machine and every resolved tool
 
-Status: Accepted (2026-08-29), closes PW-509
+Status: Accepted, 2026-08-29. Closes PW-509.
 
 **Context.** D-216 bound a clean source tree to verbose Rust/Cargo/QEMU
 versions, the QEMU executable, both firmware files, every vendored input and

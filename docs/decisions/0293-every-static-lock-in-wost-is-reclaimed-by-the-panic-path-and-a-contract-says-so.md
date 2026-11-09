@@ -1,6 +1,6 @@
 # D-293 Every static lock in `wost` is reclaimed by the panic path, and a contract says so
 
-Status: Accepted (2026-09-06), amends D-41 and D-67
+Status: Accepted, 2026-09-06. Amends D-41 and D-67.
 
 **Context.** `wost::panic::reclaim` force-unlocks the locks a panic may have
 interrupted so the reporter can use them. Its comment said that every lock in

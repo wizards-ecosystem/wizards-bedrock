@@ -1,6 +1,6 @@
 # D-184 The closed compiler gate has one finite, evidence-bound foundation register
 
-Status: Accepted (2026-08-27), refines D-18, D-77, D-135, D-175 and D-183
+Status: Accepted, 2026-08-27. Refines D-18, D-77, D-135, D-175 and D-183.
 
 **Context.** D-183 permits kernel correctness, concrete language-neutral
 prerequisites and artifact-handoff specification while its compiler gate is

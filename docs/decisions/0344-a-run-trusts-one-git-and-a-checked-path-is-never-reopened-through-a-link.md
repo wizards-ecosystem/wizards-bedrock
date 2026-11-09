@@ -1,6 +1,6 @@
 # D-344 A run trusts one Git, and a checked path is never reopened through a link
 
-Status: Accepted (2026-09-28), amends D-218 and D-330; closes PW-553, PW-554 and PW-555
+Status: Accepted, 2026-09-28. Amends D-218 and D-330; closes PW-553, PW-554 and PW-555.
 
 **Context.** The canceled Daybreak Deep scan retained three tool-trust
 findings that reproduce on the current source. Every source identity,

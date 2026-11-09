@@ -1,6 +1,6 @@
 # D-208 Mutation sweeps run from a journalled tracked-file copy
 
-Status: Accepted (2026-08-28), amends D-119, D-134 and D-175; closes PW-502
+Status: Accepted, 2026-08-28. Amends D-119, D-134 and D-175; closes PW-502.
 
 **Context.** D-119 restores a mutated file before any ordinary error may leave
 the runner, but a process killed between the write and restoration has no Rust

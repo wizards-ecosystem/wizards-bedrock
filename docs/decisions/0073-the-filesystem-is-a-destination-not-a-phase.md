@@ -1,6 +1,6 @@
 # D-73 The filesystem is a destination, not a phase
 
-Status: Provisional (2026-08-23), amends D-08
+Status: Provisional, 2026-08-23. Amends D-08.
 
 **Context.** D-08 chose a CoW B-tree with checksums and snapshots, and `003`
 set its design rules from bcachefs, btrfs, ZFS and BetrFS. The 2026-08-23

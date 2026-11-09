@@ -1,6 +1,6 @@
 # D-420 Deep workers use an owned default-deny source clone
 
-Status: Accepted (2026-10-17), implemented with qualification OPEN; amends D-406, D-417 and D-419; advances PW-026
+Status: Accepted, 2026-10-17. Implemented with qualification OPEN; amends D-406, D-417 and D-419; advances PW-026.
 
 **Context.** The owned Deep attempt on `4d4ab8c` passed the ordinary CI and
 native-debug gates, then stopped before Daybreak, MCP worker launch or scan

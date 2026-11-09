@@ -1,6 +1,6 @@
 # D-286 Repository-wide proofs fail closed on directory enumeration
 
-Status: Accepted (2026-09-05), amends D-124 and D-215; advances PW-525
+Status: Accepted, 2026-09-05. Amends D-124 and D-215; advances PW-525.
 
 **Context.** The unsafe, citation, page-size, target-source, Markdown/link,
 host-crate, model, vendored-directory and inline-command inventories opened

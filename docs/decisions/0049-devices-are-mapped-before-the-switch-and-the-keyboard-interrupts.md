@@ -1,6 +1,6 @@
 # D-49 Devices are mapped before the switch, and the keyboard interrupts
 
-Status: Accepted (2026-08-22) (amended by D-76 and D-77)
+Status: Accepted, 2026-08-22. Amended by D-76 and D-77.
 
 **Context.** `007-memory.md`'s slice 5 owes three things: the I/O APIC up,
 IRQ 1 routed, and D-37's polled keyboard drain retired. D-33 called the

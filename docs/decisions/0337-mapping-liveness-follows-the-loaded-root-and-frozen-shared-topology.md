@@ -1,6 +1,6 @@
 # D-337 Mapping liveness follows the loaded root and frozen shared topology
 
-Status: Accepted (2026-09-28), amends D-125, D-142, D-253, D-259, D-281 and D-284; closes PW-120 and advances PW-540
+Status: Accepted, 2026-09-28. Amends D-125, D-142, D-253, D-259, D-281 and D-284; closes PW-120 and advances PW-540.
 
 **Context.** The current implementation had repaired two related paging trust
 boundaries without a current end-to-end causal record. Stack and device tokens

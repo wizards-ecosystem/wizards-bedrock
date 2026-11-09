@@ -1,6 +1,6 @@
 # D-75 Phase 11 is an integration milestone, not a browser
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** `000-vision.md` promises the OS will "browse the web", and Phase 11
 is "port NetSurf". The 2026-08-23 research checked what that buys.

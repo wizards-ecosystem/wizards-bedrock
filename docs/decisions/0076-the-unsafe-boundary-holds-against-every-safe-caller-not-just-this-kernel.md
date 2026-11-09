@@ -1,6 +1,6 @@
 # D-76 The unsafe boundary holds against every safe caller, not just this kernel
 
-Status: Accepted (2026-08-23) (amended by D-77)
+Status: Accepted, 2026-08-23. Amended by D-77.
 
 **Context.** A soundness review of `wost` asked D-13's question the hard way:
 not "does the kernel misuse these APIs" but "*could* any safe caller". Five

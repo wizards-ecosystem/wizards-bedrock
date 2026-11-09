@@ -1,6 +1,6 @@
 # D-50 The framebuffer is write-combining
 
-Status: Accepted (2026-08-22) (amended by D-77)
+Status: Accepted, 2026-08-22. Amended by D-77.
 
 **Context.** `008-research-notes-2.md` §3.4 argued that write-combining and the
 console back buffer are one decision, with numbers: Linux's own MTRR

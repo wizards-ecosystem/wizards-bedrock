@@ -1,6 +1,6 @@
 # D-369 Rejected storage candidates retire behind a verified DMA fence
 
-Status: Accepted (2026-10-09), amends D-199, D-335, D-357 and D-358
+Status: Accepted, 2026-10-09. Amends D-199, D-335, D-357 and D-358.
 
 **Context.** Deep Codex Security scan
 `32245094-b8b7-47d1-b6e7-a52554800772` found three consequences of one split

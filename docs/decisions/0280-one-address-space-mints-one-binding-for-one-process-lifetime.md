@@ -1,6 +1,6 @@
 # D-280 One address space mints one binding for one process lifetime
 
-Status: Accepted (2026-09-05), amends D-117 and D-123; advances PW-539
+Status: Accepted, 2026-09-05. Amends D-117 and D-123; advances PW-539.
 
 **Context.** `Binding` was linear after construction, but that did not prove an
 `AddressSpace` could construct it only once. The current user-copy concurrency

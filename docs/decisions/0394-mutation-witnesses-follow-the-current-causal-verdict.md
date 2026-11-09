@@ -1,6 +1,6 @@
 # D-394 Mutation witnesses follow the current causal verdict
 
-Status: Accepted (2026-10-12), amends D-239 and D-322; advances PW-001
+Status: Accepted, 2026-10-12. Amends D-239 and D-322; advances PW-001.
 
 **Context.** The complete mutation sweep on `03b9543` reached permanent
 mutation 290, which prevents the input driver from adopting the scan-code

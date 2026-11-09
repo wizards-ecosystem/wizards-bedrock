@@ -1,6 +1,6 @@
 # D-387 Live VT-d entries publish once and NVMe mappings carry direction
 
-Status: Accepted (2026-10-11)
+Status: Accepted, 2026-10-11.
 
 **Context.** A deep release audit followed the ordinary DMA revocation proof
 one step earlier, to publication. `IommuTable::write_u64` converted an entry to

@@ -1,6 +1,6 @@
 # D-86 Mapping stops being one-way, because the refusal that made it safe is not the signature
 
-Status: Accepted (2026-08-24), amends D-45
+Status: Accepted, 2026-08-24. Amends D-45.
 
 **Context.** D-45 made `AddressSpace::map` safe by making it unreachable:
 `activate` took the space **by value**, so once the tables were live nothing

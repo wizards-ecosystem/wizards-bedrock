@@ -1,6 +1,6 @@
 # D-164 A wait that is a wait
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** `014` opens by saying this is "the phase that gives the kernel
 something to wait for", and D-149 puts the ABI first precisely so the waiting

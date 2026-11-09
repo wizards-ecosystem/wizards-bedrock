@@ -1,6 +1,6 @@
 # D-36 The timer is calibrated against the 8254, and ticks at 100 Hz
 
-Status: Accepted (2026-08-20)
+Status: Accepted, 2026-08-20.
 
 **Context.** The APIC timer counts the bus clock divided by a configurable
 factor, and nothing reports that clock's rate. Phase 2 owns no page tables, so

@@ -1,6 +1,6 @@
 # D-162 The last unanchored scancode was a misread column
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-156 transcribed 68 of about 89 single-byte set 2 make codes and
 stopped one short. Backslash read as `0x5C` in the source and the table had

@@ -1,6 +1,6 @@
 # D-334 Paging activation is one interrupt-excluded publication transaction
 
-Status: Accepted (2026-09-28), amends D-268; closes PW-127
+Status: Accepted, 2026-09-28. Amends D-268; closes PW-127.
 
 **Context.** D-268 implemented the activation transaction, but closure still
 required current causal evidence at each publication boundary. In particular,

@@ -1,6 +1,6 @@
 # D-298 Git pathname bytes precede filesystem path semantics
 
-Status: Accepted (2026-09-10), amends D-208; closes PW-030
+Status: Accepted, 2026-09-10. Amends D-208; closes PW-030.
 
 **Context.** The first current clean `cargo xtask mutate` stopped before its
 baselines with "Git tracked paths are not unique and sorted". Git returned its

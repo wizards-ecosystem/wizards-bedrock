@@ -1,6 +1,6 @@
 # D-271 Raw timebase parts must survive their published encoding
 
-Status: Accepted (2026-08-31), amends D-166; advances PW-309
+Status: Accepted, 2026-08-31. Amends D-166; advances PW-309.
 
 **Context.** `Timebase::from_parts` was public but admitted shifts which cannot
 be evaluated and multipliers wider than the one-word time-page representation.

@@ -1,6 +1,6 @@
 # D-259 Retained stack identity is checked at map admission and hardware use
 
-Status: Accepted (2026-08-31), amends D-94, D-125, D-214 and D-253; closes PW-113
+Status: Accepted, 2026-08-31. Amends D-94, D-125, D-214 and D-253; closes PW-113.
 
 **Context.** D-253's complete stack rewalks attacked a disposable
 `MappedStack`. They did not substitute a page after the boot, task or

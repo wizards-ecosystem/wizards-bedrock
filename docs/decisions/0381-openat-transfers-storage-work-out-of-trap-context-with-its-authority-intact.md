@@ -1,6 +1,6 @@
 # D-381 OpenAt transfers storage work out of trap context with its authority intact
 
-Status: Accepted (2026-10-10), amends D-163, D-173, D-192 and D-200; closes PW-590
+Status: Accepted, 2026-10-10. Amends D-163, D-173, D-192 and D-200; closes PW-590.
 
 **Context.** Codex Security occurrence `occ_58f0b32a48b6c444cfe0d501`
 found that `Call::RingEnter` synchronously reached `Queue::open_at`, which

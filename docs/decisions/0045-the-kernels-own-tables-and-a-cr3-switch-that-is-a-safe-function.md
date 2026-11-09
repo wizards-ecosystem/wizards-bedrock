@@ -1,6 +1,6 @@
 # D-45 The kernel's own tables, and a `CR3` switch that is a safe function
 
-Status: Accepted (2026-08-22) (amended by D-76; its one-way mapping retired by D-86)
+Status: Accepted, 2026-08-22. Amended by D-76; its one-way mapping retired by D-86.
 
 **Context.** `007-memory.md` names the switch to the kernel's own page tables
 as the phase's one irreversible moment: *"the switch is the one moment a

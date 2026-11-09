@@ -1,6 +1,6 @@
 # D-262 Artifact limits are caller policy, not parser recovery
 
-Status: Accepted (2026-08-31), amends D-220 and D-244; advances PW-012, PW-014, PW-018 and PW-028
+Status: Accepted, 2026-08-31. Amends D-220 and D-244; advances PW-012, PW-014, PW-018 and PW-028.
 
 **Context.** D-244 bound exceptional records to executions, but several byte
 doors still trusted allocation to fail safely. Model output was classified and

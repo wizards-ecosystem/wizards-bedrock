@@ -1,6 +1,6 @@
 # D-249 Device refusal is transactional, and internal contradictions fail in every build
 
-Status: Accepted (2026-08-30), amends D-37, D-41, D-48, D-115, D-133 and D-206; verification tracked by PW-533
+Status: Accepted, 2026-08-30. Amends D-37, D-41, D-48, D-115, D-133 and D-206; verification tracked by PW-533.
 
 **Context.** Several safe hardware boundaries returned refusal and their
 callers discarded it. Framebuffer reads substituted zero and writes updated

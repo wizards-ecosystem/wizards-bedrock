@@ -1,6 +1,6 @@
 # D-269 Shared memory chooses one access layout once
 
-Status: Accepted (2026-08-31), amends D-221; advances PW-128
+Status: Accepted, 2026-08-31. Amends D-221; advances PW-128.
 
 **Context.** Safe volatile byte methods and atomic publication-word methods
 could cover the same shared allocation. Ring 3 could then access a payload byte

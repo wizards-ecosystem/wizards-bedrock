@@ -1,6 +1,6 @@
 # D-25 Vendored binaries are checksum-pinned
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** `boot/limine/BOOTX64.EFI` is a 300 KB prebuilt binary from
 another project, recorded with provenance and a fetch date but no digest, and

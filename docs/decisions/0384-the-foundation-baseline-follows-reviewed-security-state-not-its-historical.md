@@ -1,6 +1,6 @@
 # D-384 The foundation baseline follows reviewed security state, not its historical footprint
 
-Status: Accepted (2026-10-11), amends D-230
+Status: Accepted, 2026-10-11. Amends D-230.
 
 **Context.** D-230's kernel-size, free-frame and live-allocation bands described
 the 215-check foundation. The completed 281-check kernel now retains the

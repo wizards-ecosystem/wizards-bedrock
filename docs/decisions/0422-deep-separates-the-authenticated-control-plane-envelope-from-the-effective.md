@@ -1,6 +1,6 @@
 # D-422 Deep separates the authenticated control-plane envelope from the effective default-deny worker profile
 
-Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-406, D-416, D-417, D-419 and D-420; advances PW-026
+Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-406, D-416, D-417, D-419 and D-420; advances PW-026.
 
 **Context.** The complete 2,133-entry mutation sweep on `0dfcb76` executed to
 completion and caught 2,132 entries, with no inconclusive result. Permanent

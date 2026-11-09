@@ -1,6 +1,6 @@
 # D-251 Hardware observations mint exact, non-derivable authority
 
-Status: Accepted (2026-08-30), amends D-188, D-205 and D-249; advances PW-130 and PW-213
+Status: Accepted, 2026-08-30. Amends D-188, D-205 and D-249; advances PW-130 and PW-213.
 
 **Context.** Pure `nvme::DmaState` claimed whether hardware was quiesced, and
 the boot module converted a forgeable enum into permission to enable and route

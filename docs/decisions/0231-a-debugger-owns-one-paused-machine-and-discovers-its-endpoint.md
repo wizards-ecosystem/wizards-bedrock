@@ -1,6 +1,6 @@
 # D-231 A debugger owns one paused machine and discovers its endpoint
 
-Status: Accepted (2026-08-29), closes PW-513
+Status: Accepted, 2026-08-29. Closes PW-513.
 
 **Context.** The kernel has retained DWARF and QEMU has a GDB stub, but the
 documented Windows workflow still stops at a raw `-s -S` suggestion. That

@@ -1,6 +1,6 @@
 # D-180 Wizzy gets the first native system-language/runtime proof
 
-Status: Provisional (2026-08-26), amends D-05's sequencing
+Status: Provisional, 2026-08-26. Amends D-05's sequencing.
 
 **Context.** D-05 names an own userland, shell, Python and document web as the
 destination. D-06 makes the native ABI capability- and completion-oriented;

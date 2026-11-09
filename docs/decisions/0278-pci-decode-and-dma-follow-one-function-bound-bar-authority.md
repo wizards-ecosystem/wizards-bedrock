@@ -1,6 +1,6 @@
 # D-278 PCI decode and DMA follow one function-bound BAR authority
 
-Status: Accepted (2026-09-04), amends D-187, D-197, D-251 and D-265; advances PW-536 and PW-537
+Status: Accepted, 2026-09-04. Amends D-187, D-197, D-251 and D-265; advances PW-536 and PW-537.
 
 **Context.** The storage path enabled memory decoding before page-rounded RAM
 exclusion and mapped a raw physical range against the page-table format's

@@ -1,6 +1,6 @@
 # D-312 A proof fixture reaches the predicate it names
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Five complete-sweep survivors remained in host checks whose broad
 fixtures stopped before, or passed around, the changed predicate. The NVMe

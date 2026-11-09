@@ -1,6 +1,6 @@
 # D-277 Interrupt sources share one typed global vector assignment
 
-Status: Accepted (2026-09-04), amends D-33, D-49, D-81, D-96, D-123, D-205 and D-258; advances PW-535
+Status: Accepted, 2026-09-04. Amends D-33, D-49, D-81, D-96, D-123, D-205 and D-258; advances PW-535.
 
 **Context.** I/O-APIC routing still accepted a raw byte, local-APIC policy
 admitted vectors 16 through 31, and the keyboard, syscall and four local

@@ -1,6 +1,6 @@
 # D-270 User admission asks one live extended-state predicate
 
-Status: Accepted (2026-08-31), amends D-82, D-115, D-228 and D-245; advances PW-132
+Status: Accepted, 2026-08-31. Amends D-82, D-115, D-228 and D-245; advances PW-132.
 
 **Context.** A remembered nonzero save form did not prove that live CR4 and
 XCR0 still matched the area which had been sized. Boot could also enable a

@@ -1,6 +1,6 @@
 # D-247 Type errors and typed ownership make two review claims durable
 
-Status: Accepted (2026-08-30), amends D-85, D-150 and D-223; closes PW-529 and PW-530
+Status: Accepted, 2026-08-30. Amends D-85, D-150 and D-223; closes PW-529 and PW-530.
 
 **Context.** D-85 recorded three compiler experiments: a live token-bearing
 spin guard made a second lock and reuse of its `ThreadContext` fail with

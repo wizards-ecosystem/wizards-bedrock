@@ -1,6 +1,6 @@
 # D-205 Every bounded I/O APIC is inventoried and one GSI has one owner
 
-Status: Accepted (2026-08-28), amends D-49 and D-86; closes PW-304
+Status: Accepted, 2026-08-28. Amends D-49 and D-86; closes PW-304.
 
 **Context.** The MADT walker logged every I/O APIC structure and retained only
 the first. Paging consequently mapped and masked only that controller, and

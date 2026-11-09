@@ -1,6 +1,6 @@
 # D-448 The first qualified release is v0.2.0 and the SBOM follows the workspace version
 
-Status: Accepted (2026-10-27); applies D-425 and D-441
+Status: Accepted, 2026-10-27. Applies D-425 and D-441.
 
 **Context.** D-441 keeps v0.1.0 an immutable source preview and requires a
 later qualified release to take another version. D-425 tags the qualified

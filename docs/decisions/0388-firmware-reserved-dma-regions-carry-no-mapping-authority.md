@@ -1,6 +1,6 @@
 # D-388 Firmware-reserved DMA regions carry no mapping authority
 
-Status: Accepted (2026-10-11), amends D-360
+Status: Accepted, 2026-10-11. Amends D-360.
 
 **Context.** D-360 screened a device's ACPI DMAR Reserved Memory Region
 Reporting (RMRR) entries against the boot memory map, then identity-mapped the

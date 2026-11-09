@@ -1,6 +1,6 @@
 # D-215 Operational Markdown is checked; historical numbers stay historical
 
-Status: Accepted (2026-08-28), amends D-146; closes PW-507
+Status: Accepted, 2026-08-28. Amends D-146; closes PW-507.
 
 **Context.** D-146 corrected thirteen numeric claims but explicitly stopped
 before `008` through `012`. Later prose checks tied two current Phase 6 totals

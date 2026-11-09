@@ -1,6 +1,6 @@
 # D-89 The double-fault handler gets a guarded stack; the boot thread's waits, with its cost
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `002-architecture.md`'s security baseline has recorded two
 exceptions since Phase 4: *"Two stacks remain unguarded: the boot thread's,

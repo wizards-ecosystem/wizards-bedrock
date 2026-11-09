@@ -1,6 +1,6 @@
 # D-386 Shipped debug information names stable virtual roots
 
-Status: Accepted (2026-10-11), closes PW-709 when qualified
+Status: Accepted, 2026-10-11. Closes PW-709 when qualified.
 
 **Context.** The requested public release fires PW-709. Release kernels retain
 DWARF for post-mortem work, and the current ELF contains the absolute checkout,

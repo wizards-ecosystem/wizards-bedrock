@@ -1,6 +1,6 @@
 # D-128 Growing the arena is two allocator operations, and one was left behind
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `handle.rs`'s `reserve_a_slot` exists for one reason, and its doc
 says so: `Vec` growth calls the allocator, which takes `HEAP` and possibly

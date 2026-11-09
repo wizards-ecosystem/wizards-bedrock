@@ -1,6 +1,6 @@
 # D-11 Graphics: own compositor, Wayland-style protocol, GPU-first toolkit
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Context.** Isaac wants his own windowing system, "probably Wayland
 style, but maybe something way more custom."

@@ -1,6 +1,6 @@
 # D-131 Where `expect` cannot reach, and the difference between a permission and a claim
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-130 replaced `#[allow(dead_code)]` with
 `#[cfg_attr(not(feature = "selftest"), expect(dead_code))]` across `kernel/`

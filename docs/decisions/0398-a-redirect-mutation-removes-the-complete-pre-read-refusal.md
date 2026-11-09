@@ -1,6 +1,6 @@
 # D-398 A redirect mutation removes the complete pre-read refusal
 
-Status: Accepted (2026-10-13), amends D-302, D-322 and D-344; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-302, D-322 and D-344; advances PW-001.
 
 **Context.** Permanent mutation 905 removed the supply-chain reader's
 pre-open `require_direct_file` check and survived its static redirected-file

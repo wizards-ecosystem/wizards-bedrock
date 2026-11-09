@@ -1,6 +1,6 @@
 # D-173 The file handle, and a buffer with no pointer in it
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** `014` left three decisions for this slice: what a `File` handle's
 object is, whether `read` takes a length or a provided buffer, and — implicitly

@@ -1,6 +1,6 @@
 # D-142 Hardware constants checked against the manual, not against themselves
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-136 pinned five `libs/` properties that a mutation could defeat.
 The audit's Tier 1 list had three more of the same family, and all three sit

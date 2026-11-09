@@ -1,6 +1,6 @@
 # D-148 The model could check nothing and report success
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The last of the audit's Tier 3 findings, and one of them is worse
 than its tier suggests.

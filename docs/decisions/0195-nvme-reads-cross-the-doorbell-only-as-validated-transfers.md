@@ -1,6 +1,6 @@
 # D-195 NVMe reads cross the doorbell only as validated transfers
 
-Status: Accepted (2026-08-27), amends D-169; closes PW-203
+Status: Accepted, 2026-08-27. Amends D-169; closes PW-203.
 
 **Context.** `Controller::read_blocks` multiplied an unchecked block count by
 the namespace's block size, built `CDW12` as `blocks - 1`, and submitted it.

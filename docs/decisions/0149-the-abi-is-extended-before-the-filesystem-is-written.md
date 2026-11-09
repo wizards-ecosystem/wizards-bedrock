@@ -1,6 +1,6 @@
 # D-149 The ABI is extended before the filesystem is written
 
-Status: Accepted (2026-08-25) (amended by D-181)
+Status: Accepted, 2026-08-25. Amended by D-181.
 
 **Context.** `000`'s roadmap makes Phase 6 "VFS + storage": a VFS over handles,
 tmpfs and devfs, and a read-only third-party format over NVMe. `013` was

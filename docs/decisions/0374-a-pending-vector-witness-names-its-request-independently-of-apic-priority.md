@@ -1,6 +1,6 @@
 # D-374 A pending-vector witness names its request independently of APIC priority
 
-Status: Accepted (2026-10-09), amends D-372; closes PW-583
+Status: Accepted, 2026-10-09. Amends D-372; closes PW-583.
 
 **Context.** The first complete post-D-373 gate reached release QEMU after all
 host, API, documentation and supply-chain stages passed, then failed only `a

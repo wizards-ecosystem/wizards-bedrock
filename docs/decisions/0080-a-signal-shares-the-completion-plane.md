@@ -1,6 +1,6 @@
 # D-80 A signal shares the completion plane
 
-Status: Accepted (2026-08-24) (amended by D-181)
+Status: Accepted, 2026-08-24. Amended by D-181.
 
 **Context.** D-74 named this the question hardest to answer late, and the
 reason mlibc moved forward to Phase 5. `002` does not mention signals at all.

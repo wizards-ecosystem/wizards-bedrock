@@ -1,6 +1,6 @@
 # D-250 Shared kernel mappings require positive runtime evidence
 
-Status: Accepted (2026-08-30), amends D-81 and D-91; verification tracked by PW-534
+Status: Accepted, 2026-08-30. Amends D-81 and D-91; verification tracked by PW-534.
 
 **Context.** D-81 declined KPTI because this kernel's target hardware reports
 `RDCL_NO`, but process admission never checked the processor actually running

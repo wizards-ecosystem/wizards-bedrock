@@ -1,6 +1,6 @@
 # D-412 Codex full-schema defaults and origins are closed
 
-Status: Accepted (2026-10-15), amends D-411 and D-406
+Status: Accepted, 2026-10-15. Amends D-411 and D-406.
 
 **Context.** After D-411 admitted the hermetic initialization identity, the
 qualified Codex app-server returned its complete effective-configuration schema

@@ -1,6 +1,6 @@
 # D-38 The harness can press a key
 
-Status: Accepted (2026-08-20; extends D-28)
+Status: Accepted, 2026-08-20. Extends D-28.
 
 **Context.** D-28's self-test can only observe what the machine does to
 itself: it proves the interrupt path with a self-interrupt and the timer with

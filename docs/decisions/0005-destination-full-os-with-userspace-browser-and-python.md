@@ -1,6 +1,6 @@
 # D-05 Destination: full OS with userspace, browser, and Python
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Context.** Sets the architecture bar and multi-year scope.
 

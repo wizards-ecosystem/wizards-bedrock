@@ -1,6 +1,6 @@
 # D-260 A panic becomes terminal evidence only at its framed completion record
 
-Status: Accepted (2026-08-31), amends D-209 and D-256; advances PW-029
+Status: Accepted, 2026-08-31. Amends D-209 and D-256; advances PW-029.
 
 **Context.** The boot readers published their panic flag as soon as a line
 contained `KERNEL PANIC`. The watcher could then stop QEMU before later lines

@@ -1,6 +1,6 @@
 # D-359 The storage candidate is sequenced through sibling stages, so one stage frame at a time sits on the boot stack
 
-Status: Accepted (2026-10-03), amends D-287 and D-358; closes PW-572
+Status: Accepted, 2026-10-03. Amends D-287 and D-358; closes PW-572.
 
 **Context.** Storage selection runs on the boot thread's guarded 32 KiB stack
 with interrupts off, and the debug build gives every by-value owner and every

@@ -1,6 +1,6 @@
 # D-147 Four holes in the things that check everything else
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The audit's remaining findings about the *gate*. A defect in a
 check costs one property; a defect in what runs the checks costs all of them,

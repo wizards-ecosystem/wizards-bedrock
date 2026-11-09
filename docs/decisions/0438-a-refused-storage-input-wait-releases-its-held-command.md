@@ -1,6 +1,6 @@
 # D-438 A refused storage-input wait releases its held command
 
-Status: Accepted (2026-10-23), qualification OPEN; advances PW-719
+Status: Accepted, 2026-10-23. Qualification OPEN; advances PW-719.
 
 The source-pinned release boot in `pristine-41w5yl95` refused clock
 calibration. The delayed-read self-test then entered blocking keyboard reads

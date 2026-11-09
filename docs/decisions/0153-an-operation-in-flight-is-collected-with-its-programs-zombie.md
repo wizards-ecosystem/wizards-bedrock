@@ -1,6 +1,6 @@
 # D-153 An operation in flight is collected with its program's zombie
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** A program submits an operation and retires before it completes.
 The completion has somewhere to go only while the program's ring exists, and

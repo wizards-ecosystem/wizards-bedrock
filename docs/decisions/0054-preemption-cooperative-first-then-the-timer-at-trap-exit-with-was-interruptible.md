@@ -1,6 +1,6 @@
 # D-54 Preemption: cooperative first, then the timer at trap exit, with "was interruptible" as the test
 
-Status: Accepted (2026-08-22) (amended by D-76)
+Status: Accepted, 2026-08-22. Amended by D-76.
 
 **Context.** Slice 1 proved the switch under yields alone. Something had to
 take the CPU from a thread that never gives it up, and the question was

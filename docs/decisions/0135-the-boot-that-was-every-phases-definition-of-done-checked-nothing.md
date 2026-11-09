@@ -1,6 +1,6 @@
 # D-135 The boot that was every phase's definition of done checked nothing
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Three adversarial audits were run against Phases 0–5 to test the
 claim that they were finished and polished. The soundness pass returned the

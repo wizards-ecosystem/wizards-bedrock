@@ -1,6 +1,6 @@
 # D-174 The Phase 6 audit: one defect in three places, and a claim nothing checked
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-77's pattern for a phase close: treat every green check as a
 claim to attack. Phase 6 added four `libs/` crates, six kernel modules, two

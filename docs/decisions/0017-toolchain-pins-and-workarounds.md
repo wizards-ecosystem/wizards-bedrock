@@ -1,6 +1,6 @@
 # D-17 Toolchain pins and workarounds
 
-Status: Accepted; review trigger owned by PW-705 (2026-08-30)
+Status: Accepted, 2026-07-18. Review trigger owned by PW-705 (2026-08-30).
 
 - **Rust 1.97.1**, pinned exactly via `rust-toolchain.toml`
   (`profile = "minimal"`, `rustfmt`/`clippy`, the `x86_64-unknown-none`

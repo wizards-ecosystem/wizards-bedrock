@@ -1,6 +1,6 @@
 # D-04 Kernel shape: monolithic-modular
 
-Status: Verified (as refined by D-13)
+Status: Verified, 2026-07-18. As refined by D-13.
 
 **Context.** Solo developer, multi-year horizon, full-OS destination.
 

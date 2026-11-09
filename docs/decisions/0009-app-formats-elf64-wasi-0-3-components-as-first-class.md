@@ -1,6 +1,6 @@
 # D-09 App formats: ELF64 + WASI 0.3 components as first-class
 
-Status: Provisional (2026-08-23; restated by D-72 as wasip1-first)
+Status: Provisional, 2026-07-18. Provisional since 2026-08-23: restated by D-72 as wasip1-first.
 
 **Context.** "Ahead of its time" directive; sandboxing story needed.
 

@@ -1,6 +1,6 @@
 # D-392 VMware's exact 440BX host bridge is present but is not a DMA requester
 
-Status: Accepted (2026-10-12), amends D-390; advances PW-594 and PW-596
+Status: Accepted, 2026-10-12. Amends D-390; advances PW-594 and PW-596.
 
 **Context.** The first source-bound VMware run of D-390 failed closed before
 memory initialization at `00:00.0`: command `0x0006` remained `0x0006` after

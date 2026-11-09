@@ -1,6 +1,6 @@
 # D-414 Paging self-test ownership is measured in one exclusion epoch
 
-Status: Accepted (2026-10-15), amends D-413
+Status: Accepted, 2026-10-15. Amends D-413.
 
 **Context.** D-413's full CI run passed release self-test 290/290 but the debug
 kernel reproducibly failed `an inactive lower-root unmap preserves the live

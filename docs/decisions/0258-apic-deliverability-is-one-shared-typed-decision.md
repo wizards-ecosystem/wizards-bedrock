@@ -1,6 +1,6 @@
 # D-258 APIC deliverability is one shared typed decision
 
-Status: Accepted (2026-08-31), advances PW-121
+Status: Accepted, 2026-08-31. Advances PW-121.
 
 **Context.** Self-IPI and one-shot timer planning independently checked that a
 source used an architectural external-interrupt frame and differed from the

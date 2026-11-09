@@ -1,6 +1,6 @@
 # D-363 Historical handoff dispositions follow their finite owners
 
-Status: Accepted (2026-10-07), amends D-325 and D-330; closes PW-577
+Status: Accepted, 2026-10-07. Amends D-325 and D-330; closes PW-577.
 
 **Context.** The PW-006 closing draft found that the historical reconciliation
 check unconditionally requires D-142 and D-148 to remain `READY`. Once their

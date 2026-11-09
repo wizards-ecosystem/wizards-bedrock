@@ -1,6 +1,6 @@
 # D-401 Interrupt-boundary source contracts prove duplicate guards and live predicates
 
-Status: Accepted (2026-10-13), amends D-372 and D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-372 and D-395; advances PW-001.
 
 **Context.** Permanent mutations 1,719 and 1,724 survived the host contract
 `pci_interrupts_are_default_deny_before_bus_mastering_or_sti`. Mutation 1,719

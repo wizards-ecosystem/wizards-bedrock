@@ -1,6 +1,6 @@
 # D-367 Uncertain device reachability consumes ownership, and hostile diagnostics are bounded
 
-Status: Accepted (2026-10-09)
+Status: Accepted, 2026-10-09.
 
 **Context.** A complete Codex Security Standard scan of revision
 `8d9f1b966c2223156c109b19acf7b74d028f63c8` found one high, one medium and

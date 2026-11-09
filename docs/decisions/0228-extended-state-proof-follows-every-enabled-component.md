@@ -1,6 +1,6 @@
 # D-228 Extended-state proof follows every enabled component
 
-Status: Accepted (2026-08-29), advances PW-305 to VERIFY
+Status: Accepted, 2026-08-29. Advances PW-305 to VERIFY.
 
 **Context.** The eager switch saves the `XCR0` mask x87 + SSE + AVX, but its
 only restored-value witness wrote the low quadword of `xmm0`. That observes SSE

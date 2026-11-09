@@ -1,6 +1,6 @@
 # D-321 One toolkit and one style source, with tokens as the OS API
 
-Status: Accepted (2026-09-12), amends D-11 and refines D-19
+Status: Accepted, 2026-09-12. Amends D-11 and refines D-19.
 
 **Context.** D-11 chose a GPU-first native toolkit and said nothing about its
 style. `.github/BRAND.md` fixed the ecosystem's palette, typefaces, voice and

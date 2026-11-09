@@ -1,6 +1,6 @@
 # D-88 Unmapping returns a token that owns the frames until it has flushed
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-86 made mapping into a live space possible and D-87 made every
 mapping carry its evidence, but neither could give a frame back: the check D-86

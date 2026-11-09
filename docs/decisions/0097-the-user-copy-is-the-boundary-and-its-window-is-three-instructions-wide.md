@@ -1,6 +1,6 @@
 # D-97 The user copy is the boundary, and its window is three instructions wide
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-81 named `stac`/`clac` as *"a scoped RAII guard; it **is** the
 user-copy ABI"*, and listed SMAP among the features to shape before ring 3. Ring

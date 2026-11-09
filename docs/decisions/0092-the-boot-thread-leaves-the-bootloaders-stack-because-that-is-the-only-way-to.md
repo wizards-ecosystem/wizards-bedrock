@@ -1,6 +1,6 @@
 # D-92 The boot thread leaves the bootloader's stack, because that is the only way to guard it
 
-Status: Accepted (2026-08-24), completes D-12's stack baseline
+Status: Accepted, 2026-08-24. Completes D-12's stack baseline.
 
 **Context.** D-89 guarded the double-fault stack and named the one that was
 left: the boot thread's. It is the bootloader's, it has nothing below it, and

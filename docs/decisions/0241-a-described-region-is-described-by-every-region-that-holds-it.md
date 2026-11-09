@@ -1,6 +1,6 @@
 # D-241 A described region is described by every region that holds it
 
-Status: Accepted (2026-08-29), amends D-177 and D-224; advances PW-006
+Status: Accepted, 2026-08-29. Amends D-177 and D-224; advances PW-006.
 
 **Context.** `libs/memory-map`'s `covers` says, in its own words, "Input order is
 not assumed, so each bounded step searches the complete map." It searched the

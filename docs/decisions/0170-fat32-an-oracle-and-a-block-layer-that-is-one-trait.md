@@ -1,6 +1,6 @@
 # D-170 FAT32, an oracle, and a block layer that is one trait
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `012` §1 chose the format on the **corpus**, not on the code, and
 was blunt that the roadmap's premise was wrong: measured against GRUB's own two

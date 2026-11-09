@@ -1,6 +1,6 @@
 # D-302 Redundant path defenses need layer-specific witnesses
 
-Status: Accepted (2026-09-12), amends D-263 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-263 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 886 and 887 each survived the same SPDX
 symlink fixture. That fixture installed the redirect before the read began, so

@@ -1,6 +1,6 @@
 # D-196 Namespace Identify data is a validated 512-byte, metadata-free format before I/O queues exist
 
-Status: Accepted (2026-08-27), amends D-169 and D-195; closes PW-204
+Status: Accepted, 2026-08-27. Amends D-169 and D-195; closes PW-204.
 
 **Context.** `Controller::identify_namespace` copied `NSZE`, masked the low
 four bits of `FLBAS`, selected an `LBAF` entry without checking `NLBAF`, and

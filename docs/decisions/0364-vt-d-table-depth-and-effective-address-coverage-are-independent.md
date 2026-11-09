@@ -1,6 +1,6 @@
 # D-364 VT-d table depth and effective address coverage are independent
 
-Status: Accepted (2026-10-07), amends D-358; advances PW-578
+Status: Accepted, 2026-10-07. Amends D-358; advances PW-578.
 
 **Context.** Two human VMware boots on `96c906d` each passed 210 of 271
 checks. Both NVMe candidates refused VT-d width selection. The selector

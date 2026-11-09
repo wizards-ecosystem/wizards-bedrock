@@ -1,6 +1,6 @@
 # D-308 Transcript witnesses preserve every contract except the one under test
 
-Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+Status: Accepted, 2026-09-12. Amends D-244 and D-301; advances PW-001.
 
 **Context.** Complete-sweep mutations 122, 126 and 127 weakened canonical VMware
 transcript validation but survived one integrated test. The duplicate-marker

@@ -1,6 +1,6 @@
 # D-402 Dead-API mutations must reach the API auditor
 
-Status: Accepted (2026-10-13), amends D-213 and D-395; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-213 and D-395; advances PW-001.
 
 **Context.** Permanent mutation 1,821 restored the retired
 `SelectedUsesCatchAll` requester-inventory error variant and expected the API

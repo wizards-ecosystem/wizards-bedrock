@@ -1,6 +1,6 @@
 # D-167 A dead program's work is finished, not forgotten
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-153 said an operation in flight becomes one more thing the
 zombie holds, and `012` §10 added the part the original entry did not say:

@@ -1,6 +1,6 @@
 # D-124 A constant that only equals itself, and a check that only measures its own description
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** The sixth adversarial sweep over Phases 0–6 went looking for the
 same failure D-28 exists to prevent, and found it in two shapes neither the

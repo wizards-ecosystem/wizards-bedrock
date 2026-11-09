@@ -1,6 +1,6 @@
 # D-34 A spin lock holds the interrupt flag
 
-Status: Accepted (2026-08-14) (amended by D-77)
+Status: Accepted, 2026-08-14. Amended by D-77.
 
 **Context.** `001-boot.md` recorded the hazard when `SpinLock` was written: a
 lock taken in ordinary kernel context and also taken from an interrupt handler

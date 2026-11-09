@@ -1,6 +1,6 @@
 # D-405 Every compiler-authority file is authenticated with bounded resident memory
 
-Status: Accepted (2026-10-13), amends D-213, D-403 and D-404; advances PW-001
+Status: Accepted, 2026-10-13. Amends D-213, D-403 and D-404; advances PW-001.
 
 **Context.** After D-404, the current-source debug launcher failed before its
 first compiler round while `snapshot_marker_free_file` read the large

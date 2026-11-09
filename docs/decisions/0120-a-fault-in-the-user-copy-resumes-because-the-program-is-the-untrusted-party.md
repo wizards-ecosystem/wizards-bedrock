@@ -1,6 +1,6 @@
 # D-120 A fault in the user copy resumes, because the program is the untrusted party
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-97 built the user-copy ABI from the right premise — *the program
 is the untrusted party* — and did not act on it. Every page of a range is

@@ -1,6 +1,6 @@
 # D-07 Process model: spawn-only, no native fork
 
-Status: Accepted (amended by D-111)
+Status: Accepted, 2026-07-18. Amended by D-111.
 
 **Context.** Follows from D-06; `fork()` implicitly duplicates the whole
 authority and address-space state, and its snapshot semantics compose badly

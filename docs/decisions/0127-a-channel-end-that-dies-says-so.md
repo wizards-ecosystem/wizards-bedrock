@@ -1,6 +1,6 @@
 # D-127 A channel end that dies says so
 
-Status: Accepted design (2026-08-25); speculative implementation retired by D-248
+Status: Accepted design, 2026-08-25. Speculative implementation retired by D-248.
 
 **Context.** `Channel::receive_blocking` documents two ways to return: with a
 message, or `None` when "the far end closed with nothing left to read". The

@@ -1,6 +1,6 @@
 # D-450 Linux hosts run the whole gate
 
-Status: Accepted (2026-11-07); amends D-275, advances PW-708
+Status: Accepted, 2026-11-07. Amends D-275, advances PW-708.
 
 **Context.** `cargo xtask ci` must pass on Linux hosts as well as on the
 Windows release host. D-275 binds the API audit's host linker to the sysroot's

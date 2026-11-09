@@ -1,6 +1,6 @@
 # D-355 The busy-reap witness names the incarnation it reaped
 
-Status: Accepted (2026-09-29), amends D-354; closes PW-565
+Status: Accepted, 2026-09-29. Amends D-354; closes PW-565.
 
 **Context.** D-354 bound two fault witnesses to the incarnation that faulted.
 One lifecycle witness still kept the identity-free shape:

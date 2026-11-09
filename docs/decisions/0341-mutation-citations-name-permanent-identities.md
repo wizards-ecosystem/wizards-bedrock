@@ -1,6 +1,6 @@
 # D-341 Mutation citations name permanent identities
 
-Status: Accepted (2026-09-28), amends D-244, D-325, D-326, D-327, D-328 and D-329; closes PW-550
+Status: Accepted, 2026-09-28. Amends D-244, D-325, D-326, D-327, D-328 and D-329; closes PW-550.
 
 **Context.** Documents cited mutations by the runner's array position, and
 positions were not stable. Since the 2026-09-26 registry, 19 entries were

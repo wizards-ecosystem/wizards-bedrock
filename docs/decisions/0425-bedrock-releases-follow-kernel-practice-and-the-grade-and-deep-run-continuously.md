@@ -1,6 +1,6 @@
 # D-425 Bedrock releases follow kernel practice and the grade and Deep run continuously
 
-Status: Accepted (2026-10-19), amends D-330, D-373 and D-406; supersedes PW-025 and PW-026 as release prerequisites
+Status: Accepted, 2026-10-19. Amends D-330, D-373 and D-406; supersedes PW-025 and PW-026 as release prerequisites.
 
 **Context.** Since D-330 the planned close bound every qualification to one
 frozen commit and then admitted only an exact documentation-only child for the

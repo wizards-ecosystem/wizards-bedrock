@@ -1,6 +1,6 @@
 # D-15 Scheduler: EEVDF-inspired virtual deadlines, tickless
 
-Status: Accepted
+Status: Accepted, 2026-07-18.
 
 **Decision.** Virtual-deadline fair scheduling (the EEVDF family Linux
 adopted in 6.6), tickless idle (no periodic timer when nothing runs).

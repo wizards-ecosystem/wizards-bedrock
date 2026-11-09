@@ -1,6 +1,6 @@
 # D-94 The mid-phase audit: a refused mapping freed frames it had mapped
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-77 established that a completed phase's green is a claim to
 attack. This is the same treatment applied *mid*-phase, to slices 1–4, by a pass

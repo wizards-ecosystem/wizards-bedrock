@@ -1,6 +1,6 @@
 # D-383 VT-d revocation drains older DMA before returning frame ownership
 
-Status: Accepted (2026-10-10), amends D-357 through D-360 and D-369; closes PW-591 and Codex Security occurrence `occ_a1a268487e204fdeb7611fcf`
+Status: Accepted, 2026-10-10. Amends D-357 through D-360 and D-369; closes PW-591 and Codex Security occurrence `occ_a1a268487e204fdeb7611fcf`.
 
 **Context.** The NVMe completion path treated a matching completion as permission
 to remove the transfer buffer from the VT-d domain and return its frames. Both

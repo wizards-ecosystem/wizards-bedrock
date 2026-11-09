@@ -1,6 +1,6 @@
 # D-155 Two checks whose inputs made the property invisible
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The last of the Phase 0–5 audit's Tier 3 findings that reach real
 behaviour. Both are checks that exist, pass, and cannot fail — not because the

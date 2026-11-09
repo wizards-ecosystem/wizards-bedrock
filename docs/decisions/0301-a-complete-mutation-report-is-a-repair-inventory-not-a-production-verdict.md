@@ -1,6 +1,6 @@
 # D-301 A complete mutation report is a repair inventory, not a production verdict
 
-Status: Accepted (2026-09-11), amends D-119 and D-244; advances PW-001
+Status: Accepted, 2026-09-11. Amends D-119 and D-244; advances PW-001.
 
 **Context.** The first clean complete run of the 1,359-entry current registry
 finished on `f28428a`: 1,301 mutations were caught, 34 survived and 24 were

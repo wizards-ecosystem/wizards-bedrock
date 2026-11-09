@@ -1,6 +1,6 @@
 # D-160 A page is 4096 bytes in five places, and now something checks that
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** Having merged the two ELF readers (D-158), the obvious next
 question is how many other tables this tree states twice. Sweeping every

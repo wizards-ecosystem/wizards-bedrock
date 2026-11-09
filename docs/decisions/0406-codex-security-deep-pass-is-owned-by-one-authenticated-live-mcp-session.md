@@ -1,6 +1,6 @@
 # D-406 Codex Security Deep PASS is owned by one authenticated live MCP session
 
-Status: Accepted (2026-10-14), amends D-330, D-344, D-347 and D-373; advances PW-009, PW-026 and PW-028
+Status: Accepted, 2026-10-14. Amends D-330, D-344, D-347 and D-373; advances PW-009, PW-026 and PW-028.
 
 **Context.** D-373 correctly removed PASS authority from caller-selected Deep
 artifact directories because hashes inside those directories authenticate

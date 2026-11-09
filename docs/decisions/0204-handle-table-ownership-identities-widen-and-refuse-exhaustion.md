@@ -1,6 +1,6 @@
 # D-204 Handle-table ownership identities widen and refuse exhaustion
 
-Status: Accepted (2026-08-28), amends D-78 and D-132; closes PW-402
+Status: Accepted, 2026-08-28. Amends D-78 and D-132; closes PW-402.
 
 **Context.** The arena authorises a decoded handle with one ownership
 comparison, `entry.owner == table.id`. That identity was a wrapping `u32`

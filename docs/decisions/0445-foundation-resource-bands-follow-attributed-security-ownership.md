@@ -1,6 +1,6 @@
 # D-445 Foundation resource bands follow attributed security ownership
 
-Status: Accepted (2026-10-26); amends D-384, advances PW-722
+Status: Accepted, 2026-10-26. Amends D-384, advances PW-722.
 
 **Context.** The 294-check kernel exceeds D-384's 281-check resource bands.
 Three release and three debug observations at `43cbd56` measured ELF sizes of

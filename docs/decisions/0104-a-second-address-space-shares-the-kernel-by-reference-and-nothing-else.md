@@ -1,6 +1,6 @@
 # D-104 A second address space shares the kernel by reference and nothing else
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** Everything left in slice 7 — `spawn`, `UFrame` (D-44), real
 isolation — waits on a second set of page tables. D-86 made a space mappable

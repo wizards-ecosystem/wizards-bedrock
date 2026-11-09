@@ -1,6 +1,6 @@
 # D-70 SMP: the target model, and the rules that cost nothing now
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** SMP is Phase 12. The 2026-08-23 research asked whether that is a
 foundational mistake and answered: deferring the *bring-up* is correct, and

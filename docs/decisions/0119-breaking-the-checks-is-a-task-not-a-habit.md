@@ -1,6 +1,6 @@
 # D-119 Breaking the checks is a task, not a habit
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-28 is the rule this project takes most seriously: every new check
 is broken once and watched go red, because a check that cannot fail is worth

@@ -1,6 +1,6 @@
 # D-03 Boot: UEFI-only via vendored Limine
 
-Status: Accepted (amended by D-219)
+Status: Accepted, 2026-07-18. Amended by D-219.
 
 **Context.** Choice between writing a bootloader (BIOS or UEFI) and
 reusing a lean open-source one. "Standing on the shoulders of clean open

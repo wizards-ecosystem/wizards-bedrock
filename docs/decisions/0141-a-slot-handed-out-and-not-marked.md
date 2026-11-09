@@ -1,6 +1,6 @@
 # D-141 A slot handed out and not marked
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** `HandleTable::insert` took the arena's leaf guard **twice**:
 

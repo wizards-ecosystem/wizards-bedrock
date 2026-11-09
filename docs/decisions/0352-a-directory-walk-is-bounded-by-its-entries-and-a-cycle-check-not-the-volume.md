@@ -1,6 +1,6 @@
 # D-352 A directory walk is bounded by its entries and a cycle check, not the volume
 
-Status: Accepted (2026-09-29), amends D-238; closes PW-562
+Status: Accepted, 2026-09-29. Amends D-238; closes PW-562.
 
 **Context.** D-238 bounded every chain walk by the data-cluster count, on the
 pigeonhole argument that a longer chain has revisited a cluster. That is finite

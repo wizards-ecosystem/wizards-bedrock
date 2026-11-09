@@ -1,6 +1,6 @@
 # D-211 A boot image names and verifies the kernel it actually carries
 
-Status: Accepted (2026-08-28), amends D-135; closes PW-500
+Status: Accepted, 2026-08-28. Amends D-135; closes PW-500.
 
 **Context.** D-135 repaired the VMware phase-close image after finding that it
 was built with an empty feature slice and therefore ran none of the checks. Its

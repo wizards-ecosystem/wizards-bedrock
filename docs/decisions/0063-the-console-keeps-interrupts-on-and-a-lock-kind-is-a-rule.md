@@ -1,6 +1,6 @@
 # D-63 The console keeps interrupts on, and a lock kind is a rule
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** D-34 accepted that interrupt latency is bounded by the longest
 critical section, named no bound, and declined a second lock type as "a type

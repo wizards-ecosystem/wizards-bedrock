@@ -1,6 +1,6 @@
 # D-442 API audit graphs share bounded workers and retain ordered authority
 
-Status: Accepted (2026-10-26); advances PW-005 and PW-595
+Status: Accepted, 2026-10-26. Advances PW-005 and PW-595.
 
 **Context.** The compiler audit repeats independent Cargo graphs in each
 instrumentation round. Serial graph execution dominates the ordinary gate,

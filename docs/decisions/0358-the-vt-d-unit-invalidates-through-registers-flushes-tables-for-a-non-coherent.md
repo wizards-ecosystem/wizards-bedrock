@@ -1,6 +1,6 @@
 # D-358 The VT-d unit invalidates through registers, flushes tables for a non-coherent walker, and lives with the storage candidate
 
-Status: Accepted (2026-10-01), amends D-357; closes PW-567, PW-568, PW-569 and PW-570
+Status: Accepted, 2026-10-01. Amends D-357; closes PW-567, PW-568, PW-569 and PW-570.
 
 **Context.** D-357 decided that the storage controller runs behind an
 identity-scoped VT-d domain and that storage fails closed without one, and left

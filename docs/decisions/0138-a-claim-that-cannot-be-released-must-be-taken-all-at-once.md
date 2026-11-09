@@ -1,6 +1,6 @@
 # D-138 A claim that cannot be released must be taken all at once
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** D-129 recorded a property of the I/O port registry and did not fix
 it: a claim is **permanent**. Nothing releases, because a driver owns its

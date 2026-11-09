@@ -1,6 +1,6 @@
 # D-263 Path authority is retained until publication or destruction commits
 
-Status: Accepted (2026-08-31), amends D-244 and D-245; advances PW-015, PW-016, PW-017, PW-020, PW-021, PW-023 and PW-024
+Status: Accepted, 2026-08-31. Amends D-244 and D-245; advances PW-015, PW-016, PW-017, PW-020, PW-021, PW-023 and PW-024.
 
 **Context.** Host tools repeatedly validated one pathname and then truncated,
 replaced or recursively removed another object reached through the same text.

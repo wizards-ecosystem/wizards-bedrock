@@ -1,6 +1,6 @@
 # D-257 APIC readiness follows an exact software-enable readback
 
-Status: Accepted (2026-08-31), amends D-33 and D-254; advances PW-126
+Status: Accepted, 2026-08-31. Amends D-33 and D-254; advances PW-126.
 
 **Context.** The final local-APIC initialization write sets the spurious vector
 and the SVR bit which software-enables the controller. The transaction then

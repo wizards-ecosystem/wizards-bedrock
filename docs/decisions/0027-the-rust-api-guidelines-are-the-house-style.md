@@ -1,6 +1,6 @@
 # D-27 The Rust API Guidelines are the house style
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** `005-code-conventions.md` was written from the project's own
 experience. Before building out subsystems on top of it, it was worth checking

@@ -1,6 +1,6 @@
 # D-239 The arriving bytes say which numbering they are in
 
-Status: Accepted (2026-08-29), supersedes the arbiter of D-178 and D-179; advances PW-003 and PW-006
+Status: Accepted, 2026-08-29. Supersedes the arbiter of D-178 and D-179; advances PW-003 and PW-006.
 
 **Context.** PW-003's human VMware round decoded every key wrongly. `a` typed a
 newline, `b` typed two `m`s, `c` typed two `f`s. Those are set 2's codes for

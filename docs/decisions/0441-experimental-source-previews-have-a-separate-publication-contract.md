@@ -1,6 +1,6 @@
 # D-441 Experimental source previews have a separate publication contract
 
-Status: Accepted (2026-10-25); amends D-26 and supersedes only D-425's first-v0.1.0 assignment
+Status: Accepted, 2026-10-25. Amends D-26 and supersedes only D-425's first-v0.1.0 assignment.
 
 **Context.** Public source and outside contributions need a truthful entry
 point before the open kernel foundation and hardware qualification finish.

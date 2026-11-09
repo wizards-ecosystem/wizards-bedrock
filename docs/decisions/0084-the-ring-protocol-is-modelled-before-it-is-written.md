@@ -1,6 +1,6 @@
 # D-84 The ring protocol is modelled before it is written
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** `010` §9 reported that the verification tier is closer than `008`
 assumed: Verus runs on this machine on stable today, `shuttle` 0.9 builds

@@ -1,6 +1,6 @@
 # D-67 The `unsafe_code` default is deny, and `wost` lifts it in one visible place
 
-Status: Accepted (2026-08-23)
+Status: Accepted, 2026-08-23.
 
 **Context.** D-13 confines `unsafe` to `wost`, and every crate carried the
 attribute that says so: thirteen `libs/` crates `forbid`, `kernel` denies,

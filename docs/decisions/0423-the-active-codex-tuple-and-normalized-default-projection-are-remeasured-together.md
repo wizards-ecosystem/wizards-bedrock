@@ -1,6 +1,6 @@
 # D-423 The active Codex tuple and normalized default projection are remeasured together
 
-Status: Accepted (2026-10-18), implemented with qualification OPEN; amends D-417 and D-422; advances PW-026
+Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-417 and D-422; advances PW-026.
 
 **Context.** Before D-422's corrected worker boundary could be frozen, the
 ChatGPT Codex installation replaced D-417's content-addressed

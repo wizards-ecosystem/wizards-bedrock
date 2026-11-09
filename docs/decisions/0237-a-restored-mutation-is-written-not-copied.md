@@ -1,6 +1,6 @@
 # D-237 A restored mutation is written, not copied
 
-Status: Accepted (2026-08-29), supersedes the mechanism of D-233 and D-236; advances PW-001
+Status: Accepted, 2026-08-29. Supersedes the mechanism of D-233 and D-236; advances PW-001.
 
 **Context.** D-233 already named the cause: on Windows `fs::copy` restores the
 snapshot's old timestamp, so Cargo sees a source older than the object built

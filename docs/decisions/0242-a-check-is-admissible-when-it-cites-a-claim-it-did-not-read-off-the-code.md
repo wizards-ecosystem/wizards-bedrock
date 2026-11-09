@@ -1,6 +1,6 @@
 # D-242 A check is admissible when it cites a claim it did not read off the code
 
-Status: Accepted (2026-08-29), extends D-84 and D-112; advances PW-516 and PW-517
+Status: Accepted, 2026-08-29. Extends D-84 and D-112; advances PW-516 and PW-517.
 
 **Context.** D-84 adopted `proptest` and `shuttle` for `libs/ring-proto`, and
 said so in as many words: "for `libs/ring-proto` only". D-112 made it three

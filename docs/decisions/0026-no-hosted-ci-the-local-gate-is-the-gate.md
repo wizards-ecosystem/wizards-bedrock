@@ -1,6 +1,6 @@
 # D-26 No hosted CI; the local gate is the gate
 
-Status: Accepted (2026-08-12)
+Status: Accepted, 2026-08-12.
 
 **Context.** A GitHub Actions workflow ran `fmt --check`, clippy, tests, the
 vendor digests, and an image build on Linux for every push.

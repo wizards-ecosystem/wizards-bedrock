@@ -1,6 +1,6 @@
 # D-136 An accessor nothing reads back, and a mapping that survives being permuted
 
-Status: Accepted (2026-08-25)
+Status: Accepted, 2026-08-25.
 
 **Context.** The Phase 0–5 audit returned roughly forty checks that cannot
 fail, verified by mutation rather than by reading: the crate copied aside, the

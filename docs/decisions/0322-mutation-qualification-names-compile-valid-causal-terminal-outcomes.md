@@ -1,6 +1,6 @@
 # D-322 Mutation qualification names compile-valid, causal terminal outcomes
 
-Status: Accepted (2026-09-12), closes the `f28428a` repair inventory subject to a clean sweep
+Status: Accepted, 2026-09-12. Closes the `f28428a` repair inventory subject to a clean sweep.
 
 **Context.** The complete 1,359-entry sweep on `f28428a` caught 1,301
 mutations, but 34 survived and 24 were inconclusive. D-302 through D-313

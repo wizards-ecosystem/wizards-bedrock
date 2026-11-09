@@ -1,6 +1,6 @@
 # D-41 Three authorities for `unsafe`, and doctests where they can run
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** `005-code-conventions.md` admitted code to `wost` on a judgement:
 "an operation that cannot be expressed safely". That phrasing has held, but it

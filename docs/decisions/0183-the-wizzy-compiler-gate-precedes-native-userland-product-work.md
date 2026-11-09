@@ -1,6 +1,6 @@
 # D-183 The Wizzy compiler gate precedes native-userland product work
 
-Status: Accepted (2026-08-26), amends D-01, D-05, D-20 and D-180
+Status: Accepted, 2026-08-26. Amends D-01, D-05, D-20 and D-180.
 
 **Context.** D-01 settled Rust as the kernel language. D-04 put drivers,
 filesystems and the network stack in that kernel, so D-08's WizFS is Rust too;

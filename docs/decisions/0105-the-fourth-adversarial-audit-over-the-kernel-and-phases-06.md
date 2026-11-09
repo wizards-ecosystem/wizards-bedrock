@@ -1,6 +1,6 @@
 # D-105 The fourth adversarial audit, over the kernel and Phases 0–6
 
-Status: Accepted (2026-08-24)
+Status: Accepted, 2026-08-24.
 
 **Context.** D-77, D-94, D-95 and D-101 each attacked a slice. This one was
 asked to attack everything: `wost`, `kernel/src`, all nineteen `libs/` crates,

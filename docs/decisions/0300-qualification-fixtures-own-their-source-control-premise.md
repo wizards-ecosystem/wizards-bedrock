@@ -1,6 +1,6 @@
 # D-300 Qualification fixtures own their source-control premise
 
-Status: Accepted (2026-09-10), amends D-208; closes PW-032
+Status: Accepted, 2026-09-10. Amends D-208; closes PW-032.
 
 **Context.** The clean mutation sweep on 1ddef80 passed the repaired linker
 boundary, then its pristine host baseline failed in

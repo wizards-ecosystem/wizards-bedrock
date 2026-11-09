@@ -1,6 +1,6 @@
 # D-46 KASLR waits, and this is what waiting costs
 
-Status: Accepted (2026-08-22)
+Status: Accepted, 2026-08-22.
 
 **Context.** D-12 put KASLR in the security baseline "on from the start, not
 retrofitted". It has been owed since Phase 0 and blocked throughout on the same

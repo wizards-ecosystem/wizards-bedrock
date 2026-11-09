@@ -1,6 +1,6 @@
 # D-373 Qualification PASS requires an owned execution or authenticated provider receipt
 
-Status: Accepted (2026-10-09), amends D-330, D-342, D-344 and D-347; closes PW-582
+Status: Accepted, 2026-10-09. Amends D-330, D-342, D-344 and D-347; closes PW-582.
 
 **Context.** Codex Security occurrence `occ_b06f0364edc18c50bc4df22d`
 identified that both exceptional qualification paths trusted files in a
