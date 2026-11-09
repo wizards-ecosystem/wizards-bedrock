@@ -1004,4 +1004,37 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "test_support::tests::a_function_slice_ends_at_its_own_block_whatever_the_comments_say",
         },
     },
+    Mutation {
+        id: 2467,
+        file: "xtask/src/cli.rs",
+        find: "        .filter(|(distance, _)| *distance <= limit)",
+        replace: "        .filter(|(distance, _)| *distance == 0)",
+        breaks: "a mistyped task is refused without naming the nearest task",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::a_mistyped_task_or_run_option_says_what_was_meant",
+        },
+    },
+    Mutation {
+        id: 2468,
+        file: "xtask/src/cli.rs",
+        find: "                } else if name == \"run\" {\n                    bail!(\"unknown option `{flag}`; pass QEMU arguments after `--`\");",
+        replace: "                } else if name.is_empty() {\n                    bail!(\"unknown option `{flag}`; pass QEMU arguments after `--`\");",
+        breaks: "a QEMU argument given to run before the separator is refused without naming it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::a_mistyped_task_or_run_option_says_what_was_meant",
+        },
+    },
+    Mutation {
+        id: 2469,
+        file: "xtask/src/cli.rs",
+        find: "    \"qualify-vmware\",\n    \"clean\",\n];",
+        replace: "    \"qualify-vmware\",\n];",
+        breaks: "the suggested task names silently drift from the tasks the parser accepts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::every_task_the_parser_accepts_is_named_in_the_help",
+        },
+    },
 ];

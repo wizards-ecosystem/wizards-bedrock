@@ -217,6 +217,38 @@ pub enum CleanScope {
     Everything,
 }
 
+/// Every task [`parse`] accepts, in the order of its match.
+const TASK_NAMES: &[&str] = &[
+    "build",
+    "image",
+    "run",
+    "vmware",
+    "check",
+    "api-audit",
+    "clippy",
+    "doc",
+    "fmt",
+    "test",
+    "test-boot",
+    "boot-check",
+    "degraded-check",
+    "supply-chain",
+    "verify-vendor",
+    "update-sbom",
+    "model-check",
+    "baseline",
+    "debug",
+    "mutate",
+    "ci",
+    "evidence",
+    "verify-evidence",
+    "qualify-advisory",
+    "qualify-mutants-grade",
+    "qualify-security-deep",
+    "qualify-vmware",
+    "clean",
+];
+
 /// Parse the arguments after the task separator.
 ///
 /// Empty input is refused so a mistyped task cannot default to booting a VM.
@@ -285,6 +317,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
                         bail!("duplicate `--verify`");
                     }
                     verify = Some(PathBuf::from(value));
+                } else if name == "run" {
+                    bail!("unknown option `{flag}`; pass QEMU arguments after `--`");
                 } else {
                     bail!("unknown option `{flag}`");
                 }
@@ -396,8 +430,38 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         } else {
             CleanScope::Build
         })),
-        other => bail!("unknown task `{other}`"),
+        other => match nearest_task(other) {
+            Some(task) => bail!("unknown task `{other}`; did you mean `{task}`?"),
+            None => bail!("unknown task `{other}`"),
+        },
     }
+}
+
+fn nearest_task(name: &str) -> Option<&'static str> {
+    let limit = (name.chars().count().saturating_sub(1) / 2).min(2);
+    TASK_NAMES
+        .iter()
+        .map(|task| (edit_distance(name, task), *task))
+        .filter(|(distance, _)| *distance <= limit)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, task)| task)
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.iter().enumerate() {
+            let substitution = usize::from(left_char != *right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
 }
 
 fn ensure_nonempty_path(value: &str) -> Result<()> {
@@ -537,6 +601,24 @@ mod tests {
     fn unknown_tasks_and_options_are_rejected() {
         assert!(parse_args(&["bulid"]).is_err());
         assert!(parse_args(&["build", "--fast"]).is_err());
+    }
+
+    #[test]
+    fn a_mistyped_task_or_run_option_says_what_was_meant() {
+        let error = |args: &[&str]| parse_args(args).unwrap_err().to_string();
+        assert_eq!(
+            error(&["bulid"]),
+            "unknown task `bulid`; did you mean `build`?"
+        );
+        assert_eq!(error(&["not-a-task"]), "unknown task `not-a-task`");
+        for short in ["x", "", "-x", "rm"] {
+            assert_eq!(error(&[short]), format!("unknown task `{short}`"));
+        }
+        assert_eq!(
+            error(&["run", "-display"]),
+            "unknown option `-display`; pass QEMU arguments after `--`"
+        );
+        assert_eq!(error(&["build", "-display"]), "unknown option `-display`");
     }
 
     fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
@@ -770,6 +852,7 @@ mod tests {
             "the parser was read as {} tasks, so the reading is wrong",
             names.len()
         );
+        assert_eq!(names, TASK_NAMES, "TASK_NAMES drifted from the parser");
 
         let help = help();
         for name in names {
