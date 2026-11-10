@@ -1,20 +1,11 @@
 //! Parsing for the ACPI tables this kernel reads.
 //!
-//! The RSDP points at the XSDT, the XSDT lists tables by signature, the
-//! MADT describes the interrupt controllers, and the DMAR describes the
-//! VT-d IOMMU hardware. Nothing more, until something reads it.
-//!
-//! Works on `&[u8]` and validates before it trusts. Firmware is the least
-//! trustworthy input the kernel has, so a malformed table must produce an
-//! error — never a panic, never a read past the buffer.
-//!
 //! ```
 //! use acpi_tables::{Rsdp, Sdt};
 //!
-//! // A minimal well-formed RSDP, checksummed.
 //! let mut bytes = [0u8; 36];
 //! bytes[..8].copy_from_slice(b"RSD PTR ");
-//! bytes[15] = 2; // revision 2 — the XSDT is present
+//! bytes[15] = 2;
 //! bytes[20..24].copy_from_slice(&36u32.to_le_bytes());
 //! bytes[24..32].copy_from_slice(&0xdead_0000u64.to_le_bytes());
 //! fn fix_checksum(bytes: &mut [u8], index: usize) {
@@ -57,58 +48,40 @@ use core::fmt;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum AcpiError {
-    /// The buffer is shorter than the structure it should hold.
     TooShort {
-        /// Bytes needed.
         needed: usize,
-        /// Bytes available.
         available: usize,
     },
-    /// The leading signature is not the expected one.
     BadSignature([u8; 8]),
-    /// The bytes do not sum to zero, so the table is corrupt.
     BadChecksum,
-    /// The table's own length field is impossible.
     BadLength(u32),
-    /// The table is structurally valid but exceeds the reader's allocation
-    /// budget.
+    /// The table is structurally valid but exceeds the reader's allocation budget.
     TooLong {
-        /// Bytes the table declares.
         declared: usize,
-        /// Largest table the caller will accept.
         limit: usize,
     },
     /// A system-description table is not the kind a typed view requires.
     WrongTable {
-        /// Signature the view accepts.
         expected: [u8; 4],
-        /// Signature the table carries.
         found: [u8; 4],
     },
     /// A fixed-width table body ends with a partial entry.
     PartialEntry {
-        /// Bytes in each complete entry.
         width: usize,
-        /// Bytes left after the last complete entry.
         trailing: usize,
     },
     /// A root table names more tables than boot discovery will inspect.
     TooManyTables {
-        /// Pointers listed by the root table.
         listed: usize,
-        /// Maximum accepted pointer count.
         limit: usize,
     },
-    /// A MADT entry has a length that cannot describe the bytes it names.
+    /// An entry has a length that cannot describe the bytes it names.
     MalformedEntry {
-        /// Byte offset of the entry in the table.
         offset: usize,
         /// Length in the entry header, if that header was complete.
         length: usize,
-        /// Bytes available from `offset` to the table's end.
         available: usize,
     },
-    /// The revision is one this kernel does not read.
     UnsupportedRevision(u8),
 }
 
@@ -167,12 +140,6 @@ fn checksum_is_valid(bytes: &[u8]) -> bool {
 }
 
 /// Set `bytes[index]` so the whole slice sums to zero.
-///
-/// For building tables in tests and doctests; firmware does this for us.
-///
-/// # Panics
-///
-/// Panics if `index` is outside `bytes`.
 #[cfg(test)]
 fn fix_checksum(bytes: &mut [u8], index: usize) {
     bytes[index] = 0;
@@ -204,7 +171,6 @@ pub struct Rsdp {
 }
 
 impl Rsdp {
-    /// The signature every RSDP begins with.
     pub const SIGNATURE: [u8; 8] = *b"RSD PTR ";
 
     /// Bytes in the original, revision-0 structure.
@@ -213,18 +179,7 @@ impl Rsdp {
     /// Bytes in the extended structure, which adds the 64-bit XSDT pointer.
     pub const V2_LEN: usize = 36;
 
-    /// Read the extent a root pointer declares without allocating it.
-    ///
-    /// Revision zero has the fixed twenty-byte form. Revision two carries a
-    /// length field so compatible extensions remain inside the checksum.
-    /// Other revision values have no defined layout and are refused.
-    ///
-    /// # Errors
-    ///
-    /// [`AcpiError::TooShort`] if the bytes do not reach the needed field,
-    /// [`AcpiError::BadLength`] for an undersized extended pointer,
-    /// [`AcpiError::TooLong`] above `limit`, and
-    /// [`AcpiError::UnsupportedRevision`] for an unknown layout.
+    /// Read the extent a root pointer declares, refusing a revision with no defined layout.
     pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
         let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
             needed: Self::V1_LEN,
@@ -254,26 +209,13 @@ impl Rsdp {
         Ok(length)
     }
 
-    /// Validate and read an RSDP.
-    ///
-    /// Both checksums are checked: revision 0 covers the first 20 bytes, and
-    /// revision 2 adds a second covering all 36. A table that fails either is
-    /// refused — firmware that miscomputes a checksum is firmware whose
-    /// pointers are not worth following.
-    ///
-    /// # Errors
-    ///
-    /// [`AcpiError::TooShort`], [`AcpiError::BadSignature`],
-    /// [`AcpiError::BadChecksum`], [`AcpiError::BadLength`] or
-    /// [`AcpiError::UnsupportedRevision`].
+    /// Validate and read an RSDP, checking its signature before trusting its revision.
     pub fn parse(bytes: &[u8]) -> Result<Self, AcpiError> {
         let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
             needed: Self::V1_LEN,
             available: bytes.len(),
         })?;
 
-        // Before the revision: the signature is what says these bytes are an
-        // RSDP at all, and an unknown revision is a poor name for random memory.
         let signature: [u8; 8] = head[..8].try_into().map_err(|_| AcpiError::BadChecksum)?;
         if signature != Self::SIGNATURE {
             return Err(AcpiError::BadSignature(signature));
@@ -308,10 +250,7 @@ impl Rsdp {
         })
     }
 
-    /// The 64-bit XSDT address, if this RSDP has one.
-    ///
-    /// Preferred over the RSDT wherever present: the RSDT's entries are 32-bit
-    /// and cannot name a table above 4 GiB.
+    /// The 64-bit XSDT address, preferred because RSDT entries cannot name a table above 4 GiB.
     pub const fn xsdt(self) -> Option<u64> {
         if self.revision >= 2 && self.xsdt != 0 {
             Some(self.xsdt)
@@ -338,7 +277,6 @@ pub struct Sdt {
 }
 
 impl Sdt {
-    /// Bytes in the header.
     pub const LEN: usize = 36;
 
     /// Signature of the Extended System Description Table.
@@ -359,19 +297,7 @@ impl Sdt {
     /// Signature of Wizard's DMA-safe firmware handoff attestation.
     pub const DMA_HANDOFF: [u8; 4] = *b"WZDH";
 
-    /// The length a header claims, without validating anything else.
-    ///
-    /// The one field that has to be read before a table can be validated at
-    /// all: the checksum covers exactly `length` bytes, so a reader must learn
-    /// `length` from an unvalidated header in order to fetch the bytes
-    /// [`parse`](Self::parse) will then check. `limit` is the reader's explicit
-    /// allocation budget, applied before any allocation follows this result.
-    ///
-    /// # Errors
-    ///
-    /// [`AcpiError::TooShort`] if the header is incomplete,
-    /// [`AcpiError::BadLength`] if the declared length is smaller than a
-    /// header, and [`AcpiError::TooLong`] above `limit`.
+    /// The unvalidated length a header claims, bounded by the reader's allocation `limit`.
     pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
         let head = bytes.get(..Self::LEN).ok_or(AcpiError::TooShort {
             needed: Self::LEN,
@@ -391,18 +317,7 @@ impl Sdt {
         Ok(length)
     }
 
-    /// Validate and read a table header.
-    ///
-    /// `bytes` must span the *whole* table, not merely its header: the
-    /// checksum covers every byte the length field claims, and a header alone
-    /// cannot be validated. That is deliberate — it makes it impossible to
-    /// accept a table on the strength of a header whose body was never read.
-    ///
-    /// # Errors
-    ///
-    /// [`AcpiError::TooShort`] if the buffer is smaller than the length field
-    /// claims, [`AcpiError::BadLength`] if that field is smaller than a
-    /// header, and [`AcpiError::BadChecksum`] if the bytes do not sum to zero.
+    /// Validate and read a table header; `bytes` must span the whole table its checksum covers.
     pub fn parse(bytes: &[u8]) -> Result<Self, AcpiError> {
         let head = bytes.get(..Self::LEN).ok_or(AcpiError::TooShort {
             needed: Self::LEN,
@@ -427,7 +342,6 @@ impl Sdt {
         })
     }
 
-    /// The four-character signature naming the table.
     pub const fn signature(self) -> [u8; 4] {
         self.signature
     }
@@ -438,25 +352,19 @@ impl Sdt {
     }
 }
 
-/// The most table pointers a root table may list.
-///
-/// A valid root can otherwise choose unbounded pre-interrupt reads and
-/// allocations. Real machines list only a few dozen tables, so 256 preserves
-/// ample headroom while bounding firmware-controlled work.
+/// Real machines list a few dozen tables; this bounds firmware-controlled pre-interrupt work.
 const MAX_TABLES: usize = 256;
 
 /// The table addresses an XSDT or RSDT lists.
-///
-/// Construction refuses a root above the fixed boot-discovery bound.
 #[derive(Debug)]
-pub struct SdtPointers<'a> {
-    body: &'a [u8],
+pub struct SdtPointers<'table> {
+    body: &'table [u8],
     width: usize,
     offset: usize,
 }
 
-impl<'a> SdtPointers<'a> {
-    fn new(table: &'a [u8], expected: [u8; 4], width: usize) -> Result<Self, AcpiError> {
+impl<'table> SdtPointers<'table> {
+    fn new(table: &'table [u8], expected: [u8; 4], width: usize) -> Result<Self, AcpiError> {
         let header = Sdt::parse(table)?;
         if header.signature() != expected {
             return Err(AcpiError::WrongTable {
@@ -484,22 +392,12 @@ impl<'a> SdtPointers<'a> {
     }
 
     /// The entries of a validated XSDT.
-    ///
-    /// # Errors
-    ///
-    /// If the table fails validation, is not an XSDT, exceeds the discovery
-    /// bound, or ends in a partial eight-byte pointer.
-    pub fn xsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
+    pub fn xsdt(table: &'table [u8]) -> Result<Self, AcpiError> {
         Self::new(table, Sdt::XSDT, 8)
     }
 
     /// The entries of a validated RSDT.
-    ///
-    /// # Errors
-    ///
-    /// If the table fails validation, is not an RSDT, exceeds the discovery
-    /// bound, or ends in a partial four-byte pointer.
-    pub fn rsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
+    pub fn rsdt(table: &'table [u8]) -> Result<Self, AcpiError> {
         Self::new(table, Sdt::RSDT, 4)
     }
 }
@@ -510,7 +408,7 @@ impl Iterator for SdtPointers<'_> {
     fn next(&mut self) -> Option<u64> {
         let address = match self.width {
             8 => u64_at(self.body, self.offset)?,
-            _ => u32_at(self.body, self.offset)? as u64,
+            _ => u64::from(u32_at(self.body, self.offset)?),
         };
         self.offset += self.width;
         Some(address)

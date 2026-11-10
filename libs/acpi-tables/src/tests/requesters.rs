@@ -433,10 +433,9 @@ fn requester_inventory_refuses_non_pci_and_unknown_requester_scopes() {
     }
 }
 
+// Every bus number differs, so a walk that stops early or strays misses the target.
 #[test]
 fn an_endpoint_scope_resolves_through_each_bridge_on_its_path() {
-    // Every bus number differs, so a walk that stops early, descends to a
-    // subordinate or asks another segment misses the target.
     let root_port = Bdf::new(3, 0x10, 0x1c, 4);
     let switch_port = Bdf::new(3, 0x20, 0x03, 2);
     let bridges = [
@@ -530,7 +529,6 @@ fn a_bridge_scope_covers_its_bridge_and_exactly_the_buses_behind_it() {
 
 #[test]
 fn a_path_through_a_function_that_is_not_a_bridge_names_nothing() {
-    // Nothing here is a bridge, so neither scope may name a function.
     let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
     let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1d, 0)]);
     let bytes = dmar_of(&[
@@ -554,8 +552,6 @@ fn a_path_through_a_function_that_is_not_a_bridge_names_nothing() {
 
 #[test]
 fn a_bridge_that_does_not_lead_past_its_own_bus_names_nothing() {
-    // A secondary bus at or before the bridge's own would let a walk
-    // return to a bus it left.
     let bridges = [
         (Bdf::new(0, 0x04, 0x1c, 0), buses(0x04, 0x08)),
         (Bdf::new(0, 0x30, 0x1c, 0), buses(0x20, 0x2f)),
@@ -606,10 +602,9 @@ fn a_bridge_whose_secondary_bus_exceeds_its_subordinate_names_nothing() {
     }
 }
 
+// Nine valid hops exceed the retired bridge-path array's old bound.
 #[test]
 fn a_long_endpoint_path_still_outranks_another_units_outer_hierarchy() {
-    // Nine valid hops exceed the retired bridge-path array's old bound.
-    // Dropping the endpoint would let the less-specific outer unit win.
     const HOPS: usize = 9;
     let bridges = (0..u8::try_from(HOPS - 1).expect("fits"))
         .map(|bus| (Bdf::new(0, bus, 0x01, 0), buses(bus + 1, 8)))
@@ -634,9 +629,9 @@ fn a_long_endpoint_path_still_outranks_another_units_outer_hierarchy() {
     );
 }
 
+// Each carries the path an endpoint scope for the target would.
 #[test]
 fn scopes_that_name_no_pci_function_never_govern_one() {
-    // Each carries the path an endpoint scope for the target would.
     let target = Bdf::new(0, 0x00, 0x1f, 0);
     let foreign = [IO_APIC, HPET, NAMESPACE_DEVICE, 0x7f]
         .map(|kind| scope(kind, 0x00, &[(0x1f, 0)]))
@@ -659,10 +654,9 @@ fn scopes_that_name_no_pci_function_never_govern_one() {
     );
 }
 
+// An outer bridge, an inner bridge and an endpoint, each on its own unit, listed outermost first.
 #[test]
 fn the_most_specific_scope_governs_across_units() {
-    // An outer bridge, an inner bridge behind it, and an endpoint behind
-    // both, each on its own unit and listed outermost first.
     let outer = Bdf::new(0, 0x00, 0x1c, 0);
     let inner = Bdf::new(0, 0x20, 0x00, 0);
     let bridges = [(outer, buses(0x20, 0x2f)), (inner, buses(0x21, 0x22))];
@@ -704,10 +698,9 @@ fn the_most_specific_scope_governs_across_units() {
     }
 }
 
+// The catch-all is listed first, so table order cannot keep it from a named function.
 #[test]
 fn the_catch_all_unit_governs_only_functions_no_scope_names() {
-    // Listed first, against the specification's ordering, so table
-    // order cannot be what keeps it from claiming a named function.
     let bridge = Bdf::new(0, 0x00, 0x1c, 0);
     let bridges = [(bridge, buses(0x20, 0x20))];
     let topology = topology(&bridges);

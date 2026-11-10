@@ -1,87 +1,57 @@
-#[cfg(doc)]
-use crate::MadtEntry;
 use crate::{AcpiError, Sdt, u16_at, u32_at, u64_at};
 
 /// A remapping structure of the DMA Remapping Reporting table.
-///
-/// Only the kinds a VT-d driver acts on are named; everything else is
-/// [`Other`](Self::Other) with its type word, the same shape as
-/// [`MadtEntry::Other`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum DmarStructure<'a> {
-    /// A DMA remapping hardware unit: one IOMMU and the segment or devices
-    /// it covers.
+pub enum DmarStructure<'table> {
+    /// A DMA remapping hardware unit: one IOMMU and the segment or devices it covers.
     Drhd {
-        /// Whether this unit covers every device in `segment` that no other
-        /// unit scopes explicitly.
+        /// Whether this unit covers every device in `segment` that no other unit scopes explicitly.
         include_pci_all: bool,
-        /// The PCI segment group this unit serves.
         segment: u16,
-        /// Physical address of the unit's register set.
         register_base: u64,
         /// Raw device-scope bytes; walk with [`DeviceScopes`].
-        scopes: &'a [u8],
+        scopes: &'table [u8],
     },
-    /// A reserved memory region a device DMAs into directly, which
-    /// remapping must identity-map rather than translate.
+    /// A reserved memory region a device DMAs into, which remapping must identity-map.
     Rmrr {
-        /// The PCI segment group the scoped device is in.
         segment: u16,
-        /// First byte of the reserved region.
         base: u64,
         /// Last byte of the reserved region, inclusive.
         limit: u64,
         /// Raw device-scope bytes; walk with [`DeviceScopes`].
-        scopes: &'a [u8],
+        scopes: &'table [u8],
     },
     /// A root-port ATS capability report.
     Atsr {
-        /// The PCI segment group the scoped devices are in.
         segment: u16,
         /// Raw device-scope bytes; walk with [`DeviceScopes`].
-        scopes: &'a [u8],
+        scopes: &'table [u8],
     },
-    /// A remapping hardware static affinity, linking a unit to a NUMA
-    /// proximity domain from the SRAT.
+    /// A remapping hardware static affinity, linking a unit to an SRAT proximity domain.
     Rhsa {
         /// Physical address of the DRHD this affinity describes.
         register_base: u64,
-        /// The proximity domain.
         proximity_domain: u32,
     },
-    /// A kind this crate does not act on, with its type word.
     Other {
-        /// The structure type.
         kind: u16,
     },
 }
 
 /// The remapping structures of a validated DMAR.
 #[derive(Debug)]
-pub struct DmarEntries<'a> {
-    pub(crate) body: &'a [u8],
+pub struct DmarEntries<'table> {
+    pub(crate) body: &'table [u8],
     pub(crate) offset: usize,
 }
 
-impl<'a> DmarEntries<'a> {
-    /// Bytes of DMAR-specific header before the remapping structures begin:
-    /// the host address width, flags, and ten reserved bytes.
+impl<'table> DmarEntries<'table> {
+    /// The SDT header, then the host address width, flags, and ten reserved bytes.
     pub(crate) const HEADER: usize = Sdt::LEN + 12;
 
-    /// Validate a DMAR and walk its remapping structures.
-    ///
-    /// Validation covers every variable-length structure — and any device
-    /// scope nested inside a DRHD, RMRR, or ATSR — before iteration starts,
-    /// so a corrupt tail invalidates the table as a whole instead of
-    /// leaving callers with a trusted prefix.
-    ///
-    /// # Errors
-    ///
-    /// If the table is not a valid DMAR, or a structure or a nested device
-    /// scope is truncated, has a non-advancing length, or runs past its
-    /// container.
-    pub fn new(table: &'a [u8]) -> Result<Self, AcpiError> {
+    /// Validate a DMAR, every structure and every nested device scope before iteration.
+    pub fn new(table: &'table [u8]) -> Result<Self, AcpiError> {
         let header = Sdt::parse(table)?;
         if header.signature() != Sdt::DMAR {
             return Err(AcpiError::WrongTable {
@@ -106,8 +76,6 @@ impl<'a> DmarEntries<'a> {
             };
             let kind = u16::from_le_bytes([prefix[0], prefix[1]]);
             let entry_len = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
-            // Each kind's minimum is the sum of its own fixed fields, so it
-            // also rejects a non-advancing (zero) length.
             let (minimum, scope_start) = match kind {
                 0 => (16, Some(16)), // DRHD
                 1 => (24, Some(24)), // RMRR
@@ -136,11 +104,7 @@ impl<'a> DmarEntries<'a> {
     }
 }
 
-/// Bounds-check every device scope nested in a DRHD, RMRR, or ATSR
-/// structure.
-///
-/// `base` is the scope list's absolute offset in the table, so a refusal
-/// names the byte a firmware author would need to fix.
+/// Bounds-check every device scope at absolute table offset `base`, so a refusal names the byte.
 fn validate_device_scopes(base: usize, scopes: &[u8]) -> Result<(), AcpiError> {
     let mut offset = 0;
     while offset < scopes.len() {
@@ -189,10 +153,10 @@ fn device_scope_is_well_formed(entry: &[u8]) -> bool {
     path.chunks_exact(2).all(|hop| hop[0] < 32 && hop[1] < 8)
 }
 
-impl<'a> Iterator for DmarEntries<'a> {
-    type Item = DmarStructure<'a>;
+impl<'table> Iterator for DmarEntries<'table> {
+    type Item = DmarStructure<'table>;
 
-    fn next(&mut self) -> Option<DmarStructure<'a>> {
+    fn next(&mut self) -> Option<DmarStructure<'table>> {
         let prefix = self.body.get(self.offset..self.offset + 4)?;
         let kind = u16::from_le_bytes([prefix[0], prefix[1]]);
         let length = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
@@ -229,19 +193,15 @@ impl<'a> Iterator for DmarEntries<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DeviceScopeKind {
-    /// A PCI endpoint device.
     PciEndpoint,
     /// A PCI-to-PCI bridge, and everything behind it.
     PciSubHierarchy,
-    /// An I/O APIC, named by its ACPI enumeration id rather than a path.
+    /// An I/O APIC, named by its ACPI enumeration id.
     IoApic,
-    /// An HPET, named by its ACPI enumeration id rather than a path.
+    /// An HPET, named by its ACPI enumeration id.
     Hpet,
-    /// An ACPI namespace device.
     AcpiNamespaceDevice,
-    /// A kind this crate does not act on, with its type byte.
     Other {
-        /// The scope type.
         kind: u8,
     },
 }
@@ -261,18 +221,16 @@ impl DeviceScopeKind {
 
 /// One device-scope entry nested in a DRHD, RMRR, or ATSR structure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DeviceScope<'a> {
+pub struct DeviceScope<'table> {
     kind: DeviceScopeKind,
     start_bus: u8,
-    path: &'a [u8],
+    path: &'table [u8],
 }
 
-impl<'a> DeviceScope<'a> {
-    /// Bytes in a scope entry with no path hops: the type, length, flags,
-    /// reserved byte, enumeration id, and start bus.
+impl<'table> DeviceScope<'table> {
+    /// The type, length, flags, reserved byte, enumeration id, and start bus.
     const MIN_LEN: usize = 6;
 
-    /// The hardware this scope names.
     pub const fn kind(self) -> DeviceScopeKind {
         self.kind
     }
@@ -283,15 +241,11 @@ impl<'a> DeviceScope<'a> {
     }
 
     /// The (device, function) hops from `start_bus` down to the target.
-    pub const fn path(self) -> PciPath<'a> {
+    pub const fn path(self) -> PciPath<'table> {
         PciPath { bytes: self.path }
     }
 
-    /// What this scope names in `segment`, walked through the live topology.
-    ///
-    /// Each hop before the last must be a bridge, and the next hop lies on
-    /// its secondary bus. `None` for a kind that names no PCI function, an
-    /// empty path, or a hop the topology does not vouch for.
+    /// What this scope names in `segment`, or `None` for a non-PCI kind or an unvouched hop.
     pub(crate) fn walk(
         self,
         segment: u16,
@@ -300,7 +254,6 @@ impl<'a> DeviceScope<'a> {
         let hierarchy = match self.kind() {
             DeviceScopeKind::PciEndpoint => false,
             DeviceScopeKind::PciSubHierarchy => true,
-            // No PCI function: I/O APIC and HPET scopes serve interrupt remapping (PW-710).
             DeviceScopeKind::IoApic
             | DeviceScopeKind::Hpet
             | DeviceScopeKind::AcpiNamespaceDevice
@@ -329,8 +282,8 @@ impl<'a> DeviceScope<'a> {
 
 /// The (device, function) hops of a [`DeviceScope`]'s PCI path.
 #[derive(Debug)]
-pub struct PciPath<'a> {
-    bytes: &'a [u8],
+pub struct PciPath<'table> {
+    bytes: &'table [u8],
 }
 
 impl Iterator for PciPath<'_> {
@@ -343,30 +296,25 @@ impl Iterator for PciPath<'_> {
     }
 }
 
-/// The device-scope entries nested in a DRHD, RMRR, or ATSR
-/// [`DmarStructure`].
+/// The device-scope entries nested in a DRHD, RMRR, or ATSR [`DmarStructure`].
 #[derive(Debug)]
-pub struct DeviceScopes<'a> {
-    bytes: &'a [u8],
+pub struct DeviceScopes<'table> {
+    bytes: &'table [u8],
 }
 
-impl<'a> DeviceScopes<'a> {
-    /// Walk the raw device-scope bytes a [`DmarStructure`] carries.
-    pub const fn new(bytes: &'a [u8]) -> Self {
+impl<'table> DeviceScopes<'table> {
+    pub const fn new(bytes: &'table [u8]) -> Self {
         Self { bytes }
     }
 }
 
-impl<'a> Iterator for DeviceScopes<'a> {
-    type Item = DeviceScope<'a>;
+impl<'table> Iterator for DeviceScopes<'table> {
+    type Item = DeviceScope<'table>;
 
-    fn next(&mut self) -> Option<DeviceScope<'a>> {
+    // Reachable without a validating constructor, so malformed bytes end the walk.
+    fn next(&mut self) -> Option<DeviceScope<'table>> {
         let kind = *self.bytes.first()?;
         let length = usize::from(*self.bytes.get(1)?);
-        // Defensive rather than trusting: unlike `DmarEntries`, this
-        // iterator is reachable without going through a validating
-        // constructor, so a malformed slice must stop cleanly, not index
-        // out of bounds.
         if length < DeviceScope::MIN_LEN {
             self.bytes = &[];
             return None;
@@ -399,8 +347,6 @@ pub struct Bdf {
 }
 
 impl Bdf {
-    /// Name a PCI function by its segment, bus, device, and function
-    /// numbers.
     pub const fn new(segment: u16, bus: u8, device: u8, function: u8) -> Self {
         Self {
             segment,
@@ -410,22 +356,18 @@ impl Bdf {
         }
     }
 
-    /// The PCI segment group.
     pub const fn segment(self) -> u16 {
         self.segment
     }
 
-    /// The bus number.
     pub const fn bus(self) -> u8 {
         self.bus
     }
 
-    /// The device number.
     pub const fn device(self) -> u8 {
         self.device
     }
 
-    /// The function number.
     pub const fn function(self) -> u8 {
         self.function
     }
@@ -440,9 +382,7 @@ pub struct BusRange {
     pub subordinate: u8,
 }
 
-/// The buses behind the bridge `bridge` reports at `at`, if its numbering
-/// leads forward: a secondary bus past its own and no later than its
-/// subordinate, so a walk never returns to a bus it left.
+/// The buses behind the bridge at `at`, if its numbering leads forward past its own bus.
 fn behind(at: Bdf, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<BusRange> {
     let buses = bridge(at)?;
     (at.bus() < buses.secondary && buses.secondary <= buses.subordinate).then_some(buses)
@@ -451,7 +391,6 @@ fn behind(at: Bdf, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<BusRange
 /// What a PCI device scope names once its path is walked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Named {
-    /// Exactly one function.
     Function(Bdf),
     /// A bridge, and every function on the buses behind it.
     Hierarchy(Hierarchy),
@@ -477,8 +416,7 @@ impl Named {
         }
     }
 
-    /// Whether this hierarchy strictly contains another through the live
-    /// bridge topology, rather than merely overlapping its numeric bus range.
+    /// Whether this hierarchy strictly contains another through the live bridge topology.
     pub(crate) fn strictly_contains(
         self,
         inner: Self,

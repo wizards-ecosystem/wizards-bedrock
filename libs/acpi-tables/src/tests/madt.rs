@@ -12,10 +12,9 @@ fn interrupt_errors_name_the_table_or_inventory_bound() {
     );
 }
 
+// Minima from ACPI 6.5 table 5-22, independent of the parser.
 #[test]
 fn a_madt_entry_shorter_than_its_fields_is_refused_not_read() {
-    // Independent minima from ACPI 6.5 table 5-22 keep the bounds from
-    // merely restating the parser (D-142).
     for (kind, minimum) in [(0u8, 8usize), (1, 12), (2, 10), (0x80, 2)] {
         let short = minimum - 1;
         let mut madt = madt_with_entry(kind, short);
@@ -206,10 +205,9 @@ fn an_interrupt_inventory_refuses_overflow_instead_of_truncating() {
     );
 }
 
+// The corrupt input that would otherwise loop forever.
 #[test]
 fn a_madt_entry_claiming_zero_length_invalidates_the_table() {
-    // The corrupt input that would otherwise loop forever: an entry whose
-    // length never advances the cursor.
     let mut body = vec![0u8; 8];
     body.extend_from_slice(&[1, 0, 0, 0]);
     let bytes = table(&Sdt::MADT, &body);

@@ -3,76 +3,49 @@ use core::fmt;
 use crate::{AcpiError, Sdt, u32_at};
 
 /// An entry of the Multiple APIC Description Table.
-///
-/// Only the kinds this kernel acts on are named. Everything else is
-/// [`Other`](Self::Other) with its type byte, so an unrecognised controller is
-/// reportable rather than invisible.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MadtEntry {
-    /// A processor's local APIC.
     LocalApic {
-        /// The processor this belongs to.
         processor: u8,
-        /// The controller's own identifier.
         id: u8,
-        /// Whether the processor is usable.
         enabled: bool,
     },
-    /// An I/O APIC: the controller that routes device interrupts.
     IoApic {
-        /// The controller's identifier.
         id: u8,
         /// Physical address of its registers.
         address: u32,
         /// The first global system interrupt it handles.
         gsi_base: u32,
     },
-    /// A legacy IRQ that does not arrive on the interrupt line sharing its
-    /// number.
-    ///
-    /// The reason IRQ routing cannot assume `irq == gsi`: firmware commonly
-    /// remaps the timer, and may remap anything.
+    /// A legacy IRQ that firmware routes to another global system interrupt.
     InterruptSourceOverride {
         /// The legacy bus, always 0 (ISA) in practice.
         bus: u8,
         /// The legacy IRQ number.
         source: u8,
-        /// The global system interrupt it actually arrives on.
         gsi: u32,
         /// Polarity and trigger mode, in the MPS INTI encoding.
         flags: u16,
     },
-    /// A kind this kernel does not act on, with its type byte.
     Other {
-        /// The entry type.
         kind: u8,
     },
 }
 
 /// The entries of a validated MADT.
 #[derive(Debug)]
-pub struct MadtEntries<'a> {
-    body: &'a [u8],
+pub struct MadtEntries<'table> {
+    body: &'table [u8],
     offset: usize,
 }
 
-impl<'a> MadtEntries<'a> {
-    /// Bytes of MADT-specific header before the entries begin: the local APIC
-    /// address and the flags word.
+impl<'table> MadtEntries<'table> {
+    /// The SDT header, then the local APIC address and the flags word.
     const HEADER: usize = Sdt::LEN + 8;
 
-    /// Validate a MADT and walk its entries.
-    ///
-    /// Validation covers the MADT-specific header and every variable-length
-    /// entry before iteration starts. That makes a corrupt tail invalidate the
-    /// table as a whole instead of leaving callers with a trusted prefix.
-    ///
-    /// # Errors
-    ///
-    /// If the table is not a valid MADT or any entry is truncated, has a
-    /// non-advancing length, or is shorter than the fields of its known kind.
-    pub fn new(table: &'a [u8]) -> Result<Self, AcpiError> {
+    /// Validate a MADT and every entry before iteration, so a corrupt tail refuses the whole table.
+    pub fn new(table: &'table [u8]) -> Result<Self, AcpiError> {
         let header = Sdt::parse(table)?;
         if header.signature() != Sdt::MADT {
             return Err(AcpiError::WrongTable {
@@ -159,7 +132,6 @@ pub struct IoApic {
 }
 
 impl IoApic {
-    /// The controller identifier firmware assigned.
     pub const fn id(self) -> u8 {
         self.id
     }
@@ -179,18 +151,14 @@ impl IoApic {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum InterruptError {
-    /// The MADT itself is not structurally valid.
     Table(AcpiError),
     /// Firmware described more I/O APICs than the caller can retain.
     TooManyIoApics {
-        /// Number of descriptions the caller permitted.
         limit: usize,
     },
     /// An interrupt source override did not describe the ISA bus.
     NonIsaOverride {
-        /// Firmware bus identifier.
         bus: u8,
-        /// Source IRQ named by the entry.
         source: u8,
     },
     /// An interrupt source override names an IRQ outside the ISA domain.
@@ -199,9 +167,7 @@ pub enum InterruptError {
     DuplicateOverride(u8),
     /// The MPS INTI polarity or trigger field has a reserved encoding.
     ReservedOverrideFlags {
-        /// Source IRQ named by the entry.
         source: u8,
-        /// Raw MPS INTI flags.
         flags: u16,
     },
 }
@@ -209,7 +175,7 @@ pub enum InterruptError {
 impl fmt::Display for InterruptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Table(error) => write!(f, "madt is unusable: {error}"),
+            Self::Table(reason) => write!(f, "madt is unusable: {reason}"),
             Self::TooManyIoApics { limit } => {
                 write!(f, "madt describes more than {limit} i/o apics")
             }
@@ -241,13 +207,7 @@ pub struct MadtInterrupts<const IO_APICS: usize> {
 }
 
 impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
-    /// Parse every I/O APIC and legacy interrupt override in `table`.
-    ///
-    /// # Errors
-    ///
-    /// [`InterruptError::Table`] for a malformed MADT, a typed override error
-    /// for contradictory routing, or [`InterruptError::TooManyIoApics`]
-    /// rather than returning a truncated inventory.
+    /// Parse every I/O APIC and legacy interrupt override, refusing a truncated inventory.
     pub fn parse(table: &[u8]) -> Result<Self, InterruptError> {
         let mut entries = MadtEntries::new(table).map_err(InterruptError::Table)?;
         let mut model = Self {
@@ -283,7 +243,7 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
                     if bus != 0 {
                         return Err(InterruptError::NonIsaOverride { bus, source });
                     }
-                    let Some(slot) = model.overrides.get_mut(source as usize) else {
+                    let Some(slot) = model.overrides.get_mut(usize::from(source)) else {
                         return Err(InterruptError::InvalidOverrideSource(source));
                     };
                     let polarity = flags & 0b11;
@@ -311,7 +271,6 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
             .flatten()
     }
 
-    /// Number of I/O APIC descriptions retained.
     pub const fn io_apic_count(&self) -> usize {
         self.io_apic_count
     }
@@ -329,6 +288,6 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
 
     /// Firmware's explicit override for `irq`, if it supplied one.
     pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
-        self.overrides.get(irq as usize).copied().flatten()
+        self.overrides.get(usize::from(irq)).copied().flatten()
     }
 }

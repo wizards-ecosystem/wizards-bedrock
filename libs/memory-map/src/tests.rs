@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct MemoryKindCase {
     kind: MemoryKind,
     name: &'static str,
@@ -10,77 +10,80 @@ struct MemoryKindCase {
     device_mapping: bool,
 }
 
-const fn kind_case(
-    kind: MemoryKind,
-    name: &'static str,
-    allocatable: bool,
-    firmware_table: bool,
-    direct_mapped: bool,
-    device_mapping: bool,
-) -> MemoryKindCase {
-    MemoryKindCase {
-        kind,
-        name,
-        allocatable,
-        firmware_table,
-        direct_mapped,
-        device_mapping,
-    }
-}
-
 fn memory_kind_cases() -> [MemoryKindCase; 9] {
     [
-        kind_case(MemoryKind::Usable, "usable", true, false, true, false),
-        kind_case(
-            MemoryKind::BootloaderReclaimable,
-            "bootloader reclaimable",
-            false,
-            false,
-            true,
-            false,
-        ),
-        kind_case(
-            MemoryKind::KernelAndModules,
-            "kernel and modules",
-            false,
-            false,
-            true,
-            false,
-        ),
-        kind_case(
-            MemoryKind::Framebuffer,
-            "framebuffer",
-            false,
-            false,
-            true,
-            false,
-        ),
-        kind_case(
-            MemoryKind::AcpiReclaimable,
-            "acpi reclaimable",
-            false,
-            true,
-            true,
-            false,
-        ),
-        kind_case(MemoryKind::AcpiNvs, "acpi nvs", false, true, true, false),
-        kind_case(MemoryKind::Reserved, "reserved", false, false, false, true),
-        kind_case(
-            MemoryKind::BadMemory,
-            "bad memory",
-            false,
-            false,
-            false,
-            false,
-        ),
-        kind_case(
-            MemoryKind::Unknown(41),
-            "unknown type 41",
-            false,
-            false,
-            false,
-            true,
-        ),
+        MemoryKindCase {
+            kind: MemoryKind::Usable,
+            name: "usable",
+            allocatable: true,
+            firmware_table: false,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::BootloaderReclaimable,
+            name: "bootloader reclaimable",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::KernelAndModules,
+            name: "kernel and modules",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::Framebuffer,
+            name: "framebuffer",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::AcpiReclaimable,
+            name: "acpi reclaimable",
+            allocatable: false,
+            firmware_table: true,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::AcpiNvs,
+            name: "acpi nvs",
+            allocatable: false,
+            firmware_table: true,
+            direct_mapped: true,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::Reserved,
+            name: "reserved",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: false,
+            device_mapping: true,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::BadMemory,
+            name: "bad memory",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: false,
+            device_mapping: false,
+        },
+        MemoryKindCase {
+            kind: MemoryKind::Unknown(41),
+            name: "unknown type 41",
+            allocatable: false,
+            firmware_table: false,
+            direct_mapped: false,
+            device_mapping: true,
+        },
     ]
 }
 
@@ -170,11 +173,7 @@ fn debug_reports_only_the_complete_region_count() {
     assert_eq!(format!("{map:?}"), "MemoryMap { regions: 2 }");
 }
 
-/// Two regions at one base answer the same whichever order they arrive in.
-///
-/// Transcribed from `covers`'s "Input order is not assumed" contract.
-/// Overlap order must change neither the verdict nor the walk distance
-/// (D-241).
+/// Transcribed from `covers`'s "input order is not assumed" contract.
 #[test]
 fn overlapping_regions_answer_the_same_in_either_order() {
     let usable = MemoryRegion {
@@ -202,8 +201,6 @@ fn overlapping_regions_answer_the_same_in_either_order() {
             "covers_memory({start:#x}, {end:#x}) depends on region order"
         );
     }
-    // A reserved claim wins where it overlaps: the point is to keep a
-    // cacheable alias off device registers, so a contradiction refuses.
     assert!(!forward.covers_memory(0, 1));
     assert!(forward.covers(0, 1));
 }
@@ -663,11 +660,6 @@ fn an_empty_or_inverted_reserved_region_is_refused() {
     }
 }
 
-/// A run this names is one `covers_memory` agrees is memory.
-///
-/// The two contracts are about the same address and disagreed: the filter
-/// picked from a direct-mapped region while the walk landed in a reserved
-/// one overlapping it, and D-177 says callers act on this answer (D-241).
 #[test]
 fn a_named_memory_run_is_memory_by_the_other_contract() {
     let usable = MemoryRegion {
@@ -816,6 +808,7 @@ fn the_region_limit_is_all_or_nothing() {
 
 #[test]
 fn an_overfull_producer_is_not_polled_past_the_first_refused_region() {
+    #[derive(Debug)]
     struct BoundedProducer {
         next: usize,
     }

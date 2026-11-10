@@ -1,9 +1,5 @@
 //! A complete bounded physical memory map.
 //!
-//! The map is built before an allocator exists, so its storage is fixed. A
-//! fixed bound is safe only when overflow refuses the whole handoff rather
-//! than returning a useful-looking prefix.
-//!
 //! # Examples
 //!
 //! ```
@@ -23,46 +19,29 @@
 
 use core::fmt;
 
-/// Bytes in one page on the target architecture.
 const PAGE_SIZE: u64 = 4096;
 
 /// Regions an allocation-free [`MemoryMap`] can hold.
 pub const MAX_REGIONS: usize = 128;
 
-/// What a region of the physical address space is for.
-///
-/// Named after what the kernel may do with a region rather than after any one
-/// bootloader's constants. [`MemoryKind::Unknown`] preserves a foreign value
-/// so it can be reported and treated as reserved rather than silently folded
-/// into a known kind (D-42).
+/// What a region of the physical address space is for; an unrecognised kind keeps its raw value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MemoryKind {
-    /// Free RAM, available to the frame allocator.
     Usable,
-    /// The bootloader's own structures, reclaimable once nothing refers to them.
     BootloaderReclaimable,
-    /// The kernel image and modules loaded with it.
     KernelAndModules,
-    /// A framebuffer.
     Framebuffer,
-    /// ACPI tables that may eventually be reclaimed.
     AcpiReclaimable,
     /// ACPI non-volatile storage, which must survive.
     AcpiNvs,
-    /// Reserved by firmware and not available to the kernel.
     Reserved,
-    /// Known-bad memory.
     BadMemory,
-    /// A type the kernel does not recognise, carrying its raw value.
     Unknown(u64),
 }
 
 impl MemoryKind {
-    /// Whether the frame allocator may hand this region out.
-    ///
-    /// Reclaimable kinds are excluded because their live structures still
-    /// have users when the allocator is built.
+    /// Whether the frame allocator may hand this region out; reclaimable kinds still have users.
     pub const fn is_allocatable(self) -> bool {
         matches!(self, Self::Usable)
     }
@@ -72,12 +51,7 @@ impl MemoryKind {
         matches!(self, Self::AcpiReclaimable | Self::AcpiNvs)
     }
 
-    /// Whether the kernel's direct map should cover this region.
-    ///
-    /// Reserved ranges may be device holes and must not gain the direct map's
-    /// cache type. Bootloader, image, framebuffer and firmware-table memory
-    /// stay included because the kernel is still using them when it changes
-    /// page tables (D-45).
+    /// Whether the direct map covers this region; reserved ranges may be device holes.
     pub const fn is_direct_mapped(self) -> bool {
         matches!(
             self,
@@ -114,11 +88,8 @@ impl fmt::Display for MemoryKind {
 /// One region of the physical address space.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MemoryRegion {
-    /// First physical byte.
     pub base: u64,
-    /// Length in bytes.
     pub len: u64,
-    /// What the region is for.
     pub kind: MemoryKind,
 }
 
@@ -132,27 +103,20 @@ impl MemoryRegion {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MemoryMapError {
-    /// The producer described no regions.
     Empty,
     /// The producer described more regions than fixed early storage can hold.
     TooMany {
-        /// Regions observed before bounded construction stopped.
         observed: usize,
-        /// Regions the allocation-free representation can hold.
         capacity: usize,
     },
     /// A region's exclusive end is outside the physical address space.
     InvalidRegion {
-        /// First physical byte.
         base: u64,
-        /// Requested length.
         len: u64,
     },
     /// A direct-mapped region cannot be rounded out to a whole final page.
     PageEndOverflow {
-        /// First physical byte.
         base: u64,
-        /// Requested length.
         len: u64,
     },
 }
@@ -180,159 +144,15 @@ impl fmt::Display for MemoryMapError {
 
 impl core::error::Error for MemoryMapError {}
 
-/// A complete physical memory map copied into fixed early storage.
-///
-/// Copying releases the bootloader-owned source structures for later reclaim.
-/// The fixed representation exists before heap initialization, and its
-/// constructor never returns a partial prefix.
+/// A complete physical memory map copied into fixed early storage before any heap exists.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MemoryMap {
     regions: [MemoryRegion; MAX_REGIONS],
     len: usize,
 }
 
-/// Cache policy for one admitted direct-map run.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DirectMapCache {
-    /// Ordinary cacheable memory.
-    Normal,
-    /// A framebuffer page, mapped write-through until write-combining exists.
-    Framebuffer,
-}
-
-/// One maximal page-normalized run with one direct-map and allocation policy.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PageRun {
-    base: u64,
-    len: u64,
-    cache: DirectMapCache,
-    allocatable: bool,
-}
-
-impl PageRun {
-    /// First physical byte in the run.
-    pub const fn base(self) -> u64 {
-        self.base
-    }
-
-    /// Bytes in the run, always a nonzero whole number of pages.
-    pub const fn bytes(self) -> u64 {
-        self.len
-    }
-
-    /// Cache policy for the direct mapping.
-    pub const fn cache(self) -> DirectMapCache {
-        self.cache
-    }
-
-    /// Whether every frame in the run is exclusively allocatable.
-    pub const fn is_allocatable(self) -> bool {
-        self.allocatable
-    }
-}
-
-/// Maximal admitted direct-map runs in ascending address order.
-#[derive(Debug)]
-pub struct PageRuns<'a> {
-    map: &'a MemoryMap,
-    cursor: Option<u64>,
-    done: bool,
-}
-
-impl Iterator for PageRuns<'_> {
-    type Item = PageRun;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        let mut left = self.cursor?;
-        loop {
-            let Some(right) = self.map.boundary_after(left) else {
-                self.done = true;
-                return None;
-            };
-            let Some((cache, allocatable)) = self.map.page_policy(left, right) else {
-                left = right;
-                self.cursor = Some(left);
-                continue;
-            };
-
-            let base = left;
-            let mut end = right;
-            loop {
-                let Some(next) = self.map.boundary_after(end) else {
-                    self.done = true;
-                    break;
-                };
-                if self.map.page_policy(end, next) != Some((cache, allocatable)) {
-                    self.cursor = Some(end);
-                    break;
-                }
-                end = next;
-            }
-            return Some(PageRun {
-                base,
-                len: end - base,
-                cache,
-                allocatable,
-            });
-        }
-    }
-}
-
-/// One maximal run of whole frames described exclusively as allocatable.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct AllocatableRun {
-    base: u64,
-    len: u64,
-}
-
-impl AllocatableRun {
-    /// First physical byte in the run.
-    pub const fn base(self) -> u64 {
-        self.base
-    }
-
-    /// Bytes in the run, always a nonzero whole number of frames.
-    pub const fn bytes(self) -> u64 {
-        self.len
-    }
-}
-
-/// Maximal exclusively allocatable frame runs in ascending address order.
-#[derive(Debug)]
-pub struct AllocatableRuns<'a> {
-    runs: PageRuns<'a>,
-}
-
-impl Iterator for AllocatableRuns<'_> {
-    type Item = AllocatableRun;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let run = self.runs.find(|run| run.is_allocatable())?;
-        Some(AllocatableRun {
-            base: run.base(),
-            len: run.bytes(),
-        })
-    }
-}
-
 impl MemoryMap {
     /// Copy a complete region stream or refuse it whole.
-    ///
-    /// Regions may overlap or arrive unsorted. Every covering claim participates
-    /// in arbitration, so a non-admitted kind refuses an overlapping range
-    /// regardless of order (D-241).
-    ///
-    /// # Errors
-    ///
-    /// [`MemoryMapError::Empty`] when `regions` is empty, or
-    /// [`MemoryMapError::TooMany`] without exposing the copied prefix when it
-    /// exceeds [`MAX_REGIONS`], [`MemoryMapError::InvalidRegion`] when a
-    /// region's exclusive end cannot be represented, or
-    /// [`MemoryMapError::PageEndOverflow`] when an admitted direct-map region
-    /// cannot be rounded outward to a complete page.
     pub fn try_from_regions(
         regions: impl IntoIterator<Item = MemoryRegion>,
     ) -> Result<Self, MemoryMapError> {
@@ -381,12 +201,7 @@ impl MemoryMap {
         self.regions[..self.len].iter().copied()
     }
 
-    /// Yield normalized page-policy runs shared by mapping and allocation.
-    ///
-    /// Runs are page-aligned, disjoint and maximal. A page is omitted unless
-    /// every claim admits direct mapping; framebuffer cache policy wins.
-    /// Allocation additionally requires complete, exclusively allocatable
-    /// coverage.
+    /// Maximal page-aligned runs every claim admits to the direct map; framebuffer policy wins.
     pub fn page_runs(&self) -> PageRuns<'_> {
         PageRuns {
             map: self,
@@ -395,37 +210,24 @@ impl MemoryMap {
         }
     }
 
-    /// Yield whole frames covered only by allocatable claims.
-    ///
-    /// Partial frames and frames touched by any other claim are excluded. The
-    /// boundary sweep prevents a huge range from causing a page-by-page delay.
+    /// Whole frames covered only by allocatable claims, found by a boundary sweep.
     pub fn allocatable_runs(&self) -> AllocatableRuns<'_> {
         AllocatableRuns {
             runs: self.page_runs(),
         }
     }
 
-    /// Whether every byte of `start..end` lies inside a described region.
-    ///
-    /// Adjacent regions jointly cover a range. Input order is not assumed, so
-    /// each bounded step searches the complete map.
+    /// Whether every byte of `start..end` is described; input order is not assumed.
     pub fn covers(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, |_| true)
     }
 
-    /// Whether every byte of `start..end` lies inside described memory.
-    ///
-    /// A reserved device hole is described but is not memory; this distinction
-    /// prevents a cacheable alias from being granted to device registers.
+    /// Whether every byte of `start..end` lies inside described memory, which a device hole is not.
     pub fn covers_memory(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, MemoryKind::is_direct_mapped)
     }
 
-    /// The one cache type the direct map gives every byte of `start..end`.
-    ///
-    /// `None` unless the map covers the range with memory, or if the range
-    /// mixes framebuffer and ordinary memory: no single mapping of it could
-    /// agree with the direct map's type for every page (D-349).
+    /// The one cache type the direct map gives every byte of `start..end`, if there is one.
     pub fn direct_map_cache(&self, start: u64, end: u64) -> Option<DirectMapCache> {
         if !self.covers_memory(start, end) {
             return None;
@@ -452,12 +254,7 @@ impl MemoryMap {
             })
     }
 
-    /// Whether a firmware-reserved region, given by its first and last byte,
-    /// reaches no page of RAM or firmware storage.
-    ///
-    /// A remapping unit maps such a region for a device in whole pages, so a
-    /// page it shares with memory the kernel owns refuses it, as does an
-    /// empty or inverted region.
+    /// Whether reserved bytes `base..=limit` share no page with RAM or firmware storage.
     pub fn allows_reserved_region(&self, base: u64, limit: u64) -> bool {
         let start = base - base % PAGE_SIZE;
         let end = limit
@@ -467,15 +264,6 @@ impl MemoryMap {
     }
 
     /// Find a page-aligned, nonzero memory run of at least `len` bytes.
-    ///
-    /// Callers use this rather than assuming a conventional low page exists,
-    /// which keeps machine checks meaningful across firmware layouts (D-177).
-    ///
-    /// The run it names is one [`covers_memory`](Self::covers_memory) agrees
-    /// is memory. Filtering to direct-mapped regions was not enough on its own:
-    /// a reserved region overlapping the one chosen made the two answers
-    /// contradict, and a caller acting on this one would map a device hole
-    /// (D-241).
     pub fn first_memory_run(&self, len: u64) -> Option<u64> {
         if len == 0 {
             return None;
@@ -497,12 +285,11 @@ impl MemoryMap {
         first
     }
 
+    // A long admitted span can jump over a nested claim, so intersecting regions are arbitrated first.
     fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
         if start > end {
             return false;
         }
-        // A long admitted span can jump over a nested claim, so arbitrate every
-        // region intersecting the requested range before walking its union.
         if start < end
             && self.regions().any(|region| {
                 region.len != 0
@@ -593,6 +380,129 @@ impl fmt::Debug for MemoryMap {
         f.debug_struct("MemoryMap")
             .field("regions", &self.len)
             .finish()
+    }
+}
+
+/// Cache policy for one admitted direct-map run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DirectMapCache {
+    Normal,
+    /// A framebuffer page, mapped write-through until write-combining exists.
+    Framebuffer,
+}
+
+/// One maximal page-normalized run with one direct-map and allocation policy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PageRun {
+    base: u64,
+    len: u64,
+    cache: DirectMapCache,
+    allocatable: bool,
+}
+
+impl PageRun {
+    pub const fn base(self) -> u64 {
+        self.base
+    }
+
+    /// Bytes in the run, always a nonzero whole number of pages.
+    pub const fn bytes(self) -> u64 {
+        self.len
+    }
+
+    pub const fn cache(self) -> DirectMapCache {
+        self.cache
+    }
+
+    /// Whether every frame in the run is exclusively allocatable.
+    pub const fn is_allocatable(self) -> bool {
+        self.allocatable
+    }
+}
+
+/// Maximal admitted direct-map runs in ascending address order.
+#[derive(Debug)]
+pub struct PageRuns<'map> {
+    map: &'map MemoryMap,
+    cursor: Option<u64>,
+    done: bool,
+}
+
+impl Iterator for PageRuns<'_> {
+    type Item = PageRun;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let mut left = self.cursor?;
+        loop {
+            let Some(right) = self.map.boundary_after(left) else {
+                self.done = true;
+                return None;
+            };
+            let Some((cache, allocatable)) = self.map.page_policy(left, right) else {
+                left = right;
+                self.cursor = Some(left);
+                continue;
+            };
+
+            let base = left;
+            let mut end = right;
+            loop {
+                let Some(next) = self.map.boundary_after(end) else {
+                    self.done = true;
+                    break;
+                };
+                if self.map.page_policy(end, next) != Some((cache, allocatable)) {
+                    self.cursor = Some(end);
+                    break;
+                }
+                end = next;
+            }
+            return Some(PageRun {
+                base,
+                len: end - base,
+                cache,
+                allocatable,
+            });
+        }
+    }
+}
+
+/// One maximal run of whole frames described exclusively as allocatable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AllocatableRun {
+    base: u64,
+    len: u64,
+}
+
+impl AllocatableRun {
+    pub const fn base(self) -> u64 {
+        self.base
+    }
+
+    /// Bytes in the run, always a nonzero whole number of frames.
+    pub const fn bytes(self) -> u64 {
+        self.len
+    }
+}
+
+/// Maximal exclusively allocatable frame runs in ascending address order.
+#[derive(Debug)]
+pub struct AllocatableRuns<'map> {
+    runs: PageRuns<'map>,
+}
+
+impl Iterator for AllocatableRuns<'_> {
+    type Item = AllocatableRun;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let run = self.runs.find(|run| run.is_allocatable())?;
+        Some(AllocatableRun {
+            base: run.base(),
+            len: run.bytes(),
+        })
     }
 }
 

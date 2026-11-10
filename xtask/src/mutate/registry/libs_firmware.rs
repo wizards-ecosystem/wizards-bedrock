@@ -211,8 +211,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1158,
         file: "libs/acpi-tables/src/madt.rs",
-        find: "                    let Some(slot) = model.overrides.get_mut(source as usize) else {",
-        replace: "                    let Some(slot) = model.overrides.get_mut((source as usize).min(15)) else {",
+        find: "                    let Some(slot) = model.overrides.get_mut(usize::from(source)) else {",
+        replace: "                    let Some(slot) = model.overrides.get_mut(usize::from(source).min(15)) else {",
         breaks: "an interrupt override outside the ISA source domain aliases a valid source",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -376,8 +376,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1565,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "        if endpoint.is_some() {",
-        replace: "        if endpoint.is_some() && enclosing.is_none() {",
+        find: "        if self.endpoint.is_some() {",
+        replace: "        if self.endpoint.is_some() && self.enclosing.is_none() {",
         breaks: "a bridge scope enclosing a function outranks an endpoint scope naming it",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -387,8 +387,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1566,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                            Some((current, _)) if current.strictly_contains(named, &hierarchy) => {\n                                enclosing = Some((named, candidate));\n                            }",
-        replace: "                            Some((current, _)) if current.strictly_contains(named, &hierarchy) => {}",
+        find: "            Some((current, _)) if current.strictly_contains(named, hierarchy) => {\n                self.enclosing = Some((named, candidate));\n            }",
+        replace: "            Some((current, _)) if current.strictly_contains(named, hierarchy) => {}",
         breaks: "an outer bridge scope outranks an inner one enclosing the same function",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -398,8 +398,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1567,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                    catch_all.get_or_insert(candidate);\n                }\n            }",
-        replace: "                    catch_all.get_or_insert(candidate);\n                }\n                return catch_all;\n            }",
+        find: "                claims.offer_catch_all(unit.register_base);\n            }",
+        replace: "                claims.offer_catch_all(unit.register_base);\n                return claims.catch_all;\n            }",
         breaks: "a catch-all unit listed before a named scope claims the function that scope names",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -497,8 +497,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1637,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                            endpoint_ambiguous = true;",
-        replace: "                            endpoint_ambiguous = false;",
+        find: "            self.endpoint_ambiguous = true;",
+        replace: "            self.endpoint_ambiguous = false;",
         breaks: "two endpoint-scoped units can make table order choose DMA authority",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -508,8 +508,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1638,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                            Some(_) => {\n                                enclosing_ambiguous = true;\n                            }",
-        replace: "                            Some(_) => {\n                                enclosing_ambiguous = false;\n                            }",
+        find: "            Some(_) => {\n                self.enclosing_ambiguous = true;\n            }",
+        replace: "            Some(_) => {\n                self.enclosing_ambiguous = false;\n            }",
         breaks: "two equal-depth bridge scopes can make table order choose DMA authority",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -519,8 +519,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1639,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                    catch_all_ambiguous = true;",
-        replace: "                    catch_all_ambiguous = false;",
+        find: "            self.catch_all_ambiguous = true;",
+        replace: "            self.catch_all_ambiguous = false;",
         breaks: "two catch-all units can make table order choose DMA authority",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -530,8 +530,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1666,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "    if requesters[..*count].contains(&Some(requester)) {\n        return Ok(());\n    }",
-        replace: "    let _duplicate_requester = requesters[..*count].contains(&Some(requester));",
+        find: "        if self.requesters[..self.count].contains(&Some(requester)) {\n            return Ok(());\n        }",
+        replace: "        let _duplicate_requester = self.requesters[..self.count].contains(&Some(requester));",
         breaks: "duplicate endpoint declarations consume distinct requester owners",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -541,8 +541,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1667,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                        for bus in\n                            scope_hierarchy.buses.secondary..=scope_hierarchy.buses.subordinate\n                        {",
-        replace: "                        for bus in\n                            scope_hierarchy.buses.secondary..scope_hierarchy.buses.secondary\n                        {",
+        find: "                            scope_hierarchy.buses.secondary..=scope_hierarchy.buses.subordinate;",
+        replace: "                            scope_hierarchy.buses.secondary..scope_hierarchy.buses.secondary;",
         breaks: "a sub-hierarchy requester scan visits none of the buses behind its bridge",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -563,7 +563,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1669,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                        add_live_requester(\n                            self,\n                            &bridge,\n                            &hierarchy,\n                            register_base,\n                            scope_hierarchy.root,\n                            &mut requesters,\n                            &mut count,\n                        )?;",
+        find: "                        inventory.push_if_governed(\n                            self,\n                            bridge,\n                            hierarchy,\n                            scope_hierarchy.root,\n                        )?;",
         replace: "                        let _unowned_hierarchy_root = scope_hierarchy.root;",
         breaks: "the bridge named by a sub-hierarchy is omitted from its unit owner",
         reddens: Caught::HostTest {
@@ -585,8 +585,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1676,
         file: "libs/acpi-tables/src/requesters.rs",
-        find: "                            Some(_) => {\n                                enclosing_ambiguous = true;\n                            }",
-        replace: "                            Some(_) => enclosing = Some((named, candidate)),",
+        find: "            Some(_) => {\n                self.enclosing_ambiguous = true;\n            }",
+        replace: "            Some(_) => self.enclosing = Some((named, candidate)),",
         breaks: "overlapping sibling hierarchies are ordered instead of refused as ambiguous",
         reddens: Caught::HostTest {
             package: "acpi-tables",
