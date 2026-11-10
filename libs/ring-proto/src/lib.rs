@@ -42,7 +42,7 @@ pub const VERSION: u32 = 1;
 pub const PUBLICATION_WORD_BYTES: usize = size_of::<u32>();
 
 /// Why a shared-ring layout cannot partition one allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum SharedLayoutError {
     /// An allocation with no bytes cannot hold a ring.
@@ -89,7 +89,7 @@ impl core::error::Error for SharedLayoutError {}
 /// The listed naturally aligned words are the only offsets usable for
 /// synchronized publication. Every other byte is payload; a payload range
 /// intersecting any listed word is refused whole.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SharedLayout<const WORDS: usize> {
     bytes: usize,
     publication_words: [usize; WORDS],
@@ -176,7 +176,7 @@ impl<const WORDS: usize> SharedLayout<WORDS> {
 }
 
 /// Why a ring could not be built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum CapacityError {
     /// Zero, or not a power of two. The mask arithmetic needs one.
@@ -198,7 +198,7 @@ impl core::fmt::Display for CapacityError {
 impl core::error::Error for CapacityError {}
 
 /// How many entries a ring holds: a power of two, and not too many.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capacity(u32);
 
 impl Capacity {
@@ -239,7 +239,7 @@ impl Capacity {
 }
 
 /// One ring's head and tail, as counts of operations rather than slots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ring {
     capacity: Capacity,
     head: u32,
@@ -332,7 +332,7 @@ impl Ring {
 }
 
 /// Why a pair of rings could not be built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PairError {
     /// The completion queue is smaller than twice the submission queue.
@@ -364,7 +364,7 @@ impl core::error::Error for PairError {}
 ///
 /// Admission reserves report capacity, making completion overflow
 /// unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Queues {
     submission: Ring,
     completion: Ring,

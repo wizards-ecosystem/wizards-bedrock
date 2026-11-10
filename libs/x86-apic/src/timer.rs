@@ -10,7 +10,7 @@
 use crate::local_vector::{DeliverableVector, Entry};
 
 /// Why a one-shot timer entry cannot be published yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum OneShotError {
     /// The current countdown has not stopped.
@@ -37,7 +37,7 @@ pub const fn one_shot_entry(
 }
 
 /// How the bus clock is divided before it drives the timer's countdown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Divide {
     /// The bus clock, undivided.
     By1,

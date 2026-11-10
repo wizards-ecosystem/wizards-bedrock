@@ -118,7 +118,7 @@ pub fn fault_window() -> (u64, u64) {
 }
 
 /// Why a copy across the boundary was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserCopyError {
     /// The range is not wholly inside user memory.
@@ -151,7 +151,7 @@ impl fmt::Display for UserCopyError {
 impl core::error::Error for UserCopyError {}
 
 /// What a page must permit for the copy being made.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
     /// The kernel reads user memory.
     FromUser,

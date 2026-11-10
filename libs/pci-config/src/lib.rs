@@ -118,7 +118,7 @@ const PROBE_DECODE: u16 = command::IO_SPACE | command::MEMORY_SPACE;
 const PROBE_DISABLED: u16 = PROBE_DECODE | command::BUS_MASTER;
 
 /// A configuration-space address, ready for the address port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Address(u32);
 
 impl Address {
@@ -193,7 +193,7 @@ impl Address {
 }
 
 /// What a function says it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Class {
     /// The broad kind: `0x01` is mass storage, `0x06` a bridge.
     pub class: u8,
@@ -238,7 +238,7 @@ impl Class {
 }
 
 /// What the header-type byte says about a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HeaderType(u8);
 
 impl HeaderType {
@@ -315,7 +315,7 @@ impl QuiescedIsaRequester {
 }
 
 /// The sealed snapshot's record of the one entry-quiesced ISA requester.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct QuiescedRequester {
     at: Address,
     identity: u32,
@@ -344,7 +344,7 @@ impl QuiescedRequester {
 /// Construction proves nothing by itself. [`PciTopology::observe_non_requester`]
 /// consumes the earlier entry-fence authority and compares every security-
 /// relevant field before excluding the function from requester inventory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FunctionObservation {
     at: Address,
     identity: u32,
@@ -378,7 +378,7 @@ impl FunctionObservation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct CommandLease {
     registry: u64,
     function: FunctionLease,
@@ -391,7 +391,7 @@ impl CommandLease {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct CommandLeases<const N: usize> {
     slots: [Option<CommandLease>; N],
     identity: u64,

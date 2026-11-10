@@ -308,7 +308,7 @@ pub(super) const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
 /// Device ranges one address space can own before activation.
 const MAX_DEVICE_MAPPINGS: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct DeviceExtent {
     physical: AddressRange,
     virtual_range: AddressRange,

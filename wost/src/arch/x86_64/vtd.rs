@@ -81,7 +81,7 @@ const TABLE_LIMIT: usize = 24;
 pub const OWNED_TABLE_FRAMES: usize = TABLE_LIMIT + 4;
 
 /// Why a VT-d domain could not be established or changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum VtdError {
     /// The supplied run is empty or its last byte wraps the address space.
@@ -224,7 +224,7 @@ impl fmt::Display for VtdError {
 }
 
 /// Whether a failed segment change left ownership safe to reuse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum SegmentChangeError {
     /// No translation for the segment remains reachable or cached.
@@ -252,7 +252,7 @@ impl core::error::Error for SegmentChangeError {}
 impl core::error::Error for VtdError {}
 
 /// What the unit reported about itself when it was taken over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UnitFacts {
     /// The raw Capability register.
     pub capability: u64,
@@ -351,7 +351,7 @@ impl DmaDomain<'_> {
 }
 
 /// Result of reusing a live interrupt owner for another DMA requester.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a retargeted VT-d owner must be installed or quarantined"]
 pub enum Retargeting {
     /// Translation is active through the replacement requester's tables.
@@ -387,7 +387,7 @@ pub enum Establishment {
 
 /// One recorded translation fault: the device named an address it was not
 /// handed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Fault {
     /// The requester's bus and device-and-function, as the unit saw them.
     pub source: u16,

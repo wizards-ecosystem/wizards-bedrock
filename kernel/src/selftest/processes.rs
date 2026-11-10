@@ -534,7 +534,7 @@ fn walked_copy_refuses_supervisor_leaf() -> bool {
     refused && cleaned
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct AllocatorSnapshot {
     free_frames: usize,
     heap: mm::heap::Stats,
@@ -569,7 +569,7 @@ impl AllocatorSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct SpawnResources {
     frames: usize,
     heap: mm::heap::Stats,

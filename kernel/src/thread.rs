@@ -96,7 +96,7 @@ pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
 }
 
 /// Why a thread could not be spawned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub(crate) enum SpawnError {
     /// The arena was never mapped, so there is nothing to run a thread on.
@@ -183,7 +183,7 @@ impl fmt::Display for SpawnError {
 impl core::error::Error for SpawnError {}
 
 /// A completed thread-construction step at which a check may force refusal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SpawnPoint {
     /// The scheduler slot is reserved, but no task exists.
     Reserved,
@@ -193,7 +193,7 @@ pub(crate) enum SpawnPoint {
     Bound,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     /// Nothing here, or a thread that has exited.
     Free,
@@ -211,7 +211,7 @@ enum State {
 
 /// What kind of thread a slot holds, which is the whole of this kernel's
 /// scheduling classes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
     /// A thread the policy schedules.
     Normal,
@@ -227,7 +227,7 @@ enum Class {
 ///
 /// Changed by `spawn` and by `exit`, and read by nothing that schedules: the
 /// half of a thread the policy has no business seeing (D-109).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Identity {
     name: &'static str,
     entry: Option<fn()>,
@@ -245,7 +245,7 @@ impl Identity {
 /// Deliberately without a name or an entry point. Swapping `libs/eevdf` for
 /// another policy is a change to [`RunQueue`] and to this, and to nothing that
 /// knows what a thread *is* (D-109).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Scheduled {
     state: State,
     class: Class,
@@ -464,7 +464,7 @@ impl RunQueue {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CurrentEligibility {
     Eligible,
     Excluded,

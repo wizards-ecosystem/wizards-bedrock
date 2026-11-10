@@ -131,7 +131,7 @@ static HEAP: SpinLock<Heap> = SpinLock::new(Heap::new());
 
 /// What the heap has taken and is holding.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Stats {
     /// Frames given to slabs. Never returned.
     pub slab_frames: usize,

@@ -198,7 +198,7 @@ impl PciBarMapFailure {
 }
 
 /// Result of returning an inaccessible PCI BAR mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a quarantined BAR still owns exact cleanup authority"]
 pub(crate) enum PciBarRetirement {
     /// Mapping and function-bound BAR authority were both returned.

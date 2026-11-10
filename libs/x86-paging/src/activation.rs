@@ -1,7 +1,7 @@
 //! Paging-activation publication states.
 
 /// One phase of the address-space activation transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum State {
     /// No activation owns the processor's page-table transition.

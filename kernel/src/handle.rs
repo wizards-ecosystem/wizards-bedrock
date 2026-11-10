@@ -33,11 +33,11 @@ mod selftest;
 ///
 /// The single comparison a lookup makes beyond arithmetic. Tables are numbered
 /// rather than addressed so that the arena holds no pointer back to them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TableId(u64);
 
 /// Why a handle operation was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub(crate) enum HandleError {
     /// The value is not a well-formed handle at all.

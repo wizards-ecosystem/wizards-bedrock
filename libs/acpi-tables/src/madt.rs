@@ -7,7 +7,7 @@ use crate::{AcpiError, Sdt, u32_at};
 /// Only the kinds this kernel acts on are named. Everything else is
 /// [`Other`](Self::Other) with its type byte, so an unrecognised controller is
 /// reportable rather than invisible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MadtEntry {
     /// A processor's local APIC.
@@ -151,7 +151,7 @@ impl Iterator for MadtEntries<'_> {
 }
 
 /// One I/O APIC description retained from a MADT.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IoApic {
     pub(crate) id: u8,
     pub(crate) address: u32,
@@ -176,7 +176,7 @@ impl IoApic {
 }
 
 /// Why a MADT could not become a complete bounded interrupt inventory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum InterruptError {
     /// The MADT itself is not structurally valid.
@@ -233,7 +233,7 @@ impl fmt::Display for InterruptError {
 impl core::error::Error for InterruptError {}
 
 /// A complete, fixed-capacity view of MADT interrupt routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MadtInterrupts<const IO_APICS: usize> {
     io_apics: [Option<IoApic>; IO_APICS],
     io_apic_count: usize,

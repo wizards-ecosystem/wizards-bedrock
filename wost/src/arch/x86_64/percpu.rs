@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Whether a spin guard may be followed by another lock acquisition.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum LockKind {
     /// A token-bearing guard under which a leaf may still be taken.
     Ordered,

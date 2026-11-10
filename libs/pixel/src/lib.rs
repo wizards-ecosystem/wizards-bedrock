@@ -32,7 +32,7 @@ use core::fmt;
 const WORD_SIZE: usize = size_of::<u32>();
 
 /// An 8-bit-per-channel colour, independent of any framebuffer's packing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rgb {
     /// Red intensity.
     pub red: u8,
@@ -69,7 +69,7 @@ const fn mix(from: u8, to: u8, intensity: u8) -> u8 {
 }
 
 /// One colour channel's position and width within a packed pixel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Channel {
     shift: u8,
     size: u8,
@@ -110,7 +110,7 @@ impl Channel {
 ///
 /// Reading this from the bootloader rather than assuming `0xRRGGBB` is what
 /// makes the console correct on a BGR or reduced-depth display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PixelFormat {
     red: Channel,
     green: Channel,
@@ -118,7 +118,7 @@ pub struct PixelFormat {
 }
 
 /// Which component of a [`PixelFormat`] is malformed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ColourChannel {
     /// The red component.
     Red,
@@ -139,7 +139,7 @@ impl fmt::Display for ColourChannel {
 }
 
 /// Why colour-channel masks cannot form a 32-bit pixel format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PixelFormatError {
     /// A colour contributes no bits.
@@ -263,7 +263,7 @@ const fn channel_mask(channel: Channel, name: ColourChannel) -> Result<u32, Pixe
 /// Construction proves that every visible pixel begins at a 4-byte-aligned
 /// offset, every row fits within its pitch, and the complete mapping span can
 /// be represented without wrapping either its length or its address range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FramebufferLayout {
     width: usize,
     height: usize,
@@ -273,7 +273,7 @@ pub struct FramebufferLayout {
 }
 
 /// Checked visible-row copies within a framebuffer shadow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RowCopyPlan {
     source_word: usize,
     destination_word: usize,
@@ -285,7 +285,7 @@ pub struct RowCopyPlan {
 }
 
 /// One checked visible-row copy within a framebuffer shadow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RowCopySpan {
     source_start: usize,
     source_end: usize,
@@ -361,7 +361,7 @@ impl ExactSizeIterator for RowCopyPlan {}
 impl core::iter::FusedIterator for RowCopyPlan {}
 
 /// Why framebuffer geometry is not safe for 32-bit pixel accesses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FramebufferLayoutError {
     /// A framebuffer must expose at least one pixel in each row.

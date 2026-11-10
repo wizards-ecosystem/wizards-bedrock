@@ -4,7 +4,7 @@ use crate::{
 };
 
 /// One configuration-space operation in the entry-time DMA fence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HandoffAccess {
     /// Read the complete vendor/device identity dword.
     ReadIdentity,
@@ -39,12 +39,12 @@ pub const FUNCTION_AUTHORITY_LIMIT: usize = 64;
 /// inventory and is quiesced at the controllers instead. The caller must select
 /// the profile only from requester-inaccessible VMware CPU evidence; every
 /// other function and every near miss remains under the strict BME-off rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HandoffFencePolicy {
     kind: HandoffFencePolicyKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HandoffFencePolicyKind {
     Strict,
     Vmware440Bx,
@@ -175,7 +175,7 @@ impl HandoffFenceReport {
 }
 
 /// Why the entry-time requester fence could not prove DMA quiescence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum HandoffFenceError {
     /// One required configuration-space cycle was unavailable.

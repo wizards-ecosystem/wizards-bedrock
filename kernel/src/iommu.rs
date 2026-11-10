@@ -94,7 +94,7 @@ impl EarlyDmaBoundary {
 }
 
 /// Why the kernel cannot trust mutable memory at this handoff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum EarlyDmaError {
     UnauthenticatedPlatform,
     BaseRevision,
@@ -422,7 +422,7 @@ impl UnitFences {
 
 /// The unit-wide owner: hardware tables and every sibling command fence stay
 /// inseparable through takeover, steady state and release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InstalledState {
     Ready,
     Quarantined,
@@ -626,7 +626,7 @@ fn unit_for(at: Address) -> Option<Unit> {
 }
 
 /// Whether the candidate acquired a complete unit-wide DMA boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum EstablishOutcome {
     Established,
     Unavailable,

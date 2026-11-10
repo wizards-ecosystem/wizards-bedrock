@@ -63,7 +63,7 @@ static DIRECT_MAP_OFFSET: AtomicU64 = AtomicU64::new(0);
 static INIT: Once = Once::new();
 
 /// What [`init`] found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Report {
     /// Frames the allocator now manages.
     pub managed: usize,
@@ -133,7 +133,7 @@ fn seed_frames<const WORDS: usize>(frames: &mut FrameSpace<WORDS>, map: &MemoryM
 /// This deliberately cannot read usable, bootloader, kernel, reserved, or
 /// device memory. It borrows the copied boot map directly so the platform
 /// contract can be checked before the allocator records global memory state.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct EarlyFirmwareMemory<'map> {
     map: &'map MemoryMap,
     direct: DirectMap,
@@ -177,7 +177,7 @@ impl<'map> EarlyFirmwareMemory<'map> {
 ///
 /// This carries the same narrow authority as [`EarlyFirmwareMemory`] without
 /// borrowing the boot handoff after the global map has accepted it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct FirmwareMemory(());
 
 impl FirmwareMemory {

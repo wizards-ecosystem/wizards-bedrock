@@ -52,7 +52,7 @@ pub(crate) fn keep(module: Result<&'static [u8], HandoffError>) {
 }
 
 /// Why a program could not be loaded.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum LoadError {
     /// No initrd was handed over.
     Missing,
@@ -154,7 +154,7 @@ pub(super) fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, 
 ///
 /// Placement is transaction data rather than global last-call state, so two
 /// constructions cannot take each other's cleanup record (D-191).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct LoadedImage {
     entry: u64,
     regions: [Option<(u64, u64)>; MAX_SEGMENTS],
@@ -189,7 +189,7 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
         .map_err(|error| LoadError::NotMapped(error.reason()))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct UnmapRefusal {
     pages: usize,
     reason: MapError,

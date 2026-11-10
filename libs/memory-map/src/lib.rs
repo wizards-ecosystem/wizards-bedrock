@@ -35,7 +35,7 @@ pub const MAX_REGIONS: usize = 128;
 /// bootloader's constants. [`MemoryKind::Unknown`] preserves a foreign value
 /// so it can be reported and treated as reserved rather than silently folded
 /// into a known kind (D-42).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MemoryKind {
     /// Free RAM, available to the frame allocator.
@@ -112,7 +112,7 @@ impl fmt::Display for MemoryKind {
 }
 
 /// One region of the physical address space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MemoryRegion {
     /// First physical byte.
     pub base: u64,
@@ -129,7 +129,7 @@ impl MemoryRegion {
 }
 
 /// Why no complete bounded map could be constructed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MemoryMapError {
     /// The producer described no regions.
@@ -192,7 +192,7 @@ pub struct MemoryMap {
 }
 
 /// Cache policy for one admitted direct-map run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DirectMapCache {
     /// Ordinary cacheable memory.
     Normal,
@@ -201,7 +201,7 @@ pub enum DirectMapCache {
 }
 
 /// One maximal page-normalized run with one direct-map and allocation policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PageRun {
     base: u64,
     len: u64,
@@ -282,7 +282,7 @@ impl Iterator for PageRuns<'_> {
 }
 
 /// One maximal run of whole frames described exclusively as allocatable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AllocatableRun {
     base: u64,
     len: u64,

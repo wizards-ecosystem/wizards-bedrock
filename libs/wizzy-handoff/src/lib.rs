@@ -76,7 +76,7 @@ const FIELDS: &[&str] = &[
 ];
 
 /// Compiler-owned versions an integration explicitly supports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Versions<'a> {
     /// Serialized artifact ABI version.
     pub artifact: &'a str,
@@ -87,7 +87,7 @@ pub struct Versions<'a> {
 }
 
 /// Identity calculated from the artifact bytes being consumed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ArtifactIdentity<'a> {
     /// Complete artifact length in bytes.
     pub bytes: u64,
@@ -96,7 +96,7 @@ pub struct ArtifactIdentity<'a> {
 }
 
 /// Why a handoff record was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum Error {
     /// The record does not use canonical LF endings, including the terminal LF.

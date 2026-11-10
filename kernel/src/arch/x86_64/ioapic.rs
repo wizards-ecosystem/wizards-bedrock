@@ -59,7 +59,7 @@ mod entry {
 /// The MPS INTI encoding an interrupt source override carries: two bits of
 /// polarity and two of trigger mode, each of which may say "conforms to the
 /// bus", and the bus here is always ISA — active-high and edge-triggered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Wiring {
     active_low: bool,
     level_triggered: bool,
@@ -99,7 +99,7 @@ impl Wiring {
 }
 
 /// Why a redirection entry could not be reached.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RoutingError {
     /// The interrupt is not one this controller routes.
     ///
@@ -161,7 +161,7 @@ impl From<MmioError> for RoutingError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MaskError {
     Registers(MmioError),
     Refused { low: u32, high: u32 },
@@ -183,7 +183,7 @@ impl From<MaskError> for RoutingError {
 }
 
 /// Why an I/O APIC could not become a checked, masked controller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TakeError {
     /// The register window refused an access.
     Registers(MmioError),

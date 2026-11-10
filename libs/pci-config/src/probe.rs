@@ -10,7 +10,7 @@ use crate::{
 /// A platform adapter implements these against its configuration mechanism.
 /// Keeping the sequence here makes its ordering and rollback host-testable;
 /// the adapter only has to keep its hardware lock for the closure's lifetime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProbeAccess {
     /// Read the command register. Only its low sixteen bits are consumed.
     ReadCommand,
@@ -23,7 +23,7 @@ pub enum ProbeAccess {
 }
 
 /// One decoded and sized BAR window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Window {
     /// What the register said.
     pub bar: Bar,
@@ -32,14 +32,14 @@ pub struct Window {
 }
 
 /// Every window discovered by one BAR-restored probe transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProbedBars {
     pub(crate) function: Option<FunctionLease>,
     pub(crate) windows: [Option<Window>; BARS],
 }
 
 /// A completed BAR probe whose safe command state remains exclusively owned.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "the staged command must be committed or restored before releasing its function"]
 pub struct StagedProbe {
     bars: ProbedBars,
@@ -53,7 +53,7 @@ impl StagedProbe {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct BarSlots {
     low: usize,
     high: Option<usize>,
@@ -72,7 +72,7 @@ impl ProbedBars {
 }
 
 /// Why a BAR-probe transaction could not produce windows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ProbeError<E> {
     /// The function or command-transition reservation was unavailable.
@@ -128,13 +128,13 @@ impl<E: core::error::Error + 'static> core::error::Error for ProbeError<E> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ProbeRestorePhase {
     Bars,
     Command,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) struct ProbeRestore {
     original: [u32; BARS],
     modified: u8,
@@ -148,20 +148,20 @@ impl ProbeRestore {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) struct RawProbeFailure<E> {
     pub(crate) reason: ProbeError<E>,
     pub(crate) restore: Option<ProbeRestore>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) struct RawStagedProbe {
     bars: ProbedBars,
     restore: ProbeRestore,
 }
 
 /// A refused BAR probe, including exact retry authority when restoration is uncertain.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "an uncertain BAR probe may carry exclusive restoration authority"]
 pub struct ProbeFailure<E> {
     reason: ProbeError<E>,
@@ -197,7 +197,7 @@ impl<E> ProbeFailure<E> {
 }
 
 /// The exclusive right to retry one uncertain BAR restoration.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "an uncertain BAR probe must be retried or retained fail-stopped"]
 pub struct ProbeRetry {
     probe: CommandProbe,

@@ -92,7 +92,7 @@ use walk::{
 };
 
 /// Why a mapping could not be made.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MapError {
     /// No frame was free for a table this mapping needed.
@@ -171,7 +171,7 @@ pub enum MapError {
 }
 
 /// A refused user mapping which retains its external-byte allocation.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserMapError {
     /// Page-table construction refused before ownership moved into a leaf.
@@ -201,7 +201,7 @@ impl fmt::Display for UserMapError {
 impl core::error::Error for UserMapError {}
 
 /// A stack rollback which stopped before every committed range was removed.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct StackRollback {
     /// Why the next stack could not be removed.
     pub reason: MapError,
@@ -211,7 +211,7 @@ pub struct StackRollback {
     pending: StackCleanup,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum StackCleanup {
     One(Slot),
     Prefix {
@@ -266,7 +266,7 @@ impl fmt::Display for StackRollback {
 impl core::error::Error for StackRollback {}
 
 /// Why guarded-stack construction could not finish atomically.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum StackMapError {
     /// Construction stopped without leaving a stack mapping behind.
@@ -393,7 +393,7 @@ impl fmt::Display for MapError {
 impl core::error::Error for MapError {}
 
 /// Why a table was refused at the moment of the switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ActivateError {
     /// A second caller tried to switch. The kernel's address space is
@@ -489,7 +489,7 @@ impl fmt::Display for ActivateError {
 impl core::error::Error for ActivateError {}
 
 /// Why an address space kept its page-table frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ReclaimError {
     /// This space was already reclaimed.
@@ -587,7 +587,7 @@ pub struct AddressSpace {
     owned_pages: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct OwnedTable {
     frame: Paddr,
     virtual_address: u64,
@@ -596,7 +596,7 @@ struct OwnedTable {
     root: TableRoot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TableRoot {
     Full,
     Stripped,
@@ -608,7 +608,7 @@ enum TableRoot {
 /// names the full root. A paired space keeps both identities in this one value;
 /// callers cannot manufacture or separate them into independently bindable
 /// authorities (D-407).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressSpaceRoots {
     full: Paddr,
     /// The user root, with its otherwise-unused low bit marking a pair.
@@ -681,7 +681,7 @@ impl AddressSpaceRoots {
 /// A user space shares live kernel tables by reference, so it may change only
 /// its lower half. Otherwise a safe handle could edit mappings the kernel is
 /// running on (D-104, D-105).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Reach {
     /// The whole space. The kernel's own, which owns every table in it.
     Everywhere,
@@ -689,7 +689,7 @@ enum Reach {
     UserHalfOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UserRootKind {
     Shared,
     Paired,

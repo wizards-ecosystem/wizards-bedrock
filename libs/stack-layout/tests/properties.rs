@@ -26,14 +26,14 @@ fn pages(max: u64) -> impl Strategy<Value = u64> {
     (1u64..=max).prop_map(|count| count * PAGE_SIZE)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Contact {
     Crosses,
     Adjacent,
     OnePast,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Side {
     Below,
     Above,
@@ -71,7 +71,7 @@ fn layout() -> impl Strategy<Value = (u64, u64, u64, usize)> {
     (pages(64), pages(8), pages(4), 1usize..12)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Placement {
     InGuard,
     Base,

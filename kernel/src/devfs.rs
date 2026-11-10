@@ -8,7 +8,7 @@
 /// An enum rather than an index into a registry, so a new device is a
 /// compile error everywhere that matches on it rather than a number that means
 /// nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub(crate) enum Device {
     /// Block storage owned by the claimed controller.

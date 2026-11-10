@@ -77,7 +77,7 @@ const STUB_BYTES: usize = 16;
 /// Field order is not a matter of taste: it mirrors the pushes in the entry
 /// sequence exactly, lowest address first. The selftest checks the two still
 /// agree on a live machine, because nothing else can.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct RawTrapFrame {
     r15: u64,
@@ -465,7 +465,7 @@ fn idt_is_loaded() -> bool {
 /// outer state first defers it until every inner state has unwound; it never
 /// enables interrupts through a still-live exclusion.
 #[must_use = "dropping this state intentionally leaves interrupts disabled"]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct InterruptState {
     owner: usize,
     level: usize,

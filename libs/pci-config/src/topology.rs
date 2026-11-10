@@ -13,7 +13,7 @@ const SEGMENT_FUNCTIONS: usize = BUSES * DEVICES as usize * FUNCTIONS as usize;
 const PRESENCE_WORDS: usize = SEGMENT_FUNCTIONS.div_ceil(u64::BITS as usize);
 
 /// A bridge range admitted into a sealed [`PciTopology`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BridgeRange {
     /// Bus immediately behind the bridge.
     pub secondary: u8,
@@ -22,7 +22,7 @@ pub struct BridgeRange {
 }
 
 /// Why a complete PCI topology snapshot cannot be trusted for DMA authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TopologyError {
     /// The function named by entry-fence authority was absent from the later snapshot.
@@ -205,7 +205,7 @@ impl core::error::Error for TopologyError {}
 /// and is returned by every later observation and seal until [`Self::reset`].
 /// Observe each function once per snapshot; successful observations are not
 /// replacement transactions.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct PciTopology {
     parent: [u32; BUSES],
     subordinate: [u8; BUSES],

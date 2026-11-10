@@ -74,7 +74,7 @@ pub(crate) fn read() -> Option<Reading> {
 
 /// What one read of the clock region found.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Reading {
     /// Whether the page may be used at all.
     pub(crate) mode: u32,

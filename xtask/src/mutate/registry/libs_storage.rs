@@ -725,8 +725,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 830,
         file: "libs/nvme/src/lib.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\npub struct DmaState {",
-        replace: "#[derive(Debug, Clone, PartialEq, Eq)]\npub struct DmaState {",
+        find: "#[derive(PartialEq, Eq, Debug)]\npub struct DmaState {",
+        replace: "#[derive(Clone, PartialEq, Eq, Debug)]\npub struct DmaState {",
         breaks: "DMA ownership authority can be duplicated before publication or completion",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -857,8 +857,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1179,
         file: "libs/nvme/src/lib.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\npub struct DmaState {",
-        replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct DmaState {",
+        find: "#[derive(PartialEq, Eq, Debug)]\npub struct DmaState {",
+        replace: "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub struct DmaState {",
         breaks: "DMA ownership state can be copied as well as cloned",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -934,8 +934,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1383,
         file: "libs/fat32/src/lib.rs",
-        find: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[non_exhaustive]\npub enum FatError {",
-        replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FatError {",
+        find: "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n#[non_exhaustive]\npub enum FatError {",
+        replace: "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub enum FatError {",
         breaks: "a public error enum can regain an exhaustive downstream variant contract",
         reddens: Caught::HostTest {
             package: "xtask",

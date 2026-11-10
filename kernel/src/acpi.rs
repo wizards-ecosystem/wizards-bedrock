@@ -28,7 +28,7 @@ const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
 const EARLY_ROOT_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
 
 /// Why an allocation-free unique ACPI authority lookup failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum EarlyTableError {
     RootPointer,
     RootTable,

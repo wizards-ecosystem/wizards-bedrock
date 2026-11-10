@@ -9,7 +9,7 @@ use core::fmt;
 use mmio_range::{AccessError, AccessRange};
 
 /// Why an [`MmioRegion`] access was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MmioError {
     /// The access would extend past the end of the region.

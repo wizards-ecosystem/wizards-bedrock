@@ -14,7 +14,7 @@ pub const ADDRESS_SIZE_LEAF: u32 = 0x8000_0008;
 /// assert!(width.contains(0, 1_u64 << 46));
 /// assert!(!width.contains(0, (1_u64 << 46) + 1));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PhysicalAddressWidth(u8);
 
 impl PhysicalAddressWidth {

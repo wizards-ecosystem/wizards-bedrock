@@ -63,7 +63,7 @@ pub const fn next_table_identity(identity: u64) -> Option<u64> {
 /// A table-derived constant that usually makes the same slot look different.
 ///
 /// It is not a secret or an authority boundary; it prevents accidental reuse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mixer(u32);
 
 /// What a table number is multiplied by to become a mixer.
@@ -111,7 +111,7 @@ impl Mixer {
 /// Which arena slot a handle names, and which use of it.
 ///
 /// This decoded value remains distinct from the encoded process-visible word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Slot {
     index: u32,
     generation: u32,
@@ -269,7 +269,7 @@ impl Quota {
 ///
 /// Rights name distinctions the kernel makes about an object, not syscall
 /// names; universal rights remain separate from per-type rights (D-78).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rights(u32);
 
 impl Rights {

@@ -52,7 +52,7 @@ pub const BOOT: usize = 0;
 pub type Entry = extern "C" fn(usize) -> !;
 
 /// Why a request was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TaskError {
     /// [`init`] has not run, or ran twice.
@@ -118,14 +118,14 @@ impl fmt::Display for TaskError {
 
 impl core::error::Error for TaskError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Vacant,
     Alive,
     Dead,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Slot {
     state: State,
     /// The pinned arena index. Absent for the boot slot.
@@ -821,7 +821,7 @@ extern "C" fn thread_start() -> ! {
 }
 
 /// Why the CPU would not be sent to ring 3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserError {
     /// Maskable interrupts were not admitted before the transition.

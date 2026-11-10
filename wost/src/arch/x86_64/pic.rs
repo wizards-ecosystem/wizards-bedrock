@@ -66,7 +66,7 @@ const MASK_ALL: u8 = 0xFF;
 static CONTROLLERS: SpinLock<Option<Pair>> = SpinLock::new(None);
 
 /// Why the legacy controllers could not be silenced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PicError {
     /// Something else already owns their ports.

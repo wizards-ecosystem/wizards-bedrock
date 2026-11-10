@@ -1,5 +1,5 @@
 /// A base address register, decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bar {
     /// A memory window.
     Memory {
@@ -84,7 +84,7 @@ impl Bar {
 }
 
 /// Register width used to interpret a probed memory-window mask.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MemoryWidth {
     /// One 32-bit base-address register.
     Bits32,

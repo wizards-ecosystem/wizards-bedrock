@@ -8,7 +8,7 @@ use core::fmt::{self, Write};
 use crate::dev;
 
 /// Severity of a log record, most severe first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Level {
     #[cfg(feature = "selftest")]
     Error,

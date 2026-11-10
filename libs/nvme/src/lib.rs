@@ -93,7 +93,7 @@ pub const NAMESPACE_IDENTIFY_BYTES: usize =
 /// matching completion returns to idle, while [`DmaState::close`] permanently
 /// closes publication. Whether a stopped device makes memory recyclable is a
 /// hardware authority and remains at the register-observation boundary.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct DmaState {
     state: DmaOwnership,
 }
@@ -108,7 +108,7 @@ pub struct DmaPublication<'a> {
     _state: &'a DmaState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DmaOwnership {
     Idle,
     Reserved,
@@ -228,7 +228,7 @@ pub mod status {
 ///
 /// This value classifies bits; it does not prove where they were observed.
 /// Hardware authority must also retain the exact register mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DisabledRegisters {
     cc: u32,
     csts: u32,
@@ -255,7 +255,7 @@ impl DisabledRegisters {
 }
 
 /// Why controller register values cannot authorize DMA admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ControllerStateError {
     /// The controller remains enabled or ready.
@@ -379,7 +379,7 @@ impl<P, E> PreparationFailure<P, E> {
 ///
 /// **Read, never assumed.** Every field here changes what a correct driver
 /// does, and `012` §11 records that VMware's values have not been measured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capabilities {
     bits: u64,
 }
@@ -453,7 +453,7 @@ impl Capabilities {
 /// is a hang rather than an error (`012` §3). A queue's head and tail are equal
 /// when it is empty, so a producer that filled the last slot could not tell the
 /// two apart — one entry is always left unused, on every queue, for ever.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capacity {
     entries: u32,
 }
@@ -526,7 +526,7 @@ impl Capacity {
 }
 
 /// Which half of a queue's doorbell pair an operation addresses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Doorbell {
     /// Publish a new submission tail.
     Submission,
@@ -583,7 +583,7 @@ mod nvm {
 }
 
 /// One validated, sixty-four-byte submission entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Command {
     words: [u32; SUBMISSION_ENTRY_BYTES / 4],
 }
@@ -725,7 +725,7 @@ impl Command {
 }
 
 /// One completion entry, decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Completion {
     /// Command-specific result.
     pub result: u32,
@@ -782,13 +782,13 @@ impl Completion {
 }
 
 /// Namespace geometry proved to match the current storage contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Namespace {
     blocks: u64,
 }
 
 /// Why Identify Namespace data cannot describe a supported namespace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum NamespaceError {
     /// The namespace contains no addressable logical blocks.
@@ -918,7 +918,7 @@ impl Namespace {
 /// The fields stay private so command construction cannot accidentally return
 /// to raw counts after this boundary. D-195 makes this the only value the
 /// kernel's read submission path accepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ReadTransfer {
     lba: u64,
     blocks: u32,
@@ -926,7 +926,7 @@ pub struct ReadTransfer {
 }
 
 /// Why a logical-block transfer cannot be encoded or safely received.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TransferError {
     /// An NVM read must name at least one logical block.

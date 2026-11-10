@@ -3,7 +3,7 @@
 use core::fmt;
 
 /// The externally observable lifetime of one local controller.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Lifecycle {
     /// No hardware transition has begun.
@@ -17,7 +17,7 @@ pub enum Lifecycle {
 }
 
 /// Whether maskable interrupts are excluded at a hardware boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Interrupts {
     /// The interrupt flag is clear.
     Excluded,
@@ -26,7 +26,7 @@ pub enum Interrupts {
 }
 
 /// One ordered boundary in the hardware transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InitStage {
     /// Enter and verify x2APIC mode.
     Mode,
@@ -52,7 +52,7 @@ impl InitStage {
 }
 
 /// Why a caller cannot begin a hardware transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BeginError {
     /// Another caller owns the unpublished transition.
@@ -80,7 +80,7 @@ impl fmt::Display for BeginError {
 impl core::error::Error for BeginError {}
 
 /// Why an initialization transaction cannot advance or publish.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ProgressError {
     /// Interrupt exclusion was lost before the next hardware boundary.
@@ -115,7 +115,7 @@ impl fmt::Display for ProgressError {
 impl core::error::Error for ProgressError {}
 
 /// The hardware-free proof state used by the privileged APIC boundary.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct InitTransaction {
     lifecycle: Lifecycle,
     next_stage: usize,

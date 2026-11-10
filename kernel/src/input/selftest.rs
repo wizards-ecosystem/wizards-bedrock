@@ -297,7 +297,7 @@ pub(crate) fn identity() -> Option<(u8, u8)> {
 }
 
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ArmedKey {
     key: Key,
     generation: u64,
@@ -378,7 +378,7 @@ pub(crate) fn interrupt_count() -> usize {
 }
 
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Watch {
     down: u128,
     completed: [u64; 128],

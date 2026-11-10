@@ -37,7 +37,7 @@ pub mod tss;
 ///
 /// The low two bits are the requested privilege level and the third selects the
 /// local descriptor table, which this kernel never uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Selector(u16);
 
 impl Selector {

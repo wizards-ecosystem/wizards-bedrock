@@ -23,7 +23,7 @@ fn only_disabled_and_not_ready_registers_pass_dma_classification() {
     );
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct PreparationOwner {
     identity: u64,
     accesses: usize,

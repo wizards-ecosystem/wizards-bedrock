@@ -53,7 +53,7 @@ pub const MAX_CLASS: usize = 2048;
 pub const CLASSES: usize = 8;
 
 /// Why a request cannot be placed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PlacementError {
     /// Rust alignments are non-zero powers of two.
@@ -73,7 +73,7 @@ impl fmt::Display for PlacementError {
 impl core::error::Error for PlacementError {}
 
 /// One size class of the slab allocator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct SizeClass {
     /// Index into the free lists: 0 is [`MIN_CLASS`].
     index: usize,
@@ -146,7 +146,7 @@ impl SizeClass {
 }
 
 /// Where a request of a given size and alignment is served from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Placement {
     /// A slot of this class, taken from a slab.
     Slot(SizeClass),

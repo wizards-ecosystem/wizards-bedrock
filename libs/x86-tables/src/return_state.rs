@@ -31,7 +31,7 @@ const USER_FLAGS: u64 = (1 << 0)
     | (1 << 21);
 
 /// The state consumed by a 64-bit privilege return.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UserReturnState {
     instruction_pointer: u64,
     code_selector: u64,
@@ -99,7 +99,7 @@ impl UserReturnState {
 }
 
 /// Why an outer-privilege frame cannot be consumed by `iretq`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum UserReturnError {
     /// `CS` is not the one installed for 64-bit ring-three code.

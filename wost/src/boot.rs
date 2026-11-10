@@ -29,7 +29,7 @@ fn framebuffer_access<T>(result: Result<T, MmioError>) -> T {
 }
 
 /// Geometry and pixel layout of a linear framebuffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FramebufferInfo {
     /// Visible width in pixels.
     pub width: usize,
@@ -232,7 +232,7 @@ impl Framebuffer {
 }
 
 /// Why the kernel has no usable framebuffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FramebufferError {
     /// The bootloader ignored the framebuffer request.
@@ -275,7 +275,7 @@ impl core::error::Error for FramebufferError {}
 /// Every physical address the memory map lists is readable at
 /// `physical + offset` before the kernel has page tables of its own — which is
 /// what makes the first page table walkable and the first frame writable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirectMap {
     offset: u64,
 }
@@ -302,7 +302,7 @@ impl DirectMap {
 /// The pair is what lets the kernel map its own sections: the linker gives
 /// their virtual addresses, and the difference between these two turns any of
 /// them into the physical frame behind it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ImageAddress {
     physical: u64,
     virtual_: u64,
@@ -325,7 +325,7 @@ impl ImageAddress {
 }
 
 /// One protection class of the loaded kernel image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Section {
     /// First virtual address, page-aligned by the linker script.
     pub start: u64,
@@ -345,7 +345,7 @@ impl Section {
 }
 
 /// The kernel image, divided by what each part may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sections {
     /// Executable code. Mapped read-only and executable.
     pub text: Section,
@@ -364,7 +364,7 @@ pub struct Sections {
 /// The two guard ranges are deliberately not part of any mapping list. Their
 /// named addresses let the page-table owner prove absence instead of deriving
 /// a hole from adjacent stack arithmetic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EntryEnclaveSections {
     /// Interrupt stubs and common entry/exit assembly.
     pub text: Section,
@@ -508,7 +508,7 @@ pub struct BootInfo {
 }
 
 /// Why part of the boot handoff is missing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum HandoffError {
     /// The bootloader ignored the request.

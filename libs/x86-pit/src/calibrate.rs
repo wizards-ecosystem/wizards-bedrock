@@ -11,7 +11,7 @@
 use crate::CRYSTAL_HZ;
 
 /// What an independent PIT window says about an armed TSC/APIC pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum WatchdogVerdict {
     /// The APIC expiry and TSC progress agree with the PIT crystal.

@@ -58,7 +58,7 @@ pub const SEPARATOR: u8 = b'/';
 pub const MAX_NAME: usize = 255;
 
 /// Why a path could not be split.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PathError {
     /// The path is empty, which names nothing.

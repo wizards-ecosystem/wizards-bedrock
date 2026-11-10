@@ -61,7 +61,7 @@ fn allocated_gapped() -> FrameSpace<1> {
     space
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FrameClass {
     Managed,
     InRangeUnmanaged,

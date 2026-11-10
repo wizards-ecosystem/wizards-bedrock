@@ -67,7 +67,7 @@ const MAX_BUSES: usize = 256;
 static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
 
 /// One function found on the bus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Function {
     /// Where it lives.
     pub(crate) at: Address,
@@ -188,7 +188,7 @@ impl Worklist {
 /// scans bus zero and stops finds every function q35 has and reports a
 /// perfectly plausible number. Only the *bus* count says whether it went
 /// through the bridge (D-168).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct Survey {
     /// Functions reported.
     pub(crate) functions: usize,
@@ -310,7 +310,7 @@ pub(crate) fn topology_is_sealed() -> bool {
 ///
 /// Security decisions must distinguish an empty sealed inventory from a probe
 /// that observed functions but failed before it could seal their topology.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TopologyPresence {
     Unsealed,
     Empty,
@@ -418,7 +418,7 @@ pub(crate) struct DmaFence {
 }
 
 /// Why a sibling requester could not enter or leave the unit fence.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum DmaFenceError {
     Claim(pci::ClaimError),
     Command(EnableError),
@@ -685,7 +685,7 @@ impl core::fmt::Display for ClaimError {
 impl core::error::Error for ClaimError {}
 
 /// Why a probed memory BAR could not become page-table authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BarAdmissionError {
     /// The requested BAR slot is empty.
     Missing,
@@ -740,7 +740,7 @@ impl BarDecodeFailure {
 }
 
 /// Why a transient function lease could not be retired exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ReleaseError {
     /// A configuration write may have taken effect without verified rollback.
     Command,
@@ -819,7 +819,7 @@ pub(crate) struct Device {
     uncertain: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClaimLifetime {
     Selection,
     Permanent,

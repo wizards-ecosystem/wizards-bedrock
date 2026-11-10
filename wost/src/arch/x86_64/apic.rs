@@ -132,7 +132,7 @@ const ACCEPT_EVERYTHING: u64 = 0;
 const LAST_REQUIRED_LVT_ENTRY: u8 = 5;
 
 /// Why the local APIC could not be brought up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ApicError {
     /// This CPU's APIC was already configured.
@@ -195,7 +195,7 @@ impl fmt::Display for ApicError {
 impl core::error::Error for ApicError {}
 
 /// Why the first global interrupt-enable transition was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PendingInterruptError {
     /// The local APIC has not completed initialization.
@@ -226,7 +226,7 @@ impl core::error::Error for PendingInterruptError {}
 /// The vectors the local APIC delivers on its own behalf.
 ///
 /// The complete local-source assignment, frozen by [`init`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Vectors {
     /// Delivered when the APIC has committed to delivering something and then
     /// found it had nothing to say. Its low four bits must all be set.
@@ -240,7 +240,7 @@ pub struct Vectors {
 }
 
 /// Why a configured APIC source could not deliver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DeliveryError {
     /// The local APIC has no completed source configuration.
@@ -265,7 +265,7 @@ impl fmt::Display for DeliveryError {
 impl core::error::Error for DeliveryError {}
 
 /// Why the local timer could not change state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TimerError {
     /// The local APIC has no completed timer configuration.
@@ -325,7 +325,7 @@ impl Drop for EoiToken<'_> {
 }
 
 /// What the local APIC says about itself once it is on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Local {
     /// This APIC's identifier, which is how another CPU would address it.
     pub id: u32,
@@ -335,7 +335,7 @@ pub struct Local {
     pub is_bootstrap: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InitializationBoundary {
     Stage(InitStage),
     Publication,

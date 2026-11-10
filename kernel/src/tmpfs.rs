@@ -30,7 +30,7 @@ const MAX_NAME: usize = 16;
 pub(crate) const ROOT: usize = 0;
 
 /// What an entry is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     /// A directory: other entries name it as their parent.
     Directory,
@@ -39,7 +39,7 @@ enum Kind {
 }
 
 /// One entry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Entry {
     name: [u8; MAX_NAME],
     name_len: usize,
@@ -170,7 +170,7 @@ fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) ->
 }
 
 /// What a name in a directory resolved to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Found {
     /// A directory, by index.
     Directory(usize),
@@ -200,7 +200,7 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
 }
 
 /// One owned directory-entry summary.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Summary {
     name: [u8; MAX_NAME],
     name_len: usize,
@@ -224,7 +224,7 @@ impl Summary {
 }
 
 /// Owned children of one directory.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Listing {
     entries: [Summary; MAX_ENTRIES - 1],
     len: usize,

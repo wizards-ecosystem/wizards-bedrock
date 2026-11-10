@@ -6,7 +6,7 @@
 /// of keyboard layout.
 #[expect(missing_docs)] // the names are the documentation
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     A,
     B,

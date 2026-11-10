@@ -27,7 +27,7 @@ pub fn the_leaf_it_was_under() -> Option<&'static core::panic::Location<'static>
 /// forgotten-guard witness in D-194. Shipped code has neither this state nor
 /// the operation that creates [`Self::Forgotten`].
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpinLockWitness {
     /// No guard owns the lock.
     Free,

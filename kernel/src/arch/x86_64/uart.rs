@@ -71,7 +71,7 @@ const MODEM_ONLINE: u8 =
     modem_control::DATA_TERMINAL_READY | modem_control::REQUEST_TO_SEND | modem_control::OUT2;
 
 /// Why a controller could not be brought up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum UartError {
     /// Another driver already owns these ports.
     PortsUnavailable,

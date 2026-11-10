@@ -155,7 +155,7 @@ impl ClockHardware {
     };
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct WatchdogArm {
     tsc_start: u64,
     pit_start: u16,
@@ -163,7 +163,7 @@ struct WatchdogArm {
 }
 
 /// A post-boot reason the clock and alarm are no longer trusted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Revocation {
     /// The timing subsystem remains active.
     None = 0,
@@ -182,7 +182,7 @@ impl Revocation {
 }
 
 /// Why the clock could not be started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TimeError {
     /// The interval timer's ports are already claimed.
     PitUnavailable,
@@ -216,7 +216,7 @@ impl fmt::Display for TimeError {
 impl core::error::Error for TimeError {}
 
 /// What one window measured of both clocks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Calibration {
     /// The timestamp counter's rate.
     tsc_hz: u64,
@@ -232,7 +232,7 @@ pub(crate) struct Calibration {
     cpuid_base_hz: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CalibrationSource {
     Pit,
     Cpuid,
@@ -477,7 +477,7 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
 /// whose author can attach a debugger that is a debugger's job; on one they
 /// cannot — which is every machine D-18 makes this project answer to — it is
 /// the difference between an answer and another boot (D-176).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Refusal {
     /// Nothing has been measured yet.
     None = 0,

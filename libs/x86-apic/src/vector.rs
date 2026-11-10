@@ -6,7 +6,7 @@ const FIRST_PIC_VECTOR: u8 = 0x20;
 pub const FIRST_ASSIGNABLE: u8 = 0x30;
 
 /// A vector available to one kernel-owned interrupt source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct InterruptVector(u8);
 
 impl InterruptVector {
@@ -28,7 +28,7 @@ impl InterruptVector {
 }
 
 /// One duplicate-free set of interrupt-source assignments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Assignment<const N: usize>([InterruptVector; N]);
 
 impl<const N: usize> Assignment<N> {

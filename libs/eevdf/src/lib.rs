@@ -72,7 +72,7 @@ pub const fn before(a: u64, b: u64) -> bool {
 }
 
 /// One schedulable thread's share of virtual time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entity {
     vruntime: u64,
     deadline: u64,

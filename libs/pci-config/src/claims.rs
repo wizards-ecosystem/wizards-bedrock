@@ -7,14 +7,14 @@ use crate::{Address, CommandLeases, HeaderType};
 /// Its registry identity, generation and address are opaque. A token minted by
 /// another registry therefore cannot authorize a hardware adapter backed by
 /// this one, even when both name the same bus/device/function tuple.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping function authority permanently retains its claim"]
 pub struct FunctionAuthority {
     pub(crate) lease: FunctionLease,
     pub(crate) registers: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct FunctionLease {
     pub(crate) registry: u64,
     pub(crate) at: Address,
@@ -34,7 +34,7 @@ impl FunctionAuthority {
 }
 
 /// A bounded registry of exclusive function authorities.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct FunctionClaims<const N: usize> {
     pub(crate) slots: [Option<FunctionLease>; N],
     pub(crate) mapped_bars: [u8; N],
@@ -163,7 +163,7 @@ impl<const N: usize> Default for FunctionClaims<N> {
 }
 
 /// Why exclusive function authority could not be minted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FunctionClaimError {
     /// Another authority already holds this function.

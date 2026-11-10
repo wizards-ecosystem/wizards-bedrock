@@ -8,14 +8,14 @@ use crate::{AcpiError, Sdt, u16_at, u64_at};
 /// describes only its boot-time device scopes even though its one emulated
 /// unit intercepts the whole segment. It does not replace the DMAR: consumers
 /// must corroborate this segment and register base against one RMRR-free DRHD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DmaCoverage {
     segment: u16,
     register_base: u64,
 }
 
 /// Why a Wizard DMA coverage attestation is not authoritative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DmaCoverageError {
     /// The enclosing ACPI table is malformed.
@@ -112,13 +112,13 @@ impl DmaCoverage {
 /// The table is deliberately separate from [`DmaCoverage`]. Coverage names a
 /// remapping unit; this contract says the platform kept one PCI segment
 /// quiescent before the kernel can establish any unit of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DmaHandoff {
     segment: u16,
 }
 
 /// Why a Wizard DMA handoff attestation is not authoritative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DmaHandoffError {
     /// The enclosing ACPI table is malformed.

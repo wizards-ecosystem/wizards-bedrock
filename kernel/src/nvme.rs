@@ -142,7 +142,7 @@ struct DmaState {
     disposition: DmaDisposition,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum DmaDisposition {
     Active,
     Quiesced,
@@ -251,7 +251,7 @@ pub(crate) struct BusMasterAdmissionFailure {
 }
 
 /// Why fresh controller proof or the PCI command transition refused DMA.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BusMasterAdmissionError {
     /// No DMA-remapping domain is installed for the function (D-357).
     Unisolated,
@@ -297,7 +297,7 @@ impl BusMasterAdmissionFailure {
 }
 
 /// Why a controller could not be brought up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BringUpError {
     /// The register window could not be mapped.
     NotMapped,
@@ -496,7 +496,7 @@ impl Drop for Controller {
 ///
 /// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
 /// fatal status does not mean the controller can still reach host memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Readiness {
     Ready,
     NotReady,

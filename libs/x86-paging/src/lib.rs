@@ -290,7 +290,7 @@ impl fmt::Debug for Flags {
 }
 
 /// Why an entry could not be encoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum EntryError {
     /// The physical address is not page-aligned.
@@ -444,7 +444,7 @@ impl fmt::Debug for Entry {
 }
 
 /// Whether an intermediate table participates in supervisor or user mappings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TablePrivilege {
     /// Every leaf below this table is supervisor-only.
     Supervisor,
@@ -453,7 +453,7 @@ pub enum TablePrivilege {
 }
 
 /// A level of the four-level page table walk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Level {
     /// The page table: entries map 4 KiB pages.
     Pt = 1,
@@ -508,7 +508,7 @@ pub const fn is_canonical(address: u64) -> bool {
 }
 
 /// A virtual address whose upper bits are the sign extension of bit 47.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CanonicalAddress(u64);
 
 impl CanonicalAddress {
@@ -535,7 +535,7 @@ impl CanonicalAddress {
 /// Construct this before allocating or writing page tables. Every address the
 /// range can produce is page-aligned, canonical on the virtual side, and
 /// encodable in an x86_64 entry on the physical side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MappingRange {
     virtual_base: u64,
     physical_base: u64,
@@ -543,7 +543,7 @@ pub struct MappingRange {
 }
 
 /// Why a complete mapping range cannot be represented safely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum MappingRangeError {
     /// An empty request does not describe a mapping.

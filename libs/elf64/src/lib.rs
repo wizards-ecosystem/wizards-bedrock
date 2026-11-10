@@ -86,7 +86,7 @@ const CURRENT_VERSION: u32 = 1;
 const EXECUTABLE: u16 = 2;
 
 /// Why an image could not be read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ElfError {
     /// Shorter than the structure being read.
@@ -171,7 +171,7 @@ impl core::fmt::Display for ElfError {
 impl core::error::Error for ElfError {}
 
 /// What a program header describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum SegmentKind {
     /// `PT_NULL` — ignore it.
@@ -228,7 +228,7 @@ impl SegmentKind {
 }
 
 /// One program header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Segment {
     kind: SegmentKind,
     flags: u32,
@@ -342,7 +342,7 @@ impl Segment {
 ///
 /// This is metadata, not a validated table. Program loading never needs to
 /// walk sections; the host image verifier does, and owns that parser (D-213).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SectionTable {
     offset: u64,
     entry_size: u16,
@@ -373,7 +373,7 @@ impl SectionTable {
 }
 
 /// A parsed ELF64 image, borrowing the bytes it came from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Elf<'a> {
     bytes: &'a [u8],
     entry: u64,

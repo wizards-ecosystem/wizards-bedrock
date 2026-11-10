@@ -333,8 +333,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 970,
         file: "kernel/src/nvme.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\nenum DmaDisposition {",
-        replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum DmaDisposition {",
+        find: "#[derive(PartialEq, Eq, Debug)]\nenum DmaDisposition {",
+        replace: "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\nenum DmaDisposition {",
         breaks: "a controller's DMA retirement disposition becomes freely copyable",
         reddens: Caught::HostTest {
             package: "xtask",

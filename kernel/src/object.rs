@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use handle_space::Rights;
 
 /// What kind of thing a handle names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub(crate) enum ObjectType {
     /// An opaque bootstrap identity.

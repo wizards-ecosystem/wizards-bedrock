@@ -41,7 +41,7 @@ use path_walk::PathError;
 const MAX_DEPTH: usize = 16;
 
 /// A directory, whichever backend it belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Directory {
     /// A FAT32 directory, named by the cluster its entries begin at.
     ///
@@ -65,7 +65,7 @@ pub(crate) enum Directory {
 }
 
 /// A file, whichever backend it belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum File {
     /// A FAT32 file: where its contents begin, and how many bytes there are.
     Fat {
@@ -84,7 +84,7 @@ pub(crate) enum File {
 }
 
 /// What a name resolved to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Node {
     /// Something with names in it.
     Directory(Directory),
@@ -95,7 +95,7 @@ pub(crate) enum Node {
 }
 
 /// Why a path did not resolve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum VfsError {
     /// The path itself is not one this kernel can resolve.
     ///

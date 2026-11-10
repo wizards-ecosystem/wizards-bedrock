@@ -8,7 +8,7 @@ use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
 
 /// Which shift keys are currently held.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Shift {
     left: bool,
     right: bool,

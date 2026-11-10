@@ -59,7 +59,7 @@ pub(super) static LAST_INVALID_USER_RETURN_KIND: AtomicUsize = AtomicUsize::new(
 
 /// Which part of an outer-privilege frame was refused.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum InvalidUserReturnKind {
     /// No refusal has been recorded.
     None,
@@ -225,7 +225,7 @@ static RECLAIMED_ABANDONED_EOI: AtomicUsize = AtomicUsize::new(0);
 
 /// A copy of what the trap handler recorded for one vector.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Record {
     /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
