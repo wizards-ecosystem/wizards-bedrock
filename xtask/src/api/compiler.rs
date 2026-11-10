@@ -101,63 +101,8 @@ pub(super) fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> 
             compiler.display()
         )
     })?;
-    let mut version_command = Command::new(&compiler);
-    version_command.current_dir(source_root).arg("-vV");
-    let result = crate::bounded_process::output_with_limit(
-        version_command,
-        TOOL_IDENTITY_TIMEOUT,
-        "API audit compiler identity",
-        MAX_TOOL_IDENTITY_BYTES,
-    )
-    .context("querying the API audit compiler host target")?;
-    ensure!(
-        result.status.success(),
-        "querying the API audit compiler host target failed ({}): {}",
-        result.status,
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let version = std::str::from_utf8(&result.stdout)
-        .context("the API audit compiler version is not UTF-8")?;
-    let targets = version
-        .lines()
-        .filter_map(|line| line.strip_prefix("host: "))
-        .collect::<Vec<_>>();
-    let [target] = targets.as_slice() else {
-        bail!("the API audit compiler did not report exactly one host target");
-    };
-    ensure!(
-        !target.is_empty()
-            && target
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
-        "the API audit compiler returned malformed host target `{target}`"
-    );
-    let mut sysroot_command = Command::new(&compiler);
-    sysroot_command
-        .current_dir(source_root)
-        .args(["--print", "sysroot"]);
-    let sysroot = crate::bounded_process::output_with_limit(
-        sysroot_command,
-        TOOL_IDENTITY_TIMEOUT,
-        "API audit compiler sysroot",
-        MAX_TOOL_IDENTITY_BYTES,
-    )
-    .context("querying the API audit compiler sysroot")?;
-    ensure!(
-        sysroot.status.success(),
-        "querying the API audit compiler sysroot failed ({}): {}",
-        sysroot.status,
-        String::from_utf8_lossy(&sysroot.stderr)
-    );
-    let sysroot = std::str::from_utf8(&sysroot.stdout)
-        .context("the API audit compiler sysroot is not UTF-8")?
-        .trim();
-    ensure!(
-        !sysroot.is_empty(),
-        "the API audit compiler returned an empty sysroot"
-    );
-    let sysroot = std::fs::canonicalize(sysroot)
-        .with_context(|| format!("canonicalizing compiler sysroot `{sysroot}`"))?;
+    let target = compiler_host_target(&compiler, source_root)?;
+    let sysroot = compiler_sysroot(&compiler, source_root)?;
     let toolchain = compiler
         .parent()
         .and_then(Path::parent)
@@ -167,7 +112,7 @@ pub(super) fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> 
         "the API audit compiler reported a sysroot outside its exact toolchain"
     );
     let (host_linker, link_editor_directory) =
-        host_linker(target, &sysroot, std::env::var_os("PATH").as_deref())?;
+        host_linker(&target, &sysroot, std::env::var_os("PATH").as_deref())?;
     let host_linker = crate::cargo::child_process_path(&host_linker);
     let tool_path = std::env::join_paths([compiler
         .parent()
@@ -189,10 +134,10 @@ pub(super) fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> 
             })
         })
         .transpose()?;
-    let input_authority = CompilerInputAuthority::capture(&sysroot, &cargo, &compiler, target)?;
+    let input_authority = CompilerInputAuthority::capture(&sysroot, &cargo, &compiler, &target)?;
     Ok(CompilerIdentity {
         path: compiler,
-        host_target: target.to_string(),
+        host_target: target,
         host_linker,
         link_editor,
         tool_path,
@@ -200,6 +145,70 @@ pub(super) fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> 
         linker_digest,
         input_authority,
     })
+}
+
+fn compiler_host_target(compiler: &Path, source_root: &Path) -> Result<String> {
+    let mut version_command = Command::new(compiler);
+    version_command.current_dir(source_root).arg("-vV");
+    let captured = crate::bounded_process::output_with_limit(
+        version_command,
+        TOOL_IDENTITY_TIMEOUT,
+        "API audit compiler identity",
+        MAX_TOOL_IDENTITY_BYTES,
+    )
+    .context("querying the API audit compiler host target")?;
+    ensure!(
+        captured.status.success(),
+        "querying the API audit compiler host target failed ({}): {}",
+        captured.status,
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    let version = std::str::from_utf8(&captured.stdout)
+        .context("the API audit compiler version is not UTF-8")?;
+    let targets = version
+        .lines()
+        .filter_map(|line| line.strip_prefix("host: "))
+        .collect::<Vec<_>>();
+    let [target] = targets.as_slice() else {
+        bail!("the API audit compiler did not report exactly one host target");
+    };
+    ensure!(
+        !target.is_empty()
+            && target
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "the API audit compiler returned malformed host target `{target}`"
+    );
+    Ok(target.to_string())
+}
+
+fn compiler_sysroot(compiler: &Path, source_root: &Path) -> Result<PathBuf> {
+    let mut sysroot_command = Command::new(compiler);
+    sysroot_command
+        .current_dir(source_root)
+        .args(["--print", "sysroot"]);
+    let captured = crate::bounded_process::output_with_limit(
+        sysroot_command,
+        TOOL_IDENTITY_TIMEOUT,
+        "API audit compiler sysroot",
+        MAX_TOOL_IDENTITY_BYTES,
+    )
+    .context("querying the API audit compiler sysroot")?;
+    ensure!(
+        captured.status.success(),
+        "querying the API audit compiler sysroot failed ({}): {}",
+        captured.status,
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    let sysroot = std::str::from_utf8(&captured.stdout)
+        .context("the API audit compiler sysroot is not UTF-8")?
+        .trim();
+    ensure!(
+        !sysroot.is_empty(),
+        "the API audit compiler returned an empty sysroot"
+    );
+    std::fs::canonicalize(sysroot)
+        .with_context(|| format!("canonicalizing compiler sysroot `{sysroot}`"))
 }
 
 impl CompilerInputAuthority {

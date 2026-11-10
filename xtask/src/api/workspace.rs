@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Debug)]
 pub(super) struct AuditWorkspace {
     pub(super) _lock: File,
     pub(super) source_root: PathBuf,
@@ -416,7 +417,7 @@ pub(super) fn materialize_locked_registry_source(
         .arg(destination)
         .arg("--manifest-path")
         .arg(workspace.join("Cargo.toml"));
-    let result = crate::bounded_process::output_with_limit(
+    let captured = crate::bounded_process::output_with_limit(
         command,
         REGISTRY_MATERIALIZATION_TIMEOUT,
         "API audit registry materialization",
@@ -424,11 +425,11 @@ pub(super) fn materialize_locked_registry_source(
     )
     .context("materializing checksum-verified registry archives for the API audit")?;
     ensure!(
-        result.status.success(),
+        captured.status.success(),
         "materializing the API audit registry source failed ({}):\n{}{}",
-        result.status,
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
+        captured.status,
+        String::from_utf8_lossy(&captured.stdout),
+        String::from_utf8_lossy(&captured.stderr)
     );
     compiler.require_unchanged()?;
     validate_materialized_registry_source(destination, &packages)?;

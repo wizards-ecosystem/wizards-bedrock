@@ -111,7 +111,7 @@ pub(super) fn run_bounded_in_order<T: Send>(
     job: impl Fn(usize) -> Result<T> + Sync,
 ) -> Result<Vec<T>> {
     let (solo, shared): (Vec<usize>, Vec<usize>) = (0..count).partition(|&index| alone(index));
-    let mut results = (0..count).map(|_| None).collect::<Vec<Option<T>>>();
+    let mut slots = (0..count).map(|_| None).collect::<Vec<Option<T>>>();
     for batch in shared.chunks(workers.max(1)) {
         let completed = std::thread::scope(|scope| {
             let job = &job;
@@ -122,23 +122,23 @@ pub(super) fn run_bounded_in_order<T: Send>(
             handles
                 .into_iter()
                 .map(|(index, handle)| {
-                    let result = handle.join().unwrap_or_else(|_| {
+                    let outcome = handle.join().unwrap_or_else(|_| {
                         Err(anyhow::anyhow!("API-audit graph {index} worker panicked"))
                     });
-                    (index, result)
+                    (index, outcome)
                 })
                 .collect::<Vec<_>>()
         });
         for (index, outcome) in completed {
-            results[index] = Some(outcome?);
+            slots[index] = Some(outcome?);
         }
     }
     for index in solo {
-        results[index] = Some(job(index)?);
+        slots[index] = Some(job(index)?);
     }
-    results
+    slots
         .into_iter()
-        .map(|result| result.context("an API-audit graph was never compiled"))
+        .map(|slot| slot.context("an API-audit graph was never compiled"))
         .collect()
 }
 
@@ -178,7 +178,7 @@ fn compile_graph(
         CompilationMode::TestHarness(target) => Some(target.clone()),
         CompilationMode::RegisteredPass | CompilationMode::Example(_) => None,
     };
-    let result = crate::bounded_process::output_streamed(
+    let captured = crate::bounded_process::output_streamed(
         command,
         COMPILATION_TIMEOUT,
         "API audit compilation",
@@ -200,16 +200,16 @@ fn compile_graph(
     workspace.require_copy_unchanged(expected)?;
     workspace.require_source_unchanged(&workspace.source_root)?;
     compiler.require_unchanged()?;
-    if !result.status.success() {
+    if !captured.status.success() {
         bail!(
             "API audit round {round} failed to compile {} ({})\n{}{}",
             compilation_label(plan),
-            result.status,
-            result.value.failure_report(),
-            String::from_utf8_lossy(&result.stderr)
+            captured.status,
+            captured.value.failure_report(),
+            String::from_utf8_lossy(&captured.stderr)
         );
     }
-    let diagnostics = result.value.finish()?;
+    let diagnostics = captured.value.finish()?;
     Ok(Compilation {
         graph,
         kind: plan.kind,
@@ -272,6 +272,7 @@ fn compilation_label(plan: &CompilationPlan) -> String {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct CargoCompilationEvidence {
     diagnostics: Vec<MarkerDiagnostic>,
     retained_bytes: usize,
@@ -305,165 +306,102 @@ impl CargoCompilationEvidence {
             crate::json::json_field(message, "reason", "Cargo compiler JSON message")?,
             "Cargo compiler JSON `reason`",
         )?;
-        if reason == "compiler-message" {
-            let package_id = crate::json::json_string(
-                crate::json::json_field(message, "package_id", "Cargo compiler message")?,
-                "Cargo compiler message `package_id`",
-            )?;
-            let target = crate::json::json_object(
-                crate::json::json_field(message, "target", "Cargo compiler message")?,
-                "Cargo compiler message target",
-            )?;
-            let compiler_message = crate::json::json_object(
-                crate::json::json_field(message, "message", "Cargo compiler message")?,
-                "Cargo compiler message",
-            )?;
-            let diagnostic_message = crate::json::json_string(
-                crate::json::json_field(compiler_message, "message", "Cargo compiler message")?,
-                "Cargo compiler diagnostic `message`",
-            )?;
-            let level = crate::json::json_string(
-                crate::json::json_field(compiler_message, "level", "Cargo compiler message")?,
-                "Cargo compiler diagnostic `level`",
-            )?;
-            let Some(id) = diagnostic_marker_id(diagnostic_message)? else {
-                if level == "error" {
-                    self.retain_failure(diagnostic_message)?;
-                }
-                return Ok(());
-            };
-            ensure!(
-                level == "warning",
-                "API marker diagnostic has compiler level `{level}` instead of `warning`"
-            );
-            let code = crate::json::json_object(
-                crate::json::json_field(compiler_message, "code", "Cargo compiler message")?,
-                "API marker diagnostic code",
-            )?;
-            let code = crate::json::json_string(
-                crate::json::json_field(code, "code", "API marker diagnostic code")?,
-                "API marker diagnostic code name",
-            )?;
-            ensure!(
-                code == "deprecated",
-                "API marker diagnostic has compiler code `{code}` instead of `deprecated`"
-            );
-            let spans = crate::json::json_array(
-                crate::json::json_field(compiler_message, "spans", "Cargo compiler message")?,
-                "Cargo compiler diagnostic `spans`",
-            )?;
-            let primary = spans
-                .iter()
-                .map(|span| {
-                    let span = crate::json::json_object(span, "Cargo compiler diagnostic span")?;
-                    let primary = match crate::json::json_field(
-                        span,
-                        "is_primary",
-                        "Cargo compiler diagnostic span",
-                    )? {
-                        crate::json::JsonValue::Bool(primary) => *primary,
-                        _ => bail!("Cargo compiler diagnostic `is_primary` is not a Boolean"),
-                    };
-                    Ok(primary.then_some(span))
-                })
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-            let [primary] = primary.as_slice() else {
-                bail!(
-                    "API marker diagnostic has {} primary spans instead of exactly one",
-                    primary.len()
-                );
-            };
-            let primary_location =
-                cargo_diagnostic_location(primary, "primary API diagnostic span")?;
-            let immediate_expansion = match crate::json::json_field(
-                primary,
-                "expansion",
-                "primary API diagnostic span",
-            )? {
-                crate::json::JsonValue::Null => None,
-                expansion @ crate::json::JsonValue::Object(_) => {
-                    let expansion =
-                        crate::json::json_object(expansion, "primary API diagnostic expansion")?;
-                    let macro_decl_name = crate::json::json_string(
-                        crate::json::json_field(
-                            expansion,
-                            "macro_decl_name",
-                            "primary API diagnostic expansion",
-                        )?,
-                        "primary API diagnostic expansion `macro_decl_name`",
-                    )?;
-                    let span = crate::json::json_object(
-                        crate::json::json_field(
-                            expansion,
-                            "span",
-                            "primary API diagnostic expansion",
-                        )?,
-                        "primary API diagnostic expansion span",
-                    )?;
-                    let terminal = match crate::json::json_field(
-                        span,
-                        "expansion",
-                        "primary API diagnostic expansion span",
-                    )? {
-                        crate::json::JsonValue::Null => true,
-                        crate::json::JsonValue::Object(_) => false,
-                        _ => bail!(
-                            "primary API diagnostic expansion span `expansion` is neither null nor an object"
-                        ),
-                    };
-                    Some(DiagnosticExpansion {
-                        location: cargo_diagnostic_location(
-                            span,
-                            "primary API diagnostic expansion span",
-                        )?,
-                        terminal,
-                        macro_decl_name: macro_decl_name.to_string(),
-                    })
-                }
-                _ => bail!("primary API diagnostic `expansion` is neither null nor an object"),
-            };
-            let target_name = crate::json::json_string(
-                crate::json::json_field(target, "name", "Cargo compiler message target")?,
-                "Cargo compiler message target `name`",
-            )?;
-            let kinds = crate::json::json_string_array(
-                crate::json::json_field(target, "kind", "Cargo compiler message target")?,
-                "Cargo compiler message target `kind`",
-            )?;
-            let target_source = PathBuf::from(crate::json::json_string(
-                crate::json::json_field(target, "src_path", "Cargo compiler message target")?,
-                "Cargo compiler message target `src_path`",
-            )?);
-            ensure!(
-                target_source.is_absolute(),
-                "Cargo compiler message target source is not absolute"
-            );
-            let diagnostic = MarkerDiagnostic {
-                id,
-                origin: CargoDiagnosticOrigin {
-                    package_id: package_id.to_string(),
-                    target_name: target_name.to_string(),
-                    target_kind: CargoTargetKind::parse(&kinds)?,
-                    target_source,
-                },
-                reported: primary_location.reported,
-                line: primary_location.line,
-                column: primary_location.column,
-                immediate_expansion,
-            };
-            self.retain_marker_with_limits(
-                diagnostic,
-                MAX_AUDIT_RETAINED_MARKERS,
-                MAX_AUDIT_OUTPUT_BYTES,
-            )?;
-            return Ok(());
+        match reason {
+            "compiler-message" => self.observe_compiler_message(message),
+            "compiler-artifact" => self.observe_compiler_artifact(message),
+            _ => Ok(()),
         }
-        if reason != "compiler-artifact" {
+    }
+
+    fn observe_compiler_message(
+        &mut self,
+        message: &BTreeMap<String, crate::json::JsonValue>,
+    ) -> Result<()> {
+        let package_id = crate::json::json_string(
+            crate::json::json_field(message, "package_id", "Cargo compiler message")?,
+            "Cargo compiler message `package_id`",
+        )?;
+        let target = crate::json::json_object(
+            crate::json::json_field(message, "target", "Cargo compiler message")?,
+            "Cargo compiler message target",
+        )?;
+        let compiler_message = crate::json::json_object(
+            crate::json::json_field(message, "message", "Cargo compiler message")?,
+            "Cargo compiler message",
+        )?;
+        let diagnostic_message = crate::json::json_string(
+            crate::json::json_field(compiler_message, "message", "Cargo compiler message")?,
+            "Cargo compiler diagnostic `message`",
+        )?;
+        let level = crate::json::json_string(
+            crate::json::json_field(compiler_message, "level", "Cargo compiler message")?,
+            "Cargo compiler diagnostic `level`",
+        )?;
+        let Some(id) = diagnostic_marker_id(diagnostic_message)? else {
+            if level == "error" {
+                self.retain_failure(diagnostic_message)?;
+            }
             return Ok(());
-        }
+        };
+        ensure!(
+            level == "warning",
+            "API marker diagnostic has compiler level `{level}` instead of `warning`"
+        );
+        let code = crate::json::json_object(
+            crate::json::json_field(compiler_message, "code", "Cargo compiler message")?,
+            "API marker diagnostic code",
+        )?;
+        let code = crate::json::json_string(
+            crate::json::json_field(code, "code", "API marker diagnostic code")?,
+            "API marker diagnostic code name",
+        )?;
+        ensure!(
+            code == "deprecated",
+            "API marker diagnostic has compiler code `{code}` instead of `deprecated`"
+        );
+        let primary = primary_diagnostic_span(compiler_message)?;
+        let primary_location = cargo_diagnostic_location(primary, "primary API diagnostic span")?;
+        let immediate_expansion = immediate_diagnostic_expansion(primary)?;
+        let target_name = crate::json::json_string(
+            crate::json::json_field(target, "name", "Cargo compiler message target")?,
+            "Cargo compiler message target `name`",
+        )?;
+        let kinds = crate::json::json_string_array(
+            crate::json::json_field(target, "kind", "Cargo compiler message target")?,
+            "Cargo compiler message target `kind`",
+        )?;
+        let target_source = PathBuf::from(crate::json::json_string(
+            crate::json::json_field(target, "src_path", "Cargo compiler message target")?,
+            "Cargo compiler message target `src_path`",
+        )?);
+        ensure!(
+            target_source.is_absolute(),
+            "Cargo compiler message target source is not absolute"
+        );
+        let diagnostic = MarkerDiagnostic {
+            id,
+            origin: CargoDiagnosticOrigin {
+                package_id: package_id.to_string(),
+                target_name: target_name.to_string(),
+                target_kind: CargoTargetKind::parse(&kinds)?,
+                target_source,
+            },
+            reported: primary_location.reported,
+            line: primary_location.line,
+            column: primary_location.column,
+            immediate_expansion,
+        };
+        self.retain_marker_with_limits(
+            diagnostic,
+            MAX_AUDIT_RETAINED_MARKERS,
+            MAX_AUDIT_OUTPUT_BYTES,
+        )
+    }
+
+    fn observe_compiler_artifact(
+        &mut self,
+        message: &BTreeMap<String, crate::json::JsonValue>,
+    ) -> Result<()> {
         let Some(selected) = self.selected_test.as_ref() else {
             return Ok(());
         };
@@ -570,6 +508,81 @@ impl CargoCompilationEvidence {
             );
         }
         Ok(self.diagnostics)
+    }
+}
+
+fn primary_diagnostic_span(
+    compiler_message: &BTreeMap<String, crate::json::JsonValue>,
+) -> Result<&BTreeMap<String, crate::json::JsonValue>> {
+    let spans = crate::json::json_array(
+        crate::json::json_field(compiler_message, "spans", "Cargo compiler message")?,
+        "Cargo compiler diagnostic `spans`",
+    )?;
+    let primary = spans
+        .iter()
+        .map(|span| {
+            let span = crate::json::json_object(span, "Cargo compiler diagnostic span")?;
+            let primary = match crate::json::json_field(
+                span,
+                "is_primary",
+                "Cargo compiler diagnostic span",
+            )? {
+                crate::json::JsonValue::Bool(primary) => *primary,
+                _ => bail!("Cargo compiler diagnostic `is_primary` is not a Boolean"),
+            };
+            Ok(primary.then_some(span))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let [primary] = primary.as_slice() else {
+        bail!(
+            "API marker diagnostic has {} primary spans instead of exactly one",
+            primary.len()
+        );
+    };
+    Ok(*primary)
+}
+
+fn immediate_diagnostic_expansion(
+    primary: &BTreeMap<String, crate::json::JsonValue>,
+) -> Result<Option<DiagnosticExpansion>> {
+    match crate::json::json_field(primary, "expansion", "primary API diagnostic span")? {
+        crate::json::JsonValue::Null => Ok(None),
+        expansion @ crate::json::JsonValue::Object(_) => {
+            let expansion =
+                crate::json::json_object(expansion, "primary API diagnostic expansion")?;
+            let macro_decl_name = crate::json::json_string(
+                crate::json::json_field(
+                    expansion,
+                    "macro_decl_name",
+                    "primary API diagnostic expansion",
+                )?,
+                "primary API diagnostic expansion `macro_decl_name`",
+            )?;
+            let span = crate::json::json_object(
+                crate::json::json_field(expansion, "span", "primary API diagnostic expansion")?,
+                "primary API diagnostic expansion span",
+            )?;
+            let terminal = match crate::json::json_field(
+                span,
+                "expansion",
+                "primary API diagnostic expansion span",
+            )? {
+                crate::json::JsonValue::Null => true,
+                crate::json::JsonValue::Object(_) => false,
+                _ => bail!(
+                    "primary API diagnostic expansion span `expansion` is neither null nor an object"
+                ),
+            };
+            Ok(Some(DiagnosticExpansion {
+                location: cargo_diagnostic_location(span, "primary API diagnostic expansion span")?,
+                terminal,
+                macro_decl_name: macro_decl_name.to_string(),
+            }))
+        }
+        _ => bail!("primary API diagnostic `expansion` is neither null nor an object"),
     }
 }
 

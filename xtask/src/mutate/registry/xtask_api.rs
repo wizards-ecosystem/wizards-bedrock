@@ -317,8 +317,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1041,
         file: "xtask/src/api/compile.rs",
-        find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
-        replace: "    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
+        find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !captured.status.success() {",
+        replace: "    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !captured.status.success() {",
         breaks: "the copied API-audit input is not rebound after each compiler graph completes",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -328,8 +328,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1042,
         file: "xtask/src/api/compile.rs",
-        find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
-        replace: "    workspace.require_copy_unchanged(expected)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
+        find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !captured.status.success() {",
+        replace: "    workspace.require_copy_unchanged(expected)?;\n    compiler.require_unchanged()?;\n    if !captured.status.success() {",
         breaks: "the original API-audit source is not rebound after each compiler graph completes",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1131,8 +1131,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1117,
         file: "xtask/src/api/compile.rs",
-        find: "                        crate::json::JsonValue::Object(_) => false,",
-        replace: "                        crate::json::JsonValue::Object(_) => bail!(\"primary API diagnostic has a nested expansion chain\"),",
+        find: "                crate::json::JsonValue::Object(_) => false,",
+        replace: "                crate::json::JsonValue::Object(_) => bail!(\"primary API diagnostic has a nested expansion chain\"),",
         breaks: "a classified primary diagnostic is rejected for retaining its lexical nested expansion policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1241,8 +1241,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1127,
         file: "xtask/src/api/compile.rs",
-        find: "                        macro_decl_name: macro_decl_name.to_string(),",
-        replace: "                        macro_decl_name: \"::wost::entry!\".to_string(),",
+        find: "                macro_decl_name: macro_decl_name.to_string(),",
+        replace: "                macro_decl_name: \"::wost::entry!\".to_string(),",
         breaks: "structured diagnostics rewrite every expansion's macro identity as wost entry",
         reddens: Caught::HostTest {
             package: "xtask",
