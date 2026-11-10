@@ -3,9 +3,10 @@
 Status: Accepted, 2026-08-24.
 
 **Context.** D-28 is the rule this project takes most seriously: every new check
-is broken once and watched go red, because a check that cannot fail is a false
-claim. Five adversarial audits have now found roughly twenty checks that could
-not fail, several in the same commit as an ADR asserting they had been broken.
+is broken once and watched go red, because a check that cannot fail is worth
+less than no check. It is also a claim. Five adversarial audits have now found
+roughly twenty checks that could not fail, several in the same commit as an ADR
+asserting they had been broken.
 
 The rule stands; **doing it by hand fails.** A break-test happens once, when the
 check is written, and never again. A check that *stops* being able to fail

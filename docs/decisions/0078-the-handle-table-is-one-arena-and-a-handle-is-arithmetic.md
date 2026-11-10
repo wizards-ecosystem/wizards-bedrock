@@ -2,11 +2,11 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** `002-architecture.md` owed "handle table representation and
-rights taxonomy" before Phase 5. `010` §3 answered the taxonomy: 16 to 24
-rights in one `u32`, each naming a distinction the kernel makes about the
-object, not a syscall. The layout and lifetime rules remained, and the first
-caller freezes them, so they come before the first object.
+**Context.** `002-architecture.md` owed "handle table representation and rights
+taxonomy" before Phase 5. `010` §3 answered the taxonomy: 16 to 24 rights in one
+`u32`, each naming a distinction the kernel makes about the object, not a
+syscall. The layout and lifetime rules remained, and they must be settled before
+the first object exists, because the first caller freezes them.
 
 **Decision.** One global arena, not per-process arrays. A slot's base value is
 `generation ‖ arena_index`; a process sees `(base_value << 2 | 0b11) ^
@@ -14,31 +14,31 @@ per_table_mixer`. Lookup is arithmetic and one ownership comparison. The
 encode/decode arithmetic goes to `libs/handle-space`; the kernel keeps the
 arena and the lock.
 
-- **No lowest-free promise.** The reserved low bits forbid a dense encoding,
-  so the promise cannot be made.
+- **No lowest-free promise.** The reserved low bits forbid a dense encoding, so
+  the promise is unmakeable rather than merely unmade.
 - **`HandleTable { table: AtomicPtr<HandleArray> }`**: Linux's
   `files_struct`/`fdtable` split, so readers can go lock-free later without
   touching a call site.
 - **The table is a refcounted object**, not an inline field of `Process`.
-- **Rights are 16 to 24 bits of one `u32`**, universal (`DUPLICATE`,
-  `TRANSFER`, `WAIT`, `INSPECT`) split from per-type.
-- **Type encodings have headroom for 64 object types.** Policy is monotonic
-  and frozen (tighten-only, immutable once a process has children); adding a
-  type never renumbers an existing one.
+- **Rights are 16 to 24 bits of one `u32`**, universal (`DUPLICATE`, `TRANSFER`,
+  `WAIT`, `INSPECT`) split from per-type.
+- **Type encodings have headroom for 64 object types.** Policy is monotonic and
+  frozen (tighten-only, immutable once a process has children); adding a type
+  never renumbers an existing one.
 - **Refcounts use `inc_not_zero` from day one.** Close promises no global
   visibility on return.
 - **No revocation.**
 - The per-process **quota** D-44 assigned to this doc is answered here: a
   process's kernel memory is bounded by what its handle table can name.
 
-**Rationale.** The encoding is Zircon's. Two independent research angles
-reached it separately: security, because generation tagging kills
-use-after-free on handle reuse, and scalability, via the Scalable
-Commutativity Rule. Zircon's contract commutes *as specified*. POSIX's "lowest
-free descriptor" is an ordering promise that serialises allocation. sv6
-measured the unordered alternative scaling linearly with **no single-core
-penalty**: "at one core, both cases perform identically." The scalable choice
-is free today, so it is taken now, not in Phase 12.
+**Rationale.** The encoding is Zircon's. Two independent research angles reached
+it separately: security, because generation tagging kills use-after-free on
+handle reuse, and scalability, via the Scalable Commutativity Rule. Zircon's
+contract commutes *by construction*. POSIX's "lowest free descriptor" does not:
+it is an ordering promise that serialises allocation. sv6 measured the unordered
+alternative scaling linearly with **no single-core penalty**: "at one core, both
+cases perform identically." The scalable choice is free today, so it is taken
+now, not in Phase 12.
 
 One-directional evidence settles the rights number: seL4 has 4, Zircon 25,
 CloudABI 31, Capsicum ~81. Capsicum's taxonomy outgrew a machine word and

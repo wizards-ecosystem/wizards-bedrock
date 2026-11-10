@@ -16,9 +16,9 @@ will not collect. The price of weak is that an orphaned end must say so, with
 messages survive the far end's death, because closing a peer does not reach into
 this end's inbox.
 
-The inbox is bounded at 16, and a full one returns `Full`. Nothing is silently
-dropped: this is the backpressure io_uring's `CQ_NODROP` provides, and the
-answer D-79 gave the completion queue.
+The inbox is bounded at 16, and a full one returns `Full`. That is backpressure,
+not a promise: nothing is silently dropped, which is what io_uring's `CQ_NODROP`
+exists to avoid, and it is the same answer D-79 gave the completion queue.
 
 **Decision: the rights.** Handles travel as `(object, rights)`, never as table
 values, because a handle value means nothing outside the table that minted it

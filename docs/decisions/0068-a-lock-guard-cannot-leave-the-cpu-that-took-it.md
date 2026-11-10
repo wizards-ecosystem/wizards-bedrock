@@ -7,10 +7,10 @@ drop; `ThreadLockGuard` holds a borrow of its lock. Both were `Send`, as
 everything they contain is, so nothing in the type system stopped a guard
 being released on another thread.
 
-On one CPU this is latent. On several it is the bug the interrupt-flag design
-exists to prevent: the restored flag would belong to the CPU that cleared it,
-leaving that CPU interruptible inside its critical section while another
-releases a lock it never took.
+On one CPU this is latent: there is nowhere else for it to go. On several it is
+the bug the interrupt-flag design exists to prevent: the restored flag would
+belong to the CPU that cleared it, leaving that CPU interruptible inside its
+critical section while another releases a lock it never took.
 
 **Decision.** At adoption both guards carried a private `PhantomData<*const
 ()>`, which made them `!Send` and `!Sync`. D-223 later centralizes the spin

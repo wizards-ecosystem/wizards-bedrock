@@ -20,18 +20,18 @@ the lost-wakeup re-check `002` already lists as owed before Phase 5.
 **Decision.** No SMP code this side of Phase 12. These rules cost nothing now
 and are expensive to retrofit:
 
-1. **The target model is one big kernel lock at first bring-up, with per-CPU
-   run queues and correct shootdown.** Today's coarse locking is the plan, not
-   debt.
-2. **Never write "disable interrupts" where "disable preemption" is meant.**
-   No preempt-disable mechanism exists yet: the frame's interrupt flag is the
-   only gate on preemption, so `SpinLock`'s `cli` does that job. A
+1. **The target model is one big kernel lock at first bring-up, with per-CPU run
+   queues and correct shootdown.** Today's coarse locking is the plan, not debt.
+2. **Never write "disable interrupts" where "disable preemption" is meant.** No
+   preempt-disable mechanism exists yet: the frame's interrupt flag is the only
+   gate on preemption, so `SpinLock`'s `cli` does that job. A
    preempt-disabled-interrupts-on lock is the common, much cheaper case; it
    arrives in Phase 5 with the per-CPU word D-56 anticipates.
-3. **No lock guard live across a context switch.** D-66's assert in
-   `prepare()` enforces it; this records its SMP rationale. Redox's
-   September-2025 multi-core hang took 292 lines of scoping to fix, so whoever
-   weakens the assert should know it guards two things.
+3. **No lock guard live across a context switch.** D-66's assert in `prepare()`
+   enforces it; this records its SMP rationale. Redox's September-2025
+   multi-core hang was this exact bug class, fixed with 292 lines of scoping for
+   precisely this, so whoever weakens the assert should know it guards two
+   things.
 4. **`Relaxed` requires justification the way `unsafe` does.** `Acquire` and
    `Release` generate the same code as `Relaxed` on x86-64, so correctness is
    free today and unobtainable later.

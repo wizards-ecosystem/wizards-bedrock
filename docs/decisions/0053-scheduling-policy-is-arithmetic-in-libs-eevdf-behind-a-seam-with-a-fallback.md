@@ -33,20 +33,19 @@ counter.
 
 **Consequences.**
 
-- Virtual time carries a `RESOLUTION` of 1024 units per unit of real time.
-  The fairness simulation found the heavy thread's clock still: one
-  millisecond at twice the base weight truncated to nothing. That test now
-  guards it.
-- Real time is charged in milliseconds from `uptime_ms`, and the start
-  stamp always advances to `now`. Time is conserved across stints even
-  when one stint is shorter than a millisecond: attributed coarsely, never
-  lost. Slice 3's finer clock refines the attribution.
-- The yield path excludes the running thread from the candidates but not
-  from the average, so "nobody else is eligible" is a valid answer there and
-  the thread keeps the CPU. The fallback counter is for the preemption
-  path, where everyone is considered. The first boot counted a fallback for
-  this reason, which the counter reported on day one.
-- Lag is clamped, not decayed: preserved across a sleep so a brief sleep
-  sheds no debt, capped at one slice so a long one banks no credit. That is
-  mainline's rule. The decay `008` described is a proposal there, to revisit
+- Virtual time carries a `RESOLUTION` of 1024 units per unit of real time. The
+  fairness simulation found the heavy thread's clock still: one millisecond at
+  twice the base weight truncated to nothing. That test now guards it.
+- Real time is charged in milliseconds from `uptime_ms`, and the start stamp
+  always advances to `now`. Time is conserved across stints even when one stint
+  is shorter than a millisecond: attributed coarsely, never lost. Slice 3's
+  finer clock refines the attribution.
+- The yield path excludes the running thread from the candidates but not from
+  the average, so "nobody else is eligible" is a valid answer there and the
+  thread keeps the CPU. The fallback counter is for the preemption path, where
+  everyone is considered. The first boot counted a fallback for this reason,
+  which the counter reported on day one.
+- Lag is clamped, not decayed: preserved across a sleep so a brief sleep sheds
+  no debt, capped at one slice so a long one banks no credit. That is mainline's
+  rule. The decay `008` described is a proposal there, and it can be revisited
   when something here can sleep (slice 4).

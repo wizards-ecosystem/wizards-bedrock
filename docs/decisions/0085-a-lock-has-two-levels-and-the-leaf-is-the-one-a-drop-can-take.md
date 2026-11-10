@@ -32,9 +32,10 @@ justification.
   for its life, so nothing that can block and no second lock is reachable while
   it is held.
 - **`lock_leaf()`** is for an acquisition that *is* the whole operation: take,
-  mutate, return, calling nothing. The obligation is on the body, which is short
-  enough to read. A leaf may be taken while a token-bearing lock is held, which
-  makes a nested acquisition sound.
+  mutate, return, calling nothing. The obligation is on the body, not the
+  caller, and it is short enough to read. A leaf may be taken while a
+  token-bearing lock is held, which makes a nested acquisition sound rather than
+  an exception.
 
 `try_lock` and `try_lock_leaf` mirror them. `ThreadLock` gets no token-bearing
 form. Its only holders are the two consoles, whose work is to format bytes and
@@ -73,8 +74,8 @@ token on every acquisition is unavailable at any price, because `Drop` impls
 exist.
 
 The heap restructure is the better half. D-47's order was the only one this
-kernel had, and refilling under the guard was convenient, not necessary.
-Deleting an order is worth more than type-checking it.
+kernel had, and it was there because refilling under the guard was convenient
+rather than necessary. Deleting an order is worth more than type-checking it.
 
 **Alternatives.** A token on every acquisition (rejected: `Drop` and
 `GlobalAlloc` cannot supply one, so the most critical sites would need an

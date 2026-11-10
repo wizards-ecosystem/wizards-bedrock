@@ -14,10 +14,11 @@ convert the interrupt trampoline to match (churn on the repo's most
 battle-tested assembly, for no behavioural change).
 
 **Decision.** `wost::task::switch` is a naked function: push the six
-callee-saved registers, store `rsp`, load the other, pop, `ret`. Nothing
-else crosses: the ABI lets a call clobber the rest, and without SSE there is
-no floating-point state. The interrupt trampoline is **not** converted, a
-judgement about churn to revisit when the trampoline next changes anyway.
+callee-saved registers, store `rsp`, load the other, pop, `ret`. Nothing else
+crosses: the ABI lets a call clobber the rest, and without SSE there is no
+floating-point state. The interrupt trampoline is **not** converted: that is a
+judgement about churn, and it may be revisited when the trampoline next changes
+for a reason of its own.
 
 The switch is `unsafe` and private. What the kernel calls (`switch_to`,
 `exit_to`, `fabricate`) is safe, on the grounds that make `activate` safe

@@ -7,10 +7,10 @@ critical section, named no bound, and declined a second lock type as "a type
 parameter with one useful value still". This phase's charter required a
 position: fix, or accept with the bound named.
 
-**What the measurement said.** A console scroll on the gate's own machine
-takes seventy milliseconds: a framebuffer moved and blitted under one lock,
-interrupts off throughout. No interrupt should wait behind that, and naming
-the bound would have meant accepting it.
+**What the measurement said.** A console scroll on the gate's own machine takes
+seventy milliseconds: a framebuffer moved and blitted under one lock, interrupts
+off throughout. That is not a latency for any interrupt to wait behind, and
+naming the bound would have meant accepting it.
 
 **Decision.** `wost::sync::ThreadLock`: a spinning lock that does *not*
 exclude interrupts and refuses to be taken from trap context. Both console

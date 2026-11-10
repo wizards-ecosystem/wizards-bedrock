@@ -2,13 +2,13 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** Since Phase 4, `002-architecture.md`'s security baseline has
-recorded two unguarded stacks, both owed to Phase 5's stack story: the boot
-thread's, which is the bootloader's, and the double-fault IST stack in `.bss`.
-Ordinary thread stacks have had guards since D-52. The double-fault stack is the
-worst of the three to leave bare. The CPU switches to it when the kernel is
-*already* in trouble, and an overrun there silently runs into whatever the
-linker placed next.
+**Context.** `002-architecture.md`'s security baseline has recorded two
+exceptions since Phase 4: *"Two stacks remain unguarded: the boot thread's,
+which is the bootloader's, and the double-fault IST stack in `.bss` — both owed
+to Phase 5's stack story."* Ordinary thread stacks have had guards since D-52.
+The double-fault stack is the worst of the three to leave bare. The CPU switches
+to it when the kernel is *already* in trouble, and an overrun there silently
+runs into whatever the linker placed next.
 
 Until D-86 nothing could be done: mapping was one-way, and the IST stack has to
 exist before paging does.
@@ -33,11 +33,11 @@ bootloader's stack. It lies inside the direct map, which uses two-megabyte pages
 on purpose (D-45, confirmed by `010` §8). Guarding it means splitting a large
 page there, which D-88 refuses and which starts losing the property `010`
 measured as worth keeping. Or it means moving the boot thread onto its own
-stack, switching `RSP` under a running call chain. That is the answer, but it
-needs a naked function that never returns, and it interacts with the trap entry
-rework slice 4 is about to do. **It is therefore slice 4's, not this slice's.**
-Waiting costs one unnoticed stack overflow on a kernel that runs no untrusted
-code yet.
+stack, switching `RSP` under a running call chain. That is the real answer, and
+it is not free: it needs a naked function that never returns, and it interacts
+with the trap entry rework slice 4 is about to do. **It is therefore slice 4's,
+not this slice's.** Waiting costs one thread's stack overflow going unnoticed on
+a kernel that is not yet running untrusted code.
 
 **Rationale.** Half a debt paid with a check that can go red beats a whole one
 deferred, and this half matters more. A thread stack overrun corrupts a
@@ -58,9 +58,10 @@ it as a thread slot, and the two lifetimes differ). Leave both until slice 4
 
 - `002`'s security baseline loses one of its two exceptions; the remaining one
   now names slice 4 and says what waiting costs.
-- The check is structural, as every guard check here is (D-52), because the
-  fault is terminal. The interrupt-stack entry points at the top of the region,
-  every page of it is writable and never executable, and every page below it is
-  absent. The break maps the region starting at the guard, and it goes red.
+- The check is structural, as every guard check here is (D-52): the fault is
+  terminal, so what is asserted is what the tables say. The interrupt-stack
+  entry points at the top of the region, every page of it is writable and never
+  executable, and every page below it is absent. The break maps the region
+  starting at the guard, and it goes red.
 - `with_active_space` stops being `#[cfg(feature = "selftest")]`.
 - Eighty-five named machine checks.

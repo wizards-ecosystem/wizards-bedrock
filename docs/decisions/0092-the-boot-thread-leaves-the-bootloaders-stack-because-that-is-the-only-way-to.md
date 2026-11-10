@@ -28,7 +28,7 @@ abandoned, so a pointer into it would point at memory nothing owns.
 sixteen-byte aligned at a function's first instruction. The eight bytes are
 subtracted at the load instead. D-76 found the same off-by-one word in the
 fabricated first frame, where it was symptomless without SSE and invisible to
-every register check.
+every register check. Writing it down here is cheaper than finding it twice.
 
 **Rationale.** `000-vision.md` claims "ordinary thread stacks guarded" and `002`
 carried two exceptions for two phases. Exceptions to a security baseline decay
@@ -38,14 +38,15 @@ stack would trade a measured property for an unmeasured one.
 
 **The check runs on the stack it is about**, which makes it more than
 structural. The stack pointer under it must be inside the mapped region, so a
-switch that silently did not happen fails. The break declines the switch, and it
-goes red.
+switch that silently did not happen fails, where a check reading only the tables
+would pass on their strength alone. The break declines the switch, and it goes
+red.
 
 **Alternatives.** Split the direct map (rejected: D-88 refuses it, D-45 and
 `010` §8 say keep it whole). Leave the boot thread parked so its stack stops
 growing (rejected: it guards nothing, it only makes an overrun less likely).
 Make `continue_on_stack` `unsafe` (rejected: `kernel` may not contain an unsafe
-block (D-13), so the evidence must be in the type or the switch is unreachable
+block (D-13), so the evidence has to be in the type or the switch is unreachable
 from where it is needed).
 
 **Consequences.**
@@ -54,7 +55,8 @@ from where it is needed).
   kernel runs on (boot, thread, double-fault) has an unmapped page beneath it,
   and each has a check that goes red without it.
 - `AddressSpace::map_stack` is now the one place a guarded stack is made. D-89's
-  fault stack keeps its own mapping call for now; folding it in is tidying.
+  fault stack keeps its own mapping call for now; folding it in is tidying, not
+  a decision.
 - Three windows now derive from the thread arena's end instead of being
   hardcoded, so none of them changes D-46's KASLR ledger.
 - A kernel that cannot map the stack keeps the bootloader's and says so. Every

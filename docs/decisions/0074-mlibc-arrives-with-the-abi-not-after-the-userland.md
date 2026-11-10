@@ -6,16 +6,15 @@ Status: Accepted, 2026-08-23. Amends D-10.
 the roadmap put in Phase 9, after a native userland in Phase 7. The 2026-08-23
 research found that order means writing the userland twice.
 
-It also priced the translation layer, which the plan costed at zero. Fuchsia
-ran this experiment (capability handles with POSIX confined to a userspace
-layer) and reversed. RFC-0082 records that POSIX Lite omits *"parts of POSIX
-that imply mutable global state… because Fuchsia is designed around an
-object-capability discipline"*. The answer was Starnix, a Linux kernel in
-userspace at ≥15 MB of Rust and 493 syscall-table entries, which implements
-`fork`. Plan 9's APE hit the same wall thirty years earlier (uid/gid, umask,
-controlling tty, `link`, `sigprocmask`), and Pike estimated the tax: *"90-95%
-of the work in Plan 9 was directly or indirectly to honor externally imposed
-standards."*
+It also priced the translation layer, which the plan costed at zero. Fuchsia ran
+this experiment (capability handles with POSIX confined to a userspace layer)
+and reversed. RFC-0082 records that POSIX Lite omits *"parts of POSIX that imply
+mutable global state… because Fuchsia is designed around an object-capability
+discipline"*. The answer was Starnix, a Linux kernel in userspace at ≥15 MB of
+Rust and 493 syscall-table entries, which implements `fork`. Plan 9's APE hit
+the same wall thirty years earlier (uid/gid, umask, controlling tty, `link`,
+`sigprocmask`), and Pike estimated the tax: *"90–95% of the work in Plan 9 was
+directly or indirectly to honor externally imposed standards."*
 
 mlibc's numbers: 296 sysdep tags, 16 mandatory ("enough for a basic
 statically-linked hello world"); real ports implement 147 to 202, and all

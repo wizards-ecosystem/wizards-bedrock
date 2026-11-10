@@ -5,8 +5,8 @@ Status: Accepted, 2026-08-23.
 **Context.** This log has two statuses: **Accepted**, and **Verified** for
 decisions supported by `003`'s adversarially-verified tier. The 2026-08-23
 research pass found the strongest label claiming more than the evidence
-supports. D-13, the framekernel and the project's most structural decision, is
-marked **Verified** on one paper with *no independent replication*, whose
+supports. D-13, the framekernel, is the project's most structural decision. It
+is marked **Verified** on one paper with *no independent replication*, whose
 headline TCB figure does not survive scrutiny. `008` §7 already recorded that;
 the ADR did not.
 

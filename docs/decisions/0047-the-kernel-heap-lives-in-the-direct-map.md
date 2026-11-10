@@ -63,10 +63,10 @@ when a print is added measures the optimiser, not the kernel.
 
 The replacement counts instead of comparing. `live` moving and returning says
 the round trip happened, and `slab_frames` standing still says the free list
-served it; neither depends on where the slot is or what the compiler did.
-It is the phase's second check whose *early-exit or identity assumption*
-was the defect, after D-43's zeroing check; both were found only because
-D-28 requires breaking every new check once.
+served it; neither depends on where the slot is or what the compiler did. It is
+the phase's second check whose *early-exit or identity assumption* was the
+defect rather than the code under test, after D-43's zeroing check; both were
+found only because D-28 requires breaking every new check once.
 
 A lock-order note for Phase 4: `heap.rs` takes `FRAMES` while holding `HEAP`,
 during a slab refill. Nothing yet allocates from the heap while holding the

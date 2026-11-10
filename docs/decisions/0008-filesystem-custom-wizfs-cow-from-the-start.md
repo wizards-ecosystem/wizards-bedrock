@@ -29,10 +29,9 @@ backed):
   (write hole)
 
 **Risk management.** Phase 13 will put the on-disk format in a host-compiling
-`libs/wizfs-format` no-std crate, so the code the kernel mounts is
-unit-tested and fuzzed on Windows. WizFS must carry
-POSIX semantics (permissions, symlinks, timestamps) or the D-10 ports
-suffer.
+`libs/wizfs-format` no-std crate, so the same code the kernel mounts can be
+unit-tested and fuzzed on Windows. WizFS must carry POSIX semantics
+(permissions, symlinks, timestamps) or the D-10 ports suffer.
 
 **Consequences.** The project's highest-risk subsystem (a wrong custom FS
 eats data); the mitigations above are non-negotiable.

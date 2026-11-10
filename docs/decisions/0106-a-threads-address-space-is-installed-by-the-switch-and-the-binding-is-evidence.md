@@ -26,8 +26,8 @@ addresses would not.
 
 The binding happens while the new slot is still `Reserved`, after `wost` has a
 slot and before anything can schedule it. That window is why `spawn_in_space`
-exists: a thread's tables and whatever its entry point must find are in place
-before its first instruction.
+exists: a thread's tables and whatever its entry point must find have to be in
+place before its first instruction, not racing it.
 
 **Rationale.** The other shapes put the `CR3` write somewhere that runs *less*
 often than a switch, which sounds cheaper and is wrong. Only the switch sees a
@@ -57,7 +57,7 @@ Left owed: an `AddressSpace` still has no `Drop`. The intended path is
 `reclaim`, which D-117 added and the zombie collector calls, so a *retired
 program's* space is given back. A space built and **abandoned** without that
 call still costs its table frames, as does a half-loaded program's memory. This
-is bounded today (three programs and a handful of refusals per boot), and D-44's
-accounting settles it. ~~Nothing yet unmaps a retired thread's space~~ (**closed
-by D-117**), and `APART` still separates two programs' addresses where it no
-longer needs to.
+is bounded today (three programs and a handful of refusals per boot) and named
+here rather than carried quietly; D-44's accounting is where it is settled.
+~~Nothing yet unmaps a retired thread's space~~ (**closed by D-117**), and
+`APART` still separates two programs' addresses where it no longer needs to.

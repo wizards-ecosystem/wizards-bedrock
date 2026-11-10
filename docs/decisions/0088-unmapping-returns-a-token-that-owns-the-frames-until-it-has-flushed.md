@@ -46,8 +46,9 @@ asking the wrong question.
 **Rationale.** The token shape is what D-70 asked for, and its value is
 invisible on one CPU. A caller taking several mappings away pays one
 invalidation instead of one each, and a future SMP shootdown has something to
-batch. The ownership arrangement *is* visible on one CPU, and it must be settled
-now, because a guess there would be unsound.
+batch. The ownership arrangement *is* visible on one CPU, and that is the half
+worth getting right now, because it is the half that would be unsound if
+guessed.
 
 Frames inside the token make the design correct; frames returned beside it would
 make it correct only *if callers are careful*. D-79 applied the same reasoning
