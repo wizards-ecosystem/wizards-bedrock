@@ -1,8 +1,4 @@
-//! The operand the descriptor table registers are loaded from.
-//!
-//! `lgdt`, `lidt` and their `s`-prefixed counterparts all read or write the same
-//! ten bytes: a limit and a base, in that order and with no padding between
-//! them.
+//! The ten-byte operand `lgdt`, `lidt` and their `s` forms share: a limit then a base, unpadded.
 
 use core::fmt;
 
@@ -37,8 +33,7 @@ impl TablePointer {
 }
 
 impl fmt::Debug for TablePointer {
-    /// Hand-written because fields of a packed struct cannot be borrowed, which
-    /// is what a derived implementation does.
+    /// Hand-written, since a derived implementation borrows fields a packed struct cannot lend.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TablePointer")
             .field("base", &self.base())

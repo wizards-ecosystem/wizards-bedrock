@@ -2,8 +2,8 @@ use super::*;
 
 /// Where the innermost live handler's assembly frame begins.
 ///
-/// A number rather than a pointer: nothing safe can reach the frame through
-/// it, and the machine selftest needs only to subtract.
+/// A number instead of a pointer, so nothing safe can reach the frame through it; the machine
+/// selftest needs only to subtract.
 #[doc(hidden)]
 #[cfg(feature = "selftest")]
 pub fn live_frame_address() -> u64 {
@@ -12,11 +12,11 @@ pub fn live_frame_address() -> u64 {
 
 /// The privilege level that may reach `vector` with `int`.
 ///
-/// Read back from the table the CPU is walking, not from what was asked for.
+/// Read back from the table the CPU is walking instead of from what was asked for.
 #[cfg(feature = "selftest")]
 pub fn gate_privilege(vector: u8) -> u8 {
-    // SAFETY: the table is written once by `init` and never again, and this
-    // reads one gate of it by value.
+    // SAFETY: the table is written once by `init` and never again, and this reads one gate of it
+    // by value.
     let gates = unsafe { &*IDT.as_mut_ptr() };
     gates[vector as usize].privilege()
 }
@@ -30,13 +30,12 @@ pub fn access_clear_is_armed() -> bool {
 
 /// How many times the buffer flush has actually executed.
 ///
-/// Counted conditionally after `verw`, so the tally witnesses execution rather
-/// than only an armed branch (D-101, D-105).
+/// Counted conditionally after `verw`, so the tally witnesses execution, not only an armed branch.
 #[cfg(feature = "selftest")]
 pub fn buffer_clears() -> u64 {
     let counter = core::ptr::addr_of!(BUFFER_CLEARS);
-    // SAFETY: naturally aligned and written only by an `inc` from the one
-    // CPU's own asm, so a read sees one value and never a mixture.
+    // SAFETY: naturally aligned and written only by an `inc` from the one CPU's own asm, so a read
+    // sees one value and never a mixture.
     unsafe { counter.read_volatile() }
 }
 
@@ -53,8 +52,7 @@ pub fn buffer_clear_is_armed() -> bool {
     unsafe { MDS_CLEAR == 1 }
 }
 
-/// Whether the CPU's interrupt descriptor table register points at the table
-/// [`init`] built, with the limit it wrote.
+/// Whether the CPU's IDT register points at the table [`init`] built, with the limit it wrote.
 #[cfg(feature = "selftest")]
 pub fn table_is_loaded() -> bool {
     idt_is_loaded()
@@ -105,8 +103,7 @@ pub fn breakpoint() {
         table_is_loaded(),
         "load the interrupt table before raising a breakpoint"
     );
-    // SAFETY: `int3` raises vector 3, whose gate the assert confirmed loaded.
-    // `rax` is caller-saved, and exposing the interrupted `rsp` through it
-    // lets the machine selftest distinguish a saved word from adjacent stack.
+    // SAFETY: `int3` raises vector 3, whose gate the assert confirmed loaded; `rax` is
+    // caller-saved, and the `rsp` it carries lets the selftest tell a saved word from the stack.
     unsafe { asm!("mov rax, rsp", "int3", out("rax") _) };
 }

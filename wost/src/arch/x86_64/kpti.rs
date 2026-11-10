@@ -1,8 +1,7 @@
 //! The linker-owned entry enclave and its fail-closed CPU-local route.
 //!
-//! D-407's stripped root may map only the ranges described by
-//! [`EntryEnclave`]. A published route is authority only while its complete
-//! root pair and guarded entry stacks match the state installed on this CPU.
+//! The stripped root may map only the ranges [`EntryEnclave`] describes. A published route is
+//! authority only while its complete root pair and guarded entry stacks match this CPU's state.
 
 use core::mem::{offset_of, size_of};
 #[cfg(feature = "selftest")]
@@ -73,7 +72,7 @@ impl EnclaveMapping {
     }
 }
 
-/// Validated, unforgeable linker geometry for D-407's entry enclave.
+/// Validated, unforgeable linker geometry for the entry enclave.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EntryEnclave {
     mappings: [EnclaveMapping; 6],
@@ -223,16 +222,27 @@ const _: () = {
     assert!(size_of::<RoutingPage>() == 88);
 };
 
-pub(super) const ROUTE_STATE_OFFSET: usize = offset_of!(RoutingPage, state);
-pub(super) const ROUTE_FULL_ROOT_OFFSET: usize = offset_of!(RoutingPage, full_root);
-pub(super) const ROUTE_STRIPPED_ROOT_OFFSET: usize = offset_of!(RoutingPage, stripped_root);
-pub(super) const ROUTE_TASK_STACK_TOP_OFFSET: usize = offset_of!(RoutingPage, task_stack_top);
-pub(super) const ROUTE_TRANSITION_STACK_TOP_OFFSET: usize =
-    offset_of!(RoutingPage, transition_stack_top);
-pub(super) const ROUTE_INTERRUPT_STACK_TOP_OFFSET: usize =
-    offset_of!(RoutingPage, interrupt_stack_top);
-pub(super) const ROUTE_STRIPPED_ENTRIES_OFFSET: usize = offset_of!(RoutingPage, stripped_entries);
-pub(super) const ROUTE_PREPARED_RETURNS_OFFSET: usize = offset_of!(RoutingPage, prepared_returns);
+/// Byte offsets of the routing page's fields, as the entry assembly addresses them.
+pub(super) mod route {
+    use core::mem::offset_of;
+
+    use super::RoutingPage;
+
+    pub(in crate::arch::x86_64) const STATE: usize = offset_of!(RoutingPage, state);
+    pub(in crate::arch::x86_64) const FULL_ROOT: usize = offset_of!(RoutingPage, full_root);
+    pub(in crate::arch::x86_64) const STRIPPED_ROOT: usize = offset_of!(RoutingPage, stripped_root);
+    pub(in crate::arch::x86_64) const TASK_STACK_TOP: usize =
+        offset_of!(RoutingPage, task_stack_top);
+    pub(in crate::arch::x86_64) const TRANSITION_STACK_TOP: usize =
+        offset_of!(RoutingPage, transition_stack_top);
+    pub(in crate::arch::x86_64) const INTERRUPT_STACK_TOP: usize =
+        offset_of!(RoutingPage, interrupt_stack_top);
+    pub(in crate::arch::x86_64) const STRIPPED_ENTRIES: usize =
+        offset_of!(RoutingPage, stripped_entries);
+    pub(in crate::arch::x86_64) const PREPARED_RETURNS: usize =
+        offset_of!(RoutingPage, prepared_returns);
+}
+
 pub(super) const RECORD_TRANSITION_EVIDENCE: bool = cfg!(feature = "selftest");
 
 #[unsafe(no_mangle)]
@@ -250,6 +260,7 @@ struct TransitionStack([u8; STACK_BYTES]);
 #[unsafe(link_section = ".kpti.state.transition_stack")]
 static TRANSITION_STACK: HardwareCell<TransitionStack> =
     HardwareCell::new(TransitionStack([0; STACK_BYTES]));
+
 /// Publish one inseparable pair and its ordinary kernel-stack destination.
 pub(super) fn publish_route(
     roots: &AddressSpaceRoots,
@@ -305,10 +316,8 @@ pub(super) fn publish_route(
 }
 
 fn refuse_route(reason: RouteError) -> Result<(), RouteError> {
-    // `ROUTE_UPDATING` is deliberately retained. It is not entry authority,
-    // and assembly makes every interrupt terminal until the caller either
-    // clears the transaction or stops, so a refused successor cannot revive
-    // the previously published task.
+    // `ROUTE_UPDATING` stays: it is no entry authority, and assembly makes every interrupt
+    // terminal until the caller clears it or stops, so a refused successor cannot revive the task.
     Err(reason)
 }
 

@@ -15,25 +15,25 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/cpu/selftest.rs",
         3,
         0,
-        "b508aed503c23ba4e0f0eaf43517b3723cf9eef29f4715083daaa8133c942133",
+        "89f22b42087d4c1534c5033fbbaaae6609238b85be426a93d69aa762aa3c5069",
     ),
     (
         "wost/src/arch/x86_64/cpu.rs",
         19,
         3,
-        "5c167d8a2c6052ee5afde52b27ff45f788d091d50e64e903345cad9c3e74ebe3",
+        "27bf4f0b248bff8e656a29be5212af65701c2cababaa232248dda5a7430cf33c",
     ),
     (
         "wost/src/arch/x86_64/interrupt/selftest.rs",
         5,
         0,
-        "61cd4851244afe7a2db0078bbcc64d96b8ef78bf77e91c65c3a765976dcd96ac",
+        "85985e4fd6349da23fe9006150ce9e84e61a97a14f341a59b8fc4363ef254773",
     ),
     (
         "wost/src/arch/x86_64/interrupt.rs",
         18,
         2,
-        "4518b1f3c0f0368e0ffe264c1d831220273bb108ef2c4233100f11719b8031a6",
+        "08a9ed8e585ce741be685dd5105d4f850ccb64ad8cd774ca0cec330fa80e173a",
     ),
     (
         "wost/src/arch/x86_64/kpti/selftest.rs",
@@ -45,7 +45,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/msr.rs",
         2,
         1,
-        "2cb6c33ff4f764985b6e0f0fd7a5c1a8bfa1c923ab30f80cf55f233178632b31",
+        "407d0484139a54dbe47474bdbac71960767a254d9e18ef51f28bb305a6014cd4",
     ),
     (
         "wost/src/arch/x86_64/paging/activation.rs",
@@ -93,7 +93,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/percpu.rs",
         2,
         0,
-        "b6bcf82a97b5f027384c97b04ed72ba82eafb439eb2d3a357a2c76aa614bcae1",
+        "46559faaf62aeca696b53789125d72b8c87210d92c82baa272bd063de62d1429",
     ),
     (
         "wost/src/arch/x86_64/port.rs",
@@ -111,7 +111,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/segment.rs",
         11,
         0,
-        "91cc1db000b01a31cbeb4665a04b1e102a1e582f70f9698f685fe34543459ade",
+        "be3f210bab1821404aea54d700adb26ca7135f73e24da2cdacab2a32098355b8",
     ),
     (
         "wost/src/arch/x86_64/shared_memory.rs",
@@ -123,25 +123,25 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/task.rs",
         14,
         2,
-        "41288f0856c0cb1724cc0bcfebccc1d71158d79f425b13727efbba50224c8599",
+        "a0fb58e15e2303aadae86602bda429d6b479d16c19bd621b6bcf5742e7cbe356",
     ),
     (
         "wost/src/arch/x86_64/usercopy.rs",
         5,
         1,
-        "c2f09adf3aa42f0d74ae8c89707d16e448ff9f404c53420ff2ba40db16e943e8",
+        "0da087f637bbf6c348a3622d8310e989c9d3da27738ba47d3b481a45b0e55d0e",
     ),
     (
         "wost/src/arch/x86_64/xstate/selftest.rs",
         3,
         0,
-        "0dad190e439ab632ed5b49a12439586c2db3bfe449b29ac2ac48647eea9b7c71",
+        "c2c92eecba90b107820cdf1ea5acf4873a23f1363cf37b60ad18917e549c5d81",
     ),
     (
         "wost/src/arch/x86_64/xstate.rs",
         6,
         3,
-        "68f4111753047a1178581f2a099ad80c7fec2c610802fd5ee7597c6543a066fa",
+        "14ee51b5ad731b63a5ed1a2e9c44ae92f67c319b920793142d3d4a6482ddc625",
     ),
     (
         "wost/src/boot/limine_glue.rs",
@@ -207,7 +207,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/sync.rs",
         4,
         4,
-        "9d43efe2228aa69f08eea0ac0522f903014b33db2d3dd133c1d40885bdf8dc91",
+        "2537badb41ed424f65db0c0d80bb0e8c0d7bac00a49ab2d37720d2aa6ae2ec75",
     ),
 ];
 
