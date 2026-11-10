@@ -215,7 +215,8 @@ fn run_campaign(paths: &Paths) -> Result<()> {
         requested_tools == tools,
         "the observed campaign differs from its source-bound request"
     );
-    // The completeness witness, doctest proof and adjudication policy come from this checkout, never the observed run.
+    // The completeness witness, doctest proof and adjudication policy come from this checkout,
+    // never the observed run.
     let inventory = capture_inventory(&tools, paths, &private_temp)?;
     let doctest = capture_doctest(&tools, paths, &private_temp)?;
     verify_doctest(&doctest)?;
@@ -225,7 +226,8 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     let (mut grade, noncaught) = parse_outcomes(&outcomes, &candidates)?;
     grade.adjudicated = verify_adjudications(&adjudications, &noncaught)?;
     require_campaign_success(result.status, &grade, &root)?;
-    // Rebind source and both tools after inventory and doctests use them, immediately before any pass.
+    // Rebind source and both tools after inventory and doctests use them,
+    // immediately before any pass.
     require_campaign_identity(
         attempt.source(),
         &qualification::source_identity(paths.root())?,

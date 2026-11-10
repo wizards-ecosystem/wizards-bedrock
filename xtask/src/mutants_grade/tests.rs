@@ -260,7 +260,8 @@ fn the_owned_output_directory_is_the_one_the_recorder_reads() {
         .windows(2)
         .find(|pair| pair[0] == "--output")
         .map(|pair| pair[1]);
-    // cargo-mutants 27.1.0 creates `mutants.out` inside `--output` (its `output.rs`); the recorder reads it.
+    // cargo-mutants 27.1.0 creates `mutants.out` inside `--output` (its `output.rs`);
+    // the recorder reads it.
     assert_eq!(output, Some("<xtask-owned-directory>"));
     assert_eq!(
         output_directory(Path::new("grade")),

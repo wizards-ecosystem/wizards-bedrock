@@ -457,7 +457,8 @@ fn an_exact_host_witness_must_run() {
     assert!(assess_host_test(name, false, "", "compiler error", "1").is_err());
 }
 
-/// A generic panic would credit an unrelated crash, and a reasonless one would dodge naming a check.
+/// A generic panic would credit an unrelated crash,
+/// and a reasonless one would dodge naming a check.
 #[test]
 fn a_panicking_mutation_names_an_exact_marker_and_why_it_is_terminal() {
     for mutation in mutations() {

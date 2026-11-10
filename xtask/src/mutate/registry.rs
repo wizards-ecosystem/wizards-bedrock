@@ -114,7 +114,8 @@ const SHARDS: &[&[Mutation]] = &[
     repository::MUTATIONS,
 ];
 
-/// Every defect removes a load-bearing guard, bound or strip; one that cannot compile tests nothing.
+/// Every defect removes a load-bearing guard, bound or strip;
+/// one that cannot compile tests nothing.
 pub fn mutations() -> impl Iterator<Item = &'static Mutation> {
     SHARDS.iter().flat_map(|shard| shard.iter())
 }
