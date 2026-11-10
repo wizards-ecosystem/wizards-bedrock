@@ -302,7 +302,51 @@ pub(super) fn verify_support(
     kind: Kind,
     root: &Path,
 ) -> Result<()> {
-    let artifacts: Vec<(&str, &str)> = match kind {
+    for (prefix, name) in &support_artifacts(kind) {
+        ensure!(
+            record.get(&format!("{prefix}.path"))? == *name,
+            "{prefix} names an unexpected qualification path"
+        );
+        let path = root.join(kind.slug()).join(name);
+        require_regular_file(&path, prefix)?;
+        require_artifact_size(kind, name, &path)?;
+        let (maximum, _) = artifact_size_policy(kind, name)?;
+        let digest = digest_file_bounded(&path, maximum)?;
+        ensure!(
+            record.get(&format!("{prefix}.bytes"))? == digest.bytes.to_string(),
+            "{prefix} length differs from its qualification record"
+        );
+        ensure!(
+            record.get(&format!("{prefix}.sha256"))? == digest.sha256,
+            "{prefix} digest differs from its qualification record"
+        );
+        if kind == Kind::Model {
+            let bytes = read_bounded_file(
+                &path,
+                MAX_MODEL_TRANSCRIPT_BYTES,
+                "model qualification transcript",
+            )?;
+            crate::model::verify_transcript(name, &bytes)?;
+        }
+        if kind == Kind::Advisory && *name == ADVISORY_POLICY_PATH {
+            let bytes = read_bounded_file(&path, MAX_ADVISORY_POLICY_BYTES, "advisory policy")?;
+            ensure!(
+                bytes == ADVISORY_POLICY.as_bytes(),
+                "advisory policy differs from the no-ignore phase-close policy"
+            );
+        }
+    }
+    if kind == Kind::Advisory {
+        verify_advisory_support(record, &root.join(kind.slug()))?;
+    }
+    if matches!(kind, Kind::VmwareSelfTest | Kind::VmwareShipped) {
+        verify_vmware_observer(paths, record, kind, root)?;
+    }
+    Ok(())
+}
+
+fn support_artifacts(kind: Kind) -> Vec<(&'static str, &'static str)> {
+    match kind {
         Kind::Advisory => vec![
             ("artifact.policy", ADVISORY_POLICY_PATH),
             ("artifact.refresh-transcript", ADVISORY_REFRESH_TRANSCRIPT),
@@ -339,63 +383,26 @@ pub(super) fn verify_support(
             ("artifact.handoff", VMWARE_HANDOFF),
             ("artifact.transcript", VMWARE_TRANSCRIPT),
         ],
-    };
-    for (prefix, name) in &artifacts {
-        ensure!(
-            record.get(&format!("{prefix}.path"))? == *name,
-            "{prefix} names an unexpected qualification path"
-        );
-        let path = root.join(kind.slug()).join(name);
-        require_regular_file(&path, prefix)?;
-        require_artifact_size(kind, name, &path)?;
-        let (maximum, _) = artifact_size_policy(kind, name)?;
-        let digest = digest_file_bounded(&path, maximum)?;
-        ensure!(
-            record.get(&format!("{prefix}.bytes"))? == digest.bytes.to_string(),
-            "{prefix} length differs from its qualification record"
-        );
-        ensure!(
-            record.get(&format!("{prefix}.sha256"))? == digest.sha256,
-            "{prefix} digest differs from its qualification record"
-        );
-        if kind == Kind::Model {
-            let bytes = read_bounded_file(
-                &path,
-                MAX_MODEL_TRANSCRIPT_BYTES,
-                "model qualification transcript",
-            )?;
-            crate::model::verify_transcript(name, &bytes)?;
-        }
-        if kind == Kind::Advisory && *name == ADVISORY_POLICY_PATH {
-            let bytes = read_bounded_file(&path, MAX_ADVISORY_POLICY_BYTES, "advisory policy")?;
-            ensure!(
-                bytes == ADVISORY_POLICY.as_bytes(),
-                "advisory policy differs from the no-ignore phase-close policy"
-            );
-        }
     }
-    if kind == Kind::Advisory {
-        let directory = root.join(kind.slug());
-        let refresh = read_bounded_file(
-            &directory.join(ADVISORY_REFRESH_TRANSCRIPT),
-            MAX_ADVISORY_TRANSCRIPT_BYTES,
-            "cargo-audit population transcript",
-        )?;
-        let pinned = read_bounded_file(
-            &directory.join(ADVISORY_TRANSCRIPT),
-            MAX_ADVISORY_TRANSCRIPT_BYTES,
-            "cargo-audit transcript",
-        )?;
-        let attestation =
-            verify_advisory_transcripts(&refresh, &pinned, record.get("database.revision")?)?;
-        ensure!(
-            record.get("database.last-updated")? == attestation.last_updated,
-            "advisory record names another database update time"
-        );
-    }
-    if matches!(kind, Kind::VmwareSelfTest | Kind::VmwareShipped) {
-        verify_vmware_observer(paths, record, kind, root)?;
-    }
+}
+
+fn verify_advisory_support(record: &Record, directory: &Path) -> Result<()> {
+    let refresh = read_bounded_file(
+        &directory.join(ADVISORY_REFRESH_TRANSCRIPT),
+        MAX_ADVISORY_TRANSCRIPT_BYTES,
+        "cargo-audit population transcript",
+    )?;
+    let pinned = read_bounded_file(
+        &directory.join(ADVISORY_TRANSCRIPT),
+        MAX_ADVISORY_TRANSCRIPT_BYTES,
+        "cargo-audit transcript",
+    )?;
+    let attestation =
+        verify_advisory_transcripts(&refresh, &pinned, record.get("database.revision")?)?;
+    ensure!(
+        record.get("database.last-updated")? == attestation.last_updated,
+        "advisory record names another database update time"
+    );
     Ok(())
 }
 
