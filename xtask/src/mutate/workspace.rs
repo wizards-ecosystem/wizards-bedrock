@@ -229,7 +229,8 @@ impl Session {
         self.store.save(&mut self.journal)
     }
 
-    /// `ids` are permanent identities in sweep order; the durable report names each outcome by them.
+    /// `ids` are permanent identities in sweep order;
+    /// the durable report names each outcome by them.
     pub fn complete(mut self, ids: &[u16]) -> Result<Vec<Outcome>> {
         ensure!(self.journal.active.is_none(), "a mutation is still active");
         ensure!(

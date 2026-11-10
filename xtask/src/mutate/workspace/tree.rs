@@ -84,7 +84,8 @@ pub(crate) fn canonical_existing_real_directory(path: &Path, label: &str) -> Res
         .with_context(|| format!("canonicalizing {}", absolute.display()))
 }
 
-/// The handle, opened without following any component, is the authority for later relative operations.
+/// The handle, opened without following any component,
+/// is the authority for later relative operations.
 pub(crate) fn open_real_directory(path: &Path, label: &str) -> Result<File> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -304,7 +305,8 @@ pub(crate) fn require_direct_file_if_present(
     Ok(true)
 }
 
-/// A path check alone cannot stop a link swapped in before an ordinary open, so the handle is checked.
+/// A path check alone cannot stop a link swapped in before an ordinary open,
+/// so the handle is checked.
 pub(crate) fn open_real_file(path: &Path, label: &str) -> Result<File> {
     let file =
         open_without_following(path).with_context(|| format!("opening {}", path.display()))?;

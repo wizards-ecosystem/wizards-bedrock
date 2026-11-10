@@ -16,7 +16,8 @@ use super::tree::{
 };
 use super::{STATE_ROOT_NAME, read_bounded_bytes};
 
-// Bounded, yet long enough that Git contending with the host suite on release builders never fails the gate.
+// Bounded, yet long enough that Git contending with the host suite on release builders
+// never fails the gate.
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
@@ -252,7 +253,8 @@ pub(super) fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Resul
     Ok(())
 }
 
-/// Never copied: `fs::copy` keeps an old timestamp, so Cargo would call a restore fresh and keep the defect.
+/// Never copied: `fs::copy` keeps an old timestamp,
+/// so Cargo would call a restore fresh and keep the defect.
 pub(super) fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
     write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))
 }

@@ -487,7 +487,8 @@ const HOST_TEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 static HOST_TEST_TEMPORARIES: AtomicU64 = AtomicU64::new(0);
 
-/// A caught mutation can strand fixed-name scratch that would redden every later witness reserving it.
+/// A caught mutation can strand fixed-name scratch
+/// that would redden every later witness reserving it.
 fn fresh_host_test_temporary(paths: &Paths) -> Result<PathBuf> {
     let target = paths.target_dir();
     let parent = target.join("host-temp");

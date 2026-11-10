@@ -1172,7 +1172,8 @@ fn a_recopied_workspace_is_what_the_next_build_observes() {
     assert_eq!(observed(&paths), "1");
 }
 
-/// The helper a parent test kills while a mutation is active; ignored unless that parent selects it.
+/// The helper a parent test kills while a mutation is active;
+/// ignored unless that parent selects it.
 #[test]
 #[ignore]
 fn interruption_child() {
