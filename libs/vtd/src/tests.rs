@@ -54,8 +54,7 @@ fn the_root_table_address_drops_the_mode_and_reserved_bits() {
     assert_eq!(root_table_address(0), 0);
 }
 
-/// Capability field positions, restated from the spec rather than from the
-/// constants above.
+/// Capability field positions, restated from the specification.
 #[test]
 fn capability_field_positions_match_the_spec() {
     assert_eq!(Capability::ND_MASK, 0x7, "ND bits 2:0");
@@ -75,8 +74,7 @@ fn capability_field_positions_match_the_spec() {
 
 #[test]
 fn capability_decodes_each_field_from_its_own_bits() {
-    // Pairwise-distinct field values placed with independent literal shifts.
-    let cap = Capability::from_bits(
+    let capability = Capability::from_bits(
         5 | (1 << 4)
             | (1 << 7)
             | (4 << 8)
@@ -86,26 +84,26 @@ fn capability_decodes_each_field_from_its_own_bits() {
             | (1 << 54)
             | (1 << 55),
     );
-    assert_eq!(cap.number_of_domains(), 1 << (4 + 2 * 5)); // ND = 5
-    assert!(cap.requires_write_buffer_flush());
-    assert!(cap.caching_mode());
-    assert!(cap.sagaw_supports(4));
-    assert!(!cap.sagaw_supports(3));
-    assert!(!cap.sagaw_supports(5));
-    assert!(!cap.sagaw_supports(2));
-    assert_eq!(cap.max_guest_address_width(), 48); // MGAW field 47
-    assert_eq!(cap.fault_recording_offset_bytes(), 0x123 * 16);
-    assert_eq!(cap.number_of_fault_recording_registers(), 0x12 + 1);
-    assert!(cap.write_draining());
-    assert!(cap.read_draining());
-    assert!(cap.dma_draining());
-    assert_eq!(cap.bits() & 0x7, 5);
+    assert_eq!(capability.number_of_domains(), 1 << (4 + 2 * 5));
+    assert!(capability.requires_write_buffer_flush());
+    assert!(capability.caching_mode());
+    assert!(capability.sagaw_supports(4));
+    assert!(!capability.sagaw_supports(3));
+    assert!(!capability.sagaw_supports(5));
+    assert!(!capability.sagaw_supports(2));
+    assert_eq!(capability.max_guest_address_width(), 48);
+    assert_eq!(capability.fault_recording_offset_bytes(), 0x123 * 16);
+    assert_eq!(capability.number_of_fault_recording_registers(), 0x12 + 1);
+    assert!(capability.write_draining());
+    assert!(capability.read_draining());
+    assert!(capability.dma_draining());
+    assert_eq!(capability.bits() & 0x7, 5);
 }
 
 #[test]
 fn number_of_domains_follows_the_power_of_two_formula() {
-    assert_eq!(Capability::from_bits(0).number_of_domains(), 16); // 2^4
-    assert_eq!(Capability::from_bits(1).number_of_domains(), 64); // 2^6
+    assert_eq!(Capability::from_bits(0).number_of_domains(), 16);
+    assert_eq!(Capability::from_bits(1).number_of_domains(), 64);
     assert_eq!(Capability::from_bits(3).number_of_domains(), 1 << 10);
     assert_eq!(Capability::from_bits(7).number_of_domains(), 1 << 18);
 }
@@ -130,13 +128,15 @@ fn dma_draining_requires_both_independent_capability_bits() {
 
 #[test]
 fn sagaw_maps_each_level_to_its_own_bit() {
-    // Bit (levels - 2), placed with an independent literal.
     for levels in 2u8..=5 {
-        let cap = Capability::from_bits(1 << (8 + (levels - 2) as u64));
-        assert!(cap.sagaw_supports(levels), "level {levels}");
+        let capability = Capability::from_bits(1 << (8 + (levels - 2) as u64));
+        assert!(capability.sagaw_supports(levels), "level {levels}");
         for other in 2u8..=5 {
             if other != levels {
-                assert!(!cap.sagaw_supports(other), "level {levels} leaked {other}");
+                assert!(
+                    !capability.sagaw_supports(other),
+                    "level {levels} leaked {other}"
+                );
             }
         }
     }
@@ -157,12 +157,13 @@ fn extended_capability_field_positions_match_the_spec() {
 
 #[test]
 fn extended_capability_decodes_each_field() {
-    let ecap = ExtendedCapability::from_bits(1 | (1 << 1) | (1 << 3) | (1 << 4) | (0x2Au64 << 8));
-    assert!(ecap.page_walk_coherent());
-    assert!(ecap.queued_invalidation());
-    assert!(ecap.interrupt_remapping());
-    assert!(ecap.extended_interrupt_mode());
-    assert_eq!(ecap.iotlb_register_offset_bytes(), 0x2A * 16);
+    let extended =
+        ExtendedCapability::from_bits(1 | (1 << 1) | (1 << 3) | (1 << 4) | (0x2Au64 << 8));
+    assert!(extended.page_walk_coherent());
+    assert!(extended.queued_invalidation());
+    assert!(extended.interrupt_remapping());
+    assert!(extended.extended_interrupt_mode());
+    assert_eq!(extended.iotlb_register_offset_bytes(), 0x2A * 16);
 
     let only_ir = ExtendedCapability::from_bits(1 << 3);
     assert!(only_ir.interrupt_remapping());
@@ -171,7 +172,6 @@ fn extended_capability_decodes_each_field() {
     assert!(!only_eim.interrupt_remapping());
     assert!(only_eim.extended_interrupt_mode());
 
-    // Only IRO set: the three single-bit fields read false.
     let only_iro = ExtendedCapability::from_bits(0x2Au64 << 8);
     assert!(!only_iro.page_walk_coherent());
     assert!(!only_iro.queued_invalidation());
@@ -206,7 +206,6 @@ fn command_helpers_or_one_bit_into_a_preserved_word() {
     assert_eq!(enable_translation(0), gcmd::TE);
     assert_eq!(set_interrupt_table_pointer(0), 1 << 24);
     assert_eq!(enable_interrupt_remapping(gcmd::CFI), 1 << 25);
-    // The preserved bits survive.
     assert_eq!(enable_translation(gcmd::IRE) & gcmd::IRE, gcmd::IRE);
 }
 
@@ -298,15 +297,13 @@ fn a_width_covers_every_address_below_its_power_of_two_and_none_above() {
         assert!(!width.covers(1u64 << bits), "{bits}-bit overflow");
         assert!(!width.covers(u64::MAX));
     }
-    // A 48-bit walk covers an address a 39-bit walk refuses.
     assert!(AddressWidth::Level4.covers(1 << 39));
     assert!(!AddressWidth::Level3.covers(1 << 39));
 }
 
 #[test]
 fn choose_prefers_the_widest_supported_table() {
-    // A large MGAW so only SAGAW decides.
-    let big_mgaw = 62u64 << 16; // MGAW field 62 -> 63-bit
+    let big_mgaw = 62u64 << 16;
     let all = Capability::from_bits((1 << 9) | (1 << 10) | (1 << 11) | big_mgaw);
     assert_eq!(AddressWidth::choose(all), Some(AddressWidth::Level5));
 
@@ -316,7 +313,6 @@ fn choose_prefers_the_widest_supported_table() {
     let three = Capability::from_bits((1 << 9) | big_mgaw);
     assert_eq!(AddressWidth::choose(three), Some(AddressWidth::Level3));
 
-    // The 2-level width is supported but never chosen.
     let two = Capability::from_bits((1 << 8) | big_mgaw);
     assert_eq!(AddressWidth::choose(two), None);
     assert_eq!(AddressWidth::choose(Capability::from_bits(big_mgaw)), None);
@@ -333,9 +329,9 @@ fn supported_table_depth_is_independent_of_guest_address_limit() {
         .into_iter()
         .find_map(|(bit, width)| (sagaw & (1 << bit) != 0).then_some(width));
         for mgaw_field in 0u64..64 {
-            let cap = Capability::from_bits((sagaw << 8) | (mgaw_field << 16));
+            let capability = Capability::from_bits((sagaw << 8) | (mgaw_field << 16));
             assert_eq!(
-                AddressWidth::choose(cap),
+                AddressWidth::choose(capability),
                 expected,
                 "{sagaw:#x}/{mgaw_field}"
             );
@@ -353,28 +349,26 @@ fn effective_coverage_obeys_both_table_and_guest_limits() {
         (AddressWidth::Level5, 57),
     ] {
         for guest_bits in 1u32..=64 {
-            let cap = Capability::from_bits(u64::from(guest_bits - 1) << 16);
+            let capability = Capability::from_bits(u64::from(guest_bits - 1) << 16);
             let boundary = 1u64 << table_bits.min(guest_bits);
-            assert!(width.covers_on(cap, 0));
-            assert!(width.covers_on(cap, boundary - 1));
-            assert!(!width.covers_on(cap, boundary));
-            assert!(!width.covers_on(cap, u64::MAX));
+            assert!(width.covers_on(capability, 0));
+            assert!(width.covers_on(capability, boundary - 1));
+            assert!(!width.covers_on(capability, boundary));
+            assert!(!width.covers_on(capability, u64::MAX));
         }
     }
 }
 
 #[test]
 fn index_splits_an_iova_nine_bits_at_a_time() {
-    // Distinct multi-bit indices placed with independent literal shifts.
     let iova =
         0xABC | (0x1F << 12) | (0x2E << 21) | (0x3D << 30) | (0x4Cu64 << 39) | (0x5Bu64 << 48);
-    let w = AddressWidth::Level5;
-    assert_eq!(w.index(iova, 0), 0x1F);
-    assert_eq!(w.index(iova, 1), 0x2E);
-    assert_eq!(w.index(iova, 2), 0x3D);
-    assert_eq!(w.index(iova, 3), 0x4C);
-    assert_eq!(w.index(iova, 4), 0x5B);
-    // Every index is a 9-bit value.
+    let width = AddressWidth::Level5;
+    assert_eq!(width.index(iova, 0), 0x1F);
+    assert_eq!(width.index(iova, 1), 0x2E);
+    assert_eq!(width.index(iova, 2), 0x3D);
+    assert_eq!(width.index(iova, 3), 0x4C);
+    assert_eq!(width.index(iova, 4), 0x5B);
     assert_eq!(AddressWidth::Level4.index(u64::MAX, 0), 0x1FF);
 }
 
@@ -386,7 +380,6 @@ fn a_root_entry_carries_present_and_a_masked_pointer() {
     assert!(entry.is_present());
     assert_eq!(entry.context_table_address(), 0x1234_5000);
 
-    // A misaligned pointer loses its low bits but sets only bit 0 below 12.
     let masked = RootEntry::present(0x1234_5FFF);
     assert_eq!(masked.context_table_address(), 0x1234_5000);
     assert_eq!(
@@ -453,19 +446,14 @@ fn second_level_entries_encode_permission_and_address() {
     assert_eq!(second_level::pte(0x3000, true, false), 0x3000 | 0b01);
     assert_eq!(second_level::pte(0x3000, false, true), 0x3000 | 0b10);
     assert_eq!(second_level::pte(0x3000, false, false), 0x3000);
-    // Read is bit 0, write is bit 1.
     assert_eq!(second_level::pte(0, true, false), 1);
     assert_eq!(second_level::pte(0, false, true), 2);
-    // The address is masked to 4 KiB.
     assert_eq!(second_level::pte(0x3FFF, true, true), 0x3000 | 0b11);
-    // A table pointer is read | write | address.
     assert_eq!(second_level::table_pointer(0x4000), 0x4000 | 0b11);
     assert_eq!(second_level::table_pointer(0x4FFF), 0x4000 | 0b11);
     assert_eq!(second_level::NOT_PRESENT, 0);
 }
 
-/// Reading an entry back inverts the encoding: presence is either
-/// permission bit, and the address is the page-aligned remainder.
 #[test]
 fn second_level_entries_read_back_their_presence_and_address() {
     assert!(!second_level::is_present(second_level::NOT_PRESENT));
@@ -496,7 +484,6 @@ fn second_level_entries_read_back_their_presence_and_address() {
 #[test]
 fn context_command_words_and_readback() {
     assert_eq!(context_command::global(), (1 << 63) | (1 << 61));
-    // ICC clear means complete; a fresh command has ICC set.
     assert!(!context_command::completed(context_command::global()));
     assert!(context_command::completed(0));
     assert!(
@@ -542,20 +529,17 @@ fn fault_status_reads_each_field() {
     assert!(status.primary_pending());
     assert_eq!(status.fault_record_index(), 0x2A);
 
-    // Overflow and pending are distinct bits.
     assert!(FaultStatus::from_bits(1).overflow());
     assert!(!FaultStatus::from_bits(1).primary_pending());
     assert!(!FaultStatus::from_bits(2).overflow());
     assert!(FaultStatus::from_bits(2).primary_pending());
     assert_eq!(FaultStatus::from_bits(0xFF << 8).fault_record_index(), 0xFF);
-    // Acknowledging an overflow writes the one write-1-to-clear bit.
     assert_eq!(FaultStatus::acknowledge_overflow(), 1);
 }
 
 #[test]
 fn fault_recording_positions_match_the_spec() {
-    // Positions restated relative to the 128-bit record: F bit 127, T bit
-    // 126, FR bits 103:96, SID bits 79:64, FI bits 63:12.
+    // Restated against the 128-bit record: F 127, T 126, FR 103:96, SID 79:64, FI 63:12.
     assert_eq!(FaultRecording::FAULT, 1 << (127 - 64));
     assert_eq!(FaultRecording::TYPE, 1 << (126 - 64));
     assert_eq!(FaultRecording::REASON_MASK, 0xFF, "FR bits 103:96");
@@ -574,7 +558,6 @@ fn a_recorded_fault_decodes_its_source_reason_and_address() {
     assert_eq!(record.fault_address(), 0xDEAD_E000);
     assert!(record.is_read_request());
 
-    // The address is masked to a page, and a clear T bit is a write.
     let unaligned = FaultRecording {
         lo: 0xDEAD_EFFF,
         hi: 1 << 63,
@@ -587,11 +570,10 @@ fn a_recorded_fault_decodes_its_source_reason_and_address() {
 fn a_register_without_the_fault_bit_records_no_fault() {
     let clean = FaultRecording {
         lo: 0xDEAD_E000,
-        hi: (0x0C << (96 - 64)) | 0xBEEF, // reason and SID set, but F clear
+        hi: (0x0C << (96 - 64)) | 0xBEEF,
     };
     assert!(!clean.is_fault());
 
-    // The clear value writes 1 to F and nothing else.
     let clear = FaultRecording::clear();
     assert_eq!(clear.hi, 1 << 63);
     assert_eq!(clear.lo, 0);

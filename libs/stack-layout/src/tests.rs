@@ -4,15 +4,11 @@ fn layout() -> StackLayout {
     StackLayout::new(0xffff_fe00_0000_0000, 16 * 1024, 4096, 16).expect("a valid layout")
 }
 
-/// The addresses the layout actually produces, transcribed.
-///
-/// Absolute addresses are independent of `stride()`, unlike a relational
-/// `base + stride·i <= base + stride·i` tautology that also admits
-/// overlapping slots (D-105).
+/// Transcribed absolute addresses, independent of `stride()`, so overlapping slots fail.
 #[test]
 fn slots_land_where_the_arithmetic_says() {
     let layout = layout();
-    // Stride is 4096 guard + 16384 stack = 20480 = 0x5000.
+    // 4096 guard plus 16384 stack.
     assert_eq!(layout.stride(), 0x5000);
     assert_eq!(layout.base(), 0xffff_fe00_0000_0000);
 
@@ -31,11 +27,7 @@ fn slots_land_where_the_arithmetic_says() {
     assert_eq!(last.stack_top(), 0xffff_fe00_0005_0000);
 }
 
-/// No stack overlaps a neighbour's, and every gap between them is a guard.
-///
-/// Stated against the *stacks* rather than against `stride`, so a stride
-/// that swallowed the guard would be visible here: a guard page is a page
-/// nothing maps, and it is only a guard if it is not another slot's stack.
+/// Stated against the stacks, so a stride that swallowed a guard into a neighbour's stack fails.
 #[test]
 fn no_two_stacks_touch_and_a_guard_lies_between_them() {
     let layout = layout();
@@ -91,10 +83,7 @@ fn a_pointer_outside_the_stack_has_no_usage() {
     assert_eq!(slot.usage_at(slot.stack_top() + 1), None);
 }
 
-/// `end()` and `last.stack_top()` are the same expression written twice,
-/// so the equality between them is `X == X`; the window's length against a
-/// transcribed number is what says the layout is the size it claims
-/// (D-105).
+/// The transcribed window length is what checks the size; `end()` equals `stack_top()` by form.
 #[test]
 fn the_window_ends_where_the_last_slot_does() {
     let layout = layout();
@@ -106,7 +95,7 @@ fn the_window_ends_where_the_last_slot_does() {
 }
 
 #[test]
-fn misalignment_is_refused() {
+fn a_misaligned_base_stack_or_guard_is_refused() {
     assert_eq!(StackLayout::new(0x1000 + 8, 0x4000, 0x1000, 4), None);
     assert_eq!(StackLayout::new(0x1000, 0x4000 + 8, 0x1000, 4), None);
     assert_eq!(StackLayout::new(0x1000, 0x4000, 0x1000 + 8, 4), None);
@@ -126,11 +115,7 @@ fn a_window_that_would_wrap_is_refused() {
     assert_eq!(StackLayout::new(0, !(PAGE_SIZE - 1), 0x1000, 2), None);
 }
 
-/// A page is four kilobytes, and a guard smaller than one is refused.
-///
-/// Anchor `PAGE_SIZE` and include a 2048-byte rejection because positive
-/// values aligned to 4096 cannot distinguish a halved modulus. `wost` maps
-/// in 4096-byte units (D-124).
+/// A 2048-byte case, since lengths aligned to 4096 cannot tell a halved modulus apart.
 #[test]
 fn a_guard_smaller_than_a_page_is_refused() {
     assert_eq!(PAGE_SIZE, 4096);

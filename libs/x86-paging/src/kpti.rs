@@ -14,12 +14,7 @@ pub struct RootPair {
 }
 
 impl RootPair {
-    /// Admit two distinct, encodable page-table roots.
-    ///
-    /// # Errors
-    ///
-    /// Refuses either unaligned or unencodable root, or a pair that names the
-    /// same root twice.
+    /// Admit two distinct, aligned and encodable page-table roots.
     pub const fn new(full: u64, stripped: u64) -> Result<Self, RootPairError> {
         if !full.is_multiple_of(PAGE_SIZE) {
             return Err(RootPairError::MisalignedFull(full));
@@ -67,32 +62,28 @@ pub enum RootPairError {
 }
 
 impl fmt::Display for RootPairError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::MisalignedFull(root) => {
-                write!(formatter, "full root {root:#x} is not page-aligned")
+                write!(f, "full root {root:#x} is not page-aligned")
             }
             Self::MisalignedStripped(root) => {
-                write!(formatter, "stripped root {root:#x} is not page-aligned")
+                write!(f, "stripped root {root:#x} is not page-aligned")
             }
             Self::FullOutOfRange(root) => {
-                write!(formatter, "full root {root:#x} does not fit 52 bits")
+                write!(f, "full root {root:#x} does not fit 52 bits")
             }
             Self::StrippedOutOfRange(root) => {
-                write!(formatter, "stripped root {root:#x} does not fit 52 bits")
+                write!(f, "stripped root {root:#x} does not fit 52 bits")
             }
-            Self::SameRoot(root) => write!(formatter, "both roots name {root:#x}"),
+            Self::SameRoot(root) => write!(f, "both roots name {root:#x}"),
         }
     }
 }
 
 impl core::error::Error for RootPairError {}
 
-/// Frame accounting while a full/stripped root pair is being constructed.
-///
-/// Root acquisition is deliberately separate from published pair authority:
-/// a refusal after the first root must return that one frame, while a complete
-/// pair can move into [`PairFrameAuthority`] only after both roots exist.
+/// Frame accounting while a pair is built, so a refusal after one root returns that one frame.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct PairConstructionLedger {
     root_frames: u8,
@@ -104,9 +95,7 @@ impl PairConstructionLedger {
         Self { root_frames: 0 }
     }
 
-    /// Record one newly acquired root frame.
-    ///
-    /// Returns `None` rather than permitting a third root to enter the pair.
+    /// Record one newly acquired root frame, refusing a third.
     pub const fn acquire_root(self) -> Option<Self> {
         if self.root_frames >= 2 {
             return None;
@@ -160,11 +149,7 @@ impl PairFrameAuthority {
         self.table_frames
     }
 
-    /// Settle an all-or-nothing cleanup observation.
-    ///
-    /// Returning no frames preserves the complete authority for retry. An
-    /// exact return releases it. Any partial count is rejected because it
-    /// would describe a half-reclaimed pair.
+    /// Settle an all-or-nothing cleanup: none retains, all releases, and a partial count fails.
     pub const fn settle(
         self,
         returned_frames: usize,
@@ -215,15 +200,12 @@ pub enum PairCleanupError {
 }
 
 impl fmt::Display for PairCleanupError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::CountOverflow => {
-                core::fmt::Write::write_str(formatter, "paired frame count overflows")
+            Self::CountOverflow => f.write_str("paired frame count overflows"),
+            Self::Incomplete { expected, returned } => {
+                write!(f, "paired cleanup returned {returned} of {expected} frames")
             }
-            Self::Incomplete { expected, returned } => write!(
-                formatter,
-                "paired cleanup returned {returned} of {expected} frames"
-            ),
         }
     }
 }
@@ -246,16 +228,7 @@ pub struct FlushPremise {
 }
 
 impl FlushPremise {
-    /// Admit the flush policy over one complete leaf-domain observation.
-    ///
-    /// `leaf_domain` must contain the flags of every present leaf reachable
-    /// through either member of the pair. The runtime owns that exhaustive
-    /// walk; this admission makes the no-PCID and all-non-global predicates
-    /// inseparable once the observation has been supplied.
-    ///
-    /// # Errors
-    ///
-    /// Refuses enabled PCID or the first observed global leaf.
+    /// Admit the flush policy over the flags of every present leaf either root reaches.
     pub fn new(pcid: PcidState, leaf_domain: &[Flags]) -> Result<Self, FlushPremiseError> {
         if matches!(pcid, PcidState::Enabled) {
             return Err(FlushPremiseError::PcidEnabled);
@@ -287,22 +260,18 @@ pub enum FlushPremiseError {
 }
 
 impl fmt::Display for FlushPremiseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PcidEnabled => core::fmt::Write::write_str(formatter, "PCID is enabled"),
-            Self::EmptyDomain => core::fmt::Write::write_str(formatter, "the leaf domain is empty"),
-            Self::GlobalLeaf(index) => write!(formatter, "leaf {index} is global"),
+            Self::PcidEnabled => f.write_str("PCID is enabled"),
+            Self::EmptyDomain => f.write_str("the leaf domain is empty"),
+            Self::GlobalLeaf(index) => write!(f, "leaf {index} is global"),
         }
     }
 }
 
 impl core::error::Error for FlushPremiseError {}
 
-/// Whether one lower-half top-level slot has the same shared user link.
-///
-/// Two absent slots match. Present slots must point to one identical user
-/// table with exactly the ordinary table-link policy; hardware `ACCESSED`
-/// drift does not change their identity.
+/// Whether a lower-half top-level slot is absent in both or links one user table identically.
 pub const fn shared_user_link_matches(full: Entry, stripped: Entry) -> bool {
     if !full.is_present() || !stripped.is_present() {
         return full.bits() == Entry::ABSENT.bits() && stripped.bits() == Entry::ABSENT.bits();
@@ -351,12 +320,7 @@ pub struct EnclavePage {
 }
 
 impl EnclavePage {
-    /// Describe one page-aligned, higher-half enclave page.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an unaligned virtual or physical address, a virtual address
-    /// outside the canonical higher half, or an unencodable physical address.
+    /// Describe one page-aligned, higher-half enclave page with encodable backing.
     pub const fn new(
         virtual_address: u64,
         physical_address: u64,
@@ -423,29 +387,19 @@ pub enum EnclavePageError {
 }
 
 impl fmt::Display for EnclavePageError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::MisalignedVirtual(address) => {
-                write!(
-                    formatter,
-                    "enclave address {address:#x} is not page-aligned"
-                )
+                write!(f, "enclave address {address:#x} is not page-aligned")
             }
             Self::OutsideHigherHalf(address) => {
-                write!(
-                    formatter,
-                    "enclave address {address:#x} is not in the higher half"
-                )
+                write!(f, "enclave address {address:#x} is not in the higher half")
             }
-            Self::MisalignedPhysical(address) => write!(
-                formatter,
-                "enclave backing {address:#x} is not page-aligned"
-            ),
+            Self::MisalignedPhysical(address) => {
+                write!(f, "enclave backing {address:#x} is not page-aligned")
+            }
             Self::PhysicalOutOfRange(address) => {
-                write!(
-                    formatter,
-                    "enclave backing {address:#x} does not fit 52 bits"
-                )
+                write!(f, "enclave backing {address:#x} does not fit 52 bits")
             }
         }
     }
@@ -473,11 +427,6 @@ pub struct EntryStackRange {
 
 impl EntryStackRange {
     /// Admit one non-empty higher-half stack and derive its lower guard page.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an unaligned or empty range, arithmetic overflow, or a range
-    /// whose payload or adjacent lower guard leaves the canonical higher half.
     pub const fn new(
         kind: EntryStackKind,
         start: u64,
@@ -555,23 +504,18 @@ pub enum EntryStackRangeError {
 }
 
 impl fmt::Display for EntryStackRangeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::MisalignedStart(start) => {
-                write!(
-                    formatter,
-                    "entry stack start {start:#x} is not page-aligned"
-                )
+                write!(f, "entry stack start {start:#x} is not page-aligned")
             }
-            Self::Empty => core::fmt::Write::write_str(formatter, "the entry stack is empty"),
+            Self::Empty => f.write_str("the entry stack is empty"),
             Self::MisalignedLength(len) => {
-                write!(formatter, "entry stack length {len} is not page-aligned")
+                write!(f, "entry stack length {len} is not page-aligned")
             }
-            Self::EndOverflow => {
-                core::fmt::Write::write_str(formatter, "entry stack end overflows")
-            }
+            Self::EndOverflow => f.write_str("entry stack end overflows"),
             Self::OutsideHigherHalf(address) => write!(
-                formatter,
+                f,
                 "entry stack address {address:#x} is not in the higher half"
             ),
         }
@@ -589,11 +533,19 @@ pub struct ObservedPage {
     flags: Flags,
 }
 
-/// Whether every supplied entry-stack guard is absent from both roots.
-///
-/// The two observations must enumerate every present leaf that could cover a
-/// supplied guard. Invalid observations fail closed, including an absent leaf
-/// or a range that is empty, unaligned, or overflowing.
+impl ObservedPage {
+    /// Record the complete result of one stripped-root leaf walk.
+    pub const fn new(virtual_address: u64, physical_address: u64, span: u64, flags: Flags) -> Self {
+        Self {
+            virtual_address,
+            physical_address,
+            span,
+            flags,
+        }
+    }
+}
+
+/// Whether no stack guard is covered by any leaf of either root; a malformed leaf fails closed.
 pub fn stack_guards_are_absent(
     stacks: &[EntryStackRange],
     full_present_pages: &[ObservedPage],
@@ -626,24 +578,7 @@ pub fn stack_guards_are_absent(
     true
 }
 
-impl ObservedPage {
-    /// Record the complete result of one stripped-root leaf walk.
-    pub const fn new(virtual_address: u64, physical_address: u64, span: u64, flags: Flags) -> Self {
-        Self {
-            virtual_address,
-            physical_address,
-            span,
-            flags,
-        }
-    }
-}
-
-/// Whether the stripped higher half contains exactly the expected enclave.
-///
-/// `observed` must contain every present leaf found in the stripped root's
-/// higher half. The comparison is order-independent and rejects an empty
-/// enclave, duplicate virtual pages, a missing or extra leaf, a large page,
-/// different backing, or any permission outside the expected policy.
+/// Whether every present stripped higher-half leaf, in any order, is exactly the expected enclave.
 pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> bool {
     if expected.is_empty() || expected.len() != observed.len() {
         return false;

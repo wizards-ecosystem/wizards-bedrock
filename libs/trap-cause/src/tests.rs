@@ -1,20 +1,8 @@
 use super::*;
 
-/// Every vector decodes to something that reports its own number back.
-///
-/// The round trip is the point. Two hundred and fifty-six stubs each
-/// knowing their own vector made this true by construction; a decode can
-/// get it wrong, and a fault report naming the wrong exception is the kind
-/// of error that costs an afternoon.
-/// Every vector decodes to the variant the architecture assigns it.
-///
-/// **Transcribed from SDM Vol. 3A table 6-1**, not derived. Bidirectional
-/// implementation checks admit a consistent permutation, while fault
-/// containment relies on the decoded variant (D-136).
+/// Transcribed from SDM Vol. 3A table 6-1, since a consistent permutation would pass a round trip.
 #[test]
 fn every_fault_sits_on_the_vector_the_manual_gives_it() {
-    // SDM Vol. 3A, table 6-1. The numbers are the architecture's, so they
-    // are written out rather than referred to.
     let pairs: [(u8, Fault); 21] = [
         (0, Fault::DivideError),
         (1, Fault::Debug),
@@ -40,7 +28,6 @@ fn every_fault_sits_on_the_vector_the_manual_gives_it() {
     ];
 
     for (vector, fault) in pairs {
-        // Both directions, against the literal rather than each other.
         assert_eq!(
             fault.vector(),
             vector,
@@ -53,8 +40,7 @@ fn every_fault_sits_on_the_vector_the_manual_gives_it() {
         );
     }
 
-    // The two the table above cannot spell: 14 carries an error code, and
-    // 30 is the last architectural vector.
+    // 14 carries an error code, and 30 is the last architectural vector.
     let TrapCause::Fault(page_fault) = TrapCause::decode(14, 0) else {
         panic!("vector 14 is the page fault");
     };
@@ -63,8 +49,7 @@ fn every_fault_sits_on_the_vector_the_manual_gives_it() {
     assert_eq!(Fault::Security.vector(), 30);
     assert_eq!(TrapCause::decode(30, 0), TrapCause::Fault(Fault::Security));
 
-    // The gaps stay gaps: 9, 15, 22..=27 and 31 are reserved, and a
-    // variant there would mean the table was renumbered around it.
+    // A variant in a reserved gap would mean the table was renumbered around it.
     for reserved in [9u8, 15, 22, 23, 24, 25, 26, 27, 31] {
         assert!(
             matches!(TrapCause::decode(reserved, 0), TrapCause::Reserved(_)),
@@ -98,10 +83,7 @@ fn the_architectural_range_is_where_faults_live() {
     }
 }
 
-/// A vector this crate calls reserved is one `x86_tables` has no name for.
-///
-/// Two tables of the architecture's vectors exist now, and this is what
-/// stops them drifting apart.
+/// Keeps this crate's reserved vectors and the unnamed `x86_tables` vectors from drifting apart.
 #[test]
 fn reserved_vectors_are_the_ones_with_no_name() {
     for vector in 0..exception::COUNT {
@@ -113,8 +95,6 @@ fn reserved_vectors_are_the_ones_with_no_name() {
     }
 }
 
-/// Each page-fault bit is read on its own, and not by accident from
-/// another.
 #[test]
 fn every_page_fault_bit_is_read_on_its_own() {
     /// One bit and the accessor that is supposed to read exactly it.
@@ -322,13 +302,7 @@ fn only_a_page_fault_carries_an_error_code() {
     }
 }
 
-/// Every fault reports the name `x86_tables` gives its vector.
-///
-/// `Fault::name` is `exception::name(self.vector()).unwrap_or("exception")`
-/// and the `if let` guard fires only where that is `Some`, so the equality
-/// alone cannot fail. The transcribed names below are what makes it a
-/// check: two crates naming the same table is why `trap-cause` exists
-/// (D-105).
+/// The transcribed names make this a check, since the guarded equality alone cannot fail.
 #[test]
 fn a_faults_name_is_its_vectors_name() {
     for vector in 0..exception::COUNT {
@@ -341,7 +315,7 @@ fn a_faults_name_is_its_vectors_name() {
         }
     }
 
-    // SDM Vol. 3A table 6-1, spelled out here rather than derived.
+    // SDM Vol. 3A table 6-1.
     let named = |vector: u8| match TrapCause::decode(vector, 0) {
         TrapCause::Fault(fault) => Some(fault.name()),
         _ => None,

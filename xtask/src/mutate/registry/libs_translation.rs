@@ -103,8 +103,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 98,
         file: "libs/x86-paging/src/lib.rs",
-        find: "            Self::ZeroLength => core::fmt::Write::write_str(f, \"mapping length is zero\"),",
-        replace: "            Self::ZeroLength => core::fmt::Write::write_str(f, \"zero\"),",
+        find: "            Self::ZeroLength => f.write_str(\"mapping length is zero\"),",
+        replace: "            Self::ZeroLength => f.write_str(\"zero\"),",
         breaks: "a mapping-range refusal omits the failed length rule",
         reddens: Caught::HostTest {
             package: "x86-paging",
@@ -606,8 +606,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1603,
         file: "libs/vtd/src/lib.rs",
-        find: "        if cap.sagaw_supports(5) {",
-        replace: "        if cap.sagaw_supports(5) && Self::Level5.address_bits() <= cap.max_guest_address_width() {",
+        find: "        if capability.sagaw_supports(5) {",
+        replace: "        if capability.sagaw_supports(5) && Self::Level5.address_bits() <= capability.max_guest_address_width() {",
         breaks: "a supported table is refused when its adjusted width exceeds MGAW",
         reddens: Caught::HostTest {
             package: "vtd",

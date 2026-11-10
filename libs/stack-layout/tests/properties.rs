@@ -1,17 +1,4 @@
-//! Property tests over the placement the module doc promises.
-//!
-//! The module doc names its own proof obligation: "the proof (as host tests)
-//! that no two slots touch". Nine unit tests carry it for the layouts a reader
-//! can check by hand; this asks it of every layout the constructor accepts.
-//!
-//! `ranges_overlap` states three separate rules in its own doc, and each is a
-//! property here rather than a case (D-242). So do `Slot::usage_at` and
-//! `Slot::span_below`, whose answers a stack meter reads for every pointer.
-//!
-//! What is *not* here: whether the guard is large enough. The doc says plainly
-//! that "a stack frame larger than the guard can step clean over it without
-//! faulting", and D-52 accepts that for a kernel built without `alloca`. No
-//! arithmetic can check a property of the code generator.
+//! Property tests that no two slots of any accepted layout touch, and over the slot answers.
 
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -115,18 +102,13 @@ fn slot_and_pointer(
 }
 
 proptest! {
-    /// "Empty ranges touch nothing."
     #[test]
     fn an_empty_range_touches_nothing(a in any::<u64>(), b in any::<u64>(), len in any::<u64>()) {
         prop_assert!(!ranges_overlap(a, 0, b, len), "an empty left range overlapped");
         prop_assert!(!ranges_overlap(a, len, b, 0), "an empty right range overlapped");
     }
 
-    /// "Whether two half-open byte ranges overlap."
-    ///
-    /// The three placements differ by one byte at an exclusive end: crossing
-    /// shares one byte, while adjacency and one-past share none. Both argument
-    /// orders must have the same answer.
+    /// Crossing shares one byte at an exclusive end, while adjacency and one-past share none.
     #[test]
     fn half_open_ranges_distinguish_crossing_adjacent_and_one_past(
         (a, alen, b, blen, contact, side) in touching_pair(),
@@ -148,8 +130,6 @@ proptest! {
         );
     }
 
-    /// "An overflowing non-empty range is invalid and treated as overlapping so
-    /// a caller protecting memory fails closed."
     #[test]
     fn an_overflowing_range_fails_closed(
         b in any::<u64>(),
@@ -165,11 +145,7 @@ proptest! {
         );
     }
 
-    /// No two slots touch — the crate's stated proof obligation.
-    ///
-    /// A guard shared between two slots is a stack that faults into its
-    /// neighbour's memory instead of into nothing, which is the whole failure
-    /// the design exists to prevent.
+    /// A shared guard would let a stack fault into its neighbour's memory.
     #[test]
     fn no_two_slots_touch((base, stack, guard, slots) in layout()) {
         let Some(layout) = StackLayout::new(base, stack, guard, slots) else {
@@ -180,9 +156,9 @@ proptest! {
             .collect();
         prop_assert_eq!(placed.len(), layout.slots(), "a slot in range was absent");
 
-        for (i, left) in placed.iter().enumerate() {
-            for (j, right) in placed.iter().enumerate() {
-                if i == j {
+        for (left_index, left) in placed.iter().enumerate() {
+            for (right_index, right) in placed.iter().enumerate() {
+                if left_index == right_index {
                     continue;
                 }
                 prop_assert!(
@@ -193,8 +169,8 @@ proptest! {
                         right.stack_len()
                     ),
                     "slots {} and {} share stack bytes",
-                    i,
-                    j
+                    left_index,
+                    right_index
                 );
                 prop_assert!(
                     !ranges_overlap(
@@ -204,15 +180,13 @@ proptest! {
                         guard
                     ),
                     "slot {}'s stack occupies slot {}'s guard",
-                    i,
-                    j
+                    left_index,
+                    right_index
                 );
             }
         }
     }
 
-    /// "The guard occupies the low addresses, the stack the high ones, so a
-    /// stack growing down runs into its own guard and never into a neighbour."
     #[test]
     fn a_stack_growing_down_meets_its_own_guard((base, stack, guard, slots) in layout()) {
         let Some(layout) = StackLayout::new(base, stack, guard, slots) else {
@@ -237,9 +211,6 @@ proptest! {
         }
     }
 
-    /// "The top itself represents an unused stack and the base represents a
-    /// completely used one. A pointer outside the checked slot has no usage
-    /// meaning and is refused."
     #[test]
     fn usage_splits_a_slot_at_every_pointer_inside_it_and_refuses_the_rest(
         placement in placed(),
@@ -273,9 +244,6 @@ proptest! {
         }
     }
 
-    /// "The word-aligned span from the stack's base to `clearance` below
-    /// `pointer`. `None` when `pointer` is outside the stack or no whole word
-    /// fits below the clearance."
     #[test]
     fn a_span_below_a_pointer_starts_at_the_base_and_stops_a_clearance_short(
         placement in placed(),
@@ -349,8 +317,7 @@ fn the_half_open_property_reaches_every_boundary_class() {
     assert!(above > SAMPLES / 3, "only {above} pairs reached above");
 }
 
-/// How often the usage and span properties meet each placement, a span and a
-/// refusal, since D-242 asks a generated check to show it reaches its cases.
+/// The usage and span properties must reach each placement, a span and a refusal.
 #[test]
 fn the_usage_and_span_properties_reach_every_placement_and_both_answers() {
     const SAMPLES: usize = 4096;
@@ -392,11 +359,7 @@ fn the_usage_and_span_properties_reach_every_placement_and_both_answers() {
     );
 }
 
-/// How often the constructor accepts, and how often it yields more than one
-/// slot to compare — D-242's obligation on a generated-input check.
-///
-/// `no_two_slots_touch` has nothing to say about a one-slot layout, so the
-/// multi-slot rate is the number that decides whether it asserts anything.
+/// `no_two_slots_touch` says nothing about one slot, so the multi-slot rate decides its worth.
 #[test]
 fn the_layout_properties_reach_multi_slot_windows() {
     const SAMPLES: usize = 4096;

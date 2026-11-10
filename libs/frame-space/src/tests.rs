@@ -33,12 +33,10 @@ fn frame_identity_is_exact_at_zero_high_and_misaligned_boundaries() {
     }
 }
 
-/// Sixty-four frames: enough to exercise every path, small enough that a
-/// test can hold several on the stack.
+/// Sixty-four frames, small enough that a test can hold several on the stack.
 type Small = FrameSpace<1>;
 
-/// Two words, to cover the case where a run or a scan crosses the boundary
-/// between them — the arithmetic most likely to be wrong.
+/// Two words, so a run or a scan can cross the boundary between them.
 type TwoWord = FrameSpace<2>;
 
 fn fully_managed() -> Small {
@@ -60,7 +58,6 @@ fn drain<const WORDS: usize>(space: &mut FrameSpace<WORDS>) -> usize {
 fn words_for_converts_bytes_to_bitmap_words() {
     assert_eq!(words_for(FRAME_SIZE * 64), 1);
     assert_eq!(words_for(16 << 30), 65_536);
-    // A partial word still needs covering.
     assert_eq!(words_for(FRAME_SIZE * 65), 2);
     assert_eq!(words_for(FRAME_SIZE * 64 + 1), 2);
     assert_eq!(Small::FRAME_COUNT, 64);
@@ -128,8 +125,6 @@ fn debug_reports_both_ledger_counts() {
 #[test]
 fn insert_takes_only_whole_frames_inside_the_range() {
     let mut space = Small::new();
-    // Starts one byte into frame 1 and ends one byte into frame 4, so only
-    // frames 2 and 3 lie wholly inside.
     let inserted = space.insert(FRAME_SIZE + 1, FRAME_SIZE * 3);
     assert_eq!(inserted.added, 2);
     assert!(!space.is_managed(1));
@@ -243,8 +238,6 @@ fn a_contiguous_run_honours_alignment() {
 #[test]
 fn a_run_may_cross_the_boundary_between_two_bitmap_words() {
     let mut space = TwoWord::new();
-    // The only managed run starts at 60 and spans the 64-frame word
-    // boundary.
     space.insert(FRAME_SIZE * 60, TwoWord::CEILING - FRAME_SIZE * 60);
 
     let run = space.allocate_contiguous(8, 1).expect("60..68 is free");
@@ -329,7 +322,6 @@ fn freeing_a_run_is_all_or_nothing() {
     space.insert(0, FRAME_SIZE * 8);
     let run = space.allocate_contiguous(4, 1).expect("eight are free");
 
-    // Frame `run + 4` was never allocated, so the whole release is refused.
     assert_eq!(
         space.free_contiguous(run, 5),
         Err(FreeError::AlreadyFree(run + 4))
@@ -350,7 +342,6 @@ fn the_hint_wraps_so_freed_frames_are_found_again() {
     let frames: Vec<_> = (0..4).map(|_| space.allocate().expect("free")).collect();
     assert_eq!(space.allocate(), None);
 
-    // Release the lowest frame; the hint is now past it and must wrap.
     space.free(frames[0]).expect("allocated");
     assert_eq!(space.allocate(), Some(frames[0]));
 }
@@ -359,8 +350,6 @@ fn the_hint_wraps_so_freed_frames_are_found_again() {
 fn a_free_run_straddling_the_hint_is_found() {
     let mut space = Small::new();
     space.insert(0, Small::CEILING);
-    // Drain everything so the hint wraps to zero, then leave the hint in
-    // the middle of a free run.
     assert_eq!(drain(&mut space), Small::FRAME_COUNT);
     for frame in 30..34 {
         space.free(frame).expect("allocated");
@@ -369,7 +358,7 @@ fn a_free_run_straddling_the_hint_is_found() {
     space.free(30).expect("allocated");
     space.free(31).expect("allocated");
 
-    // Frames 30..34 are free; the hint sits at 32, inside the run.
+    // The hint sits at 32, inside the free run 30..34.
     assert_eq!(space.allocate_contiguous(4, 1), Some(30));
 }
 
@@ -392,8 +381,6 @@ fn a_sweep_of_the_whole_space_conserves_every_frame() {
     assert_eq!(inserted.ignored, 0);
     assert_eq!(space.free_count(), TwoWord::FRAME_COUNT);
 
-    // Drain it entirely, then give it all back, and require the counts to
-    // land exactly where they started.
     let taken = drain(&mut space);
     assert_eq!(taken, TwoWord::FRAME_COUNT);
     assert_eq!(space.free_count(), 0);

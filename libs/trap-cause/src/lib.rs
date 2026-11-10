@@ -1,19 +1,11 @@
-//! What a trap was, decoded from the vector and error code the CPU pushed.
-//!
-//! The entry path saves one frame shape for every vector (D-29). Central
-//! decoding keeps architectural meaning out of call sites and preserves the
-//! page-fault error code.
-//!
-//! The pure decode lives outside `wost` so host tests can reach it; handlers
-//! consume one decoded cause instead of reinterpreting vector numbers (D-41,
-//! D-81).
+//! What a trap was, decoded once from the vector and error code the CPU pushed.
 //!
 //! # Examples
 //!
 //! ```
 //! use trap_cause::{Fault, TrapCause};
 //!
-//! // A write to a page that was present: a protection violation, not a miss.
+//! // A write to a page that was present is a protection violation.
 //! let cause = TrapCause::decode(14, 0b11);
 //! let TrapCause::Fault(Fault::PageFault(fault)) = cause else {
 //!     panic!("vector 14 is a page fault");
@@ -29,6 +21,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+use core::fmt;
 use core::ops::Range;
 
 use x86_tables::exception;
@@ -39,20 +32,14 @@ use x86_tables::exception;
 pub enum TrapCause {
     /// An architectural exception the CPU raised.
     Fault(Fault),
-    /// A vector the architecture reserves but does not define.
-    ///
-    /// Kept distinct from an interrupt: a reserved vector arriving is a
-    /// statement about the machine, not about a device.
+    /// A vector the architecture reserves, a statement about the machine and not a device.
     Reserved(u8),
     /// A device or software interrupt, by vector.
     Interrupt(u8),
 }
 
 impl TrapCause {
-    /// Decode `vector` and the error code the CPU pushed with it.
-    ///
-    /// `error_code` is ignored for every vector that does not push one, so a
-    /// caller that always passes the saved word is correct.
+    /// Decode `vector` and its error code, which is ignored for vectors that push none.
     pub const fn decode(vector: u8, error_code: u64) -> Self {
         if vector >= exception::COUNT {
             return Self::Interrupt(vector);
@@ -107,58 +94,51 @@ impl TrapCause {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum Fault {
-    /// `#DE` — a division whose result does not fit, or by zero.
+    /// `#DE`: a division whose result does not fit, or by zero.
     DivideError,
-    /// `#DB` — a debug condition: a hardware breakpoint or a single step.
+    /// `#DB`: a hardware breakpoint or a single step.
     Debug,
-    /// A non-maskable interrupt. Not masked by the interrupt flag, so no lock
-    /// excludes it.
+    /// Not masked by the interrupt flag, so no lock excludes it.
     NonMaskable,
-    /// `#BP` — the trap `int3` plants. The one resumable entry here.
+    /// `#BP`: the trap `int3` plants, the one resumable entry here.
     Breakpoint,
-    /// `#OF` — `into` with the overflow flag set.
+    /// `#OF`: `into` with the overflow flag set.
     Overflow,
-    /// `#BR` — a `bound` check that failed.
+    /// `#BR`: a `bound` check that failed.
     BoundRange,
-    /// `#UD` — an opcode the CPU does not implement in this mode.
+    /// `#UD`: an opcode the CPU does not implement in this mode.
     InvalidOpcode,
-    /// `#NM` — floating-point state is unavailable. Reserved for a future
-    /// XFD-based allocator (D-82); nothing raises it today.
+    /// `#NM`: floating-point state is unavailable; nothing raises it today.
     DeviceNotAvailable,
-    /// `#DF` — an exception raised while handling one. It has a stack of its
-    /// own because the usual one is overwhelmingly why it happened (D-89).
+    /// `#DF`: raised while handling one, on its own stack since the usual one is the likely cause.
     DoubleFault,
-    /// `#TS` — a task-state segment the CPU would not load.
+    /// `#TS`: a task-state segment the CPU would not load.
     InvalidTaskState,
-    /// `#NP` — a segment descriptor marked absent.
+    /// `#NP`: a segment descriptor marked absent.
     SegmentNotPresent,
-    /// `#SS` — a stack-segment violation.
+    /// `#SS`: a stack-segment violation.
     StackSegment,
-    /// `#GP` — the catch-all protection violation, and what a non-canonical
-    /// address becomes.
+    /// `#GP`: the catch-all protection violation, and what a non-canonical address becomes.
     GeneralProtection,
-    /// `#PF` — the page tables could not satisfy an access. `CR2` holds the
-    /// address; the decoded error code says why.
+    /// `#PF`: `CR2` holds the address, and the decoded error code says why.
     PageFault(PageFault),
-    /// `#MF` — a pending x87 error, raised at the next floating-point
-    /// instruction rather than where it happened.
+    /// `#MF`: a pending x87 error, raised at the next floating-point instruction.
     X87FloatingPoint,
-    /// `#AC` — an unaligned access with alignment checking enabled.
+    /// `#AC`: an unaligned access with alignment checking enabled.
     AlignmentCheck,
-    /// `#MC` — the hardware reporting its own failure.
+    /// `#MC`: the hardware reporting its own failure.
     MachineCheck,
-    /// `#XM` — an SSE error.
+    /// `#XM`: an SSE error.
     SimdFloatingPoint,
-    /// `#VE` — an EPT violation delivered to the guest.
+    /// `#VE`: an EPT violation delivered to the guest.
     Virtualisation,
-    /// `#CP` — a control-flow violation. What CET raises, so this is the
-    /// vector shadow stacks will arrive on (`010` §10).
+    /// `#CP`: a control-flow violation, where CET shadow stacks will arrive (`010` §10).
     ControlProtection,
-    /// `#HV` — hypervisor injection.
+    /// `#HV`: hypervisor injection.
     HypervisorInjection,
-    /// `#VC` — VMM communication, under SEV-ES.
+    /// `#VC`: VMM communication, under SEV-ES.
     VmmCommunication,
-    /// `#SX` — a security exception.
+    /// `#SX`: a security exception.
     Security,
 }
 
@@ -192,11 +172,7 @@ impl Fault {
         }
     }
 
-    /// What to call this in a report.
-    ///
-    /// Falls back to a generic word rather than panicking, which cannot
-    /// happen: every variant's vector is named in `x86_tables::exception`, and
-    /// a host test walks all of them to keep that true.
+    /// What to call this in a report; a host test keeps every variant named in `x86_tables`.
     pub const fn name(self) -> &'static str {
         match exception::name(self.vector()) {
             Some(name) => name,
@@ -205,27 +181,17 @@ impl Fault {
     }
 }
 
-/// Why a page fault happened, from the error code the CPU pushed.
-///
-/// Bit meanings are Intel SDM Vol. 3A §4.7. The useful reading is usually the
-/// first bit: clear means nothing was mapped there, set means something was and
-/// the access was not allowed. A miss and a refusal are very different bugs,
-/// and until this crate existed a fault report could not tell them apart.
+/// Why a page fault happened, from the error code bits of Intel SDM Vol. 3A §4.7.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PageFault(u64);
 
 impl PageFault {
-    /// Whether the error code describes a ring-0 data access.
-    ///
-    /// Present/missing and read/write may vary. Every privilege, fetch,
-    /// reserved, key, shadow-stack, SGX, or future bit is refused.
+    /// Whether the code is a ring-0 data access, refusing every privilege, fetch or future bit.
     pub const fn is_supervisor_data_access(self) -> bool {
         self.0 & !0b11 == 0
     }
 
-    /// A page was present, and the access violated its permissions.
-    ///
-    /// Clear means the translation was absent — a miss rather than a refusal.
+    /// A page was present and the access violated it; clear means nothing was mapped.
     pub const fn was_present(self) -> bool {
         self.0 & 1 != 0
     }
@@ -260,15 +226,14 @@ impl PageFault {
         self.0 & (1 << 6) != 0
     }
 
-    /// The bits themselves, for a report that wants them raw.
     pub const fn bits(self) -> u64 {
         self.0
     }
 }
 
-impl core::fmt::Debug for PageFault {
-    /// Reads as the sentence a fault report wants, not as a bit dump.
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+/// Reads as the sentence a fault report wants.
+impl fmt::Debug for PageFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{} on {} from {}",
@@ -287,13 +252,13 @@ impl core::fmt::Debug for PageFault {
             if self.from_user() { "user" } else { "kernel" }
         )?;
         if self.reserved_bit_set() {
-            core::fmt::Write::write_str(f, ", reserved bit set in a table entry")?;
+            f.write_str(", reserved bit set in a table entry")?;
         }
         if self.protection_key() {
-            core::fmt::Write::write_str(f, ", protection key")?;
+            f.write_str(", protection key")?;
         }
         if self.shadow_stack() {
-            core::fmt::Write::write_str(f, ", shadow stack")?;
+            f.write_str(", shadow stack")?;
         }
         Ok(())
     }
@@ -302,39 +267,14 @@ impl core::fmt::Debug for PageFault {
 /// A page fault presented to a controlled recovery boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RecoveryAttempt {
-    /// The vector saved in the trap frame.
     pub vector: u64,
-    /// The error code saved in the trap frame.
     pub frame_error_code: u64,
-    /// The selector saved in the trap frame.
     pub code_selector: u64,
-    /// The instruction pointer saved in the trap frame.
     pub instruction_pointer: u64,
     /// The page-fault cause decoded by the trap dispatcher.
     pub page_fault: PageFault,
     /// The address saved in `CR2`.
     pub faulting_address: u64,
-}
-
-/// The page-fault class one controlled recovery site admits.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub enum RecoveryFault {
-    /// Any present/missing, read/write supervisor data access.
-    SupervisorData,
-    /// Exactly a present supervisor write-protection violation.
-    SupervisorWriteProtection,
-}
-
-/// The complete non-liveness policy for one controlled recovery site.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct RecoveryRule {
-    /// The admitted page-fault class.
-    pub fault: RecoveryFault,
-    /// The half-open `CR2` interval owned by the operation.
-    pub fault_addresses: Range<u64>,
-    /// The half-open faulting-instruction interval owned by the operation.
-    pub instruction_addresses: Range<u64>,
 }
 
 impl RecoveryAttempt {
@@ -354,6 +294,26 @@ impl RecoveryAttempt {
                 .instruction_addresses
                 .contains(&self.instruction_pointer)
     }
+}
+
+/// The page-fault class one controlled recovery site admits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum RecoveryFault {
+    /// Any present/missing, read/write supervisor data access.
+    SupervisorData,
+    /// Exactly a present supervisor write-protection violation.
+    SupervisorWriteProtection,
+}
+
+/// The complete non-liveness policy for one controlled recovery site.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RecoveryRule {
+    pub fault: RecoveryFault,
+    /// The half-open `CR2` interval owned by the operation.
+    pub fault_addresses: Range<u64>,
+    /// The half-open faulting-instruction interval owned by the operation.
+    pub instruction_addresses: Range<u64>,
 }
 
 #[cfg(test)]
