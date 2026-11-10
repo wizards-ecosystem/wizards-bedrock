@@ -39,7 +39,7 @@ mod bit {
 const TASK_STATE_TYPE: u64 = 0x9 << 40;
 
 /// A code or data segment descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Descriptor(u64);
 
 impl Descriptor {
@@ -89,7 +89,7 @@ impl Descriptor {
 }
 
 /// A system descriptor: sixteen bytes, occupying two table entries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SystemDescriptor {
     /// The entry at the descriptor's own index.
     pub low: u64,

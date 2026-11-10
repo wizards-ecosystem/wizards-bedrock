@@ -33,7 +33,7 @@ const MEASURE: ControlWord = ControlWord::binary(
 );
 
 /// Why the timer could not be claimed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum PitError {
     /// Another driver already owns these ports.
     PortsUnavailable,

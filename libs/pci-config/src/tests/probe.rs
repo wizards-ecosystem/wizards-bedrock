@@ -2,7 +2,7 @@ use super::*;
 use crate::bar::io_window_size;
 use crate::probe::finish_probe_restoration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct TestAccessError;
 
 impl core::fmt::Display for TestAccessError {

@@ -131,7 +131,7 @@ pub(crate) fn init(counter_hz: u64) -> bool {
 /// conversion below, and [`MODE_NONE`] tells every reader to ask instead. Both
 /// go through the same sequence-counter protocol, because a revocation a
 /// reader half-sees is worse than one it does not see at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a deferred publication must be observed"]
 pub(crate) enum Publication {
     Published,
@@ -212,7 +212,7 @@ fn restore(shared: SharedBytes) {
 }
 
 /// Why a program could not be shown the time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TimePageError {
     /// There is no page: the machine could not spare a frame at boot.
     ///

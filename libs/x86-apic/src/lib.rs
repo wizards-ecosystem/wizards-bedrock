@@ -66,7 +66,7 @@ const REGISTER_STRIDE: usize = 16;
 /// The two modes number the same registers differently, and this is the one
 /// place that knows it: the offset the manual's table gives, and the
 /// model-specific register [`msr`](Self::msr) derives from it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Register(usize);
 
 impl Register {

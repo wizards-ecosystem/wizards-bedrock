@@ -21,7 +21,7 @@ const REGISTER_ALIGNMENT: u64 = size_of::<u32>() as u64;
 /// assert_eq!(range.page_start(), 0xfee0_0000);
 /// assert_eq!(range.page_end(), 0xfee0_1000);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeviceRange {
     physical: u64,
     page_start: u64,
@@ -90,7 +90,7 @@ impl DeviceRange {
 }
 
 /// Why a physical register range cannot be represented safely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DeviceRangeError {
     /// No register byte was requested.

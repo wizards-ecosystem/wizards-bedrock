@@ -160,7 +160,7 @@ static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
 ///
 /// The character travels with the event: the shift state that decided it was
 /// current then, and a reader may not look for milliseconds.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Keystroke {
     /// The key, and whether it went down or up.
     pub(crate) event: KeyEvent,

@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// A live function's exclusive authority over one probed memory BAR.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "a BAR authority must remain with its mapping or be returned"]
 pub struct BarAuthority {
     pub(crate) function: FunctionLease,
@@ -27,7 +27,7 @@ impl BarAuthority {
 }
 
 /// Why a probed memory BAR could not become an exclusive mapping authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BarAuthorityError {
     /// The function, registry generation, or probe provenance is not current.
@@ -51,7 +51,7 @@ impl core::fmt::Display for BarAuthorityError {
 impl core::error::Error for BarAuthorityError {}
 
 /// A refused BAR-authority return with the unchanged token.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused BAR release returns its authority for retry"]
 pub struct BarAuthorityFailure {
     reason: BarAuthorityError,
@@ -67,7 +67,7 @@ impl core::fmt::Display for BarAuthorityFailure {
 impl core::error::Error for BarAuthorityFailure {}
 
 /// Why a live BAR no longer matches the probed identity behind its mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BarIdentityError {
     /// The function or BAR mapping generation is stale or foreign.
@@ -91,7 +91,7 @@ impl core::fmt::Display for BarIdentityError {
 impl core::error::Error for BarIdentityError {}
 
 /// One access in the indivisible BAR-identity and memory-decode transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BarEnableAccess {
     /// Read one BAR slot before any command write.
     ReadBar(usize),
@@ -100,7 +100,7 @@ pub enum BarEnableAccess {
 }
 
 /// Why BAR-bound memory decoding could not be enabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BarEnableError {
     /// The mapped BAR identity was stale, inaccessible, or changed.

@@ -411,8 +411,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 845,
         file: "libs/x86-apic/src/lifecycle.rs",
-        find: "/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
-        replace: "impl Interrupts {\n    pub const fn from_enabled(enabled: bool) -> Self {\n        if enabled { Self::Enabled } else { Self::Excluded }\n    }\n}\n\n/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
+        find: "/// One ordered boundary in the hardware transaction.\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub enum InitStage {",
+        replace: "impl Interrupts {\n    pub const fn from_enabled(enabled: bool) -> Self {\n        if enabled { Self::Enabled } else { Self::Excluded }\n    }\n}\n\n/// One ordered boundary in the hardware transaction.\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub enum InitStage {",
         breaks: "APIC interrupt-exclusion policy regains a boolean constructor",
         reddens: Caught::HostTest {
             package: "xtask",

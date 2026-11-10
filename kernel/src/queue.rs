@@ -134,7 +134,7 @@ mod completion {
 /// Seven opcodes and no privileged ones (`002`). Anything else is refused with a
 /// completion rather than ignored, because D-79's rule is that every operation
 /// posts exactly one terminal completion, always.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Opcode {
     /// Return the argument. The smallest thing that proves a round trip.
     Echo,
@@ -198,7 +198,7 @@ impl Opcode {
 /// Not a view: a *copy*. Nothing here borrows the page, so nothing can be
 /// re-read after it has been validated, which is the property the type exists
 /// to enforce rather than to document.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Submission {
     /// What was asked for.
     pub(crate) opcode: Opcode,
@@ -218,7 +218,7 @@ pub(crate) struct Submission {
 }
 
 /// What the kernel wrote back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Completion {
     /// The submission's tag, copied back.
     pub(crate) token: u32,
@@ -275,7 +275,7 @@ pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
 /// Taken once per [`Queue::serve`] and never refreshed. Every bound checked
 /// below is checked against *this*, so a rewrite landing mid-service changes
 /// what the next call sees and nothing about what this one does.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Snapshot {
     submission_tail: u32,
     completion_head: u32,
@@ -286,7 +286,7 @@ struct Snapshot {
 /// Its completion slot is **already reserved** — taken when the operation was
 /// admitted — so the completion below can never fail to find room. That is
 /// what makes deferring safe rather than merely convenient.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pending {
     /// Private identity, so a stale worker cannot act on a reused slot.
     id: u64,
@@ -299,7 +299,7 @@ struct Pending {
 }
 
 /// Why an admitted operation is still live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PendingKind {
     /// Waiting for the monotonic clock.
     Timer { deadline_ns: u64 },
@@ -336,7 +336,7 @@ impl PendingKind {
 }
 
 /// Everything the worker needs after admission has dropped caller authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ReadRequest {
     file: crate::vfs::File,
     offset: u32,
@@ -345,7 +345,7 @@ struct ReadRequest {
 }
 
 /// The cancellation boundary for deferred file work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkPhase {
     Queued,
     Running,

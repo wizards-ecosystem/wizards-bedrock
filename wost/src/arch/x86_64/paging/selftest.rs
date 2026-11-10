@@ -413,7 +413,7 @@ static PROBE_PARTIAL_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Results from pausing both paging-activation publication boundaries.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ActivationPublicationProbe {
     initializing_is_excluded: bool,
     root_precedes_ready: bool,

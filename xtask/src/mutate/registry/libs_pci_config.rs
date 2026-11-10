@@ -629,8 +629,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1010,
         file: "libs/pci-config/src/claims.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
-        replace: "#[derive(Debug, Clone, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
+        find: "#[derive(PartialEq, Eq, Debug)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
+        replace: "#[derive(Clone, PartialEq, Eq, Debug)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
         breaks: "pure PCI function authority can be cloned",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -640,8 +640,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1011,
         file: "libs/pci-config/src/claims.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
-        replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
+        find: "#[derive(PartialEq, Eq, Debug)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
+        replace: "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
         breaks: "pure PCI function authority can be copied",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -827,8 +827,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1297,
         file: "libs/pci-config/src/memory.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
-        replace: "#[derive(Debug, Clone, PartialEq, Eq)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
+        find: "#[derive(PartialEq, Eq, Debug)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
+        replace: "#[derive(Clone, PartialEq, Eq, Debug)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
         breaks: "one BAR reservation can be replayed into multiple mappings",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -849,8 +849,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1388,
         file: "libs/pci-config/src/command_state.rs",
-        find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"a refused function release returns its authority for retry\"]\npub struct FunctionReleaseFailure {",
-        replace: "#[derive(Debug, PartialEq, Eq)]\npub struct FunctionReleaseFailure {",
+        find: "#[derive(PartialEq, Eq, Debug)]\n#[must_use = \"a refused function release returns its authority for retry\"]\npub struct FunctionReleaseFailure {",
+        replace: "#[derive(PartialEq, Eq, Debug)]\npub struct FunctionReleaseFailure {",
         breaks: "a linear failure wrapper can be discarded without a compiler warning",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -860,8 +860,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1409,
         file: "libs/pci-config/src/claims.rs",
-        find: "pub struct FunctionAuthority {\n    pub(crate) lease: FunctionLease,\n    pub(crate) registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct FunctionLease {",
-        replace: "pub struct FunctionAuthority {\n    pub lease: FunctionLease,\n    pub(crate) registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct FunctionLease {",
+        find: "pub struct FunctionAuthority {\n    pub(crate) lease: FunctionLease,\n    pub(crate) registers: usize,\n}\n\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub(crate) struct FunctionLease {",
+        replace: "pub struct FunctionAuthority {\n    pub lease: FunctionLease,\n    pub(crate) registers: usize,\n}\n\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]\npub struct FunctionLease {",
         breaks: "pure PCI function authority exposes its private registry lease",
         reddens: Caught::HostTest {
             package: "xtask",

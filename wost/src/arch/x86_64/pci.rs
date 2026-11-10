@@ -82,7 +82,7 @@ pub fn is_available() -> bool {
 }
 
 /// Why the entry-time exhaustive requester fence could not run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DmaHandoffFenceError {
     /// CF8/CFC could not be reserved.
@@ -271,7 +271,7 @@ pub struct NvmeBusMasterAuthority<'bar> {
 }
 
 /// Why a mapped BAR could not prove that its NVMe controller is disabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum NvmeObservationError {
     /// NVMe controller registers must come from BAR0.
@@ -385,7 +385,7 @@ impl MappedBar {
 }
 
 /// Why a CPU-admitted physical range could not bind to one probed BAR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BarBindError {
     /// The physical base or length differs from the probed BAR window.
@@ -450,7 +450,7 @@ impl FunctionClaim {
 }
 
 /// Why exclusive function authority could not be established.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ClaimError {
     /// Configuration space is unavailable.

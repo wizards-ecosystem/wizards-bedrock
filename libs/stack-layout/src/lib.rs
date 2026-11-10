@@ -46,7 +46,7 @@ const WORD: u64 = 8;
 /// let slot = layout.slot(0).unwrap();
 /// let _ = slot.stack_base;
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StackLayout {
     base: u64,
     stack_len: u64,
@@ -55,7 +55,7 @@ pub struct StackLayout {
 }
 
 /// One slot of a [`StackLayout`]: a guard range and the stack above it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Slot {
     /// First address of the guard gap. Never mapped.
     guard_base: u64,
@@ -66,7 +66,7 @@ pub struct Slot {
 }
 
 /// Stack capacity split at one observed descending stack pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StackUsage {
     capacity: u64,
     used: u64,

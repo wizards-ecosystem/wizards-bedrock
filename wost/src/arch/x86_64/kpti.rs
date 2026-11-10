@@ -38,7 +38,7 @@ const ROUTE_UPDATING: u64 = 2;
 const ENTRY_ROOT_SWITCH_IMPLEMENTED: bool = true;
 
 /// Permissions one enclave range has in one member of a root pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Access {
     /// Read-only and executable.
     Executable,
@@ -49,7 +49,7 @@ pub(super) enum Access {
 }
 
 /// One page-exact range and its full/stripped-root permissions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EnclaveMapping {
     section: Section,
     full: Access,
@@ -74,7 +74,7 @@ impl EnclaveMapping {
 }
 
 /// Validated, unforgeable linker geometry for D-407's entry enclave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EntryEnclave {
     mappings: [EnclaveMapping; 6],
     guards: [Section; 2],
@@ -160,7 +160,7 @@ const fn route_roots_are_valid(full: u64, stripped: u64) -> bool {
 const _: () = assert!(route_roots_are_valid(0, PAGE_BYTES));
 
 /// Why a paired route could not be published.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RouteError {
     /// The address-space identity has no distinct stripped root.
     SharedRoot,
@@ -410,7 +410,7 @@ pub(super) fn entry_is_ready_for(roots: AddressSpaceRoots, stack: KernelStackTop
 }
 
 /// A stack address only this module can mint from its linker-owned storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct TransitionStackTop(u64);
 
 impl TransitionStackTop {

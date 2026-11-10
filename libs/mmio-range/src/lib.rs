@@ -14,7 +14,7 @@
 use core::fmt;
 
 /// One non-empty half-open address range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressRange {
     base: u64,
     end: u64,
@@ -100,7 +100,7 @@ pub fn first_fit_by<T>(
 }
 
 /// A checked byte range inside a bounded region.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AccessRange {
     offset: usize,
     end: usize,
@@ -108,7 +108,7 @@ pub struct AccessRange {
 }
 
 /// The exact offsets authorized by an [`AccessRange`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AccessOffsets {
     next: usize,
     remaining: usize,
@@ -137,7 +137,7 @@ impl ExactSizeIterator for AccessOffsets {}
 impl core::iter::FusedIterator for AccessOffsets {}
 
 /// Why a repeated access does not name a valid range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum AccessError {
     /// An access width must be a non-zero power of two.

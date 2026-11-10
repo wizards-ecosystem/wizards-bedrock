@@ -50,7 +50,7 @@ pub const fn entries_from_version(version: u32) -> Option<u32> {
 }
 
 /// One non-empty, representable I/O APIC GSI range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct GsiRange {
     first: u32,
     last: u32,
@@ -88,7 +88,7 @@ impl GsiRange {
 }
 
 /// Two controllers claim at least one common GSI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct OverlappingRanges {
     /// Index of the earlier range in the supplied inventory.
     pub first: usize,

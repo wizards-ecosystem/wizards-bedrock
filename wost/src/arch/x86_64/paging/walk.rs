@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(super) struct EntrySlot {
     pointer: NonNull<Entry>,
 }

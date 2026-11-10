@@ -10,7 +10,7 @@ const FIRST_INTEGRATED: u8 = 0x10;
 const MAXIMUM_LVT_ENTRY_SHIFT: u32 = 16;
 
 /// The contents of [`crate::register::VERSION`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Version(u32);
 
 impl Version {

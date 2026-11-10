@@ -99,7 +99,7 @@ pub trait Sectors {
 }
 
 /// Why a volume could not be read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FatError {
     /// The source refused a read.
@@ -156,7 +156,7 @@ impl core::error::Error for FatError {}
 
 /// The BIOS parameter block, which is the only thing that says where anything
 /// is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Bpb {
     sectors_per_cluster: u32,
     reserved_sectors: u32,
@@ -337,7 +337,7 @@ impl Bpb {
 }
 
 /// What the table says follows `cluster`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Next {
     /// Another cluster.
     Cluster(u32),
@@ -369,7 +369,7 @@ const fn decode_entry(raw: u32) -> Next {
 }
 
 /// One directory entry, with its 8.3 name unpacked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// The name, without padding, upper case, with the dot restored.
     name: [u8; 12],
@@ -431,7 +431,7 @@ impl Entry {
 }
 
 /// Progress through a directory chain, retained between bounded reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirectoryCursor {
     cluster: u32,
     sector: u32,
@@ -459,7 +459,7 @@ impl DirectoryCursor {
 }
 
 /// Entries copied from at most one directory sector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirectoryChunk {
     entries: [Entry; SECTOR_BYTES / ENTRY_BYTES],
     len: usize,
@@ -521,7 +521,7 @@ const fn valid_short_name_byte(byte: u8) -> bool {
 }
 
 /// What a thirty-two byte slot holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
     /// A usable entry.
     Entry(Entry),

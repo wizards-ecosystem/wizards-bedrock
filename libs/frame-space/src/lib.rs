@@ -66,7 +66,7 @@ const fn bit(frame: usize) -> u64 {
 }
 
 /// Why a frame could not be released.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FreeError {
     /// The frame is not one this space manages — it was never usable RAM, or
@@ -88,7 +88,7 @@ impl fmt::Display for FreeError {
 impl core::error::Error for FreeError {}
 
 /// What one [`insert`](FrameSpace::insert) added.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Inserted {
     /// Frames that became managed and free.
     pub added: usize,

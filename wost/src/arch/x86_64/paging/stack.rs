@@ -384,7 +384,7 @@ impl TaskStackPin {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct StackIdentity {
     pub(super) roots: AddressSpaceRoots,
     pub(super) slot: Slot,

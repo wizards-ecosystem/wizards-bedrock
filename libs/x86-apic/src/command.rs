@@ -21,7 +21,7 @@ const ASSERT: u32 = 1 << 14;
 const SHORTHAND_SELF: u32 = 1 << 18;
 
 /// The contents of [`crate::register::COMMAND`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Command(u32);
 
 impl Command {

@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// How a remapping unit's scope reaches one function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Coverage {
     /// An endpoint scope names the function itself.
     Endpoint,
@@ -18,7 +18,7 @@ pub enum Coverage {
 }
 
 /// The remapping unit that governs one function, and the scope that chose it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct GoverningUnit {
     /// Physical address of the unit's register set.
     pub register_base: u64,
@@ -30,7 +30,7 @@ pub struct GoverningUnit {
 ///
 /// The fixed storage is deliberate: callers must choose and enforce their
 /// ownership bound before a unit-wide hardware transition can begin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RequesterInventory<const N: usize> {
     unit: GoverningUnit,
     requesters: [Option<Bdf>; N],
@@ -60,7 +60,7 @@ impl<const N: usize> RequesterInventory<N> {
 }
 
 /// Why one DRHD cannot become a complete fixed requester inventory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum RequesterInventoryError {
     /// No unambiguous unit governs the selected function.
@@ -137,7 +137,7 @@ impl fmt::Display for RequesterInventoryError {
 impl core::error::Error for RequesterInventoryError {}
 
 /// Why a DMAR could not become a validated VT-d inventory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DmarError {
     /// The DMAR itself is not structurally valid.
@@ -185,7 +185,7 @@ impl core::error::Error for DmarError {}
 /// A validated DMAR: every remapping structure and nested device scope
 /// checked once, so the queries below are pure arithmetic over trusted
 /// bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Dmar<'a> {
     body: &'a [u8],
 }

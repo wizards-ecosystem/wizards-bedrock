@@ -86,7 +86,7 @@ pub const IQA: u64 = 0x90;
 pub const IRTA: u64 = 0xB8;
 
 /// The architecture version implemented by a remapping unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Version(u32);
 
 impl Version {
@@ -150,7 +150,7 @@ pub const fn root_table_address(rtaddr: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// The Capability register: what the remapping unit can do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Capability(u64);
 
 impl Capability {
@@ -268,7 +268,7 @@ impl Capability {
 // ---------------------------------------------------------------------------
 
 /// The Extended Capability register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct ExtendedCapability(u64);
 
 impl ExtendedCapability {
@@ -469,7 +469,7 @@ pub const fn invalidation_queue_address(address: u64) -> Option<u64> {
 }
 
 /// A 128-bit queued-invalidation descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct InvalidationDescriptor {
     /// Lower 64 bits.
     pub lo: u64,
@@ -500,7 +500,7 @@ impl InvalidationDescriptor {
 // ---------------------------------------------------------------------------
 
 /// A supported adjusted guest address width and its page-table depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AddressWidth {
     /// 39-bit addresses, a 3-level second-level page table.
     Level3,
@@ -590,7 +590,7 @@ impl AddressWidth {
 ///
 /// Stored little-endian: [`lo`](Self::lo) is written at the entry's base and
 /// [`hi`](Self::hi) eight bytes above it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct RootEntry {
     /// Low qword: present bit and the context-table pointer.
     pub lo: u64,
@@ -636,7 +636,7 @@ impl RootEntry {
 }
 
 /// A context-table entry: the low and high 64-bit words, little-endian.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct ContextEntry {
     /// Low qword: present bit, translation type, and second-level root pointer.
     pub lo: u64,
@@ -847,7 +847,7 @@ pub mod iotlb_command {
 // ---------------------------------------------------------------------------
 
 /// The Fault Status register (FSTS).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct FaultStatus(u32);
 
 impl FaultStatus {
@@ -894,7 +894,7 @@ impl FaultStatus {
 ///
 /// Bit numbering is over the whole 128 bits: `lo` holds bits 63:0 and `hi` bits
 /// 127:64.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct FaultRecording {
     /// Low qword: bits 63:0 of the record, including the faulted address.
     pub lo: u64,

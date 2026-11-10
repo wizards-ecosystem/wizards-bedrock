@@ -44,7 +44,7 @@ const WORDS: usize = PORT_COUNT / PORTS_PER_WORD;
 /// One bit per port. [`reserve`](Self::reserve) is all-or-nothing: a span that
 /// overlaps an existing reservation leaves the table exactly as it found it, so
 /// a refused claim can never half-own a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PortSpace {
     reserved: [u64; WORDS],
 }

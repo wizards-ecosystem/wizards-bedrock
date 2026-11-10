@@ -74,7 +74,7 @@ const SET_1_FAKE_SHIFTS: [u8; 4] = [0x2A, 0xAA, 0x36, 0xB6];
 /// A controller that translates delivers set 1 whatever the keyboard was told
 /// to speak, and says so only in its identity reply — so the driver picks, and
 /// this is what it picks between (D-179).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Set {
     /// What the keyboard sends when nothing rewrites it.
     Two,
@@ -83,7 +83,7 @@ enum Set {
 }
 
 /// Where the machine stands between bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     /// Nothing in flight.
     Idle,

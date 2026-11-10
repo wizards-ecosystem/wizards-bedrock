@@ -597,7 +597,7 @@ impl AddressSpace {
 ///
 /// Four-kilobyte granularity keeps owned mappings splittable by `unmap`; the
 /// direct map instead takes the largest aligned pages available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Grain {
     /// The largest page each aligned stretch allows.
     Largest,
@@ -606,7 +606,7 @@ pub(super) enum Grain {
 }
 
 /// Whether every leaf named by one mapping existed before it began.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum MappingState {
     /// Every target was absent, so rollback owns every leaf it wrote.
     Absent,

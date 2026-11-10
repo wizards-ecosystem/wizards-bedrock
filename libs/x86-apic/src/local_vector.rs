@@ -32,7 +32,7 @@ const TIMER_PERIODIC: u32 = 0b01 << 17;
 const VECTOR: u32 = 0xFF;
 
 /// A vector proven deliverable under one configured spurious source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeliverableVector(InterruptVector);
 
 impl DeliverableVector {
@@ -51,7 +51,7 @@ impl DeliverableVector {
 }
 
 /// One local vector table entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry(u32);
 
 impl Entry {

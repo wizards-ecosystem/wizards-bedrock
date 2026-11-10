@@ -10,7 +10,7 @@ pub(crate) const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
 
 /// Controller-side scancode translation requested by a self-test transaction.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Translation {
     Enabled,
     Disabled,

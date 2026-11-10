@@ -15,7 +15,7 @@ use crate::arch::current::shared_memory;
 /// Its contents are outside kernel control and cannot be read as trusted data.
 /// Conversion is one-way except through [`reclaim`](Self::reclaim), which
 /// clears every byte before returning kernel ownership (D-44, D-107).
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct USegment {
     segment: Option<Segment>,
 }

@@ -53,7 +53,7 @@ static FORM: AtomicUsize = AtomicUsize::new(0);
 const OPERATION_MASK: u32 = u32::MAX;
 
 /// What [`init`] decided, for the boot report and the checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Extended {
     /// Bytes a save area needs.
     pub bytes: usize,

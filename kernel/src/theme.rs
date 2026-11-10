@@ -9,7 +9,7 @@ use wost::boot::Rgb;
 ///
 /// The pair travels together so the two colours cannot be passed the wrong way
 /// round — they are both `Rgb`, and the compiler would not notice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Palette {
     pub(crate) background: Rgb,
     pub(crate) foreground: Rgb,

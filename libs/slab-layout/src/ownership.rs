@@ -7,7 +7,7 @@
 /// count. Slab frames may increase because the heap retains empty slabs; large
 /// frames may move when a still-live allocation changes capacity. Every heap
 /// frame must leave the free pool so the total physical account is conserved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AllocatorOwnership {
     free_frames: usize,
     slab_frames: usize,

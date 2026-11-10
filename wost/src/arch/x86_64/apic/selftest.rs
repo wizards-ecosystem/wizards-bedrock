@@ -141,7 +141,7 @@ pub fn initialization_was_atomic_for_test() -> bool {
 
 /// Results from injecting every late APIC initialization refusal.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct InitializationFailureProbe {
     unavailable_and_terminal: bool,
     ignored_spurious_write_is_terminal: bool,

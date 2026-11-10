@@ -42,7 +42,7 @@ struct OpenRequest {
     reservation: Option<SlotReservation>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkTag {
     OpenAt,
     Read,
@@ -57,7 +57,7 @@ impl WorkTag {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkClaim {
     Claimed(Pending),
     Retry,

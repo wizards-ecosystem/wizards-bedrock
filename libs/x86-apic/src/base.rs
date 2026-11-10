@@ -20,7 +20,7 @@ const X2APIC: u64 = 1 << 10;
 const ENABLE: u64 = 1 << 11;
 
 /// The contents of [`MSR`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Base(u64);
 
 impl Base {

@@ -10,7 +10,7 @@ use super::{FRAMES, Paddr, direct_map_pointer, direct_pointer};
 ///
 /// It cannot be copied or safely constructed except by allocation, so mutable
 /// access through the direct map has one owner.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct Frame {
     index: usize,
 }
@@ -79,7 +79,7 @@ impl Drop for Frame {
 ///
 /// What a 2 MiB mapping and a multi-page stack are allocated as. The same
 /// ownership rule as [`Frame`]: one handle per run, released whole on drop.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct Segment {
     first: usize,
     count: usize,

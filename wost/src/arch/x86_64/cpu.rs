@@ -232,7 +232,7 @@ pub fn faulting_address() -> u64 {
 ///
 /// Each is independent, and each may be absent on an older CPU or a virtual
 /// machine that does not expose it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Protections {
     /// Supervisor writes honour read-only page-table entries.
     pub write_protect: bool,
@@ -530,7 +530,7 @@ pub(super) fn shared_kernel_mappings_are_safe() -> bool {
 }
 
 /// One `cpuid` answer.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 struct CpuidResult {
     eax: u32,
     ebx: u32,

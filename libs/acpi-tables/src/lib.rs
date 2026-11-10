@@ -54,7 +54,7 @@ pub use requesters::{
 use core::fmt;
 
 /// Why a table could not be read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum AcpiError {
     /// The buffer is shorter than the structure it should hold.
@@ -196,7 +196,7 @@ fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
 }
 
 /// The Root System Description Pointer: where the table tree starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rsdp {
     revision: u8,
     rsdt: u32,
@@ -331,7 +331,7 @@ impl Rsdp {
 }
 
 /// The header every System Description Table begins with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sdt {
     signature: [u8; 4],
     length: u32,

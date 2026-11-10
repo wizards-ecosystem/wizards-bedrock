@@ -14,7 +14,7 @@ use super::frame::{Segment, allocate_contiguous};
 /// given. A live mapping prevents recycling even if its owner is dropped.
 /// [`retain`](Self::retain) additionally removes every safe way to access the
 /// allocation when completion or revocation is uncertain.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct DmaSegment {
     segment: Option<Segment>,
     mapping_owner: Option<DmaMappingOwner>,
@@ -22,7 +22,7 @@ pub struct DmaSegment {
 
 /// Stable identity of a VT-d root whose published frames cannot be recycled.
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct DmaMappingOwner(NonZeroU64);
 
 impl DmaMappingOwner {
@@ -169,7 +169,7 @@ impl From<Segment> for DmaSegment {
 }
 
 /// How an IOMMU reads the tables the CPU writes for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableWalks {
     /// The unit snoops the processor caches, so a volatile write is visible to
     /// it as soon as it lands.

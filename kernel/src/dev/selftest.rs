@@ -75,7 +75,7 @@ pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
 
 /// What the I/O APIC does with one line.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Routing {
     /// Whether the line is masked.
     pub(crate) masked: bool,

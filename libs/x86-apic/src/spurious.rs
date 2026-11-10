@@ -14,7 +14,7 @@ const ENABLE: u32 = 1 << 8;
 const HARDWIRED_LOW_BITS: u8 = 0x0F;
 
 /// The contents of [`crate::register::SPURIOUS_INTERRUPT_VECTOR`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Spurious(u32);
 
 impl Spurious {

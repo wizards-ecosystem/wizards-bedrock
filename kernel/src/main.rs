@@ -188,7 +188,7 @@ pub(crate) fn user_launch_is_safe() -> bool {
 
 static SHARED_KERNEL_MAPPINGS_SAFE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum UserIsolation {
     Closed,
     Shared,
@@ -585,7 +585,7 @@ fn survey_the_bus(
 }
 
 /// Whether enumeration should try another storage function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum StorageSelection {
     Seeking,
     Selected,
@@ -999,7 +999,7 @@ fn retire_candidate(
 
 /// Resources a failed selection candidate must return exactly.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct CandidateBaseline {
     frames: usize,
     claims: usize,

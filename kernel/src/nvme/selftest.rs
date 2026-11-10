@@ -75,7 +75,7 @@ pub(crate) struct CandidateStackMeasurement {
 
 /// A candidate's stack use: the painted high-water mark and the deepest live leaf.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct CandidateStack {
     /// From the stack's top to the lowest word the candidate wrote.
     pub(crate) deepest: StackUsage,
@@ -354,7 +354,7 @@ pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
 
 /// What a device write into a buffer the domain does not map produced.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct FenceWitness {
     /// The command completed or was refused rather than hanging.
     pub(crate) completed: bool,

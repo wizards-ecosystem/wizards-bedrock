@@ -2,7 +2,7 @@ use crate::claims::FunctionLease;
 use crate::{Address, CommandLease, CommandLeases, FunctionAuthority, FunctionClaims, command};
 
 /// One command-register access in a verified enable transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandAccess {
     /// Read the command register. Only its low sixteen bits are consumed.
     Read,
@@ -15,7 +15,7 @@ pub enum CommandAccess {
 /// The function identity, original word, installed word and registry
 /// generation are deliberately opaque. Restoration therefore cannot be aimed
 /// at another function or replayed over a later lease.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping command state permanently retains its function lease"]
 pub struct CommandState {
     pub(crate) lease: CommandLease,
@@ -24,14 +24,14 @@ pub struct CommandState {
     pub(crate) phase: CommandPhase,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CommandPhase {
     Installed,
     Restoring(u16),
 }
 
 /// Why one function authority could not be returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FunctionReleaseError {
     /// A command transition or BAR restoration still owns this function.
@@ -56,7 +56,7 @@ impl core::fmt::Display for FunctionReleaseError {
 impl core::error::Error for FunctionReleaseError {}
 
 /// A refused function release with unchanged retry authority.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused function release returns its authority for retry"]
 pub struct FunctionReleaseFailure {
     reason: FunctionReleaseError,
@@ -124,12 +124,12 @@ pub fn release_function<const N: usize>(
 }
 
 /// Exclusive command-register reservation held for one BAR probe.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping a probe token permanently retains its function reservation"]
 pub struct CommandProbe(pub(crate) CommandLease);
 
 /// A refused command enablement, including cleanup authority when uncertain.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused command transition may retain restoration authority"]
 pub struct EnableFailure {
     reason: EnableError,
@@ -158,7 +158,7 @@ impl From<EnableError> for EnableFailure {
 }
 
 /// A refused command restoration with the unchanged retry state.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused command restoration returns its state for retry"]
 pub struct RestoreFailure {
     reason: EnableError,
@@ -178,7 +178,7 @@ impl RestoreFailure {
 }
 
 /// Why memory decode and bus mastering could not be verified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum EnableError {
     /// This function already has a live command transition.

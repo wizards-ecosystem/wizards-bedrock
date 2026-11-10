@@ -7,7 +7,7 @@ use crate::{Entry, Flags, MAX_PHYSICAL, PAGE_SIZE, page_identity_matches};
 const HIGHER_HALF_START: u64 = 0xffff_8000_0000_0000;
 
 /// The physical roots of one inseparable full/stripped address-space pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RootPair {
     full: u64,
     stripped: u64,
@@ -51,7 +51,7 @@ impl RootPair {
 }
 
 /// Why a full/stripped root pair cannot be admitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum RootPairError {
     /// The full root is not page-aligned.
@@ -93,7 +93,7 @@ impl core::error::Error for RootPairError {}
 /// Root acquisition is deliberately separate from published pair authority:
 /// a refusal after the first root must return that one frame, while a complete
 /// pair can move into [`PairFrameAuthority`] only after both roots exist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct PairConstructionLedger {
     root_frames: u8,
 }
@@ -131,7 +131,7 @@ impl PairConstructionLedger {
 }
 
 /// Complete frame authority for one inseparable full/stripped root pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PairFrameAuthority {
     table_frames: usize,
 }
@@ -191,7 +191,7 @@ impl PairFrameAuthority {
 }
 
 /// The only valid outcomes of a pair cleanup transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PairCleanupState {
     /// Cleanup refused before returning a frame, so the whole pair remains.
     Retained(PairFrameAuthority),
@@ -200,7 +200,7 @@ pub enum PairCleanupState {
 }
 
 /// Why observed cleanup cannot preserve or release complete pair authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum PairCleanupError {
     /// The complete pair's frame count cannot be represented.
@@ -231,7 +231,7 @@ impl fmt::Display for PairCleanupError {
 impl core::error::Error for PairCleanupError {}
 
 /// The live state of `CR4.PCIDE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PcidState {
     /// Address-space identifiers are disabled.
     Disabled,
@@ -240,7 +240,7 @@ pub enum PcidState {
 }
 
 /// Evidence for the ordinary-`CR3`-load flush policy used by paired roots.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FlushPremise {
     leaf_count: usize,
 }
@@ -275,7 +275,7 @@ impl FlushPremise {
 }
 
 /// Why the paired-root flush premise is absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FlushPremiseError {
     /// `CR4.PCIDE` is set.
@@ -320,7 +320,7 @@ pub const fn shared_user_link_matches(full: Entry, stripped: Entry) -> bool {
 }
 
 /// The only permissions an entry-enclave page may have.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EnclavePermission {
     /// Read-only executable entry assembly.
     Executable,
@@ -343,7 +343,7 @@ impl EnclavePermission {
 }
 
 /// One expected page in the exact stripped-root entry enclave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EnclavePage {
     virtual_address: u64,
     physical_address: u64,
@@ -409,7 +409,7 @@ impl EnclavePage {
 }
 
 /// Why an expected entry-enclave page cannot be represented.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum EnclavePageError {
     /// The virtual address is not page-aligned.
@@ -454,7 +454,7 @@ impl fmt::Display for EnclavePageError {
 impl core::error::Error for EnclavePageError {}
 
 /// The role of one guarded stack reachable before the full-root load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryStackKind {
     /// The CPU-local stack used for ordinary privilege crossings.
     Transition,
@@ -463,7 +463,7 @@ pub enum EntryStackKind {
 }
 
 /// One page-aligned entry stack with its adjacent lower guard derived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EntryStackRange {
     kind: EntryStackKind,
     start: u64,
@@ -539,7 +539,7 @@ impl EntryStackRange {
 }
 
 /// Why an entry-stack range cannot establish lower-guard geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum EntryStackRangeError {
     /// The first stack byte is not page-aligned.
@@ -581,7 +581,7 @@ impl fmt::Display for EntryStackRangeError {
 impl core::error::Error for EntryStackRangeError {}
 
 /// One leaf observed while walking the stripped root's higher half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ObservedPage {
     virtual_address: u64,
     physical_address: u64,
@@ -673,7 +673,7 @@ pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> b
 }
 
 /// One security-relevant event while entering the kernel from CPL 3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntryEvent {
     /// Load the pair's full root.
     LoadFullRoot,
@@ -686,7 +686,7 @@ pub enum EntryEvent {
 }
 
 /// Pure state for validating the CPL-3-to-kernel transition order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EntryTransition {
     stage: u8,
 }
@@ -728,7 +728,7 @@ impl Default for EntryTransition {
 }
 
 /// One security-relevant event while returning from the kernel to CPL 3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExitEvent {
     /// Validate every user-visible register and return-frame field.
     ValidateUserState,
@@ -747,7 +747,7 @@ pub enum ExitEvent {
 }
 
 /// Pure state for validating the kernel-to-CPL-3 transition order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ExitTransition {
     stage: u8,
 }

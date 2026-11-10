@@ -51,7 +51,7 @@ pub(crate) fn authority_for_test(
 /// Four, and the surface stays small on purpose. io_uring's exploit record is
 /// a warning about surface growth, and every call added here is one a hostile
 /// program can reach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Call {
     /// End this thread. The only one that does not return.
     Exit,

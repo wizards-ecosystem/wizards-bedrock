@@ -121,7 +121,7 @@ fn reclaim(
 }
 
 /// What one reclaim gave back.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct Reclaimed {
     /// Frames the program's own mappings held.
     pub(crate) pages: usize,
@@ -132,7 +132,7 @@ pub(crate) struct Reclaimed {
 }
 
 /// What one bounded collection attempt observed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CollectOutcome {
     /// No zombie owner was waiting.
     Empty,
@@ -198,7 +198,7 @@ static COLLECTION_IS_SETTLING: AtomicBool = AtomicBool::new(false);
 
 /// What a program held when it died, for machine checks.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct LastRites {
     /// The non-repeating table identity of the program that left this record.
     pub(crate) table: u64,

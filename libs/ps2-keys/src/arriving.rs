@@ -25,7 +25,7 @@
 //! past them.
 
 /// What the bytes so far have proved about their numbering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arriving {
     /// Nothing seen yet distinguishes the two.
     Undecided,
@@ -60,7 +60,7 @@ const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];
 /// Stateless on purpose: every rule above holds for a byte in any position,
 /// so there is no sequence to track and no state that could disagree with the
 /// decoder's.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct SetProbe;
 
 impl SetProbe {

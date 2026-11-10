@@ -34,7 +34,7 @@ use core::ops::Range;
 use x86_tables::exception;
 
 /// Why the CPU entered the kernel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum TrapCause {
     /// An architectural exception the CPU raised.
@@ -104,7 +104,7 @@ impl TrapCause {
 }
 
 /// An architectural exception.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum Fault {
     /// `#DE` — a division whose result does not fit, or by zero.
@@ -300,7 +300,7 @@ impl core::fmt::Debug for PageFault {
 }
 
 /// A page fault presented to a controlled recovery boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RecoveryAttempt {
     /// The vector saved in the trap frame.
     pub vector: u64,
@@ -317,7 +317,7 @@ pub struct RecoveryAttempt {
 }
 
 /// The page-fault class one controlled recovery site admits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum RecoveryFault {
     /// Any present/missing, read/write supervisor data access.
@@ -327,7 +327,7 @@ pub enum RecoveryFault {
 }
 
 /// The complete non-liveness policy for one controlled recovery site.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RecoveryRule {
     /// The admitted page-fault class.
     pub fault: RecoveryFault,

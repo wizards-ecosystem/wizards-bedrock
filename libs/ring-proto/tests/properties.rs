@@ -16,7 +16,7 @@ use proptest::prelude::*;
 use ring_proto::{Capacity, Queues, Ring};
 
 /// One thing a test can do to a ring.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Step {
     Produce,
     Consume,

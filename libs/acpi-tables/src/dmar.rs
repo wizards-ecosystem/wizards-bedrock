@@ -7,7 +7,7 @@ use crate::{AcpiError, Sdt, u16_at, u32_at, u64_at};
 /// Only the kinds a VT-d driver acts on are named; everything else is
 /// [`Other`](Self::Other) with its type word, the same shape as
 /// [`MadtEntry::Other`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DmarStructure<'a> {
     /// A DMA remapping hardware unit: one IOMMU and the segment or devices
@@ -226,7 +226,7 @@ impl<'a> Iterator for DmarEntries<'a> {
 }
 
 /// The kind of hardware a device-scope entry names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum DeviceScopeKind {
     /// A PCI endpoint device.
@@ -260,7 +260,7 @@ impl DeviceScopeKind {
 }
 
 /// One device-scope entry nested in a DRHD, RMRR, or ATSR structure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeviceScope<'a> {
     kind: DeviceScopeKind,
     start_bus: u8,
@@ -390,7 +390,7 @@ impl<'a> Iterator for DeviceScopes<'a> {
 }
 
 /// A PCI function, addressed the way a DMAR device scope names one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Bdf {
     segment: u16,
     bus: u8,
@@ -432,7 +432,7 @@ impl Bdf {
 }
 
 /// The buses a PCI-to-PCI bridge forwards to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BusRange {
     /// The bus directly behind the bridge.
     pub secondary: u8,
@@ -449,7 +449,7 @@ fn behind(at: Bdf, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<BusRange
 }
 
 /// What a PCI device scope names once its path is walked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Named {
     /// Exactly one function.
     Function(Bdf),
@@ -458,7 +458,7 @@ pub(crate) enum Named {
 }
 
 /// One resolved hierarchy and the exact live bridge path that reached it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Hierarchy {
     pub(crate) root: Bdf,
     pub(crate) buses: BusRange,

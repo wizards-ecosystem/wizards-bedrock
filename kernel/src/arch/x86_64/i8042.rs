@@ -106,7 +106,7 @@ const RESPONSE_ATTEMPTS: u32 = 100_000;
 const RESET_ATTEMPTS: u32 = 2_000_000;
 
 /// Why enabling the keyboard's interrupt source did not commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum InterruptEnableError {
     /// No configuration change was completed.
     Unavailable,
@@ -137,7 +137,7 @@ impl fmt::Display for InterruptEnableError {
 impl core::error::Error for InterruptEnableError {}
 
 /// Why the keyboard could not be brought up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum I8042Error {
     /// Another driver already owns these ports.
     PortsUnavailable,

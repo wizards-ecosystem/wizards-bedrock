@@ -26,7 +26,7 @@ const INTERRUPT_GATE: u8 = 0x8E;
 const MAX_INTERRUPT_STACK: u8 = 7;
 
 /// One interrupt descriptor table entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[repr(C)]
 pub struct Gate {
     offset_low: u16,

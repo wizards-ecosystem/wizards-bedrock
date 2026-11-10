@@ -14,7 +14,7 @@
 //! no-speculative-API rule.
 
 /// Which of the three counters the word addresses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Channel {
     /// Counter 0, historically the system timer interrupt.
     Zero,
@@ -44,7 +44,7 @@ impl Channel {
 }
 
 /// How the sixteen-bit count crosses the eight-bit data port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Access {
     /// Low byte only.
     LowByte,
@@ -65,7 +65,7 @@ impl Access {
 }
 
 /// What the counter does with its count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OperatingMode {
     /// Mode 0: count down once, raise the output at zero, keep counting.
     InterruptOnTerminalCount,
@@ -95,7 +95,7 @@ impl OperatingMode {
 }
 
 /// One control word, ready to write to the control port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ControlWord(u8);
 
 impl ControlWord {

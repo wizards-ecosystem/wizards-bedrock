@@ -52,7 +52,7 @@ const MAX_SHIFT: u32 = 63;
 const SHIFT_BITS: u32 = 32;
 
 /// One direction of one clock's conversion: multiply, then shift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Timebase {
     multiplier: u64,
     shift: u32,
@@ -294,7 +294,7 @@ impl Seq {
 /// speed cannot change the real duration; before calibration, a caller still
 /// has a finite, explicit fallback rather than an accidental endless wait
 /// (D-200).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PollLimit {
     /// Stop at this monotonic nanosecond.
     Deadline(u64),

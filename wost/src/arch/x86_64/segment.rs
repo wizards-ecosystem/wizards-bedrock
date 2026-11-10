@@ -375,7 +375,7 @@ fn fault_stack_top() -> u64 {
 }
 
 /// A stack address minted only from the linker-owned enclave IST storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct IstStackTop(u64);
 
 impl IstStackTop {

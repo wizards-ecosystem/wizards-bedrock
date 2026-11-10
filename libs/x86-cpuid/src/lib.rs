@@ -40,7 +40,7 @@ pub const SPEC_CTRL_MSR: u32 = 0x0000_0048;
 pub const SPEC_CTRL_IBRS: u64 = 1 << 0;
 
 /// A restricted, add-only update to the kernel-managed `CR4` feature bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cr4Additions(u64);
 
 impl Cr4Additions {
@@ -82,7 +82,7 @@ impl Cr4Additions {
 const HYPERVISOR_BIT: u32 = 1 << 31;
 
 /// One four-register `cpuid` answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CpuidLeaf {
     eax: u32,
     ebx: u32,
@@ -98,13 +98,13 @@ impl CpuidLeaf {
 }
 
 /// CPU-resident evidence about the execution environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ExecutionEnvironment {
     kind: ExecutionEnvironmentKind,
 }
 
 /// Requester-inaccessible CPU identity for a qualified DMA-handoff platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DmaHandoffPlatform {
     /// The exact pinned QEMU TCG hypervisor leaf.
     QemuTcg,
@@ -112,7 +112,7 @@ pub enum DmaHandoffPlatform {
     Vmware,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ExecutionEnvironmentKind {
     QemuTcg,
     Vmware,
@@ -174,12 +174,12 @@ impl ExecutionEnvironment {
 }
 
 /// Why a user page table may retain the kernel's mappings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SharedKernelMappingReason {
     kind: SharedKernelMappingReasonKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SharedKernelMappingReasonKind {
     RdclNo,
     QemuTcg,
@@ -203,7 +203,7 @@ impl core::fmt::Display for SharedKernelMappingReason {
 /// rate exactly enough to build a conversion. Leaf 0x16 is only the nominal
 /// processor base frequency, so it remains separate diagnostic evidence and
 /// is never silently promoted into a clock rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FrequencyHints {
     tsc_hz: Option<u64>,
     base_hz: Option<u64>,
@@ -257,7 +257,7 @@ impl FrequencyHints {
 /// `IA32_ARCH_CAPABILITIES` is saying nothing, not saying it is safe, and
 /// treating the two alike is how a mitigation gets skipped on the machines
 /// that need it most.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Speculation {
     capabilities: Option<u64>,
 }

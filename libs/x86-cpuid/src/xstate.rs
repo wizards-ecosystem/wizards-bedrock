@@ -85,14 +85,14 @@ pub const fn avx_state_has_instruction_support(mask: u64, basic_ecx: u32) -> boo
 }
 
 /// What the processor says about one state component.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Component {
     size: u32,
     alignment: Alignment,
 }
 
 /// Placement required by a state component's CPUID sub-leaf.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Alignment {
     /// Place directly after the preceding component.
     Natural,
@@ -146,7 +146,7 @@ pub const fn standard_component_extent(component: Component, offset: u32) -> Opt
 }
 
 /// Where every enabled component sits in a compacted save area.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Layout {
     offsets: [Option<u32>; COMPONENTS],
     size: usize,

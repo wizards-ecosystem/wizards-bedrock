@@ -265,7 +265,7 @@ const HANDLE_QUOTA: usize = 64;
 
 /// What process construction committed before the first user instruction.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Birth {
     /// The non-repeating identity of the process's authority table.
     pub(crate) table: u64,
@@ -296,7 +296,7 @@ pub(crate) fn birth_of(spawned: &Spawned) -> Option<Birth> {
 
 /// A completed construction step after which a check may force refusal.
 #[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SpawnEdge {
     /// The private address-space root exists.
     Space,

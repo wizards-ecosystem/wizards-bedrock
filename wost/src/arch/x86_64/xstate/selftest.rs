@@ -46,7 +46,7 @@ pub fn save_stays_inside_its_area() -> bool {
 }
 
 /// Values spanning every extended-state component this kernel enables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg(feature = "selftest")]
 pub struct Probe {
     /// One exactly representable value on the x87 register stack.
