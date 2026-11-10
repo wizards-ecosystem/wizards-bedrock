@@ -100,7 +100,8 @@ impl Controller {
 
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
         // Owned before the first fallible domain transition: retirement must see an uncertain
-        // partial map, and keeps device and domain quarantined until the leaves are invalidated.
+        // partial map, and keeps device and domain quarantined until the exact queue leaves are
+        // invalidated.
         self.io = Some(pair);
         // Reachable before the controller can be told about either queue.
         {

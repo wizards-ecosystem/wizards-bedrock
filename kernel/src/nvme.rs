@@ -1,13 +1,14 @@
 //! A polled NVMe controller: `libs/nvme` owns every number, `wost` the accesses and frames.
 //!
-//! Polled (`IEN = 0`, `012` §2) to keep interrupt sharing off the critical path: a read spins
+//! Polled (`IEN = 0`, `012` §2) because this kernel has no interrupt sharing: a read spins
 //! only in the file worker, `RingEnter` only admits it, and replacing it needs a measured load.
 //! Bus master must be on for DMA and its absence reports no error; the PCI lease withholds it
 //! until controller-disable readback is exact. The register window must be mapped uncacheable,
 //! since write-back is a silent bug. `CAP` is read, never assumed: queue size, doorbell stride,
 //! timeout and page-size range come from it, and VMware's values are unmeasured (`012` §11).
 //! Unlike `kernel::queue` there is no completion tail: entries are found by their phase tag,
-//! matched by command identifier and not by slot, and capacity is `size - 1`.
+//! matched by command identifier and not by slot, and capacity is `size - 1`. The arithmetic is
+//! shared through `libs/nvme`; the structure is not.
 
 use core::fmt;
 #[cfg(feature = "selftest")]

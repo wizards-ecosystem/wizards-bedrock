@@ -1,4 +1,5 @@
-//! A FAT32 volume on the one controller, read-only: nothing here writes (`014`).
+//! A FAT32 volume on the one controller, read-only: nothing here writes (`014`), so the
+//! third-party volume carries no on-disk write risk.
 //!
 //! The NVMe sector source for `libs/fat32`, whose same reader runs on the host as the oracle.
 
