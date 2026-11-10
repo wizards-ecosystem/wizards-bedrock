@@ -89,12 +89,7 @@ fn frequency_leaves_keep_exact_and_nominal_evidence_distinct() {
     );
 }
 
-/// Saying nothing is not the same as saying safe.
-///
-/// The distinction this type exists for. A processor with no capability
-/// word is every AMD part before Zen 2 and every Intel part before 2018 —
-/// treating its silence as `RDCL_NO` would skip a mitigation on exactly
-/// the machines that need one.
+/// No capability word is every AMD part before Zen 2 and every Intel part before 2018.
 #[test]
 fn silence_is_not_safety() {
     let silent = Speculation::undescribed();
@@ -181,7 +176,6 @@ fn shared_mapping_reasons_have_stable_policy_names() {
 /// Each capability bit is read on its own, and not from its neighbours.
 #[test]
 fn every_capability_bit_is_read_on_its_own() {
-    /// One bit and the accessor that is supposed to read exactly it.
     type Reader = (u64, fn(&Speculation) -> bool);
 
     let readers: [Reader; 4] = [
@@ -202,11 +196,7 @@ fn every_capability_bit_is_read_on_its_own() {
     }
 }
 
-/// The MSR is not read unless the feature bit says it exists.
-///
-/// Reading `IA32_ARCH_CAPABILITIES` on a processor that does not have it
-/// is a general-protection fault, so this is the one property here that is
-/// a crash rather than a wrong answer.
+/// The one property here whose failure is a general-protection fault.
 #[test]
 fn the_capability_msr_is_not_read_when_absent() {
     let posture = Speculation::read(0, |_| panic!("read the msr without the feature bit"));
@@ -219,10 +209,7 @@ fn the_capability_msr_is_not_read_when_absent() {
     assert!(posture.rdcl_no() && posture.enhanced_ibrs());
 }
 
-/// Enabling IBRS preserves every other bit of `IA32_SPEC_CTRL`.
-///
-/// Firmware may have enabled a mitigation of its own; clearing it would be
-/// the kernel silently weakening the machine it booted on.
+/// Firmware may have enabled a mitigation of its own, which the kernel must not clear.
 #[test]
 fn enabling_ibrs_preserves_what_firmware_set() {
     let enhanced = Speculation::described(1 << 1);
@@ -240,8 +227,6 @@ fn enabling_ibrs_preserves_what_firmware_set() {
     );
 }
 
-/// Without enhanced IBRS nothing is written, rather than the expensive
-/// alternative being chosen silently.
 #[test]
 fn without_enhanced_ibrs_nothing_is_written() {
     for posture in [
@@ -254,8 +239,6 @@ fn without_enhanced_ibrs_nothing_is_written() {
     }
 }
 
-/// The report names what it found, and says so plainly when it found
-/// nothing.
 #[test]
 fn the_report_names_what_it_found() {
     assert_eq!(
@@ -268,28 +251,15 @@ fn the_report_names_what_it_found() {
     );
 }
 
-/// The four numbers the SDM fixes, transcribed.
-///
-/// Every test above spells them by name on both sides of its comparison,
-/// so each reduces to an identity: `msr == ARCH_CAPABILITIES_MSR` where
-/// the value *is* that constant; `bit & bit != 0`, true of every single
-/// bit; `x | IBRS == x | IBRS`. All four survived being changed, and
-/// `SPEC_CTRL_MSR` was referenced by no test at all (D-124).
+/// SDM Vol. 4 table 2-2 and Vol. 2A leaf 7, since the tests above name them on both sides.
 #[test]
 fn the_speculation_constants_are_the_manual_s() {
-    // SDM Vol. 4 table 2-2: IA32_SPEC_CTRL is MSR 0x48, and
-    // IA32_ARCH_CAPABILITIES is 0x10A.
     assert_eq!(SPEC_CTRL_MSR, 0x48);
     assert_eq!(ARCH_CAPABILITIES_MSR, 0x10A);
-    // Vol. 2A, CPUID leaf 7 sub-leaf 0: EDX bit 29 says the capability
-    // MSR exists.
     assert_eq!(ARCH_CAPABILITIES_BIT, 0x2000_0000);
     assert_eq!(HYPERVISOR_BIT, 0x8000_0000);
-    // IA32_SPEC_CTRL bit 0 is IBRS.
     assert_eq!(SPEC_CTRL_IBRS, 1);
 
-    // And the bit is read from the position it names: a word with only
-    // bit 29 set describes the capability, and one with bit 28 does not.
     assert_eq!(
         Speculation::read(0x2000_0000, |_| 0),
         Speculation::described(0)

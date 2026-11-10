@@ -47,9 +47,7 @@ fn a_spurious_self_delivery_performs_no_fake_register_write() {
     assert_eq!(writes, 0);
 }
 
-/// Bit 12 is the delivery-status bit of the memory-mapped encoding, which
-/// x2APIC removed — a write there is synchronous. Building a command that
-/// sets it would be writing a reserved bit, which faults.
+/// Bit 12, xAPIC delivery status, is reserved in x2APIC and faults when written.
 #[test]
 fn a_command_leaves_the_removed_delivery_status_bit_clear() {
     let command =

@@ -1,17 +1,6 @@
-//! The control word written to program or latch a counter.
+//! The 8254 control word: counter in bits 7:6, access in 5:4, mode in 3:1, BCD in 0 left clear.
 //!
-//! One byte selects a counter, says how its sixteen bits will be transferred
-//! over an eight-bit port, and picks an operating mode. The layout is the
-//! Intel 8254 datasheet's: counter in bits 7–6, access in bits 5–4, mode in
-//! bits 3–1, and binary-coded decimal in bit 0, which stays zero because
-//! nothing has counted in decimal since the chip was new. Counter select 11
-//! is not a fourth counter but the read-back command, whose byte has its own
-//! layout below.
-//!
-//! Each multi-value hardware field is transcribed whole — every mode, every
-//! access width — because an encoding is one primitive that is incoherent in
-//! halves, which is the exception the conventions carve out of the
-//! no-speculative-API rule.
+//! Each multi-value field is transcribed whole, since an encoding is incoherent in halves.
 
 /// Which of the three counters the word addresses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -33,7 +22,7 @@ impl Channel {
         }) << 6
     }
 
-    /// The read-back command names counters one-hot in bits 3–1 instead.
+    /// The read-back command names counters one-hot in bits 3:1 instead.
     const fn select_bit(self) -> u8 {
         match self {
             Self::Zero => 1 << 1,
@@ -46,11 +35,9 @@ impl Channel {
 /// How the sixteen-bit count crosses the eight-bit data port.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Access {
-    /// Low byte only.
     LowByte,
-    /// High byte only.
     HighByte,
-    /// Low byte, then high byte — the only way to move a full count.
+    /// Low byte, then high byte, the only way to move a full count.
     LowHigh,
 }
 
@@ -73,7 +60,7 @@ pub enum OperatingMode {
     HardwareRetriggerableOneShot,
     /// Mode 2: reload on zero, one output pulse per period.
     RateGenerator,
-    /// Mode 3: reload on zero, output high half the period — the speaker mode.
+    /// Mode 3: reload on zero, output high half the period; the speaker mode.
     SquareWave,
     /// Mode 4: one output pulse, triggered by software writing a count.
     SoftwareTriggeredStrobe,
@@ -104,25 +91,14 @@ impl ControlWord {
         Self(channel.bits() | access.bits() | mode.bits())
     }
 
-    /// Latch `channel`'s count for a coherent two-byte read.
-    ///
-    /// Access bits of zero are what distinguish a latch command from a
-    /// programming word; the counter keeps running while the latched value
-    /// waits to be read.
+    /// Latch `channel`'s count for a coherent two-byte read; zero access bits make it a latch.
     pub const fn latch(channel: Channel) -> Self {
         Self(channel.bits())
     }
 
-    /// Latch `channel`'s status byte — the read-back command asking for
-    /// status only.
-    ///
-    /// The read-back layout is its own: bits 7–6 both set, bit 5 clear would
-    /// latch counts, bit 4 clear latches status, and counters are named
-    /// one-hot in bits 3–1. The status byte read from the counter's port
-    /// afterwards carries [`STATUS_NULL_COUNT`](crate::STATUS_NULL_COUNT),
-    /// which is why anyone asks.
+    /// The read-back command latching `channel`'s status, with [`crate::STATUS_NULL_COUNT`].
     pub const fn read_back_status(channel: Channel) -> Self {
-        /// Bits 7–6 set: this is a read-back, not a programming word.
+        /// Bits 7:6 set: a read-back command.
         const READ_BACK: u8 = 0b11 << 6;
         /// Bit 5 set: do not latch the count.
         const SKIP_COUNT: u8 = 1 << 5;
@@ -130,7 +106,6 @@ impl ControlWord {
         Self(READ_BACK | SKIP_COUNT | channel.select_bit())
     }
 
-    /// The byte to write.
     pub const fn bits(self) -> u8 {
         self.0
     }

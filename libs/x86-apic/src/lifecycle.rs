@@ -57,7 +57,6 @@ impl InitStage {
 pub enum BeginError {
     /// Another caller owns the unpublished transition.
     InProgress,
-    /// Initialization already completed.
     Ready,
     /// A failed hardware transition made retry unsafe.
     Poisoned,
@@ -65,15 +64,11 @@ pub enum BeginError {
 
 impl fmt::Display for BeginError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InProgress => {
-                core::fmt::Write::write_str(f, "local apic initialization is in progress")
-            }
-            Self::Ready => core::fmt::Write::write_str(f, "the local apic is already ready"),
-            Self::Poisoned => {
-                core::fmt::Write::write_str(f, "local apic initialization is poisoned")
-            }
-        }
+        f.write_str(match self {
+            Self::InProgress => "local apic initialization is in progress",
+            Self::Ready => "the local apic is already ready",
+            Self::Poisoned => "local apic initialization is poisoned",
+        })
     }
 }
 
@@ -95,20 +90,12 @@ pub enum ProgressError {
 
 impl fmt::Display for ProgressError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InterruptsEnabled => {
-                core::fmt::Write::write_str(f, "local apic initialization lost interrupt exclusion")
-            }
-            Self::OutOfOrder => {
-                core::fmt::Write::write_str(f, "local apic initialization is out of order")
-            }
-            Self::Incomplete => {
-                core::fmt::Write::write_str(f, "local apic initialization is incomplete")
-            }
-            Self::Settled => {
-                core::fmt::Write::write_str(f, "local apic initialization already settled")
-            }
-        }
+        f.write_str(match self {
+            Self::InterruptsEnabled => "local apic initialization lost interrupt exclusion",
+            Self::OutOfOrder => "local apic initialization is out of order",
+            Self::Incomplete => "local apic initialization is incomplete",
+            Self::Settled => "local apic initialization already settled",
+        })
     }
 }
 

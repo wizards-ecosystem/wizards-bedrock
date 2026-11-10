@@ -43,25 +43,18 @@ fn watchdog_spec(
     }
 }
 
-/// A count that is an exact multiple of the window makes the ratio exact:
-/// ten cycles per crystal tick is ten times the crystal.
 #[test]
 fn an_exact_ratio_calibrates_exactly() {
     assert_eq!(measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
 }
 
-/// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor would lose
-/// half a hertz per crystal tick.
+/// 1_193_182 / 4 is 298_295.5, which nearest rounds up.
 #[test]
 fn rounding_is_to_nearest_not_floor() {
     assert_eq!(measured_hz(1, 4), 298_296);
 }
 
-/// Inputs at the top of the space must answer, not overflow.
-///
-/// These lines exercise the product's `checked_mul`. No input reaches a
-/// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
-/// largest addend is `u16::MAX / 2` (D-105).
+/// No addend wraps, since `u64::MAX mod CRYSTAL_HZ` is 958_759 and the largest is `u16::MAX / 2`.
 #[test]
 fn the_product_at_the_top_of_the_space_cannot_overflow() {
     let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
@@ -69,8 +62,6 @@ fn the_product_at_the_top_of_the_space_cannot_overflow() {
     assert!(measured_hz(largest_counted, u16::MAX) > 0);
     assert_eq!(measured_hz(largest_counted + 1, u16::MAX), 0);
 
-    // The headroom the addend relies on, so a change to `CRYSTAL_HZ` that
-    // removed it is visible here rather than nowhere.
     let remainder = u64::MAX % CRYSTAL_HZ as u64;
     assert!(
         remainder >= u64::from(u16::MAX / 2),
@@ -88,11 +79,7 @@ fn a_counter_that_never_moved_measures_no_rate() {
     assert_eq!(measured_hz(0, 20_000), 0);
 }
 
-/// The numbers the two real machines produce, for both clocks a window is
-/// now shared by. QEMU models the APIC clock at a gigahertz and passes
-/// the host's timestamp counter through; VMware has traditionally
-/// advertised a sixty-six megahertz bus. All measured over a genuine
-/// 20 ms window.
+/// QEMU's gigahertz APIC clock and host TSC, and VMware's 66 MHz bus, over a 20 ms window.
 #[test]
 fn qemu_and_vmware_shaped_numbers_land_in_sane_bounds() {
     let window = 23_863;
@@ -110,8 +97,7 @@ fn qemu_and_vmware_shaped_numbers_land_in_sane_bounds() {
     assert!((65_000_000..=67_000_000).contains(&apic), "vmware {apic}");
 }
 
-/// The plausible extremes both fit: a 10 MHz bus and a 5 GHz counter are
-/// measured from the same window arithmetic without either saturating.
+/// A 10 MHz bus and a 5 GHz counter both measure from one window without saturating.
 #[test]
 fn the_plausible_clock_range_stays_representable() {
     let window = 23_863;

@@ -2,9 +2,7 @@ use core::mem::offset_of;
 
 use super::*;
 
-/// Every offset here is dictated by the architecture; nothing but this test
-/// stands between a mistyped reserved field and a stack pointer the CPU
-/// reads from the wrong place.
+/// Nothing else stands between a mistyped reserved field and a misplaced stack pointer.
 #[test]
 fn the_layout_matches_the_architecture() {
     assert_eq!(size_of::<TaskState>(), 104);
@@ -105,7 +103,6 @@ fn privilege_stacks_do_not_share_a_slot() {
     let privilege_stacks = task_state.privilege_stacks;
     assert_eq!(privilege_stacks, [0x1111_0000, 0, 0x3333_0000]);
 
-    // And they do not overlap the interrupt stacks.
     let interrupt_stacks = task_state.interrupt_stacks;
     assert_eq!(interrupt_stacks[0], 0);
 }

@@ -35,12 +35,7 @@ fn a_standard_component_extent_uses_the_reported_offset() {
     );
 }
 
-/// A snapshot with AVX-512 and APX, whose *non-compacted* offsets are not
-/// ordered by index.
-///
-/// Sizes are the architectural ones: `ZMM_Hi256` 512, `Hi16_ZMM` 1024,
-/// `PT` 128, `PKRU` 8, and APX's `EGPR` 80. The point of the snapshot is
-/// the ordering, not the exact bytes.
+/// AVX-512 and APX at their architectural sizes, with non-compacted offsets out of index order.
 fn avx512_and_apx(index: u32) -> Component {
     match index {
         2 => Component::new(256, Alignment::Natural),
@@ -61,15 +56,12 @@ fn the_header_is_always_there() {
     assert_eq!(layout.size(), HEADER_BYTES);
     assert!(layout.is_consistent());
 
-    // x87 and SSE are in the legacy area, so enabling them adds nothing
-    // and neither gets an offset of its own.
     let legacy = Layout::compacted(X87 | SSE, |_| Component::ABSENT);
     assert_eq!(legacy.size(), HEADER_BYTES);
     assert_eq!(legacy.offset_of(0), None);
     assert_eq!(legacy.offset_of(1), None);
 }
 
-/// The layout D-82 actually permits.
 #[test]
 fn the_permitted_mask_places_avx_after_the_header() {
     let layout = Layout::compacted(PERMITTED, avx_only);
@@ -79,42 +71,30 @@ fn the_permitted_mask_places_avx_after_the_header() {
     assert_eq!(PERMITTED, 0b111, "D-82 permits x87, SSE and AVX only");
 }
 
-/// **A component with a higher index at a lower offset does not disturb
-/// the compacted layout.**
-///
-/// In the non-compacted APX layout, component 19 sits below components 6,
-/// 7 and 8. Compacted offsets use mask-index order and ignore those
-/// processor offsets (`010` §8).
+/// Hand-calculated offsets, since an expectation derived from `Layout` passes a monotonic one.
 #[test]
 fn a_high_index_at_a_low_offset_changes_nothing() {
     let mask = 0b111 | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 19);
     let layout = Layout::compacted(mask, avx512_and_apx);
 
-    // Hand-calculated: deriving the expectation from `Layout` let every
-    // wrong monotonic implementation pass (D-105).
     assert_eq!(layout.offset_of(2), Some(576), "avx");
     assert_eq!(layout.offset_of(5), Some(832), "opmask");
     assert_eq!(layout.offset_of(6), Some(896), "zmm hi256");
     assert_eq!(layout.offset_of(7), Some(1408), "hi16 zmm");
     assert_eq!(layout.offset_of(8), Some(2432), "pt");
     assert_eq!(layout.offset_of(9), Some(2560), "pkru");
-    // The components inside the legacy area are never placed after it.
     assert_eq!(layout.offset_of(0), None, "x87");
     assert_eq!(layout.offset_of(1), None, "sse");
 
-    // APX asks for alignment, so it starts on a sixty-four byte boundary
-    // and the area is exactly long enough to hold it.
     let apx = layout.offset_of(19).expect("apx was enabled");
     assert_eq!(apx % 64, 0, "an aligned component started unaligned");
     assert_eq!(layout.size(), apx + 80);
     assert!(layout.is_consistent());
 }
 
-/// Alignment padding goes before the component, not after.
+/// Component 3 would start at 584 after the 8 bytes of component 2, and aligns to 640.
 #[test]
 fn alignment_pads_ahead_of_the_component() {
-    // Component 2 is 8 bytes, so component 3 would start at 584 — but it
-    // asks for alignment, so it starts at 640.
     let layout = Layout::compacted(0b1111, |index| match index {
         2 => Component::new(8, Alignment::Natural),
         3 => Component::new(16, Alignment::Bytes64),
@@ -174,11 +154,7 @@ fn the_live_configuration_is_exactly_the_fixed_policy() {
     }
 }
 
-/// No two enabled components share an offset, and none starts past the
-/// end.
-///
-/// Checked by collecting them rather than by re-deriving the walk, so a
-/// rewritten `compacted` disagrees instead of agreeing with itself.
+/// Checked by collecting the offsets, so a rewritten `compacted` cannot agree with itself.
 #[test]
 fn no_two_components_share_an_offset() {
     let mask = 0b111 | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 19);
@@ -219,7 +195,6 @@ fn a_layout_that_overflows_a_u32_offset_is_not_consistent() {
         layout.size()
     );
 
-    // And no two enabled components share a starting offset.
     let placed: Vec<Option<usize>> = (2..5).map(|index| layout.offset_of(index)).collect();
     for (index, offset) in placed.iter().enumerate() {
         for earlier in &placed[..index] {
@@ -231,11 +206,9 @@ fn a_layout_that_overflows_a_u32_offset_is_not_consistent() {
     }
 }
 
-/// A duplicate offset is what `is_consistent` is for, so it must see one.
+/// Constructed directly, since `compacted` refuses to build a duplicate offset.
 #[test]
 fn two_components_at_one_offset_are_not_consistent() {
-    // Constructed directly, because the constructor now refuses to build
-    // one — the invariant still has to be checkable from the outside.
     let mut offsets = [None; COMPONENTS];
     offsets[2] = Some(576);
     offsets[3] = Some(576);

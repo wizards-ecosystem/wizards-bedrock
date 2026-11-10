@@ -1,12 +1,4 @@
-//! Turning one measurement window into a clock's rate.
-//!
-//! A window is a pair: cycles some other clock counted while the 8254 counted
-//! `pit_ticks` of its crystal. One window can be shared by every clock read
-//! across it — the kernel measures the APIC timer and the timestamp counter
-//! in the same one — so this is a single function, applied once per clock.
-//!
-//! Rounding is to nearest, from the raw numbers, exactly once. Deriving
-//! anything from an already-rounded rate would compound two floors.
+//! A clock's rate from one PIT window, rounded to nearest once from the raw numbers.
 
 use crate::CRYSTAL_HZ;
 
@@ -22,14 +14,9 @@ pub enum WatchdogVerdict {
     Disagreed,
 }
 
-/// Judge one APIC expiry against a simultaneously started PIT window.
+/// Judge one APIC expiry against a PIT window started with it and kept under one span.
 ///
-/// The caller bounds `expected_pit_ticks` below one PIT span. An expiry later
-/// than the ordinary agreement window is inconclusive rather than a failure:
-/// interrupt latency and a slow APIC look identical after the counter reaches
-/// zero. An early expiry has no such innocent explanation. TSC progress is
-/// compared only while its own elapsed count proves the PIT window could not
-/// have folded.
+/// A late expiry is inconclusive, since latency and a slow APIC look alike; an early one disagrees.
 pub const fn watchdog_verdict(
     apic_remaining: u32,
     tsc_ticks: u64,
@@ -66,11 +53,7 @@ pub const fn watchdog_verdict(
     }
 }
 
-/// The measured clock's rate in hertz, from one window against the crystal.
-///
-/// Zero when the window is empty or the product overflows — both are readings
-/// no real measurement produces, and zero fails any plausibility bound the
-/// caller applies.
+/// The measured clock's rate in hertz, zero for an empty window or an overflowing product.
 pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     if pit_ticks == 0 {
         return 0;
@@ -82,9 +65,7 @@ pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     }
 }
 
-/// The product plus the half-denominator that makes the division round to
-/// nearest — `None` if either step overflows, so the caller stays total on
-/// inputs no real measurement produces.
+/// The product plus the half-denominator that rounds the division, `None` on overflow.
 const fn rounded_numerator(counted: u64, denominator: u64) -> Option<u64> {
     match counted.checked_mul(CRYSTAL_HZ as u64) {
         Some(product) => product.checked_add(denominator / 2),

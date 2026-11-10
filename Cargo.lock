@@ -866,6 +866,9 @@ dependencies = [
 [[package]]
 name = "x86-apic"
 version = "0.2.0"
+dependencies = [
+ "register-bits",
+]
 
 [[package]]
 name = "x86-cpuid"

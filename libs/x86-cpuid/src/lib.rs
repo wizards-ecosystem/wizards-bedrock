@@ -1,10 +1,4 @@
-//! What `cpuid` and the capability MSRs say, decoded.
-//!
-//! The pattern D-30 and D-43 set and `010` §8 asks for again: the arithmetic
-//! that reads a hardware answer lives where `cargo test` can reach it, and the
-//! privileged crate keeps only the instruction. QEMU's TCG does not emulate
-//! `IA32_ARCH_CAPABILITIES`, so synthetic capability words are the only way
-//! the enhanced-IBRS branch is checked before it meets real hardware.
+//! What `cpuid` and the capability MSRs say, decoded where `cargo test` can reach it.
 //!
 //! # Examples
 //!
@@ -26,6 +20,8 @@
 
 pub mod physical;
 pub mod xstate;
+
+use core::fmt;
 
 /// `cpuid` leaf 7 subleaf 0, `EDX` bit 29: `IA32_ARCH_CAPABILITIES` exists.
 pub const ARCH_CAPABILITIES_BIT: u32 = 1 << 29;
@@ -158,12 +154,7 @@ impl ExecutionEnvironment {
         }
     }
 
-    /// Bind a qualified DMA-handoff profile to CPU-resident platform evidence.
-    ///
-    /// Unlike ACPI bytes in guest RAM, the hypervisor base leaf cannot be
-    /// rewritten by a PCI requester. The exact QEMU TCG and VMware profiles
-    /// are the only release platforms permitted to assert the DMA-safe
-    /// handoff contract.
+    /// The qualified platform, from a hypervisor leaf no PCI requester can rewrite.
     pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {
         match self.kind {
             ExecutionEnvironmentKind::QemuTcg => Some(DmaHandoffPlatform::QemuTcg),
@@ -185,24 +176,18 @@ enum SharedKernelMappingReasonKind {
     QemuTcg,
 }
 
-impl core::fmt::Display for SharedKernelMappingReason {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Write::write_str(
-            f,
-            match self.kind {
-                SharedKernelMappingReasonKind::RdclNo => "rdcl_no",
-                SharedKernelMappingReasonKind::QemuTcg => "qemu_tcg",
-            },
-        )
+impl fmt::Display for SharedKernelMappingReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.kind {
+            SharedKernelMappingReasonKind::RdclNo => "rdcl_no",
+            SharedKernelMappingReasonKind::QemuTcg => "qemu_tcg",
+        })
     }
 }
 
 /// Frequency information reported by the basic `cpuid` leaves.
 ///
-/// Leaf 0x15 is an architectural ratio to a crystal and can name the TSC's
-/// rate exactly enough to build a conversion. Leaf 0x16 is only the nominal
-/// processor base frequency, so it remains separate diagnostic evidence and
-/// is never silently promoted into a clock rate.
+/// Leaf 0x16 is only a nominal base frequency, so it never becomes a clock rate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FrequencyHints {
     tsc_hz: Option<u64>,
@@ -210,11 +195,7 @@ pub struct FrequencyHints {
 }
 
 impl FrequencyHints {
-    /// Decode optional leaf 0x15 and leaf 0x16 answers.
-    ///
-    /// `ratio` is `(denominator, numerator, crystal_hz)`. Zero fields mean the
-    /// processor did not provide a usable ratio. Only the low sixteen bits of
-    /// `base_mhz` are defined by leaf 0x16.
+    /// Decode leaf 0x15's `(denominator, numerator, crystal_hz)` and the low 16 bits of leaf 0x16.
     pub fn from_leaves(ratio: Option<(u32, u32, u32)>, base_mhz: Option<u32>) -> Self {
         let tsc_hz = match ratio {
             Some((denominator, numerator, crystal_hz))
@@ -253,10 +234,7 @@ impl FrequencyHints {
 
 /// What a processor says about speculative-execution mitigation.
 ///
-/// Absence and safety are deliberately different states. A processor with no
-/// `IA32_ARCH_CAPABILITIES` is saying nothing, not saying it is safe, and
-/// treating the two alike is how a mitigation gets skipped on the machines
-/// that need it most.
+/// A processor with no `IA32_ARCH_CAPABILITIES` says nothing, which is a different state from safe.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Speculation {
     capabilities: Option<u64>,
@@ -275,11 +253,7 @@ impl Speculation {
         }
     }
 
-    /// Decode from the raw `cpuid` answer and a reader for the MSR.
-    ///
-    /// The MSR is read only when the feature bit says it exists, which is the
-    /// whole reason this is one function rather than two: reading it
-    /// unconditionally is a `#GP` on every processor made before 2018.
+    /// Decode, reading the MSR only when the feature bit says it exists, or the read is a `#GP`.
     pub fn read(leaf_7_edx: u32, read_msr: impl FnOnce(u32) -> u64) -> Self {
         if leaf_7_edx & ARCH_CAPABILITIES_BIT == 0 {
             return Self::undescribed();
@@ -287,48 +261,32 @@ impl Speculation {
         Self::described(read_msr(ARCH_CAPABILITIES_MSR))
     }
 
-    /// `RDCL_NO` — the processor claims immunity to Meltdown.
-    ///
-    /// The fact D-81 rests on when it declines KPTI: a mitigation whose cost
-    /// scales with syscall rate is not worth paying on a machine that says it
-    /// does not need it.
+    /// `RDCL_NO`: the processor claims immunity to Meltdown, so KPTI is declined.
     pub const fn rdcl_no(&self) -> bool {
         self.has(1 << 0)
     }
 
-    /// `IBRS_ALL` — enhanced IBRS, so one write at boot lasts.
-    ///
-    /// Where it is present, branch-target isolation is a mode the hardware
-    /// stays in rather than something the kernel re-asserts on every entry,
-    /// which is why enabling it is a boot-time write and not an entry cost.
+    /// `IBRS_ALL`: enhanced IBRS, a mode one boot-time write leaves the hardware in.
     pub const fn enhanced_ibrs(&self) -> bool {
         self.has(1 << 1)
     }
 
-    /// `RSBA` — the processor may use an alternate return predictor.
+    /// `RSBA`: the processor may use an alternate return predictor.
     pub const fn rsba(&self) -> bool {
         self.has(1 << 2)
     }
 
-    /// `MDS_NO` — the processor claims immunity to microarchitectural data
-    /// sampling, so the `VERW` on the way back to user space buys nothing.
+    /// `MDS_NO`: immunity to microarchitectural data sampling, so `VERW` on return buys nothing.
     pub const fn mds_no(&self) -> bool {
         self.has(1 << 5)
     }
 
-    /// Whether the kernel should write `IBRS` into `IA32_SPEC_CTRL` at boot.
-    ///
-    /// Only with enhanced IBRS. Without it the alternative is per-entry IBRS,
-    /// which is a real cost and a decision for a phase that can measure it —
-    /// so the answer here is "no", not "do it the expensive way".
+    /// Whether to write `IBRS` at boot: only with enhanced IBRS; per-entry IBRS awaits measurement.
     pub const fn wants_boot_ibrs(&self) -> bool {
         self.enhanced_ibrs()
     }
 
-    /// `IA32_SPEC_CTRL` as it should be left, given its current value.
-    ///
-    /// Every other bit is preserved: a mitigation firmware enabled is not the
-    /// kernel's to clear.
+    /// `IA32_SPEC_CTRL` as it should be left, preserving every mitigation firmware enabled.
     pub const fn spec_ctrl_after(&self, current: u64) -> u64 {
         if self.wants_boot_ibrs() {
             current | SPEC_CTRL_IBRS
@@ -360,10 +318,10 @@ pub const fn shared_kernel_mapping_reason(
     }
 }
 
-impl core::fmt::Display for Speculation {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Speculation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Some(bits) = self.capabilities else {
-            return core::fmt::Write::write_str(f, "describes no speculation capabilities");
+            return f.write_str("describes no speculation capabilities");
         };
         write!(f, "capabilities {bits:#x}")?;
         for (present, name) in [

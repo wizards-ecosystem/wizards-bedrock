@@ -1,20 +1,4 @@
-//! Local and I/O APIC register encoding and range policy.
-//!
-//! Which register is which, which bit software-enables the controller, how a
-//! local vector table entry packs a vector and a mask, what a self-directed
-//! interrupt command looks like: arithmetic over bits with no hardware behind
-//! it, so it lives here and is unit-tested on the host. `wost` encodes with
-//! this crate and does nothing but write the result — see
-//! `docs/006-cpu-fundamentals.md`.
-//!
-//! Bit positions and offsets follow Intel SDM Vol. 3A ch. 11 (advanced
-//! programmable interrupt controller), table 11-1 in particular.
-//!
-//! Registers are identified by their xAPIC offset because that is how the
-//! manual's table names them, and converted to an x2APIC model-specific
-//! register number by [`Register::msr`]. Only the second is reachable in this
-//! kernel: the first is a page of memory-mapped words that the bootloader does
-//! not map and the kernel cannot map for itself until it owns page tables.
+//! Local and I/O APIC register encoding and range policy, after Intel SDM Vol. 3A ch. 11.
 //!
 //! # Examples
 //!
@@ -52,34 +36,20 @@ pub mod timer;
 pub mod vector;
 pub mod version;
 
-/// Bytes of memory-mapped register space one local APIC occupies — a page.
+/// Bytes of memory-mapped register space one local APIC occupies: a page.
 pub const REGISTER_BYTES: usize = 4096;
 
-/// Model-specific register the x2APIC block starts at.
 const FIRST_MSR: u32 = 0x800;
 
-/// Boundary every local APIC register is aligned to.
 const REGISTER_STRIDE: usize = 16;
 
-/// One local APIC register, named by where it sits in the memory-mapped page.
-///
-/// The two modes number the same registers differently, and this is the one
-/// place that knows it: the offset the manual's table gives, and the
-/// model-specific register [`msr`](Self::msr) derives from it.
+/// One local APIC register, named by its xAPIC offset in table 11-1 and reached by its x2APIC MSR.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Register(usize);
 
 impl Register {
-    /// The register `offset` bytes into the register page.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `offset` leaves the page or is not 16-byte aligned. Every
-    /// register in the architecture's table is both, so this fires only on a
-    /// typo — at compile time, since every caller is a constant.
+    /// The register `offset` bytes into the page; panics unless it is inside and aligned.
     pub const fn new(offset: usize) -> Self {
-        // Subtraction: `offset + 4` wraps near `usize::MAX` and would name the
-        // wrong fault (D-105); `REGISTER_BYTES` exceeds four, so this cannot underflow.
         assert!(
             offset <= REGISTER_BYTES - size_of::<u32>(),
             "register lies outside the local APIC page"
@@ -91,16 +61,11 @@ impl Register {
         Self(offset)
     }
 
-    /// Byte offset from the base of the memory-mapped register page.
     pub const fn offset(self) -> usize {
         self.0
     }
 
-    /// The model-specific register x2APIC mode reaches this one through.
-    ///
-    /// The block is laid out so that each sixteen-byte slot in the page becomes
-    /// one consecutive register number from the base of the block — the same table,
-    /// divided by its own stride.
+    /// The x2APIC MSR: each sixteen-byte slot of the page is one consecutive register number.
     pub const fn msr(self) -> u32 {
         FIRST_MSR + (self.0 / REGISTER_STRIDE) as u32
     }

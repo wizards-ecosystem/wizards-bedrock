@@ -1,33 +1,17 @@
-//! Global-system-interrupt ranges owned by I/O APICs.
-//!
-//! ACPI supplies each range's base and the controller supplies its entry
-//! count. This module joins those two untrusted numbers without hardware and
-//! identifies a line's unique owner only after proving no ranges overlap.
+//! Global-system-interrupt ranges owned by I/O APICs, joined from ACPI bases and hardware counts.
 
 use core::fmt;
 
-/// The redirection entries a plausible I/O APIC version register can report.
-///
-/// The architecture stores the maximum redirection entry in bits 23:16, so at
-/// most 256 entries; every shipped I/O APIC reports far fewer. A count outside
-/// this range means the version register did not come from an I/O APIC, which
-/// happens when firmware points the window at another device (D-350).
-const MAX_REDIRECTION_ENTRIES: u32 = 240;
+use register_bits::u16_halves;
 
-/// Version identifiers a real I/O APIC reports in bits 7:0.
-///
-/// 82093AA and every later part report 0x11 through 0x20. A byte outside this
-/// range is not an I/O APIC version (D-350).
-const MIN_VERSION: u32 = 0x11;
-const MAX_VERSION: u32 = 0x20;
+/// The most redirection entries a plausible version register reports; more means another device.
+const MAX_REDIRECTION_ENTRIES: u16 = 240;
 
-/// The redirection-entry count a version register describes, if it is one an
-/// I/O APIC could have reported.
-///
-/// The register holds the version in bits 7:0 and the maximum redirection
-/// entry in bits 23:16; the count is one more than that maximum. `None` when
-/// either field is implausible, which is how a window aimed at another device
-/// is refused before any redirection write (D-350).
+/// Version identifiers 82093AA and every later I/O APIC report in bits 7:0.
+const MIN_VERSION: u16 = 0x11;
+const MAX_VERSION: u16 = 0x20;
+
+/// The redirection-entry count, one past bits 23:16, if bits 7:0 name a real I/O APIC.
 ///
 /// ```
 /// use x86_apic::io::entries_from_version;
@@ -38,15 +22,16 @@ const MAX_VERSION: u32 = 0x20;
 /// assert_eq!(entries_from_version(0xFFFF_FFFF), None);
 /// ```
 pub const fn entries_from_version(version: u32) -> Option<u32> {
-    let identity = version & 0xFF;
+    let (low, high) = u16_halves(version);
+    let identity = low & 0xFF;
     if identity < MIN_VERSION || identity > MAX_VERSION {
         return None;
     }
-    let entries = ((version >> 16) & 0xFF) + 1;
+    let entries = (high & 0xFF) + 1;
     if entries > MAX_REDIRECTION_ENTRIES {
         return None;
     }
-    Some(entries)
+    Some(entries as u32)
 }
 
 /// One non-empty, representable I/O APIC GSI range.
@@ -57,10 +42,7 @@ pub struct GsiRange {
 }
 
 impl GsiRange {
-    /// Join an ACPI GSI base to a hardware-reported entry count.
-    ///
-    /// Returns `None` for an empty range or when its final GSI would exceed
-    /// the 32-bit namespace ACPI defines.
+    /// Join an ACPI GSI base to a hardware entry count, unless empty or past the 32-bit namespace.
     pub const fn new(first: u32, entries: u32) -> Option<Self> {
         let Some(distance) = entries.checked_sub(1) else {
             return None;
@@ -71,7 +53,6 @@ impl GsiRange {
         Some(Self { first, last })
     }
 
-    /// The first GSI this controller owns.
     pub const fn first(self) -> u32 {
         self.first
     }
@@ -108,16 +89,9 @@ impl fmt::Display for OverlappingRanges {
 
 impl core::error::Error for OverlappingRanges {}
 
-/// Find the unique controller which owns `gsi`.
+/// The unique controller owning `gsi`, after the whole set is proven free of overlaps.
 ///
-/// The complete set is checked before an owner is returned. An overlap is
-/// malformed firmware even when it lies away from the particular GSI being
-/// selected, because accepting only the convenient subset would make routing
-/// depend on discovery order.
-///
-/// # Errors
-///
-/// [`OverlappingRanges`] naming the first ambiguous pair.
+/// An overlap anywhere refuses, so routing cannot depend on discovery order.
 pub fn owner_of(ranges: &[GsiRange], gsi: u32) -> Result<Option<usize>, OverlappingRanges> {
     for first in 0..ranges.len() {
         for second in first + 1..ranges.len() {
