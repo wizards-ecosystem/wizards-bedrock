@@ -28,7 +28,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     ))",
         replace: "    let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
-    let _ = bootstrap.ring.shape();
+    let _ = bootstrap.ring.completion_head();
     Some((
         alloc::sync::Arc::clone(&bootstrap.ring),
         alloc::sync::Arc::clone(&bootstrap.table),
@@ -534,7 +534,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1526,
         file: "kernel/src/user/load.rs",
         find: "        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
-        replace: "        if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {",
+        replace: "        if mapped_end > wost::arch::current::usercopy::USER_END || segment.memory_size() == 0 {",
         breaks: "the loader places a segment on the last canonical page",
         reddens: Caught::Check("the loader refuses what it may not map"),
     },

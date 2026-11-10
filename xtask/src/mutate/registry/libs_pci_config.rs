@@ -806,7 +806,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1294,
         file: "libs/pci-config/src/memory.rs",
         find: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)?;",
-        replace: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)? & !Bar::TYPE_MASK;",
+        replace: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)? & !0b110;",
         breaks: "a type-only live BAR change is erased before identity verification",
         reddens: Caught::HostTest {
             package: "pci-config",
