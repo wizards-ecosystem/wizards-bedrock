@@ -1,13 +1,10 @@
-//! The one Git executable a run trusts with source identity (D-344).
-//!
-//! Git answers whether the checkout is clean and which commit and tree it is.
-//! A run resolves Git once, spawns that exact file for every query, and each
-//! record names the bytes that answered, so a substituted executable is
-//! visible in the evidence and cannot change during a run.
+//! The one Git executable a run trusts with source identity. It is resolved once and spawned for
+//! every query, and each record names its bytes, so a substitute is visible and cannot change.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -22,12 +19,15 @@ const CONFIG_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FILTER_DRIVERS: usize = 128;
 const MAX_FILTER_OVERRIDE_BYTES: usize = 16 * 1024;
 const REFUSED_CONFIGURATION_OPTION: &str = "--wizard-refused-unsafe-repository-configuration";
+pub(crate) const MAX_MODEL_PATH_LIST_BYTES: usize = 64 * 1024;
+const MAX_MODEL_FILES: usize = 128;
+pub(crate) const MAX_MODEL_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_MODEL_TREE_BYTES: u64 = 4 * 1024 * 1024;
 #[cfg(windows)]
 const DISABLED_GIT_PATH: &str = "NUL";
 #[cfg(not(windows))]
 const DISABLED_GIT_PATH: &str = "/dev/null";
 
-/// The record keys that name the Git executable behind a source identity.
 pub(crate) const FIELDS: [&str; 4] = [
     "tool.git.bytes",
     "tool.git.path",
@@ -37,7 +37,6 @@ pub(crate) const FIELDS: [&str; 4] = [
 
 static RESOLVED: OnceLock<Result<Git, String>> = OnceLock::new();
 
-/// One resolved Git executable and the identity it had when resolved.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Git {
     path: PathBuf,
@@ -46,7 +45,6 @@ pub(crate) struct Git {
     sha256: String,
 }
 
-/// The Git this run resolved from `PATH` at its first source query.
 pub(crate) fn resolved() -> Result<&'static Git> {
     RESOLVED
         .get_or_init(|| {
@@ -113,12 +111,10 @@ fn measure(path: &Path) -> Result<(u64, String)> {
 }
 
 impl Git {
-    /// The canonical executable path used for every query in this run.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    /// A Git-defined query in `root` spawned from this exact executable.
     pub(crate) fn command(&self, root: &Path) -> Command {
         let Ok(root) = absolute_root(root) else {
             return self.refused_command();
@@ -201,8 +197,8 @@ impl Git {
     }
 
     fn filter_drivers(&self, root: &Path) -> Result<BTreeSet<String>> {
-        // D-406 excludes the checkout owner's same-account rewrite between
-        // this bounded discovery and the immediately returned query.
+        // A same-account rewrite by the checkout owner between this bounded discovery and the
+        // immediately returned query is outside the threat model.
         parse_filter_drivers(&self.filter_configuration(root)?)
     }
 
@@ -230,7 +226,7 @@ impl Git {
         command
     }
 
-    /// Refuse to publish a record whose Git executable changed after it answered.
+    /// Run after Git's last answer and before publishing, so a changed executable is refused.
     pub(crate) fn require_unchanged(&self) -> Result<()> {
         ensure!(
             measure(&self.path)? == (self.bytes, self.sha256.clone()),
@@ -240,7 +236,6 @@ impl Git {
         Ok(())
     }
 
-    /// The identity fields, in [`FIELDS`] order.
     pub(crate) fn fields(&self) -> [(&'static str, String); 4] {
         [
             (FIELDS[0], self.bytes.to_string()),
@@ -314,7 +309,6 @@ fn absolute_root(root: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Check the recorded identity of the Git that established a source.
 pub(crate) fn validate_fields<'text>(get: impl Fn(&str) -> Result<&'text str>) -> Result<()> {
     let bytes = get(FIELDS[0])?;
     ensure!(
@@ -344,6 +338,113 @@ pub(crate) fn validate_fields<'text>(get: impl Fn(&str) -> Result<&'text str>) -
 
 pub(crate) fn is_git_id(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) struct TreeDigest {
+    pub(crate) files: usize,
+    pub(crate) bytes: u64,
+    pub(crate) sha256: String,
+}
+
+pub(crate) fn tracked_tree_digest(root: &Path, directory: &str) -> Result<TreeDigest> {
+    let paths = tracked_paths(root, directory)?;
+    let mut hasher = crate::sha256::Hasher::new();
+    let mut total = 0u64;
+    for relative in &paths {
+        let path = root.join(relative);
+        crate::qualification::require_contained_regular_file(root, &path, "tracked model input")?;
+        let mut file = crate::mutate::workspace::open_real_file(&path, "tracked model input")?;
+        let length = file
+            .metadata()
+            .with_context(|| format!("measuring model input {relative}"))?
+            .len();
+        ensure!(
+            length <= MAX_MODEL_FILE_BYTES,
+            "model input {relative} is {length} bytes, exceeding its {MAX_MODEL_FILE_BYTES}-byte limit"
+        );
+        total = total
+            .checked_add(length)
+            .context("model input length overflowed")?;
+        ensure!(
+            total <= MAX_MODEL_TREE_BYTES,
+            "tracked model tree is {total} bytes, exceeding its {MAX_MODEL_TREE_BYTES}-byte limit"
+        );
+        hasher
+            .update(&(relative.len() as u64).to_le_bytes())
+            .context("hashing a model path length")?;
+        hasher
+            .update(relative.as_bytes())
+            .context("hashing a model path")?;
+        hasher
+            .update(&length.to_le_bytes())
+            .context("hashing a model input length")?;
+
+        let mut observed = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        let mut limited = (&mut file).take(length + 1);
+        loop {
+            let read = std::io::Read::read(&mut limited, &mut buffer)
+                .with_context(|| format!("reading model input {relative}"))?;
+            if read == 0 {
+                break;
+            }
+            observed += read as u64;
+            hasher
+                .update(&buffer[..read])
+                .with_context(|| format!("hashing model input {relative}"))?;
+        }
+        ensure!(
+            observed == length
+                && file
+                    .metadata()
+                    .with_context(|| format!("remeasuring model input {relative}"))?
+                    .len()
+                    == length,
+            "model input {relative} changed length while being hashed"
+        );
+    }
+    Ok(TreeDigest {
+        files: paths.len(),
+        bytes: total,
+        sha256: crate::sha256::hex(&hasher.finish()),
+    })
+}
+
+fn tracked_paths(root: &Path, directory: &str) -> Result<Vec<String>> {
+    let output = crate::qualification::git_output_bytes(
+        root,
+        &["ls-files", "-z", "--", directory],
+        MAX_MODEL_PATH_LIST_BYTES,
+        "tracked model path inventory",
+    )?;
+    let mut paths = Vec::new();
+    for raw in output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let relative = std::str::from_utf8(raw).context("tracked model path is not UTF-8")?;
+        let path = Path::new(relative);
+        ensure!(
+            path.starts_with(directory)
+                && path
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_))),
+            "Git returned an unsafe model path: {relative}"
+        );
+        paths.push(relative.to_string());
+    }
+    ensure!(!paths.is_empty(), "no tracked model inputs were found");
+    ensure!(
+        paths.len() <= MAX_MODEL_FILES,
+        "tracked model tree has {} files, exceeding its {MAX_MODEL_FILES}-file limit",
+        paths.len()
+    );
+    ensure!(
+        paths.windows(2).all(|pair| pair[0] < pair[1]),
+        "tracked model inputs are not unique and sorted"
+    );
+    Ok(paths)
 }
 
 #[cfg(test)]

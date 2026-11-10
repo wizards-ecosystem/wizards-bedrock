@@ -59,7 +59,7 @@ fn model_record_with_tool_and_source(
         "input.tlc-jar",
         &paths.root().join("tools/tla/tla2tools.jar"),
     )?;
-    let models = tracked_tree_digest(paths.root(), "models")?;
+    let models = crate::git::tracked_tree_digest(paths.root(), "models")?;
     record.insert("input.models.files", models.files.to_string())?;
     record.insert("input.models.bytes", models.bytes.to_string())?;
     record.insert("input.models.sha256", models.sha256)?;
@@ -276,160 +276,155 @@ pub(super) fn parse_record(text: &str) -> Result<Record> {
     Ok(record)
 }
 
-pub(super) fn validate_record(record: &Record, kind: Kind) -> Result<()> {
-    let mut expected = BTreeSet::from([
-        "kind".to_string(),
-        "result".to_string(),
-        "source.commit".to_string(),
-        "source.tree".to_string(),
-    ]);
-    expected.extend(crate::git::FIELDS.map(str::to_string));
+struct RecordSchema {
+    fields: &'static [&'static str],
+    tools: &'static [&'static str],
+    artifacts: Vec<&'static str>,
+}
+
+fn record_schema(kind: Kind) -> RecordSchema {
     match kind {
-        Kind::Advisory => {
-            add_tool_keys(&mut expected, "input.cargo-audit");
-            expected.extend([
-                "database.last-updated".to_string(),
-                "database.revision".to_string(),
-                "database.tree".to_string(),
-                "database.url".to_string(),
-                "execution.command".to_string(),
-                "execution.exit-code".to_string(),
-                "execution.refresh-command".to_string(),
-                "execution.refresh-exit-code".to_string(),
-                "input.cargo-lock.bytes".to_string(),
-                "input.cargo-lock.sha256".to_string(),
-                "observation.utc-unix-seconds".to_string(),
-            ]);
-            add_artifact_keys(&mut expected, "artifact.policy");
-            add_artifact_keys(&mut expected, "artifact.refresh-transcript");
-            add_artifact_keys(&mut expected, "artifact.transcript");
-        }
-        Kind::Mutation => {
-            expected.extend([
-                "input.index.sha256".to_string(),
-                "input.mutations".to_string(),
-                "input.registry.sha256".to_string(),
-                "input.source.sha256".to_string(),
-            ]);
-            add_artifact_keys(&mut expected, "artifact.report");
-        }
-        Kind::CargoMutantsGrade => {
-            expected.extend([
-                "execution.authority".to_string(),
-                "grade.adjudicated".to_string(),
-                "grade.caught".to_string(),
-                "grade.missed".to_string(),
-                "grade.timeout".to_string(),
-                "grade.total".to_string(),
-                "grade.unviable".to_string(),
-                "tool.cargo-mutants.bytes".to_string(),
-                "tool.cargo-mutants.sha256".to_string(),
-                "tool.cargo-mutants.version".to_string(),
-                "tool.cargo-nextest.archive.sha256".to_string(),
-                "tool.cargo-nextest.bytes".to_string(),
-                "tool.cargo-nextest.commit".to_string(),
-                "tool.cargo-nextest.sha256".to_string(),
-                "tool.cargo-nextest.url".to_string(),
-                "tool.cargo-nextest.version".to_string(),
-            ]);
-            for prefix in [
+        Kind::Advisory => RecordSchema {
+            fields: &[
+                "database.last-updated",
+                "database.revision",
+                "database.tree",
+                "database.url",
+                "execution.command",
+                "execution.exit-code",
+                "execution.refresh-command",
+                "execution.refresh-exit-code",
+                "input.cargo-lock.bytes",
+                "input.cargo-lock.sha256",
+                "observation.utc-unix-seconds",
+            ],
+            tools: &["input.cargo-audit"],
+            artifacts: vec![
+                "artifact.policy",
+                "artifact.refresh-transcript",
+                "artifact.transcript",
+            ],
+        },
+        Kind::Mutation => RecordSchema {
+            fields: &[
+                "input.index.sha256",
+                "input.mutations",
+                "input.registry.sha256",
+                "input.source.sha256",
+            ],
+            tools: &[],
+            artifacts: vec!["artifact.report"],
+        },
+        Kind::CargoMutantsGrade => RecordSchema {
+            fields: &[
+                "execution.authority",
+                "grade.adjudicated",
+                "grade.caught",
+                "grade.missed",
+                "grade.timeout",
+                "grade.total",
+                "grade.unviable",
+                "tool.cargo-mutants.bytes",
+                "tool.cargo-mutants.sha256",
+                "tool.cargo-mutants.version",
+                "tool.cargo-nextest.archive.sha256",
+                "tool.cargo-nextest.bytes",
+                "tool.cargo-nextest.commit",
+                "tool.cargo-nextest.sha256",
+                "tool.cargo-nextest.url",
+                "tool.cargo-nextest.version",
+            ],
+            tools: &[],
+            artifacts: vec![
                 "artifact.request",
                 "artifact.inventory",
                 "artifact.mutants",
                 "artifact.outcomes",
                 "artifact.adjudications",
                 "artifact.doctest",
-            ] {
-                add_artifact_keys(&mut expected, prefix);
-            }
-        }
-        Kind::CodexSecurityDeep => {
-            expected.extend([
-                "authentication.channel".to_string(),
-                "environment.policy".to_string(),
-                "execution.authority".to_string(),
-                "execution.complete-tool".to_string(),
-                "execution.model".to_string(),
-                "execution.protocol".to_string(),
-                "execution.reasoning".to_string(),
-                "execution.server-name".to_string(),
-                "execution.server-version".to_string(),
-                "execution.start-tool".to_string(),
-                "execution.tools.bytes".to_string(),
-                "execution.tools.count".to_string(),
-                "execution.tools.sha256".to_string(),
-                "execution.worker-permission".to_string(),
-                "execution.worker-effective-profile.sha256".to_string(),
-                "execution.worker-effective-state.sha256".to_string(),
-                "execution.worker-parent-state.sha256".to_string(),
-                "execution.worker-provider-profile.sha256".to_string(),
-                "execution.worker-preflight.allowed-reads".to_string(),
-                "execution.worker-preflight.denied-reads".to_string(),
-                "execution.worker-preflight.denied-write-creates".to_string(),
-                "execution.worker-preflight.denied-write-mutations".to_string(),
-                "execution.worker-preflight.denied-network-listeners".to_string(),
-                "execution.worker-preflight.denied-network-connections".to_string(),
-                "execution.worker-preflight.denied-descendants".to_string(),
-                "execution.worker-transitions.app-server".to_string(),
-                "execution.worker-transitions.exec-initial".to_string(),
-                "execution.worker-transitions.exec-resumed".to_string(),
-                "findings.critical".to_string(),
-                "findings.high".to_string(),
-                "findings.informational".to_string(),
-                "findings.low".to_string(),
-                "findings.medium".to_string(),
-                "findings.total".to_string(),
-                "scan.id".to_string(),
-                "scan.producer.name".to_string(),
-                "scan.producer.version".to_string(),
-                "scan.surfaces".to_string(),
-                "tool.codex-security.integrity.bytes".to_string(),
-                "tool.codex-security.integrity.sha256".to_string(),
-                "tool.codex-security.tree.files".to_string(),
-                "tool.codex-security.version".to_string(),
-                "tool.codex.runtime.bytes".to_string(),
-                "tool.codex.runtime.files".to_string(),
-                "tool.codex.runtime.root".to_string(),
-                "tool.codex.runtime.sha256".to_string(),
-                "tool.python.runtime.bytes".to_string(),
-                "tool.python.runtime.files".to_string(),
-                "tool.python.runtime.root".to_string(),
-                "tool.python.runtime.sha256".to_string(),
-            ]);
-            for prefix in ["tool.node", "tool.python", "tool.codex"] {
-                add_tool_keys(&mut expected, prefix);
-            }
-            for prefix in [
+            ],
+        },
+        Kind::CodexSecurityDeep => RecordSchema {
+            fields: &[
+                "authentication.channel",
+                "environment.policy",
+                "execution.authority",
+                "execution.complete-tool",
+                "execution.model",
+                "execution.protocol",
+                "execution.reasoning",
+                "execution.server-name",
+                "execution.server-version",
+                "execution.start-tool",
+                "execution.tools.bytes",
+                "execution.tools.count",
+                "execution.tools.sha256",
+                "execution.worker-permission",
+                "execution.worker-effective-profile.sha256",
+                "execution.worker-effective-state.sha256",
+                "execution.worker-parent-state.sha256",
+                "execution.worker-provider-profile.sha256",
+                "execution.worker-preflight.allowed-reads",
+                "execution.worker-preflight.denied-reads",
+                "execution.worker-preflight.denied-write-creates",
+                "execution.worker-preflight.denied-write-mutations",
+                "execution.worker-preflight.denied-network-listeners",
+                "execution.worker-preflight.denied-network-connections",
+                "execution.worker-preflight.denied-descendants",
+                "execution.worker-transitions.app-server",
+                "execution.worker-transitions.exec-initial",
+                "execution.worker-transitions.exec-resumed",
+                "findings.critical",
+                "findings.high",
+                "findings.informational",
+                "findings.low",
+                "findings.medium",
+                "findings.total",
+                "scan.id",
+                "scan.producer.name",
+                "scan.producer.version",
+                "scan.surfaces",
+                "tool.codex-security.integrity.bytes",
+                "tool.codex-security.integrity.sha256",
+                "tool.codex-security.tree.files",
+                "tool.codex-security.version",
+                "tool.codex.runtime.bytes",
+                "tool.codex.runtime.files",
+                "tool.codex.runtime.root",
+                "tool.codex.runtime.sha256",
+                "tool.python.runtime.bytes",
+                "tool.python.runtime.files",
+                "tool.python.runtime.root",
+                "tool.python.runtime.sha256",
+            ],
+            tools: &["tool.node", "tool.python", "tool.codex"],
+            artifacts: vec![
                 "artifact.request",
                 "artifact.manifest",
                 "artifact.findings",
                 "artifact.coverage",
                 "artifact.report",
                 "artifact.worker-transitions",
-            ] {
-                add_artifact_keys(&mut expected, prefix);
-            }
-        }
-        Kind::Model => {
-            add_tool_keys(&mut expected, "input.java");
-            expected.extend([
-                "input.models.bytes".to_string(),
-                "input.models.files".to_string(),
-                "input.models.sha256".to_string(),
-                "input.tlc-jar.bytes".to_string(),
-                "input.tlc-jar.sha256".to_string(),
-            ]);
-            for artifact in crate::model::TRANSCRIPT_ARTIFACTS {
-                add_artifact_keys(&mut expected, artifact.prefix);
-            }
-        }
-        Kind::VmwareSelfTest | Kind::VmwareShipped => {
-            add_tool_keys(&mut expected, "input.vmrun");
-            expected.extend([
-                "execution.vmrun.command".to_string(),
-                "execution.vmrun.running".to_string(),
-            ]);
-            for prefix in [
+            ],
+        },
+        Kind::Model => RecordSchema {
+            fields: &[
+                "input.models.bytes",
+                "input.models.files",
+                "input.models.sha256",
+                "input.tlc-jar.bytes",
+                "input.tlc-jar.sha256",
+            ],
+            tools: &["input.java"],
+            artifacts: crate::model::TRANSCRIPT_ARTIFACTS
+                .iter()
+                .map(|artifact| artifact.prefix)
+                .collect(),
+        },
+        Kind::VmwareSelfTest | Kind::VmwareShipped => RecordSchema {
+            fields: &["execution.vmrun.command", "execution.vmrun.running"],
+            tools: &["input.vmrun"],
+            artifacts: vec![
                 "artifact.generation",
                 "artifact.image",
                 "artifact.namespace",
@@ -439,11 +434,30 @@ pub(super) fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "artifact.handoff",
                 "artifact.transcript",
                 "artifact.observer",
-            ] {
-                add_artifact_keys(&mut expected, prefix);
-            }
-        }
+            ],
+        },
     }
+}
+
+fn expected_keys(kind: Kind) -> BTreeSet<String> {
+    let schema = record_schema(kind);
+    let mut expected: BTreeSet<String> = ["kind", "result", "source.commit", "source.tree"]
+        .into_iter()
+        .chain(crate::git::FIELDS)
+        .chain(schema.fields.iter().copied())
+        .map(str::to_string)
+        .collect();
+    for prefix in schema.tools {
+        add_tool_keys(&mut expected, prefix);
+    }
+    for prefix in schema.artifacts {
+        add_artifact_keys(&mut expected, prefix);
+    }
+    expected
+}
+
+pub(super) fn validate_record(record: &Record, kind: Kind) -> Result<()> {
+    let expected = expected_keys(kind);
     let actual: BTreeSet<String> = record.fields.keys().cloned().collect();
     ensure!(
         actual == expected,
@@ -457,35 +471,7 @@ pub(super) fn validate_record(record: &Record, kind: Kind) -> Result<()> {
     );
     ensure!(record.get("result")? == PASS, "qualification did not pass");
     if kind == Kind::Advisory {
-        ensure!(
-            record.get("database.url")? == ADVISORY_DATABASE_URL
-                && is_git_id(record.get("database.revision")?)
-                && is_git_id(record.get("database.tree")?),
-            "advisory qualification database identity is malformed"
-        );
-        ensure!(
-            is_rfc3339_timestamp(record.get("database.last-updated")?),
-            "advisory qualification names no RFC3339 database update time"
-        );
-        ensure!(
-            record.get("execution.command")? == ADVISORY_COMMAND
-                && record.get("execution.exit-code")? == "0"
-                && record.get("execution.refresh-command")? == ADVISORY_REFRESH_COMMAND
-                && record.get("execution.refresh-exit-code")? == "0",
-            "advisory qualification has no exact successful command"
-        );
-        let observed =
-            <u64 as core::str::FromStr>::from_str(record.get("observation.utc-unix-seconds")?)
-                .context("advisory UTC observation is not a number")?;
-        ensure!(
-            observed != 0 && observed.to_string() == record.get("observation.utc-unix-seconds")?,
-            "advisory UTC observation is not canonical"
-        );
-        ensure!(
-            cargo_audit_version(record.get("input.cargo-audit.version")?)?.as_str()
-                == record.get("input.cargo-audit.version")?,
-            "cargo-audit version identity is not canonical"
-        );
+        validate_advisory_record(record)?;
     }
     if matches!(kind, Kind::VmwareSelfTest | Kind::VmwareShipped) {
         ensure!(
@@ -517,6 +503,39 @@ pub(super) fn validate_record(record: &Record, kind: Kind) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn validate_advisory_record(record: &Record) -> Result<()> {
+    ensure!(
+        record.get("database.url")? == ADVISORY_DATABASE_URL
+            && is_git_id(record.get("database.revision")?)
+            && is_git_id(record.get("database.tree")?),
+        "advisory qualification database identity is malformed"
+    );
+    ensure!(
+        is_rfc3339_timestamp(record.get("database.last-updated")?),
+        "advisory qualification names no RFC3339 database update time"
+    );
+    ensure!(
+        record.get("execution.command")? == ADVISORY_COMMAND
+            && record.get("execution.exit-code")? == "0"
+            && record.get("execution.refresh-command")? == ADVISORY_REFRESH_COMMAND
+            && record.get("execution.refresh-exit-code")? == "0",
+        "advisory qualification has no exact successful command"
+    );
+    let observed =
+        <u64 as core::str::FromStr>::from_str(record.get("observation.utc-unix-seconds")?)
+            .context("advisory UTC observation is not a number")?;
+    ensure!(
+        observed != 0 && observed.to_string() == record.get("observation.utc-unix-seconds")?,
+        "advisory UTC observation is not canonical"
+    );
+    ensure!(
+        cargo_audit_version(record.get("input.cargo-audit.version")?)?.as_str()
+            == record.get("input.cargo-audit.version")?,
+        "cargo-audit version identity is not canonical"
+    );
     Ok(())
 }
 

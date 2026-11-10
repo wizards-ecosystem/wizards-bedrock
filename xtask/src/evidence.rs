@@ -200,8 +200,7 @@ impl Record {
     }
 }
 
-/// Run the complete gate, reproduce the shipped artifacts twice and record the
-/// exact source, tools, inputs, bytes and verdicts involved.
+/// The full gate, two reproductions of the shipped artifacts, and every input and verdict recorded.
 pub(crate) fn create(paths: &Paths) -> Result<()> {
     let root = invalidate_manifest(paths)?;
     println!("[xtask] qualifying a reproducible release from a clean checkout");
@@ -226,6 +225,25 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
         "source, tools, firmware or boot inputs changed during qualification"
     );
 
+    reproduce_into_bundle(paths, &root)?;
+
+    let mut record = input_record_with_relation(paths, &qualified_source)?;
+    ensure!(
+        record == before,
+        "source, tools, firmware or boot inputs changed during artifact reproduction"
+    );
+    qualifications.install(&root)?;
+    add_bundle(&mut record, paths, &root, &qualifications.campaigns())?;
+
+    verify_record(paths, &root, &record)?;
+    crate::git::resolved()?.require_unchanged()?;
+    let manifest = root.join(MANIFEST_NAME);
+    write_manifest(&root, &manifest, &record.render())?;
+    println!("[xtask] release evidence ready at {}", manifest.display());
+    Ok(())
+}
+
+fn reproduce_into_bundle(paths: &Paths, root: &Path) -> Result<()> {
     for child in [
         "work-a",
         "work-b",
@@ -235,11 +253,11 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
         "toolchain-b",
         "cargo-home-b",
     ] {
-        reset_child(&root, child)?;
+        reset_child(root, child)?;
     }
 
     let release_a = reproduce_release(paths, &root.join("work-a"), "A")?;
-    let release_b = reproduce_release_alternate(paths, &root, &root.join("work-b"))?;
+    let release_b = reproduce_release_alternate(paths, root, &root.join("work-b"))?;
     ensure!(
         release_a
             .host_roots
@@ -248,21 +266,7 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
             .all(|(left, right)| left != right),
         "release reproductions reused a source, toolchain or Cargo root"
     );
-    let original_roots = crate::cargo::active_kernel_remap_roots(paths)?;
-    let host_roots = original_roots
-        .iter()
-        .chain(release_a.host_roots.iter())
-        .chain(release_b.host_roots.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    for (path, maximum, label) in [
-        (&release_a.kernel, MAX_KERNEL_BYTES, "release kernel A"),
-        (&release_a.image, boot_image_bytes(), "release image A"),
-        (&release_b.kernel, MAX_KERNEL_BYTES, "release kernel B"),
-        (&release_b.image, boot_image_bytes(), "release image B"),
-    ] {
-        require_no_host_paths(path, maximum, label, &host_roots)?;
-    }
+    require_no_release_host_paths(paths, &release_a, &release_b)?;
 
     let built_kernel_a =
         digest_file_bounded(&release_a.kernel, MAX_KERNEL_BYTES, "release kernel A")?;
@@ -296,37 +300,54 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
         "the boot changed the release image it qualified"
     );
 
-    remove_child(&root, "work-a")?;
-    remove_child(&root, "work-b")?;
+    remove_child(root, "work-a")?;
+    remove_child(root, "work-b")?;
+    Ok(())
+}
 
-    let mut record = input_record_with_relation(paths, &qualified_source)?;
-    ensure!(
-        record == before,
-        "source, tools, firmware or boot inputs changed during artifact reproduction"
-    );
-    qualifications.install(&root)?;
-    let campaigns = qualifications.campaigns();
-    add_artifacts(&mut record, &root)?;
-    add_qualification_files(&mut record, &root, &campaigns)?;
+fn require_no_release_host_paths(
+    paths: &Paths,
+    release_a: &ReproducedRelease,
+    release_b: &ReproducedRelease,
+) -> Result<()> {
+    let original_roots = crate::cargo::active_kernel_remap_roots(paths)?;
+    let host_roots = original_roots
+        .iter()
+        .chain(release_a.host_roots.iter())
+        .chain(release_b.host_roots.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    for (path, maximum, label) in [
+        (&release_a.kernel, MAX_KERNEL_BYTES, "release kernel A"),
+        (&release_a.image, boot_image_bytes(), "release image A"),
+        (&release_b.kernel, MAX_KERNEL_BYTES, "release kernel B"),
+        (&release_b.image, boot_image_bytes(), "release image B"),
+    ] {
+        require_no_host_paths(path, maximum, label, &host_roots)?;
+    }
+    Ok(())
+}
+
+fn add_bundle(
+    record: &mut Record,
+    paths: &Paths,
+    root: &Path,
+    campaigns: &qualification::CampaignStates,
+) -> Result<()> {
+    add_artifacts(record, root)?;
+    add_qualification_files(record, root, campaigns)?;
     for (key, label) in qualification::CampaignStates::status_keys()
         .into_iter()
         .zip(campaigns.labels())
     {
         record.insert(key, label)?;
     }
-    verify_qualification_artifact_identity(paths, &root)?;
+    verify_qualification_artifact_identity(paths, root)?;
     for step in gate::REGISTRY.steps() {
         record.insert(step.evidence_key(), PASS)?;
     }
     record.insert("result.artifacts-byte-identical", PASS)?;
-    record.insert("result.shipped-artifact-boot", PASS)?;
-
-    verify_record(paths, &root, &record)?;
-    crate::git::resolved()?.require_unchanged()?;
-    let manifest = root.join(MANIFEST_NAME);
-    write_manifest(&root, &manifest, &record.render())?;
-    println!("[xtask] release evidence ready at {}", manifest.display());
-    Ok(())
+    record.insert("result.shipped-artifact-boot", PASS)
 }
 
 fn reproduce_release(paths: &Paths, target: &Path, label: &str) -> Result<ReproducedRelease> {
@@ -351,76 +372,15 @@ fn reproduce_release_alternate(
     let original = crate::cargo::active_kernel_remap_roots(paths)?;
     let toolchain = evidence.join("toolchain-b");
     let cargo_home = evidence.join("cargo-home-b");
-    let result = (|| {
-        let mut entries = 0usize;
-        for child in ["bin", "lib"] {
-            mirror_directory(
-                &original[1].join(child),
-                &toolchain.join(child),
-                0,
-                &mut entries,
-            )?;
-        }
-        mirror_directory(
-            &original[2].join("registry"),
-            &cargo_home.join("registry"),
-            0,
-            &mut entries,
-        )?;
-        for name in ["config", "config.toml"] {
-            let source = original[2].join(name);
-            match std::fs::symlink_metadata(&source) {
-                Ok(metadata) => {
-                    entries = entries
-                        .checked_add(1)
-                        .context("alternate build mirror entry count overflowed")?;
-                    ensure!(
-                        entries <= MIRROR_ENTRY_LIMIT,
-                        "alternate build mirror exceeds its entry limit"
-                    );
-                    mirror_file(&source, &cargo_home.join(name), &metadata)?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error).with_context(|| format!("inspecting {}", source.display()));
-                }
-            }
-        }
-
-        crate::mutate::workspace::with_clean_source_copy(paths, |source| {
-            run_alternate_release_build(source, target, &toolchain, &cargo_home)?;
-            let copied = Paths::new(source.to_path_buf(), Some(target));
-            let image = copied.image();
-            let kernel = copied.kernel_elf(Profile::Release);
-            crate::elf::verify_file(&kernel)?;
-            ensure!(image.is_file(), "alternate release build produced no image");
-            Ok(ReproducedRelease {
-                image,
-                kernel,
-                host_roots: [
-                    crate::mutate::workspace::canonical_existing_real_directory(
-                        source,
-                        "alternate release source root",
-                    )?,
-                    crate::mutate::workspace::canonical_existing_real_directory(
-                        &toolchain,
-                        "alternate release toolchain root",
-                    )?,
-                    crate::mutate::workspace::canonical_existing_real_directory(
-                        &cargo_home,
-                        "alternate release Cargo home",
-                    )?,
-                ],
-            })
-        })
-    })();
+    let built = mirror_alternate_roots(&original, &toolchain, &cargo_home)
+        .and_then(|()| build_alternate_release(paths, target, &toolchain, &cargo_home));
     let toolchain_cleanup = remove_child(evidence, "toolchain-b");
     let cargo_cleanup = remove_child(evidence, "cargo-home-b");
-    match (result, toolchain_cleanup, cargo_cleanup) {
+    match (built, toolchain_cleanup, cargo_cleanup) {
         (Ok(release), Ok(()), Ok(())) => Ok(release),
         (Err(error), Ok(()), Ok(())) => Err(error),
-        (result, toolchain_cleanup, cargo_cleanup) => {
-            let primary = match result {
+        (built, toolchain_cleanup, cargo_cleanup) => {
+            let primary = match built {
                 Ok(_) => "alternate release build passed".to_string(),
                 Err(error) => format!("{error:#}"),
             };
@@ -433,8 +393,84 @@ fn reproduce_release_alternate(
     }
 }
 
-fn cleanup_outcome(result: Result<()>) -> String {
-    result.map_or_else(|error| format!("{error:#}"), |()| "ok".to_string())
+fn cleanup_outcome(cleanup: Result<()>) -> String {
+    cleanup.map_or_else(|error| format!("{error:#}"), |()| "ok".to_string())
+}
+
+fn mirror_alternate_roots(
+    original: &[PathBuf; 3],
+    toolchain: &Path,
+    cargo_home: &Path,
+) -> Result<()> {
+    let mut entries = 0usize;
+    for child in ["bin", "lib"] {
+        mirror_directory(
+            &original[1].join(child),
+            &toolchain.join(child),
+            0,
+            &mut entries,
+        )?;
+    }
+    mirror_directory(
+        &original[2].join("registry"),
+        &cargo_home.join("registry"),
+        0,
+        &mut entries,
+    )?;
+    for name in ["config", "config.toml"] {
+        let source = original[2].join(name);
+        match std::fs::symlink_metadata(&source) {
+            Ok(metadata) => {
+                entries = entries
+                    .checked_add(1)
+                    .context("alternate build mirror entry count overflowed")?;
+                ensure!(
+                    entries <= MIRROR_ENTRY_LIMIT,
+                    "alternate build mirror exceeds its entry limit"
+                );
+                mirror_file(&source, &cargo_home.join(name), &metadata)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspecting {}", source.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_alternate_release(
+    paths: &Paths,
+    target: &Path,
+    toolchain: &Path,
+    cargo_home: &Path,
+) -> Result<ReproducedRelease> {
+    crate::mutate::workspace::with_clean_source_copy(paths, |source| {
+        run_alternate_release_build(source, target, toolchain, cargo_home)?;
+        let copied = Paths::new(source.to_path_buf(), Some(target));
+        let image = copied.image();
+        let kernel = copied.kernel_elf(Profile::Release);
+        crate::elf::verify_file(&kernel)?;
+        ensure!(image.is_file(), "alternate release build produced no image");
+        Ok(ReproducedRelease {
+            image,
+            kernel,
+            host_roots: [
+                crate::mutate::workspace::canonical_existing_real_directory(
+                    source,
+                    "alternate release source root",
+                )?,
+                crate::mutate::workspace::canonical_existing_real_directory(
+                    toolchain,
+                    "alternate release toolchain root",
+                )?,
+                crate::mutate::workspace::canonical_existing_real_directory(
+                    cargo_home,
+                    "alternate release Cargo home",
+                )?,
+            ],
+        })
+    })
 }
 
 fn run_alternate_release_build(
@@ -594,8 +630,7 @@ fn relation_requires_current_mutation(policy: &str) -> bool {
     policy == "same-commit"
 }
 
-/// Verify the evidence bundle against the current clean checkout and installed
-/// tools without contacting a network or rebuilding anything.
+/// The bundle checked against the clean checkout and installed tools, with no network or rebuild.
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
     let root = evidence_root(paths);
     let manifest = root.join(MANIFEST_NAME);
@@ -1413,13 +1448,16 @@ fn byte_identical(first: &Digest, second: &Digest) -> bool {
 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
     let mut input = crate::mutate::workspace::open_real_file(source, "evidence source artifact")?;
-    let mut output_options = OpenOptions::new();
-    OpenOptions::create_new(&mut output_options, true);
-    OpenOptions::write(&mut output_options, true);
-    let mut output = OpenOptions::open(&output_options, destination)
+    let mut options = OpenOptions::new();
+    OpenOptions::create_new(&mut options, true);
+    OpenOptions::write(&mut options, true);
+    let mut destination_file = OpenOptions::open(&options, destination)
         .with_context(|| format!("creating {}", destination.display()))?;
-    let copied = std::io::copy(&mut (&mut input).take(expected.bytes + 1), &mut output)
-        .with_context(|| format!("copying {} to {}", source.display(), destination.display()))?;
+    let copied = std::io::copy(
+        &mut (&mut input).take(expected.bytes + 1),
+        &mut destination_file,
+    )
+    .with_context(|| format!("copying {} to {}", source.display(), destination.display()))?;
     ensure!(
         copied == expected.bytes
             && input
@@ -1430,10 +1468,10 @@ fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()
         "{} changed length while entering the evidence bundle",
         source.display()
     );
-    output
+    destination_file
         .sync_all()
         .with_context(|| format!("syncing {}", destination.display()))?;
-    drop(output);
+    drop(destination_file);
     ensure!(
         digest_file_exact(destination, expected.bytes, "copied evidence artifact")? == *expected,
         "{} changed while entering the evidence bundle",

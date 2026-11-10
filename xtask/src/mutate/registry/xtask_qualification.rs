@@ -169,8 +169,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 34,
         file: "xtask/src/qualification/record.rs",
-        find: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL\n                && is_git_id(record.get(\"database.revision\")?)\n                && is_git_id(record.get(\"database.tree\")?),",
-        replace: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL,",
+        find: "        record.get(\"database.url\")? == ADVISORY_DATABASE_URL\n            && is_git_id(record.get(\"database.revision\")?)\n            && is_git_id(record.get(\"database.tree\")?),",
+        replace: "        record.get(\"database.url\")? == ADVISORY_DATABASE_URL,",
         breaks: "a malformed advisory database revision can enter the qualification record",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -180,8 +180,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 35,
         file: "xtask/src/qualification/record.rs",
-        find: "            record.get(\"execution.command\")? == ADVISORY_COMMAND\n                && record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
-        replace: "            record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
+        find: "        record.get(\"execution.command\")? == ADVISORY_COMMAND\n            && record.get(\"execution.exit-code\")? == \"0\"\n            && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n            && record.get(\"execution.refresh-exit-code\")? == \"0\",",
+        replace: "        record.get(\"execution.exit-code\")? == \"0\"\n            && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n            && record.get(\"execution.refresh-exit-code\")? == \"0\",",
         breaks: "an advisory record can name a weaker or stale command line",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -191,8 +191,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 36,
         file: "xtask/src/qualification/record.rs",
-        find: "            observed != 0 && observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
-        replace: "            observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
+        find: "        observed != 0 && observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
+        replace: "        observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
         breaks: "an advisory record can carry no real UTC observation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1268,7 +1268,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 894,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/git.rs",
         find: "            length <= MAX_MODEL_FILE_BYTES,",
         replace: "            true,",
         breaks: "one oversized tracked model input reaches the hashing stream",
@@ -1279,7 +1279,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 895,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/git.rs",
         find: "            total <= MAX_MODEL_TREE_BYTES,",
         replace: "            true,",
         breaks: "the tracked model tree has no aggregate byte ceiling",
@@ -1290,7 +1290,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 896,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/git.rs",
         find: "            .update(&(relative.len() as u64).to_le_bytes())",
         replace: "            .update(&0u64.to_le_bytes())",
         breaks: "the model-tree digest omits its path-length frame",
@@ -1739,8 +1739,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1378,
         file: "xtask/src/qualification/record.rs",
-        find: "        ensure!(\n            is_rfc3339_timestamp(record.get(\"database.last-updated\")?),\n            \"advisory qualification names no RFC3339 database update time\"\n        );",
-        replace: "        let _unchecked_database_update_time = record.get(\"database.last-updated\")?;",
+        find: "    ensure!(\n        is_rfc3339_timestamp(record.get(\"database.last-updated\")?),\n        \"advisory qualification names no RFC3339 database update time\"\n    );",
+        replace: "    let _unchecked_database_update_time = record.get(\"database.last-updated\")?;",
         breaks: "an advisory record can carry a malformed database update time",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2080,8 +2080,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2005,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"tool.codex.runtime.root\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),\n                \"tool.python.runtime.bytes\".to_string(),",
-        replace: "                \"tool.codex.runtime.root\".to_string(),\n                \"tool.python.runtime.bytes\".to_string(),",
+        find: "                \"tool.codex.runtime.root\",\n                \"tool.codex.runtime.sha256\",\n                \"tool.python.runtime.bytes\",",
+        replace: "                \"tool.codex.runtime.root\",\n                \"tool.python.runtime.bytes\",",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime digest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2289,8 +2289,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2030,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.files\".to_string(),",
-        replace: "                \"tool.codex.runtime.files\".to_string(),",
+        find: "                \"tool.codex.runtime.bytes\",\n                \"tool.codex.runtime.files\",",
+        replace: "                \"tool.codex.runtime.files\",",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime byte count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2300,8 +2300,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2031,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),",
-        replace: "                \"tool.codex.runtime.bytes\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),",
+        find: "                \"tool.codex.runtime.bytes\",\n                \"tool.codex.runtime.files\",\n                \"tool.codex.runtime.root\",",
+        replace: "                \"tool.codex.runtime.bytes\",\n                \"tool.codex.runtime.root\",",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime file count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2311,8 +2311,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2032,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.root\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),",
-        replace: "                \"tool.codex.runtime.files\".to_string(),\n                \"tool.codex.runtime.sha256\".to_string(),",
+        find: "                \"tool.codex.runtime.files\",\n                \"tool.codex.runtime.root\",\n                \"tool.codex.runtime.sha256\",",
+        replace: "                \"tool.codex.runtime.files\",\n                \"tool.codex.runtime.sha256\",",
         breaks: "qualification can admit owned Deep evidence without the Codex runtime root",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2322,8 +2322,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2182,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
-        replace: "                \"execution.worker-permission\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        find: "                \"execution.worker-permission\",\n                \"execution.worker-effective-profile.sha256\",\n                \"execution.worker-effective-state.sha256\",\n                \"execution.worker-parent-state.sha256\",",
+        replace: "                \"execution.worker-permission\",\n                \"execution.worker-effective-state.sha256\",\n                \"execution.worker-parent-state.sha256\",",
         breaks: "qualification can admit owned Deep evidence without the effective-profile digest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2333,8 +2333,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2183,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
-        replace: "                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),",
+        find: "                \"execution.worker-effective-state.sha256\",\n                \"execution.worker-parent-state.sha256\",\n                \"execution.worker-provider-profile.sha256\",",
+        replace: "                \"execution.worker-effective-state.sha256\",\n                \"execution.worker-provider-profile.sha256\",",
         breaks: "qualification can admit owned Deep evidence without the parent-state digest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2344,8 +2344,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2184,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-provider-profile.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
-        replace: "                \"execution.worker-parent-state.sha256\".to_string(),\n                \"execution.worker-preflight.allowed-reads\".to_string(),",
+        find: "                \"execution.worker-parent-state.sha256\",\n                \"execution.worker-provider-profile.sha256\",\n                \"execution.worker-preflight.allowed-reads\",",
+        replace: "                \"execution.worker-parent-state.sha256\",\n                \"execution.worker-preflight.allowed-reads\",",
         breaks: "qualification can admit owned Deep evidence without the provider-profile digest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2377,8 +2377,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2199,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"execution.worker-transitions.exec-resumed\".to_string(),\n                \"findings.critical\".to_string(),",
-        replace: "                \"execution.worker-transitions.exec-initial\".to_string(),\n                \"findings.critical\".to_string(),",
+        find: "                \"execution.worker-transitions.exec-initial\",\n                \"execution.worker-transitions.exec-resumed\",\n                \"findings.critical\",",
+        replace: "                \"execution.worker-transitions.exec-initial\",\n                \"findings.critical\",",
         breaks: "qualification can admit owned Deep evidence without the resumed-transition count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2399,8 +2399,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2218,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-effective-state.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
-        replace: "                \"execution.worker-effective-profile.sha256\".to_string(),\n                \"execution.worker-parent-state.sha256\".to_string(),",
+        find: "                \"execution.worker-effective-profile.sha256\",\n                \"execution.worker-effective-state.sha256\",\n                \"execution.worker-parent-state.sha256\",",
+        replace: "                \"execution.worker-effective-profile.sha256\",\n                \"execution.worker-parent-state.sha256\",",
         breaks: "qualification can omit the raw effective sandbox-state digest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2410,8 +2410,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2219,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-preflight.allowed-reads\".to_string(),\n                \"execution.worker-preflight.denied-reads\".to_string(),",
-        replace: "                \"execution.worker-preflight.denied-reads\".to_string(),",
+        find: "                \"execution.worker-preflight.allowed-reads\",\n                \"execution.worker-preflight.denied-reads\",",
+        replace: "                \"execution.worker-preflight.denied-reads\",",
         breaks: "qualification can omit the allowed-read preflight count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2421,8 +2421,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2220,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-preflight.denied-write-creates\".to_string(),\n                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
-        replace: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),",
+        find: "                \"execution.worker-preflight.denied-write-creates\",\n                \"execution.worker-preflight.denied-write-mutations\",",
+        replace: "                \"execution.worker-preflight.denied-write-mutations\",",
         breaks: "qualification can omit the denied-create preflight count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2432,8 +2432,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2221,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-preflight.denied-write-mutations\".to_string(),\n                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
-        replace: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),",
+        find: "                \"execution.worker-preflight.denied-write-mutations\",\n                \"execution.worker-preflight.denied-network-listeners\",",
+        replace: "                \"execution.worker-preflight.denied-network-listeners\",",
         breaks: "qualification can omit the denied existing-file mutation count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2443,8 +2443,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2222,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-preflight.denied-network-listeners\".to_string(),\n                \"execution.worker-preflight.denied-network-connections\".to_string(),",
-        replace: "                \"execution.worker-preflight.denied-network-connections\".to_string(),",
+        find: "                \"execution.worker-preflight.denied-network-listeners\",\n                \"execution.worker-preflight.denied-network-connections\",",
+        replace: "                \"execution.worker-preflight.denied-network-connections\",",
         breaks: "qualification can omit the denied-listener preflight count",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2454,8 +2454,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2223,
         file: "xtask/src/qualification/record.rs",
-        find: "                \"execution.worker-preflight.denied-network-connections\".to_string(),\n                \"execution.worker-preflight.denied-descendants\".to_string(),",
-        replace: "                \"execution.worker-preflight.denied-descendants\".to_string(),",
+        find: "                \"execution.worker-preflight.denied-network-connections\",\n                \"execution.worker-preflight.denied-descendants\",",
+        replace: "                \"execution.worker-preflight.denied-descendants\",",
         breaks: "qualification can omit the denied outbound-connect preflight count",
         reddens: Caught::HostTest {
             package: "xtask",

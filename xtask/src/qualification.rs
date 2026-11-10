@@ -154,14 +154,6 @@ const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
 
-const MAX_MODEL_PATH_LIST_BYTES: usize = 64 * 1024;
-
-const MAX_MODEL_FILES: usize = 128;
-
-const MAX_MODEL_FILE_BYTES: u64 = 1024 * 1024;
-
-const MAX_MODEL_TREE_BYTES: u64 = 4 * 1024 * 1024;
-
 const MAX_DIGEST_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -706,7 +698,7 @@ fn require_real_root(path: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Result<()> {
+pub(crate) fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Result<()> {
     let parent = path.parent().context("contained file has no parent")?;
     require_contained_real_directory(root, parent, label)?;
     require_regular_file(path, label)?;
@@ -888,109 +880,6 @@ fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()
     Ok(())
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct TreeDigest {
-    files: usize,
-    bytes: u64,
-    sha256: String,
-}
-
-fn tracked_tree_digest(root: &Path, directory: &str) -> Result<TreeDigest> {
-    let output = git_output_bytes(
-        root,
-        &["ls-files", "-z", "--", directory],
-        MAX_MODEL_PATH_LIST_BYTES,
-        "tracked model path inventory",
-    )?;
-    let mut paths = Vec::new();
-    for raw in output
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-    {
-        let relative = std::str::from_utf8(raw).context("tracked model path is not UTF-8")?;
-        let path = Path::new(relative);
-        ensure!(
-            path.starts_with(directory)
-                && path
-                    .components()
-                    .all(|component| matches!(component, Component::Normal(_))),
-            "Git returned an unsafe model path: {relative}"
-        );
-        paths.push(relative.to_string());
-    }
-    ensure!(!paths.is_empty(), "no tracked model inputs were found");
-    ensure!(
-        paths.len() <= MAX_MODEL_FILES,
-        "tracked model tree has {} files, exceeding its {MAX_MODEL_FILES}-file limit",
-        paths.len()
-    );
-    ensure!(
-        paths.windows(2).all(|pair| pair[0] < pair[1]),
-        "tracked model inputs are not unique and sorted"
-    );
-
-    let mut hasher = sha256::Hasher::new();
-    let mut total = 0u64;
-    for relative in &paths {
-        let path = root.join(relative);
-        require_contained_regular_file(root, &path, "tracked model input")?;
-        let mut file = crate::mutate::workspace::open_real_file(&path, "tracked model input")?;
-        let length = file
-            .metadata()
-            .with_context(|| format!("measuring model input {relative}"))?
-            .len();
-        ensure!(
-            length <= MAX_MODEL_FILE_BYTES,
-            "model input {relative} is {length} bytes, exceeding its {MAX_MODEL_FILE_BYTES}-byte limit"
-        );
-        total = total
-            .checked_add(length)
-            .context("model input length overflowed")?;
-        ensure!(
-            total <= MAX_MODEL_TREE_BYTES,
-            "tracked model tree is {total} bytes, exceeding its {MAX_MODEL_TREE_BYTES}-byte limit"
-        );
-        hasher
-            .update(&(relative.len() as u64).to_le_bytes())
-            .context("hashing a model path length")?;
-        hasher
-            .update(relative.as_bytes())
-            .context("hashing a model path")?;
-        hasher
-            .update(&length.to_le_bytes())
-            .context("hashing a model input length")?;
-
-        let mut observed = 0u64;
-        let mut buffer = [0u8; 64 * 1024];
-        let mut limited = (&mut file).take(length + 1);
-        loop {
-            let read = std::io::Read::read(&mut limited, &mut buffer)
-                .with_context(|| format!("reading model input {relative}"))?;
-            if read == 0 {
-                break;
-            }
-            observed += read as u64;
-            hasher
-                .update(&buffer[..read])
-                .with_context(|| format!("hashing model input {relative}"))?;
-        }
-        ensure!(
-            observed == length
-                && file
-                    .metadata()
-                    .with_context(|| format!("remeasuring model input {relative}"))?
-                    .len()
-                    == length,
-            "model input {relative} changed length while being hashed"
-        );
-    }
-    Ok(TreeDigest {
-        files: paths.len(),
-        bytes: total,
-        sha256: sha256::hex(&hasher.finish()),
-    })
-}
-
 pub(crate) fn is_rfc3339_timestamp(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < 20
@@ -1100,7 +989,12 @@ fn git_output(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result
         .map(|output| output.trim().to_string())
 }
 
-fn git_output_bytes(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<Vec<u8>> {
+pub(crate) fn git_output_bytes(
+    root: &Path,
+    args: &[&str],
+    maximum: usize,
+    label: &str,
+) -> Result<Vec<u8>> {
     git_output_bytes_with(
         root,
         args,
