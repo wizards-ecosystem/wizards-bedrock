@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::{
     Address, Class, DEVICES, FUNCTIONS, FunctionObservation, HeaderType, QualifiedNonRequester,
     QuiescedIsaRequester, QuiescedRequester, primary_bus, secondary_bus, subordinate_bus,
@@ -11,6 +13,9 @@ const SEGMENT_FUNCTIONS: usize = BUSES * DEVICES as usize * FUNCTIONS as usize;
 
 /// Machine words needed to remember every function identity in one segment.
 const PRESENCE_WORDS: usize = SEGMENT_FUNCTIONS.div_ceil(u64::BITS as usize);
+
+/// Non-root buses in one segment; parent walks must strictly approach bus zero.
+const BUSES_BELOW_ROOT: usize = BUSES - 1;
 
 /// A bridge range admitted into a sealed [`PciTopology`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -26,78 +31,40 @@ pub struct BridgeRange {
 #[non_exhaustive]
 pub enum TopologyError {
     /// The function named by entry-fence authority was absent from the later snapshot.
-    QualifiedNonRequesterMissing {
-        /// Exact function which had been classified at entry.
-        at: Address,
-    },
+    QualifiedNonRequesterMissing { at: Address },
     /// The function named by entry-fence authority changed before the snapshot.
-    QualifiedNonRequesterChanged {
-        /// Exact function whose identity, class or command changed.
-        at: Address,
-    },
+    QualifiedNonRequesterChanged { at: Address },
     /// The requester quiesced at entry was absent from the later snapshot.
-    QuiescedRequesterMissing {
-        /// Exact function which had been quiesced at entry.
-        at: Address,
-    },
+    QuiescedRequesterMissing { at: Address },
     /// The requester quiesced at entry changed before the snapshot.
-    QuiescedRequesterChanged {
-        /// Exact function whose identity, class or command changed.
-        at: Address,
-    },
+    QuiescedRequesterChanged { at: Address },
     /// The class and header layout disagree about whether a function is a bridge.
-    BridgeIdentity {
-        /// Function with contradictory bridge identity.
-        at: Address,
-    },
+    BridgeIdentity { at: Address },
     /// A bridge function had no readable bus-number register.
-    MissingBusNumbers {
-        /// Bridge whose routing could not be read.
-        at: Address,
-    },
+    MissingBusNumbers { at: Address },
     /// A bridge's primary or forwarded range cannot describe a child bus.
     InvalidRange {
-        /// Bridge with invalid bus numbers.
         at: Address,
-        /// Primary bus encoded by the bridge.
         primary: u8,
-        /// First forwarded bus.
         secondary: u8,
-        /// Last forwarded bus.
         subordinate: u8,
     },
     /// Two different bridges claim to be one bus's direct parent.
     DuplicateParent {
-        /// Bus with two parent bridges.
         bus: u8,
-        /// First parent found.
         first: Address,
-        /// Second parent found.
         second: Address,
     },
     /// A present function is on a bus with no rooted parent chain.
-    UnrootedFunction {
-        /// Present function outside the proved tree.
-        at: Address,
-    },
+    UnrootedFunction { at: Address },
     /// A child bridge forwards beyond the range admitted by its parent.
-    ChildEscapesParent {
-        /// Child bridge whose range escapes.
-        child: Address,
-        /// Direct parent bridge.
-        parent: Address,
-    },
+    ChildEscapesParent { child: Address, parent: Address },
     /// Two unrelated bridge branches advertise intersecting ranges.
-    UnrelatedOverlap {
-        /// First bridge in the overlap.
-        first: Address,
-        /// Second bridge in the overlap.
-        second: Address,
-    },
+    UnrelatedOverlap { first: Address, second: Address },
 }
 
-impl core::fmt::Display for TopologyError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for TopologyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::QualifiedNonRequesterMissing { at } => write!(
                 f,
@@ -196,15 +163,7 @@ impl core::fmt::Display for TopologyError {
 
 impl core::error::Error for TopologyError {}
 
-/// A fixed, allocation-free snapshot of one rooted legacy PCI segment.
-///
-/// Each non-root bus is indexed by its unique direct parent bridge. Queries
-/// return nothing until [`Self::seal`] proves that all present functions reach
-/// bus zero, child ranges stay inside their parents, and unrelated branches
-/// do not overlap. An error from any observation door invalidates the snapshot
-/// and is returned by every later observation and seal until [`Self::reset`].
-/// Observe each function once per snapshot; successful observations are not
-/// replacement transactions.
+/// A snapshot of one PCI segment that answers only once sealed; an error poisons it until reset.
 #[derive(PartialEq, Eq, Debug)]
 pub struct PciTopology {
     parent: [u32; BUSES],
@@ -217,7 +176,6 @@ pub struct PciTopology {
 }
 
 impl PciTopology {
-    /// Begin an empty, unsealed segment-zero snapshot.
     pub const fn new() -> Self {
         Self {
             parent: [0; BUSES],
@@ -244,28 +202,22 @@ impl PciTopology {
     fn begin_observation(&mut self) -> Result<(), TopologyError> {
         self.sealed = false;
         match self.observation_failure {
-            Some(error) => Err(error),
+            Some(reason) => Err(reason),
             None => Ok(()),
         }
     }
 
     fn retain_observation_failure(
         &mut self,
-        result: Result<(), TopologyError>,
+        outcome: Result<(), TopologyError>,
     ) -> Result<(), TopologyError> {
-        if let Err(error) = result {
-            self.observation_failure = Some(error);
+        if let Err(reason) = outcome {
+            self.observation_failure = Some(reason);
         }
-        result
+        outcome
     }
 
     /// Record one independently probed function and, for a bridge, its routing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TopologyError`] for contradictory bridge identity, unreadable
-    /// bus numbers, an invalid range, or a second direct parent for one bus.
-    /// The first observation error is retained until [`Self::reset`].
     pub fn observe(
         &mut self,
         at: Address,
@@ -274,8 +226,8 @@ impl PciTopology {
         bus_numbers: Option<u32>,
     ) -> Result<(), TopologyError> {
         self.begin_observation()?;
-        let result = self.observe_function(at, class, header, bus_numbers);
-        self.retain_observation_failure(result)
+        let outcome = self.observe_function(at, class, header, bus_numbers);
+        self.retain_observation_failure(outcome)
     }
 
     fn observe_function(
@@ -323,13 +275,7 @@ impl PciTopology {
         Ok(())
     }
 
-    /// Record an exact platform-qualified function that is present but is not
-    /// a PCI DMA requester.
-    ///
-    /// # Errors
-    ///
-    /// The same topology errors as [`Self::observe`]. The consumed authority
-    /// can name only the exact platform tuple recognized by the handoff policy.
+    /// Record a present function that entry-fence authority proved is not a DMA requester.
     pub fn observe_non_requester(
         &mut self,
         authority: QualifiedNonRequester,
@@ -362,12 +308,6 @@ impl PciTopology {
     }
 
     /// Record the exact entry-quiesced ISA requester, which stays a requester.
-    ///
-    /// # Errors
-    ///
-    /// The same topology errors as [`Self::observe`], or
-    /// [`TopologyError::QuiescedRequesterChanged`] when any field the entry
-    /// fence bound differs.
     pub fn observe_quiesced_requester(
         &mut self,
         authority: QuiescedIsaRequester,
@@ -415,16 +355,10 @@ impl PciTopology {
     }
 
     /// Seal the snapshot after validating its complete rooted interval tree.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TopologyError`] when a present function is unrooted, a child
-    /// range escapes its parent, or unrelated branches overlap. A retained
-    /// observation error is returned first and requires [`Self::reset`].
     pub fn seal(&mut self) -> Result<(), TopologyError> {
         self.sealed = false;
-        if let Some(error) = self.observation_failure {
-            return Err(error);
+        if let Some(reason) = self.observation_failure {
+            return Err(reason);
         }
         for index in 0..SEGMENT_FUNCTIONS {
             if self.present[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) == 0 {
@@ -588,9 +522,6 @@ impl Default for PciTopology {
         Self::new()
     }
 }
-
-/// Non-root buses in one segment; parent walks must strictly approach bus zero.
-const BUSES_BELOW_ROOT: usize = BUSES - 1;
 
 fn function_index(at: Address) -> usize {
     (usize::from(at.bus()) * usize::from(DEVICES) + usize::from(at.device()))

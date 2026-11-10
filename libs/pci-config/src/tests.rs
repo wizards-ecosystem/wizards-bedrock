@@ -14,6 +14,7 @@ mod topology;
 const TRACE_CAPACITY: usize = 96;
 const COMMAND_TRACE_CAPACITY: usize = 16;
 
+#[derive(Debug)]
 struct FakeCommand {
     command: u16,
     status: u16,
@@ -65,7 +66,7 @@ impl FakeCommand {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct FakeConfig {
     command: u16,
     status: u16,
@@ -243,9 +244,9 @@ fn duplicate_state(state: &CommandState) -> CommandState {
     }
 }
 
+// Pairwise-distinct fields expose every accidental swap.
 #[test]
 fn an_address_puts_every_field_where_the_manual_says() {
-    // Pairwise-distinct fields expose every accidental swap (D-136).
     let at = Address::new(0x12, 0x1A, 0x05, 0x3C).expect("a valid address");
 
     assert_eq!(at.bits() >> 31, 1, "the enable bit");
@@ -324,7 +325,6 @@ fn an_address_that_cannot_be_encoded_is_refused() {
 
 #[test]
 fn the_class_word_is_read_as_four_separate_bytes() {
-    // Distinct bytes prevent one field from standing in for another.
     let class = Class::from_bits(0x0C_03_30_A1);
     assert_eq!(class.class, 0x0C);
     assert_eq!(class.subclass, 0x03);
@@ -375,8 +375,6 @@ fn the_header_type_byte_is_a_layout_and_a_flag() {
     assert_eq!(multi_bridge.layout(), 1);
     assert!(multi_bridge.is_bridge());
 
-    // The flag must not leak into the layout, which is what a missing mask
-    // would do: `0x81 & 0x7F` is 1, `0x81` is 129.
     let multi_plain = HeaderType::from_bits(0x80);
     assert!(multi_plain.is_multifunction());
     assert_eq!(multi_plain.layout(), 0);
@@ -400,14 +398,12 @@ fn a_bridge_secondary_bus_is_read_from_its_own_byte() {
 
 #[test]
 fn a_bridge_subordinate_bus_is_read_from_its_own_byte() {
-    // Primary, secondary, subordinate and latency timer, each distinct.
     let bits = 0x4433_2211u32;
     assert_eq!(subordinate_bus(bits), 0x33);
 }
 
 #[test]
 fn a_bridge_primary_bus_is_read_from_its_own_byte() {
-    // Primary, secondary, subordinate and latency timer, each distinct.
     let bits = 0x4433_2211;
     assert_eq!(primary_bus(bits), 0x11);
 }

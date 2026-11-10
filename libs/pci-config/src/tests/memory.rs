@@ -111,7 +111,6 @@ fn enabling_memory_decode_keeps_a_firmware_enabled_bit_and_refuses_a_retired_pha
     let (bars, mut state) = probe_claimed_bars(&mut functions, &function, &mut fake);
     let bar = bind_memory_bar(&mut functions, &function, &bars, 0).expect("BAR0 authority");
 
-    // The second admission finds decode already enabled and must keep it.
     for admission in 0..2 {
         let _ =
             enable_memory_bar(
@@ -161,9 +160,9 @@ fn a_command_readback_that_differs_after_restoration_is_reported() {
             .expect("function authority");
         (functions, authority)
     }
-    fn position(fake: &FakeConfig, want: impl Fn(&ProbeAccess) -> bool, last: bool) -> usize {
+    fn position(fake: &FakeConfig, wanted: impl Fn(&ProbeAccess) -> bool, last: bool) -> usize {
         let events = fake.events();
-        let matches = |event: &Option<ProbeAccess>| event.as_ref().is_some_and(&want);
+        let matches = |event: &Option<ProbeAccess>| event.as_ref().is_some_and(&wanted);
         let found = if last {
             events.iter().rposition(matches)
         } else {

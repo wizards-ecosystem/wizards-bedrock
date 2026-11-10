@@ -1,3 +1,5 @@
+use core::fmt;
+
 use super::*;
 use crate::bar::io_window_size;
 use crate::probe::finish_probe_restoration;
@@ -5,9 +7,9 @@ use crate::probe::finish_probe_restoration;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct TestAccessError;
 
-impl core::fmt::Display for TestAccessError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Write::write_str(f, "test access failure")
+impl fmt::Display for TestAccessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("test access failure")
     }
 }
 
@@ -390,10 +392,9 @@ fn a_bar_probe_is_one_restored_decode_off_transaction() {
     assert_eq!(fake.events(), expected.map(Some));
 }
 
+// Calls 7 through 20 are the decode-off write and probe cycles; rollback has its own proof.
 #[test]
 fn every_probe_access_failure_restores_the_device() {
-    // Calls 7 through 20 are the decode-off write and probe cycles. The
-    // events after them are rollback itself and have a separate proof.
     for fail_at in 7..=20 {
         let mut fake = FakeConfig::device();
         let original = fake.clone();

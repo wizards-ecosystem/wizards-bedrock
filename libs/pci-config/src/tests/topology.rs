@@ -24,7 +24,7 @@ fn bus_numbers(primary: u8, secondary: u8, subordinate: u8) -> u32 {
     u32::from(primary) | (u32::from(secondary) << 8) | (u32::from(subordinate) << 16)
 }
 
-fn assert_topology_poisoned(topology: &mut PciTopology, at: Address, error: TopologyError) {
+fn assert_topology_poisoned(topology: &mut PciTopology, at: Address, reason: TopologyError) {
     assert!(
         !topology.is_sealed(),
         "an error must invalidate a prior seal"
@@ -34,16 +34,16 @@ fn assert_topology_poisoned(topology: &mut PciTopology, at: Address, error: Topo
     assert_eq!(topology.bridge_range(at), None);
     assert!(!topology.hierarchy_contains(at, at));
     assert_eq!(topology.quiesced_requester(at), None);
-    assert_eq!(topology.seal(), Err(error));
+    assert_eq!(topology.seal(), Err(reason));
     assert!(!topology.is_sealed());
-    assert_eq!(topology.seal(), Err(error), "sealing cannot clear poison");
+    assert_eq!(topology.seal(), Err(reason), "sealing cannot clear poison");
 }
 
 #[test]
 fn every_ordinary_observation_error_poisoned_until_reset() {
     let root = topology_address(0, 0x1c, 0);
     let rejected = topology_address(0, 0x1d, 0);
-    for (class, header, numbers, error) in [
+    for (class, header, numbers, reason) in [
         (
             bridge_class(),
             endpoint_header(),
@@ -92,18 +92,18 @@ fn every_ordinary_observation_error_poisoned_until_reset() {
         assert!(topology.bridge_range(root).is_some());
         assert_eq!(
             topology.observe(rejected, class, header, numbers),
-            Err(error)
+            Err(reason)
         );
-        assert_topology_poisoned(&mut topology, root, error);
+        assert_topology_poisoned(&mut topology, root, reason);
         assert!(!topology.contains_function(rejected));
         assert_eq!(
             topology.observe(rejected, endpoint_class(), endpoint_header(), None),
-            Err(error),
+            Err(reason),
             "a valid later observation cannot discard the first error"
         );
         assert_eq!(
             topology.observe(rejected, bridge_class(), endpoint_header(), None),
-            Err(error),
+            Err(reason),
             "a later different error cannot replace the first error"
         );
         topology.reset();
@@ -182,28 +182,28 @@ fn a_failed_non_requester_observation_revokes_the_seal_and_retains_its_error() {
     topology.seal().unwrap();
     assert!(topology.contains_function(host));
     assert!(!topology.contains_requester(host));
-    let error = TopologyError::QualifiedNonRequesterChanged { at: host };
+    let reason = TopologyError::QualifiedNonRequesterChanged { at: host };
     assert_eq!(
         topology.observe_non_requester(
             topology_entry_fence().take_non_requester().unwrap(),
             topology_host_observation(0x7190_8087),
         ),
-        Err(error)
+        Err(reason)
     );
-    assert_topology_poisoned(&mut topology, host, error);
+    assert_topology_poisoned(&mut topology, host, reason);
     assert_eq!(
         topology.observe_non_requester(
             topology_entry_fence().take_non_requester().unwrap(),
             topology_host_observation(0x7190_8086),
         ),
-        Err(error)
+        Err(reason)
     );
     assert_eq!(
         topology.observe_quiesced_requester(
             topology_entry_fence().take_quiesced_requester().unwrap(),
             topology_isa_observation(0x7110_8087),
         ),
-        Err(error),
+        Err(reason),
         "another observation door must preserve the first error"
     );
     topology.reset();
@@ -231,28 +231,28 @@ fn a_failed_quiesced_observation_revokes_the_seal_and_retains_its_error() {
     topology.seal().unwrap();
     assert!(topology.contains_requester(isa));
     assert!(topology.quiesced_requester(isa).is_some());
-    let error = TopologyError::QuiescedRequesterChanged { at: isa };
+    let reason = TopologyError::QuiescedRequesterChanged { at: isa };
     assert_eq!(
         topology.observe_quiesced_requester(
             topology_entry_fence().take_quiesced_requester().unwrap(),
             topology_isa_observation(0x7110_8087),
         ),
-        Err(error)
+        Err(reason)
     );
-    assert_topology_poisoned(&mut topology, isa, error);
+    assert_topology_poisoned(&mut topology, isa, reason);
     assert_eq!(
         topology.observe_quiesced_requester(
             topology_entry_fence().take_quiesced_requester().unwrap(),
             topology_isa_observation(0x7110_8086),
         ),
-        Err(error)
+        Err(reason)
     );
     assert_eq!(
         topology.observe_non_requester(
             topology_entry_fence().take_non_requester().unwrap(),
             topology_host_observation(0x7190_8087),
         ),
-        Err(error),
+        Err(reason),
         "another observation door must preserve the first error"
     );
     topology.reset();
@@ -273,21 +273,21 @@ fn delegated_non_requester_errors_stay_poisoned_until_reset() {
     let mut observation = topology_host_observation(0x7190_8086);
     observation.header = bridge_header();
     let mut topology = PciTopology::new();
-    let error = TopologyError::BridgeIdentity { at: host };
+    let reason = TopologyError::BridgeIdentity { at: host };
     assert_eq!(
         topology.observe_non_requester(
             topology_entry_fence().take_non_requester().unwrap(),
             observation,
         ),
-        Err(error),
+        Err(reason),
     );
-    assert_topology_poisoned(&mut topology, host, error);
+    assert_topology_poisoned(&mut topology, host, reason);
     assert_eq!(
         topology.observe_non_requester(
             topology_entry_fence().take_non_requester().unwrap(),
             topology_host_observation(0x7190_8086),
         ),
-        Err(error),
+        Err(reason),
     );
     topology.reset();
     topology
@@ -307,21 +307,21 @@ fn delegated_quiesced_requester_errors_stay_poisoned_until_reset() {
     let mut observation = topology_isa_observation(0x7110_8086);
     observation.header = bridge_header();
     let mut topology = PciTopology::new();
-    let error = TopologyError::BridgeIdentity { at: isa };
+    let reason = TopologyError::BridgeIdentity { at: isa };
     assert_eq!(
         topology.observe_quiesced_requester(
             topology_entry_fence().take_quiesced_requester().unwrap(),
             observation,
         ),
-        Err(error),
+        Err(reason),
     );
-    assert_topology_poisoned(&mut topology, isa, error);
+    assert_topology_poisoned(&mut topology, isa, reason);
     assert_eq!(
         topology.observe_quiesced_requester(
             topology_entry_fence().take_quiesced_requester().unwrap(),
             topology_isa_observation(0x7110_8086),
         ),
-        Err(error),
+        Err(reason),
     );
     topology.reset();
     topology

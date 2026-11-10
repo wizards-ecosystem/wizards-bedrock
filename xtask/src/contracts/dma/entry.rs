@@ -94,7 +94,8 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
 
     let pci = source("libs/pci-config/src/fence.rs");
     let pci_crate = source_tree(&root().join("libs/pci-config/src"));
-    let fence = function_after(&pci, "pub fn fence_dma_handoff(").expect("pure entry fence");
+    let fence = source_through(&pci, "pub fn fence_dma_handoff(", "fn verify_unchanged(")
+        .expect("pure entry fence");
     assert!(fence.contains("for bus in 0..=u8::MAX"));
     assert!(fence.contains("for device in 0..DEVICES"));
     assert!(fence.contains("for function in 0..FUNCTIONS"));

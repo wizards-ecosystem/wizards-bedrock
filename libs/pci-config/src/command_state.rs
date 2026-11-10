@@ -1,20 +1,18 @@
+use core::fmt;
+
 use crate::claims::FunctionLease;
 use crate::{Address, CommandLease, CommandLeases, FunctionAuthority, FunctionClaims, command};
 
 /// One command-register access in a verified enable transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandAccess {
-    /// Read the command register. Only its low sixteen bits are consumed.
+    /// Only the low sixteen bits are consumed.
     Read,
     /// Write only command bits, leaving the status half of the dword clear.
     Write(u16),
 }
 
 /// The exclusive right to finish one function's command-register transition.
-///
-/// The function identity, original word, installed word and registry
-/// generation are deliberately opaque. Restoration therefore cannot be aimed
-/// at another function or replayed over a later lease.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping command state permanently retains its function lease"]
 pub struct CommandState {
@@ -40,15 +38,11 @@ pub enum FunctionReleaseError {
     Stale,
 }
 
-impl core::fmt::Display for FunctionReleaseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for FunctionReleaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Active => {
-                core::fmt::Write::write_str(f, "the function still has a configuration sublease")
-            }
-            Self::Stale => {
-                core::fmt::Write::write_str(f, "the function authority is foreign or stale")
-            }
+            Self::Active => f.write_str("the function still has a configuration sublease"),
+            Self::Stale => f.write_str("the function authority is foreign or stale"),
         }
     }
 }
@@ -64,31 +58,24 @@ pub struct FunctionReleaseFailure {
 }
 
 impl FunctionReleaseFailure {
-    /// Why release refused.
     pub const fn reason(&self) -> FunctionReleaseError {
         self.reason
     }
 
-    /// Recover the exact function authority for retry.
     pub fn into_authority(self) -> FunctionAuthority {
         self.authority
     }
 }
 
-impl core::fmt::Display for FunctionReleaseFailure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.reason, f)
+impl fmt::Display for FunctionReleaseFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, f)
     }
 }
 
 impl core::error::Error for FunctionReleaseFailure {}
 
 /// Release a function only after every command and probe sublease is gone.
-///
-/// # Errors
-///
-/// Returns the unchanged authority while a sublease remains or if the token
-/// is foreign or stale. No registry slot changes on refusal.
 pub fn release_function<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: FunctionAuthority,
@@ -137,12 +124,10 @@ pub struct EnableFailure {
 }
 
 impl EnableFailure {
-    /// Why enablement refused.
     pub const fn reason(&self) -> EnableError {
         self.reason
     }
 
-    /// Recover an uncertain transition for exact restoration.
     pub fn into_state(self) -> Option<CommandState> {
         self.state
     }
@@ -166,12 +151,10 @@ pub struct RestoreFailure {
 }
 
 impl RestoreFailure {
-    /// Why the lease could not be completed.
     pub const fn reason(&self) -> EnableError {
         self.reason
     }
 
-    /// Recover the exact command word for another restoration attempt.
     pub fn into_state(self) -> CommandState {
         self.state
     }
@@ -201,30 +184,22 @@ pub enum EnableError {
     ForeignDomain,
 }
 
-impl core::fmt::Display for EnableError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for EnableError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Leased => {
-                core::fmt::Write::write_str(f, "the function already has a command lease")
-            }
-            Self::NoRoom => core::fmt::Write::write_str(f, "the command-lease registry is full"),
-            Self::Exhausted => {
-                core::fmt::Write::write_str(f, "command-lease generations are exhausted")
-            }
-            Self::Stale => core::fmt::Write::write_str(f, "the command lease is no longer current"),
+            Self::Leased => f.write_str("the function already has a command lease"),
+            Self::NoRoom => f.write_str("the command-lease registry is full"),
+            Self::Exhausted => f.write_str("command-lease generations are exhausted"),
+            Self::Stale => f.write_str("the command lease is no longer current"),
             Self::Changed(observed) => {
                 write!(f, "the leased command register changed to {observed:#06x}")
             }
-            Self::Access => core::fmt::Write::write_str(f, "configuration access failed"),
+            Self::Access => f.write_str("configuration access failed"),
             Self::Refused(observed) => {
                 write!(f, "the command register read back as {observed:#06x}")
             }
-            Self::Restore => {
-                core::fmt::Write::write_str(f, "the original command could not be verified")
-            }
-            Self::ForeignDomain => {
-                core::fmt::Write::write_str(f, "the DMA domain isolates another function")
-            }
+            Self::Restore => f.write_str("the original command could not be verified"),
+            Self::ForeignDomain => f.write_str("the DMA domain isolates another function"),
         }
     }
 }
@@ -232,9 +207,6 @@ impl core::fmt::Display for EnableError {
 impl core::error::Error for EnableError {}
 
 /// Enable memory decode while explicitly withholding bus mastering.
-///
-/// This is the safe first stage for a memory-mapped controller whose firmware
-/// DMA state must be disabled before bus mastering is admitted.
 pub fn enable_memory_space<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -246,18 +218,7 @@ pub fn enable_memory_space<const N: usize>(
     enable_memory_space_with_leases(&mut functions.commands, authority, access)
 }
 
-/// Exclusively fence one requester's bus mastering for a unit-wide DMA
-/// transition.
-///
-/// The returned command owner records every captured bit except BME as its
-/// restoration target. It must therefore remain attached to the remapping
-/// unit until the unit transition is complete; restoring it can never revive
-/// unisolated DMA.
-///
-/// # Errors
-///
-/// See [`EnableError`]. An uncertain rollback returns its still-live
-/// [`CommandState`] through [`EnableFailure`] for quarantine or exact retry.
+/// Fence one requester's bus mastering for a unit-wide transition; restoring it never revives BME.
 pub fn fence_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -273,16 +234,11 @@ pub fn fence_bus_master<const N: usize>(
         command::BUS_MASTER,
         access,
     )?;
-    // `begin_command` verified the installed word exactly. From this point a
-    // later restoration is deliberately safe rather than firmware-exact.
     state.before &= !command::BUS_MASTER;
     Ok(state)
 }
 
 /// Freshly verify that one live command owner still has BME clear.
-///
-/// This is the last selected-function check before a unit-wide VT-d write.
-/// It neither changes nor consumes the command owner.
 pub fn verify_bus_master_fence<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -456,37 +412,22 @@ pub(crate) fn admit_bus_master_with_leases<const N: usize>(
     }
     let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;
     state.phase = CommandPhase::Restoring(wanted);
-    let result = change_command(at, current, wanted, &mut access);
-    match result {
+    match change_command(at, current, wanted, &mut access) {
         Ok(()) => {
             state.installed = wanted;
             state.phase = CommandPhase::Installed;
             Ok(())
         }
-        Err(error) => {
-            if error != EnableError::Restore {
+        Err(reason) => {
+            if reason != EnableError::Restore {
                 state.phase = CommandPhase::Installed;
             }
-            Err(error)
+            Err(reason)
         }
     }
 }
 
-/// Permanently withhold bus mastering from a transient function lease.
-///
-/// The command word is read and the BME-clear result is verified while the
-/// exact function and command generations remain live. Only a successful
-/// readback removes BME from the word a later [`restore_command`] will write;
-/// every other captured bit is still restored normally. An interrupted prior
-/// command change is accepted only at one of its two recorded words, which
-/// lets teardown settle an uncertain bus-master admission without inventing a
-/// third state.
-///
-/// # Errors
-///
-/// Refuses stale authority, an independently changed word, configuration
-/// access failure, or a transition whose exact result cannot be verified. The
-/// caller retains `state` for retry or quarantine in every case.
+/// Permanently withhold bus mastering, accepting an interrupted change only at its recorded words.
 pub fn disable_bus_master_for_retirement<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -504,6 +445,7 @@ pub fn disable_bus_master_for_retirement<const N: usize>(
     )
 }
 
+// `installed` takes the current word before the write so an interrupted retry names both words.
 pub(crate) fn disable_bus_master_for_retirement_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     function: FunctionLease,
@@ -523,9 +465,6 @@ pub(crate) fn disable_bus_master_for_retirement_with_leases<const N: usize>(
         return Err(EnableError::Changed(current));
     }
 
-    // `current` is now one of the command owner's exact recorded words. Make
-    // it the rollback word before publishing the next possible hardware word,
-    // so an interrupted retry still names both and only both possibilities.
     state.installed = current;
     let wanted = current & !command::BUS_MASTER;
     state.phase = CommandPhase::Restoring(wanted);
@@ -537,20 +476,14 @@ pub(crate) fn disable_bus_master_for_retirement_with_leases<const N: usize>(
             Ok(())
         }
         Err(EnableError::Restore) => Err(EnableError::Restore),
-        Err(error) => {
+        Err(reason) => {
             state.phase = CommandPhase::Installed;
-            Err(error)
+            Err(reason)
         }
     }
 }
 
 /// Restore the exact command word carried by a [`CommandState`].
-///
-/// # Errors
-///
-/// The unchanged state is returned in [`RestoreFailure`] whenever its registry
-/// generation is stale, the installed word changed, an access failed, or the
-/// final readback did not equal the captured word.
 pub fn restore_command<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -569,10 +502,9 @@ pub fn restore_command<const N: usize>(
 pub(crate) fn restore_command_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
-    state: CommandState,
+    mut state: CommandState,
     mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
 ) -> Result<(), RestoreFailure> {
-    let mut state = state;
     if !leases.holds(authority, state.lease) {
         return Err(RestoreFailure {
             reason: EnableError::Stale,
@@ -635,11 +567,6 @@ pub(crate) fn restore_command_with_leases<const N: usize>(
 }
 
 /// Finish a permanent command transition without restoring its old word.
-///
-/// # Errors
-///
-/// Returns the unchanged state unless its exact registry generation is live
-/// and the command register still equals the installed word.
 pub fn commit_command<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,

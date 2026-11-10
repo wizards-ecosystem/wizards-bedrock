@@ -91,7 +91,6 @@ fn a_memory_window_size_is_the_complement_of_the_probe() {
 
 #[test]
 fn a_narrow_window_is_not_complemented_in_a_wide_word() {
-    // The same mask must be complemented in the selected register width.
     assert_eq!(
         memory_window_size(0xFFFF_C000, 0, MemoryWidth::Bits32),
         Some(0x4000)
