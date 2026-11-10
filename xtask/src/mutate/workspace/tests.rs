@@ -41,8 +41,7 @@ fn fixture_journal() -> Journal {
     }
 }
 
-/// Identities that are neither positions nor contiguous, as a registry
-/// with retired and interleaved entries would carry.
+/// Identities that are neither positions nor contiguous, as retired and interleaved entries leave.
 fn ids_for(journal: &Journal) -> Vec<u16> {
     (0..journal.completed.len())
         .map(|index| 17 + 2 * index as u16)
@@ -1004,8 +1003,6 @@ fn an_interrupted_session_is_sanitized_before_recovery() {
     assert_eq!(resumed.complete(&[1]).unwrap(), [Outcome::Caught]);
 }
 
-/// The real Git boundary supplies only tracked bytes to a distinct build
-/// root and leaves both the checkout and its index byte-exact.
 #[test]
 fn a_session_builds_only_from_its_tracked_copy() {
     let temp = TempTree::new("session");
@@ -1082,8 +1079,7 @@ fn chain_source(value: u8) -> String {
     format!("#[inline(always)]\npub fn value() -> u8 {{ {value} }}\n")
 }
 
-/// A three-crate inlining chain whose old snapshot timestamp must not hide
-/// a restored source change from Cargo.
+/// A three-crate inlining chain whose old snapshot timestamp must not hide a restore from Cargo.
 fn chain(name: &str) -> (TempTree, PathBuf, Paths) {
     let temp = TempTree::new(name);
     let snapshot = temp.0.join("snapshot");
@@ -1148,8 +1144,6 @@ fn observed(paths: &Paths) -> String {
     String::from_utf8(output.stdout).expect("fixture output")
 }
 
-/// A restored mutation must be what the next build *observes*, not merely
-/// what the file on disk says.
 #[test]
 fn a_restored_input_is_what_the_next_build_observes() {
     let (_temp, snapshot, paths) = chain("restore");
@@ -1165,8 +1159,7 @@ fn a_restored_input_is_what_the_next_build_observes() {
     assert_eq!(observed(&paths), "1");
 }
 
-/// A new sweep must rebuild rather than inherit the preceding sweep's last
-/// mutation from its retained build directory.
+/// A new sweep must not inherit the last sweep's final mutation from its retained build directory.
 #[test]
 fn a_recopied_workspace_is_what_the_next_build_observes() {
     let (_temp, snapshot, paths) = chain("recopy");
@@ -1179,8 +1172,7 @@ fn a_recopied_workspace_is_what_the_next_build_observes() {
     assert_eq!(observed(&paths), "1");
 }
 
-/// The helper process a parent test really terminates while a mutation is
-/// active. It is ignored unless that parent selects it explicitly.
+/// The helper a parent test kills while a mutation is active; ignored unless that parent selects it.
 #[test]
 #[ignore]
 fn interruption_child() {
@@ -1217,8 +1209,7 @@ fn kill_at(state: &Path, marker: &Path) {
     assert!(!second_acquired, "a live second sweep acquired the lock");
 }
 
-/// A killed build or boot leaves only the copy dirty; the released lock
-/// and active journal let the next process restore and rerun it.
+/// The released lock and active journal let the next process restore and rerun the killed mutation.
 #[test]
 fn a_killed_build_or_boot_resumes_outside_the_user_tree() {
     let temp = TempTree::new("interrupt");
@@ -1264,8 +1255,6 @@ fn a_killed_build_or_boot_resumes_outside_the_user_tree() {
     }
 }
 
-/// The newest complete generation wins; a torn rewrite cannot erase the
-/// previous complete one.
 #[test]
 fn journal_uses_the_newest_complete_slot_and_falls_back_from_a_torn_write() {
     let temp = TempTree::new("journal");

@@ -114,8 +114,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 108,
         file: "xtask/src/mutate.rs",
-        find: "        let pass = workspace::current_pass(paths, &registry, mutations.len())?;\n        qualification_attempt.pass(&pass)?;",
-        replace: "        let pass = workspace::current_pass(paths, &registry, mutations.len())?;\n        drop(qualification_attempt);",
+        find: "    let pass = workspace::current_pass(paths, &registry, mutations.len())?;\n    qualification_attempt.pass(&pass)?;",
+        replace: "    let pass = workspace::current_pass(paths, &registry, mutations.len())?;\n    drop(qualification_attempt);",
         breaks: "a complete caught mutation sweep does not commit its qualification",
         reddens: Caught::HostTest {
             package: "xtask",

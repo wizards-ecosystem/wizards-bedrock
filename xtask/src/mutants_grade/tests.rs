@@ -260,8 +260,7 @@ fn the_owned_output_directory_is_the_one_the_recorder_reads() {
         .windows(2)
         .find(|pair| pair[0] == "--output")
         .map(|pair| pair[1]);
-    // cargo-mutants 27.1.0 creates `mutants.out` inside its `--output`
-    // argument (its `output.rs`), and the recorder reads that child.
+    // cargo-mutants 27.1.0 creates `mutants.out` inside `--output` (its `output.rs`); the recorder reads it.
     assert_eq!(output, Some("<xtask-owned-directory>"));
     assert_eq!(
         output_directory(Path::new("grade")),
@@ -304,8 +303,7 @@ fn a_grade_has_one_baseline_and_an_outcome_for_every_candidate() {
     assert!(parse_outcomes(doubled.as_bytes(), &candidates).is_err());
     let absent = valid.replacen(&format!("{baseline},"), "", 1);
     assert!(parse_outcomes(absent.as_bytes(), &candidates).is_err());
-    // Counters agree with the larger inventory, so only the missing
-    // outcome can refuse it.
+    // Counters agree with the larger inventory, so only the missing outcome can refuse it.
     let two = BTreeMap::from([
         ("m".to_string(), "d".to_string()),
         ("n".to_string(), "e".to_string()),

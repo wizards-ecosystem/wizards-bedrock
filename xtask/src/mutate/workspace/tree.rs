@@ -84,8 +84,7 @@ pub(crate) fn canonical_existing_real_directory(path: &Path, label: &str) -> Res
         .with_context(|| format!("canonicalizing {}", absolute.display()))
 }
 
-/// Open one real directory without following any path component and retain
-/// the handle as the authority for later relative operations.
+/// The handle, opened without following any component, is the authority for later relative operations.
 pub(crate) fn open_real_directory(path: &Path, label: &str) -> Result<File> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -305,10 +304,7 @@ pub(crate) fn require_direct_file_if_present(
     Ok(true)
 }
 
-/// Open `path` for reading without following a final-component link, then
-/// prove from the opened handle that it is one real file (D-344).
-///
-/// A path check alone cannot stop a link swapped in before an ordinary open.
+/// A path check alone cannot stop a link swapped in before an ordinary open, so the handle is checked.
 pub(crate) fn open_real_file(path: &Path, label: &str) -> Result<File> {
     let file =
         open_without_following(path).with_context(|| format!("opening {}", path.display()))?;
@@ -336,8 +332,7 @@ fn open_without_following(path: &Path) -> std::io::Result<File> {
     File::open(path)
 }
 
-// Windows opened the entry itself; elsewhere the entry must still be the file
-// the handle reached.
+// Windows opened the entry itself; elsewhere the entry must still be the file the handle reached.
 #[cfg(windows)]
 const fn require_opened_entry(
     _path: &Path,

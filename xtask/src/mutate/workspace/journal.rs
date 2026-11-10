@@ -92,15 +92,7 @@ impl Journal {
             self.completed.len()
         );
         for outcome in &self.completed {
-            match outcome {
-                Outcome::Caught => body.push_str("result caught\n"),
-                Outcome::Survived => body.push_str("result survived\n"),
-                Outcome::Inconclusive(error) => {
-                    body.push_str("result inconclusive ");
-                    body.push_str(&hex_encode(error.as_bytes()));
-                    body.push('\n');
-                }
-            }
+            push_outcome(&mut body, outcome);
         }
         body
     }
@@ -112,17 +104,7 @@ impl Journal {
     }
 
     fn parse(text: &str) -> Result<Self> {
-        let mut lines: Vec<&str> = text.lines().collect();
-        let checksum = lines.pop().context("journal has no checksum")?;
-        let expected = checksum
-            .strip_prefix("checksum ")
-            .context("journal checksum line is malformed")?;
-        ensure!(is_digest(expected), "journal checksum is malformed");
-        let body = format!("{}\n", lines.join("\n"));
-        let actual = sha256::hex(&sha256::digest(body.as_bytes()));
-        ensure!(actual == expected, "journal checksum does not match");
-
-        let mut lines = lines.into_iter();
+        let mut lines = checksummed_lines(text, "journal")?.into_iter();
         ensure!(lines.next() == Some(JOURNAL_MAGIC), "wrong journal version");
         let generation = <u64 as core::str::FromStr>::from_str(field(&mut lines, "generation")?)
             .context("parsing journal generation")?;
@@ -150,20 +132,7 @@ impl Journal {
         let mut completed = Vec::with_capacity(count);
         for _ in 0..count {
             let line = lines.next().context("journal outcome is missing")?;
-            let outcome = match line {
-                "result caught" => Outcome::Caught,
-                "result survived" => Outcome::Survived,
-                _ => {
-                    let encoded = line
-                        .strip_prefix("result inconclusive ")
-                        .context("journal outcome is malformed")?;
-                    let bytes = hex_decode(encoded)?;
-                    Outcome::Inconclusive(
-                        String::from_utf8(bytes).context("journal error is not UTF-8")?,
-                    )
-                }
-            };
-            completed.push(outcome);
+            completed.push(parse_outcome(line, "journal")?);
         }
         ensure!(lines.next().is_none(), "journal has trailing records");
         Ok(Self {
@@ -240,15 +209,7 @@ impl Report {
         );
         for (id, outcome) in self.ids.iter().zip(&self.outcomes) {
             body.push_str(&format!("id {id} "));
-            match outcome {
-                Outcome::Caught => body.push_str("result caught\n"),
-                Outcome::Survived => body.push_str("result survived\n"),
-                Outcome::Inconclusive(error) => {
-                    body.push_str("result inconclusive ");
-                    body.push_str(&hex_encode(error.as_bytes()));
-                    body.push('\n');
-                }
-            }
+            push_outcome(&mut body, outcome);
         }
         body
     }
@@ -264,19 +225,7 @@ impl Report {
             text.ends_with('\n') && !text.contains('\r'),
             "mutation report is not canonical LF text"
         );
-        let mut lines: Vec<&str> = text.lines().collect();
-        let checksum = lines.pop().context("mutation report has no checksum")?;
-        let expected = checksum
-            .strip_prefix("checksum ")
-            .context("mutation report checksum line is malformed")?;
-        ensure!(is_digest(expected), "mutation report checksum is malformed");
-        let body = format!("{}\n", lines.join("\n"));
-        ensure!(
-            sha256::hex(&sha256::digest(body.as_bytes())) == expected,
-            "mutation report checksum does not match"
-        );
-
-        let mut lines = lines.into_iter();
+        let mut lines = checksummed_lines(text, "mutation report")?.into_iter();
         ensure!(
             lines.next() == Some(REPORT_MAGIC),
             "wrong mutation report version"
@@ -323,19 +272,7 @@ impl Report {
                 <u16 as core::str::FromStr>::from_str(id)
                     .context("parsing mutation report identity")?,
             );
-            outcomes.push(match line {
-                "result caught" => Outcome::Caught,
-                "result survived" => Outcome::Survived,
-                _ => {
-                    let encoded = line
-                        .strip_prefix("result inconclusive ")
-                        .context("mutation report outcome is malformed")?;
-                    Outcome::Inconclusive(
-                        String::from_utf8(hex_decode(encoded)?)
-                            .context("mutation report error is not UTF-8")?,
-                    )
-                }
-            });
+            outcomes.push(parse_outcome(line, "mutation report")?);
         }
         ensure!(
             lines.next().is_none(),
@@ -412,6 +349,51 @@ fn outcome_totals(outcomes: &[Outcome]) -> (usize, usize, usize) {
         }
     }
     (caught, survived, inconclusive)
+}
+
+fn checksummed_lines<'text>(text: &'text str, label: &str) -> Result<Vec<&'text str>> {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let checksum = lines
+        .pop()
+        .with_context(|| format!("{label} has no checksum"))?;
+    let expected = checksum
+        .strip_prefix("checksum ")
+        .with_context(|| format!("{label} checksum line is malformed"))?;
+    ensure!(is_digest(expected), "{label} checksum is malformed");
+    let body = format!("{}\n", lines.join("\n"));
+    ensure!(
+        sha256::hex(&sha256::digest(body.as_bytes())) == expected,
+        "{label} checksum does not match"
+    );
+    Ok(lines)
+}
+
+fn push_outcome(body: &mut String, outcome: &Outcome) {
+    match outcome {
+        Outcome::Caught => body.push_str("result caught\n"),
+        Outcome::Survived => body.push_str("result survived\n"),
+        Outcome::Inconclusive(error) => {
+            body.push_str("result inconclusive ");
+            body.push_str(&hex_encode(error.as_bytes()));
+            body.push('\n');
+        }
+    }
+}
+
+fn parse_outcome(line: &str, label: &str) -> Result<Outcome> {
+    Ok(match line {
+        "result caught" => Outcome::Caught,
+        "result survived" => Outcome::Survived,
+        _ => {
+            let encoded = line
+                .strip_prefix("result inconclusive ")
+                .with_context(|| format!("{label} outcome is malformed"))?;
+            Outcome::Inconclusive(
+                String::from_utf8(hex_decode(encoded)?)
+                    .with_context(|| format!("{label} error is not UTF-8"))?,
+            )
+        }
+    })
 }
 
 fn field<'text>(lines: &mut impl Iterator<Item = &'text str>, name: &str) -> Result<&'text str> {

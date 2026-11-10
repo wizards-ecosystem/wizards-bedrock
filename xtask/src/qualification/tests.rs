@@ -1281,7 +1281,7 @@ fn exceptional_tasks_commit_only_after_their_terminal_verdict() {
         .rfind("\npub fn run(paths: &Paths) -> Result<()> {")
         .unwrap();
     let mutation_end = mutation_source[mutation_start..]
-        .find("\npub(crate) fn registry_fingerprint")
+        .find("\nfn resume_interrupted(")
         .unwrap()
         + mutation_start;
     let mutation = &mutation_source[mutation_start..mutation_end];

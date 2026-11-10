@@ -43,7 +43,7 @@ const CAMPAIGN_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const CAMPAIGN_ROOT: &str = "qualification-runs/cargo-mutants";
 /// The directory cargo-mutants creates inside its `--output` argument.
 const CARGO_MUTANTS_OUTPUT: &str = "mutants.out";
-/// The reviewed crates.io `cargo-mutants 27.1.0` executable (D-342).
+/// The reviewed crates.io `cargo-mutants 27.1.0` executable.
 const CARGO_MUTANTS_EXECUTABLE_SHA256: &str =
     "4ef442752564625eef9786739a1d57cc692263fca071dd16751f45ba2e322d9c";
 const INVENTORY_COMMAND: &str = "cargo mutants -p xtask --list --json --diff --no-times";
@@ -215,8 +215,7 @@ fn run_campaign(paths: &Paths) -> Result<()> {
         requested_tools == tools,
         "the observed campaign differs from its source-bound request"
     );
-    // The completeness witness, doctest proof and adjudication policy come
-    // from this checkout, never from files beside the observed run.
+    // The completeness witness, doctest proof and adjudication policy come from this checkout, never the observed run.
     let inventory = capture_inventory(&tools, paths, &private_temp)?;
     let doctest = capture_doctest(&tools, paths, &private_temp)?;
     verify_doctest(&doctest)?;
@@ -226,9 +225,7 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     let (mut grade, noncaught) = parse_outcomes(&outcomes, &candidates)?;
     grade.adjudicated = verify_adjudications(&adjudications, &noncaught)?;
     require_campaign_success(result.status, &grade, &root)?;
-    // Inventory is another grader invocation and doctests exercise the pinned
-    // Cargo toolchain. Rebind source and both external tools after their final
-    // use, immediately before any PASS-producing call.
+    // Rebind source and both tools after inventory and doctests use them, immediately before any pass.
     require_campaign_identity(
         attempt.source(),
         &qualification::source_identity(paths.root())?,
@@ -379,6 +376,111 @@ fn parse_outcomes(
 ) -> Result<(Grade, BTreeMap<String, NonCaught>)> {
     let value = parse_json(bytes, "cargo-mutants outcomes")?;
     let root = json_object(&value, "cargo-mutants outcomes")?;
+    require_outcomes_header(root)?;
+
+    let mut baseline = 0u64;
+    let mut observed = BTreeSet::new();
+    let mut noncaught = BTreeMap::new();
+    let mut caught = 0u64;
+    let mut missed = 0u64;
+    let mut timeout = 0u64;
+    let mut unviable = 0u64;
+    for outcome in json_array(
+        json_field(root, "outcomes", "outcomes")?,
+        "cargo-mutants outcome list",
+    )? {
+        let outcome = json_object(outcome, "cargo-mutants outcome")?;
+        require_json_fields(
+            outcome,
+            &[
+                "scenario",
+                "summary",
+                "log_path",
+                "diff_path",
+                "phase_results",
+            ],
+            "cargo-mutants outcome",
+        )?;
+        let summary = json_string(
+            json_field(outcome, "summary", "outcome")?,
+            "outcome summary",
+        )?;
+        let log = json_string(
+            json_field(outcome, "log_path", "outcome")?,
+            "outcome log path",
+        )?;
+        require_relative_path(log)?;
+        match json_field(outcome, "scenario", "outcome")? {
+            JsonValue::String(value) => {
+                require_baseline_outcome(outcome, value, summary)?;
+                baseline += 1;
+            }
+            JsonValue::Object(scenario) => {
+                let name = require_known_mutant(scenario, candidates, &mut observed)?;
+                let diff = json_string(
+                    json_field(outcome, "diff_path", "outcome")?,
+                    "outcome diff path",
+                )?;
+                require_relative_path(diff)?;
+                require_nextest_phases(json_field(outcome, "phase_results", "outcome")?, summary)?;
+                match summary {
+                    "CaughtMutant" => caught += 1,
+                    "MissedMutant" => missed += 1,
+                    "Timeout" => timeout += 1,
+                    "Unviable" => unviable += 1,
+                    "Failure" | "Success" => {
+                        bail!("cargo-mutants grade contains an unclassified `{summary}` outcome")
+                    }
+                    other => bail!("cargo-mutants grade contains unknown outcome `{other}`"),
+                }
+                if summary != "CaughtMutant" {
+                    noncaught.insert(
+                        name.to_string(),
+                        NonCaught {
+                            summary: summary.to_string(),
+                            diff: candidates[name].clone(),
+                        },
+                    );
+                }
+            }
+            _ => bail!("cargo-mutants outcome scenario is malformed"),
+        }
+    }
+    ensure!(
+        baseline == 1,
+        "cargo-mutants grade needs exactly one passing pristine baseline"
+    );
+    ensure!(
+        observed == candidates.keys().cloned().collect(),
+        "cargo-mutants candidate and outcome sets differ"
+    );
+    let total = candidates.len() as u64;
+    for (key, actual) in [
+        ("total_mutants", total),
+        ("caught", caught),
+        ("missed", missed),
+        ("timeout", timeout),
+        ("unviable", unviable),
+    ] {
+        ensure!(
+            json_u64(json_field(root, key, "outcomes")?, key)? == actual,
+            "cargo-mutants `{key}` counter differs from its outcomes"
+        );
+    }
+    Ok((
+        Grade {
+            total,
+            caught,
+            missed,
+            timeout,
+            unviable,
+            adjudicated: 0,
+        },
+        noncaught,
+    ))
+}
+
+fn require_outcomes_header(root: &BTreeMap<String, JsonValue>) -> Result<()> {
     require_json_fields(
         root,
         &[
@@ -420,168 +522,67 @@ fn parse_outcomes(
         )? == 0,
         "cargo-mutants reports unclassified successful mutants"
     );
+    Ok(())
+}
 
-    let mut baseline = 0u64;
-    let mut observed = BTreeSet::new();
-    let mut noncaught = BTreeMap::new();
-    let mut caught = 0u64;
-    let mut missed = 0u64;
-    let mut timeout = 0u64;
-    let mut unviable = 0u64;
-    for outcome in json_array(
-        json_field(root, "outcomes", "outcomes")?,
-        "cargo-mutants outcome list",
-    )? {
-        let outcome = json_object(outcome, "cargo-mutants outcome")?;
-        require_json_fields(
-            outcome,
-            &[
-                "scenario",
-                "summary",
-                "log_path",
-                "diff_path",
-                "phase_results",
-            ],
-            "cargo-mutants outcome",
-        )?;
-        let summary = json_string(
-            json_field(outcome, "summary", "outcome")?,
-            "outcome summary",
-        )?;
-        let log = json_string(
-            json_field(outcome, "log_path", "outcome")?,
-            "outcome log path",
-        )?;
-        require_relative_path(log)?;
-        match json_field(outcome, "scenario", "outcome")? {
-            JsonValue::String(value) => {
-                ensure!(
-                    value == "Baseline" && summary == "Success",
-                    "cargo-mutants pristine baseline did not pass"
-                );
-                ensure!(
-                    matches!(
-                        json_field(outcome, "diff_path", "outcome")?,
-                        JsonValue::Null
-                    ),
-                    "cargo-mutants baseline has a diff"
-                );
-                require_nextest_phases(json_field(outcome, "phase_results", "outcome")?, summary)?;
-                baseline += 1;
-            }
-            JsonValue::Object(scenario) => {
-                require_json_fields(scenario, &["Mutant"], "mutant scenario")?;
-                let mutant = json_object(
-                    json_field(scenario, "Mutant", "mutant scenario")?,
-                    "mutant scenario",
-                )?;
-                require_json_fields(
-                    mutant,
-                    &[
-                        "name",
-                        "package",
-                        "file",
-                        "function",
-                        "span",
-                        "replacement",
-                        "genre",
-                    ],
-                    "mutant scenario",
-                )?;
-                ensure!(
-                    json_string(
-                        json_field(mutant, "package", "mutant scenario")?,
-                        "mutant package"
-                    )? == "xtask",
-                    "cargo-mutants outcome belongs to another package"
-                );
-                let name = json_string(
-                    json_field(mutant, "name", "mutant scenario")?,
-                    "mutant name",
-                )?;
-                ensure!(
-                    candidates.contains_key(name) && observed.insert(name.to_string()),
-                    "cargo-mutants outcome has an unknown or duplicate candidate"
-                );
-                let diff = json_string(
-                    json_field(outcome, "diff_path", "outcome")?,
-                    "outcome diff path",
-                )?;
-                require_relative_path(diff)?;
-                require_nextest_phases(json_field(outcome, "phase_results", "outcome")?, summary)?;
-                match summary {
-                    "CaughtMutant" => caught += 1,
-                    "MissedMutant" => {
-                        missed += 1;
-                        noncaught.insert(
-                            name.to_string(),
-                            NonCaught {
-                                summary: summary.to_string(),
-                                diff: candidates[name].clone(),
-                            },
-                        );
-                    }
-                    "Timeout" => {
-                        timeout += 1;
-                        noncaught.insert(
-                            name.to_string(),
-                            NonCaught {
-                                summary: summary.to_string(),
-                                diff: candidates[name].clone(),
-                            },
-                        );
-                    }
-                    "Unviable" => {
-                        unviable += 1;
-                        noncaught.insert(
-                            name.to_string(),
-                            NonCaught {
-                                summary: summary.to_string(),
-                                diff: candidates[name].clone(),
-                            },
-                        );
-                    }
-                    "Failure" | "Success" => {
-                        bail!("cargo-mutants grade contains an unclassified `{summary}` outcome")
-                    }
-                    other => bail!("cargo-mutants grade contains unknown outcome `{other}`"),
-                }
-            }
-            _ => bail!("cargo-mutants outcome scenario is malformed"),
-        }
-    }
+fn require_baseline_outcome(
+    outcome: &BTreeMap<String, JsonValue>,
+    scenario: &str,
+    summary: &str,
+) -> Result<()> {
     ensure!(
-        baseline == 1,
-        "cargo-mutants grade needs exactly one passing pristine baseline"
+        scenario == "Baseline" && summary == "Success",
+        "cargo-mutants pristine baseline did not pass"
     );
     ensure!(
-        observed == candidates.keys().cloned().collect(),
-        "cargo-mutants candidate and outcome sets differ"
+        matches!(
+            json_field(outcome, "diff_path", "outcome")?,
+            JsonValue::Null
+        ),
+        "cargo-mutants baseline has a diff"
     );
-    let total = candidates.len() as u64;
-    for (key, actual) in [
-        ("total_mutants", total),
-        ("caught", caught),
-        ("missed", missed),
-        ("timeout", timeout),
-        ("unviable", unviable),
-    ] {
-        ensure!(
-            json_u64(json_field(root, key, "outcomes")?, key)? == actual,
-            "cargo-mutants `{key}` counter differs from its outcomes"
-        );
-    }
-    Ok((
-        Grade {
-            total,
-            caught,
-            missed,
-            timeout,
-            unviable,
-            adjudicated: 0,
-        },
-        noncaught,
-    ))
+    require_nextest_phases(json_field(outcome, "phase_results", "outcome")?, summary)
+}
+
+fn require_known_mutant<'json>(
+    scenario: &'json BTreeMap<String, JsonValue>,
+    candidates: &BTreeMap<String, String>,
+    observed: &mut BTreeSet<String>,
+) -> Result<&'json str> {
+    require_json_fields(scenario, &["Mutant"], "mutant scenario")?;
+    let mutant = json_object(
+        json_field(scenario, "Mutant", "mutant scenario")?,
+        "mutant scenario",
+    )?;
+    require_json_fields(
+        mutant,
+        &[
+            "name",
+            "package",
+            "file",
+            "function",
+            "span",
+            "replacement",
+            "genre",
+        ],
+        "mutant scenario",
+    )?;
+    ensure!(
+        json_string(
+            json_field(mutant, "package", "mutant scenario")?,
+            "mutant package"
+        )? == "xtask",
+        "cargo-mutants outcome belongs to another package"
+    );
+    let name = json_string(
+        json_field(mutant, "name", "mutant scenario")?,
+        "mutant name",
+    )?;
+    ensure!(
+        candidates.contains_key(name) && observed.insert(name.to_string()),
+        "cargo-mutants outcome has an unknown or duplicate candidate"
+    );
+    Ok(name)
 }
 
 fn require_nextest_phases(value: &JsonValue, summary: &str) -> Result<()> {
@@ -889,38 +890,7 @@ fn verify_request(
     source: &SourceIdentity,
     adjudications: &[u8],
 ) -> Result<ToolIdentity> {
-    let text = std::str::from_utf8(bytes).context("cargo-mutants request is not UTF-8")?;
-    let without_lf = text
-        .strip_suffix('\n')
-        .context("cargo-mutants request has no terminal LF")?;
-    let (body, checksum) = without_lf
-        .rsplit_once("checksum.sha256=")
-        .context("cargo-mutants request has no checksum")?;
-    let mut canonical_body = body.to_string();
-    ensure!(
-        canonical_body.ends_with('\n') && !checksum.contains('\n'),
-        "cargo-mutants request checksum is malformed"
-    );
-    ensure!(
-        sha256::hex(&sha256::digest(canonical_body.as_bytes())) == checksum,
-        "cargo-mutants request checksum differs"
-    );
-    canonical_body.pop();
-    let mut lines = canonical_body.lines();
-    ensure!(
-        lines.next() == Some("wizard-cargo-mutants-request-v5"),
-        "unsupported cargo-mutants request"
-    );
-    let mut fields = BTreeMap::new();
-    for line in lines {
-        let (key, value) = line
-            .split_once('=')
-            .context("cargo-mutants receipt line has no value")?;
-        ensure!(
-            fields.insert(key, value).is_none(),
-            "cargo-mutants receipt field is duplicated"
-        );
-    }
+    let mut fields = request_fields(bytes)?;
     let expected = BTreeMap::from([
         ("source.commit", source.commit.as_str()),
         ("source.tree", source.tree.as_str()),
@@ -1020,6 +990,40 @@ fn verify_request(
     })
 }
 
+fn request_fields(bytes: &[u8]) -> Result<BTreeMap<&str, &str>> {
+    let text = std::str::from_utf8(bytes).context("cargo-mutants request is not UTF-8")?;
+    let without_lf = text
+        .strip_suffix('\n')
+        .context("cargo-mutants request has no terminal LF")?;
+    let (body, checksum) = without_lf
+        .rsplit_once("checksum.sha256=")
+        .context("cargo-mutants request has no checksum")?;
+    ensure!(
+        body.ends_with('\n') && !checksum.contains('\n'),
+        "cargo-mutants request checksum is malformed"
+    );
+    ensure!(
+        sha256::hex(&sha256::digest(body.as_bytes())) == checksum,
+        "cargo-mutants request checksum differs"
+    );
+    let mut lines = body[..body.len() - 1].lines();
+    ensure!(
+        lines.next() == Some("wizard-cargo-mutants-request-v5"),
+        "unsupported cargo-mutants request"
+    );
+    let mut fields = BTreeMap::new();
+    for line in lines {
+        let (key, value) = line
+            .split_once('=')
+            .context("cargo-mutants receipt line has no value")?;
+        ensure!(
+            fields.insert(key, value).is_none(),
+            "cargo-mutants receipt field is duplicated"
+        );
+    }
+    Ok(fields)
+}
+
 fn request_executable(
     fields: &mut BTreeMap<&str, &str>,
     prefix: &str,
@@ -1087,22 +1091,7 @@ fn discover_tools(paths: &Paths, private_temp: &Path) -> Result<ToolIdentity> {
     let rustdoc_path =
         std::fs::canonicalize(toolchain_bin.join(format!("rustdoc{executable_suffix}")))
             .context("resolving rustdoc beside the exact Cargo executable")?;
-    let mut version = Command::new(&rustc_path);
-    version.current_dir(paths.root()).arg("-vV");
-    remove_ambient_execution_semantics(&mut version, std::env::vars_os().map(|(name, _)| name));
-    apply_private_temp_environment(&mut version, private_temp);
-    let version = crate::bounded_process::output_with_limit(
-        version,
-        Duration::from_secs(5),
-        "pinned rustc version probe",
-        MAX_RECEIPT_BYTES as usize,
-    )?;
-    ensure!(
-        version.status.success(),
-        "pinned rustc version probe failed"
-    );
-    let version =
-        std::str::from_utf8(&version.stdout).context("pinned rustc version is not UTF-8")?;
+    let version = probe_rustc(&rustc_path, paths, private_temp, &["-vV"], "version")?;
     let releases = version
         .lines()
         .filter_map(|line| line.strip_prefix("release: "))
@@ -1122,25 +1111,14 @@ fn discover_tools(paths: &Paths, private_temp: &Path) -> Result<ToolIdentity> {
         *host_target == "x86_64-pc-windows-gnu",
         "cargo-mutants qualification requires the reviewed Windows GNU host toolchain"
     );
-    let mut sysroot = Command::new(&rustc_path);
-    sysroot
-        .current_dir(paths.root())
-        .args(["--print", "sysroot"]);
-    remove_ambient_execution_semantics(&mut sysroot, std::env::vars_os().map(|(name, _)| name));
-    apply_private_temp_environment(&mut sysroot, private_temp);
-    let sysroot = crate::bounded_process::output_with_limit(
-        sysroot,
-        Duration::from_secs(5),
-        "pinned rustc sysroot probe",
-        MAX_RECEIPT_BYTES as usize,
+    let sysroot = probe_rustc(
+        &rustc_path,
+        paths,
+        private_temp,
+        &["--print", "sysroot"],
+        "sysroot",
     )?;
-    ensure!(
-        sysroot.status.success(),
-        "pinned rustc sysroot probe failed"
-    );
-    let sysroot = std::str::from_utf8(&sysroot.stdout)
-        .context("pinned rustc sysroot is not UTF-8")?
-        .trim();
+    let sysroot = sysroot.trim();
     let sysroot = std::fs::canonicalize(sysroot)
         .with_context(|| format!("canonicalizing rustc sysroot {sysroot}"))?;
     ensure!(
@@ -1189,6 +1167,30 @@ fn discover_tools(paths: &Paths, private_temp: &Path) -> Result<ToolIdentity> {
         "cargo-mutants version differs from D-324"
     );
     Ok(tools)
+}
+
+fn probe_rustc(
+    rustc: &Path,
+    paths: &Paths,
+    private_temp: &Path,
+    arguments: &[&str],
+    subject: &str,
+) -> Result<String> {
+    let mut probe = Command::new(rustc);
+    probe.current_dir(paths.root()).args(arguments);
+    remove_ambient_execution_semantics(&mut probe, std::env::vars_os().map(|(name, _)| name));
+    apply_private_temp_environment(&mut probe, private_temp);
+    let output = crate::bounded_process::output_with_limit(
+        probe,
+        Duration::from_secs(5),
+        &format!("pinned rustc {subject} probe"),
+        MAX_RECEIPT_BYTES as usize,
+    )?;
+    ensure!(
+        output.status.success(),
+        "pinned rustc {subject} probe failed"
+    );
+    String::from_utf8(output.stdout).with_context(|| format!("pinned rustc {subject} is not UTF-8"))
 }
 
 fn executable_identity(path: &Path, label: &str) -> Result<ExecutableIdentity> {
@@ -1560,8 +1562,7 @@ fn doctest_command(tools: &ToolIdentity, paths: &Paths, private_temp: &Path) -> 
     Ok(command)
 }
 
-/// Cargo's `Doc-tests` header goes to stderr and the harness summary to
-/// stdout, so the transcript keeps them in that order.
+/// Cargo writes the `Doc-tests` header to stderr and the summary to stdout, so stderr comes first.
 fn capture_doctest(tools: &ToolIdentity, paths: &Paths, private_temp: &Path) -> Result<Vec<u8>> {
     let output = crate::bounded_process::output(
         doctest_command(tools, paths, private_temp)?,

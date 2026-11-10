@@ -217,13 +217,7 @@ fn rust_sources_contain(directory: &std::path::Path, needle: &str) -> bool {
         })
 }
 
-/// Every mutation still names something that exists, exactly once.
-///
-/// The cheap tier, and the one that matters more: a pattern that has
-/// stopped matching is a mutation that silently stopped testing anything —
-/// which is the failure mode this whole file exists to catch, one level up.
-/// Milliseconds, in `cargo test`, so it is in the gate where the boot
-/// itself cannot be.
+/// A pattern that stops matching silently tests nothing, so this cheap check runs in the gate.
 #[test]
 fn every_mutation_still_applies() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -255,7 +249,7 @@ fn every_mutation_still_applies() {
 #[test]
 fn a_mutation_cannot_target_the_running_driver() {
     for mutation in mutations() {
-        ensure_target_is_rebuilt(mutation).unwrap_or_else(|error| panic!("{error}"));
+        require_target_is_rebuilt(mutation).unwrap_or_else(|error| panic!("{error}"));
     }
 
     let mut impossible = *mutations()
@@ -271,12 +265,11 @@ fn a_mutation_cannot_target_the_running_driver() {
         .unwrap();
     impossible.file = "xtask/src/image/program.rs";
     impossible.reddens = Caught::Check("unused");
-    let error = ensure_target_is_rebuilt(&impossible).expect_err("the driver is already running");
+    let error = require_target_is_rebuilt(&impossible).expect_err("the driver is already running");
     assert!(error.to_string().contains("would not be rebuilt"));
 }
 
-/// Require every named check or host test to remain present without
-/// recursively invoking Cargo or paying for a machine boot.
+/// Read from source, so no recursive Cargo run or machine boot is paid for.
 #[test]
 fn every_named_check_exists() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -464,10 +457,7 @@ fn an_exact_host_witness_must_run() {
     assert!(assess_host_test(name, false, "", "compiler error", "1").is_err());
 }
 
-/// Every mutation says what catching it looks like.
-///
-/// A generic panic would be the way to credit an unrelated crash, and a
-/// panic with no reason would be the way to dodge naming a check.
+/// A generic panic would credit an unrelated crash, and a reasonless one would dodge naming a check.
 #[test]
 fn a_panicking_mutation_names_an_exact_marker_and_why_it_is_terminal() {
     for mutation in mutations() {
@@ -689,10 +679,7 @@ fn an_inconclusive_machine_observation_gets_one_bounded_retry() {
     assert!(error.to_string().contains("after 2 observations"));
 }
 
-/// No two mutations break the same property.
-///
-/// A duplicate is a witness run spent twice on one question; machine
-/// entries make that cost a complete boot.
+/// A duplicate spends a witness run twice on one question, and a machine entry's run is a boot.
 #[test]
 fn no_two_mutations_name_the_same_property() {
     for (index, mutation) in mutations().enumerate() {
@@ -702,8 +689,7 @@ fn no_two_mutations_name_the_same_property() {
     }
 }
 
-/// Documents cite identities, so an identity may neither repeat nor
-/// return after its mutation is deleted (D-341).
+/// Documents cite identities, so one may neither repeat nor return after its mutation is deleted.
 #[test]
 fn every_mutation_identity_is_permanent_and_accounted_for() {
     let mut seen = BTreeMap::new();

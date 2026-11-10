@@ -25,35 +25,26 @@ mod xtask_qualification;
 mod xtask_runners;
 mod xtask_security_deep;
 
-/// One deliberate defect, and what it is a defect *in*.
 #[derive(Clone, Copy, Debug)]
 pub struct Mutation {
-    /// Permanent identity that documents cite; never renumbered or reused (D-341).
+    /// Permanent identity that documents cite; never renumbered or reused.
     pub id: u16,
-    /// Workspace-relative path.
     pub file: &'static str,
-    /// The exact text to replace. Must occur exactly once.
+    /// The exact text to replace, which must occur exactly once.
     pub find: &'static str,
-    /// What to put there.
     pub replace: &'static str,
-    /// The property this removes, in the register a check name is written in.
-    ///
-    /// Human-facing, and deliberately *not* the check's name: only four of
-    /// these are, and the paraphrases read better in a progress line than the
-    /// checks they stand for. [`Mutation::reddens`] carries the name.
+    /// The property this removes, paraphrased for a progress line; `reddens` names the check.
     pub breaks: &'static str,
     /// The check this must turn red, or why nothing names it.
     pub reddens: Caught,
 }
 
-/// What a mutation must produce, and how precisely it is required.
 #[derive(Clone, Copy, Debug)]
 pub enum Caught {
     /// The exact `report.check("…")` name that must appear as `FAILED`.
     Check(&'static str),
     /// An exact host test whose own FAILED verdict must name the defect.
     HostTest {
-        /// Cargo package containing the test.
         package: &'static str,
         /// Fully qualified test name accepted by `--exact`.
         name: &'static str,
@@ -123,12 +114,7 @@ const SHARDS: &[&[Mutation]] = &[
     repository::MUTATIONS,
 ];
 
-/// The defects, each of which some check must notice.
-///
-/// Chosen to be *load-bearing rather than merely different*: every one removes
-/// a guard, a bound or a strip that something depends on, and none is a
-/// cosmetic edit that would fail a build instead. A mutation that cannot
-/// compile tests nothing.
+/// Every defect removes a load-bearing guard, bound or strip; one that cannot compile tests nothing.
 pub fn mutations() -> impl Iterator<Item = &'static Mutation> {
     SHARDS.iter().flat_map(|shard| shard.iter())
 }
