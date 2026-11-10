@@ -134,7 +134,7 @@ pub(super) const DEGRADED_CPU: [&str; 2] = [
 ];
 
 /// One degraded machine: which facility is missing, and what the boot must say.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct DegradedProfile {
     announcement: &'static str,
     cpu: Option<&'static [&'static str; 2]>,
@@ -271,7 +271,7 @@ fn observe_profile(
     Ok(DegradedOutcome::Settled)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DegradedWatch {
     Complete,
     Panicked,

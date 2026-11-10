@@ -32,7 +32,7 @@ const TYPE_EFI_SYSTEM: u8 = 0xEF;
 const FLAG_BOOTABLE: u8 = 0x80;
 
 /// One entry in the partition table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct PartitionEntry {
     /// Whether the active flag is set.
     pub bootable: bool,

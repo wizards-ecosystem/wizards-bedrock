@@ -77,7 +77,7 @@ const PRIVATE_TEMP_DIRECTORY: &str = "temp";
 const PRIVATE_TEMP_REQUEST: &str = "<xtask-owned-directory>/temp";
 static NEXT_CAMPAIGN: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Grade {
     total: u64,
     caught: u64,
@@ -87,20 +87,20 @@ struct Grade {
     adjudicated: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct NonCaught {
     summary: String,
     diff: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ExecutableIdentity {
     path: String,
     bytes: u64,
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ToolIdentity {
     cargo_mutants_path: String,
     cargo_mutants_bytes: u64,

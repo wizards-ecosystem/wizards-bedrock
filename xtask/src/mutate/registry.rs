@@ -26,7 +26,7 @@ mod xtask_runners;
 mod xtask_security_deep;
 
 /// One deliberate defect, and what it is a defect *in*.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Mutation {
     /// Permanent identity that documents cite; never renumbered or reused (D-341).
     pub id: u16,
@@ -47,7 +47,7 @@ pub struct Mutation {
 }
 
 /// What a mutation must produce, and how precisely it is required.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Caught {
     /// The exact `report.check("…")` name that must appear as `FAILED`.
     Check(&'static str),

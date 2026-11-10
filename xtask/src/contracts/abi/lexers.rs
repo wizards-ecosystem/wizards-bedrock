@@ -293,7 +293,7 @@ pub(super) fn cpp_directive(line: &str) -> Option<(&str, &str)> {
 }
 
 pub(super) fn checked_header(source: &str) -> (String, std::collections::BTreeMap<String, String>) {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Phase {
         BeforeGuard,
         GuardDefinition,

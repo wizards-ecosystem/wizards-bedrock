@@ -62,7 +62,7 @@ fn invlpg_requires_canonical_address_authority() {
     assert_eq!(complete_shape.invlpg_macros, 1);
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum ActivationEvent {
     LoadPageTable,
     PublishReady,
@@ -130,7 +130,7 @@ fn paging_activation_loads_cr3_before_publishing_ready() {
     );
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum TaskInitEvent {
     ValidateArena,
     PublishInit,
@@ -201,7 +201,7 @@ fn task_init_validates_the_arena_before_publication_and_pinning() {
     );
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum TaskSwitchEvent {
     PageTableGuard,
     LoadPageTable,

@@ -638,7 +638,7 @@ fn framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit() {
     );
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WaitOwnership {
     CannotWait,
     CompletionPlane,

@@ -15,7 +15,7 @@ use crate::{gate, image, qemu, supply_chain, vendor};
 
 /// Whether a subcommand should be pointed at a package's test and bench
 /// targets as well as the ones it ships.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
     /// Everything a package builds, test code included. What `check` and
     /// `clippy` want, and the reason the host half sees its own tests.

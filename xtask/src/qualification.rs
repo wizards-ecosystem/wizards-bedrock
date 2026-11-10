@@ -167,13 +167,13 @@ const MAX_DIGEST_FILE_BYTES: u64 = 512 * 1024 * 1024;
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// One resolved executable and the version it reported.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Tool {
     pub(crate) path: PathBuf,
     pub(crate) version: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Kind {
     Mutation,
     CargoMutantsGrade,
@@ -205,13 +205,13 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Digest {
     bytes: u64,
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
 struct Record {
     fields: BTreeMap<String, String>,
 }
@@ -248,7 +248,7 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct BundleFile {
     pub(crate) prefix: &'static str,
     pub(crate) relative: &'static str,
@@ -451,7 +451,7 @@ const DEFERRED: &str = "deferred";
 /// carries either their exact-source record or an explicit deferral (D-425).
 const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CampaignState {
     Pass,
     Deferred,
@@ -467,7 +467,7 @@ impl CampaignState {
 }
 
 /// Whether each continuous campaign passed for a bundle's source or was deferred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct CampaignStates {
     states: [CampaignState; 2],
 }
@@ -895,7 +895,7 @@ fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct TreeDigest {
     files: usize,
     bytes: u64,
@@ -1194,7 +1194,7 @@ fn executable_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ExitPolicy {
     Success,
     Any,

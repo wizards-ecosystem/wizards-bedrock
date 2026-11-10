@@ -2,7 +2,7 @@ use syn::visit::{self, Visit};
 
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Condition {
     Always,
     Never,

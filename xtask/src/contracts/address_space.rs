@@ -537,7 +537,7 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
     });
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum DeviceLedgerEvent {
     Reserve,
     FindGap,

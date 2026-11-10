@@ -212,7 +212,7 @@ pub const PART_START_LBA: u64 = 2048;
 pub const ESP_LABEL: [u8; 11] = *b"WIZARD-ESP ";
 
 /// Resolved locations for one checkout.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Paths {
     root: PathBuf,
     target_dir: PathBuf,

@@ -95,7 +95,7 @@ pub fn help() -> String {
 }
 
 /// What the user asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Task {
     /// Print [`help`].
     Help,
@@ -175,14 +175,14 @@ pub enum Task {
 }
 
 /// Which part of the external cargo-mutants qualification to perform.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MutantsGradeAction {
     /// Run and record the complete campaign under `xtask` process ownership.
     Run,
 }
 
 /// Which part of the external Codex Security qualification to perform.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SecurityDeepAction {
     /// Run and record the complete scan under `xtask` process ownership.
     Run,
@@ -193,7 +193,7 @@ pub enum SecurityDeepAction {
 }
 
 /// Whether `fmt` rewrites files or just reports on them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum FmtMode {
     /// Reformat the workspace in place.
     #[default]
@@ -203,7 +203,7 @@ pub enum FmtMode {
 }
 
 /// Whether the debugger stays interactive or proves the setup and exits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum DebugMode {
     /// Leave GDB at the kernel entry until the user quits it.
     #[default]
@@ -213,7 +213,7 @@ pub enum DebugMode {
 }
 
 /// How much `clean` removes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum CleanScope {
     /// Cargo's build output only.
     #[default]

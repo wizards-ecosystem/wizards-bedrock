@@ -121,14 +121,14 @@ fn expand(source: &str) -> Result<Vec<u8>> {
     Ok(expanded)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct InventoryEntry {
     name: String,
     directory: bool,
     bytes: u32,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct View {
     inventory: Vec<InventoryEntry>,
     fragmented: Vec<u8>,

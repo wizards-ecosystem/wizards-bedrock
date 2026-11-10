@@ -20,7 +20,7 @@ const REPORT_SUFFIX: &str = ".report";
 pub(super) const LAST_RUN: &str = "last-run";
 static NEXT_STORE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct Journal {
     pub(super) generation: u64,
     pub(super) commit: String,
@@ -185,13 +185,13 @@ impl Journal {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ReportVerdict {
     Pass,
     Fail,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct Report {
     pub(super) sequence: u64,
     pub(super) commit: String,

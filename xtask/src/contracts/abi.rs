@@ -331,7 +331,7 @@ fn c_enum_values(source: &str, name: &str) -> std::collections::BTreeMap<String,
     values
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct ProgramOperands {
     pops: Vec<&'static str>,
     rcx_imm8_rejections: Vec<(u8, usize)>,

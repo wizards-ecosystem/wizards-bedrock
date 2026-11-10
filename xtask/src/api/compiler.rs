@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct CompilerIdentity {
     pub(super) path: PathBuf,
     pub(super) host_target: String,
@@ -12,14 +12,14 @@ pub(super) struct CompilerIdentity {
     pub(super) input_authority: CompilerInputAuthority,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct LinkEditor {
     pub(super) search_directory: PathBuf,
     path: PathBuf,
     digest: [u8; 32],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct CompilerInputAuthority {
     pub(super) sysroot: PathBuf,
     cargo: PathBuf,

@@ -128,7 +128,7 @@ fn the_exit_codes_are_the_kernels_doubled() {
     assert_ne!(SELFTEST_PASSED, SELFTEST_FAILED);
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 struct DevfsEntry {
     variant: String,
     name: Vec<u8>,

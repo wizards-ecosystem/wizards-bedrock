@@ -38,7 +38,7 @@ pub(crate) const FIELDS: [&str; 4] = [
 static RESOLVED: OnceLock<Result<Git, String>> = OnceLock::new();
 
 /// One resolved Git executable and the identity it had when resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Git {
     path: PathBuf,
     version: String,

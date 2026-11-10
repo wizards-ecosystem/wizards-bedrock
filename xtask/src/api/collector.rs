@@ -55,7 +55,7 @@ impl<'ast> Visit<'ast> for NestedItems<'_, '_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Availability {
     Production,
     Verification,

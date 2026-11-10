@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct Node {
     pub(super) id: usize,
     pub(super) file: usize,
@@ -26,7 +26,7 @@ pub(super) struct Node {
     pub(super) global_allocator_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(super) struct RootSet {
     pub(super) production: bool,
     pub(super) verification: bool,
@@ -42,7 +42,7 @@ impl RootSet {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Isolation {
     Variant,
     TraitMember,
@@ -50,7 +50,7 @@ pub(super) enum Isolation {
 
 const ISOLATIONS: [Isolation; 2] = [Isolation::Variant, Isolation::TraitMember];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct SourceRange {
     pub(super) start: LineColumn,
     pub(super) end: LineColumn,
@@ -70,7 +70,7 @@ impl SourceRange {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct SourceFile {
     pub(super) relative: PathBuf,
     pub(super) crate_name: String,
@@ -84,7 +84,7 @@ pub(super) struct SourceFile {
     value_constructions: Vec<ValueConstruction>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct Inventory {
     pub(super) files: Vec<SourceFile>,
     pub(super) nodes: Vec<Node>,
@@ -447,7 +447,7 @@ impl Inventory {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Insertion {
     pub(super) line: usize,
     pub(super) column: usize,
@@ -549,7 +549,7 @@ pub(super) fn byte_offset(text: &str, at: LineColumn) -> Result<usize> {
     Ok(offset)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum RootKind {
     Production,
     Verification,

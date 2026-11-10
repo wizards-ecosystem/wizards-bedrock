@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct EffectiveConfig {
     pub(super) model: Option<String>,
     pub(super) model_provider: Option<String>,
@@ -19,7 +19,7 @@ pub(super) struct EffectiveConfig {
     pub(super) origins: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct McpRoute {
     pub(super) enabled: bool,
     pub(super) command: Option<String>,

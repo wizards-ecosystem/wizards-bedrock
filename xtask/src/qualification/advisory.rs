@@ -200,7 +200,7 @@ fn advisory_input_record(paths: &Paths, tool: &Tool) -> Result<Record> {
     Ok(record)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct AdvisoryDatabaseIdentity {
     revision: String,
     tree: String,
@@ -438,7 +438,7 @@ fn digest_field<'a>(line: &'a str, prefix: &str) -> Result<&'a str> {
 }
 
 /// How a cargo-audit report can name the database it audited.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum DatabaseBinding {
     /// The run fetched, so cargo-audit itself names the commit it audited.
     Fetched,
@@ -448,7 +448,7 @@ pub(super) enum DatabaseBinding {
 }
 
 /// What one verified cargo-audit report says about its database.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct AdvisoryFacts {
     pub(super) advisory_count: u64,
     pub(super) last_updated: Option<String>,

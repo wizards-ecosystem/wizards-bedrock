@@ -2,7 +2,7 @@ use syn::visit::{self, Visit};
 
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct DispatchSite {
     pub(super) range: SourceRange,
     pub(super) callee_evidence: Vec<SourceRange>,
@@ -20,12 +20,12 @@ impl DispatchSite {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct ValueConstruction {
     pub(super) range: SourceRange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum DispatchKind {
     Call {
         member: String,
@@ -261,7 +261,7 @@ impl<'ast> Visit<'ast> for DispatchSites {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ExactReceiver {
     range: SourceRange,
     exact_nominal: bool,

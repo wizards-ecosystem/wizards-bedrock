@@ -25,7 +25,7 @@ use crate::cargo::{self, Profile};
 use crate::paths::{self, Paths};
 
 /// Which kernel a normal boot image carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kernel {
     /// The kernel that boots for a user.
     Shipped,

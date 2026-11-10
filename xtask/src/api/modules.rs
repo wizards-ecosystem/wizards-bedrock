@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct ModuleContext {
     pub(super) scope: Vec<String>,
     pub(super) availability: Availability,

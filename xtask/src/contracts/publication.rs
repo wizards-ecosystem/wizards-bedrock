@@ -6,14 +6,14 @@ mod tests {
 
     use crate::test_support::{function_end, source_through};
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Order {
         Relaxed,
         Acquire,
         Release,
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Event {
         PayloadVisible,
         IndexVisible,

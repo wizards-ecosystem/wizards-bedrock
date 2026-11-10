@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Default)]
+#[derive(Default, Debug)]
 pub(super) struct Uses {
     pub(super) roots: BTreeSet<usize>,
     pub(super) edges: BTreeMap<usize, BTreeSet<usize>>,
@@ -16,7 +16,7 @@ pub(super) struct DispatchEvidence {
     pub(super) self_nodes: BTreeSet<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DispatchResolution {
     NoCredit,
     DeclarationOnly,
@@ -583,7 +583,7 @@ impl Uses {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) struct DispatchFailure {
     file: usize,
     site: usize,
@@ -603,7 +603,7 @@ pub(super) fn dispatch_failure(inventory: &Inventory, failure: DispatchFailure) 
     )
 }
 
-#[derive(Debug, Default)]
+#[derive(Default, Debug)]
 pub(super) struct GraphUses {
     pub(super) graphs: Vec<Uses>,
 }

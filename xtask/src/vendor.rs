@@ -19,7 +19,7 @@ pub(crate) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DIRECTORY_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One line of a `sha256sum`-style checksum file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// Lowercase hex digest.
     pub digest: String,

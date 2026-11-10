@@ -258,7 +258,7 @@ pub(super) fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) struct LockedRegistryPackage {
     pub(super) name: String,
     pub(super) version: String,

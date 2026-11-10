@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum ProviderExecConfig {
     Approval,
     DefaultPermissions,
@@ -156,14 +156,14 @@ pub(super) fn require_provider_exec_config(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkerDirectoryKind {
     ScanArtifacts,
     WorkerOutput,
     ReducerOutput,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct WorkerDirectory {
     pub(super) path: PathBuf,
     scan_directory: PathBuf,

@@ -12,7 +12,7 @@ const REGISTRY_START: &str = "<!-- CI-REGISTRY:START -->";
 const REGISTRY_END: &str = "<!-- CI-REGISTRY:END -->";
 
 /// One crate graph used by every Cargo-driven gate stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct CargoPass {
     pub(crate) name: &'static str,
     pub(crate) packages: &'static [&'static str],
@@ -41,7 +41,7 @@ impl CargoPass {
 }
 
 /// One ordered stage of `cargo xtask ci`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Step {
     Format,
     Clippy,

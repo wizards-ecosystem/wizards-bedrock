@@ -70,7 +70,7 @@ pub(super) fn require_current_source(paths: &Paths, record: &Record) -> Result<(
     require_source(record, &source_identity(paths.root())?)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct SourceIdentity {
     pub(crate) commit: String,
     pub(crate) tree: String,
