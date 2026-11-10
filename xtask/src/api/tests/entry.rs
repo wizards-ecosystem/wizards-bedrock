@@ -496,9 +496,10 @@ fn cross_crate_entry_diagnostics_require_the_exact_compiler_origin_bridge() {
         target_kind: wost_origin.kind,
         target_source: root.join(&wost_origin.relative),
     };
-    let mut local_uses = Uses::default();
+    let mut local_uses = GraphUses::default();
     local_uses
         .observe_cargo(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -506,8 +507,8 @@ fn cross_crate_entry_diagnostics_require_the_exact_compiler_origin_bridge() {
             &instrumentation,
         )
         .expect("same-wost macro definition diagnostic is ordinary opaque evidence");
-    assert!(local_uses.edges.is_empty());
-    assert!(local_uses.roots.is_empty());
+    assert!(local_uses.graphs[0].edges.is_empty());
+    assert!(local_uses.graphs[0].roots.is_empty());
     assert!(
         local_uses
             .dead(&inventory)
@@ -788,8 +789,9 @@ fn kernel_main(_: wost::boot::BootInfo) -> ! {
         LineColumn { line: 3, column: 4 },
         foundation.id,
     ));
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     uses.observe(
+        0,
         RootKind::Production,
         &inventory,
         &root,
@@ -800,7 +802,7 @@ fn kernel_main(_: wost::boot::BootInfo) -> ! {
         },
     )
     .expect("trusted entry diagnostics");
-    let live = uses.live(&inventory);
+    let live = uses.graphs[0].live(&inventory);
     assert!(live.contains(&entry.invocation_node));
     assert!(live.contains(&entry.function_node));
     assert!(live.contains(&entry.macro_declaration));

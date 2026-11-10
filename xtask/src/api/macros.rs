@@ -3,7 +3,7 @@ use syn::visit::{self, Visit};
 
 use super::*;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct MacroSyntax {
     pub(super) ranges: Vec<SourceRange>,
     pub(super) transparent: Vec<SourceRange>,
@@ -48,6 +48,7 @@ const TRANSPARENT_MACROS: &[&str] = &[
 
 const TOKEN_GRAMMAR_STATEMENT_MACROS: &[&str] = &["asm", "naked_asm"];
 
+#[derive(Debug)]
 pub(super) struct MacroShadowPolicy<'context> {
     pub(super) shadows_standard: bool,
     pub(super) reserved_root_rebinding: Option<String>,
@@ -385,6 +386,7 @@ fn ensure_syn_empty(input: ParseStream<'_>) -> syn::Result<()> {
     }
 }
 
+#[derive(Debug)]
 struct MacroBoundary {
     unqualified_standard: bool,
     opaque: bool,

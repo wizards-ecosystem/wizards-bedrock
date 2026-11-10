@@ -101,13 +101,14 @@ pub fn mention() {
     )
     .expect("drop fixture negative cases");
     let inventory = Inventory::discover(&root).expect("drop fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument drop fixture");
         let output = compile_wost_fixture(&root);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -170,13 +171,14 @@ pub fn exercise() {{ {body} }}
         )
         .expect("Drop producer fixture source");
         let inventory = Inventory::discover(&root).expect("Drop producer inventory");
-        let mut uses = Uses::default();
+        let mut uses = GraphUses::default();
         for round in 0..inventory.rounds {
             let instrumentation = inventory
                 .instrument(&root, round)
                 .expect("instrument Drop producer fixture");
             let output = compile_wost_fixture(&root);
             uses.observe(
+                0,
                 RootKind::Production,
                 &inventory,
                 &root,
@@ -227,13 +229,14 @@ pub fn construct() { let _ = <USegment as From<Segment>>::from(Segment); }
     )
     .expect("USegment producer fixture source");
     let inventory = Inventory::discover(&root).expect("USegment producer inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument USegment producer fixture");
         let output = compile_wost_fixture(&root);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -294,13 +297,14 @@ pub extern "C" fn runtime() { mm::dma::exercise(); }
                 format!("{definition}\nimpl core::ops::Drop for {owner} {{ fn drop(&mut self) {{ super::drop_body_api(); }} }}\npub fn exercise() {{ {body} }}\n"),
             ).expect("DMA Drop fixture source");
             let inventory = Inventory::discover(&root).expect("reviewed DMA Drop inventory");
-            let mut uses = Uses::default();
+            let mut uses = GraphUses::default();
             for round in 0..inventory.rounds {
                 let instrumentation = inventory
                     .instrument(&root, round)
                     .expect("instrument DMA Drop fixture");
                 let output = compile_wost_fixture(&root);
                 uses.observe(
+                    0,
                     RootKind::Production,
                     &inventory,
                     &root,
@@ -592,13 +596,14 @@ pub fn leak() {
     )
     .expect("Drop leak fixture source");
     let inventory = Inventory::discover(&root).expect("Drop leak fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument Drop leak fixture");
         let output = compile_wost_fixture(&root);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -648,13 +653,14 @@ fn main() { let _ = Box::new(1_u8); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("allocator fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument allocator fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

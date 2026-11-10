@@ -138,17 +138,21 @@ impl TraitImports {
     }
 }
 
-impl Uses {
-    #[cfg(test)]
+impl GraphUses {
     fn observe(
         &mut self,
+        graph: usize,
         kind: RootKind,
         inventory: &Inventory,
         root: &Path,
         output: &str,
         instrumentation: &Instrumentation,
     ) -> Result<()> {
-        self.seed_dispatches(inventory)?;
+        if self.graphs.len() <= graph {
+            self.graphs.resize_with(graph + 1, Uses::default);
+        }
+        let uses = &mut self.graphs[graph];
+        uses.seed_dispatches(inventory)?;
         for line in output.lines().filter(|line| line.contains(MARKER)) {
             let marker = line
                 .find(MARKER)
@@ -188,7 +192,7 @@ impl Uses {
                     inventory.nodes[id].label
                 )
             })?;
-            self.observe_marker(
+            uses.observe_marker(
                 kind,
                 inventory,
                 MarkerObservation {
@@ -202,49 +206,6 @@ impl Uses {
             )?;
         }
         Ok(())
-    }
-
-    #[cfg(test)]
-    fn validate_dispatches(&self, inventory: &Inventory) -> Result<()> {
-        let failures = self.dispatch_failures(inventory);
-        ensure!(
-            failures.is_empty(),
-            "{}",
-            failures
-                .iter()
-                .map(|failure| dispatch_failure(inventory, *failure))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn dead<'inventory>(&self, inventory: &'inventory Inventory) -> Vec<&'inventory Node> {
-        let live = self.live(inventory);
-        inventory
-            .nodes
-            .iter()
-            .filter(|node| node.report && !live.contains(&node.id))
-            .collect()
-    }
-}
-
-impl GraphUses {
-    #[cfg(test)]
-    fn observe(
-        &mut self,
-        graph: usize,
-        kind: RootKind,
-        inventory: &Inventory,
-        root: &Path,
-        output: &str,
-        instrumentation: &Instrumentation,
-    ) -> Result<()> {
-        if self.graphs.len() <= graph {
-            self.graphs.resize_with(graph + 1, Uses::default);
-        }
-        self.graphs[graph].observe(kind, inventory, root, output, instrumentation)
     }
 }
 

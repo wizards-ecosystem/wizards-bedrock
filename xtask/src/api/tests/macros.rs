@@ -15,13 +15,14 @@ fn main() { invoke_expanded!(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -62,13 +63,14 @@ fn main() {
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -98,13 +100,14 @@ fn main() { assert!(hidden()); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("shadowed-macro inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
             .instrument(&root, round)
             .expect("instrument shadowed-macro fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

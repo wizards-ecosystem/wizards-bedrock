@@ -55,11 +55,7 @@ fn attribute_disables_production(attribute: &Attribute) -> bool {
     else {
         return false;
     };
-    let mut arguments = arguments.iter();
-    let Some(predicate) = arguments.next() else {
-        return false;
-    };
-    cfg_condition(predicate) == Condition::Always && arguments.any(meta_disables_production)
+    cfg_attr_disables_production(&arguments)
 }
 
 fn meta_disables_production(meta: &Meta) -> bool {
@@ -81,6 +77,10 @@ fn meta_disables_production(meta: &Meta) -> bool {
     else {
         return false;
     };
+    cfg_attr_disables_production(&arguments)
+}
+
+fn cfg_attr_disables_production(arguments: &Punctuated<Meta, Token![,]>) -> bool {
     let mut arguments = arguments.iter();
     let Some(predicate) = arguments.next() else {
         return false;
@@ -227,7 +227,7 @@ fn lint_arguments_may_suppress(stream: TokenStream) -> bool {
     })
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Suppression {
     at: Option<Span>,
 }
