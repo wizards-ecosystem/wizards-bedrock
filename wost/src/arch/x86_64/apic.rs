@@ -477,7 +477,8 @@ pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
 /// Audit every local-APIC IRR bank and perform the first `sti` as one door.
 ///
 /// A compatibility-format MSI accepted into IRR before IRE went live survives until `sti`, so any
-/// pending vector is refused while interrupts are excluded, and `sti` follows eight empty banks.
+/// pending vector is refused while interrupts are excluded, and `sti` runs only after all eight
+/// banks read empty.
 ///
 /// # Errors
 ///

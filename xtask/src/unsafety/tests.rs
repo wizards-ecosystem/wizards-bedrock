@@ -9,7 +9,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/apic.rs",
         3,
         0,
-        "6522356ff50119ef4e690430ab0db62409a871de0d01747a0061880cc24d06a6",
+        "457b091921a975f7646f3907a9938336449d53d87c5fa900d12fc58a3d9fe57c",
     ),
     (
         "wost/src/arch/x86_64/cpu/selftest.rs",
@@ -99,7 +99,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/port.rs",
         16,
         10,
-        "3c051502595444b6ab5d5d57c550def7fb304d23c56ec935ea814de17d7be216",
+        "5e5e10a9998931c7db7200f0540941d2f3d0ff47a4b6a4bfd5ffbedb4ff86fa8",
     ),
     (
         "wost/src/arch/x86_64/segment/selftest.rs",

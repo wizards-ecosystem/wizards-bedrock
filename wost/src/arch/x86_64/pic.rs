@@ -128,8 +128,8 @@ impl Pair {
     ///
     /// The first word clears the mask, leaving every firmware line unmasked until `mask_all`, so
     /// this must run with the interrupt flag clear, before anything sets it, and never again.
-    /// No delay between accesses: the pair is emulated by the chipset or hypervisor, so each `out`
-    /// is already a completed transaction.
+    /// No delay between accesses: on every machine this kernel boots, the chipset or hypervisor
+    /// emulates the pair, so each `out` is already a completed transaction.
     fn remap(&mut self) {
         for (controller, vectors, cascade) in [
             (&mut self.primary, PRIMARY_VECTORS, initialise::CASCADE_LINE),
