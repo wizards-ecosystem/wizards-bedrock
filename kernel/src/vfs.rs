@@ -8,8 +8,6 @@
 //! > No sequence of path operations from a directory handle can yield a node
 //! > that is not a descendant of that handle's node.
 
-use core::fmt;
-
 use fat32::FatError;
 use path_walk::PathError;
 
@@ -77,20 +75,6 @@ pub(crate) enum VfsError {
     /// The name is not there.
     NotFound,
 }
-
-impl fmt::Display for VfsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(reason) => write!(f, "path: {reason}"),
-            Self::Backend(reason) => write!(f, "backend: {reason}"),
-            Self::NoVolume => f.write_str("no volume to resolve against"),
-            Self::NotADirectory => f.write_str("a component is not a directory"),
-            Self::NotFound => f.write_str("the name is not there"),
-        }
-    }
-}
-
-impl core::error::Error for VfsError {}
 
 impl From<PathError> for VfsError {
     fn from(error: PathError) -> Self {
