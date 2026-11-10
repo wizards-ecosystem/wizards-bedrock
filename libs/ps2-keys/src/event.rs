@@ -5,7 +5,7 @@ use crate::key::Key;
 /// Whether the key went down or came up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum KeyState {
-    /// The key went down — also what a held key repeats.
+    /// The key went down, also what a held key repeats.
     Pressed,
     /// The key came up.
     Released,
@@ -14,8 +14,6 @@ pub enum KeyState {
 /// One decoded key transition.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
-    /// Which key.
     pub key: Key,
-    /// Which way it went.
     pub state: KeyState,
 }

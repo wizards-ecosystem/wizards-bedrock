@@ -1,18 +1,8 @@
-//! Scan code set 2's two lookup tables.
-//!
-//! The base table for bare make codes, and the extended table for codes
-//! arriving behind an `E0` prefix. Values are the IBM PS/2 specification's
-//! set 2 assignment. An unknown code maps to nothing: multimedia and
-//! vendor keys are swallowed upstream rather than being errors, because a
-//! keyboard is allowed to have buttons this kernel has no name for.
+//! Scan code set 2's base and `E0` tables, per the IBM PS/2 specification; a code with no name here is no error.
 
 use crate::key::Key;
 
-/// The key a bare set 2 make code names.
-///
-/// Note F7: `0x83`, the one assignment above `0x7F`, which is why this table
-/// is over the full byte and why break codes need their `F0` prefix rather
-/// than a high bit.
+/// The key a bare set 2 make code names; F7 is `0x83`, so the table spans the byte and breaks need `F0`.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::F9,
@@ -104,8 +94,7 @@ pub(crate) fn key_for(code: u8) -> Option<Key> {
     })
 }
 
-/// The key an `E0`-prefixed code names — the navigation cluster, the right
-/// modifiers, and the two keypad keys the base table has no room for.
+/// The key an `E0`-prefixed code names: navigation, the right modifiers and two keypad keys.
 pub(crate) fn extended_key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x11 => Key::AltRight,

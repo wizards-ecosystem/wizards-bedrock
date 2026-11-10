@@ -11,7 +11,7 @@ fn held() -> Shift {
 }
 
 #[test]
-fn letters_follow_shift() {
+fn letters_are_capitals_while_shift_is_held() {
     assert_eq!(char_for(Key::A, Shift::new()), Some('a'));
     assert_eq!(char_for(Key::A, held()), Some('A'));
 }
@@ -36,15 +36,13 @@ fn the_digit_row_shifts_to_symbols() {
 }
 
 #[test]
-fn punctuation_shifts() {
+fn shifted_punctuation_types_its_upper_legend() {
     assert_eq!(char_for(Key::Semicolon, held()), Some(':'));
     assert_eq!(char_for(Key::Apostrophe, held()), Some('"'));
     assert_eq!(char_for(Key::Slash, held()), Some('?'));
 }
 
-/// The whole punctuation row, both halves, keyed to the legends on the
-/// physical board — including the backslash, whose escaping makes it the
-/// arm most worth pinning.
+/// Keyed to the physical legends, including the backslash, whose escaping makes it the arm most worth pinning.
 #[test]
 fn every_punctuation_pair_matches_the_keycap() {
     for (key, plain, shifted) in [
@@ -65,9 +63,7 @@ fn every_punctuation_pair_matches_the_keycap() {
     }
 }
 
-/// The three crates' worth of path, end to end: raw set 2 bytes through
-/// the decoder, shift folded in as the driver folds it, characters out.
-/// Shift down, 'a' becomes 'A'; shift released mid-stream, it goes back.
+/// Raw set 2 bytes through the decoder, with shift folded in as the driver folds it.
 #[test]
 fn a_decoded_stream_types_through_the_layout() {
     let mut decoder = crate::Decoder::new();
@@ -75,12 +71,7 @@ fn a_decoded_stream_types_through_the_layout() {
     let mut typed = String::new();
 
     let wire = [
-        0x1C, 0xF0, 0x1C, // a down, a up
-        0x12, // left shift down
-        0x1C, 0xF0, 0x1C, // A
-        0x16, 0xF0, 0x16, // !
-        0xF0, 0x12, // left shift up
-        0x1C, 0xF0, 0x1C, // a again
+        0x1C, 0xF0, 0x1C, 0x12, 0x1C, 0xF0, 0x1C, 0x16, 0xF0, 0x16, 0xF0, 0x12, 0x1C, 0xF0, 0x1C,
     ];
     for byte in wire {
         let Some(event) = decoder.feed(byte) else {
@@ -98,7 +89,7 @@ fn a_decoded_stream_types_through_the_layout() {
 }
 
 #[test]
-fn whitespace_maps() {
+fn whitespace_keys_type_their_characters() {
     assert_eq!(char_for(Key::Space, Shift::new()), Some(' '));
     assert_eq!(char_for(Key::Enter, Shift::new()), Some('\n'));
     assert_eq!(char_for(Key::KeypadEnter, Shift::new()), Some('\n'));
@@ -129,10 +120,9 @@ fn the_keypad_types_its_digits_regardless_of_shift() {
     }
 }
 
+/// Each is an ASCII character a console implements, so callers need no special case.
 #[test]
 fn the_control_characters_a_console_acts_on_are_typed() {
-    // Not printable, but each is an ASCII character a console implements,
-    // so callers need no special case.
     assert_eq!(char_for(Key::Enter, Shift::new()), Some('\n'));
     assert_eq!(char_for(Key::KeypadEnter, Shift::new()), Some('\n'));
     assert_eq!(char_for(Key::Tab, Shift::new()), Some('\t'));

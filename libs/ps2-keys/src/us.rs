@@ -1,10 +1,4 @@
-//! The US layout: from key identity to character.
-//!
-//! Layout is policy over the decoder's facts, kept apart from it so a second
-//! layout is a sibling module rather than a decoder change. Keys that type
-//! nothing — modifiers, navigation, function keys — map to `None`; the
-//! keypad maps as its digits, because nothing tracks NumLock yet and the
-//! digits are the useful half.
+//! The US layout; the keypad types its digits because nothing tracks NumLock yet.
 
 use crate::key::Key;
 use crate::shift::Shift;
@@ -66,8 +60,6 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         Key::Space => ' ',
         Key::Enter | Key::KeypadEnter => '\n',
         Key::Tab => '\t',
-        // Backspace is an action, but ASCII has a character for it and a
-        // console knows what to do; a second such key would want its own channel.
         Key::Backspace => '\u{8}',
         Key::Keypad0 => '0',
         Key::Keypad1 => '1',

@@ -1,17 +1,6 @@
 use super::*;
 
-/// Spot anchors transcribed from the set 2 table, one from every region:
-/// letters, digits, punctuation, function row, modifiers, keypad, and the
-/// one code above `0x7F`.
-/// Every single-byte set 2 make code, transcribed from the specification.
-///
-/// Source: Andries Brouwer, *Keyboard scancodes*, section 10, "Scan code
-/// set 2" — the table Linux's own documentation points at. The numbers are
-/// the specification's, so they are written out rather than derived.
-///
-/// Brouwer's correspondence table gives backslash as `0x5D` in set 2 and
-/// `0x5C` in set 3; Vetra's translation table independently agrees
-/// (D-156, D-162).
+/// Written out from Andries Brouwer's *Keyboard scancodes*, section 10, "Scan code set 2".
 #[test]
 fn every_single_byte_make_code_is_the_specification_s() {
     const SET_2: [(u8, Key); 69] = [
@@ -94,8 +83,6 @@ fn every_single_byte_make_code_is_the_specification_s() {
         );
     }
 
-    // And the mapping is injective: two codes naming one key would mean a
-    // transcription error that the loop above cannot see.
     for (index, (code, key)) in SET_2.iter().enumerate() {
         for (earlier_code, earlier_key) in &SET_2[..index] {
             assert_ne!(code, earlier_code, "{code:#04X} appears twice");
@@ -161,14 +148,12 @@ fn extended_codes_match_the_set_two_table() {
     }
 }
 
-/// No code may name two keys, within a table or its own sweep.
+/// The inner sweep is widened to `u16` because `code + 1` overflows at `0xFF`.
 #[test]
 fn no_two_codes_share_a_key_within_a_table() {
     for table in [key_for, extended_key_for] {
         for code in 0..=u8::MAX {
             let Some(key) = table(code) else { continue };
-            // Widened: `code + 1` overflows at `0xFF`, and the test would
-            // panic in its own arithmetic rather than report (D-105).
             for other in (u16::from(code) + 1)..=u16::from(u8::MAX) {
                 let other = other as u8;
                 assert_ne!(table(other), Some(key), "{code:#04x} vs {other:#04x}");

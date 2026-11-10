@@ -1,8 +1,4 @@
-//! Tracking the one modifier the layout needs.
-//!
-//! Shift only. CapsLock is a toggle entangled with an LED command protocol,
-//! and Ctrl/Alt have no consumer yet — each arrives with the first code that
-//! needs it, per the no-speculative-API rule.
+//! Shift, the one modifier the layout needs; CapsLock, Ctrl and Alt arrive with the first code that needs them.
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
@@ -23,7 +19,7 @@ impl Shift {
         }
     }
 
-    /// Fold one event into the state. Non-shift keys change nothing.
+    /// Fold one event into the state; other keys change nothing.
     pub fn observe(&mut self, event: KeyEvent) {
         let held = event.state == KeyState::Pressed;
         match event.key {

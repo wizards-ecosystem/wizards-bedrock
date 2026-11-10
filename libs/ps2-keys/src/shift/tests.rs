@@ -27,8 +27,7 @@ fn either_shift_held_reports_down() {
     assert!(shift.is_down());
 }
 
-/// The classic bug this struct exists to avoid: releasing one shift while
-/// the other is still held must not report both up.
+/// The bug this struct exists to avoid: releasing one shift while the other is held must not report both up.
 #[test]
 fn releasing_one_shift_keeps_the_other() {
     let mut shift = Shift::new();

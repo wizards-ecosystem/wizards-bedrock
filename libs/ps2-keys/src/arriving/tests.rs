@@ -1,12 +1,7 @@
 use super::*;
 use crate::{set1, table};
 
-/// The probe's two bounds are the tables', not numbers chosen beside them.
-///
-/// This is the check that makes the rule an argument rather than a claim:
-/// if either table grows a code past the bound the probe assumes, the
-/// discriminator stops being sound and this fails before a machine can
-/// mis-decode a keystroke.
+/// If either table grows a code past the probe's bound, this fails before a machine mis-decodes a keystroke.
 #[test]
 fn the_two_tables_still_bound_this_probe() {
     for code in 0..=u8::MAX {
@@ -31,13 +26,7 @@ fn the_two_tables_still_bound_this_probe() {
     );
 }
 
-/// An identity reply that reaches the stream answers nothing.
-///
-/// `AB 41` and `AB 83` are the replies whose dishonesty this probe exists
-/// to route around, so letting the first byte of either decide would put
-/// that answer straight back in the stream's mouth. `AB` is also a real
-/// set 1 backslash release, which is why it has to be excluded rather than
-/// argued away.
+/// `AB 41` and `AB 83` are the dishonest identity replies this probe routes around, so neither byte may decide.
 #[test]
 fn an_identity_reply_in_the_stream_decides_nothing() {
     for reply in [[0xABu8, 0x41], [0xAB, 0x83]] {
@@ -51,7 +40,6 @@ fn an_identity_reply_in_the_stream_decides_nothing() {
     }
 }
 
-/// Every byte either proves one set or proves nothing — never both.
 #[test]
 fn no_byte_proves_both_sets() {
     for byte in 0..=u8::MAX {
@@ -70,11 +58,7 @@ fn no_byte_proves_both_sets() {
     assert_eq!(SetProbe::observe(0xDE), Arriving::Undecided);
 }
 
-/// A real keystroke from each set decides, and decides correctly.
-///
-/// The exact bytes the two machines delivered: VMware's `c` arrived as
-/// set 2 while its identity claimed set 1, and the same key under a
-/// controller that really translates arrives as set 1.
+/// The bytes two machines delivered: VMware's `c` as set 2 under a set 1 identity, and a translating controller's set 1.
 #[test]
 fn one_keystroke_from_either_machine_decides_it() {
     let set_2 = [0x21u8, 0xF0, 0x21];
@@ -95,7 +79,7 @@ fn one_keystroke_from_either_machine_decides_it() {
     );
 }
 
-/// Set 2's Pause sequence decides on its `F0`, not on its high bytes.
+/// Set 2's Pause sequence decides on its `F0`.
 #[test]
 fn the_longest_set_2_sequence_still_decides_set_2() {
     let pause = [0xE1u8, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
@@ -108,7 +92,6 @@ fn the_longest_set_2_sequence_still_decides_set_2() {
     );
 }
 
-/// Set 1's Pause sequence decides set 1, and never set 2.
 #[test]
 fn the_longest_set_1_sequence_never_says_set_2() {
     let pause = [0xE1u8, 0x1D, 0x45, 0xE1, 0x9D, 0xC5];

@@ -1,14 +1,4 @@
-//! Reservation bookkeeping for the x86 I/O port space.
-//!
-//! A driver that owns a device's registers must own *every* port an access
-//! reaches, not merely the one it names: a 32-bit `out` to port `n` drives
-//! `n..n + 4`. Tracking that is arithmetic over a bitmap with no hardware
-//! behind it, so it lives here and is unit-tested on the host; `wost` wraps one
-//! of these in a lock and hands out the port handles.
-//!
-//! Fixed-driver reservations are permanent. A transient PCI lease may return
-//! several dynamic spans together before a driver commits; the wrapper keeps
-//! release behind the unique span capabilities (D-199).
+//! Which x86 I/O ports are reserved; a claim must cover every port a wide access drives, and `wost` holds this behind a lock.
 //!
 //! # Examples
 //!
@@ -30,20 +20,14 @@
 
 use core::ops::Range;
 
-/// Addressable I/O ports on x86 — the space `in` and `out` can name.
+/// Addressable x86 I/O ports, the space `in` and `out` can name.
 pub const PORT_COUNT: usize = 0x1_0000;
 
-/// Ports one word of the bitmap accounts for.
 const PORTS_PER_WORD: usize = u64::BITS as usize;
 
-/// Words needed to give every port a bit.
 const WORDS: usize = PORT_COUNT / PORTS_PER_WORD;
 
-/// Which ports are spoken for.
-///
-/// One bit per port. [`reserve`](Self::reserve) is all-or-nothing: a span that
-/// overlaps an existing reservation leaves the table exactly as it found it, so
-/// a refused claim can never half-own a device.
+/// Which ports are spoken for, one bit each; a refused claim leaves the table as it was.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PortSpace {
     reserved: [u64; WORDS],
@@ -57,10 +41,7 @@ impl PortSpace {
         }
     }
 
-    /// Whether `port` is spoken for.
-    ///
-    /// A port outside the space reads as reserved: nothing may drive it, which
-    /// is the answer that stops a caller treating it as free.
+    /// Whether `port` is spoken for; a port outside the space reads as reserved so no caller drives it.
     pub const fn is_reserved(&self, port: usize) -> bool {
         if port >= PORT_COUNT {
             return true;
@@ -68,11 +49,7 @@ impl PortSpace {
         self.reserved[port / PORTS_PER_WORD] & bit(port) != 0
     }
 
-    /// Reserve the `len` ports starting at `port`.
-    ///
-    /// False — and nothing recorded — if any of them is already reserved, if
-    /// the span would run past the end of the space, or if `len` is zero, which
-    /// would reserve nothing while reporting success.
+    /// Reserve `len` ports at `port`, recording nothing on refusal; a zero `len` is refused as it would report success reserving nothing.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve(&mut self, port: usize, len: usize) -> bool {
         let Some(span) = self.span(port, len) else {
@@ -84,27 +61,13 @@ impl PortSpace {
         true
     }
 
-    /// Reserve several spans, all or none.
-    ///
-    /// Fixed-driver claims in this registry are **permanent**, because a driver
-    /// owns its registers for the life of the kernel. A transient higher-level
-    /// lease can return its unique spans through
-    /// [`release_all`](Self::release_all), but that does not help a caller
-    /// which takes one fixed span and fails on the second: the first is
-    /// stranded for the boot. Only the registry lock can answer the complete
-    /// all-or-none question (D-138).
-    ///
-    /// False, and nothing recorded, if *any* span is unavailable — checked
-    /// against the others in the same call, so two overlapping spans in one
-    /// request are refused rather than silently merged.
+    /// Reserve every span or none; fixed claims are permanent, so a caller needing several must ask here, not span by span.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
             return false;
         }
 
-        // Every span is resolved before any is written and checked against
-        // its predecessors: `span` sees only what is recorded.
         let mut resolved = [const { None }; MAX_SPANS];
         let Some(room) = resolved.get_mut(..spans.len()) else {
             return false;
@@ -129,14 +92,7 @@ impl PortSpace {
         true
     }
 
-    /// Release several reserved spans, all or none.
-    ///
-    /// This is bookkeeping for a higher-level transient lease, not an
-    /// address-based ownership API: the `wost` wrapper accepts only the unique
-    /// span values its matching reservation returned (D-199).
-    ///
-    /// False, and nothing changed, if the request is empty, malformed,
-    /// overlaps itself, or contains any port which is not currently reserved.
+    /// Release every span or none; this cannot tell owners apart, so callers must pass only spans their lease reserved.
     #[must_use = "a refused release leaves every requested port reserved"]
     pub fn release_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
@@ -170,16 +126,12 @@ impl PortSpace {
         true
     }
 
-    /// Whether the `len` ports starting at `port` could be reserved right now.
-    ///
-    /// The question [`reserve`](Self::reserve) answers as a side effect,
-    /// separated out so a caller can ask without taking anything.
+    /// Whether the `len` ports at `port` could be reserved now, asked without taking them.
     pub fn is_available(&self, port: usize, len: usize) -> bool {
         self.span(port, len).is_some()
     }
 
-    /// The ports a `len`-wide access at `port` reaches, or `None` if that span
-    /// is not this caller's to take.
+    /// The ports a `len`-wide access at `port` reaches, if all are in the space and free.
     fn span(&self, port: usize, len: usize) -> Option<Range<usize>> {
         let span = bounded_span(port, len)?;
         span.clone()
@@ -208,14 +160,10 @@ fn bounded_span(port: usize, len: usize) -> Option<Range<usize>> {
     Some(port..end)
 }
 
-/// Spans one [`reserve_all`](PortSpace::reserve_all) may take at once.
-///
-/// Two is what the two callers need. The array is fixed because this crate is
-/// `no_std` with no allocator, and a ceiling that refuses is better than a
-/// silent truncation that reserves some of what was asked for.
+/// Spans one all-or-none call may take, fixed for want of an allocator; a longer request is refused whole.
 pub const MAX_SPANS: usize = 8;
 
-/// Whether two resolved spans share a port.
+/// Whether two resolved spans share a port; `span` sees only what is recorded, so a request checks its own spans with this.
 fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }

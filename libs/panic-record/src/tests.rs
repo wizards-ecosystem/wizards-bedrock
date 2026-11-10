@@ -73,8 +73,8 @@ fn the_escape_encoding_is_injective_over_ascii_pairs() {
 }
 
 #[derive(Debug)]
-struct Refuse<'a> {
-    text: &'a str,
+struct Refuse<'text> {
+    text: &'text str,
 }
 
 impl fmt::Write for Refuse<'_> {

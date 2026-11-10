@@ -1,22 +1,10 @@
-//! The byte-at-a-time state machine over set 2's sequences.
-//!
-//! Everything a keyboard can legally send has a defined transition here:
-//! bare makes, `F0` breaks, `E0` extended makes and breaks, PrintScreen's
-//! fake-shift wrapping, Pause's eight-byte sequence with no break at all,
-//! and the protocol bytes — acknowledgements, self-test results, echoes —
-//! that the device may interleave with key data. Feeding any byte in any
-//! state cannot panic, and garbage costs at most the sequence it corrupted:
-//! the machine resets to idle and the next key decodes.
+//! The byte-at-a-time scancode state machine; any byte in any state cannot panic and costs at most its own sequence.
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
 use crate::{set1, table};
 
-/// Bytes the protocol reserves; they never begin a key sequence.
-///
-/// They appear as command replies and error reports, and because a command
-/// can be answered while a key sequence is in flight, the decoder swallows
-/// them from idle rather than treating them as unknown makes.
+/// Reserved protocol bytes, swallowed wherever they arrive since a command can be answered mid-sequence.
 mod protocol {
     /// Break prefix: the next code is a release.
     pub(super) const BREAK: u8 = 0xF0;
@@ -26,7 +14,7 @@ mod protocol {
     pub(super) const PAUSE: u8 = 0xE1;
     /// Command acknowledged.
     pub(super) const ACK: u8 = 0xFA;
-    /// Self-test passed — sent after a reset.
+    /// Self-test passed; in set 1 also left shift's release, so the reset path must read it before scanning.
     pub(super) const SELF_TEST_PASSED: u8 = 0xAA;
     /// Echo reply.
     pub(super) const ECHO: u8 = 0xEE;
@@ -46,34 +34,22 @@ mod protocol {
     }
 }
 
-/// The two codes PrintScreen and the navigation cluster wrap around
-/// themselves when modifiers are involved — `E0 12` and `E0 59`, shifts that
-/// no shift key sent. They exist so 1980s BIOSes could keep their shift
-/// state; this decoder discards them.
+/// The fake shifts `E0 12` and `E0 59` wrapping PrintScreen and navigation keys, guarded here should the extended table name them.
 const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 
-// Both bytes are also absent from `table::extended_key_for`; the guard keeps
-// the behaviour if a future edit adds them there, as base-table keys (D-124).
-
-/// Pause sends this whole sequence on press and nothing on release — the
-/// one key with no break code.
+/// Pause sends this whole sequence on press and nothing on release, the one key with no break code.
 const PAUSE_SEQUENCE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
 
-/// Set 1 encodes a release in the high bit rather than a prefix, so its whole
-/// upper half is break codes and the key is the seven bits below.
+/// Set 1 marks a release in the high bit, so the key is the seven bits below.
 const SET_1_BREAK: u8 = 0x80;
 
-/// The same key, six bytes instead of eight.
+/// Set 1's Pause sequence, six bytes instead of eight.
 const SET_1_PAUSE_SEQUENCE: [u8; 6] = [0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5];
 
 /// Set 1's fake shifts: `E0 2A`/`E0 36` and their releases.
 const SET_1_FAKE_SHIFTS: [u8; 4] = [0x2A, 0xAA, 0x36, 0xB6];
 
-/// Which numbering the bytes arriving are in.
-///
-/// A controller that translates delivers set 1 whatever the keyboard was told
-/// to speak, and says so only in its identity reply — so the driver picks, and
-/// this is what it picks between (D-179).
+/// Which numbering the bytes arriving are in, as the driver picked it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Set {
     /// What the keyboard sends when nothing rewrites it.
@@ -115,12 +91,6 @@ impl Decoder {
 
     /// A decoder reading the set 1 a translating controller delivers.
     ///
-    /// Not a mode of the same machine: set 1 puts the release in the high bit
-    /// where set 2 uses an `F0` prefix, spells Pause in six bytes rather than
-    /// eight, and numbers every key differently. The layout above it and the
-    /// events below are shared, which is the whole of what the two have in
-    /// common (D-179).
-    ///
     /// # Examples
     ///
     /// ```
@@ -145,15 +115,8 @@ impl Decoder {
         matches!(self.set, Set::One)
     }
 
-    /// Feed one byte; an event comes out when one is complete.
-    ///
-    /// Total: every byte in every state has a defined transition, and a byte
-    /// that fits no sequence resets the machine to idle so the next key
-    /// still decodes. Protocol replies are transparent wherever they arrive:
-    /// they produce no event and leave an in-flight key sequence intact.
+    /// Feed one byte, returning an event once one completes; a misfit byte resets to idle, a reply keeps the sequence.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
-        // In set 1 `0xAA` is the left shift's release, not a reply; the reset
-        // path reads the colliding self-test result before scanning (D-179).
         let reply = match self.set {
             Set::Two => protocol::is_reply(byte),
             Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,
@@ -169,7 +132,7 @@ impl Decoder {
         event
     }
 
-    /// One byte of set 1, which encodes its releases in the high bit.
+    /// One byte of set 1, whose releases are the high bit; with no break prefix, the two break states only reset.
     fn transition_set_1(&self, byte: u8) -> (State, Option<KeyEvent>) {
         let code = byte & !SET_1_BREAK;
         let broke = byte & SET_1_BREAK != 0;
@@ -205,8 +168,6 @@ impl Decoder {
                     (State::Pause(matched), None)
                 }
             }
-            // Set 1 has no break prefix, so a decoder never enters these two;
-            // resetting is the answer for any byte that fits no sequence.
             State::Break | State::ExtendedBreak => (State::Idle, None),
         }
     }
