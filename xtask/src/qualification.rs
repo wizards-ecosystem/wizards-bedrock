@@ -31,8 +31,8 @@ use crate::sha256;
 pub(crate) use self::advisory::qualify_advisory;
 use self::advisory::*;
 pub(crate) use self::attempts::{
-    ObservedDeepArtifacts, ObservedMutantsArtifacts, begin_model, begin_mutants_grade,
-    begin_mutation, begin_owned_security_deep, begin_security_deep,
+    ObservedDeepArtifacts, ObservedMutantsArtifacts, OwnedDeepAttempt, begin_model,
+    begin_mutants_grade, begin_mutation, begin_owned_security_deep, begin_security_deep,
 };
 use self::record::*;
 pub(crate) use self::record::{SourceIdentity, source_identity, validate_field};

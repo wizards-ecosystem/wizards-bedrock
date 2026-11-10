@@ -175,15 +175,7 @@ fn require_qualified_system_skills(root: &Path) -> Result<()> {
 }
 
 pub(super) fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentity> {
-    let mut entries = Vec::new();
-    for child in bounded_sorted_directory_entries(
-        root,
-        usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
-            .context("Codex system-skills entry limit does not fit usize")?,
-    )? {
-        collect_qualified_system_skill_entries(root, &child.path(), 0, &mut entries)?;
-    }
-    sort_qualified_system_skill_entries(&mut entries);
+    let entries = list_qualified_system_skill_entries(root)?;
     ensure!(
         entries.len() as u64 <= CODEX_SYSTEM_SKILLS_ENTRIES,
         "private Codex system skills exceed their entry limit"
@@ -212,15 +204,7 @@ pub(super) fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentit
             folded.update(&digest)?;
         }
     }
-    let mut after = Vec::new();
-    for child in bounded_sorted_directory_entries(
-        root,
-        usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
-            .context("Codex system-skills entry limit does not fit usize")?,
-    )? {
-        collect_qualified_system_skill_entries(root, &child.path(), 0, &mut after)?;
-    }
-    sort_qualified_system_skill_entries(&mut after);
+    let after = list_qualified_system_skill_entries(root)?;
     ensure!(
         after
             .iter()
@@ -233,6 +217,19 @@ pub(super) fn measure_qualified_system_skills(root: &Path) -> Result<TreeIdentit
         bytes,
         sha256: sha256::hex(&folded.finish()),
     })
+}
+
+fn list_qualified_system_skill_entries(root: &Path) -> Result<Vec<(String, PathBuf, bool)>> {
+    let mut entries = Vec::new();
+    for child in bounded_sorted_directory_entries(
+        root,
+        usize::try_from(CODEX_SYSTEM_SKILLS_ENTRIES)
+            .context("Codex system-skills entry limit does not fit usize")?,
+    )? {
+        collect_qualified_system_skill_entries(root, &child.path(), 0, &mut entries)?;
+    }
+    sort_qualified_system_skill_entries(&mut entries);
+    Ok(entries)
 }
 
 fn sort_qualified_system_skill_entries(entries: &mut [(String, PathBuf, bool)]) {
@@ -448,7 +445,7 @@ pub(super) fn plugin_relative_path(value: &str) -> Result<PathBuf> {
             && !value.ends_with('/'),
         "Codex Security integrity path is not canonical"
     );
-    let mut result = PathBuf::new();
+    let mut relative = PathBuf::new();
     for component in value.split('/') {
         ensure!(
             !component.is_empty()
@@ -457,15 +454,15 @@ pub(super) fn plugin_relative_path(value: &str) -> Result<PathBuf> {
                 && !component.contains(':'),
             "Codex Security integrity path has an unsafe component"
         );
-        result.push(component);
+        relative.push(component);
     }
     ensure!(
-        result
+        relative
             .components()
             .all(|component| matches!(component, std::path::Component::Normal(_))),
         "Codex Security integrity path is not relative"
     );
-    Ok(result)
+    Ok(relative)
 }
 
 fn require_plugin_descriptor(root: &Path) -> Result<()> {

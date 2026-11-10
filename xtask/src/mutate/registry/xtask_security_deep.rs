@@ -2501,8 +2501,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2228,
         file: "xtask/src/security_deep.rs",
-        find: "            &permission_digests,\n            &worker_probes,\n        )?;",
-        replace: "            &permission_digests,\n            &WorkerProbeSummary {\n                allowed_reads: 7,\n                denied_reads: 4,\n                denied_write_creates: 2,\n                denied_write_mutations: 3,\n                denied_network_listeners: 1,\n                denied_network_connections: 1,\n                denied_descendants: 1,\n            },\n        )?;",
+        find: "        &permission_digests,\n        &worker_probes,\n    )?;",
+        replace: "        &permission_digests,\n        &WorkerProbeSummary {\n            allowed_reads: 7,\n            denied_reads: 4,\n            denied_write_creates: 2,\n            denied_write_mutations: 3,\n            denied_network_listeners: 1,\n            denied_network_connections: 1,\n            denied_descendants: 1,\n        },\n    )?;",
         breaks: "the final ledger can discard the measured worker-probe summary",
         reddens: Caught::HostTest {
             package: "xtask",

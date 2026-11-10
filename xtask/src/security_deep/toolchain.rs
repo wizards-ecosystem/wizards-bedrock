@@ -172,11 +172,12 @@ pub(super) fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<T
             .join("a5a02988362ca169")
             .join("bin")
             .join("node.exe"),
-        &["--version"],
-        NODE_BYTES,
-        NODE_SHA256,
-        NODE_VERSION,
-        "Node",
+        QualifiedTool {
+            label: "Node",
+            bytes: NODE_BYTES,
+            sha256: NODE_SHA256,
+            version: NODE_VERSION,
+        },
         root,
         scratch,
     )?;
@@ -189,11 +190,12 @@ pub(super) fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<T
     let python_runtime_before = identify_python_runtime(&python_path)?;
     let python = identify_tool(
         &python_path,
-        &["--version"],
-        PYTHON_BYTES,
-        PYTHON_SHA256,
-        PYTHON_VERSION,
-        "Python",
+        QualifiedTool {
+            label: "Python",
+            bytes: PYTHON_BYTES,
+            sha256: PYTHON_SHA256,
+            version: PYTHON_VERSION,
+        },
         root,
         scratch,
     )?;
@@ -212,11 +214,12 @@ pub(super) fn resolve_toolchain(root: &Path, scratch: &OwnedScratch) -> Result<T
     let codex_runtime_before = identify_codex_runtime(&codex_path)?;
     let codex = identify_tool(
         &codex_path,
-        &["--version"],
-        CODEX_BYTES,
-        CODEX_SHA256,
-        CODEX_VERSION,
-        "Codex",
+        QualifiedTool {
+            label: "Codex",
+            bytes: CODEX_BYTES,
+            sha256: CODEX_SHA256,
+            version: CODEX_VERSION,
+        },
         root,
         scratch,
     )?;
@@ -546,26 +549,30 @@ pub(super) fn bounded_sorted_directory_entries(
     Ok(children)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy, Debug)]
+struct QualifiedTool {
+    label: &'static str,
+    bytes: u64,
+    sha256: &'static str,
+    version: &'static str,
+}
+
 fn identify_tool(
     path: &Path,
-    arguments: &[&str],
-    expected_bytes: u64,
-    expected_sha256: &str,
-    expected_version: &str,
-    label: &str,
+    expected: QualifiedTool,
     root: &Path,
     scratch: &OwnedScratch,
 ) -> Result<ToolIdentity> {
+    let label = expected.label;
     let canonical = require_exact_executable_path(path, label)?;
     let (bytes, digest) = measure_file(&canonical, MAX_EXECUTABLE_BYTES, label)?;
     let sha256 = sha256::hex(&digest);
     ensure!(
-        bytes == expected_bytes && sha256 == expected_sha256,
+        bytes == expected.bytes && sha256 == expected.sha256,
         "{label} executable differs from the qualified runtime"
     );
     let mut command = Command::new(&canonical);
-    command.args(arguments).current_dir(root);
+    command.arg("--version").current_dir(root);
     apply_base_environment(&mut command, scratch, None)?;
     if label == "Codex" {
         require_private_credential_projection(&scratch.codex_home())?;
@@ -586,7 +593,7 @@ fn identify_tool(
     );
     let version = single_line_output(&output.stdout, &output.stderr, label)?;
     ensure!(
-        version == expected_version,
+        version == expected.version,
         "{label} version differs from the qualified runtime"
     );
     Ok(ToolIdentity {

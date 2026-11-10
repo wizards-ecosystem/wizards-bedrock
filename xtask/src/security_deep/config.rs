@@ -40,13 +40,13 @@ pub(super) fn read_codex_config(
     overrides: &[String],
 ) -> Result<EffectiveConfig> {
     require_private_credential_projection(&scratch.codex_home())?;
-    let result = read_codex_config_with_command(
+    let config = read_codex_config_with_command(
         codex_config_command(codex, overrides),
         repository,
         scratch,
     )?;
     require_private_credential_projection(&scratch.codex_home())?;
-    Ok(result)
+    Ok(config)
 }
 
 pub(super) fn codex_config_command(codex: &ToolIdentity, overrides: &[String]) -> Command {
@@ -384,10 +384,8 @@ fn require_codex_default_config(config: &BTreeMap<String, JsonValue>) -> Result<
     )?;
     remove_owned_config_fields(&mut defaults, "features", &["memories"])?;
     remove_owned_config_fields(&mut defaults, "windows", &["sandbox"])?;
-    // Disabling memories makes this Codex runtime project the rest of the
-    // memories schema, and its associated network feature, as explicit nulls.
-    // Normalize only those exact inert values; any active or newly introduced
-    // default remains part of the pinned full-schema digest.
+    // Disabled memories make this Codex runtime project the other memories fields and network_proxy
+    // as nulls. Only those exact inert values go; any other default stays in the pinned digest.
     remove_null_config_fields(
         &mut defaults,
         "memories",
@@ -722,6 +720,47 @@ pub(super) fn require_safe_effective_config(
     ambient: &EffectiveConfig,
     inert_mcp: &Path,
 ) -> Result<()> {
+    let authorized_origins = safety_override_origins(ambient);
+    ensure!(
+        effective.origins.is_subset(&authorized_origins),
+        "effective Codex config has an origin not authorized by the safety overrides"
+    );
+    ensure!(
+        effective.model.as_deref() == Some(MODEL)
+            && effective.model_provider.as_deref() == Some("openai")
+            && effective.openai_base_url.as_deref() == Some(OFFICIAL_CHATGPT_BASE_URL)
+            && effective.chatgpt_base_url.as_deref() == Some(OFFICIAL_CHATGPT_BASE_URL)
+            && effective.reasoning.as_deref() == Some(REASONING)
+            && effective.service_tier.as_deref() == Some("default"),
+        "effective Codex model route differs from the hermetic ChatGPT policy"
+    );
+    ensure!(
+        effective.notify_is_empty
+            && effective.memories_generate == Some(false)
+            && effective.memories_use == Some(false)
+            && effective.feature_memories == Some(false),
+        "effective Codex side-effect features are not disabled"
+    );
+    ensure!(
+        effective.windows_sandbox.as_deref() == Some("mxc"),
+        "effective Codex Windows sandbox is not the required MXC backend"
+    );
+    ensure!(
+        effective.model_providers.is_empty(),
+        "effective Codex config contains custom provider definitions"
+    );
+    ensure!(
+        effective.mcp_servers.keys().eq(ambient.mcp_servers.keys())
+            && effective.plugins.keys().eq(ambient.plugins.keys())
+            && effective.plugins.values().all(|enabled| !enabled),
+        "effective Codex config has an enabled or unexpected MCP/plugin route"
+    );
+    require_inert_mcp_routes(effective, ambient, inert_mcp)?;
+    require_inert_mcp_path(inert_mcp)?;
+    require_safety_override_origins(effective, ambient)
+}
+
+fn safety_override_origins(ambient: &EffectiveConfig) -> BTreeSet<String> {
     let mut authorized_origins: BTreeSet<String> = [
         "model_provider",
         "openai_base_url",
@@ -757,40 +796,14 @@ pub(super) fn require_safe_effective_config(
     for name in ambient.plugins.keys() {
         authorized_origins.insert(format!("plugins.{name}.enabled"));
     }
-    ensure!(
-        effective.origins.is_subset(&authorized_origins),
-        "effective Codex config has an origin not authorized by the safety overrides"
-    );
-    ensure!(
-        effective.model.as_deref() == Some(MODEL)
-            && effective.model_provider.as_deref() == Some("openai")
-            && effective.openai_base_url.as_deref() == Some(OFFICIAL_CHATGPT_BASE_URL)
-            && effective.chatgpt_base_url.as_deref() == Some(OFFICIAL_CHATGPT_BASE_URL)
-            && effective.reasoning.as_deref() == Some(REASONING)
-            && effective.service_tier.as_deref() == Some("default"),
-        "effective Codex model route differs from the hermetic ChatGPT policy"
-    );
-    ensure!(
-        effective.notify_is_empty
-            && effective.memories_generate == Some(false)
-            && effective.memories_use == Some(false)
-            && effective.feature_memories == Some(false),
-        "effective Codex side-effect features are not disabled"
-    );
-    ensure!(
-        effective.windows_sandbox.as_deref() == Some("mxc"),
-        "effective Codex Windows sandbox is not the required MXC backend"
-    );
-    ensure!(
-        effective.model_providers.is_empty(),
-        "effective Codex config contains custom provider definitions"
-    );
-    ensure!(
-        effective.mcp_servers.keys().eq(ambient.mcp_servers.keys())
-            && effective.plugins.keys().eq(ambient.plugins.keys())
-            && effective.plugins.values().all(|enabled| !enabled),
-        "effective Codex config has an enabled or unexpected MCP/plugin route"
-    );
+    authorized_origins
+}
+
+fn require_inert_mcp_routes(
+    effective: &EffectiveConfig,
+    ambient: &EffectiveConfig,
+    inert_mcp: &Path,
+) -> Result<()> {
     let expected_mcp_fields: BTreeSet<String> = [
         "args",
         "command",
@@ -822,7 +835,13 @@ pub(super) fn require_safe_effective_config(
             "effective Codex MCP route is not the exact inert disabled transport"
         );
     }
-    require_inert_mcp_path(inert_mcp)?;
+    Ok(())
+}
+
+fn require_safety_override_origins(
+    effective: &EffectiveConfig,
+    ambient: &EffectiveConfig,
+) -> Result<()> {
     for field in [
         "model_provider",
         "openai_base_url",

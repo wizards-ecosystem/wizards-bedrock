@@ -336,7 +336,7 @@ pub(super) fn require_artifact_environment(
                 scan_id,
             )?;
         }
-        _ => unreachable!(),
+        _ => unreachable!("artifact layouts other than worker and reducer were refused"),
     }
     Ok(())
 }
@@ -419,10 +419,7 @@ fn scan_id_source_from_marker(marker: &str) -> Result<&str> {
         .strip_prefix(WRAPPER_MARKER_PREFIX)
         .context("private wrapper selector is malformed")?;
     ensure!(
-        source.len() == 40
-            && source
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        is_source_commit(source),
         "private wrapper selector source differs"
     );
     Ok(source)

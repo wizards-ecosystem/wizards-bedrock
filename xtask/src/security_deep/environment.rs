@@ -7,10 +7,7 @@ impl PrivateExecutionContext {
             .strip_prefix(WRAPPER_MARKER_PREFIX)
             .context("private wrapper selector is malformed")?;
         ensure!(
-            source.len() == 40
-                && source
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            is_source_commit(source),
             "private wrapper selector has an invalid source identity"
         );
         let scratch = self
