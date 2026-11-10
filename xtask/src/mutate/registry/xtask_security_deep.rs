@@ -2568,7 +2568,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 2234,
         file: "xtask/src/security_deep/wrapper.rs",
         find: "        if status.code() == Some(0) {\n            write_worker_transition_receipt(\n                source,\n                invocation.transition,\n                WorkerTransitionStage::ExitedZero,\n                &worker.path,\n                Some(&thread),\n                &invocation.arguments,\n            )?;\n        }",
-        replace: "        write_worker_transition_receipt(\n            source,\n            invocation.transition,\n            WorkerTransitionStage::parse(\"exited-zero\")?,\n            &worker.path,\n            Some(&thread),\n            &invocation.arguments,\n        )?;",
+        replace: "        write_worker_transition_receipt(\n            source,\n            invocation.transition,\n            WorkerTransitionStage::ExitedZero,\n            &worker.path,\n            Some(&thread),\n            &invocation.arguments,\n        )?;",
         breaks: "a failed Codex child can be recorded as a successful completed transition",
         reddens: Caught::HostTest {
             package: "xtask",

@@ -1254,7 +1254,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 2410,
         file: "xtask/src/mutate/workspace.rs",
         find: "fn read_bounded_bytes_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<Vec<u8>>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = open_real_file(path, label)?;\n",
-        replace: "fn read_bounded_bytes_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<Vec<u8>>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = File::open(path)?;\n",
+        replace: "fn read_bounded_bytes_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<Vec<u8>>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = std::fs::File::open(path)?;\n",
         breaks: "read_bounded_bytes_with admits a final-component link instead of a checked real-file handle",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1265,7 +1265,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 2411,
         file: "xtask/src/mutate/workspace/source.rs",
         find: "fn digest_file_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<String>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = open_real_file(path, label)?;\n",
-        replace: "fn digest_file_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<String>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = File::open(path)?;\n",
+        replace: "fn digest_file_with<F>(\n    path: &Path,\n    maximum: u64,\n    label: &str,\n    after_measurement: F,\n) -> Result<String>\nwhere\n    F: FnOnce() -> Result<()>,\n{\n    let mut file = std::fs::File::open(path)?;\n",
         breaks: "digest_file_with admits a final-component link instead of a checked real-file handle",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1276,7 +1276,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 2412,
         file: "xtask/src/mutate/workspace/source.rs",
         find: "        let mut file = open_real_file(&path, \"tracked mutation source\")?;",
-        replace: "        let mut file = File::open(&path)?;",
+        replace: "        let mut file = std::fs::File::open(&path)?;",
         breaks: "tracked source hashing follows a path after confinement validation",
         reddens: Caught::HostTest {
             package: "xtask",

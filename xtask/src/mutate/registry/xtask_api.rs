@@ -846,7 +846,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1091,
         file: "xtask/src/api/compile.rs",
         find: "                snapshot_marker_free_file(\n                    root,\n                    &entry.path(),\n                    snapshot,\n                    \"build-script compiler input\",\n                )?;",
-        replace: "                snapshot_file(root, &entry.path(), snapshot)?;",
+        replace: "                snapshot.insert(\n                    relative.clone(),\n                    stream_file_digest(&entry.path(), \"build-script compiler input\")?,\n                );",
         breaks: "pristine build-script output is SHA-bound without rejecting a reserved diagnostic marker",
         reddens: Caught::HostTest {
             package: "xtask",
