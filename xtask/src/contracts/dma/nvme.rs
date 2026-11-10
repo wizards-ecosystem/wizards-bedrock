@@ -116,7 +116,7 @@ impl<'ast> Visit<'ast> for BusMasterUses {
 
 #[test]
 fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
-    let wost = parse("wost/src/arch/x86_64/pci.rs");
+    let wost = parse_module("wost/src/arch/x86_64/pci.rs");
     let authority = wost
         .items
         .iter()
@@ -411,7 +411,7 @@ fn queue_mapping_state_conserves_every_reachable_segment() {
 
 #[test]
 fn device_fault_reporting_is_bounded_and_follows_retirement() {
-    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
     let drain = method(&vtd, "Vtd", "drain_faults").expect("bounded VT-d fault drain");
     let Some(Stmt::Expr(Expr::While(drain_loop), None)) = drain.block.stmts.get(1) else {
         panic!("the VT-d fault drain has no explicit loop");

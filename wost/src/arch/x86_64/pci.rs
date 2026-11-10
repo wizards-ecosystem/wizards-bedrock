@@ -22,6 +22,11 @@ use crate::sync::SpinLock;
 
 use super::port::{self, Port, PortBlock};
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+pub use selftest::{claims, is_claimed};
+
 /// Functions that may be held by drivers at once.
 const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
@@ -376,14 +381,6 @@ impl MappedBar {
             authority: self.authority,
             region: self.region,
         }
-    }
-}
-
-impl NvmeBusMasterAuthority<'_> {
-    /// The live register values carried by this authority.
-    #[cfg(feature = "selftest")]
-    pub fn observation_for_test(&self) -> (u32, u32) {
-        self._observed.bits()
     }
 }
 
@@ -873,18 +870,6 @@ pub fn retry_probe(function: &FunctionClaim, retry: ProbeRetry) -> Result<(), Pr
     pci_config::retry_probe(functions, &function.authority, retry, |at, access| {
         configuration_cycle(ports, at, access)
     })
-}
-
-/// Whether any offset of `at` is claimed by a live function authority.
-#[cfg(feature = "selftest")]
-pub fn is_claimed(at: Address) -> bool {
-    CONFIGURATION.lock_leaf().functions.is_claimed(at)
-}
-
-/// Function authorities retained at this instant.
-#[cfg(feature = "selftest")]
-pub fn claims() -> usize {
-    CONFIGURATION.lock_leaf().functions.len()
 }
 
 fn configuration_cycle(

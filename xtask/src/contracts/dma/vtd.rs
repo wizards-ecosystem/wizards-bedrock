@@ -17,7 +17,7 @@ fn bool_literal_is(expression: &Expr, value: bool) -> bool {
 
 #[test]
 fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
-    let syntax = parse("wost/src/arch/x86_64/vtd.rs");
+    let syntax = parse_module("wost/src/arch/x86_64/vtd.rs");
     let public = method(&syntax, "Vtd", "map_segment").expect("missing VT-d mapping seam");
     let Some(FnArg::Typed(segment)) = public.sig.inputs.iter().nth(1) else {
         panic!("the public VT-d mapping seam has no segment owner");
@@ -95,7 +95,7 @@ fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
 
 #[test]
 fn vtd_revocation_drains_older_dma_before_recycling_frames() {
-    let syntax = parse("wost/src/arch/x86_64/vtd.rs");
+    let syntax = parse_module("wost/src/arch/x86_64/vtd.rs");
 
     let mut preflight_calls = CallNames::default();
     preflight_calls.visit_impl_item_fn(method(&syntax, "Plan", "read").expect("VT-d preflight"));
@@ -299,8 +299,8 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         "the IOMMU-table writer must have one exact span qword publication and no alternate write"
     );
 
-    let vtd = source("wost/src/arch/x86_64/vtd.rs");
-    let vtd_syntax = parse("wost/src/arch/x86_64/vtd.rs");
+    let vtd = module_source("wost/src/arch/x86_64/vtd.rs");
+    let vtd_syntax = parse_module("wost/src/arch/x86_64/vtd.rs");
     for (name, direction) in [
         (
             "map_segment",
@@ -630,7 +630,7 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     let selected_release = call_position(&retirement_calls, "release");
     assert!(selected_fence < unit_release && unit_release < selected_release);
 
-    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
     assert!(method(&vtd, "Vtd", "disable_translation_for_test").is_none());
     assert!(method(&vtd, "Vtd", "enable_translation_for_test").is_none());
 
@@ -1023,7 +1023,7 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
         "the early empty owner must expose no firmware mapping argument"
     );
 
-    let vtd = source("wost/src/arch/x86_64/vtd.rs");
+    let vtd = module_source("wost/src/arch/x86_64/vtd.rs");
     assert!(!vtd.contains("reserved: &[(u64, u64)]"));
     assert!(!vtd.contains("VtdError::ReservedRegion"));
 }
@@ -1159,7 +1159,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
             syn::visit::visit_type_path(self, path);
         }
     }
-    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
     let mm = parse_module("wost/src/mm.rs");
     let begin = method(&mm, "DmaSegment", "begin_mapping").expect("single-owner lease acquisition");
     assert_eq!(begin.block.stmts.len(), 3);

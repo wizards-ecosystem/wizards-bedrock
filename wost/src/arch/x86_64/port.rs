@@ -27,12 +27,16 @@ use port_space::PortSpace;
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+use selftest::REFUSE_SPAN_RELEASE;
+#[cfg(feature = "selftest")]
+pub use selftest::{is_claimed, refuse_span_release_for_test};
+
 /// Which ports are spoken for. Fixed claims are permanent; only unique dynamic
 /// span capabilities can return a transient lease.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
-
-#[cfg(feature = "selftest")]
-static REFUSE_SPAN_RELEASE: AtomicBool = AtomicBool::new(false);
 
 /// Record `len` ports from `number` as claimed, all or nothing.
 fn reserve(number: u16, len: usize) -> bool {
@@ -160,12 +164,6 @@ pub struct SpanReleaseFailure<const N: usize> {
     pub spans: [Option<PortSpan>; N],
 }
 
-/// Refuse the next dynamic span release before the registry changes.
-#[cfg(feature = "selftest")]
-pub fn refuse_span_release_for_test() {
-    REFUSE_SPAN_RELEASE.store(true, Ordering::Release);
-}
-
 /// Claim exclusive access to the `N` consecutive ports starting at `base`.
 ///
 /// Returns `None` if any of them is already claimed, or if the block would run
@@ -241,16 +239,6 @@ pub fn com1() -> Option<PortBlock<8>> {
 /// to prove nothing else did.
 pub fn pci_configuration() -> Option<(Port<u32>, Port<u32>)> {
     claim_pair(0x0CF8, 0x0CFC)
-}
-
-/// Whether `len` ports from `port` are already claimed, without minting one.
-///
-/// The self-test proves exclusivity by asking whether a device driver's ports
-/// are spoken for; a probe answers that without handing back a usable [`Port`]
-/// that would itself claim them (D-351).
-#[cfg(feature = "selftest")]
-pub fn is_claimed(port: u16, len: usize) -> bool {
-    !CLAIMED.lock_leaf().is_available(port as usize, len)
 }
 
 /// Reclaim the registry's lock on the terminal panic path.

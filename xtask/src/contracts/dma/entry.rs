@@ -5,7 +5,7 @@ use crate::test_support::{function_after, source_through};
 
 use super::{
     CallNames, ReferencedPaths, authority_alias_count, call_position, exact_derives, function,
-    method, parse, root, source,
+    method, module_source, parse, parse_module, root, source,
 };
 
 #[test]
@@ -217,7 +217,7 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             .iter()
             .all(|field| matches!(field.vis, Visibility::Inherited))
     );
-    let wost_pci = source("wost/src/arch/x86_64/pci.rs");
+    let wost_pci = module_source("wost/src/arch/x86_64/pci.rs");
     assert!(
         wost_pci.contains("HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),")
     );
@@ -280,8 +280,8 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
 
 #[test]
 fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
-    let vtd_source = source("wost/src/arch/x86_64/vtd.rs");
-    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let vtd_source = module_source("wost/src/arch/x86_64/vtd.rs");
+    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
     let proof = vtd
         .items
         .iter()
@@ -451,7 +451,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(unique.contains("if require_unique {"));
     assert!(unique.contains("return None;"));
 
-    let pci = source("wost/src/arch/x86_64/pci.rs");
+    let pci = module_source("wost/src/arch/x86_64/pci.rs");
     assert!(pci.contains("if interrupts.function() != domain.function() {"));
 
     let kernel_pci = source("kernel/src/pci.rs");
@@ -503,7 +503,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .expect("interrupt-ready publication");
     assert!(remapping < pending && pending < ready);
 
-    let apic = source("wost/src/arch/x86_64/apic.rs");
+    let apic = module_source("wost/src/arch/x86_64/apic.rs");
     assert!(apic.contains(
         "for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {"
     ));
