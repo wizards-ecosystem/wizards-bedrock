@@ -18,34 +18,23 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. `014-storage.md` owns the source totals. Historical green
-evidence remains historical. The clean complete 1,359-entry sweep on
-`f28428a` caught 1,301 mutations and produced 34 survivors and 24 inconclusive
-outcomes. D-301 makes that report the repair inventory, and D-302 through
-D-322 repair all 58 non-caught outcomes. The complete 2,133-entry sweep on
-`0dfcb76` later caught 2,132 with no inconclusive outcome, but permanent
-mutation 2,036 survived because the owned-metadata witness did not independently
-assert the required `managed` permission-profile type. D-422 makes that report
-new repair input, not qualification; the updated current registry must still
-complete cleanly. The complete 2,228-entry sweep on `20cf580` then caught 2,222:
-mutations 1,968, 2,193, 2,203 and 2,208 survived through witness gaps, 2,202 was
-an equivalent mutant, and 556 was inconclusive after the API-audit compiler
-exhausted host memory. That report is also repair input. D-425 then made the
-next qualified close a release rather than a foundation close. D-441 now
-supersedes only its first-v0.1.0 assignment: that publication is an experimental
-source-only prerelease under the bounded source-preview gate, closes no rows,
-and establishes no current machine qualification. Qualified diagnostic releases
-remain gated by CI, the complete curated mutation sweep, model checking, the advisory review, both
-human VMware qualifications and evidence created and verified on the exact
-qualified commit, which is then tagged directly. The `xtask` grade and the
-owned Deep scan run continuously against `main`; a release bundle verifies
-their records only when present for its source and otherwise declares them
-`deferred`. Rows the gate proves close in the commit after the tag, and every
-other live row ships as a known open item. v0.2.0 (D-449) is that release:
-it qualified `694061f` and closed every row its gate proved, leaving PW-006,
-PW-010 and the `TRIGGER` rows live. The adversarial
-re-audit also found new safe-boundary, hostile-layout and qualification
-defects, all recorded below. VMware waits for a frozen candidate after the
-non-machine source and manual-red gaps close; its fresh boots are themselves
+evidence remains historical. PW-001 records each complete sweep report and its
+counts. Every failed report is repair input, not qualification: D-301 makes the
+clean 1,359-entry `f28428a` report the repair inventory, D-302 through D-322
+repair all 58 of its non-caught outcomes, and D-422 makes the `0dfcb76` report
+new repair input. On `20cf580`, mutations 1,968, 2,193, 2,203 and 2,208
+survived through witness gaps and 2,202 was an equivalent mutant. D-425 then
+made the next qualified close a release rather than a foundation close. D-441
+now supersedes only its first-v0.1.0 assignment: that publication is an
+experimental source-only prerelease under the bounded source-preview gate, is
+not the qualification campaign under What is left, closes no rows, starts none
+of the stopped product work, and establishes no current machine qualification.
+What is left gives the gate and order of a qualified diagnostic release.
+v0.2.0 (D-449) is such a release: it qualified `694061f` and closed every row
+its gate proved, leaving PW-006, PW-010 and the `TRIGGER` rows live. The
+adversarial re-audit also found new safe-boundary, hostile-layout and
+qualification defects, all recorded below. VMware waits for a frozen candidate
+after the non-machine source and manual-red gaps close; its fresh boots are
 required to close the machine-dependent rows.
 
 D-366 transfers compiler-readiness authority to Realm. The kernel handoff in
@@ -89,7 +78,7 @@ dated tree carried no uncommitted work. The day's work, in the order it landed:
 - `c17dabd` and `46ff365` closed what `cargo-mutants` found across the 26
   host libraries; D-246 carries the complete grade and every adjudication.
 
-What remains, and exactly how to run it:
+What remains, and how to run it:
 
 1. **PW-001, the registry sweep.** `cargo xtask mutate` from a clean
    checkout. The clean `f28428a` run completed with 1,301 caught, 34 survivors
@@ -591,24 +580,21 @@ v0.2.0 closed every row its gate proved (D-449); the order below is for the
 next qualified release.
 
 The failed `f28428a`, `44e1c89`, `0dfcb76` and `20cf580` reports are
-historical repair inventories, not qualification. The `0dfcb76` run caught
-2,132 of 2,133 with no inconclusive outcome but left permanent mutation 2,036
-alive; the `20cf580` run caught 2,222 of 2,228. The complete updated current
-registry must pass on the frozen qualification commit; no earlier verdict may
-be inherited. D-425's stronger qualified-release path remains in force;
-D-441 makes only the first v0.1.0 publication a bounded experimental source
-preview. That launch is not this qualification campaign, closes no foundation
-rows and starts none of the stopped product work. A future qualified release
-needs another immutable version and the following finite order:
+historical repair inventories, not qualification; PW-001 records their counts.
+The complete updated current registry must pass on the frozen qualification
+commit; no earlier verdict may be inherited. D-425's qualified-release path,
+stronger than D-441's source preview, remains in force. A future qualified
+release needs another immutable version and the following finite order:
 
 1. Close every source, proof and manual-red gap that does not depend on final
    source-bound qualification; draft PW-006's disposition ADR without inventing
    results, and keep machine-dependent rows open.
 2. Freeze and commit a clean candidate. On that exact commit run CI, the full
-   mutation sweep, model checks, the fresh advisory qualification, and both
-   generated-and-human-booted VMware selectors. The `xtask` grade and the owned
-   Deep scan run continuously against `main` and enter this release only when
-   their records name this exact commit (D-425). Both VMware transcripts must show `iommu: translation on`
+   curated mutation sweep, model checks, the fresh advisory qualification, and
+   both generated-and-human-booted VMware selectors. The `xtask` grade and the
+   owned Deep scan run continuously against `main` and enter this release only
+   when their records name this exact commit; otherwise the bundle declares
+   each `deferred` (D-425). Both VMware transcripts must show `iommu: translation on`
     before `nvme: up` (PW-571). No verdict may be inherited from `ff6ddd3`,
     `e47c22c`, `a58bc97`, `f28428a` or `44e1c89`.
 3. If any proof requires a source change, discard the candidate evidence and
