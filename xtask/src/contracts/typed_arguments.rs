@@ -207,13 +207,13 @@ fn selected_state_selectors_use_semantic_types() {
     );
     assert_eq!(route.inputs.len(), 1);
 
-    let input = parse("kernel/src/input.rs");
+    let input = super::module_syntax(&root().join("kernel/src/input.rs"));
     assert_named(
         function(&input, "set_translation"),
         "translation",
         "Translation",
     );
-    let i8042 = parse("kernel/src/arch/x86_64/i8042.rs");
+    let i8042 = super::module_syntax(&root().join("kernel/src/arch/x86_64/i8042.rs"));
     assert_named(
         method(&i8042, "Controller", "set_translation"),
         "translation",
@@ -234,7 +234,7 @@ fn selected_state_selectors_use_semantic_types() {
         "CurrentEligibility",
     );
 
-    let console = parse("kernel/src/console.rs");
+    let console = super::module_syntax(&root().join("kernel/src/console.rs"));
     assert_no_typed_parameters(method(&console, "Console", "show_cursor"));
     assert_no_typed_parameters(method(&console, "Console", "hide_cursor"));
     assert!(

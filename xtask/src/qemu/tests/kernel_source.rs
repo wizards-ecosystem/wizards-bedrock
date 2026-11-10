@@ -6,7 +6,7 @@ fn the_human_wait_fits_the_harness_patience() {
         .parent()
         .expect("xtask sits below the workspace root")
         .to_path_buf();
-    let input = std::fs::read_to_string(root.join("kernel/src/input.rs")).expect("input.rs");
+    let input = crate::contracts::module_source(&root, "kernel/src/input.rs");
     let wait_ms: u64 = input
         .lines()
         .find_map(|line| {

@@ -301,7 +301,9 @@ fn one_assignment_and_typed_signatures_own_every_vector_door() {
             "wost/src/arch/x86_64/apic.rs",
             "wost/src/arch/x86_64/interrupt.rs",
             "kernel/src/arch/x86_64/ioapic.rs",
+            "kernel/src/arch/x86_64/ioapic/selftest.rs",
             "kernel/src/arch/x86_64/trap.rs",
+            "kernel/src/arch/x86_64/trap/selftest.rs",
         ],
     );
 

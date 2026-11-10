@@ -3,7 +3,7 @@ use super::{Caught, Mutation};
 pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 57,
-        file: "kernel/src/input.rs",
+        file: "kernel/src/input/selftest.rs",
         find: "            KeyState::Released => {\n                if self.down & bit != 0 {\n                    self.completed[index] = self.completed[index].wrapping_add(1);\n                }\n                self.down &= !bit;\n            }",
         replace: "            KeyState::Released => {\n                self.completed[index] = self.completed[index].wrapping_add(1);\n                self.down &= !bit;\n            }",
         breaks: "an interrupt witness accepts a release with no preceding press",
@@ -59,7 +59,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // QEMU makes the bit and identity agree, so only omitted re-derivation is observable.
     Mutation {
         id: 289,
-        file: "kernel/src/input.rs",
+        file: "kernel/src/input/selftest.rs",
         find: "    keyboard.decoder = decoder_for(&mut keyboard.controller);",
         replace: "    let _ = &mut keyboard.controller;",
         breaks: "translation leaves the decoder on its previous numbering",
@@ -76,7 +76,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 294,
-        file: "kernel/src/input.rs",
+        file: "kernel/src/input/selftest.rs",
         find: "pub(crate) const HUMAN_WAIT_MS: u64 = 45_000;",
         replace: "pub(crate) const HUMAN_WAIT_MS: u64 = 90_000;",
         breaks: "three unanswered keystroke rounds end as a red check, not a hang",
@@ -171,7 +171,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 773,
-        file: "kernel/src/arch/x86_64/trap.rs",
+        file: "kernel/src/arch/x86_64/trap/selftest.rs",
         find: "    drop(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
         replace: "    core::mem::forget(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
         breaks: "abandoning an EOI token can permanently strand its live-claim latch",
@@ -245,7 +245,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 932,
-        file: "kernel/src/input.rs",
+        file: "kernel/src/input/selftest.rs",
         find: "pub(crate) fn set_translation(translation: crate::arch::current::i8042::Translation) -> bool {",
         replace: "pub(crate) fn set_translation(translation: bool) -> bool {",
         breaks: "input translation policy becomes an unnamed boolean selector",
@@ -256,7 +256,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 933,
-        file: "kernel/src/arch/x86_64/i8042.rs",
+        file: "kernel/src/arch/x86_64/i8042/selftest.rs",
         find: "    pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {",
         replace: "    pub(crate) fn set_translation(&mut self, translation: bool) -> bool {",
         breaks: "i8042 translation policy becomes an unnamed boolean selector",
@@ -322,7 +322,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1273,
-        file: "kernel/src/arch/x86_64/ioapic.rs",
+        file: "kernel/src/arch/x86_64/ioapic/selftest.rs",
         find: "        && controller.registers.low == u32::from(super::vector::KEYBOARD.get())",
         replace: "        && controller.registers.low == u32::from(super::vector::TIMER.get())",
         breaks: "the isolated I/O APIC route accepts another source's encoded vector",
@@ -426,7 +426,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2435,
-        file: "kernel/src/input.rs",
+        file: "kernel/src/input/selftest.rs",
         find: "pub(crate) fn try_read_key_for_test() -> Option<Keystroke> {\n    EVENTS.lock_leaf().pop()\n}",
         replace: "pub(crate) fn try_read_key_for_test() -> Option<Keystroke> {\n    None\n}",
         breaks: "the nonblocking self-test reader refuses even an available queued event",
