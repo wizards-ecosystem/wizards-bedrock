@@ -3,7 +3,7 @@
 The phase that first gives the kernel something to keep in flight.
 
 Phase 5 built a ring and gave it Echo. Phase 6 then separated four milestones
-that the opening draft conflated: Timer is the first operation whose honest
+that the opening draft conflated: Timer is the first operation whose
 answer is *not yet*; Duplicate is the first completion that carries derived
 authority; OpenAt is the first namespace operation that produces authority;
 and Read is the first storage/data caller that needs a handle, offset, buffer
@@ -42,7 +42,7 @@ and teardown history.
 | Debt | Where recorded | What Phase 6 does |
 |---|---|---|
 | No completion carries a handle, so the ring is not the delegation path channels are | `011` close; D-151 | **Slice 1**, with the receiver reserving the slot at submission |
-| Nothing blocks on a completion, so the wait queue is built and unused | `011` close | **Slice 1**: Timer becomes the first genuinely deferred operation |
+| Nothing blocks on a completion, so the wait queue is built and unused | `011` close | **Slice 1**: Timer becomes the first deferred operation |
 | Port claims prove exclusivity, not device *entitlement*: the device half of the authority debt | D-77; `011` | **Slice 4**, with PCI discovery: a driver claims a device, not a port range |
 | The five file sysdeps were OWED or ABSENT under D-114's former taxonomy | D-114; amended by D-181 | Slices 6-9 build the VFS, `OpenAt` and `Read`; D-181 separates the remaining compatibility, door and missing-substrate work |
 | `sys_clock_get` was OWED under that former taxonomy | D-114; amended by D-181 | **Slice 2**: monotonic time stops being a call and becomes a load |
@@ -68,7 +68,7 @@ before its abstraction is anything but a guess.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | **A completion carries a handle.** Result-slot reservation, same-object attenuation, and the first operation that genuinely waits; cross-type derivation arrives with OpenAt in slice 9 | Done |
+| 1 | **A completion carries a handle.** Result-slot reservation, same-object attenuation, and the first operation that waits; cross-type derivation arrives with OpenAt in slice 9 | Done |
 | 2 | **The time page.** Immutable constants, a versioned clock with a revocation gate, and proof that kernel Uptime survives revocation; D-181 records the still-incomplete shared userspace fallback | Done |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
@@ -118,7 +118,7 @@ A **versioned clock region**: Linux's seqlock protocol with both barriers,
 whole `base_ns` plus a fractional carry, a 128-bit multiply/shift in the
 reader, and a `clock_mode` **revocation gate**. A kernel check proves ring
 Uptime still answers after revocation. The shared userspace client that can
-correlate its fallback completion remains Phase 7 work (D-181).
+correlate its fallback completion remains old Phase 7 work (D-181).
 
 **One question this phase must answer before writing the writer.** `012` section 9:
 Linux tolerates a naive reader spin only because its timekeeping update runs
@@ -269,9 +269,9 @@ is the protocol and the trait is irrelevant.
 
 **devfs does not go through a byte interface.** A devfs entry has no bytes; it
 resolves internally as `Node::Device`. Forcing it to implement `read_at` is the
-"everything is a file" conflation, and WASI's own README rejects it on exactly
+"everything is a file" conflation, and WASI's own README rejects it on
 these grounds. OpenAt currently refuses that node; a user-visible `Device`
-handle remains Phase 7 work.
+handle remains old Phase 7 work.
 
 ### Rights, and the one split worth stealing (`012` section 4)
 
@@ -337,7 +337,7 @@ reason two handles to one file have observable coupling, which in a capability
 system is a covert channel; and per-operation offsets are what a userspace
 cursor is built *from*, while the reverse needs a kernel lock.
 
-**The exception, honestly.** Directory enumeration cannot be stateless: entries
+**The exception.** Directory enumeration cannot be stateless: entries
 are variable-length and the set mutates. `read_dir` returns an opaque `u64`
 cookie and takes it back, so the cursor lives in the caller's memory and the
 kernel keeps **zero** position state on any handle.
@@ -349,7 +349,7 @@ alone would be `4 x nr_cpus`. This kernel has sixteen thread slots total.
 
 1. Always try inline with a nowait flag.
 2. Anything pollable registers a wait, never a thread.
-3. **A regular-file read that sleeps is the only case that genuinely needs
+3. **A regular-file read that sleeps is the only case that needs
    one**, and if the block layer is submit-plus-completion, driving the read as
    a state machine may need **zero**. That is the direction Linux was
    travelling and could not finish, because it had to keep every existing
@@ -395,8 +395,8 @@ Specific checks this phase owes, named now so they are not invented later:
 
 ## Known holes, carried deliberately
 
-- **No write path.** The format is read-only and the phase is honest about
-  that: "zero on-disk-write risk" is the roadmap's phrase and the point of
+- **No write path.** The format is read-only:
+  "zero on-disk-write risk" is the roadmap's phrase and the point of
   choosing a third-party format at all.
 - **No page cache.** A read goes to the device. Whether that is affordable is a
   measurement this phase should take rather than assume, and a cache is a
@@ -452,7 +452,7 @@ Three opcodes, and each exists to pay one of the debts `011` closed with:
 | Opcode | What it proves |
 |---|---|
 | `Duplicate` | A completion carries **authority**, narrowed on arrival |
-| `Timer` | An operation whose honest answer is *not yet*, and the first blocking wait |
+| `Timer` | An operation whose answer is *not yet*, and the first blocking wait |
 | `Cancel` | An operation ends early **with its own completion**, never with the target's |
 
 ### What had to move first
@@ -485,7 +485,7 @@ program) gives it back without being told to.
 The arithmetic went to `libs/handle-space` as `Quota`, two counts in one word so
 the promise-to-handle transition is a single compare-and-exchange. Its overflow
 test found a real edge on the first run: `reserve` could carry a full promise
-half into the held half. Not reachable through a quota of 64, which is exactly
+half into the held half. Not reachable through a quota of 64, which is
 why it had to be right.
 
 ### What the checks are, and the one that could not fail
@@ -608,7 +608,7 @@ accounting says work is outstanding for ever.
 
 **No grace period, no refcount**: `012` section 10's third consequence, and the
 easiest to violate by accident. A teardown that waits for a count to reach zero
-*eventually* is precisely the out-of-line cancellation that took io_uring six
+*eventually* is the out-of-line cancellation that took io_uring six
 years to undo.
 
 ### The part that needed no code
@@ -617,7 +617,7 @@ D-151's third terminal path is "a retired program's", and D-163 had already
 made the reservation a value holding an `Arc` to its table. A program that dies
 holding a promise leaves the table alive exactly as long as the promise, and
 the destructor gives the slot back and lets the table go. The teardown drops
-its reference and the table simply does not leave.
+its reference and the table does not leave.
 
 That is *checked* rather than asserted: the check watches the table through a
 `Weak`, spends the promise against it after its owner is gone (surviving and
@@ -881,7 +881,7 @@ enforces it.
 ### What the enum did
 
 Adding a `Node` variant was a compile error in every match that handles one,
-which is exactly what slice 7's enum-dispatch decision was for: a fourth backend
+which is what slice 7's enum-dispatch decision was for: a fourth backend
 is a build failure rather than a number that means nothing.
 
 ### The corpus caught a check again
@@ -1100,7 +1100,7 @@ fifth is real, and the boot that added D-178's identity probe answered it:
 `(0xAB, 0x83)` is the same keyboard when nothing rewrites it, which is what
 QEMU answers. So VMware reports its translation bit clear, passes the check
 that reads that bit, and translates anyway. The decoder is being fed set 1
-while it decodes set 2, which is precisely the symptom that started this: keys
+while it decodes set 2, which is the symptom that started this: keys
 are accepted and nothing happens.
 
 Two checks on the same boot disagreed, and the one that could not be lied to
@@ -1149,7 +1149,7 @@ write here.
 **What the four boots were worth.** Three defects and a rule apiece, none of
 them findable on QEMU, in planned slices whose current phase-close evidence
 those boots did not supply: a driver shipped to a
-machine with no such device, four load-bearing paging checks that had never
+machine with no such device, four paging checks that had never
 executed anywhere but one emulator, and a keyboard whose configuration byte and
 whose behaviour disagree. **A second machine does not re-run the checks; it
 discovers which of them were about the first machine.**
@@ -1258,7 +1258,7 @@ or odd scope paths and an unsealed topology refuse isolation (D-371). Bus
 mastering is gated on both active DMA and interrupt boundaries for that exact
 function: `admit_bus_master` consumes a `DmaDomain` and an
 `InterruptIsolation`, so there is no path that reaches a doorbell without both
-fences in place. A degraded boot without the IOMMU device exists precisely to
+fences in place. A degraded boot without the IOMMU device exists to
 prove the refusal fires.
 
 D-372 closes the interrupt side of the same admission. The unique DMAR must
