@@ -1,30 +1,15 @@
-//! An NVMe controller, polled.
+//! A polled NVMe controller: `libs/nvme` owns every number, `wost` the accesses and frames.
 //!
-//! `libs/nvme` owns every number; `wost` owns the memory-mapped accesses and
-//! the frames. What is here is the sequence: bring a controller up, ask it what
-//! it is, build one I/O queue pair, and read a block.
-//!
-//! **Polled is what makes this affordable** (`012` §2). `Create I/O Completion
-//! Queue` with `IEN = 0` disables interrupts for that queue, which removes
-//! "this kernel has no interrupt sharing" from the critical path entirely. The
-//! cost is that a read spins. D-200 confines that polling to the one file
-//! worker, where timer and input interrupts may preempt it; `RingEnter` only
-//! admits the request. PW-704 requires a measured workload before replacing it.
-//!
-//! **Three things decide whether this works at all, and none is optional.**
-//! Bus master must be on or the controller cannot DMA and *there is no error
-//! anywhere to read*. The PCI lease withholds it until controller-disable
-//! readback is exact. The register window must be mapped **uncacheable**;
-//! write-back is a silent, hard-to-debug bug. And `CAP` is read, never assumed:
-//! the queue size, the doorbell stride, the timeout and the page-size range all
-//! come from it, and `012` §11 records that VMware's values are unmeasured.
-//!
-//! **The ring parallel is a trap.** This looks like `kernel::queue` and is not:
-//! there is no completion tail to read, entries are found by their phase tag,
-//! completions are matched by command identifier rather than by slot, and
-//! capacity is `size - 1`. The arithmetic is shared through `libs/nvme`; the
-//! structure is not (D-169).
+//! Polled (`IEN = 0`, `012` §2) to keep interrupt sharing off the critical path: a read spins
+//! only in the file worker, `RingEnter` only admits it, and replacing it needs a measured load.
+//! Bus master must be on for DMA and its absence reports no error; the PCI lease withholds it
+//! until controller-disable readback is exact. The register window must be mapped uncacheable,
+//! since write-back is a silent bug. `CAP` is read, never assumed: queue size, doorbell stride,
+//! timeout and page-size range come from it, and VMware's values are unmeasured (`012` §11).
+//! Unlike `kernel::queue` there is no completion tail: entries are found by their phase tag,
+//! matched by command identifier and not by slot, and capacity is `size - 1`.
 
+use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::Ordering;
 
@@ -65,27 +50,17 @@ pub(crate) use selftest::{
     unmapped_write_is_fenced_for_test,
 };
 
-/// Entries in the queues this driver builds.
-///
-/// Small: one command is outstanding at a time while the path is polled, and a
-/// deeper queue would be depth nothing uses. It is clamped against `CAP.MQES`
-/// rather than assumed, because a controller may offer fewer.
+/// Entries in each queue: small, since one polled command is outstanding at a time, and
+/// clamped against `CAP.MQES` because a controller may offer fewer.
 const WANTED_ENTRIES: u32 = 8;
 
 /// The identifier of the one I/O queue pair.
 const IO_QUEUE: u16 = 1;
 
-/// The namespace this driver reads from.
-///
-/// One, which is the first and the only one QEMU's controller presents. A
-/// driver that enumerated namespaces would ask `Identify` for the list; this
-/// one reads the namespace it was told about and says so.
+/// The namespace this driver reads: the first, and the only one QEMU presents; none is enumerated.
 const NAMESPACE: u32 = 1;
 
-/// How many completion reads boot may attempt before the clock is calibrated.
-///
-/// Once calibrated, the command deadline is real time instead. The attempt
-/// bound keeps early bring-up finite before that service exists (D-200).
+/// Completion reads a command may poll before the clock is calibrated, so bring-up stays finite.
 const POLL_ATTEMPTS: u32 = 5_000_000;
 
 /// Real-time bound for one command once the monotonic clock exists.
@@ -94,18 +69,15 @@ const COMMAND_TIMEOUT_MS: u64 = 5_000;
 /// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
 pub(crate) struct Controller {
-    /// Where the registers are readable. Kept so a check can ask **how they
-    /// were mapped**: a register file mapped write-back is a driver whose
-    /// writes arrive when the cache feels like it, and nothing about the
-    /// driver's behaviour would say so on an emulator.
+    /// Where the registers are readable, so a check can prove them uncacheable; on an emulator a
+    /// write-back mapping changes nothing the driver can see.
     #[cfg(feature = "selftest")]
     observed_window: u64,
     registers: Option<MappedBar>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
-    /// The next command identifier. Wrapping is fine: a completion is matched
-    /// by it and only one command is outstanding at a time.
+    /// The next command identifier; wrapping is safe while one command is outstanding at a time.
     next_id: u16,
     #[cfg(feature = "selftest")]
     published_commands: u32,
@@ -126,8 +98,7 @@ pub(crate) struct Controller {
     /// Queue creations which crossed namespace validation during the witness.
     #[cfg(feature = "selftest")]
     intercepted_io_queue_creations: u32,
-    /// Publish the next transfer buffer without mapping it, so a check can
-    /// watch the domain refuse the device.
+    /// Publish the next transfer buffer unmapped, so a check can see the domain refuse the device.
     #[cfg(feature = "selftest")]
     leave_data_unmapped: bool,
     /// What `Identify` said, kept so a check can ask rather than infer.
@@ -225,19 +196,15 @@ pub(crate) struct DisabledController {
     capacity: Capacity,
 }
 
-/// A disabled controller whose PCI function accepted bus-master admission.
-///
-/// Only [`DisabledController::admit_bus_master`] constructs this value, so
-/// consuming it is proof that controller start cannot bypass a refused PCI
-/// transition.
+/// A disabled controller whose PCI function accepted bus-master admission; only
+/// `admit_bus_master` builds one, so start cannot bypass a refused PCI transition.
 #[derive(Debug)]
 pub(crate) struct BusMasterAdmittedController(DisabledController);
 
 /// The two ownership-preserving results of bus-master admission.
 #[derive(Debug)]
 pub(crate) enum BusMasterAdmission {
-    /// PCI admitted DMA behind the installed domain and minted controller-start
-    /// authority.
+    /// PCI admitted DMA behind the installed domain and minted controller-start authority.
     Admitted(BusMasterAdmittedController),
     /// PCI refused DMA and returned retirement authority.
     Refused(BusMasterAdmissionFailure),
@@ -253,7 +220,7 @@ pub(crate) struct BusMasterAdmissionFailure {
 /// Why fresh controller proof or the PCI command transition refused DMA.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BusMasterAdmissionError {
-    /// No DMA-remapping domain is installed for the function (D-357).
+    /// No DMA-remapping domain is installed for the function.
     Unisolated,
     /// The admin queues could not be made reachable through the domain.
     QueuesUnreachable,
@@ -265,19 +232,16 @@ pub(crate) enum BusMasterAdmissionError {
     Command(pci_config::EnableError),
 }
 
-impl core::fmt::Display for BusMasterAdmissionError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BusMasterAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unisolated => {
-                core::fmt::Write::write_str(formatter, "no DMA domain isolates the function")
+            Self::Unisolated => f.write_str("no DMA domain isolates the function"),
+            Self::QueuesUnreachable => {
+                f.write_str("the admin queues could not enter the DMA domain")
             }
-            Self::QueuesUnreachable => core::fmt::Write::write_str(
-                formatter,
-                "the admin queues could not enter the DMA domain",
-            ),
-            Self::NotMapped => core::fmt::Write::write_str(formatter, "register BAR is absent"),
-            Self::Observation(reason) => write!(formatter, "controller observation: {reason}"),
-            Self::Command(reason) => write!(formatter, "PCI command: {reason}"),
+            Self::NotMapped => f.write_str("register BAR is absent"),
+            Self::Observation(reason) => write!(f, "controller observation: {reason}"),
+            Self::Command(reason) => write!(f, "PCI command: {reason}"),
         }
     }
 }
@@ -324,25 +288,19 @@ pub(crate) enum BringUpError {
     /// Identify Namespace data did not fit the supported storage contract.
     InvalidNamespace(NamespaceError),
     /// No DMA domain is installed, or the one installed refused a queue or
-    /// transfer buffer, so nothing may be published (D-357).
+    /// transfer buffer, so nothing may be published.
     Isolation,
 }
 
-impl core::fmt::Display for BringUpError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BringUpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotMapped => {
-                core::fmt::Write::write_str(f, "the register window could not be mapped")
-            }
-            Self::NoCommandSet => core::fmt::Write::write_str(f, "no nvm command set"),
-            Self::PageSize => {
-                core::fmt::Write::write_str(f, "this kernel's page size is outside mpsmin..mpsmax")
-            }
-            Self::QueueSize => {
-                core::fmt::Write::write_str(f, "the reported queue size holds nothing")
-            }
-            Self::NoMemory => core::fmt::Write::write_str(f, "no memory for the queues"),
-            Self::NotReady => core::fmt::Write::write_str(f, "the controller never became ready"),
+            Self::NotMapped => f.write_str("the register window could not be mapped"),
+            Self::NoCommandSet => f.write_str("no nvm command set"),
+            Self::PageSize => f.write_str("this kernel's page size is outside mpsmin..mpsmax"),
+            Self::QueueSize => f.write_str("the reported queue size holds nothing"),
+            Self::NoMemory => f.write_str("no memory for the queues"),
+            Self::NotReady => f.write_str("the controller never became ready"),
             Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
             Self::UnexpectedCompletion {
                 queue,
@@ -354,7 +312,7 @@ impl core::fmt::Display for BringUpError {
             ),
             Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason}"),
             Self::InvalidNamespace(reason) => write!(f, "an invalid namespace: {reason}"),
-            Self::Isolation => core::fmt::Write::write_str(f, "no dma domain admits the buffer"),
+            Self::Isolation => f.write_str("no dma domain admits the buffer"),
         }
     }
 }
@@ -492,10 +450,6 @@ impl Drop for Controller {
     }
 }
 
-/// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`.
-///
-/// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
-/// fatal status does not mean the controller can still reach host memory.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Readiness {
     Ready,
@@ -522,13 +476,16 @@ fn stop_controller(controller: &mut Controller) -> Result<ControllerStopped<'_>,
     })
 }
 
+/// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`; `CSTS.CFS` ends an enable wait.
+/// During disable observed `RDY = 0` wins: fatal status does not mean the controller can still
+/// reach host memory.
 fn wait_for_ready(
     registers: &mut MappedBar,
     capabilities: Capabilities,
     wanted: Readiness,
 ) -> Result<(), BringUpError> {
     let timeout_ms = capabilities.timeout_ms().max(500);
-    let fallback = (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32;
+    let fallback = fallback_polls(timeout_ms);
     let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
     while limit.permit(clock_ns()) {
         let bits = read(registers, register::CSTS)?;
@@ -546,6 +503,11 @@ fn wait_for_ready(
         core::hint::spin_loop();
     }
     Err(BringUpError::NotReady)
+}
+
+/// Register polls a readiness wait may make before the clock is calibrated; the cap fits `u32`.
+fn fallback_polls(timeout_ms: u64) -> u32 {
+    (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32
 }
 
 /// Read the monotonic clock only after calibration has made it meaningful.
@@ -580,10 +542,8 @@ fn write_submission(
     result
 }
 
-/// Bring the controller up and say what it is.
-///
-/// Reports a retirement-qualified failure: the selector may keep booting
-/// without storage, but may try a sibling only when teardown was exact.
+/// Bring the controller up and say what it is; a failure carries its retirement, so the selector
+/// may boot without storage but may try a sibling only when teardown was exact.
 pub(crate) fn start(
     context: &mut ThreadContext,
     device: &mut crate::pci::Device,
@@ -629,12 +589,9 @@ pub(crate) fn start(
 }
 
 impl DisabledController {
-    /// The admission steps: the installed domain reaches the admin queues and
-    /// mints its proof, then the fresh disabled observation reaches PCI.
-    ///
-    /// Separate from [`admit_bus_master`](Self::admit_bus_master) so that each
-    /// refusal builds a small value rather than a whole admission result: the
-    /// debug build gives every such temporary its own stack slot (D-287).
+    /// The installed domain reaches the admin queues and mints its proof, then a fresh disabled
+    /// observation reaches PCI. Apart from `admit_bus_master` so each refusal builds only a small
+    /// error: the debug build gives every such temporary its own stack slot.
     fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
         let mut installed = crate::iommu::installed();
         let Some(isolation) = installed.as_mut() else {
@@ -701,11 +658,8 @@ impl DisabledController {
     }
 }
 
-/// The one controller, kept so anything that wants blocks can ask.
-///
-/// A `static` rather than a value threaded through boot because the driver
-/// outlives the function that built it. Runtime reads reach it only through
-/// the file worker (D-200).
+/// The one controller, a `static` because it outlives the function that built it; runtime
+/// reads reach it only through the file worker, where timer and input interrupts may preempt.
 static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
 
 static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =

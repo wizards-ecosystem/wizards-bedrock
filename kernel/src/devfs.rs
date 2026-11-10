@@ -1,15 +1,7 @@
-//! Names that yield devices rather than byte-bearing files.
-//!
-//! Lookup returns [`Node::Device`](crate::vfs::Node::Device), while reads take
-//! [`File`](crate::vfs::File), enforcing the distinction in types (D-172).
+//! Device names: lookup returns `Node::Device` while reads take `File`, so types keep them apart.
 
-/// A device this kernel can name.
-///
-/// An enum rather than an index into a registry, so a new device is a
-/// compile error everywhere that matches on it rather than a number that means
-/// nothing.
+/// A device this kernel can name, an enum so a new device is a compile error at every match.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub(crate) enum Device {
     /// Block storage owned by the claimed controller.
     Storage,
@@ -35,10 +27,7 @@ impl Device {
     }
 }
 
-/// Every device, in listing order.
-///
-/// The host source contract inventories this independently from the enum and
-/// both descriptive matches (D-174).
+/// Every device in listing order; a host contract checks it against the enum and both matches.
 pub(crate) const DEVICES: [Device; 2] = [Device::Storage, Device::Console];
 
 /// Find `name` among the devices.

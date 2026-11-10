@@ -309,8 +309,7 @@ pub(crate) fn measure_buffered_read_for_test() -> Option<(u64, u64)> {
     controller.measure_buffered_read(buffer)
 }
 
-/// Whether the installed domain mints a proof and the unit walks the kernel's
-/// root table, for the controller that was kept.
+/// Whether the installed domain mints a proof and the unit walks the kernel's root table.
 #[cfg(feature = "selftest")]
 pub(crate) fn isolation_is_active_for_test() -> Option<(bool, bool)> {
     let held = CONTROLLER.lock();
@@ -323,8 +322,7 @@ pub(crate) fn isolation_is_active_for_test() -> Option<(bool, bool)> {
     ))
 }
 
-/// The pages the domain reaches, read back from its tables, beside the frames
-/// of every live queue, both sorted.
+/// The pages the domain's tables reach beside the frames of every live queue, both sorted.
 #[cfg(feature = "selftest")]
 pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc::vec::Vec<u64>)> {
     let held = CONTROLLER.lock();
@@ -337,8 +335,7 @@ pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc
     Some((reachable, expected))
 }
 
-/// Ask the production proof door to read the live installed unit without
-/// creating a weaker self-test-only translation transition.
+/// Ask the production proof door about the live unit, adding no self-test translation path.
 #[cfg(feature = "selftest")]
 pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
     let held = CONTROLLER.lock();
@@ -366,12 +363,9 @@ pub(crate) struct FenceWitness {
     pub(crate) faulted: bool,
 }
 
-/// Publish a read into the kept buffer without mapping it, then ask the unit
-/// and the buffer what happened.
-///
-/// A priming read maps and unmaps the same frame first, so a unit whose cache
-/// was not invalidated at the unmap would still translate the frame and let
-/// the device write through.
+/// Publish a read into the kept buffer unmapped, then ask the unit and the buffer what happened.
+/// A priming read maps and unmaps the frame first, so a unit whose cache the unmap did not
+/// invalidate would still translate it and let the device write through.
 #[cfg(feature = "selftest")]
 pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
     const PATTERN: u8 = 0xA5;

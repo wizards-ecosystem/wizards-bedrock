@@ -7,15 +7,13 @@ use x86_paging::PAGE_SIZE;
 
 use super::{
     BringUpError, Controller, DisabledController, DmaState, PrepareFailure, PrepareOutcome,
-    QueuePair, WANTED_ENTRIES, clock_ns, read, write,
+    QueuePair, WANTED_ENTRIES, clock_ns, fallback_polls, read, write,
 };
 use crate::mem;
 use crate::thread::ThreadContext;
 
-/// Bring a controller up on its mapped register window.
-///
-/// The specification's initialisation sequence, in order, with the two waits
-/// bounded by `CAP.TO` rather than by a number chosen here.
+/// Bring a controller up on its mapped register window: the specification's initialisation
+/// sequence in order, with both waits bounded by `CAP.TO`.
 pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
     #[cfg(feature = "selftest")]
     let observed_window = registers.address();
@@ -75,8 +73,7 @@ enum DisabledRegisterWrite {
 fn read_capabilities(registers: MappedBar) -> CapabilityRead {
     let preparation = ControllerPreparation::new(registers);
 
-    // `CAP` in two halves, because an `MmioRegion` makes thirty-two-bit
-    // accesses. The specification allows it for this register.
+    // `CAP` in two halves: an `MmioRegion` makes 32-bit accesses, which this register allows.
     let (preparation, low) = match preparation.access(|registers| read(registers, register::CAP)) {
         Ok(result) => result,
         Err(failure) => {
@@ -247,8 +244,7 @@ fn finish_preparation(
     capacity: Capacity,
     #[cfg(feature = "selftest")] observed_window: u64,
 ) -> PrepareOutcome {
-    // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the
-    // specification's fixed logarithms.
+    // `MPS` is the host page size as `log2 - 12`; the entry sizes are fixed logarithms.
     let page_shift = PAGE_SIZE.trailing_zeros() - 12;
     let cc = configuration::ENABLE
         | (page_shift << configuration::PAGE_SIZE_SHIFT)
@@ -332,7 +328,7 @@ fn wait_for_disabled_preparation(
     capabilities: Capabilities,
 ) -> PreparationWait {
     let timeout_ms = capabilities.timeout_ms().max(500);
-    let fallback = (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32;
+    let fallback = fallback_polls(timeout_ms);
     let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
     while limit.permit(clock_ns()) {
         let (returned, bits) = match preparation.access(|registers| read(registers, register::CSTS))
