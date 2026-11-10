@@ -2,6 +2,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use syn::spanned::Spanned;
@@ -36,6 +37,37 @@ pub(crate) fn remove_directory_link(path: &Path) {
     #[cfg(not(windows))]
     let removed = std::fs::remove_file(path);
     removed.unwrap_or_else(|error| panic!("remove directory link {}: {error}", path.display()));
+}
+
+pub(crate) fn create_directory_symlink(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_dir(target, link);
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    created.unwrap_or_else(|error| panic!("create directory symlink {}: {error}", link.display()));
+}
+
+pub(crate) fn create_file_symlink(target: &Path, link: &Path) {
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    created.unwrap_or_else(|error| panic!("create file symlink {}: {error}", link.display()));
+}
+
+pub(crate) fn repository_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask sits below the workspace root")
+}
+
+pub(crate) fn success_status() -> ExitStatus {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+
+    ExitStatus::from_raw(0)
 }
 
 fn reserve_directory_with(parent: &Path, label: &str, next: &AtomicU64) -> PathBuf {

@@ -9,6 +9,7 @@ use super::debug::*;
 use crate::contracts::abi::lexers::{compact_cpp, rust_function_body, rust_without_comments};
 
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink};
 
 struct QemuFixture {
     root: PathBuf,
@@ -29,26 +30,6 @@ impl Drop for QemuFixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating storage file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating storage file symlink");
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating QEMU directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating QEMU directory symlink");
 }
 
 fn publish_fixture(parent: &Path, bytes: &'static [u8]) -> Result<PathBuf> {

@@ -9,6 +9,7 @@ use super::source::{
     restore_file, write_source_with,
 };
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink};
 
 const CHILD_STATE: &str = "WIZARD_MUTATION_CHILD_STATE";
 const CHILD_MARKER: &str = "WIZARD_MUTATION_CHILD_MARKER";
@@ -544,26 +545,6 @@ fn mutation_session(name: &str) -> (TempTree, Paths) {
         ],
     );
     (temp, Paths::new(repository, Some(&target)))
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating file symlink");
 }
 
 #[test]

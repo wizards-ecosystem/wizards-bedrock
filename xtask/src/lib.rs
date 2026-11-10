@@ -22,6 +22,7 @@ mod debugger;
 pub mod decisions;
 pub mod elf;
 mod evidence;
+mod files;
 mod gate;
 mod git;
 pub mod image;

@@ -1,16 +1,7 @@
 use std::fs::File;
 
 use super::*;
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating SPDX file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating SPDX file symlink");
-}
+use crate::test_support::create_file_symlink;
 
 fn repository() -> Paths {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))

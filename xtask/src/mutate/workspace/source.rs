@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::files::is_reparse_point;
 use crate::paths::Paths;
 use crate::sha256;
 
 use super::journal::is_hex;
 use super::tree::{
-    canonical_existing_real_directory, is_reparse_point, open_real_file, prepare_real_child,
-    require_direct_file, require_direct_file_if_present, require_real_child,
-    require_real_directory_metadata,
+    canonical_existing_real_directory, open_real_file, prepare_real_child, require_direct_file,
+    require_direct_file_if_present, require_real_child, require_real_directory_metadata,
 };
 use super::{STATE_ROOT_NAME, read_bounded_bytes};
 

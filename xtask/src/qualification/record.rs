@@ -570,17 +570,17 @@ pub(super) fn add_digest(record: &mut Record, prefix: &str, path: &Path) -> Resu
     Ok(())
 }
 
-pub(super) fn validate_field(key: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_field(owner: &str, key: &str, value: &str) -> Result<()> {
     ensure!(
         !key.is_empty()
             && key.bytes().all(|byte| {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte)
             }),
-        "invalid qualification key `{key}`"
+        "invalid {owner} key `{key}`"
     );
     ensure!(
         !value.contains(['\r', '\n', '\0']),
-        "qualification value for `{key}` contains a forbidden byte"
+        "{owner} value for `{key}` contains a forbidden byte"
     );
     Ok(())
 }
@@ -590,8 +590,4 @@ pub(super) fn is_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
-pub(super) fn is_git_id(value: &str) -> bool {
-    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

@@ -459,7 +459,8 @@ pub(super) fn verify_advisory_report(
     database_revision: &str,
     binding: DatabaseBinding,
 ) -> Result<AdvisoryFacts> {
-    let report = parse_json(bytes)?;
+    const JSON: &str = "cargo-audit JSON";
+    let report = parse_json(bytes, JSON)?;
     let report = json_object(&report, "cargo-audit report")?;
     require_json_fields(
         report,
@@ -473,21 +474,27 @@ pub(super) fn verify_advisory_report(
         "cargo-audit report",
     )?;
 
-    let database = json_object(json_field(report, "database")?, "cargo-audit database")?;
+    let database = json_object(
+        json_field(report, "database", JSON)?,
+        "cargo-audit database",
+    )?;
     require_json_fields(
         database,
         &["advisory-count", "last-commit", "last-updated"],
         "cargo-audit database",
     )?;
-    let advisory_count = json_u64(json_field(database, "advisory-count")?, "advisory-count")?;
+    let advisory_count = json_u64(
+        json_field(database, "advisory-count", JSON)?,
+        "cargo-audit `advisory-count`",
+    )?;
     ensure!(
         advisory_count != 0,
         "cargo-audit report names an empty advisory database"
     );
     let last_updated = match (
         binding,
-        json_field(database, "last-commit")?,
-        json_field(database, "last-updated")?,
+        json_field(database, "last-commit", JSON)?,
+        json_field(database, "last-updated", JSON)?,
     ) {
         (_, JsonValue::String(commit), JsonValue::String(updated)) => {
             ensure!(
@@ -504,17 +511,23 @@ pub(super) fn verify_advisory_report(
         _ => bail!("cargo-audit report has no usable advisory database identity"),
     };
 
-    let lockfile = json_object(json_field(report, "lockfile")?, "cargo-audit lockfile")?;
+    let lockfile = json_object(
+        json_field(report, "lockfile", JSON)?,
+        "cargo-audit lockfile",
+    )?;
     require_json_fields(lockfile, &["dependency-count"], "cargo-audit lockfile")?;
     ensure!(
         json_u64(
-            json_field(lockfile, "dependency-count")?,
-            "dependency-count"
+            json_field(lockfile, "dependency-count", JSON)?,
+            "cargo-audit `dependency-count`"
         )? != 0,
         "cargo-audit report names an empty lockfile"
     );
 
-    let settings = json_object(json_field(report, "settings")?, "cargo-audit settings")?;
+    let settings = json_object(
+        json_field(report, "settings", JSON)?,
+        "cargo-audit settings",
+    )?;
     require_json_fields(
         settings,
         &[
@@ -527,19 +540,31 @@ pub(super) fn verify_advisory_report(
         "cargo-audit settings",
     )?;
     ensure!(
-        json_array(json_field(settings, "target_arch")?, "target_arch")?.is_empty()
-            && json_array(json_field(settings, "target_os")?, "target_os")?.is_empty()
-            && matches!(json_field(settings, "severity")?, JsonValue::Null)
-            && json_array(json_field(settings, "ignore")?, "ignore")?.is_empty()
+        json_array(
+            json_field(settings, "target_arch", JSON)?,
+            "cargo-audit `target_arch`"
+        )?
+        .is_empty()
+            && json_array(
+                json_field(settings, "target_os", JSON)?,
+                "cargo-audit `target_os`"
+            )?
+            .is_empty()
+            && matches!(json_field(settings, "severity", JSON)?, JsonValue::Null)
+            && json_array(
+                json_field(settings, "ignore", JSON)?,
+                "cargo-audit `ignore`"
+            )?
+            .is_empty()
             && json_string_array(
-                json_field(settings, "informational_warnings")?,
-                "informational_warnings"
+                json_field(settings, "informational_warnings", JSON)?,
+                "cargo-audit `informational_warnings`"
             )? == ["unmaintained", "unsound", "notice"],
         "cargo-audit report was generated with different audit settings"
     );
 
     let vulnerabilities = json_object(
-        json_field(report, "vulnerabilities")?,
+        json_field(report, "vulnerabilities", JSON)?,
         "cargo-audit vulnerabilities",
     )?;
     require_json_fields(
@@ -549,14 +574,24 @@ pub(super) fn verify_advisory_report(
     )?;
     ensure!(
         matches!(
-            json_field(vulnerabilities, "found")?,
+            json_field(vulnerabilities, "found", JSON)?,
             JsonValue::Bool(false)
-        ) && json_u64(json_field(vulnerabilities, "count")?, "vulnerability count")? == 0
-            && json_array(json_field(vulnerabilities, "list")?, "vulnerability list")?.is_empty(),
+        ) && json_u64(
+            json_field(vulnerabilities, "count", JSON)?,
+            "cargo-audit `vulnerability count`"
+        )? == 0
+            && json_array(
+                json_field(vulnerabilities, "list", JSON)?,
+                "cargo-audit `vulnerability list`"
+            )?
+            .is_empty(),
         "cargo-audit report is not a consistent vulnerability-free result"
     );
 
-    let warnings = json_object(json_field(report, "warnings")?, "cargo-audit warnings")?;
+    let warnings = json_object(
+        json_field(report, "warnings", JSON)?,
+        "cargo-audit warnings",
+    )?;
     ensure!(
         warnings.is_empty(),
         "cargo-audit report contains a dependency warning"

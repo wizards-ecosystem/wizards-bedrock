@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::rc::Rc;
 
 use super::*;
+use crate::test_support::success_status;
 
 fn expected_fixed_git_environment() -> std::collections::BTreeMap<OsString, OsString> {
     [
@@ -98,20 +99,6 @@ impl PollFailureChild {
         self.killed.set(true);
         Ok(())
     }
-}
-
-#[cfg(unix)]
-fn success_status() -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-
-    ExitStatus::from_raw(0)
-}
-
-#[cfg(windows)]
-fn success_status() -> ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-
-    ExitStatus::from_raw(0)
 }
 
 struct FailingReader;

@@ -3,6 +3,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::files::is_reparse_point;
+
 pub(crate) fn prepare_real_directory_tree(path: &Path, label: &str) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -218,19 +220,6 @@ pub(crate) fn metadata_is_real_directory(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_dir()
         && !metadata.file_type().is_symlink()
         && !is_reparse_point(metadata)
-}
-
-#[cfg(windows)]
-pub(super) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-pub(super) const fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 #[derive(Debug)]

@@ -1,33 +1,7 @@
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink, repository_root};
 
 const IMAGE_SECTORS: u64 = 64 * 1024 * 1024 / 512;
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating VMware directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating VMware directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating VMware file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating VMware file symlink");
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace above xtask")
-        .to_path_buf()
-}
 
 #[test]
 fn vmware_generation_never_writes_through_preexisting_output_links() {
@@ -92,7 +66,7 @@ fn storage_records() -> String {
 }
 
 fn selftest_transcript_with_isolation(isolation: &str) -> String {
-    let expected = expected_selftest_checks(&repository_root()).expect("current check count");
+    let expected = expected_selftest_checks(repository_root()).expect("current check count");
     let mut transcript = String::new();
     // The order the 2026-10-20 VMware self-test boot emitted: storage is
     // selected before user isolation, and isolation before the APIC.
@@ -138,7 +112,7 @@ fn selftest_transcript() -> String {
 
 #[test]
 fn the_delayed_read_marker_matches_the_unique_kernel_format_literal() {
-    let kernel = crate::contracts::module_source(&repository_root(), "kernel/src/selftest.rs");
+    let kernel = crate::contracts::module_source(repository_root(), "kernel/src/selftest.rs");
     let prefix = "\"selftest: delayed read evidence ";
     let occurrences = kernel.match_indices(prefix).collect::<Vec<_>>();
     assert_eq!(
@@ -222,11 +196,11 @@ fn the_vmware_dma_handoff_marker_is_required_by_both_selectors() {
         (Kernel::SelfTest, selftest_transcript()),
         (Kernel::Shipped, shipped_transcript()),
     ] {
-        verify_transcript(&root, selector, transcript.as_bytes())
+        verify_transcript(root, selector, transcript.as_bytes())
             .expect("canonical VMware DMA witness");
         let omitted = transcript.replacen(&record, "", 1);
         assert!(
-            verify_transcript(&root, selector, omitted.as_bytes()).is_err(),
+            verify_transcript(root, selector, omitted.as_bytes()).is_err(),
             "selector accepted a transcript without its VMware DMA witness"
         );
     }
@@ -261,11 +235,11 @@ fn the_vmware_isa_dma_marker_is_required_by_both_selectors() {
         (Kernel::SelfTest, selftest_transcript()),
         (Kernel::Shipped, shipped_transcript()),
     ] {
-        verify_transcript(&root, selector, transcript.as_bytes())
+        verify_transcript(root, selector, transcript.as_bytes())
             .expect("canonical VMware quiesce witness");
         let omitted = transcript.replacen(&record, "", 1);
         assert!(
-            verify_transcript(&root, selector, omitted.as_bytes()).is_err(),
+            verify_transcript(root, selector, omitted.as_bytes()).is_err(),
             "selector accepted a transcript without its VMware quiesce witness"
         );
     }
@@ -290,8 +264,8 @@ fn swapped(transcript: &str, first: TranscriptMarker, second: TranscriptMarker) 
 fn selftest_verdict_counts_use_one_canonical_decimal_grammar() {
     let root = repository_root();
     let valid = selftest_transcript();
-    let expected = expected_selftest_checks(&root).unwrap();
-    verify_transcript(&root, Kernel::SelfTest, valid.as_bytes()).unwrap();
+    let expected = expected_selftest_checks(root).unwrap();
+    verify_transcript(root, Kernel::SelfTest, valid.as_bytes()).unwrap();
 
     for forged in [
         valid.replace(
@@ -306,7 +280,7 @@ fn selftest_verdict_counts_use_one_canonical_decimal_grammar() {
         valid.replace(&format!("passed={expected}"), "passed=18446744073709551616"),
         valid.replace(&format!("passed={expected}"), "passed=\u{0661}"),
     ] {
-        assert!(verify_transcript(&root, Kernel::SelfTest, forged.as_bytes()).is_err());
+        assert!(verify_transcript(root, Kernel::SelfTest, forged.as_bytes()).is_err());
     }
 }
 
@@ -314,7 +288,7 @@ fn selftest_verdict_counts_use_one_canonical_decimal_grammar() {
 fn vmware_selftest_verdict_requires_single_ascii_spaces() {
     let root = repository_root();
     let valid = selftest_transcript();
-    verify_transcript(&root, Kernel::SelfTest, valid.as_bytes()).unwrap();
+    verify_transcript(root, Kernel::SelfTest, valid.as_bytes()).unwrap();
     let verdict = format!("{}\n", valid.lines().last().expect("verdict record"));
 
     for forged in [
@@ -328,7 +302,7 @@ fn vmware_selftest_verdict_requires_single_ascii_spaces() {
         valid.trim_end_matches('\n').to_string(),
     ] {
         assert!(
-            verify_transcript(&root, Kernel::SelfTest, forged.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::SelfTest, forged.as_bytes()).is_err(),
             "accepted noncanonical verdict spacing: {forged:?}"
         );
     }
@@ -396,7 +370,7 @@ fn vmware_isolation_records_are_selector_specific_exact_and_unique() {
             shipped_transcript_with_isolation(FIXTURE_SHIPPED_SHARED_ISOLATION),
         ),
     ] {
-        verify_transcript(&root, kernel, transcript.as_bytes())
+        verify_transcript(root, kernel, transcript.as_bytes())
             .expect("selector-appropriate isolation evidence");
     }
 
@@ -451,7 +425,7 @@ fn vmware_isolation_records_are_selector_specific_exact_and_unique() {
     ];
     for (kernel, transcript) in rejected {
         assert!(
-            verify_transcript(&root, kernel, transcript.as_bytes()).is_err(),
+            verify_transcript(root, kernel, transcript.as_bytes()).is_err(),
             "accepted missing, ambiguous, cross-selector or inexact isolation evidence"
         );
     }
@@ -464,8 +438,8 @@ fn uart_crlf_and_lf_are_both_valid_transcript_terminators() {
         (Kernel::SelfTest, selftest_transcript()),
         (Kernel::Shipped, shipped_transcript()),
     ] {
-        verify_transcript(&root, kernel, transcript.as_bytes()).unwrap();
-        verify_transcript(&root, kernel, transcript.replace('\n', "\r\n").as_bytes()).unwrap();
+        verify_transcript(root, kernel, transcript.as_bytes()).unwrap();
+        verify_transcript(root, kernel, transcript.replace('\n', "\r\n").as_bytes()).unwrap();
     }
 }
 
@@ -479,7 +453,7 @@ fn only_a_carriage_return_paired_with_line_feed_is_allowed() {
         valid.replace('\n', "\r\r\n"),
         format!("{valid}\r"),
     ] {
-        assert!(verify_transcript(&root, Kernel::SelfTest, poisoned.as_bytes()).is_err());
+        assert!(verify_transcript(root, Kernel::SelfTest, poisoned.as_bytes()).is_err());
     }
 }
 
@@ -487,12 +461,12 @@ fn only_a_carriage_return_paired_with_line_feed_is_allowed() {
 fn a_vmware_selftest_transcript_is_complete_current_and_unambiguous() {
     let root = repository_root();
     let valid = selftest_transcript();
-    assert!(verify_transcript(&root, Kernel::SelfTest, valid.as_bytes()).is_ok());
+    assert!(verify_transcript(root, Kernel::SelfTest, valid.as_bytes()).is_ok());
 
     for marker in SELFTEST_MARKERS {
         let omitted = valid.replacen(marker.example(), "omitted", 1);
         assert!(
-            verify_transcript(&root, Kernel::SelfTest, omitted.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::SelfTest, omitted.as_bytes()).is_err(),
             "omitting {} was accepted",
             marker.example()
         );
@@ -503,28 +477,28 @@ fn a_vmware_selftest_transcript_is_complete_current_and_unambiguous() {
         &format!("{marker_record}{marker_record}"),
         1,
     );
-    assert!(verify_transcript(&root, Kernel::SelfTest, duplicated_marker.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, duplicated_marker.as_bytes()).is_err());
     let duplicated = format!("{valid}{}", valid.lines().last().expect("verdict line"));
-    assert!(verify_transcript(&root, Kernel::SelfTest, duplicated.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, duplicated.as_bytes()).is_err());
     let reordered = swapped(&valid, SELFTEST_MARKERS[4], SELFTEST_MARKERS[5]);
-    assert!(verify_transcript(&root, Kernel::SelfTest, reordered.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, reordered.as_bytes()).is_err());
     let split_compound = valid.replace(", compacted", "\n[info ] , compacted");
-    assert!(verify_transcript(&root, Kernel::SelfTest, split_compound.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, split_compound.as_bytes()).is_err());
     let merged_steps = valid.replace(
         "\n[info ] selftest: a thread crosses",
         " [info ] selftest: a thread crosses",
     );
-    assert!(verify_transcript(&root, Kernel::SelfTest, merged_steps.as_bytes()).is_err());
-    let expected = expected_selftest_checks(&root).unwrap();
+    assert!(verify_transcript(root, Kernel::SelfTest, merged_steps.as_bytes()).is_err());
+    let expected = expected_selftest_checks(root).unwrap();
     let stale = valid.replace(
         &format!("passed={expected}"),
         &format!("passed={}", expected - 1),
     );
-    assert!(verify_transcript(&root, Kernel::SelfTest, stale.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, stale.as_bytes()).is_err());
     let panicked = format!("{valid}[error] KERNEL PANIC\n");
-    assert!(verify_transcript(&root, Kernel::SelfTest, panicked.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, panicked.as_bytes()).is_err());
     let failed = format!("{valid}[error] selftest: injected defect FAILED\n");
-    assert!(verify_transcript(&root, Kernel::SelfTest, failed.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, failed.as_bytes()).is_err());
     for poisoned in [
         valid.trim_end_matches('\n').to_string(),
         valid.replacen("[info ]", "[info\r ]", 1),
@@ -532,7 +506,7 @@ fn a_vmware_selftest_transcript_is_complete_current_and_unambiguous() {
         valid.replacen("[info ]", "[info\u{8} ]", 1),
     ] {
         assert!(
-            verify_transcript(&root, Kernel::SelfTest, poisoned.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::SelfTest, poisoned.as_bytes()).is_err(),
             "accepted a partial or terminal-active transcript: {poisoned:?}"
         );
     }
@@ -540,7 +514,7 @@ fn a_vmware_selftest_transcript_is_complete_current_and_unambiguous() {
     invalid_utf8.push(0xff);
     invalid_utf8.push(b'\n');
     invalid_utf8.extend_from_slice(valid.as_bytes());
-    assert!(verify_transcript(&root, Kernel::SelfTest, &invalid_utf8).is_err());
+    assert!(verify_transcript(root, Kernel::SelfTest, &invalid_utf8).is_err());
 }
 
 #[test]
@@ -557,7 +531,7 @@ fn a_nul_transcript_is_rejected_before_canonical_text_validation() {
                 canonical_validation_started.set(true);
                 Ok(())
             },
-            || expected_selftest_checks(&root),
+            || expected_selftest_checks(root),
         )
         .is_err()
     );
@@ -596,22 +570,22 @@ fn real_vmware_captures_satisfy_only_their_own_selector() {
 fn a_shipped_vmware_transcript_proves_liveness_without_selftest_substitution() {
     let root = repository_root();
     let valid = shipped_transcript();
-    assert!(verify_transcript(&root, Kernel::Shipped, valid.as_bytes()).is_ok());
+    assert!(verify_transcript(root, Kernel::Shipped, valid.as_bytes()).is_ok());
 
     for marker in SHIPPED_MARKERS {
         let omitted = valid.replacen(marker.example(), "omitted", 1);
         assert!(
-            verify_transcript(&root, Kernel::Shipped, omitted.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::Shipped, omitted.as_bytes()).is_err(),
             "omitting {} was accepted",
             marker.example()
         );
     }
     let reordered = swapped(&valid, SHIPPED_MARKERS[0], SHIPPED_MARKERS[1]);
-    assert!(verify_transcript(&root, Kernel::Shipped, reordered.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::Shipped, reordered.as_bytes()).is_err());
     let selftest = format!("{valid}selftest: verdict v1 PASS passed=1 failed=0 expected=1\n");
-    assert!(verify_transcript(&root, Kernel::Shipped, selftest.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::Shipped, selftest.as_bytes()).is_err());
     let refusal = format!("{valid}user: no program: refused\n");
-    assert!(verify_transcript(&root, Kernel::Shipped, refusal.as_bytes()).is_err());
+    assert!(verify_transcript(root, Kernel::Shipped, refusal.as_bytes()).is_err());
 }
 
 #[test]
@@ -629,13 +603,13 @@ fn shipped_vmware_requires_execution_after_entry_not_launch_announcements() {
     ] {
         let forged = valid.replacen(record, replacement, 1);
         assert!(
-            verify_transcript(&root, Kernel::Shipped, forged.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::Shipped, forged.as_bytes()).is_err(),
             "accepted {replacement:?}"
         );
     }
-    assert!(verify_transcript(&root, Kernel::Shipped, valid.as_bytes()).is_ok());
+    assert!(verify_transcript(root, Kernel::Shipped, valid.as_bytes()).is_ok());
     let rescheduled = format!("{record}{}", valid.replacen(record, "", 1));
-    assert!(verify_transcript(&root, Kernel::Shipped, rescheduled.as_bytes()).is_ok());
+    assert!(verify_transcript(root, Kernel::Shipped, rescheduled.as_bytes()).is_ok());
 }
 
 #[test]
@@ -657,7 +631,7 @@ fn vmware_evidence_requires_canonical_info_records() {
                 valid.replacen(&canonical, &format!("{canonical} trailing"), 1),
             ] {
                 assert!(
-                    verify_transcript(&root, kernel, forged.as_bytes()).is_err(),
+                    verify_transcript(root, kernel, forged.as_bytes()).is_err(),
                     "accepted a noncanonical record for {}",
                     marker.example()
                 );
@@ -667,7 +641,7 @@ fn vmware_evidence_requires_canonical_info_records() {
         let first = format!("\n[info ] {}", markers[1].example());
         let merged = valid.replacen(&first, &format!(" [info ] {}", markers[1].example()), 1);
         assert!(
-            verify_transcript(&root, kernel, merged.as_bytes()).is_err(),
+            verify_transcript(root, kernel, merged.as_bytes()).is_err(),
             "accepted two execution records on one line"
         );
     }
@@ -682,7 +656,7 @@ fn vmware_evidence_requires_canonical_info_records() {
         ),
     ] {
         assert!(
-            verify_transcript(&root, Kernel::SelfTest, forged.as_bytes()).is_err(),
+            verify_transcript(root, Kernel::SelfTest, forged.as_bytes()).is_err(),
             "accepted a noncanonical self-test verdict"
         );
     }
@@ -697,7 +671,7 @@ fn a_vmware_transcript_without_translation_is_refused() {
         (Kernel::Shipped, shipped_transcript()),
     ] {
         let untranslated = valid.replacen(&storage_records(), &storage, 1);
-        let error = verify_transcript(&root, kernel, untranslated.as_bytes()).unwrap_err();
+        let error = verify_transcript(root, kernel, untranslated.as_bytes()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -719,7 +693,7 @@ fn a_vmware_translation_after_storage_is_refused() {
         (Kernel::Shipped, shipped_transcript()),
     ] {
         let reordered = valid.replacen(&storage_records(), &late, 1);
-        let error = verify_transcript(&root, kernel, reordered.as_bytes()).unwrap_err();
+        let error = verify_transcript(root, kernel, reordered.as_bytes()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -740,9 +714,9 @@ fn two_vmware_translations_before_storage_qualify() {
         (Kernel::Shipped, shipped_transcript()),
     ] {
         assert!(valid.contains(&storage_records()));
-        verify_transcript(&root, kernel, valid.as_bytes()).unwrap();
+        verify_transcript(root, kernel, valid.as_bytes()).unwrap();
         let spaced = valid.replacen(&storage_records(), &separated, 1);
-        verify_transcript(&root, kernel, spaced.as_bytes()).unwrap();
+        verify_transcript(root, kernel, spaced.as_bytes()).unwrap();
     }
 }
 
@@ -758,7 +732,7 @@ fn a_warning_translation_record_does_not_count() {
         (Kernel::Shipped, shipped_transcript()),
     ] {
         let demoted = valid.replacen(&storage_records(), &warned, 1);
-        let error = verify_transcript(&root, kernel, demoted.as_bytes()).unwrap_err();
+        let error = verify_transcript(root, kernel, demoted.as_bytes()).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -767,7 +741,7 @@ fn a_warning_translation_record_does_not_count() {
         );
 
         let late_warning = valid.replacen(&storage, &format!("{storage}{kept}"), 1);
-        verify_transcript(&root, kernel, late_warning.as_bytes()).unwrap();
+        verify_transcript(root, kernel, late_warning.as_bytes()).unwrap();
     }
 }
 

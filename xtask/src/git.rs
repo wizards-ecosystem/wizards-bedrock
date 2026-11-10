@@ -342,5 +342,9 @@ pub(crate) fn validate_fields<'text>(get: impl Fn(&str) -> Result<&'text str>) -
     Ok(())
 }
 
+pub(crate) fn is_git_id(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests;

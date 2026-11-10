@@ -17,10 +17,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::files::require_real_directory;
+use crate::git::is_git_id;
 use crate::image::Kernel;
 use crate::json::{
-    JsonValue, json_array as parse_json_array, json_field as parse_json_field, json_object,
-    json_string_array as parse_json_string_array, json_u64 as parse_json_u64, require_json_fields,
+    JsonValue, json_array, json_field, json_object, json_string_array, json_u64, parse_json,
+    require_json_fields,
 };
 use crate::mutate::workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
@@ -33,7 +35,7 @@ pub(crate) use self::attempts::{
     begin_mutation, begin_owned_security_deep, begin_security_deep,
 };
 use self::record::*;
-pub(crate) use self::record::{SourceIdentity, source_identity};
+pub(crate) use self::record::{SourceIdentity, source_identity, validate_field};
 pub(crate) use self::size_policy::bundle_file_size_policy;
 use self::size_policy::*;
 use self::verify::*;
@@ -218,7 +220,7 @@ impl Record {
     fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let key = key.into();
         let value = value.into();
-        validate_field(&key, &value)?;
+        validate_field("qualification", &key, &value)?;
         ensure!(
             self.fields.insert(key.clone(), value).is_none(),
             "duplicate qualification key `{key}`"
@@ -636,11 +638,6 @@ fn require_regular_file(path: &Path, label: &str) -> Result<()> {
     crate::mutate::workspace::require_direct_file(parent, path, label)
 }
 
-fn require_real_directory(path: &Path, label: &str) -> Result<()> {
-    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;
-    Ok(())
-}
-
 fn require_contained_real_directory(root: &Path, directory: &Path, label: &str) -> Result<()> {
     require_real_root(root, label)?;
     let relative = directory
@@ -851,11 +848,11 @@ pub(crate) fn read_bounded_text(path: &Path, maximum: u64, label: &str) -> Resul
         .with_context(|| format!("{label} {} is not UTF-8", path.display()))
 }
 
-fn boot_image_bytes() -> u64 {
+pub(crate) fn boot_image_bytes() -> u64 {
     crate::paths::DISK_MIB * 1024 * 1024
 }
 
-fn namespace_bytes() -> u64 {
+pub(crate) fn namespace_bytes() -> u64 {
     crate::qemu::NVME_VOLUME_SECTOR * crate::qemu::NVME_BLOCK_BYTES as u64
         + crate::image::corpus::VOLUME_BYTES as u64
 }
@@ -1069,29 +1066,6 @@ fn decimal(bytes: &[u8]) -> Option<u32> {
         byte.is_ascii_digit()
             .then(|| value * 10 + u32::from(*byte - b'0'))
     })
-}
-
-fn parse_json(bytes: &[u8]) -> Result<JsonValue> {
-    crate::json::parse_json(bytes, "cargo-audit JSON")
-}
-
-fn json_array<'json>(value: &'json JsonValue, label: &str) -> Result<&'json [JsonValue]> {
-    parse_json_array(value, &format!("cargo-audit `{label}`"))
-}
-
-fn json_string_array<'json>(value: &'json JsonValue, label: &str) -> Result<Vec<&'json str>> {
-    parse_json_string_array(value, &format!("cargo-audit `{label}`"))
-}
-
-fn json_u64(value: &JsonValue, label: &str) -> Result<u64> {
-    parse_json_u64(value, &format!("cargo-audit `{label}`"))
-}
-
-fn json_field<'json>(
-    object: &'json BTreeMap<String, JsonValue>,
-    name: &str,
-) -> Result<&'json JsonValue> {
-    parse_json_field(object, name, "cargo-audit JSON")
 }
 
 fn qualification_root(paths: &Paths) -> PathBuf {

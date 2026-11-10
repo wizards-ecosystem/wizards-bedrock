@@ -10,7 +10,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
+use crate::files::{is_reparse_point, require_real_directory};
+use crate::git::is_git_id;
 use crate::paths::Paths;
+use crate::qualification::{boot_image_bytes, namespace_bytes, validate_field};
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
 const FORMAT: &str = "wizard-evidence-v11";
@@ -170,7 +173,7 @@ impl Record {
     fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let key = key.into();
         let value = value.into();
-        validate_field(&key, &value)?;
+        validate_field("evidence", &key, &value)?;
         ensure!(
             self.fields.insert(key.clone(), value).is_none(),
             "duplicate evidence key `{key}`"
@@ -518,7 +521,7 @@ fn mirror_directory(
     ensure!(
         metadata.file_type().is_dir()
             && !metadata.file_type().is_symlink()
-            && !is_reparse(&metadata),
+            && !is_reparse_point(&metadata),
         "alternate build mirror source is not a real directory: {}",
         source.display()
     );
@@ -540,7 +543,7 @@ fn mirror_directory(
         let target = destination.join(entry.file_name());
         if metadata.file_type().is_dir()
             && !metadata.file_type().is_symlink()
-            && !is_reparse(&metadata)
+            && !is_reparse_point(&metadata)
         {
             mirror_directory(&entry.path(), &target, depth + 1, entries)?;
         } else {
@@ -554,7 +557,7 @@ fn mirror_file(source: &Path, destination: &Path, metadata: &std::fs::Metadata) 
     ensure!(
         metadata.file_type().is_file()
             && !metadata.file_type().is_symlink()
-            && !is_reparse(metadata),
+            && !is_reparse_point(metadata),
         "alternate build mirror source is not a real file: {}",
         source.display()
     );
@@ -565,17 +568,6 @@ fn mirror_file(source: &Path, destination: &Path, metadata: &std::fs::Metadata) 
             destination.display()
         )
     })
-}
-
-#[cfg(windows)]
-fn is_reparse(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-const fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 fn require_no_host_paths(path: &Path, maximum: u64, label: &str, roots: &[PathBuf]) -> Result<()> {
@@ -1097,21 +1089,6 @@ fn parse_manifest(text: &str) -> Result<Record> {
     Ok(record)
 }
 
-fn validate_field(key: &str, value: &str) -> Result<()> {
-    ensure!(
-        !key.is_empty()
-            && key.bytes().all(|byte| byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || b".-".contains(&byte)),
-        "invalid evidence key `{key}`"
-    );
-    ensure!(
-        !value.contains(['\r', '\n', '\0']),
-        "evidence value for `{key}` contains a forbidden byte"
-    );
-    Ok(())
-}
-
 fn clean_source(root: &Path) -> Result<(String, String)> {
     let before_status = git_output(
         root,
@@ -1168,10 +1145,6 @@ fn require_stable_clean_source(
 
 fn status_is_clean(status: &str) -> bool {
     status.trim().is_empty()
-}
-
-fn is_git_id(value: &str) -> bool {
-    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn git_output(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<String> {
@@ -1434,15 +1407,6 @@ where
     Ok(digest)
 }
 
-fn boot_image_bytes() -> u64 {
-    crate::paths::DISK_MIB * 1024 * 1024
-}
-
-fn namespace_bytes() -> u64 {
-    crate::qemu::NVME_VOLUME_SECTOR * crate::qemu::NVME_BLOCK_BYTES as u64
-        + crate::image::corpus::VOLUME_BYTES as u64
-}
-
 fn byte_identical(first: &Digest, second: &Digest) -> bool {
     first.bytes == second.bytes && first.sha256 == second.sha256
 }
@@ -1509,11 +1473,6 @@ fn checked_bundle_file(root: &Path, relative: &str, label: &str) -> Result<PathB
     let path = root.join(relative);
     require_contained_regular_file(root, &path, label)?;
     Ok(path)
-}
-
-fn require_real_directory(path: &Path, label: &str) -> Result<()> {
-    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;
-    Ok(())
 }
 
 fn require_evidence_root(root: &Path) -> Result<()> {

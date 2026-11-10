@@ -2,28 +2,9 @@ use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink};
 
 const TEST_IMAGE_BYTES: usize = 8 * 1024 * 1024;
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating image directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating image directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating image file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating image file symlink");
-}
 
 fn test_root(label: &str) -> PathBuf {
     crate::test_support::reserve_temp_directory(&format!("wizard-image-{label}"))
