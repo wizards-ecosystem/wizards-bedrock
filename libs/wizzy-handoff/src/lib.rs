@@ -1,4 +1,5 @@
-//! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock, silent on whether bytes are bytecode, ELF or Wasm.
+//! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock.
+//! It does not say whether the artifact bytes are bytecode, ELF or Wasm.
 //!
 //! # Examples
 //!
@@ -151,7 +152,8 @@ struct Record<'manifest> {
     target_id: &'manifest str,
 }
 
-/// Verify one canonical record against supported versions and consumed bytes; its effects are metadata granting no authority.
+/// Verify one canonical record against supported versions and consumed bytes.
+/// A successful verification grants the artifact no authority; its effects are metadata only.
 pub fn verify(
     manifest: &str,
     versions: Versions<'_>,

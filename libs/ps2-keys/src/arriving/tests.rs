@@ -1,7 +1,8 @@
 use super::*;
 use crate::{set1, table};
 
-/// If either table grows a code past the probe's bound, this fails before a machine mis-decodes a keystroke.
+/// If either table grows a code past the probe's bound, this fails before a machine
+/// mis-decodes a keystroke.
 #[test]
 fn the_two_tables_still_bound_this_probe() {
     for code in 0..=u8::MAX {
@@ -26,7 +27,8 @@ fn the_two_tables_still_bound_this_probe() {
     );
 }
 
-/// `AB 41` and `AB 83` are the dishonest identity replies this probe routes around, so neither byte may decide.
+/// `AB 41` and `AB 83` are the dishonest identity replies this probe routes around.
+/// Neither byte of either may decide.
 #[test]
 fn an_identity_reply_in_the_stream_decides_nothing() {
     for reply in [[0xABu8, 0x41], [0xAB, 0x83]] {
@@ -58,7 +60,8 @@ fn no_byte_proves_both_sets() {
     assert_eq!(SetProbe::observe(0xDE), Arriving::Undecided);
 }
 
-/// The bytes two machines delivered: VMware's `c` as set 2 under a set 1 identity, and a translating controller's set 1.
+/// The bytes two machines delivered: VMware's `c` as set 2 under a set 1 identity,
+/// and the same key as set 1 from a controller that really translates.
 #[test]
 fn one_keystroke_from_either_machine_decides_it() {
     let set_2 = [0x21u8, 0xF0, 0x21];

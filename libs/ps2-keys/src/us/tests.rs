@@ -42,7 +42,8 @@ fn shifted_punctuation_types_its_upper_legend() {
     assert_eq!(char_for(Key::Slash, held()), Some('?'));
 }
 
-/// Keyed to the physical legends, including the backslash, whose escaping makes it the arm most worth pinning.
+/// Keyed to the physical legends, including the backslash,
+/// whose escaping makes it the arm most worth pinning.
 #[test]
 fn every_punctuation_pair_matches_the_keycap() {
     for (key, plain, shifted) in [

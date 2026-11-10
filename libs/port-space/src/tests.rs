@@ -3,7 +3,7 @@ use super::*;
 /// Widths an x86 port access can have, so every span length a real kernel asks for.
 const WIDTHS: [usize; 3] = [1, 2, 4];
 
-/// A claim is permanent, so a refused request that kept its first span would strand it for the boot.
+/// A claim is permanent, so a refused request keeping its first span strands it for the boot.
 #[test]
 fn a_refused_multi_span_reservation_takes_nothing() {
     const SPANS: [(usize, usize); MAX_SPANS] = [
@@ -95,7 +95,7 @@ fn reserving_marks_exactly_its_span() {
     assert!(!space.is_reserved(0x400), "the port above is untouched");
 }
 
-/// The defect this crate exists to rule out: a claim marking one port of an access that drives four.
+/// The defect this crate exists to rule out: a claim marking one port of a four-port access.
 #[test]
 fn a_wide_reservation_covers_every_port_it_drives() {
     for width in WIDTHS {
@@ -135,7 +135,8 @@ fn overlap_is_refused_from_either_side_and_adjacency_is_not() {
     }
 }
 
-/// A refused reservation must leave the table untouched, or a refused driver owns half a neighbour's registers.
+/// A refused reservation must leave the table untouched.
+/// Otherwise a refused driver owns half of a neighbour's registers.
 #[test]
 fn a_refused_reservation_records_nothing() {
     let mut space = PortSpace::new();

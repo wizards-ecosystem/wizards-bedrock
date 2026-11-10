@@ -1,10 +1,12 @@
-//! The byte-at-a-time scancode state machine; any byte in any state cannot panic and costs at most its own sequence.
+//! The byte-at-a-time scancode state machine.
+//! No byte in any state can panic, and garbage costs at most the sequence it corrupted.
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
 use crate::{set1, table};
 
-/// Reserved protocol bytes, swallowed wherever they arrive since a command can be answered mid-sequence.
+/// Reserved protocol bytes, swallowed wherever they arrive.
+/// A command can be answered while a key sequence is in flight.
 mod protocol {
     /// Break prefix: the next code is a release.
     pub(super) const BREAK: u8 = 0xF0;
@@ -14,7 +16,8 @@ mod protocol {
     pub(super) const PAUSE: u8 = 0xE1;
     /// Command acknowledged.
     pub(super) const ACK: u8 = 0xFA;
-    /// Self-test passed; in set 1 also left shift's release, so the reset path must read it before scanning.
+    /// Self-test passed; in set 1 also left shift's release.
+    /// The reset path must therefore read it before scanning starts.
     pub(super) const SELF_TEST_PASSED: u8 = 0xAA;
     /// Echo reply.
     pub(super) const ECHO: u8 = 0xEE;
@@ -34,7 +37,8 @@ mod protocol {
     }
 }
 
-/// The fake shifts `E0 12` and `E0 59` wrapping PrintScreen and navigation keys, guarded here should the extended table name them.
+/// The fake shifts `E0 12` and `E0 59` wrapping PrintScreen and navigation keys.
+/// Guarded here in case the extended table ever names them.
 const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 
 /// Pause sends this whole sequence on press and nothing on release, the one key with no break code.
@@ -115,7 +119,8 @@ impl Decoder {
         matches!(self.set, Set::One)
     }
 
-    /// Feed one byte, returning an event once one completes; a misfit byte resets to idle, a reply keeps the sequence.
+    /// Feed one byte, returning an event once one completes.
+    /// A byte that fits no sequence resets to idle; a reply leaves the sequence in flight.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
         let reply = match self.set {
             Set::Two => protocol::is_reply(byte),
@@ -132,7 +137,8 @@ impl Decoder {
         event
     }
 
-    /// One byte of set 1, whose releases are the high bit; with no break prefix, the two break states only reset.
+    /// One byte of set 1, whose releases are the high bit.
+    /// Set 1 has no break prefix, so the two break states only reset.
     fn transition_set_1(&self, byte: u8) -> (State, Option<KeyEvent>) {
         let code = byte & !SET_1_BREAK;
         let broke = byte & SET_1_BREAK != 0;

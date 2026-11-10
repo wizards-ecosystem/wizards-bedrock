@@ -1,4 +1,5 @@
-//! Checked address arithmetic for repeated MMIO accesses, host-tested here while `wost` performs them.
+//! Checked address arithmetic for repeated MMIO accesses, host-tested here.
+//! `wost` performs the accesses themselves.
 //!
 //! ```
 //! let span = mmio_range::AccessRange::repeated(8, 3, 4, 32).unwrap();
@@ -57,7 +58,8 @@ impl AddressRange {
     }
 }
 
-/// Find the lowest aligned gap, projecting each occupied record so a ledger needs no second array of ranges.
+/// Find the lowest aligned gap, projecting each occupied record.
+/// A ledger then needs no second array of ranges beside it.
 pub fn first_fit_by<T>(
     window: AddressRange,
     len: u64,
@@ -178,7 +180,8 @@ impl fmt::Display for AccessError {
 impl core::error::Error for AccessError {}
 
 impl AccessRange {
-    /// Check `count` naturally aligned `width`-byte accesses; a zero count accesses nothing, so needs no alignment.
+    /// Check `count` naturally aligned `width`-byte accesses.
+    /// A zero count accesses nothing, so its offset needs no alignment.
     pub const fn repeated(
         offset: usize,
         count: usize,

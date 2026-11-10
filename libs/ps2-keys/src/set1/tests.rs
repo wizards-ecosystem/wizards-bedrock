@@ -1,7 +1,8 @@
 use super::*;
 use crate::table;
 
-/// Both sets number the same keys, so a key missing from one table is a hole in it, and there is no third table to ask.
+/// Both sets number the same keys, so a key missing from one table is a hole in it.
+/// There is no third table to ask.
 #[test]
 fn both_sets_name_the_same_keys() {
     let mut only_in_set_1 = Vec::new();
@@ -37,7 +38,8 @@ fn names(base: fn(u8) -> Option<Key>, extended: fn(u8) -> Option<Key>, key: Key)
     (0..=u8::MAX).any(|code| base(code) == Some(key) || extended(code) == Some(key))
 }
 
-/// Repeated codes leave a later arm unreachable; this direction catches a key reachable through two codes.
+/// Repeated codes leave a later arm unreachable.
+/// This direction catches a key reachable through two codes.
 #[test]
 fn no_key_is_named_twice_within_a_table() {
     for table in [

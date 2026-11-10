@@ -1,4 +1,5 @@
-//! Shift, the one modifier the layout needs; CapsLock, Ctrl and Alt arrive with the first code that needs them.
+//! Shift, the one modifier the layout needs.
+//! CapsLock, Ctrl and Alt arrive with the first code that needs them.
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;

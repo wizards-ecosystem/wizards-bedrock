@@ -1,4 +1,5 @@
-//! Which x86 I/O ports are reserved; a claim must cover every port a wide access drives, and `wost` holds this behind a lock.
+//! Which x86 I/O ports are reserved; `wost` holds this behind a lock.
+//! A claim must cover every port a wide access drives.
 //!
 //! # Examples
 //!
@@ -41,7 +42,8 @@ impl PortSpace {
         }
     }
 
-    /// Whether `port` is spoken for; a port outside the space reads as reserved so no caller drives it.
+    /// Whether `port` is spoken for.
+    /// A port outside the space reads as reserved, so no caller drives it.
     pub const fn is_reserved(&self, port: usize) -> bool {
         if port >= PORT_COUNT {
             return true;
@@ -49,7 +51,9 @@ impl PortSpace {
         self.reserved[port / PORTS_PER_WORD] & bit(port) != 0
     }
 
-    /// Reserve `len` ports at `port`, recording nothing on refusal; a zero `len` is refused as it would report success reserving nothing.
+    /// Reserve `len` ports at `port`, recording nothing on refusal.
+    /// A zero `len` is refused, as it would report success while reserving nothing.
+    /// A granted fixed claim is permanent; only a lease not yet committed may release its spans.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve(&mut self, port: usize, len: usize) -> bool {
         let Some(span) = self.span(port, len) else {
@@ -61,7 +65,8 @@ impl PortSpace {
         true
     }
 
-    /// Reserve every span or none; fixed claims are permanent, so a caller needing several must ask here, not span by span.
+    /// Reserve every span or none.
+    /// Fixed claims are permanent, so a caller needing several must ask here, not span by span.
     #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
@@ -92,7 +97,8 @@ impl PortSpace {
         true
     }
 
-    /// Release every span or none; this cannot tell owners apart, so callers must pass only spans their lease reserved.
+    /// Release every span or none.
+    /// This cannot tell owners apart, so callers must pass only spans their lease reserved.
     #[must_use = "a refused release leaves every requested port reserved"]
     pub fn release_all(&mut self, spans: &[(usize, usize)]) -> bool {
         if spans.is_empty() {
@@ -160,10 +166,12 @@ fn bounded_span(port: usize, len: usize) -> Option<Range<usize>> {
     Some(port..end)
 }
 
-/// Spans one all-or-none call may take, fixed for want of an allocator; a longer request is refused whole.
+/// Spans one all-or-none call may take, fixed for want of an allocator.
+/// A longer request is refused whole.
 pub const MAX_SPANS: usize = 8;
 
-/// Whether two resolved spans share a port; `span` sees only what is recorded, so a request checks its own spans with this.
+/// Whether two resolved spans share a port.
+/// `span` sees only what is recorded, so a request checks its own spans with this.
 fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }

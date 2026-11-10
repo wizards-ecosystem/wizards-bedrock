@@ -1,4 +1,6 @@
-//! Which numbering arriving bytes are in, read from the bytes since controllers' translation bits and identity replies have been seen to lie.
+//! Which numbering arriving bytes are in, read from the bytes themselves.
+//! Translation bits, identity replies and set queries (`F0 00`) have each been seen to lie,
+//! so no probe is trusted.
 
 /// What the bytes so far have proved about their numbering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -20,10 +22,12 @@ const SET_2_HIGHEST_MAKE: u8 = 0x83;
 /// The highest release set 1 can produce: its highest make, high bit set.
 const SET_1_HIGHEST_BREAK: u8 = 0xDD;
 
-/// Set 1 releases set 2 also sends as replies (`AA` self-test, `AB` identity), so they must never decide.
+/// Set 1 releases that set 2 also sends as replies, so they must never decide.
+/// `AA` is set 2's self-test reply and `AB` begins every identity reply.
 const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];
 
-/// Reads the numbering off the stream without consuming it, statelessly since every rule holds at any position.
+/// Reads the numbering off the stream without consuming it.
+/// Stateless, since every rule holds for a byte in any position.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SetProbe;
 

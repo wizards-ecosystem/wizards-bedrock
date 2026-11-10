@@ -1,4 +1,5 @@
-//! Property tests over the reservation contract; who may release a span is the wrapper's, which no arithmetic here can see.
+//! Property tests over the reservation contract.
+//! Who may release a span is the wrapper's to decide, and no arithmetic here can see it.
 
 use port_space::{PORT_COUNT, PortSpace};
 use proptest::prelude::*;
@@ -45,7 +46,7 @@ proptest! {
         );
     }
 
-    /// A 32-bit access at `n` drives `n..n + 4`, so recording only `n` leaves three ports claimable.
+    /// A 32-bit access at `n` drives `n..n + 4`; recording only `n` leaves three claimable.
     #[test]
     fn a_granted_reservation_owns_its_whole_span(
         setup in prop::collection::vec(request(), 0..8),
@@ -107,7 +108,8 @@ proptest! {
     }
 }
 
-/// One property asserts on refusals and one on grants, so a rate near zero or one leaves one vacuous.
+/// One property asserts on refusals and one on grants.
+/// A rate near zero or near one would leave one of them asserting nothing.
 #[test]
 fn the_reservation_properties_reach_both_grants_and_refusals() {
     const SAMPLES: usize = 4096;

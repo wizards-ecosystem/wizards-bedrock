@@ -1,4 +1,5 @@
-//! Scan code set 1's base and `E0` tables, from Andries Brouwer's *Keyboard scancodes*, "Scan code set 1".
+//! Scan code set 1's base and `E0` tables.
+//! Source: Andries Brouwer, *Keyboard scancodes*, "Scan code set 1".
 
 use crate::key::Key;
 

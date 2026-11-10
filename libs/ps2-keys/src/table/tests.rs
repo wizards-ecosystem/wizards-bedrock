@@ -83,6 +83,7 @@ fn every_single_byte_make_code_is_the_specification_s() {
         );
     }
 
+    // The loop above cannot see two entries sharing a code or a key.
     for (index, (code, key)) in SET_2.iter().enumerate() {
         for (earlier_code, earlier_key) in &SET_2[..index] {
             assert_ne!(code, earlier_code, "{code:#04X} appears twice");
