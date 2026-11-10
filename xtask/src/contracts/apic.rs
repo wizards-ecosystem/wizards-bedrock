@@ -4,11 +4,12 @@ use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, ExprMatch, GenericArgument, Item, Pat, PathArguments, Type};
 
 use crate::paths::Paths;
-use crate::test_support::function_after;
+use crate::test_support::{function_after, source_through};
 
 use super::sources::production_sources_below;
 use super::{
-    cfg_not_selftest, observer_expr_attributes, require_error, require_success, selftest_cfg,
+    cfg_not_selftest, module_source, module_syntax, observer_expr_attributes, require_error,
+    require_success, selftest_cfg,
 };
 
 #[derive(Default)]
@@ -172,10 +173,7 @@ fn require_input_type(paths: &Paths, source: &str, function: &str, input: &str, 
 fn reject_raw_vector_inputs(paths: &Paths, sources: &[&str]) {
     for source in sources {
         let source = paths.root().join(source);
-        let text = std::fs::read_to_string(&source)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
-        let syntax = syn::parse_file(&text)
-            .unwrap_or_else(|error| panic!("parsing {}: {error}", source.display()));
+        let syntax = module_syntax(&source);
         let mut inputs = NamedInputs::default();
         inputs.visit_file(&syntax);
         for ((function, input), shapes) in inputs.0 {
@@ -393,8 +391,7 @@ fn apic_policy_observations_are_typed() {
 #[test]
 fn apic_ready_publication_precedes_dependent_vector_reads() {
     let paths = Paths::discover().expect("workspace paths");
-    let source = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/apic.rs"))
-        .expect("wost APIC source");
+    let source = module_source(paths.root(), "wost/src/arch/x86_64/apic.rs");
     let between = |start, end| {
         source
             .split_once(start)
@@ -481,10 +478,12 @@ fn apic_ready_publication_precedes_dependent_vector_reads() {
         "an APIC vector can be read before acquiring Ready"
     );
 
-    let ignored_write_fixture = between(
+    let ignored_write_fixture = source_through(
+        &source,
         "fn ignored_spurious_write_is_terminal",
-        "fn initialization_conflict",
-    );
+        "fn source_fixture_refuses",
+    )
+    .expect("APIC ignored-write fixture");
     for bypass in [
         "self_interrupt_vector.load(",
         "timer_vector.load(",

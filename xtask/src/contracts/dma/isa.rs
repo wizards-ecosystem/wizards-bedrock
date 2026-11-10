@@ -1,7 +1,8 @@
 use syn::{Expr, Item, Pat, ReturnType, Stmt, Type};
 
 use super::{
-    field_chain_is, function, integer_literal_is, method, parse, path_ends, path_expression_is,
+    field_chain_is, function, integer_literal_is, method, parse, parse_module, path_ends,
+    path_expression_is,
 };
 
 fn isa_port_operation(
@@ -67,7 +68,7 @@ fn port_block_width(ty: &Type, width: u64) -> bool {
 
 #[test]
 fn isa_dma_adapter_clears_masks_and_rechecks_both_controllers() {
-    let pci = parse("wost/src/arch/x86_64/pci.rs");
+    let pci = parse_module("wost/src/arch/x86_64/pci.rs");
     let quiesce = method(&pci, "IsaDma", "quiesce").expect("entry 8237 reset");
     let [
         Stmt::Expr(first_clear, Some(_)),
@@ -193,7 +194,7 @@ fn isa_dma_adapter_clears_masks_and_rechecks_both_controllers() {
         && value.args.len() == 1
         && value.args.first().is_some_and(|argument| path_expression_is(argument, &["controllers"]))));
 
-    let ports = parse("wost/src/arch/x86_64/port.rs");
+    let ports = parse_module("wost/src/arch/x86_64/port.rs");
     let claim = function(&ports, "isa_dma_controllers");
     let [Stmt::Expr(Expr::Call(pair), None)] = claim.block.stmts.as_slice() else {
         panic!("both DMA controller windows must be claimed atomically");

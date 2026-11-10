@@ -870,7 +870,8 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
     assert_eq!(
         admission_sites,
         [
-            ("wost/src/arch/x86_64/apic.rs".to_owned(), 2),
+            ("wost/src/arch/x86_64/apic/selftest.rs".to_owned(), 1),
+            ("wost/src/arch/x86_64/apic.rs".to_owned(), 1),
             ("wost/src/arch/x86_64/task.rs".to_owned(), 1)
         ],
         "interrupt admission escaped its two audited authority paths"

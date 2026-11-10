@@ -123,11 +123,13 @@ mod tests {
             "{} does not deny target-side expect/unwrap",
             wost.display()
         );
-        let ports = root.join("wost/src/arch/x86_64/port.rs");
+        let ports = "wost/src/arch/x86_64/port.rs";
         assert!(
-            !compact(&ports).contains("implPortSpan{"),
-            "{} gives an uncalled dynamic lease a register API",
-            ports.display()
+            !crate::contracts::module_source(&root, ports)
+                .split_whitespace()
+                .collect::<String>()
+                .contains("implPortSpan{"),
+            "{ports} gives an uncalled dynamic lease a register API"
         );
         let kernel = root.join("kernel/src/main.rs");
         let kernel_source = compact(&kernel);
