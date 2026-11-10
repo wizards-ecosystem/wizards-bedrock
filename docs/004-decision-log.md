@@ -110,7 +110,7 @@ to D-20 were made on 2026-07-18.
 | [D-102 A fault the program caused kills the program](decisions/0102-a-fault-the-program-caused-kills-the-program.md) | Accepted | 2026-08-24 |
 | [D-103 A walk reports the permission the CPU will grant](decisions/0103-a-walk-reports-the-permission-the-cpu-will-grant.md) | Accepted | 2026-08-24 |
 | [D-104 A second address space shares the kernel by reference and nothing else](decisions/0104-a-second-address-space-shares-the-kernel-by-reference-and-nothing-else.md) | Accepted | 2026-08-24 |
-| [D-105 The fourth adversarial audit, over the kernel and Phases 0–6](decisions/0105-the-fourth-adversarial-audit-over-the-kernel-and-phases-06.md) | Accepted | 2026-08-24 |
+| [D-105 The fourth adversarial audit, over the kernel and Phases 0 to 6](decisions/0105-the-fourth-adversarial-audit-over-the-kernel-and-phases-06.md) | Accepted | 2026-08-24 |
 | [D-106 A thread's address space is installed by the switch, and the binding is evidence](decisions/0106-a-threads-address-space-is-installed-by-the-switch-and-the-binding-is-evidence.md) | Accepted | 2026-08-24 |
 | [D-107 The untyped split is a type, and "untyped" means externally modifiable](decisions/0107-the-untyped-split-is-a-type-and-untyped-means-externally-modifiable.md) | Accepted | 2026-08-24 |
 | [D-108 Extended state is saved eagerly, by the same code that moves `CR3` and `RSP0`](decisions/0108-extended-state-is-saved-eagerly-by-the-same-code-that-moves-cr3-and-rsp0.md) | Accepted | 2026-08-24 |
