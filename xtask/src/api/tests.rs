@@ -245,17 +245,17 @@ fn compile_fixture(root: &Path, extra: &[&str]) -> String {
         "fixture.rmeta",
     ]);
     command.args(extra);
-    let result = command.output().expect("compile fixture");
+    let output = command.output().expect("compile fixture");
     assert!(
-        result.status.success(),
+        output.status.success(),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(result.stderr).expect("rustc diagnostics are UTF-8")
+    String::from_utf8(output.stderr).expect("rustc diagnostics are UTF-8")
 }
 
 fn compile_wost_fixture(root: &Path) -> String {
-    let result = Command::new("rustc")
+    let output = Command::new("rustc")
         .current_dir(root)
         .args([
             "--edition=2024",
@@ -272,9 +272,9 @@ fn compile_wost_fixture(root: &Path) -> String {
         .output()
         .expect("compile wost fixture");
     assert!(
-        result.status.success(),
+        output.status.success(),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(result.stderr).expect("rustc diagnostics are UTF-8")
+    String::from_utf8(output.stderr).expect("rustc diagnostics are UTF-8")
 }

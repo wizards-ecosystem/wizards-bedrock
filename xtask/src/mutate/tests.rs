@@ -175,7 +175,11 @@ fn api_audit_commands_rebind_original_and_copied_sources_before_verdicts() {
 
     for (label, command, verdict) in [
         ("Cargo metadata", metadata, "ensure!("),
-        ("compiler graph", compilation, "if !result.status.success()"),
+        (
+            "compiler graph",
+            compilation,
+            "if !captured.status.success()",
+        ),
     ] {
         let output = command
             .find("bounded_process::output_")

@@ -222,7 +222,7 @@ dependencies = [
         .expect("materialize verified archive");
     let baseline =
         cargo_input_snapshot(&cargo, &home, &registry).expect("private Cargo authority baseline");
-    let result = audited_cargo_command(&execution, &home, &registry, &compiler)
+    let output = audited_cargo_command(&execution, &home, &registry, &compiler)
         .expect("isolated Cargo check")
         .env("CARGO_TARGET_DIR", root.join("target"))
         .env("CARGO_ENCODED_RUSTFLAGS", "")
@@ -232,10 +232,10 @@ dependencies = [
         .output()
         .expect("run isolated Cargo check");
     assert!(
-        result.status.success(),
+        output.status.success(),
         "{}{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
         cargo_input_snapshot(&cargo, &home, &registry).expect("unchanged private Cargo authority"),
@@ -503,12 +503,8 @@ fn authority_semantic_reads_enforce_a_fixed_allocation_ceiling() {
     file.set_len(MAX_COMPILER_AUTHORITY_TEXT_BYTES as u64 + 1)
         .expect("size oversized authority fixture");
 
-    let result = read_bounded_authority_text(&path, "test compiler authority");
-    assert!(
-        result.is_err(),
-        "oversized semantic authority must fail before allocation"
-    );
-    let error = result.expect_err("the oversized authority result was checked above");
+    let error = read_bounded_authority_text(&path, "test compiler authority")
+        .expect_err("oversized semantic authority must fail before allocation");
     assert!(format!("{error:#}").contains("allocation limit"));
 
     std::fs::remove_dir_all(root).expect("remove authority allocation fixture");

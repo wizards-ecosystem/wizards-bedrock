@@ -24,11 +24,11 @@ fn compiler_graphs_have_distinct_stable_build_directories() {
 fn instrumented_rounds_cannot_change_build_script_output_authority() {
     let root = crate::test_support::reserve_temp_directory("wizard-api-build-authority");
     let package = root.join("debug/build/fixture-build-id");
-    let out = package.join("out");
-    std::fs::create_dir_all(&out).expect("build-script OUT_DIR fixture");
+    let out_dir = package.join("out");
+    std::fs::create_dir_all(&out_dir).expect("build-script OUT_DIR fixture");
     std::fs::write(package.join("output"), "cargo:rerun-if-changed=fixed\n")
         .expect("build-script output fixture");
-    let generated = out.join("generated.rs");
+    let generated = out_dir.join("generated.rs");
     std::fs::write(&generated, "pub const VALUE: usize = 1;\n").expect("generated source fixture");
 
     let baseline = build_script_authority_snapshot(&root).expect("pristine authority");
@@ -327,8 +327,7 @@ fn streamed_cargo_records_are_bounded_individually() {
         None,
         32,
     )
-    .err()
-    .expect("one oversized record must be refused");
+    .expect_err("one oversized record must be refused");
     assert!(format!("{error:#}").contains("record exceeded 32 bytes"));
 
     let error = cargo_compilation_stream(
@@ -338,8 +337,7 @@ fn streamed_cargo_records_are_bounded_individually() {
         None,
         128,
     )
-    .err()
-    .expect("unterminated Cargo JSON must be refused");
+    .expect_err("unterminated Cargo JSON must be refused");
     assert!(format!("{error:#}").contains("without a record terminator"));
 }
 
@@ -812,7 +810,7 @@ fn copied_source_is_bound_after_instrumentation_and_after_each_graph() {
         .find("workspace.require_copy_unchanged(expected)?;")
         .expect("copied-source guard");
     let verdict = compile_graph
-        .find("if !result.status.success()")
+        .find("if !captured.status.success()")
         .expect("compiler verdict");
     assert!(output < copy_guard && copy_guard < verdict);
 }

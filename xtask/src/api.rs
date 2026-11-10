@@ -62,7 +62,7 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
 /// One pristine compilation graph may include every workspace package.
 const COMPILATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Captured output, streamed stderr and retained typed compiler evidence each
-/// keep a fixed 64 MiB ceiling (D-391 and D-393).
+/// keep a fixed 64 MiB ceiling.
 const MAX_AUDIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 /// One Cargo JSON record is parsed before its typed evidence is retained.
 const MAX_AUDIT_JSON_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -74,8 +74,8 @@ const MAX_AUDIT_RETAINED_MARKERS: usize =
 const MAX_AUDIT_FAILURE_BYTES: usize = 1024 * 1024;
 const TOOL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TOOL_IDENTITY_BYTES: usize = 64 * 1024;
-/// Compiler binaries are streamed; valid text is retained only for the
-/// decoded-literal marker scan (D-405).
+/// Compiler binaries are streamed; valid text is retained only for the decoded-literal scan in
+/// `reject_authority_diagnostic_marker`.
 const COMPILER_AUTHORITY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_COMPILER_AUTHORITY_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const REGISTRY_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
