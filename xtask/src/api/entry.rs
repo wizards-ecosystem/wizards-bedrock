@@ -337,7 +337,7 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
         ("base_revision", "__WOST_BASE_REVISION"),
         ("framebuffer", "__WOST_FRAMEBUFFER"),
         ("memory_map", "__WOST_MEMORY_MAP"),
-        ("hhdm", "__WOST_DIRECT_MAP"),
+        ("direct_map", "__WOST_DIRECT_MAP"),
         ("image", "__WOST_IMAGE"),
         ("rsdp", "__WOST_RSDP"),
         ("modules", "__WOST_MODULES"),
@@ -392,60 +392,60 @@ fn expected_wost_entry_expansion() -> Result<TokenStream> {
 const __WOST_ENTRY_SIGNATURE: fn(wost::boot::BootInfo) -> ! = kernel_main;
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests_start_marker")]
 static __WOST_REQUESTS_START: wost::boot::__macro::RequestsStartMarker =
     wost::boot::__macro::RequestsStartMarker::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_BASE_REVISION: wost::boot::__macro::BaseRevision =
     wost::boot::__macro::base_revision();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_FRAMEBUFFER: wost::boot::__macro::FramebufferRequest =
     wost::boot::__macro::FramebufferRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_MEMORY_MAP: wost::boot::__macro::MemoryMapRequest =
     wost::boot::__macro::MemoryMapRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_DIRECT_MAP: wost::boot::__macro::HhdmRequest =
     wost::boot::__macro::HhdmRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_IMAGE: wost::boot::__macro::ExecutableAddressRequest =
     wost::boot::__macro::ExecutableAddressRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_RSDP: wost::boot::__macro::RsdpRequest =
     wost::boot::__macro::RsdpRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests")]
 static __WOST_MODULES: wost::boot::__macro::ModuleRequest =
     wost::boot::__macro::ModuleRequest::new();
 
 #[used]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(link_section = ".requests_end_marker")]
 static __WOST_REQUESTS_END: wost::boot::__macro::RequestsEndMarker =
     wost::boot::__macro::RequestsEndMarker::new();
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
     wost::boot::enter(
@@ -453,7 +453,7 @@ extern "C" fn kmain() -> ! {
             base_revision: &__WOST_BASE_REVISION,
             framebuffer: &__WOST_FRAMEBUFFER,
             memory_map: &__WOST_MEMORY_MAP,
-            hhdm: &__WOST_DIRECT_MAP,
+            direct_map: &__WOST_DIRECT_MAP,
             image: &__WOST_IMAGE,
             rsdp: &__WOST_RSDP,
             modules: &__WOST_MODULES,

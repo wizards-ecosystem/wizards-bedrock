@@ -109,12 +109,12 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 494,
         file: "wost/src/sync.rs",
-        find: "pub struct ThreadLockGuard<'a, T> {
-    lock: &'a ThreadLock<T>,
+        find: "pub struct ThreadLockGuard<'lock, T> {
+    lock: &'lock ThreadLock<T>,
     stays_here: PhantomData<*const ()>,
 }",
-        replace: "pub struct ThreadLockGuard<'a, T> {
-    lock: &'a ThreadLock<T>,
+        replace: "pub struct ThreadLockGuard<'lock, T> {
+    lock: &'lock ThreadLock<T>,
     stays_here: PhantomData<()>,
 }",
         breaks: "a thread-lock guard cannot be released on another CPU",

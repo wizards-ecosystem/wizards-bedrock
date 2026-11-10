@@ -6,10 +6,7 @@ use super::init;
 use super::selftest::{observe_external_run_release_for_test, refuse_external_zero_for_test};
 use super::{FRAMES, Paddr, direct_map_pointer, direct_pointer};
 
-/// One physical frame, owned for as long as this value lives.
-///
-/// It cannot be copied or safely constructed except by allocation, so mutable
-/// access through the direct map has one owner.
+/// One physical frame, owned while this value lives; only allocation makes one, so one owner.
 #[derive(PartialEq, Eq, Debug)]
 pub struct Frame {
     index: usize,
@@ -20,11 +17,9 @@ impl Frame {
     ///
     /// # Safety
     ///
-    /// `address` must be a frame [`allocate`] or [`allocate_zeroed`] returned
-    /// and whose handle was forgotten, and no other `Frame` may name it.
-    /// Dropping the result frees it, so a second handle over one frame is a
-    /// double free — and one built over a frame nothing allocated corrupts the
-    /// allocator's records.
+    /// `address` must be an [`allocate`] or [`allocate_zeroed`] frame whose handle was forgotten.
+    /// No other `Frame` may name it: dropping the result frees it, so a second handle double frees.
+    /// A handle over a frame nothing allocated corrupts the allocator's records.
     pub(crate) const unsafe fn from_raw(address: Paddr) -> Self {
         Self {
             index: (address / FRAME_SIZE) as usize,
@@ -36,23 +31,16 @@ impl Frame {
         self.index as u64 * FRAME_SIZE
     }
 
-    /// Fill every byte of the frame with `byte`.
+    /// Fill every byte of the frame with `byte`, or `false` before [`init`] or past the boot map.
     ///
-    /// Returns `false` if the direct map cannot reach it, which means either
-    /// that [`init`] has not run or that the bootloader's map does not cover
-    /// this frame. Neither is recoverable at the call site, but both are
-    /// reportable, and a silent no-op would hand out a page table full of
-    /// whatever the last owner left.
+    /// A reportable refusal, since a silent no-op would hand out a table of the last owner's bytes.
     #[must_use = "a refused frame fill changed no bytes"]
     pub fn fill(&mut self, byte: u8) -> bool {
         let Some(base) = direct_map_pointer(self.address()) else {
             return false;
         };
-        // SAFETY: `self` owns this frame — no other `Frame` can name it, since
-        // the allocator hands out one handle per frame and this method needs
-        // `&mut self`. The frame is allocatable memory, and every allocatable
-        // region is direct-mapped, so the whole of it is reachable through the
-        // pointer just formed.
+        // SAFETY: `&mut self` and one allocator handle per frame make this the only access, and
+        // allocatable memory is direct-mapped, so the whole frame is reachable through `base`.
         unsafe { core::ptr::write_bytes(base, byte, FRAME_SIZE as usize) };
         true
     }
@@ -74,11 +62,7 @@ impl Drop for Frame {
     }
 }
 
-/// A run of consecutive physical frames, owned for as long as this value
-/// lives.
-///
-/// What a 2 MiB mapping and a multi-page stack are allocated as. The same
-/// ownership rule as [`Frame`]: one handle per run, released whole on drop.
+/// A run of consecutive frames with one handle, owned while it lives and released whole on drop.
 #[derive(PartialEq, Eq, Debug)]
 pub struct Segment {
     first: usize,
@@ -105,18 +89,14 @@ impl Segment {
         self.count as u64 * FRAME_SIZE
     }
 
-    /// Fill every byte of the run with `byte`.
-    ///
-    /// False if the direct map cannot reach the whole run, having written
-    /// nothing.
+    /// Fill every byte of the run with `byte`, or `false` having written nothing if unreachable.
     #[must_use = "a refused segment fill changed no bytes"]
     pub fn fill(&mut self, byte: u8) -> bool {
         let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: a live `Segment` proves the allocator admitted and reserved
-        // every frame in this run; allocator-managed frames are direct-mapped.
-        // `direct_pointer` separately proved the address arithmetic.
+        // SAFETY: the live `Segment` proves every frame admitted and reserved, managed frames are
+        // direct-mapped, and `direct_pointer` separately proved the address arithmetic.
         unsafe { core::ptr::write_bytes(base, byte, self.len() as usize) };
         true
     }
@@ -131,13 +111,9 @@ impl Segment {
         self.fill(0)
     }
 
-    /// Write `bytes` at `offset` within the run.
+    /// Write `bytes` at `offset`, the safe loading path before pages turn read-only and executable.
     ///
-    /// This is the safe loading path: bytes enter before pages become
-    /// read-only and executable (D-13, D-96).
-    ///
-    /// `false` if the write would run past the run, or if the direct map
-    /// cannot reach it.
+    /// `false` if the write would run past the run, or if the direct map cannot reach it.
     #[must_use = "a refused segment write changed no bytes"]
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
         let Some(end) = offset.checked_add(bytes.len()) else {
@@ -162,10 +138,8 @@ impl Segment {
     ///
     /// # Safety
     ///
-    /// `count` frames from `address` must be a run that
-    /// [`allocate_contiguous`] returned and whose handle was forgotten, and
-    /// no other `Segment` may name any of them. Dropping the result frees
-    /// them, so a second handle over the same run is a double free.
+    /// `count` frames at `address` must be an [`allocate_contiguous`] run, its handle forgotten.
+    /// No other `Segment` may name them; dropping each frees them, so two handles double free.
     pub(crate) const unsafe fn from_raw(address: Paddr, count: usize) -> Self {
         Self {
             first: (address / FRAME_SIZE) as usize,
@@ -194,17 +168,13 @@ pub fn allocate() -> Option<Frame> {
 
 /// Allocate `count` consecutive frames, the first aligned to `align` frames.
 ///
-/// `align` is rounded up to a power of two. A 2 MiB page wants
-/// `allocate_contiguous(512, 512)`.
+/// `align` rounds up to a power of two; a 2 MiB page wants `allocate_contiguous(512, 512)`.
 pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
     let first = FRAMES.lock_leaf().allocate_contiguous(count, align)?;
     Some(Segment { first, count })
 }
 
-/// Allocate one frame filled with zeros.
-///
-/// Returns an unreachable frame to the allocator rather than exposing stale
-/// contents through a new mapping.
+/// Allocate one zeroed frame, returning an unreachable one to the allocator to hide stale bytes.
 pub fn allocate_zeroed() -> Option<Frame> {
     let mut frame = allocate()?;
     frame.zero().then_some(frame)

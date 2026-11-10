@@ -19,7 +19,7 @@ pub mod limine_glue {
         pub base_revision: &'static BaseRevision,
         pub framebuffer: &'static FramebufferRequest,
         pub memory_map: &'static MemoryMapRequest,
-        pub hhdm: &'static HhdmRequest,
+        pub direct_map: &'static HhdmRequest,
         pub image: &'static ExecutableAddressRequest,
         pub rsdp: &'static RsdpRequest,
         pub modules: &'static ModuleRequest,
@@ -46,60 +46,60 @@ macro_rules! entry {
         const __WOST_ENTRY_SIGNATURE: fn($crate::boot::BootInfo) -> ! = $path;
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_start_marker")]
         static __WOST_REQUESTS_START: $crate::boot::__macro::RequestsStartMarker =
             $crate::boot::__macro::RequestsStartMarker::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_BASE_REVISION: $crate::boot::__macro::BaseRevision =
             $crate::boot::__macro::base_revision();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_FRAMEBUFFER: $crate::boot::__macro::FramebufferRequest =
             $crate::boot::__macro::FramebufferRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_MEMORY_MAP: $crate::boot::__macro::MemoryMapRequest =
             $crate::boot::__macro::MemoryMapRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_DIRECT_MAP: $crate::boot::__macro::HhdmRequest =
             $crate::boot::__macro::HhdmRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_IMAGE: $crate::boot::__macro::ExecutableAddressRequest =
             $crate::boot::__macro::ExecutableAddressRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_RSDP: $crate::boot::__macro::RsdpRequest =
             $crate::boot::__macro::RsdpRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_MODULES: $crate::boot::__macro::ModuleRequest =
             $crate::boot::__macro::ModuleRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
 
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(no_mangle)]
         extern "C" fn kmain() -> ! {
             $crate::boot::enter(
@@ -107,7 +107,7 @@ macro_rules! entry {
                     base_revision: &__WOST_BASE_REVISION,
                     framebuffer: &__WOST_FRAMEBUFFER,
                     memory_map: &__WOST_MEMORY_MAP,
-                    hhdm: &__WOST_DIRECT_MAP,
+                    direct_map: &__WOST_DIRECT_MAP,
                     image: &__WOST_IMAGE,
                     rsdp: &__WOST_RSDP,
                     modules: &__WOST_MODULES,

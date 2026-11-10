@@ -1,9 +1,4 @@
-//! Bootloader handoff.
-//!
-//! [`entry!`](crate::entry) defines the kernel's entry point and the bootloader
-//! request block. Everything the bootloader tells us arrives as [`BootInfo`],
-//! whose types name no bootloader at all — swapping Limine out is a change to
-//! `limine_glue.rs` and nothing else.
+//! Bootloader handoff: [`entry!`](crate::entry) and a [`BootInfo`] whose types name no bootloader.
 
 mod limine_glue;
 #[cfg(feature = "selftest")]
@@ -18,13 +13,13 @@ pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
 
 use crate::mmio::{MmioError, MmioRegion};
 
-/// Bytes in one framebuffer word — the only access width the region supports.
+/// Bytes in one framebuffer word, the only access width the region supports.
 const WORD: usize = size_of::<u32>();
 
 fn framebuffer_access<T>(result: Result<T, MmioError>) -> T {
     match result {
         Ok(value) => value,
-        Err(error) => panic!("validated framebuffer access left its mapping: {error}"),
+        Err(reason) => panic!("validated framebuffer access left its mapping: {reason}"),
     }
 }
 
@@ -35,33 +30,22 @@ pub struct FramebufferInfo {
     pub width: usize,
     /// Visible height in pixels.
     pub height: usize,
-    /// Distance between the starts of consecutive rows, in bytes. Not always
-    /// `width * bytes_per_pixel`.
+    /// Bytes between the starts of consecutive rows, not always `width * bytes_per_pixel`.
     pub pitch: usize,
-    /// Bytes occupied by one pixel.
     pub bytes_per_pixel: usize,
-    /// How colour channels sit inside a pixel.
     pub format: PixelFormat,
 }
 
-/// A linear framebuffer the bootloader has already mapped for us.
+/// A linear framebuffer the bootloader mapped; with a back buffer, reads come from RAM.
 ///
-/// Once [`attach_back_buffer`](Self::attach_back_buffer) has been called, every
-/// write goes to both the device and a shadow copy in RAM, and every *read*
-/// comes from the shadow. That is what retires the scroll read-back
-/// `001-boot.md` recorded as a limitation: framebuffer memory is uncached, so
-/// reading a screen's worth of it to move rows up costs far more than the same
-/// bytes in ordinary RAM — and it is the precondition for ever marking the
-/// mapping write-combining, where reads are worse still (D-48).
-/// A checked MMIO refusal after construction is internal geometry corruption
-/// and fails stopped before the shadow can diverge from the device (D-249).
+/// Framebuffer memory is uncached, so the shadow keeps scrolling off device reads.
+/// A refused MMIO access is geometry corruption, stopped before shadow and device diverge.
 #[derive(Debug)]
 pub struct Framebuffer {
     region: MmioRegion,
     info: FramebufferInfo,
     layout: FramebufferLayout,
-    /// One `u32` per pixel of the visible area, at the device's own stride, or
-    /// empty before a back buffer is attached.
+    /// One `u32` per pixel at the device's stride, empty until a back buffer is attached.
     back: alloc::vec::Vec<u32>,
 }
 
@@ -80,20 +64,14 @@ impl Framebuffer {
         }
     }
 
-    /// Geometry and pixel layout.
     pub const fn info(&self) -> FramebufferInfo {
         self.info
     }
 
-    /// Give the framebuffer a shadow copy in RAM.
+    /// Give the framebuffer a shadow in RAM once the heap exists; idempotent.
     ///
-    /// Separate from construction because the framebuffer is built during the
-    /// boot handoff, long before there is a heap to build a shadow in. Called
-    /// once the heap exists; idempotent, and `false` if the allocation failed,
-    /// in which case the framebuffer keeps working exactly as it did before.
-    ///
-    /// The shadow starts as a copy of what is on screen, so attaching it
-    /// mid-boot does not lose the lines already printed.
+    /// `false` means the allocation failed and the framebuffer keeps working unshadowed.
+    /// The shadow starts as a copy of the screen, so lines already printed are kept.
     #[must_use = "a refused framebuffer shadow was not attached"]
     pub fn attach_back_buffer(&mut self) -> bool {
         if !self.back.is_empty() {
@@ -128,8 +106,7 @@ impl Framebuffer {
         *word = value;
     }
 
-    /// The word at `offset`, from the shadow if there is one and from the
-    /// device otherwise.
+    /// The word at `offset`, from the shadow if there is one and from the device otherwise.
     fn word_at(&self, offset: usize) -> u32 {
         if self.back.is_empty() {
             framebuffer_access(MmioRegion::read_u32(&self.region, offset))
@@ -145,12 +122,9 @@ impl Framebuffer {
         self.shadow(offset, value);
     }
 
-    /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible
-    /// area.
+    /// Set the pixel at (`x`, `y`), clipped to the visible area since edge glyphs run off it.
     ///
-    /// Clipping is deliberate: a glyph drawn near the right or bottom edge
-    /// legitimately runs off it. Anything that survives the clip is still
-    /// bounds-checked by the underlying region.
+    /// Whatever survives the clip is still bounds-checked by the underlying region.
     pub fn write_pixel(&mut self, x: usize, y: usize, colour: Rgb) {
         let Some(offset) = self.layout.offset(x, y) else {
             return;
@@ -178,16 +152,13 @@ impl Framebuffer {
         }
     }
 
-    /// Copy `rows` of pixels from `from_y` up to `to_y`.
+    /// Copy `rows` of pixels from `from_y` up to `to_y` as raw words, lossless for narrow channels.
     ///
-    /// Pixels move as raw words rather than through [`Rgb`], so nothing is lost
-    /// on a display whose channels are narrower than eight bits. Rows exposed
-    /// at the bottom are left for the caller to clear.
+    /// The caller clears the rows exposed at the bottom.
     ///
     /// # Panics
     ///
-    /// Panics if `to_y > from_y`. Source and destination may overlap, but only
-    /// upward: copying down would read rows this call had already overwritten.
+    /// If `to_y > from_y`: an overlapping copy downward would read rows it already overwrote.
     pub fn copy_rows(&mut self, from_y: usize, to_y: usize, rows: usize) {
         let Some(plan) = self.layout.copy_rows_up(from_y, to_y, rows) else {
             panic!("copy_rows moves rows upward only");
@@ -222,8 +193,7 @@ impl Framebuffer {
                 let Some(to) = self.layout.offset(column, to_y) else {
                     continue;
                 };
-                // From the shadow where there is one. Reading device memory to
-                // scroll is what this exists to stop.
+                // From the shadow where there is one, since scrolling must not read device memory.
                 let word = self.word_at(from);
                 self.write_word(to, word);
             }
@@ -252,15 +222,9 @@ pub enum FramebufferError {
 impl fmt::Display for FramebufferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoResponse => {
-                core::fmt::Write::write_str(f, "bootloader ignored the framebuffer request")
-            }
-            Self::NoFramebuffer => {
-                core::fmt::Write::write_str(f, "bootloader listed no framebuffers")
-            }
-            Self::UnsupportedMemoryModel => {
-                core::fmt::Write::write_str(f, "framebuffer is not direct RGB")
-            }
+            Self::NoResponse => f.write_str("bootloader ignored the framebuffer request"),
+            Self::NoFramebuffer => f.write_str("bootloader listed no framebuffers"),
+            Self::UnsupportedMemoryModel => f.write_str("framebuffer is not direct RGB"),
             Self::UnsupportedBpp(bpp) => write!(f, "unsupported depth: {bpp} bits per pixel"),
             Self::InvalidGeometry(reason) => write!(f, "invalid framebuffer geometry: {reason}"),
             Self::InvalidPixelFormat(reason) => write!(f, "invalid framebuffer format: {reason}"),
@@ -270,23 +234,19 @@ impl fmt::Display for FramebufferError {
 
 impl core::error::Error for FramebufferError {}
 
-/// The bootloader's direct map of physical memory into the higher half.
+/// The bootloader's higher-half direct map: each listed address reads at `physical + offset`.
 ///
-/// Every physical address the memory map lists is readable at
-/// `physical + offset` before the kernel has page tables of its own — which is
-/// what makes the first page table walkable and the first frame writable.
+/// It is readable before the kernel has page tables of its own, so the first table is walkable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DirectMap {
     offset: u64,
 }
 
 impl DirectMap {
-    /// Wrap the offset the bootloader reported.
     pub(crate) const fn new(offset: u64) -> Self {
         Self { offset }
     }
 
-    /// The offset itself.
     pub const fn offset(self) -> u64 {
         self.offset
     }
@@ -297,11 +257,7 @@ impl DirectMap {
     }
 }
 
-/// Where the bootloader placed the kernel image.
-///
-/// The pair is what lets the kernel map its own sections: the linker gives
-/// their virtual addresses, and the difference between these two turns any of
-/// them into the physical frame behind it.
+/// Where the bootloader placed the kernel image, which turns a linked address into its frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ImageAddress {
     physical: u64,
@@ -309,13 +265,11 @@ pub struct ImageAddress {
 }
 
 impl ImageAddress {
-    /// Record the pair the bootloader reported.
     pub(crate) const fn new(physical: u64, virtual_: u64) -> Self {
         Self { physical, virtual_ }
     }
 
-    /// The frame behind a virtual address inside the image, or `None` if the
-    /// address is below its base.
+    /// The frame behind a virtual address inside the image, or `None` below its base.
     pub const fn to_physical(self, address: u64) -> Option<u64> {
         match address.checked_sub(self.virtual_) {
             Some(offset) => self.physical.checked_add(offset),
@@ -334,10 +288,7 @@ pub struct Section {
 }
 
 impl Section {
-    /// Bytes from `start` to the end of the page `end` falls in.
-    ///
-    /// Rounded up because a mapping covers whole pages: the tail of the last
-    /// page belongs to this section whether or not anything is in it.
+    /// Bytes from `start` to the end of `end`'s page, since a mapping covers whole pages.
     pub const fn mapped_len(self) -> u64 {
         let len = self.end.saturating_sub(self.start);
         len.next_multiple_of(4096)
@@ -347,23 +298,19 @@ impl Section {
 /// The kernel image, divided by what each part may do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sections {
-    /// Executable code. Mapped read-only and executable.
+    /// Executable code, mapped read-only and executable.
     pub text: Section,
-    /// Constants. Mapped read-only and never executable.
+    /// Constants, mapped read-only and never executable.
     pub rodata: Section,
-    /// Everything writable — `.requests`, `.data` and `.bss`, which the linker
-    /// script keeps contiguous in one segment. Mapped writable and never
-    /// executable.
+    /// `.requests`, `.data` and `.bss` in one linker segment, mapped writable, never executable.
     pub data: Section,
-    /// The page-exact D-407 entry ranges, outside the ordinary image classes.
+    /// The page-exact entry ranges, outside the ordinary image classes.
     pub entry_enclave: EntryEnclaveSections,
 }
 
 /// Linker-owned ranges from which the x86 entry enclave is validated.
 ///
-/// The two guard ranges are deliberately not part of any mapping list. Their
-/// named addresses let the page-table owner prove absence instead of deriving
-/// a hole from adjacent stack arithmetic.
+/// The guards are in no mapping list; their named addresses let the page-table owner prove absence.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EntryEnclaveSections {
     /// Interrupt stubs and common entry/exit assembly.
@@ -388,14 +335,9 @@ pub struct EntryEnclaveSections {
 
 /// Where the linker put each protection class of this kernel.
 ///
-/// `entry!` already ties `wost` to the linker script through `ENTRY(kmain)`
-/// and the `.requests` section; the six symbols read here are the rest of that
-/// contract. A script that does not define them fails to link, which is the
-/// failure mode to want — the alternative is a kernel that maps its own text
-/// writable because a symbol silently resolved to zero.
+/// The linker script must define every symbol read here, so a missing one fails to link.
 pub fn sections() -> Sections {
-    // Linker symbols with no storage: only their addresses are taken, which
-    // is what makes `u8` harmless and `&raw const` safe where a read is not.
+    // Storage-less symbols: only addresses are taken, so `u8` is harmless and `&raw const` safe.
     unsafe extern "C" {
         static __text_start: u8;
         static __text_end: u8;
@@ -422,10 +364,7 @@ pub fn sections() -> Sections {
         static __kpti_ist_stack_end: u8;
     }
 
-    // Distinct linker symbols may deliberately resolve to the same boundary.
-    // Keep their numeric addresses opaque until runtime: otherwise an
-    // optimizer may fold equality between two distinct extern statics to
-    // false even though the linker aliases their final addresses.
+    // Distinct symbols may alias one boundary, so opacity stops their equality folding to false.
     fn linker_address(symbol: *const u8) -> u64 {
         core::hint::black_box(symbol).addr() as u64
     }
@@ -497,13 +436,9 @@ pub struct BootInfo {
     pub direct_map: Result<DirectMap, HandoffError>,
     /// Where the bootloader placed the kernel image, or why it did not say.
     pub image: Result<ImageAddress, HandoffError>,
-    /// The address of the ACPI root pointer, or why there is none.
-    ///
-    /// Virtual from base revision 4, which is one of the reasons D-42 asked
-    /// for it: the table tree is readable before the kernel maps anything.
+    /// The ACPI root pointer's address, virtual from base revision 4, or why there is none.
     pub rsdp: Result<u64, HandoffError>,
-    /// The first module the bootloader loaded — this kernel's initrd, which is
-    /// one program (D-100).
+    /// The first module the bootloader loaded, this kernel's one-program initrd.
     pub module: Result<&'static [u8], HandoffError>,
 }
 
@@ -522,8 +457,8 @@ pub enum HandoffError {
 impl fmt::Display for HandoffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoResponse => core::fmt::Write::write_str(f, "bootloader ignored the request"),
-            Self::Empty => core::fmt::Write::write_str(f, "bootloader answered with nothing"),
+            Self::NoResponse => f.write_str("bootloader ignored the request"),
+            Self::Empty => f.write_str("bootloader answered with nothing"),
             Self::MemoryMap(reason) => write!(f, "invalid memory map: {reason}"),
         }
     }
@@ -531,10 +466,7 @@ impl fmt::Display for HandoffError {
 
 impl core::error::Error for HandoffError {}
 
-/// Items [`entry!`](crate::entry) names in the calling crate.
-///
-/// Not a stable interface; re-exported only so downstream crates never depend
-/// on the bootloader protocol crate directly.
+/// Unstable items [`entry!`](crate::entry) names, so no crate depends on `limine` directly.
 #[doc(hidden)]
 pub mod __macro {
     pub use limine::BaseRevision;
@@ -546,83 +478,72 @@ pub mod __macro {
     pub use super::limine_glue::{Requests, base_revision};
 }
 
-/// Define the kernel entry point.
+/// Define the request block and the `kmain` symbol the linker script's `ENTRY()` names.
 ///
-/// Expands to the bootloader request block and the `kmain` symbol named by
-/// `ENTRY()` in the linker script, then calls `$path`, which must be
-/// `fn(BootInfo) -> !`.
-///
-/// The expansion lands in the calling crate rather than in `wost` on purpose:
-/// `#[used]` statics inside an rlib can be dropped wholesale by the linker,
-/// because nothing references the archive member holding them
-/// (rust-lang/rust#47384). Every `-rt` crate in the ecosystem does it this way.
-/// The `#[allow(unsafe_code)]` attributes are what let the calling crate carry
-/// `#![deny(unsafe_code)]`; they cover `wost`-authored code that merely expands
-/// there, which is why that crate uses `deny` rather than `forbid`.
-///
-/// **`allow`, not `expect`:** `unfulfilled_lint_expectations` does not fire for
-/// attributes inside a macro expansion, so `expect` would falsely appear
-/// checked (D-131).
+/// `$path` must be `fn(BootInfo) -> !`.
+/// It expands in the caller: a linker may drop an rlib's `#[used]` statics (rust-lang/rust#47384).
+/// The caller must `deny`, never `forbid`, `unsafe_code`, so these `allow`s cover the expansion.
+/// They stay `allow` because `expect` never fires inside a macro expansion and would look checked.
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
         const __WOST_ENTRY_SIGNATURE: fn($crate::boot::BootInfo) -> ! = $path;
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_start_marker")]
         static __WOST_REQUESTS_START: $crate::boot::__macro::RequestsStartMarker =
             $crate::boot::__macro::RequestsStartMarker::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_BASE_REVISION: $crate::boot::__macro::BaseRevision =
             $crate::boot::__macro::base_revision();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_FRAMEBUFFER: $crate::boot::__macro::FramebufferRequest =
             $crate::boot::__macro::FramebufferRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_MEMORY_MAP: $crate::boot::__macro::MemoryMapRequest =
             $crate::boot::__macro::MemoryMapRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_DIRECT_MAP: $crate::boot::__macro::HhdmRequest =
             $crate::boot::__macro::HhdmRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_IMAGE: $crate::boot::__macro::ExecutableAddressRequest =
             $crate::boot::__macro::ExecutableAddressRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_RSDP: $crate::boot::__macro::RsdpRequest =
             $crate::boot::__macro::RsdpRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests")]
         static __WOST_MODULES: $crate::boot::__macro::ModuleRequest =
             $crate::boot::__macro::ModuleRequest::new();
 
         #[used]
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
 
-        #[allow(unsafe_code)]
+        #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(no_mangle)]
         extern "C" fn kmain() -> ! {
             $crate::boot::enter(
@@ -630,7 +551,7 @@ macro_rules! entry {
                     base_revision: &__WOST_BASE_REVISION,
                     framebuffer: &__WOST_FRAMEBUFFER,
                     memory_map: &__WOST_MEMORY_MAP,
-                    hhdm: &__WOST_DIRECT_MAP,
+                    direct_map: &__WOST_DIRECT_MAP,
                     image: &__WOST_IMAGE,
                     rsdp: &__WOST_RSDP,
                     modules: &__WOST_MODULES,
