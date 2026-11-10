@@ -30,11 +30,11 @@ experimental source-only prerelease under the bounded source-preview gate, is
 not the qualification campaign under What is left, closes no rows, starts none
 of the stopped product work, and establishes no current machine qualification.
 What is left gives the gate and order of a qualified diagnostic release.
-v0.2.0 (D-449) is such a release: it qualified `694061f` and closed every row
+v0.2.0 (D-449) is that qualified release: it qualified `694061f` and closed every row
 its gate proved, leaving PW-006, PW-010 and the `TRIGGER` rows live. The
 adversarial re-audit also found new safe-boundary, hostile-layout and
 qualification defects, all recorded below. VMware waits for a frozen candidate
-after the non-machine source and manual-red gaps close; its fresh boots are
+after the non-machine source and manual-red gaps close; its fresh boots are themselves
 required to close the machine-dependent rows.
 
 D-366 transfers compiler-readiness authority to Realm. The kernel handoff in
@@ -78,7 +78,7 @@ dated tree carried no uncommitted work. The day's work, in the order it landed:
 - `c17dabd` and `46ff365` closed what `cargo-mutants` found across the 26
   host libraries; D-246 carries the complete grade and every adjudication.
 
-What remains, and how to run it:
+What remains, and exactly how to run it:
 
 1. **PW-001, the registry sweep.** `cargo xtask mutate` from a clean
    checkout. The clean `f28428a` run completed with 1,301 caught, 34 survivors
