@@ -1,9 +1,8 @@
 use super::*;
 
+// Invalidates any legacy PASS record before reading unsigned provider output: its consistency
+// helps the operator, but caller-selected bytes have no release authority.
 pub(super) fn verify(paths: &Paths, scan_directory: &Path) -> Result<()> {
-    // D-373: this deliberately invalidates any legacy PASS record before
-    // inspecting unsigned provider output. Semantic consistency is useful to
-    // the operator, but caller-selected bytes have no release authority.
     let attempt = qualification::begin_security_deep(paths, true)?;
     let request = read(
         &attempt.directory().join(REQUEST),
@@ -110,7 +109,23 @@ pub(super) fn verify_scan(
         findings,
         coverage,
     )?;
+    let counts = verify_findings(findings, id)?;
+    let surfaces = verify_coverage(coverage, id)?;
+    require_zero_finding_report(report, target, scope, threat_model, source)?;
+    Ok(Scan {
+        id: id.to_string(),
+        producer_name,
+        producer_version,
+        surfaces,
+        critical: counts["critical"],
+        high: counts["high"],
+        medium: counts["medium"],
+        low: counts["low"],
+        informational: counts["informational"],
+    })
+}
 
+fn verify_findings(findings: &[u8], id: &str) -> Result<BTreeMap<&'static str, u64>> {
     let findings_value = parse_json(findings, "Codex Security findings")?;
     let findings_root = json_object(&findings_value, "Codex Security findings")?;
     require_json_fields(
@@ -169,7 +184,10 @@ pub(super) fn verify_scan(
         counts.values().all(|count| *count == 0),
         "Codex Security scan has reportable findings without a repository disposition"
     );
+    Ok(counts)
+}
 
+fn verify_coverage(coverage: &[u8], id: &str) -> Result<u64> {
     let coverage_value = parse_json(coverage, "Codex Security coverage")?;
     let coverage_root = json_object(&coverage_value, "Codex Security coverage")?;
     require_json_fields(
@@ -234,18 +252,7 @@ pub(super) fn verify_scan(
         surfaces.is_empty(),
         "Codex Security deep aggregate has noncanonical surface rows"
     );
-    require_zero_finding_report(report, target, scope, threat_model, source)?;
-    Ok(Scan {
-        id: id.to_string(),
-        producer_name,
-        producer_version,
-        surfaces: surfaces.len() as u64,
-        critical: counts["critical"],
-        high: counts["high"],
-        medium: counts["medium"],
-        low: counts["low"],
-        informational: counts["informational"],
-    })
+    Ok(surfaces.len() as u64)
 }
 
 fn require_zero_finding_report(
@@ -917,20 +924,14 @@ pub(super) fn fields(
     permissions: &WorkerPermissionDigests,
     transitions: &WorkerTransitionLedger,
 ) -> Vec<(String, String)> {
-    let mut result = owned_identity_fields(
-        tools.node.bytes,
-        &tools.node.sha256,
-        &tools.node.version,
-        tools.python.bytes,
-        &tools.python.sha256,
-        &tools.python.version,
-        tools.codex.bytes,
-        &tools.codex.sha256,
-        &tools.codex.version,
-        &tools.codex_runtime,
-        package.integrity.len() as u64,
-        &tools.python_runtime,
-    );
+    let mut result = owned_identity_fields(OwnedIdentity {
+        node: RecordedTool::of(&tools.node),
+        python: RecordedTool::of(&tools.python),
+        codex: RecordedTool::of(&tools.codex),
+        codex_runtime: &tools.codex_runtime,
+        integrity_bytes: package.integrity.len() as u64,
+        python_runtime: &tools.python_runtime,
+    });
     result.extend([
         (
             "execution.worker-effective-profile.sha256".to_string(),
@@ -976,21 +977,42 @@ fn scan_fields(scan: &Scan) -> Vec<(String, String)> {
     ]
 }
 
-#[allow(clippy::too_many_arguments)]
-fn owned_identity_fields(
-    node_bytes: u64,
-    node_sha256: &str,
-    node_version: &str,
-    python_bytes: u64,
-    python_sha256: &str,
-    python_version: &str,
-    codex_bytes: u64,
-    codex_sha256: &str,
-    codex_version: &str,
-    codex_runtime: &CodexRuntimeIdentity,
+#[derive(Clone, Copy, Debug)]
+struct RecordedTool<'identity> {
+    bytes: u64,
+    sha256: &'identity str,
+    version: &'identity str,
+}
+
+impl<'identity> RecordedTool<'identity> {
+    fn of(tool: &'identity ToolIdentity) -> Self {
+        Self {
+            bytes: tool.bytes,
+            sha256: &tool.sha256,
+            version: &tool.version,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OwnedIdentity<'identity> {
+    node: RecordedTool<'identity>,
+    python: RecordedTool<'identity>,
+    codex: RecordedTool<'identity>,
+    codex_runtime: &'identity CodexRuntimeIdentity,
     integrity_bytes: u64,
-    python_runtime: &PythonRuntimeIdentity,
-) -> Vec<(String, String)> {
+    python_runtime: &'identity PythonRuntimeIdentity,
+}
+
+fn owned_identity_fields(identity: OwnedIdentity<'_>) -> Vec<(String, String)> {
+    let OwnedIdentity {
+        node,
+        python,
+        codex,
+        codex_runtime,
+        integrity_bytes,
+        python_runtime,
+    } = identity;
     vec![
         (
             "authentication.channel".to_string(),
@@ -1052,14 +1074,14 @@ fn owned_identity_fields(
             "tool.codex-security.version".to_string(),
             PRODUCER_VERSION.to_string(),
         ),
-        ("tool.node.bytes".to_string(), node_bytes.to_string()),
-        ("tool.node.sha256".to_string(), node_sha256.to_string()),
-        ("tool.node.version".to_string(), node_version.to_string()),
-        ("tool.python.bytes".to_string(), python_bytes.to_string()),
-        ("tool.python.sha256".to_string(), python_sha256.to_string()),
+        ("tool.node.bytes".to_string(), node.bytes.to_string()),
+        ("tool.node.sha256".to_string(), node.sha256.to_string()),
+        ("tool.node.version".to_string(), node.version.to_string()),
+        ("tool.python.bytes".to_string(), python.bytes.to_string()),
+        ("tool.python.sha256".to_string(), python.sha256.to_string()),
         (
             "tool.python.version".to_string(),
-            python_version.to_string(),
+            python.version.to_string(),
         ),
         (
             "tool.python.runtime.bytes".to_string(),
@@ -1077,9 +1099,9 @@ fn owned_identity_fields(
             "tool.python.runtime.sha256".to_string(),
             python_runtime.sha256.clone(),
         ),
-        ("tool.codex.bytes".to_string(), codex_bytes.to_string()),
-        ("tool.codex.sha256".to_string(), codex_sha256.to_string()),
-        ("tool.codex.version".to_string(), codex_version.to_string()),
+        ("tool.codex.bytes".to_string(), codex.bytes.to_string()),
+        ("tool.codex.sha256".to_string(), codex.sha256.to_string()),
+        ("tool.codex.version".to_string(), codex.version.to_string()),
         (
             "tool.codex.runtime.bytes".to_string(),
             codex_runtime.bytes.to_string(),
@@ -1209,6 +1231,13 @@ tool.codex.runtime.sha256={}\n",
     format!("{body}checksum.sha256={checksum}\n").into_bytes()
 }
 
+const WORKER_POLICY_DIGEST_FIELDS: [&str; 4] = [
+    "execution.worker-effective-profile.sha256",
+    "execution.worker-effective-state.sha256",
+    "execution.worker-parent-state.sha256",
+    "execution.worker-provider-profile.sha256",
+];
+
 pub(super) fn verify_owned_request(
     bytes: &[u8],
     source: &SourceIdentity,
@@ -1220,6 +1249,43 @@ pub(super) fn verify_owned_request(
         text.ends_with('\n') && !text.contains('\r') && !text.contains('\0'),
         "owned Codex Security request framing differs"
     );
+    let values = read_owned_request(text)?;
+    require_owned_request_values(&values, source, python_runtime, git)?;
+    let codex_runtime = qualified_codex_runtime_identity();
+    let mut fields = owned_identity_fields(OwnedIdentity {
+        node: RecordedTool {
+            bytes: NODE_BYTES,
+            sha256: NODE_SHA256,
+            version: NODE_VERSION,
+        },
+        python: RecordedTool {
+            bytes: PYTHON_BYTES,
+            sha256: PYTHON_SHA256,
+            version: PYTHON_VERSION,
+        },
+        codex: RecordedTool {
+            bytes: CODEX_BYTES,
+            sha256: CODEX_SHA256,
+            version: CODEX_VERSION,
+        },
+        codex_runtime: &codex_runtime,
+        integrity_bytes: PLUGIN_INTEGRITY_BYTES,
+        python_runtime,
+    });
+    for key in WORKER_POLICY_DIGEST_FIELDS {
+        fields.push((
+            key.to_string(),
+            values
+                .get(key)
+                .copied()
+                .context("owned Codex Security request has no worker-policy digest")?
+                .to_string(),
+        ));
+    }
+    Ok(fields)
+}
+
+fn read_owned_request(text: &str) -> Result<BTreeMap<&str, &str>> {
     let mut lines = text.lines();
     ensure!(
         lines.next() == Some("wizard-codex-security-request-v3"),
@@ -1303,12 +1369,7 @@ pub(super) fn verify_owned_request(
         lines.next().is_none(),
         "owned Codex Security request has trailing fields"
     );
-    for field in [
-        "execution.worker-effective-profile.sha256",
-        "execution.worker-effective-state.sha256",
-        "execution.worker-parent-state.sha256",
-        "execution.worker-provider-profile.sha256",
-    ] {
+    for field in WORKER_POLICY_DIGEST_FIELDS {
         require_sha256(
             values
                 .get(field)
@@ -1324,6 +1385,15 @@ pub(super) fn verify_owned_request(
         sha256::hex(&sha256::digest(&text.as_bytes()[..checksum_offset])) == checksum,
         "owned Codex Security request checksum differs"
     );
+    Ok(values)
+}
+
+fn require_owned_request_values(
+    values: &BTreeMap<&str, &str>,
+    source: &SourceIdentity,
+    python_runtime: &PythonRuntimeIdentity,
+    git: &GitIdentity,
+) -> Result<()> {
     for (key, expected) in [
         ("authentication.channel", AUTHENTICATION_CHANNEL),
         ("environment.policy", ENVIRONMENT_POLICY),
@@ -1394,37 +1464,7 @@ pub(super) fn verify_owned_request(
                 == Some(python_runtime.sha256.as_str()),
         "owned Codex Security request Python runtime identity differs"
     );
-    let codex_runtime = qualified_codex_runtime_identity();
-    let mut fields = owned_identity_fields(
-        NODE_BYTES,
-        NODE_SHA256,
-        NODE_VERSION,
-        PYTHON_BYTES,
-        PYTHON_SHA256,
-        PYTHON_VERSION,
-        CODEX_BYTES,
-        CODEX_SHA256,
-        CODEX_VERSION,
-        &codex_runtime,
-        PLUGIN_INTEGRITY_BYTES,
-        python_runtime,
-    );
-    for key in [
-        "execution.worker-effective-profile.sha256",
-        "execution.worker-effective-state.sha256",
-        "execution.worker-parent-state.sha256",
-        "execution.worker-provider-profile.sha256",
-    ] {
-        fields.push((
-            key.to_string(),
-            values
-                .get(key)
-                .copied()
-                .context("owned Codex Security request has no worker-policy digest")?
-                .to_string(),
-        ));
-    }
-    Ok(fields)
+    Ok(())
 }
 
 pub(super) fn qualified_codex_runtime_identity() -> CodexRuntimeIdentity {

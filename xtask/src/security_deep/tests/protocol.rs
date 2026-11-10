@@ -3,9 +3,12 @@ use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::fake_app_server::{expect_value, read_value, send_value, wait_until_ready};
+
 const FAKE_MODE_ENV: &str = "WIZARD_SECURITY_DEEP_FAKE_MCP_MODE";
 const FAKE_ROOT_ENV: &str = "WIZARD_SECURITY_DEEP_FAKE_MCP_ROOT";
 const READY: &[u8] = b"WIZARD-SECURITY-DEEP-FAKE-MCP-READY\n";
+const CLIENT: &str = "fake MCP client";
 const SCAN_ID: &str = "11111111-1111-4111-8111-111111111111";
 const OTHER_SCAN_ID: &str = "22222222-2222-4222-8222-222222222222";
 const WORKSPACE_ID: &str = "33333333-3333-4333-8333-333333333333";
@@ -785,465 +788,426 @@ fn start_result(mode: &str, paths: &FakePaths) -> JsonValue {
     JsonValue::Object(result)
 }
 
+const COMPLETED_SCAN: &str = r#"{
+    "artifacts": {},
+    "canceledAt": null,
+    "continuationThreadId": null,
+    "contract": {
+        "diffTarget": null,
+        "scope": {"requestedPath": ".", "requiredExcludePaths": [], "requiredIncludePaths": ["."]},
+        "target": {
+            "allowedKinds": ["git_revision"],
+            "displayName": "repository",
+            "targetId": "target-1"
+        }
+    },
+    "diffTarget": null,
+    "executionThreadIds": ["thread-1"],
+    "failureMessage": null,
+    "findingCount": 0,
+    "findings": [],
+    "findingsTruncated": false,
+    "handoffClaimToken": null,
+    "handoffClaimedAt": null,
+    "handoffStatus": null,
+    "mode": "deep",
+    "progress": {
+        "candidates": {"reportable": 0},
+        "coverage": {"closedRows": 1, "filesTotal": 1, "worklistRows": 1},
+        "independentReviews": {"active": 0, "completed": 4, "consolidating": false, "maximum": 40},
+        "phase": "reporting",
+        "phaseProgress": {"completed": 1, "total": 1, "unit": "report_artifacts"},
+        "preflightIssues": [],
+        "preflightProgress": {"completed": 1, "total": 1},
+        "reviewPass": 1,
+        "status": "complete",
+        "updatedAt": "2026-10-14T00:00:00Z"
+    },
+    "reportAvailable": true,
+    "remediationAvailable": true,
+    "remediationUnavailableReason": null,
+    "resultsRecoveryNeeded": false,
+    "scope": ".",
+    "targetSummary": null,
+    "threadIds": ["thread-1", "thread-2"],
+    "severityCounts": {},
+    "updatedAt": "2026-10-14T00:00:01Z",
+    "userContext": null,
+    "warnings": []
+}"#;
+
+const COMPLETION: &str = r#"{
+    "isError": false,
+    "structuredContent": {
+        "otherRunningDeepScans": [],
+        "targetWarnings": [],
+        "workspace": {
+            "diffTarget": null,
+            "mode": "deep",
+            "scope": ".",
+            "setup": {"submitted": true},
+            "setupValidation": {"error": null, "valid": true},
+            "targetSummary": null,
+            "targetTitle": "repository",
+            "updatedAt": "2026-10-14T00:00:00Z",
+            "userContext": null
+        }
+    }
+}"#;
+
+fn edit_json(value: &mut JsonValue, pointer: &str, replacement: Option<JsonValue>) {
+    let (parent, field) = pointer
+        .rsplit_once('/')
+        .expect("fixture pointer names a field");
+    let mut node = value;
+    for segment in parent.split('/').skip(1) {
+        node = match node {
+            JsonValue::Object(fields) => fields.get_mut(segment),
+            JsonValue::Array(items) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get_mut(index)),
+            _ => None,
+        }
+        .unwrap_or_else(|| panic!("fixture pointer {pointer} is absent"));
+    }
+    match (node, replacement) {
+        (JsonValue::Object(fields), Some(replacement)) => {
+            fields.insert(field.to_string(), replacement);
+        }
+        (JsonValue::Object(fields), None) => {
+            fields.remove(field);
+        }
+        (JsonValue::Array(items), Some(replacement)) => {
+            let index = field.parse::<usize>().expect("fixture array index");
+            if index == items.len() {
+                items.push(replacement);
+            } else {
+                items[index] = replacement;
+            }
+        }
+        _ => panic!("fixture pointer {pointer} has no editable parent"),
+    }
+}
+
 fn complete_result(mode: &str, paths: &FakePaths, source: &SourceIdentity) -> JsonValue {
     let directory = if mode == "complete-changed-directory" {
         &paths.changed_scan_directory
     } else {
         paths.start_directory(mode)
     };
-    let target = if mode == "complete-other-target" {
-        &paths.other_repository
-    } else {
-        &paths.repository
-    };
-    let revision = if mode == "complete-other-revision" {
-        "c".repeat(40)
-    } else {
-        source.commit.clone()
-    };
-    let artifact_path = |artifact_mode: &str, name: &str| {
-        if mode == artifact_mode {
-            path_text(&paths.other_manifest)
-        } else {
-            path_text(&directory.join(name))
+    let mut scan = parse_json(COMPLETED_SCAN.as_bytes(), "completed scan fixture").unwrap();
+    let other_manifest = || Some(path_text(&paths.other_manifest));
+    for (fault, pointer, value) in [
+        (
+            "",
+            "/artifacts/coverage",
+            Some(path_text(&directory.join(COVERAGE))),
+        ),
+        (
+            "",
+            "/artifacts/findings",
+            Some(path_text(&directory.join(FINDINGS))),
+        ),
+        (
+            "",
+            "/artifacts/manifest",
+            Some(path_text(&directory.join(MANIFEST))),
+        ),
+        (
+            "",
+            "/artifacts/markdownReport",
+            Some(path_text(&directory.join(REPORT))),
+        ),
+        ("", "/model", Some(text_value(MODEL))),
+        ("", "/reasoningEffort", Some(text_value(REASONING))),
+        ("", "/scanDir", Some(path_text(directory))),
+        ("", "/scanId", Some(text_value(start_scan_id(mode)))),
+        ("", "/targetPath", Some(path_text(&paths.repository))),
+        ("", "/targetRevision", Some(text_value(&source.commit))),
+        (
+            "artifact-coverage-path",
+            "/artifacts/coverage",
+            other_manifest(),
+        ),
+        (
+            "artifact-findings-path",
+            "/artifacts/findings",
+            other_manifest(),
+        ),
+        (
+            "artifact-manifest-path",
+            "/artifacts/manifest",
+            other_manifest(),
+        ),
+        (
+            "artifact-report-path",
+            "/artifacts/markdownReport",
+            other_manifest(),
+        ),
+        (
+            "artifact-schema",
+            "/artifacts/unexpected",
+            Some(JsonValue::Null),
+        ),
+        (
+            "complete-in-progress",
+            "/progress/status",
+            Some(text_value("running")),
+        ),
+        (
+            "complete-progress-extra",
+            "/progress/unexpected",
+            Some(JsonValue::Null),
+        ),
+        (
+            "complete-execution-thread-unreported",
+            "/executionThreadIds",
+            Some(JsonValue::Array(vec![text_value("thread-3")])),
+        ),
+        (
+            "complete-finding-count",
+            "/findingCount",
+            Some(JsonValue::Number("1".to_string())),
+        ),
+        (
+            "complete-finding-row",
+            "/findings",
+            Some(JsonValue::Array(vec![object([(
+                "findingId",
+                text_value("finding-1"),
+            )])])),
+        ),
+        ("complete-wrong-mode", "/mode", Some(text_value("quick"))),
+        (
+            "complete-wrong-model",
+            "/model",
+            Some(text_value("other-model")),
+        ),
+        (
+            "complete-wrong-reasoning",
+            "/reasoningEffort",
+            Some(text_value("low")),
+        ),
+        (
+            "complete-no-report",
+            "/reportAvailable",
+            Some(JsonValue::Bool(false)),
+        ),
+        (
+            "complete-needs-recovery",
+            "/resultsRecoveryNeeded",
+            Some(JsonValue::Bool(true)),
+        ),
+        (
+            "complete-other-scan",
+            "/scanId",
+            Some(text_value(OTHER_SCAN_ID)),
+        ),
+        ("complete-wrong-scope", "/scope", Some(text_value("src"))),
+        (
+            "complete-other-target",
+            "/targetPath",
+            Some(path_text(&paths.other_repository)),
+        ),
+        (
+            "complete-other-revision",
+            "/targetRevision",
+            Some(text_value(&"c".repeat(40))),
+        ),
+        (
+            "complete-scan-warning",
+            "/warnings",
+            Some(JsonValue::Array(vec![text_value("fixture warning")])),
+        ),
+        ("complete-scan-extra", "/unexpected", Some(JsonValue::Null)),
+    ] {
+        if fault.is_empty() || fault == mode {
+            edit_json(&mut scan, pointer, value);
         }
-    };
-    let mut artifacts = BTreeMap::from([
-        (
-            "coverage".to_string(),
-            artifact_path("artifact-coverage-path", COVERAGE),
-        ),
-        (
-            "findings".to_string(),
-            artifact_path("artifact-findings-path", FINDINGS),
-        ),
-        (
-            "manifest".to_string(),
-            artifact_path("artifact-manifest-path", MANIFEST),
-        ),
-        (
-            "markdownReport".to_string(),
-            artifact_path("artifact-report-path", REPORT),
-        ),
+    }
+    let content = object([
+        ("text", text_value(COMPLETE_CONTENT)),
+        ("type", text_value("text")),
     ]);
-    if mode == "artifact-schema" {
-        artifacts.insert("unexpected".to_string(), JsonValue::Null);
+    let workspace = |field: &str| format!("/structuredContent/workspace/{field}");
+    let mut result = parse_json(COMPLETION.as_bytes(), "completion fixture").unwrap();
+    for (fault, pointer, value) in [
+        (
+            "",
+            "/content".to_string(),
+            Some(JsonValue::Array(vec![clone_json(&content)])),
+        ),
+        (
+            "",
+            "/structuredContent/scan".to_string(),
+            Some(clone_json(&scan)),
+        ),
+        ("", workspace("id"), Some(text_value(WORKSPACE_ID))),
+        (
+            "",
+            workspace("targetPath"),
+            Some(path_text(&paths.repository)),
+        ),
+        ("", workspace("results"), Some(scan)),
+        (
+            "workspace-setup-unsubmitted",
+            workspace("setup/submitted"),
+            Some(JsonValue::Bool(false)),
+        ),
+        (
+            "workspace-setup-schema",
+            workspace("setup/unexpected"),
+            Some(JsonValue::Null),
+        ),
+        (
+            "workspace-validation-error",
+            workspace("setupValidation/error"),
+            Some(text_value("fixture setup failure")),
+        ),
+        (
+            "workspace-validation-invalid",
+            workspace("setupValidation/valid"),
+            Some(JsonValue::Bool(false)),
+        ),
+        (
+            "workspace-validation-schema",
+            workspace("setupValidation/unexpected"),
+            Some(JsonValue::Null),
+        ),
+        (
+            "workspace-other-target",
+            workspace("targetPath"),
+            Some(path_text(&paths.other_repository)),
+        ),
+        ("workspace-id", workspace("id"), Some(text_value("short"))),
+        (
+            "workspace-diff-target",
+            workspace("diffTarget"),
+            Some(text_value("HEAD")),
+        ),
+        (
+            "workspace-mode",
+            workspace("mode"),
+            Some(text_value("standard")),
+        ),
+        (
+            "workspace-scope",
+            workspace("scope"),
+            Some(text_value("src")),
+        ),
+        (
+            "workspace-target-summary",
+            workspace("targetSummary"),
+            Some(text_value("stale summary")),
+        ),
+        (
+            "workspace-wrong-title",
+            workspace("targetTitle"),
+            Some(text_value("other")),
+        ),
+        (
+            "workspace-updated-at",
+            workspace("updatedAt"),
+            Some(text_value("not-a-timestamp")),
+        ),
+        (
+            "workspace-user-context",
+            workspace("userContext"),
+            Some(text_value("stale context")),
+        ),
+        (
+            "workspace-results",
+            workspace("results"),
+            Some(JsonValue::Object(BTreeMap::new())),
+        ),
+        (
+            "workspace-schema-extra",
+            workspace("unexpected"),
+            Some(JsonValue::Null),
+        ),
+        ("workspace-schema-missing", workspace("userContext"), None),
+        (
+            "complete-other-running",
+            "/structuredContent/otherRunningDeepScans".to_string(),
+            Some(JsonValue::Array(vec![text_value(OTHER_RUNNING_SCAN_ID)])),
+        ),
+        (
+            "complete-target-warning",
+            "/structuredContent/targetWarnings".to_string(),
+            Some(JsonValue::Array(vec![text_value("fixture target warning")])),
+        ),
+        (
+            "complete-context-extra",
+            "/structuredContent/unexpected".to_string(),
+            Some(JsonValue::Null),
+        ),
+        (
+            "complete-parent-scan",
+            "/structuredContent/parentScanId".to_string(),
+            Some(text_value(PARENT_SCAN_ID)),
+        ),
+        (
+            "complete-recipe",
+            "/structuredContent/recipe".to_string(),
+            Some(text_value("fixture-recipe")),
+        ),
+        (
+            "complete-content-wrong-text",
+            "/content/0/text".to_string(),
+            Some(text_value("Completion was not indexed.")),
+        ),
+        (
+            "complete-content-wrong-type",
+            "/content/0/type".to_string(),
+            Some(text_value("image")),
+        ),
+        (
+            "complete-content-missing-type",
+            "/content/0/type".to_string(),
+            None,
+        ),
+        (
+            "complete-content-missing-text",
+            "/content/0/text".to_string(),
+            None,
+        ),
+        (
+            "complete-content-extra",
+            "/content/0/unexpected".to_string(),
+            Some(JsonValue::Null),
+        ),
+        (
+            "complete-content-not-array",
+            "/content".to_string(),
+            Some(JsonValue::Object(BTreeMap::new())),
+        ),
+        (
+            "complete-content-item-not-object",
+            "/content".to_string(),
+            Some(JsonValue::Array(vec![text_value("not an object")])),
+        ),
+        (
+            "complete-content-count",
+            "/content/1".to_string(),
+            Some(content),
+        ),
+        (
+            "complete-is-error",
+            "/isError".to_string(),
+            Some(JsonValue::Bool(true)),
+        ),
+        (
+            "complete-result-extra",
+            "/unexpected".to_string(),
+            Some(JsonValue::Null),
+        ),
+    ] {
+        if fault.is_empty() || fault == mode {
+            edit_json(&mut result, &pointer, value);
+        }
     }
-    let mut progress = BTreeMap::from([
-        (
-            "candidates".to_string(),
-            object([("reportable", JsonValue::Number("0".to_string()))]),
-        ),
-        (
-            "coverage".to_string(),
-            object([
-                ("closedRows", JsonValue::Number("1".to_string())),
-                ("filesTotal", JsonValue::Number("1".to_string())),
-                ("worklistRows", JsonValue::Number("1".to_string())),
-            ]),
-        ),
-        (
-            "independentReviews".to_string(),
-            object([
-                ("active", JsonValue::Number("0".to_string())),
-                ("completed", JsonValue::Number("4".to_string())),
-                ("consolidating", JsonValue::Bool(false)),
-                ("maximum", JsonValue::Number("40".to_string())),
-            ]),
-        ),
-        ("phase".to_string(), text_value("reporting")),
-        (
-            "phaseProgress".to_string(),
-            object([
-                ("completed", JsonValue::Number("1".to_string())),
-                ("total", JsonValue::Number("1".to_string())),
-                ("unit", text_value("report_artifacts")),
-            ]),
-        ),
-        ("preflightIssues".to_string(), JsonValue::Array(Vec::new())),
-        (
-            "preflightProgress".to_string(),
-            object([
-                ("completed", JsonValue::Number("1".to_string())),
-                ("total", JsonValue::Number("1".to_string())),
-            ]),
-        ),
-        ("reviewPass".to_string(), JsonValue::Number("1".to_string())),
-        (
-            "status".to_string(),
-            text_value(if mode == "complete-in-progress" {
-                "running"
-            } else {
-                "complete"
-            }),
-        ),
-        ("updatedAt".to_string(), text_value("2026-10-14T00:00:00Z")),
-    ]);
-    if mode == "complete-progress-extra" {
-        progress.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    let mut scan = BTreeMap::from([
-        ("artifacts".to_string(), JsonValue::Object(artifacts)),
-        ("canceledAt".to_string(), JsonValue::Null),
-        ("continuationThreadId".to_string(), JsonValue::Null),
-        (
-            "contract".to_string(),
-            object([
-                ("diffTarget", JsonValue::Null),
-                (
-                    "scope",
-                    object([
-                        ("requestedPath", text_value(".")),
-                        ("requiredExcludePaths", JsonValue::Array(Vec::new())),
-                        (
-                            "requiredIncludePaths",
-                            JsonValue::Array(vec![text_value(".")]),
-                        ),
-                    ]),
-                ),
-                (
-                    "target",
-                    object([
-                        (
-                            "allowedKinds",
-                            JsonValue::Array(vec![text_value("git_revision")]),
-                        ),
-                        ("displayName", text_value("repository")),
-                        ("targetId", text_value("target-1")),
-                    ]),
-                ),
-            ]),
-        ),
-        ("diffTarget".to_string(), JsonValue::Null),
-        (
-            "executionThreadIds".to_string(),
-            JsonValue::Array(vec![text_value(
-                if mode == "complete-execution-thread-unreported" {
-                    "thread-3"
-                } else {
-                    "thread-1"
-                },
-            )]),
-        ),
-        ("failureMessage".to_string(), JsonValue::Null),
-        (
-            "findingCount".to_string(),
-            JsonValue::Number(if mode == "complete-finding-count" {
-                "1".to_string()
-            } else {
-                "0".to_string()
-            }),
-        ),
-        (
-            "findings".to_string(),
-            if mode == "complete-finding-row" {
-                JsonValue::Array(vec![object([("findingId", text_value("finding-1"))])])
-            } else {
-                JsonValue::Array(Vec::new())
-            },
-        ),
-        ("findingsTruncated".to_string(), JsonValue::Bool(false)),
-        ("handoffClaimToken".to_string(), JsonValue::Null),
-        ("handoffClaimedAt".to_string(), JsonValue::Null),
-        ("handoffStatus".to_string(), JsonValue::Null),
-        (
-            "mode".to_string(),
-            text_value(if mode == "complete-wrong-mode" {
-                "quick"
-            } else {
-                "deep"
-            }),
-        ),
-        (
-            "model".to_string(),
-            text_value(if mode == "complete-wrong-model" {
-                "other-model"
-            } else {
-                MODEL
-            }),
-        ),
-        ("progress".to_string(), JsonValue::Object(progress)),
-        (
-            "reasoningEffort".to_string(),
-            text_value(if mode == "complete-wrong-reasoning" {
-                "low"
-            } else {
-                REASONING
-            }),
-        ),
-        (
-            "reportAvailable".to_string(),
-            JsonValue::Bool(mode != "complete-no-report"),
-        ),
-        ("remediationAvailable".to_string(), JsonValue::Bool(true)),
-        ("remediationUnavailableReason".to_string(), JsonValue::Null),
-        (
-            "resultsRecoveryNeeded".to_string(),
-            JsonValue::Bool(mode == "complete-needs-recovery"),
-        ),
-        ("scanDir".to_string(), path_text(directory)),
-        (
-            "scanId".to_string(),
-            text_value(if mode == "complete-other-scan" {
-                OTHER_SCAN_ID
-            } else {
-                start_scan_id(mode)
-            }),
-        ),
-        (
-            "scope".to_string(),
-            text_value(if mode == "complete-wrong-scope" {
-                "src"
-            } else {
-                "."
-            }),
-        ),
-        ("targetPath".to_string(), path_text(target)),
-        ("targetRevision".to_string(), text_value(&revision)),
-        ("targetSummary".to_string(), JsonValue::Null),
-        (
-            "threadIds".to_string(),
-            JsonValue::Array(vec![text_value("thread-1"), text_value("thread-2")]),
-        ),
-        (
-            "severityCounts".to_string(),
-            object(std::iter::empty::<(&str, JsonValue)>()),
-        ),
-        ("updatedAt".to_string(), text_value("2026-10-14T00:00:01Z")),
-        ("userContext".to_string(), JsonValue::Null),
-        (
-            "warnings".to_string(),
-            if mode == "complete-scan-warning" {
-                JsonValue::Array(vec![text_value("fixture warning")])
-            } else {
-                JsonValue::Array(Vec::new())
-            },
-        ),
-    ]);
-    if mode == "complete-scan-extra" {
-        scan.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    let scan = JsonValue::Object(scan);
-    let scan_results = clone_json(&scan);
-    let mut setup = BTreeMap::from([(
-        "submitted".to_string(),
-        JsonValue::Bool(mode != "workspace-setup-unsubmitted"),
-    )]);
-    if mode == "workspace-setup-schema" {
-        setup.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    let mut setup_validation = BTreeMap::from([
-        (
-            "error".to_string(),
-            if mode == "workspace-validation-error" {
-                text_value("fixture setup failure")
-            } else {
-                JsonValue::Null
-            },
-        ),
-        (
-            "valid".to_string(),
-            JsonValue::Bool(mode != "workspace-validation-invalid"),
-        ),
-    ]);
-    if mode == "workspace-validation-schema" {
-        setup_validation.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    let workspace_target = if mode == "workspace-other-target" {
-        &paths.other_repository
-    } else {
-        &paths.repository
-    };
-    let mut workspace = BTreeMap::from([
-        (
-            "id".to_string(),
-            text_value(if mode == "workspace-id" {
-                "short"
-            } else {
-                WORKSPACE_ID
-            }),
-        ),
-        (
-            "diffTarget".to_string(),
-            if mode == "workspace-diff-target" {
-                text_value("HEAD")
-            } else {
-                JsonValue::Null
-            },
-        ),
-        (
-            "mode".to_string(),
-            text_value(if mode == "workspace-mode" {
-                "standard"
-            } else {
-                "deep"
-            }),
-        ),
-        (
-            "scope".to_string(),
-            text_value(if mode == "workspace-scope" {
-                "src"
-            } else {
-                "."
-            }),
-        ),
-        ("setup".to_string(), JsonValue::Object(setup)),
-        (
-            "setupValidation".to_string(),
-            JsonValue::Object(setup_validation),
-        ),
-        ("targetPath".to_string(), path_text(workspace_target)),
-        (
-            "targetSummary".to_string(),
-            if mode == "workspace-target-summary" {
-                text_value("stale summary")
-            } else {
-                JsonValue::Null
-            },
-        ),
-        (
-            "targetTitle".to_string(),
-            text_value(if mode == "workspace-wrong-title" {
-                "other"
-            } else {
-                "repository"
-            }),
-        ),
-        (
-            "updatedAt".to_string(),
-            text_value(if mode == "workspace-updated-at" {
-                "not-a-timestamp"
-            } else {
-                "2026-10-14T00:00:00Z"
-            }),
-        ),
-        (
-            "userContext".to_string(),
-            if mode == "workspace-user-context" {
-                text_value("stale context")
-            } else {
-                JsonValue::Null
-            },
-        ),
-        (
-            "results".to_string(),
-            if mode == "workspace-results" {
-                object(std::iter::empty::<(&str, JsonValue)>())
-            } else {
-                scan_results
-            },
-        ),
-    ]);
-    if mode == "workspace-schema-extra" {
-        workspace.insert("unexpected".to_string(), JsonValue::Null);
-    } else if mode == "workspace-schema-missing" {
-        workspace.remove("userContext");
-    }
-    let mut context = BTreeMap::from([
-        (
-            "otherRunningDeepScans".to_string(),
-            if mode == "complete-other-running" {
-                JsonValue::Array(vec![text_value(OTHER_RUNNING_SCAN_ID)])
-            } else {
-                JsonValue::Array(Vec::new())
-            },
-        ),
-        ("scan".to_string(), scan),
-        (
-            "targetWarnings".to_string(),
-            if mode == "complete-target-warning" {
-                JsonValue::Array(vec![text_value("fixture target warning")])
-            } else {
-                JsonValue::Array(Vec::new())
-            },
-        ),
-        ("workspace".to_string(), JsonValue::Object(workspace)),
-    ]);
-    if mode == "complete-context-extra" {
-        context.insert("unexpected".to_string(), JsonValue::Null);
-    } else if mode == "complete-parent-scan" {
-        context.insert("parentScanId".to_string(), text_value(PARENT_SCAN_ID));
-    } else if mode == "complete-recipe" {
-        context.insert("recipe".to_string(), text_value("fixture-recipe"));
-    }
-    let mut content_item = BTreeMap::from([
-        (
-            "text".to_string(),
-            text_value(if mode == "complete-content-wrong-text" {
-                "Completion was not indexed."
-            } else {
-                COMPLETE_CONTENT
-            }),
-        ),
-        (
-            "type".to_string(),
-            text_value(if mode == "complete-content-wrong-type" {
-                "image"
-            } else {
-                "text"
-            }),
-        ),
-    ]);
-    if mode == "complete-content-missing-type" {
-        content_item.remove("type");
-    } else if mode == "complete-content-missing-text" {
-        content_item.remove("text");
-    } else if mode == "complete-content-extra" {
-        content_item.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    let content_item = JsonValue::Object(content_item);
-    let content = match mode {
-        "complete-content-not-array" => object(std::iter::empty::<(&str, JsonValue)>()),
-        "complete-content-item-not-object" => JsonValue::Array(vec![text_value("not an object")]),
-        "complete-content-count" => JsonValue::Array(vec![clone_json(&content_item), content_item]),
-        _ => JsonValue::Array(vec![content_item]),
-    };
-    let mut result = BTreeMap::from([
-        ("content".to_string(), content),
-        (
-            "isError".to_string(),
-            JsonValue::Bool(mode == "complete-is-error"),
-        ),
-        ("structuredContent".to_string(), JsonValue::Object(context)),
-    ]);
-    if mode == "complete-result-extra" {
-        result.insert("unexpected".to_string(), JsonValue::Null);
-    }
-    JsonValue::Object(result)
-}
-
-fn read_value(reader: &mut impl BufRead, label: &str) -> Result<JsonValue> {
-    let mut line = Vec::new();
-    ensure!(
-        reader.read_until(b'\n', &mut line)? != 0,
-        "fake MCP client closed before {label}"
-    );
-    ensure!(
-        line.last() == Some(&b'\n')
-            && line.iter().filter(|byte| **byte == b'\n').count() == 1
-            && !line.contains(&b'\r'),
-        "fake MCP client used noncanonical framing for {label}"
-    );
-    line.pop();
-    let value = parse_json(&line, label)?;
-    ensure!(
-        render_json(&value)?.as_bytes() == line,
-        "fake MCP client did not use canonical JSON for {label}"
-    );
-    Ok(value)
-}
-
-fn expect_value(reader: &mut impl BufRead, expected: JsonValue, label: &str) -> Result<()> {
-    let actual = read_value(reader, label)?;
-    ensure!(actual == expected, "fake MCP client {label} differs");
-    Ok(())
-}
-
-fn send_value(writer: &mut impl Write, value: &JsonValue) -> Result<()> {
-    writer.write_all(render_json(value)?.as_bytes())?;
-    writer.write_all(b"\n")?;
-    writer.flush()?;
-    Ok(())
+    result
 }
 
 fn send_initialize_response(writer: &mut impl Write, mode: &str, paths: &FakePaths) -> Result<()> {
@@ -1507,7 +1471,7 @@ fn exchange_server_messages(
     }
     send_value(writer, &JsonValue::Object(ping))?;
     if mode == "server-ping-bad-id" {
-        read_value(reader, "bad ping response")?;
+        read_value(reader, CLIENT, "bad ping response")?;
     } else {
         expect_value(
             reader,
@@ -1516,6 +1480,7 @@ fn exchange_server_messages(
                 ("jsonrpc", text_value("2.0")),
                 ("result", object(std::iter::empty::<(&str, JsonValue)>())),
             ]),
+            CLIENT,
             "ping response",
         )?;
     }
@@ -1534,6 +1499,7 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
     expect_value(
         &mut reader,
         expected_initialize_request(),
+        CLIENT,
         "initialize request",
     )?;
     if mode == "premature-eof" {
@@ -1545,9 +1511,15 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
     expect_value(
         &mut reader,
         expected_initialized_notification(),
+        CLIENT,
         "initialized notification",
     )?;
-    expect_value(&mut reader, expected_tools_request(), "tools/list request")?;
+    expect_value(
+        &mut reader,
+        expected_tools_request(),
+        CLIENT,
+        "tools/list request",
+    )?;
     exchange_server_messages(&mut reader, &mut writer, mode, paths)?;
     let tools = response("tools", tools_result(mode, paths));
     if mode.starts_with("tools-") {
@@ -1558,6 +1530,7 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
     expect_value(
         &mut reader,
         expected_daybreak_request(&paths.repository, &source),
+        CLIENT,
         "Daybreak advisory request",
     )?;
     if !send_daybreak_response(&mut writer, mode, paths)? {
@@ -1567,6 +1540,7 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
     expect_value(
         &mut reader,
         expected_start_request(&paths.repository, &source),
+        CLIENT,
         "start request",
     )?;
     let start = response("start", start_result(mode, paths));
@@ -1578,6 +1552,7 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
     expect_value(
         &mut reader,
         expected_complete_request(mode, &paths.repository, &source),
+        CLIENT,
         "complete request",
     )?;
     if mode == "start-missing-manifest" {
@@ -1611,23 +1586,6 @@ fn fake_mcp_main(mode: &str, paths: &FakePaths) -> Result<()> {
         "fake MCP client sent trailing input"
     );
     Ok(())
-}
-
-fn wait_until_ready(dialogue: &mut LineDialogue) -> Result<()> {
-    let mut observed = 0usize;
-    for _ in 0..8 {
-        let line = dialogue
-            .receive_line()?
-            .context("fake MCP test executable closed before its ready marker")?;
-        observed = observed
-            .checked_add(line.len())
-            .context("fake MCP ready prelude length overflowed")?;
-        ensure!(observed <= 4096, "fake MCP test prelude is excessive");
-        if line.ends_with(READY) {
-            return Ok(());
-        }
-    }
-    bail!("fake MCP test executable omitted its ready marker")
 }
 
 struct FakeRun {
@@ -1668,7 +1626,7 @@ fn run_fake(mode: &str) -> Result<FakeRun> {
             },
             || Ok(()),
             move |dialogue| {
-                wait_until_ready(dialogue)?;
+                wait_until_ready(dialogue, READY, "fake MCP test executable")?;
                 exchange_mcp(dialogue, &worker_policy, &source, &scan_root)
             },
         )?;
