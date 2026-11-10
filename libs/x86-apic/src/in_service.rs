@@ -20,6 +20,8 @@ pub enum DismissalOwnership {
 }
 
 /// The highest-priority vector in the eight ISR words, which an EOI write dismisses.
+///
+/// A lower set bit therefore cannot authorize the EOI while a higher-priority delivery is nested.
 pub fn highest(registers: &[u32; 8]) -> Option<u8> {
     for (bank, bits) in registers.iter().enumerate().rev() {
         if *bits != 0 {

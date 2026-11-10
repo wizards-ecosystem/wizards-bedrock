@@ -1,5 +1,7 @@
 //! Width conversions for register values; reserved high bits are ignored here, never refused.
 //!
+//! Readers mask them here before any comparison or decode.
+//!
 //! # Examples
 //!
 //! ```

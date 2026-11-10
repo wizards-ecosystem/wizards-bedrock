@@ -29,12 +29,16 @@ impl TaskState {
     }
 
     /// Byte offset of privilege stack `level`, for a targeted store a trap cannot see torn.
+    ///
+    /// A whole-segment `write_volatile` is a memcpy a trap can see torn.
     pub const fn privilege_stack_offset(level: usize) -> usize {
         assert!(level < PRIVILEGE_STACKS, "there are three privilege stacks");
         size_of::<u32>() + level * size_of::<u64>()
     }
 
     /// Byte offset of IST entry `index`, from 1, for a store a double fault cannot see torn.
+    ///
+    /// A whole-segment `write_volatile` is a memcpy a double fault can see torn.
     pub const fn interrupt_stack_offset(index: usize) -> usize {
         assert!(
             index.wrapping_sub(1) < INTERRUPT_STACKS,

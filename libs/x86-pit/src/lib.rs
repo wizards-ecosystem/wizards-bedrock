@@ -27,7 +27,9 @@ pub const CRYSTAL_HZ: u32 = 1_193_182;
 /// A count loads up to 838 ns after its last byte, so a baseline read waits for this to clear.
 pub const STATUS_NULL_COUNT: u8 = 1 << 6;
 
-/// Down-counter ticks from `start` to `now`, surviving one wrap; one span is 54.9 ms.
+/// Down-counter ticks from `start` to `now`, surviving one wrap.
+///
+/// A window over one 54.9 ms span reads as a shorter one, so the caller must keep it shorter.
 pub const fn elapsed_ticks(start: u16, now: u16) -> u16 {
     start.wrapping_sub(now)
 }

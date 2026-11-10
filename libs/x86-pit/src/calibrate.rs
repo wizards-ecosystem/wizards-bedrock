@@ -17,6 +17,8 @@ pub enum WatchdogVerdict {
 /// Judge one APIC expiry against a PIT window started with it and kept under one span.
 ///
 /// A late expiry is inconclusive, since latency and a slow APIC look alike; an early one disagrees.
+///
+/// TSC progress is judged only while its own count proves the PIT window cannot have folded.
 pub const fn watchdog_verdict(
     apic_remaining: u32,
     tsc_ticks: u64,
@@ -54,6 +56,8 @@ pub const fn watchdog_verdict(
 }
 
 /// The measured clock's rate in hertz, zero for an empty window or an overflowing product.
+///
+/// Zero fails any plausibility bound, which the caller must apply.
 pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     if pit_ticks == 0 {
         return 0;

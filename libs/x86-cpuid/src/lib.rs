@@ -155,6 +155,10 @@ impl ExecutionEnvironment {
     }
 
     /// The qualified platform, from a hypervisor leaf no PCI requester can rewrite.
+    ///
+    /// ACPI bytes in guest RAM are not such evidence, since a PCI requester can rewrite them.
+    ///
+    /// These are the only release platforms permitted to assert the DMA-safe handoff contract.
     pub const fn dma_handoff_platform(self) -> Option<DmaHandoffPlatform> {
         match self.kind {
             ExecutionEnvironmentKind::QemuTcg => Some(DmaHandoffPlatform::QemuTcg),
@@ -262,6 +266,8 @@ impl Speculation {
     }
 
     /// `RDCL_NO`: the processor claims immunity to Meltdown, so KPTI is declined.
+    ///
+    /// [`shared_kernel_mapping_reason`] declines KPTI's per-syscall cost on this claim alone.
     pub const fn rdcl_no(&self) -> bool {
         self.has(1 << 0)
     }

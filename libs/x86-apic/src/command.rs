@@ -21,7 +21,7 @@ impl Command {
         Self(vector.get().get() as u32 | DELIVERY_FIXED | ASSERT | SHORTHAND_SELF)
     }
 
-    /// The low half of the register; a shorthand makes the destination above it zero.
+    /// The low half; the caller widens it, zeroing the destination a shorthand ignores.
     pub const fn bits(self) -> u32 {
         self.0
     }

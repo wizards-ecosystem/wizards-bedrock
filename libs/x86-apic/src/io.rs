@@ -1,4 +1,6 @@
 //! Global-system-interrupt ranges owned by I/O APICs, joined from ACPI bases and hardware counts.
+//!
+//! Both numbers are untrusted input.
 
 use core::fmt;
 
@@ -12,6 +14,8 @@ const MIN_VERSION: u16 = 0x11;
 const MAX_VERSION: u16 = 0x20;
 
 /// The redirection-entry count, one past bits 23:16, if bits 7:0 name a real I/O APIC.
+///
+/// `None` refuses a window aimed at another device, before any redirection write.
 ///
 /// ```
 /// use x86_apic::io::entries_from_version;
