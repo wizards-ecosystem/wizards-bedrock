@@ -993,145 +993,154 @@ fn run_owned(paths: &Paths) -> Result<()> {
     let source = attempt.source().clone();
     let scratch = reserve_scratch()?;
     let mut credential = prepare_private_codex_home(&scratch)?;
-    let live_auth = credential.source_path.clone();
-    let projected_auth = credential.auth_path.clone();
-    let result = (|| -> Result<()> {
-        let package = load_plugin_package()?;
-        let tools = resolve_toolchain(paths.root(), &scratch)?;
-        let git = crate::git::resolved()?;
-        git.require_unchanged()?;
-        let worker_repository = prepare_owned_worker_repository(paths, &scratch, git, &source)?;
-        let shell_environment = ShellEnvironmentPolicy::qualify(&tools, git.path(), &scratch)?;
-        copy_plugin(&package, &scratch.plugin)?;
-        require_mirror_exact(&scratch.plugin, &package)?;
-        let worker_policy = ManagedWorkerPolicy::qualify(
-            &worker_repository,
-            &scratch,
-            &live_auth,
-            &projected_auth,
-            &tools,
-            &shell_environment,
-        )?;
-        require_chatgpt_login(&tools.codex, &scratch, paths.root())?;
-        let ambient = read_codex_config(&tools.codex, paths.root(), &scratch, &[])?;
-        require_safe_ambient_config(&ambient)?;
-        ensure!(
-            ambient.model_providers.is_empty(),
-            "owned Codex Security refuses ambient custom model-provider definitions"
-        );
-        let inert_mcp = inert_mcp_executable(&scratch.root)?;
-        let overrides = safety_overrides(&ambient, &inert_mcp)?;
-        let effective = read_codex_config(&tools.codex, paths.root(), &scratch, &overrides)?;
-        require_safe_effective_config(&effective, &ambient, &inert_mcp)?;
-
-        let git_identity = git_identity(git)?;
-        let permission_digests = worker_permission_digests(&worker_policy)?;
-        let request = render_owned_request(
-            &source,
-            &tools,
-            &git_identity,
-            &package,
-            &permission_digests,
-        );
-        let worker_probes =
-            require_worker_filesystem_policy(&tools, &scratch, &worker_policy, &shell_environment)?;
-        let outcome = run_mcp(OwnedMcpInvocation {
-            source: &source,
-            scratch: &scratch,
-            worker_policy: &worker_policy,
-            tools: &tools,
-            git: git.path(),
-            overrides: &overrides,
-            shell_environment: &shell_environment,
-        })?;
-        let final_effective = read_codex_config(&tools.codex, paths.root(), &scratch, &overrides)?;
-        ensure!(
-            final_effective == effective,
-            "effective Codex configuration changed during owned Deep execution"
-        );
-        require_safe_effective_config(&final_effective, &ambient, &inert_mcp)?;
-        require_no_ambient_codex_inputs(&scratch.codex_home())?;
-        ensure!(
-            resolve_toolchain(paths.root(), &scratch)? == tools,
-            "a qualified Codex Security executable changed during execution"
-        );
-        credential.scrub()?;
-
-        let manifest = read(
-            &outcome.scan_directory.join(MANIFEST),
-            MAX_MANIFEST_BYTES,
-            "owned Codex Security manifest",
-        )?;
-        let findings = read(
-            &outcome.scan_directory.join(FINDINGS),
-            MAX_FINDINGS_BYTES,
-            "owned Codex Security findings",
-        )?;
-        let coverage = read(
-            &outcome.scan_directory.join(COVERAGE),
-            MAX_COVERAGE_BYTES,
-            "owned Codex Security coverage",
-        )?;
-        let report = read(
-            &outcome.scan_directory.join(REPORT),
-            MAX_REPORT_BYTES,
-            "owned Codex Security report",
-        )?;
-        let scan = verify_scan(&manifest, &findings, &coverage, &report, &source)?;
-        ensure!(
-            scan.id == outcome.scan_id,
-            "Codex Security completion and sealed manifest name different scans"
-        );
-        let transitions = aggregate_worker_transitions(
-            &scratch.transitions,
-            &outcome.thread_ids,
-            &outcome.execution_threads,
-            &source,
-            &permission_digests,
-            &worker_probes,
-        )?;
-
-        ensure!(
-            qualification::source_identity(paths.root())? == source,
-            "qualification source changed during owned Codex Security execution"
-        );
-        let worker_git_repository = crate::cargo::child_process_path(&worker_repository);
-        ensure!(
-            qualification::source_identity(&worker_git_repository)? == source,
-            "owned Codex Security repository changed during execution"
-        );
-        git.require_unchanged()?;
-        require_plugin_unchanged(&package)?;
-        require_mirror_exact(&scratch.plugin, &package)?;
-        require_worker_canaries(&scratch)?;
-        require_absent(&inert_mcp, "inert Codex MCP executable")?;
-        observe_scratch(&scratch.root)?;
-
-        let artifacts = qualification::ObservedDeepArtifacts {
-            request,
-            manifest,
-            findings,
-            coverage,
-            report,
-            worker_transitions: transitions.bytes.clone(),
-        };
-        let fields = fields(&scan, &tools, &package, &permission_digests, &transitions);
-        finalize_owned_transaction(
-            || remove_scratch(&scratch),
-            || attempt.pass_observed_deep(authority, &fields, artifacts),
-        )?;
-        println!(
-            "[xtask] authenticated {} {} scan {} qualified the exact source",
-            scan.producer_name, scan.producer_version, scan.id
-        );
-        Ok(())
-    })();
-    if result.is_err() {
+    let qualified = qualify_owned_scan(paths, authority, attempt, source, scratch, &mut credential);
+    if qualified.is_err() {
         credential
             .scrub()
             .context("scrubbing the retained-run ChatGPT credential")?;
     }
-    result
+    qualified
+}
+
+fn qualify_owned_scan(
+    paths: &Paths,
+    authority: DeepAuthority,
+    attempt: qualification::OwnedDeepAttempt,
+    source: SourceIdentity,
+    scratch: OwnedScratch,
+    credential: &mut PrivateCodexCredential,
+) -> Result<()> {
+    let live_auth = credential.source_path.clone();
+    let projected_auth = credential.auth_path.clone();
+    let package = load_plugin_package()?;
+    let tools = resolve_toolchain(paths.root(), &scratch)?;
+    let git = crate::git::resolved()?;
+    git.require_unchanged()?;
+    let worker_repository = prepare_owned_worker_repository(paths, &scratch, git, &source)?;
+    let shell_environment = ShellEnvironmentPolicy::qualify(&tools, git.path(), &scratch)?;
+    copy_plugin(&package, &scratch.plugin)?;
+    require_mirror_exact(&scratch.plugin, &package)?;
+    let worker_policy = ManagedWorkerPolicy::qualify(
+        &worker_repository,
+        &scratch,
+        &live_auth,
+        &projected_auth,
+        &tools,
+        &shell_environment,
+    )?;
+    require_chatgpt_login(&tools.codex, &scratch, paths.root())?;
+    let ambient = read_codex_config(&tools.codex, paths.root(), &scratch, &[])?;
+    require_safe_ambient_config(&ambient)?;
+    ensure!(
+        ambient.model_providers.is_empty(),
+        "owned Codex Security refuses ambient custom model-provider definitions"
+    );
+    let inert_mcp = inert_mcp_executable(&scratch.root)?;
+    let overrides = safety_overrides(&ambient, &inert_mcp)?;
+    let effective = read_codex_config(&tools.codex, paths.root(), &scratch, &overrides)?;
+    require_safe_effective_config(&effective, &ambient, &inert_mcp)?;
+
+    let git_identity = git_identity(git)?;
+    let permission_digests = worker_permission_digests(&worker_policy)?;
+    let request = render_owned_request(
+        &source,
+        &tools,
+        &git_identity,
+        &package,
+        &permission_digests,
+    );
+    let worker_probes =
+        require_worker_filesystem_policy(&tools, &scratch, &worker_policy, &shell_environment)?;
+    let outcome = run_mcp(OwnedMcpInvocation {
+        source: &source,
+        scratch: &scratch,
+        worker_policy: &worker_policy,
+        tools: &tools,
+        git: git.path(),
+        overrides: &overrides,
+        shell_environment: &shell_environment,
+    })?;
+    let final_effective = read_codex_config(&tools.codex, paths.root(), &scratch, &overrides)?;
+    ensure!(
+        final_effective == effective,
+        "effective Codex configuration changed during owned Deep execution"
+    );
+    require_safe_effective_config(&final_effective, &ambient, &inert_mcp)?;
+    require_no_ambient_codex_inputs(&scratch.codex_home())?;
+    ensure!(
+        resolve_toolchain(paths.root(), &scratch)? == tools,
+        "a qualified Codex Security executable changed during execution"
+    );
+    credential.scrub()?;
+
+    let manifest = read(
+        &outcome.scan_directory.join(MANIFEST),
+        MAX_MANIFEST_BYTES,
+        "owned Codex Security manifest",
+    )?;
+    let findings = read(
+        &outcome.scan_directory.join(FINDINGS),
+        MAX_FINDINGS_BYTES,
+        "owned Codex Security findings",
+    )?;
+    let coverage = read(
+        &outcome.scan_directory.join(COVERAGE),
+        MAX_COVERAGE_BYTES,
+        "owned Codex Security coverage",
+    )?;
+    let report = read(
+        &outcome.scan_directory.join(REPORT),
+        MAX_REPORT_BYTES,
+        "owned Codex Security report",
+    )?;
+    let scan = verify_scan(&manifest, &findings, &coverage, &report, &source)?;
+    ensure!(
+        scan.id == outcome.scan_id,
+        "Codex Security completion and sealed manifest name different scans"
+    );
+    let transitions = aggregate_worker_transitions(
+        &scratch.transitions,
+        &outcome.thread_ids,
+        &outcome.execution_threads,
+        &source,
+        &permission_digests,
+        &worker_probes,
+    )?;
+
+    ensure!(
+        qualification::source_identity(paths.root())? == source,
+        "qualification source changed during owned Codex Security execution"
+    );
+    let worker_git_repository = crate::cargo::child_process_path(&worker_repository);
+    ensure!(
+        qualification::source_identity(&worker_git_repository)? == source,
+        "owned Codex Security repository changed during execution"
+    );
+    git.require_unchanged()?;
+    require_plugin_unchanged(&package)?;
+    require_mirror_exact(&scratch.plugin, &package)?;
+    require_worker_canaries(&scratch)?;
+    require_absent(&inert_mcp, "inert Codex MCP executable")?;
+    observe_scratch(&scratch.root)?;
+
+    let artifacts = qualification::ObservedDeepArtifacts {
+        request,
+        manifest,
+        findings,
+        coverage,
+        report,
+        worker_transitions: transitions.bytes.clone(),
+    };
+    let fields = fields(&scan, &tools, &package, &permission_digests, &transitions);
+    finalize_owned_transaction(
+        || remove_scratch(&scratch),
+        || attempt.pass_observed_deep(authority, &fields, artifacts),
+    )?;
+    println!(
+        "[xtask] authenticated {} {} scan {} qualified the exact source",
+        scan.producer_name, scan.producer_version, scan.id
+    );
+    Ok(())
 }
 
 fn finalize_owned_transaction<T>(

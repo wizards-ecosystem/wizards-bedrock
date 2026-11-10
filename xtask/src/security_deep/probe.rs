@@ -121,38 +121,7 @@ pub(super) fn require_worker_filesystem_policy(
     policy: &ManagedWorkerPolicy,
     shell_environment: &ShellEnvironmentPolicy,
 ) -> Result<WorkerProbeSummary> {
-    ensure!(
-        cfg!(windows),
-        "managed worker filesystem preflight requires Windows"
-    );
-    ensure!(
-        canonical_directory(&policy.repository, "worker probe repository")? == policy.repository
-            && canonical_directory(&policy.probe_directory, "worker probe directory")?
-                == policy.probe_directory
-            && policy.probe_directory == scratch.scan_root
-            && policy.probe_directory != policy.repository,
-        "worker probe repository or execution directory is redirected"
-    );
-    let supplied_fixture = std::env::current_exe().context("resolving credential probe fixture")?;
-    let fixture = std::fs::canonicalize(&supplied_fixture).with_context(|| {
-        format!(
-            "canonicalizing credential probe fixture {}",
-            supplied_fixture.display()
-        )
-    })?;
-    ensure!(
-        require_exact_executable_path(&fixture, "credential probe fixture")? == fixture,
-        "credential probe fixture is redirected"
-    );
-    ensure!(
-        fixture != tools.codex.path,
-        "worker probe fixture resolves to the Codex runtime"
-    );
-    ensure!(
-        policy.projected_auth == scratch.codex_home().join("auth.json")
-            && policy.live_auth != policy.projected_auth,
-        "worker probe targets differ from the owned credential policy"
-    );
+    let fixture = worker_probe_fixture(tools, scratch, policy)?;
     require_worker_canaries(scratch)?;
     require_worker_probe_positive_controls(scratch)?;
     let shell_environment_override = shell_environment.set_override()?;
@@ -272,36 +241,14 @@ pub(super) fn require_worker_filesystem_policy(
         },
     )?;
     summary.denied_network_listeners += 1;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .context("binding managed worker denied-connect control listener")?;
-    let endpoint = listener
-        .local_addr()
-        .context("reading managed worker denied-connect control endpoint")?;
-    ensure!(
-        endpoint.is_ipv4() && endpoint.ip().is_loopback() && endpoint.port() != 0,
-        "managed worker denied-connect endpoint is not IPv4 loopback"
-    );
-    let endpoint = endpoint.to_string();
-    let connect_arguments = worker_private_probe_arguments(
-        policy,
-        &fixture,
-        PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
-        Some(OsStr::new(&endpoint)),
-        &shell_environment_override,
-    )?;
-    require_worker_probe_execution(
+    require_worker_denied_connect(
         tools,
         scratch,
         policy,
         shell_environment,
-        &connect_arguments,
-        WorkerProbeExpectation {
-            label: "Codex worker denied-network-connect preflight",
-            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
-            disposition: "deny network connect",
-        },
+        &fixture,
+        &shell_environment_override,
     )?;
-    drop(listener);
     summary.denied_network_connections += 1;
     let descendant_arguments = worker_private_probe_arguments(
         policy,
@@ -340,6 +287,87 @@ pub(super) fn require_worker_filesystem_policy(
     );
     summary.require_complete()?;
     Ok(summary)
+}
+
+fn worker_probe_fixture(
+    tools: &Toolchain,
+    scratch: &OwnedScratch,
+    policy: &ManagedWorkerPolicy,
+) -> Result<PathBuf> {
+    ensure!(
+        cfg!(windows),
+        "managed worker filesystem preflight requires Windows"
+    );
+    ensure!(
+        canonical_directory(&policy.repository, "worker probe repository")? == policy.repository
+            && canonical_directory(&policy.probe_directory, "worker probe directory")?
+                == policy.probe_directory
+            && policy.probe_directory == scratch.scan_root
+            && policy.probe_directory != policy.repository,
+        "worker probe repository or execution directory is redirected"
+    );
+    let supplied_fixture = std::env::current_exe().context("resolving credential probe fixture")?;
+    let fixture = std::fs::canonicalize(&supplied_fixture).with_context(|| {
+        format!(
+            "canonicalizing credential probe fixture {}",
+            supplied_fixture.display()
+        )
+    })?;
+    ensure!(
+        require_exact_executable_path(&fixture, "credential probe fixture")? == fixture,
+        "credential probe fixture is redirected"
+    );
+    ensure!(
+        fixture != tools.codex.path,
+        "worker probe fixture resolves to the Codex runtime"
+    );
+    ensure!(
+        policy.projected_auth == scratch.codex_home().join("auth.json")
+            && policy.live_auth != policy.projected_auth,
+        "worker probe targets differ from the owned credential policy"
+    );
+    Ok(fixture)
+}
+
+fn require_worker_denied_connect(
+    tools: &Toolchain,
+    scratch: &OwnedScratch,
+    policy: &ManagedWorkerPolicy,
+    shell_environment: &ShellEnvironmentPolicy,
+    fixture: &Path,
+    shell_environment_override: &str,
+) -> Result<()> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("binding managed worker denied-connect control listener")?;
+    let endpoint = listener
+        .local_addr()
+        .context("reading managed worker denied-connect control endpoint")?;
+    ensure!(
+        endpoint.is_ipv4() && endpoint.ip().is_loopback() && endpoint.port() != 0,
+        "managed worker denied-connect endpoint is not IPv4 loopback"
+    );
+    let endpoint = endpoint.to_string();
+    let connect_arguments = worker_private_probe_arguments(
+        policy,
+        fixture,
+        PRIVATE_NETWORK_CONNECT_PROBE_ARGUMENT,
+        Some(OsStr::new(&endpoint)),
+        shell_environment_override,
+    )?;
+    require_worker_probe_execution(
+        tools,
+        scratch,
+        policy,
+        shell_environment,
+        &connect_arguments,
+        WorkerProbeExpectation {
+            label: "Codex worker denied-network-connect preflight",
+            exit: PRIVATE_CREDENTIAL_DENIED_EXIT,
+            disposition: "deny network connect",
+        },
+    )?;
+    drop(listener);
+    Ok(())
 }
 
 pub(super) fn worker_read_probe_arguments(

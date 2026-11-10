@@ -760,7 +760,7 @@ fn managed_worker_policy_is_clone_backed_narrow_and_single_source() {
     let run = &implementation[run_start..run_end];
     let prepare = run.find("prepare_owned_worker_repository").unwrap();
     let qualify = run
-        .find("ManagedWorkerPolicy::qualify(\n            &worker_repository,")
+        .find("ManagedWorkerPolicy::qualify(\n        &worker_repository,")
         .unwrap();
     let preflight = run.find("require_worker_filesystem_policy").unwrap();
     let mcp = run.find("run_mcp(OwnedMcpInvocation").unwrap();
