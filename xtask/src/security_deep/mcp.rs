@@ -878,10 +878,10 @@ fn require_nonnegative_json_number(value: &JsonValue, label: &str) -> Result<()>
     Ok(())
 }
 
-pub(super) fn require_tool_success<'a>(
-    value: &'a JsonValue,
+pub(super) fn require_tool_success<'json>(
+    value: &'json JsonValue,
     label: &str,
-) -> Result<&'a BTreeMap<String, JsonValue>> {
+) -> Result<&'json BTreeMap<String, JsonValue>> {
     let result = json_object(value, label)?;
     require_allowed_fields(
         result,

@@ -81,31 +81,37 @@ fn render_string(value: &str, rendered: &mut String) {
     rendered.push('"');
 }
 
-pub(crate) fn json_object<'a>(
-    value: &'a JsonValue,
+pub(crate) fn json_object<'json>(
+    value: &'json JsonValue,
     label: &str,
-) -> Result<&'a BTreeMap<String, JsonValue>> {
+) -> Result<&'json BTreeMap<String, JsonValue>> {
     match value {
         JsonValue::Object(object) => Ok(object),
         _ => bail!("{label} is not an object"),
     }
 }
 
-pub(crate) fn json_array<'a>(value: &'a JsonValue, label: &str) -> Result<&'a [JsonValue]> {
+pub(crate) fn json_array<'json>(
+    value: &'json JsonValue,
+    label: &str,
+) -> Result<&'json [JsonValue]> {
     match value {
         JsonValue::Array(array) => Ok(array),
         _ => bail!("{label} is not an array"),
     }
 }
 
-pub(crate) fn json_string<'a>(value: &'a JsonValue, label: &str) -> Result<&'a str> {
+pub(crate) fn json_string<'json>(value: &'json JsonValue, label: &str) -> Result<&'json str> {
     match value {
         JsonValue::String(string) => Ok(string),
         _ => bail!("{label} is not a string"),
     }
 }
 
-pub(crate) fn json_string_array<'a>(value: &'a JsonValue, label: &str) -> Result<Vec<&'a str>> {
+pub(crate) fn json_string_array<'json>(
+    value: &'json JsonValue,
+    label: &str,
+) -> Result<Vec<&'json str>> {
     json_array(value, label)?
         .iter()
         .map(|value| json_string(value, label))
@@ -125,11 +131,11 @@ pub(crate) fn json_u64(value: &JsonValue, label: &str) -> Result<u64> {
     Ok(parsed)
 }
 
-pub(crate) fn json_field<'a>(
-    object: &'a BTreeMap<String, JsonValue>,
+pub(crate) fn json_field<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
     name: &str,
     label: &str,
-) -> Result<&'a JsonValue> {
+) -> Result<&'json JsonValue> {
     object
         .get(name)
         .with_context(|| format!("{label} has no `{name}` field"))
@@ -156,14 +162,14 @@ pub(crate) enum JsonValue {
     Object(BTreeMap<String, JsonValue>),
 }
 
-struct JsonParser<'a> {
-    bytes: &'a [u8],
-    label: &'a str,
+struct JsonParser<'json> {
+    bytes: &'json [u8],
+    label: &'json str,
     offset: usize,
 }
 
-impl<'a> JsonParser<'a> {
-    fn new(bytes: &'a [u8], label: &'a str) -> Self {
+impl<'json> JsonParser<'json> {
+    fn new(bytes: &'json [u8], label: &'json str) -> Self {
         Self {
             bytes,
             label,

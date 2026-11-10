@@ -148,7 +148,7 @@ fn device_variant(path: &syn::Path, owner: &str) -> Result<String> {
     Ok(path.segments[1].ident.to_string())
 }
 
-fn devfs_method<'a>(syntax: &'a syn::File, name: &str) -> Result<&'a syn::ImplItemFn> {
+fn devfs_method<'ast>(syntax: &'ast syn::File, name: &str) -> Result<&'ast syn::ImplItemFn> {
     let methods = syntax
         .items
         .iter()

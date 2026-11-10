@@ -51,13 +51,13 @@ pub(crate) fn private_python_child_command(
     Ok(command)
 }
 
-pub(crate) fn validate_python_wrapper_arguments<'a>(
-    arguments: &'a [OsString],
+pub(crate) fn validate_python_wrapper_arguments<'arguments>(
+    arguments: &'arguments [OsString],
     mirror: &Path,
     repository: &Path,
     scan_root: &Path,
     state_root: &Path,
-) -> Result<(PathBuf, &'a [OsString])> {
+) -> Result<(PathBuf, &'arguments [OsString])> {
     let script_index = if arguments.first().is_some_and(|argument| argument == "-I") {
         ensure!(
             arguments.get(1).is_some_and(|argument| argument == "-X")

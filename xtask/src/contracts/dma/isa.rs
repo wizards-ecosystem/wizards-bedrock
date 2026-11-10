@@ -38,7 +38,7 @@ fn isa_status_read(statement: &Stmt, controller: &str, offset: u64) -> bool {
                 && isa_port_operation(&initializer.expr, controller, "read", &[offset])))
 }
 
-fn no_argument_method<'a>(expression: &'a Expr, name: &str) -> Option<&'a Expr> {
+fn no_argument_method<'ast>(expression: &'ast Expr, name: &str) -> Option<&'ast Expr> {
     let Expr::MethodCall(call) = expression else {
         return None;
     };

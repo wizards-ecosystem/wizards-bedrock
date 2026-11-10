@@ -151,8 +151,8 @@ fn entry_contract_use(
     symbol: &'static str,
     normalized_path: &str,
 ) -> Result<EntryContractUse> {
-    struct MatchingPaths<'a> {
-        expected: &'a str,
+    struct MatchingPaths<'expected> {
+        expected: &'expected str,
         ranges: Vec<SourceRange>,
     }
 

@@ -51,7 +51,11 @@ impl WorkerTransitionKind {
         }
     }
 
-    pub(super) fn applied_digest<'a>(self, provider: &'a str, effective: &'a str) -> &'a str {
+    pub(super) fn applied_digest<'digest>(
+        self,
+        provider: &'digest str,
+        effective: &'digest str,
+    ) -> &'digest str {
         match self {
             Self::AppServerPassThrough => provider,
             Self::ExecInitialAttenuated | Self::ExecResumedAttenuated => effective,

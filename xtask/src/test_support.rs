@@ -73,11 +73,15 @@ fn reserve_file(parent: &Path, label: &str, next: &AtomicU64) -> (PathBuf, File)
     panic!("could not reserve a unique {label} test fixture file")
 }
 
-pub(crate) fn function_after<'a>(source: &'a str, opening: &str) -> Option<&'a str> {
+pub(crate) fn function_after<'source>(source: &'source str, opening: &str) -> Option<&'source str> {
     source_through(source, opening, opening)
 }
 
-pub(crate) fn source_through<'a>(source: &'a str, start: &str, last: &str) -> Option<&'a str> {
+pub(crate) fn source_through<'source>(
+    source: &'source str,
+    start: &str,
+    last: &str,
+) -> Option<&'source str> {
     let from = source.find(start)?;
     let end = function_end(source, from + source[from..].find(last)?)?;
     Some(&source[from + start.len()..end])

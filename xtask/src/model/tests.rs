@@ -75,7 +75,7 @@ fn defined_properties(spec: &str) -> Vec<&str> {
         .collect()
 }
 
-fn named_set<'a>(spec: &'a str, name: &str) -> Vec<&'a str> {
+fn named_set<'spec>(spec: &'spec str, name: &str) -> Vec<&'spec str> {
     let prefix = format!("{name} == {{");
     let line = spec
         .lines()

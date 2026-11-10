@@ -613,7 +613,7 @@ fn table_numbers(document: &str, label: &str) -> Vec<usize> {
         .collect()
 }
 
-fn table_cell<'a>(document: &'a str, label: &str) -> &'a str {
+fn table_cell<'document>(document: &'document str, label: &str) -> &'document str {
     document
         .lines()
         .find(|line| line.trim_start().starts_with(&format!("| {label} |")))

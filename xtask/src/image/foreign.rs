@@ -16,7 +16,10 @@ const FRAGMENT_BYTES: usize = 20 * 1024;
 const LONG_CONTENT: &[u8] = b"long-name fragments precede this alias\n";
 const NESTED_CONTENT: &[u8] = b"nested through a foreign directory\n";
 
-fn header<'a>(lines: &mut impl Iterator<Item = &'a str>, expected: &str) -> Result<&'a str> {
+fn header<'text>(
+    lines: &mut impl Iterator<Item = &'text str>,
+    expected: &str,
+) -> Result<&'text str> {
     let line =
         core::iter::Iterator::next(lines).with_context(|| format!("missing {expected} header"))?;
     let mut fields = line.split(' ');
@@ -180,7 +183,7 @@ fn oracle_view(image: &mut [u8]) -> Result<View> {
     })
 }
 
-struct Bytes<'a>(&'a [u8]);
+struct Bytes<'bytes>(&'bytes [u8]);
 
 impl fat32::Sectors for Bytes<'_> {
     type Error = ();

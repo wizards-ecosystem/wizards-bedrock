@@ -315,7 +315,7 @@ fn absolute_root(root: &Path) -> Result<PathBuf> {
 }
 
 /// Check the recorded identity of the Git that established a source.
-pub(crate) fn validate_fields<'a>(get: impl Fn(&str) -> Result<&'a str>) -> Result<()> {
+pub(crate) fn validate_fields<'text>(get: impl Fn(&str) -> Result<&'text str>) -> Result<()> {
     let bytes = get(FIELDS[0])?;
     ensure!(
         bytes

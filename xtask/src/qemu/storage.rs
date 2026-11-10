@@ -267,15 +267,15 @@ pub(super) fn write_nvme_namespace(file: &mut File) -> Result<()> {
     Ok(())
 }
 
-struct FileWindow<'a> {
-    file: &'a mut File,
+struct FileWindow<'file> {
+    file: &'file mut File,
     start: u64,
     len: u64,
     position: u64,
 }
 
-impl<'a> FileWindow<'a> {
-    fn new(file: &'a mut File, start: u64, len: u64) -> Result<Self> {
+impl<'file> FileWindow<'file> {
+    fn new(file: &'file mut File, start: u64, len: u64) -> Result<Self> {
         ensure!(
             start.checked_add(len) == Some(NVME_BYTES),
             "NVMe volume window does not cover the exact image tail"

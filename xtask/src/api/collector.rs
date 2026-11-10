@@ -28,17 +28,17 @@ impl<'ast> Visit<'ast> for NonCallUses {
     }
 }
 
-pub(super) struct Collector<'a> {
+pub(super) struct Collector<'source> {
     pub(super) audit: bool,
     pub(super) file: usize,
-    pub(super) relative: &'a Path,
-    pub(super) nodes: &'a mut Vec<Node>,
-    pub(super) trait_imports: &'a TraitImports,
+    pub(super) relative: &'source Path,
+    pub(super) nodes: &'source mut Vec<Node>,
+    pub(super) trait_imports: &'source TraitImports,
     pub(super) unsupported_macros: Vec<String>,
-    pub(super) entry_specs: &'a mut Vec<EntrySpec>,
+    pub(super) entry_specs: &'source mut Vec<EntrySpec>,
     pub(super) scope: Vec<String>,
-    pub(super) package: &'a str,
-    pub(super) target_root: &'a Path,
+    pub(super) package: &'source str,
+    pub(super) target_root: &'source Path,
     pub(super) target_kind: CargoTargetKind,
     pub(super) language_main: bool,
     pub(super) lexical_item_depth: usize,

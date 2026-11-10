@@ -96,7 +96,7 @@ fn is_pub_crate(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Restricted(restricted) if restricted.path.is_ident("crate"))
 }
 
-fn function<'a>(syntax: &'a syn::File, name: &str) -> &'a ItemFn {
+fn function<'ast>(syntax: &'ast syn::File, name: &str) -> &'ast ItemFn {
     syntax
         .items
         .iter()
@@ -107,7 +107,7 @@ fn function<'a>(syntax: &'a syn::File, name: &str) -> &'a ItemFn {
         .unwrap_or_else(|| panic!("missing function `{name}`"))
 }
 
-fn parameter<'a>(function: &'a ItemFn, name: &str) -> &'a Type {
+fn parameter<'ast>(function: &'ast ItemFn, name: &str) -> &'ast Type {
     function
         .sig
         .inputs
@@ -144,7 +144,7 @@ impl<'ast> Visit<'ast> for MethodCollector<'ast, '_> {
     }
 }
 
-fn method<'a>(syntax: &'a syn::File, owner: &str, name: &str) -> &'a syn::ImplItemFn {
+fn method<'ast>(syntax: &'ast syn::File, owner: &str, name: &str) -> &'ast syn::ImplItemFn {
     let mut collector = MethodCollector {
         owner,
         name,
@@ -155,11 +155,11 @@ fn method<'a>(syntax: &'a syn::File, owner: &str, name: &str) -> &'a syn::ImplIt
     collector.methods[0]
 }
 
-fn optional_method<'a>(
-    syntax: &'a syn::File,
+fn optional_method<'ast>(
+    syntax: &'ast syn::File,
     owner: &str,
     name: &str,
-) -> Option<&'a syn::ImplItemFn> {
+) -> Option<&'ast syn::ImplItemFn> {
     let mut collector = MethodCollector {
         owner,
         name,
@@ -184,7 +184,7 @@ impl<'ast> Visit<'ast> for Implementations<'ast, '_> {
     }
 }
 
-fn implementations<'a>(syntax: &'a syn::File, owner: &str) -> Vec<&'a ItemImpl> {
+fn implementations<'ast>(syntax: &'ast syn::File, owner: &str) -> Vec<&'ast ItemImpl> {
     let mut implementations = Implementations {
         owner,
         items: Vec::new(),

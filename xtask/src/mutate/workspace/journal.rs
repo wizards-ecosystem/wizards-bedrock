@@ -422,7 +422,7 @@ fn outcome_totals(outcomes: &[Outcome]) -> (usize, usize, usize) {
     (caught, survived, inconclusive)
 }
 
-fn field<'a>(lines: &mut impl Iterator<Item = &'a str>, name: &str) -> Result<&'a str> {
+fn field<'text>(lines: &mut impl Iterator<Item = &'text str>, name: &str) -> Result<&'text str> {
     let line = core::iter::Iterator::next(lines)
         .with_context(|| format!("journal field {name} is missing"))?;
     line.strip_prefix(&format!("{name} "))
