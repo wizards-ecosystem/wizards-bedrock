@@ -2,59 +2,57 @@
 
 Status: Accepted, 2026-08-20. Extends D-28.
 
-**Context.** D-28's self-test can only observe what the machine does to
-itself: it proves the interrupt path with a self-interrupt and the timer with
-its own tick, but an input device's defining behaviour starts outside the
-machine. Without an outside hand, the whole keyboard path — controller,
-buffering, decoding — ships with its main road untested.
+**Context.** D-28's self-test only observes what the machine does to
+itself: a self-interrupt proves the interrupt path, its own tick the timer.
+An input device's defining behaviour starts outside the machine. Without an
+outside hand, the keyboard path (controller, buffering, decoding) ships with
+its main road untested.
 
 **Options.**
 
 - *Host tests plus human eyes.* Leaves the only hardware-facing half
-  unasserted; regressions surface as "typing stopped working" on a VMware
-  boot, days later.
-- *QEMU's monitor `sendkey` via `human-monitor-command`.* Works, but the
-  release is automatic on QEMU's hold-time schedule — the check wants to
-  assert the break code's arrival and order, so the timing must be ours.
+  unasserted; regressions surface days later as "typing stopped working" on
+  a VMware boot.
+- *QEMU's monitor `sendkey` via `human-monitor-command`.* Works, but QEMU
+  releases the key on its own hold-time schedule. The check asserts the
+  break code's arrival and order, so the timing must be ours.
 - *A QMP crate.* A dependency for three fixed message exchanges, against
   D-25's precedent that a hand-rolled hundred lines beats a supply-chain
   edge.
 - *A hand-rolled QMP client sending `input-send-event`.* Chosen.
 
 **Decision.** `cargo xtask test-boot` binds a loopback `TcpListener` on an
-ephemeral port before spawning QEMU and passes `-qmp tcp:{addr}` so QEMU
-dials out — no fixed port to collide, no bind-then-connect race, no retry
-loop. Serial is piped through a forwarding thread (every line still reaches
-the console; a dying kernel's unterminated last line is flushed too) which
-watches for one marker the kernel prints immediately before its bounded
-wait: `selftest: awaiting injected keystroke`, a two-file contract kept in
-step by comment exactly as the exit codes already are. On the marker, the
-harness sends one command carrying an explicit press and release of `A`; the
-kernel's check requires the make and then the break to decode, in order.
+ephemeral port before spawning QEMU and passes `-qmp tcp:{addr}`, so QEMU
+dials out: no fixed port to collide, no bind-then-connect race, no retry
+loop. A forwarding thread pipes serial, still passing every line to the
+console and flushing a dying kernel's unterminated last line. It watches for
+the line the kernel prints just before its bounded wait, `selftest: awaiting
+injected keystroke`, a two-file contract kept in step by comment like the
+exit codes. The harness then sends one command with an explicit press and
+release of `A`. The kernel's check requires the make, then the break, to
+decode in order.
 
-**Rationale.** Marker-gating rather than spraying keys from power-on: early
-keystrokes land in firmware setup prompts or the bootloader menu, and the
-self-test's own controller commands (config readback, echo, set readback)
-must never interleave with injected bytes — the ordering is load-bearing and
-commented at the check. The verdict stays the kernel's: any QMP failure
-prints its cause and retires the injector, whereupon the kernel's doubly
-bounded wait (a tick budget, plus an iteration cap so a dead timer cannot
-convert red into hang) fails the check, and the sixty-second kill stands
-behind everything. Reply handling is token classification, not JSON parsing,
-which is sufficient because both commands are fixed strings, the response
-set is tiny, and unsolicited `SHUTDOWN` events — which genuinely arrive on
-this socket when the exit device fires — need only to be skipped.
+**Rationale.** Keys wait for that line instead of being sprayed from
+power-on. Early keystrokes land in firmware setup prompts or the bootloader
+menu, and the self-test's own controller commands (config readback, echo,
+set readback) must never interleave with injected bytes; the check's comment
+records that ordering. The verdict stays the kernel's. A QMP failure prints
+its cause and retires the injector. The kernel's doubly bounded wait (a tick
+budget, plus an iteration cap so a dead timer cannot turn red into a hang)
+then fails the check, with the sixty-second kill behind everything. Replies
+are classified by token, not parsed as JSON. That suffices: both commands
+are fixed strings, the response set is tiny, and unsolicited `SHUTDOWN`
+events, which arrive on this socket when the exit device fires, are just
+skipped.
 
 **Consequences.**
 
-- `test-boot`'s serial output now passes through a pipe; behaviour is
-  preserved line-for-line, and this is the note recording that it is
-  deliberate.
-- Injection is unconditionally on for `test-boot` — a check that only
-  sometimes receives its stimulus is a check that only sometimes can fail.
+- `test-boot`'s serial output now passes through a pipe. Behaviour is
+  preserved line-for-line, and the change is intended.
+- Injection is always on for `test-boot`: a check that only sometimes gets
+  its stimulus only sometimes can fail.
 - The QMP failure path was broken once on purpose (the `-qmp` argument
-  deleted): the run went red on the keystroke check rather than hanging.
-- On real hardware there is no QMP and no injector; the same check would go
-  red, which is correct — nothing outside presses a key there either. The
-  self-test feature never ships in an image (D-28), so this changes nothing
-  for a real boot.
+  deleted): the run went red on the keystroke check instead of hanging.
+- Real hardware has no QMP or injector, so the check would go red there,
+  correctly, since nothing outside presses a key. The self-test feature never
+  ships in an image (D-28), so a real boot is unchanged.
