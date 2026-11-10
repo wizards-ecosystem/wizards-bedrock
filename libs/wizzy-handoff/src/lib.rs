@@ -1,9 +1,4 @@
-//! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock.
-//!
-//! The envelope says which target and ABI versions opaque artifact bytes need,
-//! where those bytes came from, which effects they request, and which digest
-//! identifies them. It does not say whether the bytes are bytecode, ELF or
-//! Wasm.
+//! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock, silent on whether bytes are bytecode, ELF or Wasm.
 //!
 //! # Examples
 //!
@@ -77,22 +72,22 @@ const FIELDS: &[&str] = &[
 
 /// Compiler-owned versions an integration explicitly supports.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Versions<'a> {
+pub struct Versions<'version> {
     /// Serialized artifact ABI version.
-    pub artifact: &'a str,
+    pub artifact: &'version str,
     /// Separable target-runtime ABI version.
-    pub runtime: &'a str,
+    pub runtime: &'version str,
     /// Encoding version for the effect requirement set.
-    pub effects: &'a str,
+    pub effects: &'version str,
 }
 
 /// Identity calculated from the artifact bytes being consumed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ArtifactIdentity<'a> {
+pub struct ArtifactIdentity<'digest> {
     /// Complete artifact length in bytes.
     pub bytes: u64,
     /// Lowercase SHA-256 of the complete artifact.
-    pub sha256: &'a str,
+    pub sha256: &'digest str,
 }
 
 /// Why a handoff record was refused.
@@ -140,31 +135,23 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-struct Record<'a> {
-    artifact_abi: &'a str,
+struct Record<'manifest> {
+    artifact_abi: &'manifest str,
     artifact_bytes: u64,
-    artifact_sha256: &'a str,
-    effects_abi: &'a str,
-    effects_required: &'a str,
-    platform_abi: &'a str,
-    compiler_revision: &'a str,
-    lock_sha256: &'a str,
-    repository: &'a str,
-    runtime_revision: &'a str,
-    source_revision: &'a str,
-    runtime_abi: &'a str,
-    target_id: &'a str,
+    artifact_sha256: &'manifest str,
+    effects_abi: &'manifest str,
+    effects_required: &'manifest str,
+    platform_abi: &'manifest str,
+    compiler_revision: &'manifest str,
+    lock_sha256: &'manifest str,
+    repository: &'manifest str,
+    runtime_revision: &'manifest str,
+    source_revision: &'manifest str,
+    runtime_abi: &'manifest str,
+    target_id: &'manifest str,
 }
 
-/// Verify one canonical record against supported versions and consumed bytes.
-///
-/// Effect requirements are authenticated metadata only. Successful
-/// verification does not grant the artifact any authority.
-///
-/// # Errors
-///
-/// Returns [`Error`] for any unknown, missing, malformed or mismatched part of
-/// the record, including an artifact length or digest mismatch.
+/// Verify one canonical record against supported versions and consumed bytes; its effects are metadata granting no authority.
 pub fn verify(
     manifest: &str,
     versions: Versions<'_>,
@@ -235,7 +222,10 @@ fn parse(manifest: &str) -> Result<Record<'_>, Error> {
     })
 }
 
-fn field<'a>(lines: &mut core::str::Lines<'a>, expected: &str) -> Result<&'a str, Error> {
+fn field<'manifest>(
+    lines: &mut core::str::Lines<'manifest>,
+    expected: &str,
+) -> Result<&'manifest str, Error> {
     let line = core::iter::Iterator::next(lines).ok_or(Error::MissingField)?;
     let (key, value) = line.split_once('=').ok_or(Error::InvalidLine)?;
     if key != expected {

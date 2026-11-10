@@ -1,21 +1,8 @@
-//! Scan code set 1's two lookup tables.
-//!
-//! The set a translating controller delivers. Same shape as [`crate::table`] —
-//! a base table and an `E0` table — over different numbers, and with the
-//! release encoded in the high bit rather than an `F0` prefix, which is the
-//! decoder's problem rather than this module's.
-//!
-//! Source: Andries Brouwer, *Keyboard scancodes*, "Scan code set 1", the same
-//! reference [`crate::table`] is transcribed from. The correspondence D-162
-//! settled is one of the entries here: backslash is `0x2B` in set 1 where it
-//! is `0x5D` in set 2.
+//! Scan code set 1's base and `E0` tables, from Andries Brouwer's *Keyboard scancodes*, "Scan code set 1".
 
 use crate::key::Key;
 
-/// The key a bare set 1 make code names.
-///
-/// Codes run `0x01..=0x58` with gaps; everything above is a release, which
-/// never reaches here.
+/// The key a bare set 1 make code names, `0x01..=0x58` with gaps; releases never reach here.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::Escape,

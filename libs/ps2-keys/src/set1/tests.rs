@@ -1,15 +1,7 @@
 use super::*;
 use crate::table;
 
-/// Every key one set names, the other names too.
-///
-/// The check that makes a second transcription worth more than the sum of
-/// two transcriptions: set 1 and set 2 are different numbers for the same
-/// hundred-odd keys, so a key present in one table and absent from the
-/// other is a hole in whichever is newer, and there is no third table to
-/// ask. A dropped entry, a duplicated arm shadowing its neighbour, and a
-/// key spelled into the wrong half — base where it belongs behind `E0` —
-/// are all caught here, and none of them by reading (D-179).
+/// Both sets number the same keys, so a key missing from one table is a hole in it, and there is no third table to ask.
 #[test]
 fn both_sets_name_the_same_keys() {
     let mut only_in_set_1 = Vec::new();
@@ -45,10 +37,7 @@ fn names(base: fn(u8) -> Option<Key>, extended: fn(u8) -> Option<Key>, key: Key)
     (0..=u8::MAX).any(|code| base(code) == Some(key) || extended(code) == Some(key))
 }
 
-/// No code names two keys, and no key has two codes.
-///
-/// Repeated codes make a later match arm unreachable; this independent
-/// direction catches a key reachable through two codes.
+/// Repeated codes leave a later arm unreachable; this direction catches a key reachable through two codes.
 #[test]
 fn no_key_is_named_twice_within_a_table() {
     for table in [
@@ -65,22 +54,14 @@ fn no_key_is_named_twice_within_a_table() {
     }
 }
 
-/// The correspondence `004`'s D-162 settled, as an anchor.
-///
-/// That entry cost a research pass and two independent sources to resolve,
-/// and it names both sets — so it is the one pair in this table that
-/// arrives already verified, and it is asserted rather than trusted.
+/// The one pair two independent sources verified for both sets, asserted as an anchor.
 #[test]
 fn backslash_is_the_correspondence_d162_settled() {
     assert_eq!(key_for(0x2B), Some(Key::Backslash));
     assert_eq!(table::key_for(0x5D), Some(Key::Backslash));
 }
 
-/// The rows a QWERTY keyboard lays out contiguously, in set 1.
-///
-/// Set 1's numbering follows the physical rows, which is the property that
-/// makes a single mistyped entry visible: every letter row is a run with
-/// no gaps, so a swapped pair breaks the run.
+/// Set 1 numbers each letter row as a run with no gaps, so a swapped pair breaks the run.
 #[test]
 fn the_letter_rows_are_contiguous_runs() {
     for (start, row) in [

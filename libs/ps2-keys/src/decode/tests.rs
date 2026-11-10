@@ -1,7 +1,6 @@
 use super::*;
 
-/// Drive one sequence byte by byte, asserting silence at every step but
-/// the last — which is the shape of the real driver's loop.
+/// Drive one sequence byte by byte as the driver's loop does, asserting silence until the last.
 fn decode(decoder: &mut Decoder, sequence: &[u8]) -> Option<KeyEvent> {
     let (last, rest) = sequence.split_last().expect("empty sequence");
     for &byte in rest {
@@ -14,7 +13,6 @@ fn event(key: Key, state: KeyState) -> Option<KeyEvent> {
     Some(KeyEvent { key, state })
 }
 
-/// Set 1's release is the high bit, and it is not a prefix.
 #[test]
 fn set_1_puts_the_release_in_the_high_bit() {
     assert!(!Decoder::new().reads_translated());
@@ -24,7 +22,6 @@ fn set_1_puts_the_release_in_the_high_bit() {
     assert_eq!(decoder.feed(0x9E), event(Key::A, KeyState::Released));
 }
 
-/// The extended table, both directions, through the same high bit.
 #[test]
 fn set_1_extended_codes_decode_either_way() {
     let mut decoder = Decoder::translated();
@@ -38,7 +35,6 @@ fn set_1_extended_codes_decode_either_way() {
     );
 }
 
-/// PrintScreen arrives wrapped in shifts nothing pressed, as in set 2.
 #[test]
 fn set_1_discards_the_fake_shifts_around_print_screen() {
     let mut decoder = Decoder::translated();
@@ -48,7 +44,6 @@ fn set_1_discards_the_fake_shifts_around_print_screen() {
     );
 }
 
-/// Six bytes rather than eight, and still no release.
 #[test]
 fn set_1_pause_is_six_bytes() {
     let mut decoder = Decoder::translated();
@@ -58,13 +53,7 @@ fn set_1_pause_is_six_bytes() {
     );
 }
 
-/// **The collision, decided.**
-///
-/// `0xAA` is the self-test result *and* `0x2A | 0x80`, the left shift's
-/// release. Swallowing it as a reply would leave shift held down for ever
-/// after the first capital letter — so in set 1 it is a key, and the
-/// self-test result is read by the reset path before scanning is enabled
-/// where no decoder can see it (D-179).
+/// Swallowing `AA` in set 1 would hold shift down for ever, so the reset path reads the self-test result first.
 #[test]
 fn set_1_reads_aa_as_a_shift_release_not_a_self_test_result() {
     let mut decoder = Decoder::translated();
@@ -74,26 +63,20 @@ fn set_1_reads_aa_as_a_shift_release_not_a_self_test_result() {
         event(Key::ShiftLeft, KeyState::Released)
     );
 
-    // And set 2, where `0xAA` is unambiguous, still swallows it.
     let mut set_two = Decoder::new();
     assert_eq!(set_two.feed(protocol::SELF_TEST_PASSED), None);
 }
 
-/// The replies that are not ambiguous stay transparent in set 1 too.
 #[test]
 fn set_1_still_swallows_the_unambiguous_replies() {
     let mut decoder = Decoder::translated();
     for reply in [protocol::ACK, protocol::ECHO, protocol::RESEND] {
         assert_eq!(decoder.feed(reply), None, "{reply:#04x} is not a key");
     }
-    // And a key still decodes after them.
     assert_eq!(decoder.feed(0x1E), event(Key::A, KeyState::Pressed));
 }
 
-/// A shift held across a letter types a capital, through the set 1 path.
-///
-/// The end-to-end shape the driver runs: decoder to shift state to layout.
-/// It is the sequence that would have typed nothing on VMware (D-179).
+/// Decoder to shift state to layout, the sequence that would have typed nothing on VMware.
 #[test]
 fn set_1_types_a_capital_through_the_whole_path() {
     let mut decoder = Decoder::translated();
@@ -143,10 +126,9 @@ fn an_extended_break_decodes() {
     );
 }
 
+/// Transcribed, since a truncated `PAUSE_SEQUENCE` compared with itself passed every test and left phantom releases.
 #[test]
 fn the_pause_sequence_yields_one_press_and_no_break() {
-    // Transcribed, not `PAUSE_SEQUENCE`: a truncated constant compared
-    // against itself passed every test and left phantom releases (D-105).
     const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
     assert_eq!(PAUSE_SEQUENCE, WIRE, "the sequence is not the wire form");
 
@@ -158,11 +140,7 @@ fn the_pause_sequence_yields_one_press_and_no_break() {
     assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
 }
 
-/// A short prefix of the sequence yields nothing, and the byte after a
-/// complete one is an ordinary key.
-///
-/// The length is the half nothing pinned: a decoder that stopped early
-/// would emit `Pause` and then decode the remaining bytes as keys.
+/// A decoder that stopped early would emit `Pause` and then decode the remaining bytes as keys.
 #[test]
 fn no_proper_prefix_of_the_pause_sequence_decodes() {
     const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
@@ -174,8 +152,6 @@ fn no_proper_prefix_of_the_pause_sequence_decodes() {
         }
     }
 
-    // And a wrong byte anywhere in the middle abandons the sequence
-    // rather than completing it.
     for corrupt in 1..WIRE.len() {
         let mut decoder = Decoder::new();
         let mut wrong = WIRE;
@@ -188,7 +164,6 @@ fn no_proper_prefix_of_the_pause_sequence_decodes() {
     }
 }
 
-/// The wire form of a bare PrintScreen press: fake shift, then the key.
 #[test]
 fn print_screen_make_is_one_event() {
     let mut decoder = Decoder::new();
@@ -203,7 +178,6 @@ fn print_screen_make_is_one_event() {
     assert_eq!(core::iter::Iterator::next(&mut events), None);
 }
 
-/// And its release: the key, then the fake shift's break.
 #[test]
 fn print_screen_break_is_one_event() {
     let mut decoder = Decoder::new();
@@ -299,9 +273,7 @@ fn f7_sits_above_the_seven_bit_boundary() {
     );
 }
 
-/// A held key repeats as bare makes with no breaks between; each one is
-/// a fresh press, which is what a future input stack debounces, not this
-/// crate.
+/// A held key repeats as bare makes, each a fresh press for a future input stack to debounce.
 #[test]
 fn typematic_repeat_is_a_press_per_make() {
     let mut decoder = Decoder::new();
@@ -314,13 +286,7 @@ fn typematic_repeat_is_a_press_per_make() {
     );
 }
 
-/// Totality: every byte, fed in every reachable prefix state, neither
-/// panics nor wedges the machine — a letter still decodes afterwards,
-/// possibly on the second try when the byte itself opened a new prefix.
-///
-/// The Pause prefixes are derived from the sequence constant so every
-/// intermediate `Pause(n)` state — home of the crate's indexed access —
-/// remains covered when the sequence changes.
+/// Pause prefixes come from the constant, so every `Pause(n)` state, where the indexing is, stays covered.
 #[test]
 fn no_byte_in_no_state_panics_or_wedges() {
     let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];
@@ -346,23 +312,18 @@ fn no_byte_in_no_state_panics_or_wedges() {
     }
 }
 
-/// Both protocol-only shifts are swallowed in make and break form.
-/// The extended table also omits them, so this pins wire behavior rather
-/// than claiming which of the two equivalent refusals supplied it.
+/// Pins wire behaviour only, since the extended table also omits both fake shifts.
 #[test]
 fn both_fake_shifts_are_swallowed() {
     for fake in [0x12u8, 0x59] {
         let mut decoder = Decoder::new();
-        // The make: `E0 <fake>` yields nothing at all.
         assert_eq!(decoder.feed(0xE0), None, "{fake:#04x} make prefix");
         assert_eq!(decoder.feed(fake), None, "{fake:#04x} make");
 
-        // The break: `E0 F0 <fake>` likewise.
         assert_eq!(decoder.feed(0xE0), None, "{fake:#04x} break prefix");
         assert_eq!(decoder.feed(0xF0), None, "{fake:#04x} break marker");
         assert_eq!(decoder.feed(fake), None, "{fake:#04x} break");
 
-        // And the decoder is back at rest, not stuck in a state.
         assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
     }
 }

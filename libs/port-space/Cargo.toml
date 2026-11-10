@@ -10,8 +10,7 @@ repository.workspace = true
 [lints]
 workspace = true
 
-# Property testing, host-only (D-242). `no_std` for the kernel; these are only
-# ever built for the host under `cargo test`.
+# Host-only property testing; the kernel build never sees these.
 [dev-dependencies]
 proptest.workspace = true
 getrandom.workspace = true

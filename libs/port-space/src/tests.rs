@@ -1,15 +1,9 @@
 use super::*;
 
-/// Widths an x86 port access can have, and therefore every span length a
-/// real kernel ever asks for.
+/// Widths an x86 port access can have, so every span length a real kernel asks for.
 const WIDTHS: [usize; 3] = [1, 2, 4];
 
-/// A refused multi-span reservation strands nothing.
-///
-/// The whole point: a claim here is permanent, so a caller that takes the
-/// first span and then fails has foreclosed it for the life of the boot.
-/// Both real callers wanted two spans and neither could ask for them
-/// together (D-138).
+/// A claim is permanent, so a refused request that kept its first span would strand it for the boot.
 #[test]
 fn a_refused_multi_span_reservation_takes_nothing() {
     const SPANS: [(usize, usize); MAX_SPANS] = [
@@ -42,7 +36,6 @@ fn a_refused_multi_span_reservation_takes_nothing() {
     }
 }
 
-/// A granted multi-span reservation takes all of them.
 #[test]
 fn a_granted_multi_span_reservation_takes_every_span() {
     let spans = [(0x60, 1), (0x64, 1), (0x3F8, 8)];
@@ -53,35 +46,26 @@ fn a_granted_multi_span_reservation_takes_every_span() {
     for (port, len) in spans {
         assert!(!space.is_available(port, len), "{port:#x} was not recorded");
     }
-    // And nothing beyond them: the span at 0x70 is untouched.
     assert!(space.is_available(0x70, 1));
-    // Asking again is refused, because the registry never releases.
     assert!(!space.reserve_all(&spans));
 }
 
-/// Two spans in one request that overlap each other are refused.
-///
-/// `span` only sees what is already *recorded*, so without the pairwise
-/// check both halves of `[(0x60, 4), (0x62, 2)]` pass it and the caller is
-/// told it owns one range twice.
+/// Without the pairwise check both halves pass `span`, and the caller owns one range twice.
 #[test]
 fn a_request_that_overlaps_itself_is_refused() {
     let mut space = PortSpace::new();
     assert!(!space.reserve_all(&[(0x60, 4), (0x62, 2)]));
     assert!(space.is_available(0x60, 4), "nothing was recorded");
 
-    // Adjacent but disjoint is fine — the boundary is exclusive.
     assert!(space.reserve_all(&[(0x60, 2), (0x62, 2)]));
 
     let mut reversed = PortSpace::new();
     assert!(reversed.reserve_all(&[(0x62, 2), (0x60, 2)]));
 }
 
-/// An empty request and one past the ceiling are both refused.
 #[test]
 fn an_empty_or_oversized_multi_span_request_is_refused() {
     let mut space = PortSpace::new();
-    // Empty would reserve nothing while reporting success.
     assert!(!space.reserve_all(&[]));
 
     let too_many: [(usize, usize); MAX_SPANS + 1] = core::array::from_fn(|index| (index * 2, 1));
@@ -111,8 +95,7 @@ fn reserving_marks_exactly_its_span() {
     assert!(!space.is_reserved(0x400), "the port above is untouched");
 }
 
-/// The defect this crate exists to rule out: a claim marking one port while
-/// the access it authorises drives four.
+/// The defect this crate exists to rule out: a claim marking one port of an access that drives four.
 #[test]
 fn a_wide_reservation_covers_every_port_it_drives() {
     for width in WIDTHS {
@@ -133,9 +116,7 @@ fn a_second_reservation_of_the_same_port_is_refused() {
     assert!(!space.reserve(0x60, 1));
 }
 
-/// Every way one span can meet another — touching below, overlapping from
-/// below, contained, containing, overlapping from above, touching above —
-/// swept rather than enumerated, so no case is the one nobody thought of.
+/// Swept over every relative position, so no way one span can meet another is left out.
 #[test]
 fn overlap_is_refused_from_either_side_and_adjacency_is_not() {
     let held = 0x40..0x44;
@@ -154,8 +135,7 @@ fn overlap_is_refused_from_either_side_and_adjacency_is_not() {
     }
 }
 
-/// A refused reservation must leave the table untouched, or a driver told
-/// "no" still ends up owning half of a neighbour's registers.
+/// A refused reservation must leave the table untouched, or a refused driver owns half a neighbour's registers.
 #[test]
 fn a_refused_reservation_records_nothing() {
     let mut space = PortSpace::new();
@@ -179,7 +159,6 @@ fn a_span_running_past_the_end_of_the_space_is_refused() {
     assert_eq!(space, PortSpace::new());
 }
 
-/// The last port in the space is ordinary; only what would follow it is not.
 #[test]
 fn a_span_ending_exactly_at_the_end_of_the_space_is_allowed() {
     let mut space = PortSpace::new();
@@ -197,8 +176,6 @@ fn an_empty_span_reserves_nothing_and_says_so() {
     assert!(!space.is_reserved(0x80));
 }
 
-/// Outside the space there is no free port, so a caller cannot mistake the
-/// answer for an invitation.
 #[test]
 fn every_port_outside_the_space_reads_as_reserved() {
     let space = PortSpace::new();
@@ -207,36 +184,27 @@ fn every_port_outside_the_space_reads_as_reserved() {
     assert!(space.is_reserved(usize::MAX));
 }
 
-/// Availability agrees with reserving, *and* with an independent oracle.
-///
-/// `is_available` and `reserve` both return `span(p, l).is_some()`, so
-/// comparing them is `span(p,l).is_some() == span(p,l).is_some()` — true
-/// for every implementation of `span`, correct or not. Mutating `span`'s
-/// overlap scan killed three other tests here and never this one (D-105).
+/// Both sides call `span`, so agreement alone holds for any `span`; a `Range` oracle checks it.
 #[test]
 fn availability_agrees_with_what_reserving_would_do() {
     let mut space = PortSpace::new();
     assert!(space.reserve(0x20, 2));
-    // Reserved: ports 0x20 and 0x21.
     let taken = 0x20usize..0x22;
 
     for start in 0x1C..0x28 {
         for len in WIDTHS {
-            let expected = space.is_available(start, len);
+            let available = space.is_available(start, len);
             let mut copy = space;
-            assert_eq!(copy.reserve(start, len), expected, "{len} at {start:#x}");
+            assert_eq!(copy.reserve(start, len), available, "{len} at {start:#x}");
 
-            // The oracle uses `Range`, not the bitmap under test: a span
-            // is available exactly when it touches no reserved port.
             let end = start + len;
             let overlaps = (start..end).any(|port| taken.contains(&port));
-            assert_eq!(expected, !overlaps, "{len} at {start:#x}");
+            assert_eq!(available, !overlaps, "{len} at {start:#x}");
         }
     }
 }
 
-/// Word boundaries are where a bitmap goes wrong: a span crossing one must
-/// mark both sides, and a port beyond it must stay free.
+/// Word boundaries are where a bitmap goes wrong.
 #[test]
 fn a_span_crossing_a_word_boundary_marks_both_words() {
     let mut space = PortSpace::new();
@@ -248,7 +216,6 @@ fn a_span_crossing_a_word_boundary_marks_both_words() {
     assert!(!space.is_reserved(boundary + 2));
 }
 
-/// A transient owner returns every span together or retains all of them.
 #[test]
 fn a_multi_span_release_is_exact_and_all_or_none() {
     let spans = [(0x100usize, 4usize), (0x120, 8), (0x1ff, 2)];
@@ -275,8 +242,6 @@ fn a_multi_span_release_is_exact_and_all_or_none() {
     assert_eq!(space, empty);
 }
 
-/// Sweeping the whole space one port at a time: every port reserves once
-/// and refuses thereafter, and no bit lands on a neighbour along the way.
 #[test]
 fn every_port_in_the_space_can_be_reserved_exactly_once() {
     let mut space = PortSpace::new();
@@ -290,16 +255,11 @@ fn every_port_in_the_space_can_be_reserved_exactly_once() {
     }
 }
 
-/// The I/O space is sixteen bits, from the architecture rather than from
-/// itself.
-///
-/// Literal upper-bound witnesses keep `PORT_COUNT` from serving as its own
-/// oracle (D-124).
+/// Literal witnesses, so `PORT_COUNT` does not serve as its own oracle.
 #[test]
 fn the_io_space_is_sixteen_bits() {
     assert_eq!(PORT_COUNT, 65_536);
 
-    // The highest port a one-byte access can reach, and the one past it.
     let mut space = PortSpace::new();
     assert!(space.reserve(0xFFFF, 1), "the last port is reservable");
     assert!(!space.is_available(0xFFFF, 2), "and nothing runs past it");

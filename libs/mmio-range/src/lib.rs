@@ -1,7 +1,4 @@
-//! Checked address arithmetic for repeated MMIO accesses.
-//!
-//! Hardware access belongs in `wost`; deciding whether a repeated access fits
-//! is pure arithmetic and is host-tested here.
+//! Checked address arithmetic for repeated MMIO accesses, host-tested here while `wost` performs them.
 //!
 //! ```
 //! let span = mmio_range::AccessRange::repeated(8, 3, 4, 32).unwrap();
@@ -60,10 +57,7 @@ impl AddressRange {
     }
 }
 
-/// Find the lowest aligned gap after projecting each occupied record.
-///
-/// This keeps a bounded ownership ledger in its native representation rather
-/// than requiring a second array of ranges beside it.
+/// Find the lowest aligned gap, projecting each occupied record so a ledger needs no second array of ranges.
 pub fn first_fit_by<T>(
     window: AddressRange,
     len: u64,
@@ -143,33 +137,15 @@ pub enum AccessError {
     /// An access width must be a non-zero power of two.
     InvalidWidth(usize),
     /// The first access is not naturally aligned.
-    Misaligned {
-        /// Requested byte offset.
-        offset: usize,
-        /// Required alignment.
-        align: usize,
-    },
+    Misaligned { offset: usize, align: usize },
     /// `count * width` does not fit in `usize`.
-    LengthOverflow {
-        /// Number of repeated accesses.
-        count: usize,
-        /// Bytes in each access.
-        width: usize,
-    },
+    LengthOverflow { count: usize, width: usize },
     /// Adding the repeated length to its offset wraps.
-    EndOverflow {
-        /// Requested byte offset.
-        offset: usize,
-        /// Checked byte length.
-        len: usize,
-    },
+    EndOverflow { offset: usize, len: usize },
     /// The range extends beyond the containing region.
     OutOfBounds {
-        /// Requested byte offset.
         offset: usize,
-        /// Checked byte length.
         len: usize,
-        /// Bytes in the containing region.
         region_len: usize,
     },
 }
@@ -202,13 +178,7 @@ impl fmt::Display for AccessError {
 impl core::error::Error for AccessError {}
 
 impl AccessRange {
-    /// Check `count` naturally aligned accesses of `width` bytes.
-    ///
-    /// # Errors
-    ///
-    /// Refuses invalid widths, misalignment, arithmetic overflow, and any
-    /// range whose exclusive end is past `region_len`. A zero count is an
-    /// empty no-op, so its offset need not be aligned.
+    /// Check `count` naturally aligned `width`-byte accesses; a zero count accesses nothing, so needs no alignment.
     pub const fn repeated(
         offset: usize,
         count: usize,

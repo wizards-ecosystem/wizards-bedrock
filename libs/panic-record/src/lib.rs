@@ -1,9 +1,4 @@
-//! Allocation-free framing for a terminal kernel panic record.
-//!
-//! A panic body is arbitrary formatted text, so it can contain the physical
-//! line breaks used to frame the record that follows it. [`write_record`]
-//! makes those breaks and their escape introducer visible, and publishes
-//! completion only after every prior write succeeds.
+//! Allocation-free panic record framing; a hostile body's line breaks and backslashes are escaped so it cannot forge the framing.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -21,12 +16,12 @@ pub const OPEN_PREFIX: &str = "[error] KERNEL PANIC on thread '";
 pub const COMPLETE_MARKER: &str = "panic: terminal record complete v1";
 
 #[derive(Debug)]
-struct SingleLine<'a, W: fmt::Write> {
-    writer: &'a mut W,
+struct SingleLine<'writer, W: fmt::Write> {
+    writer: &'writer mut W,
 }
 
-impl<'a, W: fmt::Write> SingleLine<'a, W> {
-    fn new(writer: &'a mut W) -> Self {
+impl<'writer, W: fmt::Write> SingleLine<'writer, W> {
+    fn new(writer: &'writer mut W) -> Self {
         Self { writer }
     }
 }
@@ -57,10 +52,7 @@ impl<W: fmt::Write> fmt::Write for SingleLine<'_, W> {
     }
 }
 
-/// Write one complete terminal panic record.
-///
-/// The completion line is withheld unless the body and its physical newline
-/// were both accepted by `writer`.
+/// Write one terminal panic record, withholding the completion line unless `writer` accepted every earlier write.
 ///
 /// # Examples
 ///
@@ -76,11 +68,6 @@ impl<W: fmt::Write> fmt::Write for SingleLine<'_, W> {
 ///     )
 /// );
 /// ```
-///
-/// # Errors
-///
-/// Returns [`fmt::Error`] after the first refused body, newline, or completion
-/// write.
 pub fn write_record(
     writer: &mut impl fmt::Write,
     thread: &str,
