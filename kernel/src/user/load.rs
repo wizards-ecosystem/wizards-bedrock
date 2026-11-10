@@ -1,7 +1,7 @@
 #[cfg(feature = "selftest")]
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use elf64::{Elf, ElfError, Segment, SegmentKind};
+use elf64::{Elf, ElfError, SegmentKind};
 use wost::arch::current::paging::{AddressSpace, MapError, Unmapped};
 use wost::boot::HandoffError;
 use wost::mm;
@@ -284,7 +284,89 @@ pub(crate) fn load_image(
     shift: u64,
 ) -> Result<LoadedImage, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
-    let placements = preflight(&elf, bytes.len(), shift)?;
+
+    let mut placements = [None; MAX_SEGMENTS];
+    let mut loaded = 0usize;
+    for segment in elf
+        .segments()
+        .filter(|segment| segment.kind() == SegmentKind::Load)
+    {
+        if !segment.contents_fit(bytes.len()) {
+            return Err(LoadError::Truncated(segment.address()));
+        }
+        if segment.is_oversized() {
+            return Err(LoadError::Malformed(segment.address()));
+        }
+        if segment.is_write_execute() {
+            return Err(LoadError::WriteExecute(segment.address()));
+        }
+        if !segment.has_valid_alignment() {
+            return Err(LoadError::InvalidAlignment {
+                at: segment.address(),
+                alignment: segment.alignment(),
+            });
+        }
+
+        // Checked: a `p_vaddr` near the top wraps past the refusal below, and a debug build
+        // would panic on bytes a program supplied.
+        let at = segment
+            .address()
+            .checked_add(shift)
+            .ok_or(LoadError::NotUserMemory(segment.address()))?;
+        if !at.is_multiple_of(PAGE_SIZE) {
+            return Err(LoadError::Unaligned(at));
+        }
+        let end = at
+            .checked_add(segment.memory_size())
+            .ok_or(LoadError::NotUserMemory(at))?;
+        let mapped_len = segment
+            .memory_size()
+            .div_ceil(PAGE_SIZE)
+            .checked_mul(PAGE_SIZE)
+            .ok_or(LoadError::NotUserMemory(at))?;
+        let mapped_end = at
+            .checked_add(mapped_len)
+            .ok_or(LoadError::NotUserMemory(at))?;
+        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
+            return Err(LoadError::NotUserMemory(at));
+        }
+
+        let mut flags = Flags::USER;
+        if segment.is_writable() {
+            flags = flags.union(Flags::WRITABLE);
+        }
+        if !segment.is_executable() {
+            flags = flags.union(Flags::NO_EXECUTE);
+        }
+        let placement = Placement {
+            at,
+            end,
+            mapped_end,
+            pages: (mapped_len / PAGE_SIZE) as usize,
+            from: segment.offset() as usize,
+            len: segment.file_size() as usize,
+            flags,
+        };
+
+        // Two segments sharing one page would collide in `map_owned` after the first is mapped;
+        // caught here, before anything is taken.
+        if placements
+            .iter()
+            .flatten()
+            .any(|other: &Placement| overlaps(other, &placement))
+        {
+            return Err(LoadError::Overlapping(at));
+        }
+
+        *placements
+            .get_mut(loaded)
+            .ok_or(LoadError::TooManySegments)? = Some(placement);
+        loaded += 1;
+    }
+
+    if loaded == 0 {
+        return Err(LoadError::Empty);
+    }
 
     let entry = elf
         .entry()
@@ -299,122 +381,12 @@ pub(crate) fn load_image(
         return Err(LoadError::InvalidEntry(entry));
     }
 
-    place_all(space, bytes, &placements)?;
-
-    let mut regions = [None; MAX_SEGMENTS];
-    for (slot, placement) in placements.iter().flatten().enumerate() {
-        regions[slot] = Some((placement.at, placement.mapped_end - placement.at));
-    }
-    Ok(LoadedImage { entry, regions })
-}
-
-/// Validate every load segment, and every pair of them, before any page is taken.
-fn preflight(
-    elf: &Elf<'_>,
-    image_len: usize,
-    shift: u64,
-) -> Result<[Option<Placement>; MAX_SEGMENTS], LoadError> {
-    let mut placements = [None; MAX_SEGMENTS];
-    let mut loaded = 0usize;
-    for segment in elf
-        .segments()
-        .filter(|segment| segment.kind() == SegmentKind::Load)
-    {
-        let placement = validate(&segment, image_len, shift)?;
-
-        // Two segments sharing one page would collide in `map_owned` after the first is mapped;
-        // caught here, before anything is taken.
-        if placements
-            .iter()
-            .flatten()
-            .any(|other: &Placement| overlaps(other, &placement))
-        {
-            return Err(LoadError::Overlapping(placement.at));
-        }
-
-        *placements
-            .get_mut(loaded)
-            .ok_or(LoadError::TooManySegments)? = Some(placement);
-        loaded += 1;
-    }
-
-    if loaded == 0 {
-        return Err(LoadError::Empty);
-    }
-    Ok(placements)
-}
-
-/// Where one segment of an `image_len`-byte image goes once shifted, or why it may not.
-fn validate(segment: &Segment, image_len: usize, shift: u64) -> Result<Placement, LoadError> {
-    if !segment.contents_fit(image_len) {
-        return Err(LoadError::Truncated(segment.address()));
-    }
-    if segment.is_oversized() {
-        return Err(LoadError::Malformed(segment.address()));
-    }
-    if segment.is_write_execute() {
-        return Err(LoadError::WriteExecute(segment.address()));
-    }
-    if !segment.has_valid_alignment() {
-        return Err(LoadError::InvalidAlignment {
-            at: segment.address(),
-            alignment: segment.alignment(),
-        });
-    }
-
-    // Checked: a `p_vaddr` near the top wraps past the refusal below, and a debug build would
-    // panic on bytes a program supplied.
-    let at = segment
-        .address()
-        .checked_add(shift)
-        .ok_or(LoadError::NotUserMemory(segment.address()))?;
-    if !at.is_multiple_of(PAGE_SIZE) {
-        return Err(LoadError::Unaligned(at));
-    }
-    let end = at
-        .checked_add(segment.memory_size())
-        .ok_or(LoadError::NotUserMemory(at))?;
-    let mapped_len = segment
-        .memory_size()
-        .div_ceil(PAGE_SIZE)
-        .checked_mul(PAGE_SIZE)
-        .ok_or(LoadError::NotUserMemory(at))?;
-    let mapped_end = at
-        .checked_add(mapped_len)
-        .ok_or(LoadError::NotUserMemory(at))?;
-    if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
-        return Err(LoadError::NotUserMemory(at));
-    }
-
-    let mut flags = Flags::USER;
-    if segment.is_writable() {
-        flags = flags.union(Flags::WRITABLE);
-    }
-    if !segment.is_executable() {
-        flags = flags.union(Flags::NO_EXECUTE);
-    }
-    Ok(Placement {
-        at,
-        end,
-        mapped_end,
-        pages: (mapped_len / PAGE_SIZE) as usize,
-        from: segment.offset() as usize,
-        len: segment.file_size() as usize,
-        flags,
-    })
-}
-
-/// Map every placement in order, walking back exactly what was mapped if one refuses: validation
-/// cannot rule out a frame shortage or a collision.
-fn place_all(
-    space: &mut AddressSpace,
-    bytes: &[u8],
-    placements: &[Option<Placement>; MAX_SEGMENTS],
-) -> Result<(), LoadError> {
     for (done, placement) in placements.iter().flatten().enumerate() {
         match place(space, bytes, placement) {
             Ok(()) => {}
             Err(reason) => {
+                // Validation cannot rule out a frame shortage or a collision, so the pass walks
+                // back exactly what it mapped.
                 if let Err(refusal) = undo(space, &placements[..done]) {
                     return Err(LoadError::Rollback {
                         reason: refusal.reason,
@@ -425,5 +397,10 @@ fn place_all(
             }
         }
     }
-    Ok(())
+
+    let mut regions = [None; MAX_SEGMENTS];
+    for (slot, placement) in placements.iter().flatten().enumerate() {
+        regions[slot] = Some((placement.at, placement.mapped_end - placement.at));
+    }
+    Ok(LoadedImage { entry, regions })
 }
