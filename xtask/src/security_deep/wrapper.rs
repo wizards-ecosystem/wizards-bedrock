@@ -246,10 +246,7 @@ fn dispatch_private_wrapper_inner(marker: &OsStr, arguments: &[OsString]) -> Res
         .strip_prefix(WRAPPER_MARKER_PREFIX)
         .context("private Codex wrapper marker is malformed")?;
     ensure!(
-        source.len() == 40
-            && source
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        is_source_commit(source),
         "private Codex wrapper marker has an invalid source identity"
     );
     let real = PathBuf::from(
@@ -343,6 +340,13 @@ fn dispatch_private_wrapper_inner(marker: &OsStr, arguments: &[OsString]) -> Res
         .code()
         .context("private Codex child exited without an exit code")?;
     Ok(code)
+}
+
+pub(super) fn is_source_commit(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn relay_private_child_stdout(child: &mut std::process::Child) -> Result<()> {
@@ -515,10 +519,7 @@ fn dispatch_private_python_wrapper(marker: &OsStr, arguments: &[OsString]) -> Re
         .strip_prefix(WRAPPER_MARKER_PREFIX)
         .context("private Python wrapper marker is malformed")?;
     ensure!(
-        source.len() == 40
-            && source
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        is_source_commit(source),
         "private Python wrapper marker has an invalid source identity"
     );
     let real = PathBuf::from(

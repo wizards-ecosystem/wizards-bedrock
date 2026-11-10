@@ -2821,7 +2821,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 2257,
         file: "xtask/src/security_deep/transitions.rs",
         find: "            initial_pairs.contains(&(receipt.worker.clone(), thread.clone())),\n            \"private Codex resumed execution thread lacks same-worker initial ancestry\"",
-        replace: "            thread_ids.contains(thread),\n            \"private Codex resumed execution thread lacks same-worker initial ancestry\"",
+        replace: "            !thread.is_empty(),\n            \"private Codex resumed execution thread lacks same-worker initial ancestry\"",
         breaks: "a resumed execution identity can qualify without same-worker initial ancestry",
         reddens: Caught::HostTest {
             package: "xtask",

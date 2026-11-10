@@ -251,6 +251,7 @@ struct ShellEnvironmentPolicy {
     temporary: PathBuf,
 }
 
+#[derive(Debug)]
 struct OwnedMcpInvocation<'run> {
     source: &'run SourceIdentity,
     scratch: &'run OwnedScratch,
@@ -447,22 +448,11 @@ impl ManagedWorkerPolicy {
         )?;
         let mut denied_entries = vec![repository.join(".git")];
         denied_entries.extend(python_denies);
-        let mut denied_probes = Vec::new();
-        for category in ["__pycache__", "site-packages"] {
-            if let Some(directory) = denied_entries.iter().find(|path| {
-                path.file_name()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|name| name.eq_ignore_ascii_case(category))
-            }) {
-                denied_probes.push(first_python_policy_file(directory, 0)?.with_context(|| {
-                    format!("managed worker Python {category} tree contains no deny probe")
-                })?);
-            }
-        }
+        let denied_probes = python_deny_probes(&denied_entries)?;
         ensure!(
             denied_probes
                 .iter()
-                .all(|probe| { denied_entries.iter().any(|entry| probe.starts_with(entry)) }),
+                .all(|probe| denied_entries.iter().any(|entry| probe.starts_with(entry))),
             "managed worker denied read probe is not covered by an explicit deny"
         );
         let denied_write_probes = vec![
@@ -545,6 +535,22 @@ impl ManagedWorkerPolicy {
             &self.repository_metadata_probe,
         ]
     }
+}
+
+fn python_deny_probes(denied_entries: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut denied_probes = Vec::new();
+    for category in ["__pycache__", "site-packages"] {
+        if let Some(directory) = denied_entries.iter().find(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case(category))
+        }) {
+            denied_probes.push(first_python_policy_file(directory, 0)?.with_context(|| {
+                format!("managed worker Python {category} tree contains no deny probe")
+            })?);
+        }
+    }
+    Ok(denied_probes)
 }
 
 fn complete_worker_denies(policy: &ManagedWorkerPolicy) -> Vec<&Path> {

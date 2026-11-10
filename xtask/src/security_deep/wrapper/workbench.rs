@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct WorkbenchCommandPolicy {
     required: &'static [&'static str],
     optional: &'static [&'static str],
