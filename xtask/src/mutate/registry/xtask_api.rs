@@ -2229,7 +2229,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2365,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\"wost/src/mm.rs\", \"mm::DmaSegment\"),\n",
+        find: "    (\"wost/src/mm/dma.rs\", \"mm::dma::DmaSegment\"),\n",
         replace: "",
         breaks: "the reviewed DmaSegment Drop boundary is absent from API reachability",
         reddens: Caught::HostTest {
@@ -2240,7 +2240,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2366,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm.rs\",\n        owner: \"mm::DmaSegment\",\n        member: \"from\",\n        implemented_trait: Some(\"From\"),\n        produced: \"mm::DmaSegment\",\n    },\n",
+        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm/dma.rs\",\n        owner: \"mm::dma::DmaSegment\",\n        member: \"from\",\n        implemented_trait: Some(\"From\"),\n        produced: \"mm::dma::DmaSegment\",\n    },\n",
         replace: "",
         breaks: "the exact DmaSegment owned producer no longer activates its reviewed Drop",
         reddens: Caught::HostTest {
@@ -2251,7 +2251,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2367,
         file: "xtask/src/api/reviewed.rs",
-        find: "    (\"wost/src/mm.rs\", \"mm::PublishedIommuTable\"),\n",
+        find: "    (\"wost/src/mm/dma.rs\", \"mm::dma::PublishedIommuTable\"),\n",
         replace: "",
         breaks: "the reviewed PublishedIommuTable Drop boundary is absent from API reachability",
         reddens: Caught::HostTest {
@@ -2262,7 +2262,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2368,
         file: "xtask/src/api/reviewed.rs",
-        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm.rs\",\n        owner: \"mm::PublishedIommuTable\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"mm::PublishedIommuTable\",\n    },\n",
+        find: "    ReviewedDropProducer {\n        relative: \"wost/src/mm/dma.rs\",\n        owner: \"mm::dma::PublishedIommuTable\",\n        member: \"new\",\n        implemented_trait: None,\n        produced: \"mm::dma::PublishedIommuTable\",\n    },\n",
         replace: "",
         breaks: "the exact PublishedIommuTable owned producer no longer activates its reviewed Drop",
         reddens: Caught::HostTest {

@@ -6,6 +6,8 @@
 //! `limine_glue.rs` and nothing else.
 
 mod limine_glue;
+#[cfg(feature = "selftest")]
+mod selftest;
 
 use core::fmt;
 
@@ -109,24 +111,6 @@ impl Framebuffer {
         true
     }
 
-    /// Where the pixels are reachable.
-    #[cfg(feature = "selftest")]
-    pub fn address(&self) -> u64 {
-        self.region.base_address() as u64
-    }
-
-    /// Bytes the mapping covers, which every pixel offset must land inside.
-    #[cfg(feature = "selftest")]
-    pub fn mapped_bytes(&self) -> usize {
-        self.layout.span()
-    }
-
-    /// Whether every framebuffer word has a shadow.
-    #[cfg(feature = "selftest")]
-    pub fn has_complete_back_buffer(&self) -> bool {
-        !self.back.is_empty() && self.back.len() == self.words()
-    }
-
     /// Words in the shadow: the device's stride times its visible height.
     fn words(&self) -> usize {
         self.layout.span() / WORD
@@ -159,15 +143,6 @@ impl Framebuffer {
     fn write_word(&mut self, offset: usize, value: u32) {
         framebuffer_access(MmioRegion::write_u32(&mut self.region, offset, value));
         self.shadow(offset, value);
-    }
-
-    /// The pixel at (`x`, `y`), or `None` outside the visible area.
-    ///
-    /// Read from the shadow to avoid an uncached device read and make stray
-    /// cursor marks observable (D-137).
-    #[cfg(feature = "selftest")]
-    pub fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
-        Some(self.word_at(self.layout.offset(x, y)?))
     }
 
     /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible

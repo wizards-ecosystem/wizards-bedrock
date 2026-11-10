@@ -1536,9 +1536,7 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
     let paging = rust_without_comments(
         &std::fs::read_to_string(root.join("wost/src/arch/x86_64/paging.rs")).expect("paging.rs"),
     );
-    let memory = rust_without_comments(
-        &std::fs::read_to_string(root.join("wost/src/mm.rs")).expect("mm.rs"),
-    );
+    let memory = rust_without_comments(&super::module_source(root, "wost/src/mm.rs"));
     assert_eq!(remainder("sys_vm_unmap"), "PARTIAL");
     assert_eq!(remainder("sys_anon_free"), "PARTIAL");
     assert!(paging.contains("pub fn unmap(&mut self, virtual_base: u64, len: u64)"));

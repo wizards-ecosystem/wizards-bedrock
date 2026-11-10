@@ -261,63 +261,63 @@ fn fallible_operation_bools_stay_must_use() {
             "#[must_use = \"a refused firmware read copied no bytes\"]\n    pub fn read",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/frame.rs",
             "#[must_use = \"a refused frame fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/frame.rs",
             "#[must_use = \"a refused frame clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/frame.rs",
             "#[must_use = \"a refused segment fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/frame.rs",
             "#[must_use = \"a refused segment clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/frame.rs",
             "#[must_use = \"a refused segment write changed no bytes\"]\n    pub fn write_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/selftest.rs",
             "#[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/dma.rs",
             "#[must_use = \"a refused DMA-segment fill changed no bytes\"]\n    pub fn fill",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/dma.rs",
             "#[must_use = \"a refused DMA-segment clear changed no bytes\"]\n    pub fn zero",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/dma.rs",
             "#[must_use = \"a refused DMA-segment write changed no bytes\"]\n    pub fn write_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/dma.rs",
             "#[must_use = \"a refused DMA-segment read copied no bytes\"]\n    pub fn read_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/shared.rs",
             "#[must_use = \"a refused shared-memory write changed no bytes\"]\n    pub fn write_volatile_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/shared.rs",
             "#[must_use = \"a refused shared-memory read copied no bytes\"]\n    pub fn read_volatile_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/shared.rs",
             "#[must_use = \"a refused ring-payload write changed no bytes\"]\n    pub fn write_payload_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/shared.rs",
             "#[must_use = \"a refused ring-payload read copied no bytes\"]\n    pub fn read_payload_at",
         ),
         (
-            "wost/src/mm.rs",
+            "wost/src/mm/shared.rs",
             "#[must_use = \"a refused shared-memory publication stored no index\"]\n    pub fn store_release_u32",
         ),
         (
