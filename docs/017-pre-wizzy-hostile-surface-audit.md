@@ -215,10 +215,10 @@ record. D-373 removes the supported elevation of an arbitrary caller-selected
 result directory into PASS; it does not claim that checksummed local files
 authenticate against the operator account that owns them. The release flow
 requires an exclusive clean run under that account, while offline transport
-uses the recorded hashes to detect later substitution. Git's identity and
-checked-path opening are bound as the Git identity and checked reads row states
-(D-344, `88d529d`). The
-manifest also binds QEMU and both firmware images by digest (D-216), and
+uses the recorded hashes to detect later substitution. Git's identity enters
+every qualification record and the evidence manifest, and checked paths are
+opened, as the Git identity and checked reads row states (D-344, `88d529d`).
+The evidence manifest also binds QEMU and both firmware images by digest (D-216), and
 `cargo xtask verify-evidence` requires the verifying host to match. QMP runs
 over the QEMU child's own standard streams and no boot binds a control listener
 (D-346, `2889b75`); the `debug` task's loopback GDB server serves a paused
@@ -241,7 +241,7 @@ forced last, explicit read grants, credential and repository-metadata denies,
 and network disabled. The live credential still has exactly one name before
 its one owned projection, both names remain explicitly denied and
 identity-checked for model workers. The canonical v3 ledger, the pinned
-Codex/MXC preflight and what each proves are stated once, after the host
+Codex/MXC preflight and what each proves are stated once, in the D-422 paragraph after the host
 tooling table. This implemented split remains unqualified until a
 complete clean frozen owned run passes; D-425 superseded PW-026 as a release
 prerequisite, so that run's record enters only a release with the same source.
@@ -323,7 +323,9 @@ all PCI interrupt delivery through an empty interrupt-remapping table and keeps
 legacy I/O APIC lines masked. Still stopped: AMD units have no backend
 (`PW-711`), and a device sees the physical addresses of its buffers (`PW-712`).
 
-**Census limits.** The four limits below are what the census cannot discharge.
+**Census limits.** The four numbered limits under Stopped surfaces and audit limits are what the
+census cannot discharge: mapping and instruction contracts, ignored device writes, a parent
+directory replaced between check and open, and processes outside the Windows job.
 
 
 ## Cross-cutting closure obligations
