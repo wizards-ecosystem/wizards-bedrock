@@ -368,7 +368,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .expect("interrupt-cache invalidation end")
         .0;
     let queue_enable = invalidation
-        .find("self.switch_queued_invalidation(true)?")
+        .find("self.switch_queued_invalidation(Switch::On)?")
         .expect("QI enable");
     let queue_readback = invalidation
         .find("let observed_queue = read_u64(&self.registers, vtd::IQA)?;")
@@ -377,7 +377,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("write_u64(&mut self.registers, vtd::IQT, INVALIDATION_TAIL)?;")
         .expect("QI tail publication");
     let queue_disable = invalidation
-        .find("let disabled = self.switch_queued_invalidation(false);")
+        .find("let disabled = self.switch_queued_invalidation(Switch::Off);")
         .expect("QI disable");
     assert!(queue_enable < queue_readback && queue_readback < tail && tail < queue_disable);
     let fault_mask = vtd_source
@@ -515,7 +515,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .split_once("pub fn enable_after_pending_audit()")
         .expect("local APIC pending audit")
         .1
-        .split_once("fn initialize_controller")
+        .split_once("fn init_controller")
         .expect("local APIC pending audit end")
         .0;
     let irr = audit

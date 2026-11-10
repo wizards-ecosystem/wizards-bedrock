@@ -582,7 +582,7 @@ fn the_serial_contract_matches_the_kernel_source() {
     assert!(
         main.contains("warn!(\"local apic: {reason}; interrupts stay off\")")
             && apic.contains(&format!(
-                "Self::NoExtendedMode => core::fmt::Write::write_str(\n                f,\n                \"{no_x2apic_reason}\",\n            ),"
+                "Self::NoExtendedMode => {{\n                f.write_str(\"{no_x2apic_reason}\")\n            }}"
             )),
         "the exact no-x2APIC diagnosis drifted from its two producers"
     );

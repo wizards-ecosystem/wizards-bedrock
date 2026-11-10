@@ -407,11 +407,11 @@ fn apic_ready_publication_precedes_dependent_vector_reads() {
     };
 
     let transaction = between(
-        "fn initialize_controller<R: InitializationRegisters>",
-        "fn initialize<R: InitializationRegisters>",
+        "fn init_controller<R: InitializationRegisters>",
+        "fn init_stages<R: InitializationRegisters>",
     );
     let configure = transaction
-        .find("let configured = initialize(")
+        .find("let configured = init_stages(")
         .expect("APIC vector configuration");
     let publish = transaction
         .find("initialization.commit(configured)")
@@ -420,7 +420,7 @@ fn apic_ready_publication_precedes_dependent_vector_reads() {
         configure < publish,
         "APIC readiness can publish before vector configuration returns"
     );
-    let initialization = function_after(&source, "fn initialize<R: InitializationRegisters>")
+    let initialization = function_after(&source, "fn init_stages<R: InitializationRegisters>")
         .expect("APIC initialization");
     assert!(
         initialization.contains(".self_interrupt_vector\n        .store(")

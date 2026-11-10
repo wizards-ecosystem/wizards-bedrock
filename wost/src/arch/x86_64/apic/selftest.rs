@@ -61,9 +61,8 @@ pub fn pending_audit_refuses_queued_self_interrupt_for_test(
         core::hint::spin_loop();
         ready_registers().is_some_and(|access| is_pending(&access, expected))
     });
-    // A timer may become pending after exclusion. The production door must
-    // refuse whichever vector is highest, while `queued` above proves that
-    // the self-IPI this witness sent is independently present in IRR.
+    // A timer may also become pending, so the door refuses whichever vector is highest, while
+    // `queued` proves this witness's self-IPI is independently in IRR.
     let refusal = matches!(
         enable_after_pending_audit(),
         Err(PendingInterruptError::Pending(_))
@@ -80,8 +79,7 @@ pub fn pending_audit_refuses_queued_self_interrupt_for_test(
     sent && queued && refusal && stayed_excluded && arrived && interrupt::are_enabled()
 }
 
-/// The timer's local vector entry, read back from the hardware rather than
-/// remembered from what was written.
+/// The timer's local vector entry, read back from the hardware.
 #[cfg(feature = "selftest")]
 pub fn timer_entry() -> Entry {
     Entry::from_bits(low_u32(read(register::LVT_TIMER)))
@@ -318,10 +316,8 @@ impl<DeliveryCount: FnMut() -> usize> InitializationObserver
 
 /// Exercise the production APIC transaction with isolated failure state.
 ///
-/// Register reads and writes use bounded counters because replaying controller
-/// setup would disturb the live singleton. The transaction owner, stage
-/// runner, public-operation gates, interrupt flag and queued self-IPI are the
-/// production paths; `delivery_count` observes that real interrupt arriving.
+/// Registers are counters since replaying setup would disturb the live singleton; the transaction,
+/// gates, interrupt flag and queued self-IPI are production, and `delivery_count` sees it arrive.
 #[cfg(feature = "selftest")]
 pub fn initialization_failures_for_test(
     vectors: Vectors,
@@ -370,11 +366,9 @@ pub fn initialization_failures_for_test(
                 delivery_excluded: false,
                 queued_at: None,
             };
-            let outcome = initialize_controller(
+            let outcome = init_controller(
                 fixture,
-                vectors,
-                Entry::fixed(vectors.error),
-                Spurious::enabled(vectors.spurious),
+                Sources::new(vectors),
                 || {
                     mode_entered.store(true, Ordering::Release);
                     Ok((
@@ -454,11 +448,9 @@ fn ignored_spurious_write_is_terminal(vectors: Vectors) -> bool {
     let lvt_covered = AtomicU8::new(0);
     let entry_interrupts = interrupt::are_enabled();
     let mut observer = Unobserved;
-    let outcome = initialize_controller(
+    let outcome = init_controller(
         fixture,
-        vectors,
-        Entry::fixed(vectors.error),
-        Spurious::enabled(vectors.spurious),
+        Sources::new(vectors),
         || {
             Ok((
                 Base::from_bits(0),
@@ -511,11 +503,9 @@ fn advertised_sources_masked(vectors: Vectors) -> bool {
         let lvt_masked = AtomicU8::new(0);
         let lvt_covered = AtomicU8::new(0);
         let mut observer = Unobserved;
-        let outcome = initialize_controller(
+        let outcome = init_controller(
             fixture,
-            vectors,
-            Entry::fixed(vectors.error),
-            Spurious::enabled(vectors.spurious),
+            Sources::new(vectors),
             || {
                 Ok((
                     Base::from_bits(0),
@@ -575,11 +565,9 @@ fn source_fixture_refuses(vectors: Vectors, maximum: u8, fault: LvtFault) -> boo
     let lvt_covered = AtomicU8::new(0);
     let entry_interrupts = interrupt::are_enabled();
     let mut observer = Unobserved;
-    let outcome = initialize_controller(
+    let outcome = init_controller(
         fixture,
-        vectors,
-        Entry::fixed(vectors.error),
-        Spurious::enabled(vectors.spurious),
+        Sources::new(vectors),
         || {
             Ok((
                 Base::from_bits(0),
