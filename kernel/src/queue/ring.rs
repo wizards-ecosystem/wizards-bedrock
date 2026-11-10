@@ -20,7 +20,7 @@ impl Queue {
             .then_some(len)
     }
 
-    /// Copy `bytes` into the data area at `offset`.
+    /// Copy `bytes` into the data area at `at`.
     pub(super) fn write_data(&self, at: usize, bytes: &[u8]) -> bool {
         self.ring
             .lock_leaf()
@@ -39,16 +39,14 @@ impl Queue {
 
     /// Admit and take one submission, if the snapshot says there is one.
     ///
-    /// Two refusals, and they are different things. **Nothing published** ends
-    /// the round normally. **No completion slot** is backpressure: the entry
-    /// stays where it is and is served on a later call, which is what makes an
-    /// unreportable operation impossible rather than merely unlikely.
+    /// Nothing published ends the round. No completion slot is backpressure: the entry stays and is
+    /// served on a later call, so an admitted operation can never be unreportable.
     pub(super) fn take(&self, snapshot: &Snapshot) -> Option<Submission> {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         {
             let mut ring = self.ring.lock_leaf();
-            // The tail is userspace's claim, so it bounds nothing on its own;
-            // a runaway tail would walk the kernel through unwritten slots.
+            // The tail is userspace's claim and bounds nothing alone: a runaway tail would walk
+            // the kernel through unwritten slots.
             let published = snapshot
                 .submission_tail
                 .wrapping_sub(ring.protocol.submissions().head());
@@ -57,8 +55,8 @@ impl Queue {
             }
             // The reservation, taken before the operation is accepted.
             ring.protocol.submit()?;
-            // `submit` just produced this slot; losing it would strand the
-            // reservation, so the contradiction is terminal in every build (D-206).
+            // Losing the slot `submit` just produced would strand the reservation: terminal in
+            // every build.
             let taken = ring.protocol.take();
             assert!(
                 taken.is_some(),
@@ -67,22 +65,20 @@ impl Queue {
             let slot = taken?;
 
             let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-            // Unreachable by construction, and terminal for the same reason:
-            // this one has consumed the submission, so it loses the operation too.
+            // Unreachable by construction, and terminal too: the submission is consumed, so this
+            // would lose the operation.
             let in_bounds = ring.pages.read_payload_at(at, &mut bytes);
             assert!(in_bounds, "a submission slot was outside the shared pages");
             if !in_bounds {
                 return None;
             }
 
-            // The head is published after the copy, so a program cannot see
-            // the kernel release a slot it is still reading.
+            // Published after the copy, so no program sees a slot released while still read.
             let head = ring.protocol.submissions().head();
             publish_index(&ring.pages, header::SUBMISSION_HEAD, head);
         }
 
-        // Validated after the copy, and the copy is what is used. A second
-        // read here would be the double fetch the whole design refuses.
+        // Validated after the copy, and only the copy is used: a second read is a double fetch.
         let opcode = Opcode::decode(read_entry_u32(&bytes, submission::OPCODE));
         let token = read_entry_u32(&bytes, submission::TOKEN);
         let handle = read_entry_u32(&bytes, submission::HANDLE);
@@ -100,13 +96,11 @@ impl Queue {
         })
     }
 
-    /// Post one completion.
+    /// Post one completion; `false` means no reservation accounting changed.
     ///
-    /// `false` means no reservation accounting changed. The model says the
-    /// production path cannot reach it; checks inject it before the state
-    /// transition to prove every caller handles the refusal. A shared-page
-    /// bounds failure after that transition is fatal instead: retrying an
-    /// already-spent reservation would duplicate accounting (D-192).
+    /// The model says production cannot reach `false`; checks inject it before the transition to
+    /// prove every caller handles it. A bounds failure after the transition is fatal, because
+    /// retrying an already-spent reservation would duplicate accounting.
     pub(super) fn post(&self, completion: Completion) -> bool {
         #[cfg(feature = "selftest")]
         if self.refuse_next_post.swap(false, Ordering::AcqRel) {
@@ -117,8 +111,8 @@ impl Queue {
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);
         write_entry_u64(&mut bytes, completion::VALUE, completion.value);
 
-        // One guard makes every completion path one logical producer; with
-        // separate locks a later tail could publish before an earlier slot (D-221).
+        // One guard makes every completion path one producer; separate locks would let a later
+        // tail publish before an earlier slot.
         let mut ring = self.ring.lock_leaf();
         let Some(slot) = ring.protocol.complete() else {
             return false;
@@ -130,17 +124,15 @@ impl Queue {
             ring.pages.write_payload_at(at, &bytes),
             "an internal completion slot was outside the ring pages"
         );
-        // The entry is in the page before the tail says so; `complete`
-        // advanced the tail before the write, and it is published after it.
+        // `complete` advanced the tail before the write; it is published after the entry is in.
         publish_index(&ring.pages, header::COMPLETION_TAIL, tail);
         true
     }
 
     /// Let userspace's reaping through, so admission can proceed again.
     ///
-    /// `claimed_head` is whatever the program wrote, taken once by the caller
-    /// and passed in — this function reads no page. What it does with the
-    /// value is bound it: see below.
+    /// `claimed_head` is whatever the program wrote, read once by the caller; this reads no page
+    /// and only bounds the value.
     pub(crate) fn reap_up_to(&self, claimed_head: u32) -> usize {
         let mut ring = self.ring.lock_leaf();
 
@@ -154,9 +146,8 @@ impl Queue {
 }
 /// Where in the data area `offset` and `length` name, if they name anything.
 ///
-/// **Arithmetic, not a page walk.** The data area is part of the ring, so the
-/// whole of "is this buffer usable" is two comparisons — and there is no
-/// caller pointer, no SMAP window and no fault to recover (D-173).
+/// The data area is ring memory, so two comparisons decide it, with no caller pointer, no SMAP
+/// window and no fault to recover.
 pub(super) fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
     let at = usize::try_from(offset).ok()?;
     let len = length as usize;

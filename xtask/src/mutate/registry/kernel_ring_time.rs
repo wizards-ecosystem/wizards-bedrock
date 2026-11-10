@@ -42,9 +42,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 205,
         file: "kernel/src/queue.rs",
         find: "        if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
-            // The cancellation itself still gets the completion reserved for",
+            // The cancellation still gets its reserved completion, while the target stays live",
         replace: "        if false && !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
-            // The cancellation itself still gets the completion reserved for",
+            // The cancellation still gets its reserved completion, while the target stays live",
         breaks: "a cancelled operation still gets its own completion",
         reddens: Caught::Panic {
             marker: "a reserved completion slot was not there",

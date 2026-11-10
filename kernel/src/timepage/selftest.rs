@@ -8,17 +8,15 @@ use super::{CLOCK_AT, PAGE, clock, read_u32, restore};
 
 /// Times the sequence counter was left odd with interrupts on.
 ///
-/// The measured publication window, not the caller's entry state, must exclude
-/// preemption so a writer cannot strand readers on an odd sequence value
-/// (D-152, D-166).
+/// The measured window itself, whatever the caller's entry state, must exclude preemption so a
+/// writer cannot strand readers on an odd sequence value.
 #[cfg(feature = "selftest")]
 pub(super) static WINDOW_LEFT_PREEMPTIBLE: AtomicUsize = AtomicUsize::new(0);
 
 /// Updates that never marked their window open.
 ///
-/// The writer reads its own odd marker because interrupt exclusion leaves no
-/// concurrent observer on one CPU; a second CPU is required for independent
-/// observation (D-154, D-166).
+/// The writer reads its own odd value: interrupt exclusion leaves no concurrent observer on one
+/// CPU, and independent observation requires a second CPU.
 #[cfg(feature = "selftest")]
 pub(super) static WINDOW_NEVER_OPENED: AtomicUsize = AtomicUsize::new(0);
 
@@ -33,10 +31,8 @@ pub(crate) fn with_page_absent_for_test<T>(check: impl FnOnce() -> T) -> Option<
 
 /// Read the page the way a program does, and say what it found.
 ///
-/// The kernel's copy of the reader protocol, and it exists so the check can be
-/// about the *page* rather than about the kernel's own clock. Bounded rather
-/// than looped for ever: a page whose writer never finishes is a broken kernel,
-/// and spinning on it forgives exactly the failure worth reporting.
+/// Bounded, because a writer that never finishes is a broken kernel, and spinning on it would
+/// forgive exactly the failure worth reporting.
 #[cfg(feature = "selftest")]
 pub(crate) fn read() -> Option<Reading> {
     const ATTEMPTS: usize = 64;
@@ -120,18 +116,14 @@ pub(crate) fn windows_never_opened() -> usize {
     WINDOW_NEVER_OPENED.load(Ordering::Relaxed)
 }
 
-/// Updates whose sequence-counter window ran with interrupts on.
-///
-/// Zero on a correct kernel; see [`WINDOW_LEFT_PREEMPTIBLE`].
+/// Updates whose sequence-counter window ran with interrupts on; zero on a correct kernel.
 #[cfg(feature = "selftest")]
 pub(crate) fn windows_left_preemptible() -> usize {
     WINDOW_LEFT_PREEMPTIBLE.load(Ordering::Relaxed)
 }
 
-/// How many times the clock region has been written.
-///
-/// Two per publication, so a check can say a publication happened rather than
-/// inferring it from a value that might not have changed.
+/// How many times the clock region has been written, two per publication, so a check can see a
+/// publication even when no value changed.
 #[cfg(feature = "selftest")]
 pub(crate) fn sequence() -> Option<u32> {
     let guard = PAGE.lock_leaf();

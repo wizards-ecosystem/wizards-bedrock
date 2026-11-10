@@ -219,7 +219,7 @@ pub(super) fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
     );
     queue.post_submission_for_test(
         2,
-        queue::Queue::about_at(queue::Opcode::OpenAt, 0xFEE2, source, 0, u64::MAX, 1),
+        queue::Submission::about(queue::Opcode::OpenAt, 0xFEE2, source, u64::MAX).length(1),
     );
     queue.publish_tail_for_test(3);
 

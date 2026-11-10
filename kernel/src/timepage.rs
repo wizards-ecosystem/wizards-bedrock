@@ -1,18 +1,8 @@
-//! The time page: what a program reads instead of calling.
+//! The time page a program reads instead of calling: constants written once before it is mapped
+//! anywhere, which need no sequence counter, and a clock region under Linux's seqlock.
 //!
-//! **Two regions, and the split is the point.** The constants — version, page
-//! size, counter rate — have no sequence counter, because there is nothing to
-//! tear: they are written once, before the page is mapped
-//! anywhere, and never again. Zircon's arrangement, and it removes the most
-//! error-prone reads from the protocol entirely. The clock region carries
-//! Linux's seqlock, both barriers included.
-//!
-//! **The conversion is fixed; permission to use it is not.** Linux rewrites its
-//! published clock for adjustable sources and NTP. This kernel keeps one
-//! conversion, while a retained PIT validates bounded APIC/TSC windows. Two
-//! consecutive conclusive disagreements freeze public time and publish
-//! `MODE_NONE` through this page's sequence protocol (D-225). Suspend and NTP
-//! adjustment remain unsupported rather than pretending continuity.
+//! The conversion is fixed. Two consecutive watchdog disagreements freeze public time and publish
+//! `MODE_NONE` through the same sequence protocol; suspend and NTP adjustment are unsupported.
 
 use core::sync::atomic::{AtomicU32, Ordering, fence};
 
@@ -33,18 +23,12 @@ pub(crate) use selftest::{
     with_page_absent_for_test,
 };
 
-/// Where the page appears in every program's space.
+/// Where the page appears in every program's space, fixed because the ABI header names it.
 ///
-/// Fixed, and one more entry on D-46's KASLR ledger. It costs nothing while no
-/// two programs share a table (D-113), and it is the address the ABI header
-/// names.
+/// A fixed address costs KASLR nothing only while no two programs share a table.
 pub(crate) const TIME: u64 = 0x0000_1000_0000_0000;
 
-/// What this page's layout is called.
-///
-/// A reader that cannot say what shape the page is would have to guess, which
-/// is IoRing's improvement over io_uring and the same argument as the ring
-/// header's version word.
+/// This page's layout version, so a reader need not guess its shape.
 pub(crate) const VERSION: u32 = 1;
 
 /// `mode`: the page is not to be used, and the caller must ask instead.
@@ -55,20 +39,15 @@ pub(crate) const MODE_COUNTER: u32 = 1;
 
 /// Byte offsets of the constants region, which is the ABI.
 mod constants {
-    /// This layout's version.
     pub(super) const VERSION: usize = 0;
     /// Bytes in a page, so a program need not assume.
     pub(super) const PAGE_BYTES: usize = 4;
-    /// The counter's measured rate, for a reader that wants to reason about
-    /// resolution rather than only to read the time.
+    /// The counter's measured rate, for a reader reasoning about resolution.
     pub(super) const COUNTER_HZ: usize = 8;
 }
 
-/// Where the clock region starts.
-///
-/// Its own cache line, away from the constants: the constants are read once
-/// and the clock is read constantly, and sharing a line would have every read
-/// of one pull the other.
+/// The clock region's own cache line: it is read constantly and the constants once, so they share
+/// none.
 const CLOCK_AT: usize = 64;
 
 /// Byte offsets within the clock region, which is also the ABI.
@@ -83,31 +62,19 @@ mod clock {
     pub(super) const FRACTION: usize = 16;
     /// The counter reading `BASE_NS` belongs to.
     pub(super) const LAST_TICKS: usize = 24;
-    /// The conversion's multiplier.
     pub(super) const MULTIPLIER: usize = 32;
-    /// The conversion's shift.
     pub(super) const SHIFT: usize = 40;
 }
 
-/// The one page. `None` until the global ABI page is built at boot; present
-/// even when the clock is uncalibrated or revoked.
-///
-/// Global rather than per-process (D-152): every program reads the same clock,
-/// and a page each would be a page each to keep in step.
+/// The one global page: `None` until built at boot, and present even when the clock is
+/// uncalibrated or revoked. Every program reads the same clock, so one page keeps them in step.
 static PAGE: SpinLock<Option<SharedBytes>> = SpinLock::new(None);
 
-/// The mode the page must show when an installation temporarily returns it.
-///
-/// `install` moves the owner out while it maps the frame. A revocation may
-/// interrupt that allocation window, so the desired mode cannot live only in
-/// the temporarily absent page.
+/// The mode the page must show when an installation returns it. A revocation may interrupt the
+/// window while `install` has the owner moved out, so the mode cannot live only in the page.
 static DESIRED_MODE: AtomicU32 = AtomicU32::new(MODE_NONE);
 
-/// Build the page and write its constants. Once, at boot.
-///
-/// The constants go in **before** anything can map it, which is what lets that
-/// region have no sequence counter: a reader cannot see a half-written value
-/// it could never reach.
+/// Build the page and write its constants, once at boot, before anything can map it.
 pub(crate) fn init(counter_hz: u64) -> bool {
     let Some(mut run) = mm::allocate_contiguous(1, 1) else {
         return false;
@@ -125,12 +92,7 @@ pub(crate) fn init(counter_hz: u64) -> bool {
     true
 }
 
-/// Write the clock region, or revoke it.
-///
-/// `mode` is what a caller is really choosing: [`MODE_COUNTER`] publishes the
-/// conversion below, and [`MODE_NONE`] tells every reader to ask instead. Both
-/// go through the same sequence-counter protocol, because a revocation a
-/// reader half-sees is worse than one it does not see at all.
+/// Whether [`publish`] wrote the page or found it absent.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a deferred publication must be observed"]
 pub(crate) enum Publication {
@@ -138,11 +100,15 @@ pub(crate) enum Publication {
     Deferred,
 }
 
+/// Write the clock region: [`MODE_COUNTER`] publishes the conversion, and [`MODE_NONE`] revokes it.
+///
+/// Both go through the sequence protocol, because a revocation a reader half-sees is worse than one
+/// it does not see at all.
 pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publication {
     DESIRED_MODE.store(mode, Ordering::Release);
     let mut guard = PAGE.lock_leaf();
-    // Inside the guard, because the question is whether the window below can
-    // be preempted; counted rather than refused, which the caller cannot act on.
+    // Inside the guard, because the question is whether the window can be preempted; counted,
+    // since the caller cannot act on a refusal.
     #[cfg(feature = "selftest")]
     if wost::arch::current::interrupt::are_enabled() {
         WINDOW_LEFT_PREEMPTIBLE.fetch_add(1, Ordering::Relaxed);
@@ -160,8 +126,7 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
     if Seq::is_stable(read_u32(page, CLOCK_AT + clock::SEQ)) {
         WINDOW_NEVER_OPENED.fetch_add(1, Ordering::Relaxed);
     }
-    // The first of Linux's two barriers: on x86 a compiler barrier and no
-    // instruction, written out so another port does not rediscover it.
+    // The first of Linux's two barriers, only a compiler barrier on x86, written out for any port.
     fence(Ordering::Release);
 
     write_u32(page, CLOCK_AT + clock::MODE, mode);
@@ -177,20 +142,18 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
     Publication::Published
 }
 
-/// Map the page into `space`, read-only.
+/// Map the page into `space`, never writable or executable.
 ///
-/// **Not writable and not executable**, which is the whole of what a program
-/// may do with it. `map_shared` adds `USER` and writes no owned bit, so a
-/// program cannot free the frame and an unmap cannot return it.
+/// `map_shared` adds `USER` and writes no owned bit, so a program cannot free the frame and an
+/// unmap cannot return it.
 ///
 /// # Errors
 ///
-/// [`TimePageError::Absent`] if the page could not be built at boot, which is a
-/// machine that ran out of memory before its first program; otherwise whatever
+/// [`TimePageError::Absent`] if the page could not be built at boot, otherwise whatever
 /// [`AddressSpace::map_shared`] refused.
 pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
-    // Moved out because mapping may allocate under the leaf; a publication
-    // during the gap records a mode that restore applies (D-85, D-115).
+    // Moved out because mapping may allocate, which no leaf guard may span; a publication during
+    // the gap records a mode that `restore` applies.
     let taken = PAGE.lock_leaf().take();
     let Some(shared) = taken else {
         return Err(TimePageError::Absent);
@@ -214,10 +177,7 @@ fn restore(shared: SharedBytes) {
 /// Why a program could not be shown the time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TimePageError {
-    /// There is no page: the machine could not spare a frame at boot.
-    ///
-    /// A refusal rather than a silent omission. The ABI says the page is at
-    /// [`TIME`], and a program that reads it and faults has been lied to.
+    /// No frame could be spared at boot; refused, since the ABI promises the page at [`TIME`].
     Absent,
     /// The mapping itself was refused.
     Map(MapError),

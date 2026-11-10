@@ -1,14 +1,8 @@
 ---------------------------- MODULE RingMemory ----------------------------
-(***************************************************************************)
-(* The shared-memory and terminal-ownership composition of D-229.          *)
-(*                                                                         *)
-(* `Ring.tla` keeps admission capacity deliberately anonymous. This model  *)
-(* gives two operations identities and carries the D-221 release/acquire   *)
-(* publication edge through admission, normal completion, cancellation,   *)
-(* retirement and userspace reaping. The same message state is reset from  *)
-(* submission to completion, so both queue directions take the same weak-  *)
-(* memory path.                                                            *)
-(***************************************************************************)
+\* Shared memory and terminal ownership: operations with identities carry the release/acquire
+\* publication edge through admission, completion, cancellation, retirement and reaping.
+\* The message state is reset from submission to completion, so both queue directions take the
+\* same weak-memory path.
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS
@@ -89,10 +83,8 @@ Init ==
     /\ reported       = 0
     /\ reaped         = 0
 
-(***************************************************************************)
-(* Producer program order issues the payload before its tail. Visibility   *)
-(* remains independent until the release edge below constrains it.         *)
-(***************************************************************************)
+\* Program order issues the payload before its tail; visibility stays independent until the
+\* release edge below constrains it.
 IssuePayload(op) ==
     /\ kind[op] \in {"submission", "completion"}
     /\ ~payloadIssued[op]
@@ -125,11 +117,8 @@ IssueSubmissionTail(op) ==
         reservations, posted, reportCount, reported, reaped
         >>
 
-(***************************************************************************)
-(* A terminal tail is the commit point: until it is issued the operation   *)
-(* and its reservation remain owned. `SingleTerminal = FALSE` is the       *)
-(* deliberate duplicate-publication mutation.                              *)
-(***************************************************************************)
+\* A terminal tail is the commit point: until it is issued the operation and its reservation
+\* remain owned. `SingleTerminal = FALSE` is the deliberate duplicate-publication mutation.
 IssueCompletionTail(op) ==
     /\ kind[op] = "completion"
     /\ payloadIssued[op]
@@ -150,10 +139,8 @@ IssueCompletionTail(op) ==
         payloadRead, staleReads, admitted, cause, reaped
         >>
 
-(***************************************************************************)
-(* Release orders visibility, not issue. Removing this dependency permits  *)
-(* the peer to observe a new tail while the payload is still old.          *)
-(***************************************************************************)
+\* Release orders visibility: without this dependency the peer can observe a new tail while the
+\* payload is still old.
 MakeTailVisible(op) ==
     /\ tailIssued[op]
     /\ ~tailVisible[op]
@@ -175,10 +162,8 @@ AcquireTail(op) ==
         reservations, posted, reportCount, reported, reaped
         >>
 
-(***************************************************************************)
-(* Without acquire the compiler/CPU may perform the payload read early.     *)
-(* It becomes an actual stale observation only if the tail is later read.  *)
-(***************************************************************************)
+\* Without acquire the compiler or CPU may read the payload early; that read is a stale
+\* observation only if the tail is later read.
 ReadPayload(op) ==
     /\ kind[op] \in {"submission", "completion"}
     /\ ~payloadRead[op]
@@ -193,10 +178,8 @@ ReadPayload(op) ==
         reportCount, reported, reaped
         >>
 
-(***************************************************************************)
-(* Admission and reservation are one transition. The message state is      *)
-(* reset for the completion which this operation is now owed.              *)
-(***************************************************************************)
+\* Admission and reservation are one transition, and the message state is reset for the
+\* completion this operation is now owed.
 Admit(op) ==
     /\ kind[op] = "submission"
     /\ tailRead[op]
@@ -268,10 +251,8 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-(***************************************************************************)
-(* A speculative/early payload read is harmless only until a new tail is   *)
-(* observed. Release plus acquire makes their conjunction unreachable.     *)
-(***************************************************************************)
+\* An early payload read is harmless only until a new tail is observed; release plus acquire
+\* makes their conjunction unreachable.
 NoStalePayload ==
     \A op \in Operations: ~(tailRead[op] /\ op \in staleReads)
 

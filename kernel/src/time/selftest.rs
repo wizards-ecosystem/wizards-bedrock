@@ -1,7 +1,8 @@
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use timebase::Timebase;
 use wost::arch::current::{cpu, interrupt};
+use wost::sync::Injection;
 use x86_pit::calibrate;
 
 use super::{
@@ -28,8 +29,6 @@ pub(super) static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "selftest")]
 impl Refusal {
     /// Every refusal, so a check can sweep them without a list of its own.
-    ///
-    /// D-161: the list a test sweeps can itself fall behind.
     pub(crate) const ALL: [Self; 7] = [
         Self::None,
         Self::CrystalStepped,
@@ -43,9 +42,7 @@ impl Refusal {
 
 /// Every refusal reads back as the one that was recorded.
 ///
-/// A diagnosis that names the wrong guard is worse than one that names none,
-/// and the way it comes to name the wrong guard is a discriminant and a `match`
-/// arm drifting apart — which nothing else here would notice (D-176).
+/// Nothing else notices a discriminant and its `match` arm drifting apart to name the wrong guard.
 #[cfg(feature = "selftest")]
 pub(crate) fn every_refusal_reads_back_as_itself() -> bool {
     let held = LAST_REFUSAL.load(Ordering::Relaxed);
@@ -70,15 +67,13 @@ pub(crate) fn adjacent_readings_for_test() -> (u64, u64) {
 }
 
 #[cfg(feature = "selftest")]
-pub(super) static REFUSE_CALIBRATION: AtomicBool = AtomicBool::new(false);
+pub(super) static REFUSE_CALIBRATION: Injection = Injection::new();
 
 /// Run a check through the production uncalibrated-clock predicate.
 #[cfg(feature = "selftest")]
 pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
     let disabled = interrupt::disable();
-    let refused = REFUSE_CALIBRATION.swap(true, Ordering::AcqRel);
-    let result = check();
-    REFUSE_CALIBRATION.store(refused, Ordering::Release);
+    let result = REFUSE_CALIBRATION.with(true, check);
     disabled.restore();
     result
 }
@@ -131,8 +126,7 @@ pub(crate) fn expiries() -> u64 {
     EXPIRIES.load(Ordering::Relaxed)
 }
 
-/// The measured rate of the APIC timer's divided clock; zero if calibration
-/// declined.
+/// The measured rate of the APIC timer's divided clock; zero if calibration declined.
 #[cfg(feature = "selftest")]
 pub(crate) fn apic_hz() -> u64 {
     APIC_HZ.load(Ordering::Relaxed)

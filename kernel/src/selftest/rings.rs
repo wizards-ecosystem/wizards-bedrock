@@ -168,18 +168,15 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
     };
     queue.post_submission_for_test(
         4,
-        queue::Queue::about_at(
-            queue::Opcode::Read,
-            0xC003,
-            file,
-            u64::from(u32::MAX),
-            512,
-            16,
-        ),
+        queue::Submission::about(queue::Opcode::Read, 0xC003, file, 512)
+            .offset(u64::from(u32::MAX))
+            .length(16),
     );
     queue.post_submission_for_test(
         5,
-        queue::Queue::about_at(queue::Opcode::Read, 0xC004, file, 1u64 << 32, 528, 16),
+        queue::Submission::about(queue::Opcode::Read, 0xC004, file, 528)
+            .offset(1u64 << 32)
+            .length(16),
     );
     queue.publish_tail_for_test(6);
     let before_read = queue.served_count();
@@ -223,14 +220,8 @@ fn open_the_small_file_in(
     }
     queue.post_submission_for_test(
         slot,
-        queue::Queue::about_at(
-            queue::Opcode::OpenAt,
-            0x0F11,
-            directory,
-            0,
-            0,
-            SMALL_NAME.len() as u32,
-        ),
+        queue::Submission::about(queue::Opcode::OpenAt, 0x0F11, directory, 0)
+            .length(SMALL_NAME.len() as u32),
     );
     queue.publish_tail_for_test(slot as u32 + 1);
     let before = queue.served_count();
@@ -263,14 +254,8 @@ pub(super) fn a_completion_carries_a_file_handle() -> bool {
     }
     queue.post_submission_for_test(
         0,
-        queue::Queue::about_at(
-            queue::Opcode::OpenAt,
-            0x09E4,
-            directory,
-            0,
-            0,
-            SMALL_NAME.len() as u32,
-        ),
+        queue::Submission::about(queue::Opcode::OpenAt, 0x09E4, directory, 0)
+            .length(SMALL_NAME.len() as u32),
     );
     queue.publish_tail_for_test(1);
 
@@ -325,14 +310,8 @@ pub(super) fn opening_a_node_does_not_restore_universal_rights() -> bool {
     ] {
         queue.post_submission_for_test(
             slot,
-            queue::Queue::about_at(
-                queue::Opcode::OpenAt,
-                token,
-                directory,
-                0,
-                at,
-                name.len() as u32,
-            ),
+            queue::Submission::about(queue::Opcode::OpenAt, token, directory, at)
+                .length(name.len() as u32),
         );
     }
     queue.publish_tail_for_test(2);
@@ -377,7 +356,9 @@ pub(super) fn a_read_is_a_submission_with_its_own_offset() -> bool {
     ] {
         queue.post_submission_for_test(
             slot,
-            queue::Queue::about_at(queue::Opcode::Read, token, handle, offset, at, length),
+            queue::Submission::about(queue::Opcode::Read, token, handle, at)
+                .offset(offset)
+                .length(length),
         );
     }
     queue.publish_tail_for_test(3);
@@ -451,14 +432,8 @@ pub(super) fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bo
     let cancelled = {
         ring.post_submission_for_test(
             0,
-            queue::Queue::about_at(
-                queue::Opcode::OpenAt,
-                0x0A71,
-                directory,
-                0,
-                0,
-                SMALL_NAME.len() as u32,
-            ),
+            queue::Submission::about(queue::Opcode::OpenAt, 0x0A71, directory, 0)
+                .length(SMALL_NAME.len() as u32),
         );
         ring.publish_tail_for_test(1);
         let admitted = ring.serve(&table) == 0
@@ -491,14 +466,8 @@ pub(super) fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bo
 
     retry.post_submission_for_test(
         0,
-        queue::Queue::about_at(
-            queue::Opcode::OpenAt,
-            0x0A81,
-            directory,
-            0,
-            0,
-            SMALL_NAME.len() as u32,
-        ),
+        queue::Submission::about(queue::Opcode::OpenAt, 0x0A81, directory, 0)
+            .length(SMALL_NAME.len() as u32),
     );
     retry.publish_tail_for_test(1);
     let admitted_for_retry = retry.serve(&table) == 0
@@ -560,14 +529,9 @@ pub(super) fn file_work_pressure_is_bounded_at_admission() -> bool {
     for slot in 0..8 {
         work.post_submission_for_test(
             slot,
-            queue::Queue::about_at(
-                queue::Opcode::Read,
-                0x8100 + slot as u32,
-                handle,
-                slot as u64,
-                0,
-                16,
-            ),
+            queue::Submission::about(queue::Opcode::Read, 0x8100 + slot as u32, handle, 0)
+                .offset(slot as u64)
+                .length(16),
         );
     }
     work.publish_tail_for_test(8);
@@ -576,7 +540,7 @@ pub(super) fn file_work_pressure_is_bounded_at_admission() -> bool {
 
     overflow.post_submission_for_test(
         0,
-        queue::Queue::about_at(queue::Opcode::Read, 0x8199, handle, 0, 0, 16),
+        queue::Submission::about(queue::Opcode::Read, 0x8199, handle, 0).length(16),
     );
     overflow.publish_tail_for_test(1);
     let ninth_refused = overflow.serve(&table) == 1
@@ -617,7 +581,7 @@ pub(super) fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() 
     };
     ring.post_submission_for_test(
         0,
-        queue::Queue::about_at(queue::Opcode::Read, 0xD200, handle, 0, 64, 16),
+        queue::Submission::about(queue::Opcode::Read, 0xD200, handle, 64).length(16),
     );
     ring.publish_tail_for_test(1);
 
@@ -803,7 +767,7 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
     for (slot, token, handle, at, length, _) in asked {
         queue.post_submission_for_test(
             slot,
-            queue::Queue::about_at(queue::Opcode::OpenAt, token, handle, 0, at, length),
+            queue::Submission::about(queue::Opcode::OpenAt, token, handle, at).length(length),
         );
     }
     queue.publish_tail_for_test(asked.len() as u32);
@@ -827,17 +791,17 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
     // after I/O (D-173).
     queue.post_submission_for_test(
         4,
-        queue::Queue::about_at(queue::Opcode::Read, 0xD5, unreadable, 0, 0, 16),
+        queue::Submission::about(queue::Opcode::Read, 0xD5, unreadable, 0).length(16),
     );
     queue.post_submission_for_test(
         5,
-        queue::Queue::about_at(queue::Opcode::Read, 0xD6, unreadable, 0, 4090, 16),
+        queue::Submission::about(queue::Opcode::Read, 0xD6, unreadable, 4090).length(16),
     );
     // The one that reaches the bound: the device must still not be asked, or
     // the bound is checked with the work already done.
     queue.post_submission_for_test(
         6,
-        queue::Queue::about_at(queue::Opcode::Read, 0xD7, readable, 0, 4090, 16),
+        queue::Submission::about(queue::Opcode::Read, 0xD7, readable, 4090).length(16),
     );
     queue.publish_tail_for_test(7);
     let served = queue.serve(&table) == 3;
@@ -866,14 +830,8 @@ fn open_the_small_file(
     }
     queue.post_submission_for_test(
         0,
-        queue::Queue::about_at(
-            queue::Opcode::OpenAt,
-            1,
-            directory,
-            0,
-            0,
-            SMALL_NAME.len() as u32,
-        ),
+        queue::Submission::about(queue::Opcode::OpenAt, 1, directory, 0)
+            .length(SMALL_NAME.len() as u32),
     );
     queue.publish_tail_for_test(1);
     let before = queue.served_count();

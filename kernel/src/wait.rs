@@ -1,16 +1,9 @@
-//! Waiting for something that has not happened yet.
+//! Waiting for an event: a waiting thread is not runnable and nothing is armed for it.
 //!
-//! A [`WaitQueue`] is the other half of `thread::sleep_ms`: a sleep names a
-//! time to come back at, this names an event. A waiting thread is not
-//! runnable and nothing is armed for it, so a machine whose only outstanding
-//! business is a wait takes no interrupts until the event arrives.
-//!
-//! The waiter set is a bitmask of slots in the queue itself: the waker is an
-//! interrupt handler, where D-55 forbids the heap.
-//!
-//! A queue's lock and `THREADS` are never held together. What makes
-//! registering and blocking one step is the interrupt flag, clear across
-//! both; SMP owes this pair a second look.
+//! The waiter set is a bitmask of slots in the queue itself, because the waker is an interrupt
+//! handler, which may not use the heap. A queue's lock and `THREADS` are never held together.
+//! The interrupt flag, clear across registering and blocking, makes them one step; SMP owes this
+//! pair a second look.
 
 use wost::sync::SpinLock;
 
@@ -39,8 +32,8 @@ impl WaitQueue {
 
     /// Wait until [`wake_all`](Self::wake_all) is called.
     ///
-    /// A wake may be someone else's, so every caller re-checks in a loop. The
-    /// [`ThreadContext`] is what a handler cannot mint (D-62).
+    /// A wake may be someone else's, so every caller re-checks in a loop. The [`ThreadContext`] is
+    /// what a handler cannot mint.
     ///
     /// # Panics
     ///
@@ -51,12 +44,12 @@ impl WaitQueue {
 
     /// Check `ready` under the lock `wake_all` takes, and set this thread's bit only if false.
     ///
-    /// The check and the registration both happen with the interrupt
-    /// flag clear, which on one CPU makes them one step. Under SMP the flag
-    /// excludes nothing; full barriers on both sides must replace it (D-70).
+    /// The check and the registration both happen with the interrupt flag clear, which on one CPU
+    /// makes them one step. Under SMP the flag excludes nothing; full barriers on both sides must
+    /// replace it.
     ///
-    /// `ready` runs with interrupts off and a queue lock held, so it must read
-    /// state and nothing else.
+    /// `ready` runs with interrupts off and a queue lock held, so it must read state and nothing
+    /// else.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
         let slot = thread::current_slot();
         let mut saved = wost::arch::current::interrupt::disable();
@@ -64,8 +57,7 @@ impl WaitQueue {
         let registered = {
             let mut waiters = self.waiters.lock(context);
             if ready() {
-                // Nothing to wait for after all, and nothing registered — so
-                // no stale bit is left behind for a later wake to trip over.
+                // Nothing registered, so no stale bit is left for a later wake to trip over.
                 false
             } else {
                 *waiters |= 1 << slot;
@@ -75,15 +67,15 @@ impl WaitQueue {
 
         if registered {
             thread::block(context, &mut saved);
-            // Woken, or never left the CPU; either way a bit left set would
-            // name this thread in someone else's wake.
+            // Woken or not, a bit left set would name this thread in someone else's wake.
             let mut waiters = self.waiters.lock(context);
             *waiters &= !(1 << slot);
         }
         saved.restore();
     }
 
-    /// Register and wait through a syscall frame until an event or deadline.
+    /// Check `ready` under the lock `wake_all` takes and, only if false, wait through a syscall
+    /// frame until a wake or `until`, reporting whether this thread switched away.
     ///
     /// `ready` has the same atomic-only contract as [`wait_unless`](Self::wait_unless).
     pub(crate) fn wait_from_trap_until(
@@ -112,9 +104,7 @@ impl WaitQueue {
         switched
     }
 
-    /// Make every thread waiting here runnable, and report how many.
-    ///
-    /// Safe from a trap handler, and meant to be.
+    /// Make every thread waiting here runnable, and report how many; safe from a trap handler.
     pub(crate) fn wake_all(&self) -> usize {
         let waiting = {
             let mut waiters = self.waiters.lock_leaf();
