@@ -1,25 +1,5 @@
 //! Just enough ELF64 to load a program: the header, and the segments.
 //!
-//! The kernel loads a *user program* and cares about program headers and an
-//! entry point, in `no_std`, with no allocator and no ability to panic on
-//! hostile input. `xtask`'s image builder round-trips what it writes through
-//! this crate, which is the other caller.
-//!
-//! `xtask/src/elf.rs` verifies the linked kernel after every build (D-40) and
-//! now reads the file header and the program headers through this crate
-//! (D-158). It carried its own transcription of the magic, the class byte and
-//! every header offset for two phases; they agreed, nothing checked that they
-//! did, and a repair to one copy left the other two validations short — which
-//! is how `x86-tables` and `trap-cause` came to disagree about vector 28.
-//! What stays there is the **section-entry** and string-table parser: a loader
-//! never walks either. This crate exposes only their four file-header fields,
-//! so the host verifier does not privately transcribe part of the header.
-//!
-//! **Nothing here allocates, indexes unchecked, or panics.** The bytes may
-//! come from an initrd a program supplied, so every read is bounds-checked
-//! against the slice and every field that could be a length is checked against
-//! what remains.
-//!
 //! # Examples
 //!
 //! ```
@@ -63,7 +43,8 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-/// What every ELF begins with.
+use core::fmt;
+
 pub const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 
 /// `ELFCLASS64`.
@@ -72,10 +53,8 @@ pub const CLASS_64: u8 = 2;
 /// `ELFDATA2LSB`.
 pub const LITTLE_ENDIAN: u8 = 1;
 
-/// Bytes of an ELF64 file header.
 pub const HEADER_BYTES: usize = 64;
 
-/// Bytes of an ELF64 program header.
 pub const PROGRAM_HEADER_BYTES: usize = 56;
 
 /// `EM_X86_64`, the only machine this loader will run.
@@ -90,12 +69,7 @@ const EXECUTABLE: u16 = 2;
 #[non_exhaustive]
 pub enum ElfError {
     /// Shorter than the structure being read.
-    Truncated {
-        /// Bytes wanted.
-        wanted: usize,
-        /// Bytes there.
-        available: usize,
-    },
+    Truncated { wanted: usize, available: usize },
     /// Does not begin with [`MAGIC`].
     NotAnElf,
     /// Not `ELFCLASS64`.
@@ -108,36 +82,23 @@ pub enum ElfError {
     WrongType(u16),
     /// The file-header version is not `EV_CURRENT`.
     WrongVersion(u32),
-    /// Not built for this machine.
-    ///
-    /// An aarch64 or i386 ELF64 parses cleanly by every other rule here and
-    /// yields segments full of instructions this CPU would fault on. The image
-    /// builder writes `EM_X86_64` and nothing read it back (D-105).
+    /// Not built for this machine, though every other rule here may pass.
     WrongMachine(u16),
     /// The file-header size is not [`HEADER_BYTES`].
     WrongHeaderSize(u16),
-    /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`].
-    ///
-    /// Refused rather than honoured: a different size means a different
-    /// format, and walking it with this one's field offsets would read
-    /// whatever happened to be there.
+    /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`], so it is another format.
     WrongProgramHeaderSize(u16),
     /// The program-header table does not fit inside the image.
-    ProgramHeadersOutOfRange {
-        /// Where the table claims to start.
-        offset: u64,
-        /// How many entries it claims.
-        count: u16,
-    },
+    ProgramHeadersOutOfRange { offset: u64, count: u16 },
 }
 
-impl core::fmt::Display for ElfError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ElfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Truncated { wanted, available } => {
                 write!(f, "wanted {wanted} bytes and there are {available}")
             }
-            Self::NotAnElf => core::fmt::Write::write_str(f, "does not begin with the elf magic"),
+            Self::NotAnElf => f.write_str("does not begin with the elf magic"),
             Self::NotSixtyFourBit(class) => write!(f, "elf class {class} is not 64-bit"),
             Self::NotLittleEndian(data) => {
                 write!(f, "elf data encoding {data} is not little-endian")
@@ -174,14 +135,13 @@ impl core::error::Error for ElfError {}
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum SegmentKind {
-    /// `PT_NULL` — ignore it.
+    /// `PT_NULL`.
     Null,
-    /// `PT_LOAD` — the only kind a loader places in memory.
+    /// `PT_LOAD`, the only kind a loader places in memory.
     Load,
     /// `PT_DYNAMIC`.
     Dynamic,
-    /// `PT_INTERP` — the program wants a dynamic linker, which this kernel
-    /// does not have.
+    /// `PT_INTERP`, a request for a dynamic linker this kernel does not have.
     Interpreter,
     /// `PT_NOTE`.
     Note,
@@ -189,7 +149,7 @@ pub enum SegmentKind {
     ProgramHeaders,
     /// `PT_TLS`.
     ThreadLocal,
-    /// Anything else, by value. `PT_GNU_STACK` and friends land here.
+    /// Anything else by value, such as `PT_GNU_STACK`.
     Other(u32),
 }
 
@@ -208,11 +168,7 @@ impl SegmentKind {
         }
     }
 
-    /// The `p_type` field this decodes from.
-    ///
-    /// The inverse of [`from_bits`](Self::from_bits), which makes the pair
-    /// round-trippable and so testable: a decode table with no encode side is
-    /// a table nothing can check against itself.
+    /// The `p_type` field, the inverse of [`from_bits`](Self::from_bits) so the table is checkable.
     pub const fn bits(self) -> u32 {
         match self {
             Self::Null => 0,
@@ -247,15 +203,11 @@ impl Segment {
     /// `PF_R`.
     pub const READ: u32 = 1 << 2;
 
-    /// What it describes.
     pub const fn kind(self) -> SegmentKind {
         self.kind
     }
 
-    /// The raw `p_flags` field.
-    ///
-    /// The three predicates below are what a loader wants. This is for a
-    /// *verifier*, which has to report the value it objected to.
+    /// The raw `p_flags` field, for a verifier that reports the value it objected to.
     pub const fn flags(self) -> u32 {
         self.flags
     }
@@ -265,23 +217,19 @@ impl Segment {
         self.offset
     }
 
-    /// Where in memory it goes.
     pub const fn address(self) -> u64 {
         self.address
     }
 
-    /// Bytes to copy from the file.
     pub const fn file_size(self) -> u64 {
         self.file_size
     }
 
-    /// Bytes to occupy in memory. Anything past `file_size` is zero — which is
-    /// how `.bss` costs no file space (D-40).
+    /// Bytes to occupy in memory, zero past `file_size`.
     pub const fn memory_size(self) -> u64 {
         self.memory_size
     }
 
-    /// What alignment it asks for.
     pub const fn alignment(self) -> u64 {
         self.alignment
     }
@@ -293,35 +241,24 @@ impl Segment {
                 && self.address % self.alignment == self.offset % self.alignment
     }
 
-    /// Whether it may be read.
     pub const fn is_readable(self) -> bool {
         self.flags & Self::READ != 0
     }
 
-    /// Whether it may be written.
     pub const fn is_writable(self) -> bool {
         self.flags & Self::WRITE != 0
     }
 
-    /// Whether it may be executed.
     pub const fn is_executable(self) -> bool {
         self.flags & Self::EXECUTE != 0
     }
 
-    /// Whether it asks to be both writable and executable.
-    ///
-    /// The one combination this kernel never maps (D-12, D-32). A loader is
-    /// expected to refuse the image rather than drop a permission, because an
-    /// image that wants W+X is not an image that works without it.
+    /// Whether it asks for W+X, which a loader refuses rather than dropping a permission.
     pub const fn is_write_execute(self) -> bool {
         self.is_writable() && self.is_executable()
     }
 
-    /// Whether its file contents fit inside an image of `bytes` bytes.
-    ///
-    /// Separate from parsing because a header is well formed whatever it
-    /// points at: this is the question a *loader* must ask before copying, and
-    /// it is checked here so no caller has to remember the overflow.
+    /// Whether its file contents fit inside an image of `bytes` bytes, without overflow.
     pub const fn contents_fit(self, bytes: usize) -> bool {
         match self.offset.checked_add(self.file_size) {
             Some(end) => end <= bytes as u64,
@@ -330,18 +267,12 @@ impl Segment {
     }
 
     /// Whether it claims more file bytes than memory to put them in.
-    ///
-    /// Malformed, and worth its own question: a loader that copied
-    /// `file_size` into a `memory_size` region would write past the mapping.
     pub const fn is_oversized(self) -> bool {
         self.file_size > self.memory_size
     }
 }
 
-/// The file header's description of the section table.
-///
-/// This is metadata, not a validated table. Program loading never needs to
-/// walk sections; the host image verifier does, and owns that parser (D-213).
+/// The file header's unvalidated description of the section table, for the host verifier.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SectionTable {
     offset: u64,
@@ -356,12 +287,10 @@ impl SectionTable {
         self.offset
     }
 
-    /// Bytes in each section header.
     pub const fn entry_size(self) -> u16 {
         self.entry_size
     }
 
-    /// Number of section headers.
     pub const fn count(self) -> u16 {
         self.count
     }
@@ -374,28 +303,17 @@ impl SectionTable {
 
 /// A parsed ELF64 image, borrowing the bytes it came from.
 #[derive(Clone, Copy, Debug)]
-pub struct Elf<'a> {
-    bytes: &'a [u8],
+pub struct Elf<'bytes> {
+    bytes: &'bytes [u8],
     entry: u64,
     program_offset: u64,
     program_count: u16,
     sections: SectionTable,
 }
 
-impl<'a> Elf<'a> {
-    /// Read the file header, or say why it is not one.
-    ///
-    /// Validates the identification, current format versions, executable type,
-    /// machine, file-header size, program-header entry size, and that the
-    /// program-header table lies inside the image. It does **not** validate the
-    /// segments: a caller that only wants the entry point should not pay for a
-    /// walk, and a loader has to look at each one anyway.
-    ///
-    /// # Errors
-    ///
-    /// See [`ElfError`] — including [`ElfError::WrongMachine`], which this
-    /// checks and this block did not name (D-145).
-    pub fn parse(bytes: &'a [u8]) -> Result<Self, ElfError> {
+impl<'bytes> Elf<'bytes> {
+    /// Validate the file header and program-header table bounds, leaving segments to the loader.
+    pub fn parse(bytes: &'bytes [u8]) -> Result<Self, ElfError> {
         let header = take(bytes, 0, HEADER_BYTES)?;
         if header.get(..4) != Some(&MAGIC) {
             return Err(ElfError::NotAnElf);
@@ -422,8 +340,6 @@ impl<'a> Elf<'a> {
         }
 
         let entry = read_u64(header, 24)?;
-        // Format checks do not reject a well-formed image for another
-        // architecture.
         let machine = read_u16(header, 18)?;
         if machine != MACHINE_X86_64 {
             return Err(ElfError::WrongMachine(machine));
@@ -451,8 +367,6 @@ impl<'a> Elf<'a> {
             return Err(ElfError::WrongProgramHeaderSize(entry_size));
         }
 
-        // Checked without overflowing: a `p_phoff` near `u64::MAX` with a
-        // plausible count is exactly what a hostile image looks like.
         let span = (program_count as u64) * (PROGRAM_HEADER_BYTES as u64);
         let fits = program_offset
             .checked_add(span)
@@ -473,27 +387,20 @@ impl<'a> Elf<'a> {
         })
     }
 
-    /// Where execution begins.
     pub const fn entry(&self) -> u64 {
         self.entry
     }
 
-    /// How many program headers there are.
     pub const fn segment_count(&self) -> u16 {
         self.program_count
     }
 
-    /// The section-table fields from the file header.
     pub const fn section_table(&self) -> SectionTable {
         self.sections
     }
 
-    /// Every program header, in order.
-    ///
-    /// Infallible by then: `parse` already established that the whole table is
-    /// inside the image, so the walk cannot run off the end and needs no
-    /// per-entry error.
-    pub fn segments(&self) -> impl Iterator<Item = Segment> + use<'a> {
+    /// Every program header, in order, inside the table `parse` already bounded.
+    pub fn segments(&self) -> impl Iterator<Item = Segment> + use<'bytes> {
         let bytes = self.bytes;
         let base = self.program_offset as usize;
         (0..self.program_count as usize).filter_map(move |index| {

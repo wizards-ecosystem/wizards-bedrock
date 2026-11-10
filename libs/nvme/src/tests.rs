@@ -141,9 +141,9 @@ fn every_disabled_preparation_access_failure_returns_the_exact_retirement_owner(
 fn identify(blocks: u64) -> [u8; NAMESPACE_IDENTIFY_BYTES] {
     let mut bytes = [0u8; NAMESPACE_IDENTIFY_BYTES];
     bytes[..8].copy_from_slice(&blocks.to_le_bytes());
-    bytes[FORMAT_COUNT_OFFSET] = MAX_LBA_FORMATS - 1;
+    bytes[identify::FORMAT_COUNT] = MAX_LBA_FORMATS - 1;
     for format in 0..MAX_LBA_FORMATS {
-        let offset = LBA_FORMATS_OFFSET + usize::from(format) * LBA_FORMAT_BYTES;
+        let offset = identify::LBA_FORMATS + usize::from(format) * LBA_FORMAT_BYTES;
         bytes[offset + 2] = SUPPORTED_BLOCK_SHIFT;
     }
     bytes
@@ -216,12 +216,7 @@ fn closed_dma_state_cannot_publish_or_complete() {
     }
 }
 
-/// A queue holds one fewer command than it has entries.
-///
-/// `012` §3 singles this out: a full queue and an empty one have the same
-/// head and tail, so one slot is always unused — and **the symptom of
-/// getting it wrong is a hang**, not an error. There is no controller
-/// response and nothing to log.
+/// Getting this wrong is a hang rather than an error, with nothing to log.
 #[test]
 fn a_queue_holds_one_fewer_command_than_it_has_entries() {
     for entries in [2u32, 3, 8, 64, 1024, 65536] {
@@ -231,10 +226,7 @@ fn a_queue_holds_one_fewer_command_than_it_has_entries() {
     }
 }
 
-/// The last slot is never taken, whatever the head is.
-///
-/// Exhaustive over every head and tail of a small queue, because the rule
-/// is about one specific pair out of every pair and a sample misses it.
+/// Exhaustive over every head and tail, because a sample misses the one pair the rule is about.
 #[test]
 fn a_queue_refuses_the_entry_that_would_make_full_look_empty() {
     let capacity = Capacity::new(4).expect("four entries");
@@ -247,7 +239,6 @@ fn a_queue_refuses_the_entry_that_would_make_full_look_empty() {
         }
     }
 
-    // And the count that follows from it: three, never four.
     let mut tail = 0;
     let mut admitted = 0;
     for _ in 0..capacity.entries() {
@@ -288,52 +279,38 @@ fn queue_indices_and_storage_bytes_are_exact() {
     );
 }
 
-/// Every capability field is read from its own bits.
-///
-/// Pairwise distinct values so no two fields can be swapped with this
-/// still passing (D-136), and every one of them changes what a correct
-/// driver does.
+/// Pairwise distinct values, so no two fields can be swapped with this still passing.
 #[test]
 fn every_capability_field_is_read_from_its_own_bits() {
     let bits =
         0x0000_0000_0000_00FFu64 | (0x0A << 24) | (0x3 << 32) | (1 << 37) | (1 << 48) | (5 << 52);
-    let cap = Capabilities::from_bits(bits);
+    let capabilities = Capabilities::from_bits(bits);
 
-    assert_eq!(cap.max_queue_entries(), 256);
-    assert_eq!(cap.timeout_ms(), 5_000);
-    assert_eq!(cap.doorbell_stride(), 3);
-    assert_eq!(cap.doorbell_bytes(), 32);
-    assert!(cap.supports_nvm_command_set());
-    assert_eq!(cap.min_page_shift(), 13);
-    assert_eq!(cap.max_page_shift(), 17);
+    assert_eq!(capabilities.max_queue_entries(), 256);
+    assert_eq!(capabilities.timeout_ms(), 5_000);
+    assert_eq!(capabilities.doorbell_stride(), 3);
+    assert_eq!(capabilities.doorbell_bytes(), 32);
+    assert!(capabilities.supports_nvm_command_set());
+    assert_eq!(capabilities.min_page_shift(), 13);
+    assert_eq!(capabilities.max_page_shift(), 17);
 
-    // Refused outside the reported range, or `CC.MPS` would hold a value
-    // the controller rejects and the ready bit would never come.
-    assert!(!cap.supports_page_size(4096), "below MPSMIN");
-    assert!(cap.supports_page_size(8192));
-    assert!(cap.supports_page_size(1 << 17));
-    assert!(!cap.supports_page_size(1 << 18), "above MPSMAX");
-    assert!(!cap.supports_page_size(6144), "not a power of two");
+    assert!(!capabilities.supports_page_size(4096), "below MPSMIN");
+    assert!(capabilities.supports_page_size(8192));
+    assert!(capabilities.supports_page_size(1 << 17));
+    assert!(!capabilities.supports_page_size(1 << 18), "above MPSMAX");
+    assert!(!capabilities.supports_page_size(6144), "not a power of two");
 }
 
-/// A controller that says nothing supports nothing.
-///
-/// The zeroed register, which is what a driver reads from an address it
-/// mapped wrongly — and it must not look like a working controller.
+/// The zeroed register is what a driver reads from an address it mapped wrongly.
 #[test]
 fn a_silent_controller_supports_nothing() {
-    let cap = Capabilities::from_bits(0);
-    assert!(!cap.supports_nvm_command_set());
-    assert_eq!(cap.timeout_ms(), 0);
-    assert_eq!(cap.max_queue_entries(), 1);
-    assert!(Capacity::new(cap.max_queue_entries()).is_none());
+    let capabilities = Capabilities::from_bits(0);
+    assert!(!capabilities.supports_nvm_command_set());
+    assert_eq!(capabilities.timeout_ms(), 0);
+    assert_eq!(capabilities.max_queue_entries(), 1);
+    assert!(Capacity::new(capabilities.max_queue_entries()).is_none());
 }
 
-/// Doorbells alternate, and the stride is the controller's.
-///
-/// A driver that assumes four bytes works on every controller reporting a
-/// stride of zero and silently writes a *different queue's* doorbell on
-/// any that does not.
 #[test]
 fn doorbells_alternate_and_use_the_controllers_stride() {
     let narrow = Capabilities::from_bits(0);
@@ -342,8 +319,6 @@ fn doorbells_alternate_and_use_the_controllers_stride() {
     assert_eq!(doorbell(narrow, 1, Doorbell::Submission), Some(0x1008));
     assert_eq!(doorbell(narrow, 1, Doorbell::Completion), Some(0x100C));
 
-    // Stride 2: sixteen bytes apart, so the I/O submission doorbell is at
-    // 0x1020 and a driver assuming four would write the admin pair.
     let wide = Capabilities::from_bits(2 << 32);
     assert_eq!(wide.doorbell_bytes(), 16);
     assert_eq!(doorbell(wide, 0, Doorbell::Submission), Some(0x1000));
@@ -351,7 +326,6 @@ fn doorbells_alternate_and_use_the_controllers_stride() {
     assert_eq!(doorbell(wide, 1, Doorbell::Completion), Some(0x1030));
 }
 
-/// A command puts every field where the specification says.
 #[test]
 fn a_command_puts_every_field_where_the_specification_says() {
     const LBA: u64 = 0x8877_6655_0000_0064;
@@ -363,11 +337,8 @@ fn a_command_puts_every_field_where_the_specification_says() {
 
     let bytes = command.to_bytes();
     assert_eq!(bytes.len(), 64);
-    // CDW0: opcode in the low byte, identifier in the high half.
     assert_eq!(&bytes[0..4], &[0x02, 0x00, 0xCD, 0xAB]);
-    // NSID.
     assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
-    // PRP1 at 24, PRP2 at 32 — the two most consequential offsets here.
     assert_eq!(&bytes[24..32], &0x1122_3344_5566_7000u64.to_le_bytes());
     assert_eq!(&bytes[32..40], &0u64.to_le_bytes());
     assert_eq!(&bytes[40..48], &LBA.to_le_bytes());
@@ -385,18 +356,12 @@ fn queue_negotiation_requests_and_proves_both_queue_domains() {
     assert!(Command::number_of_queues(1, 1, 0).is_none());
 }
 
-/// A completion is decoded field by field, and the phase tag is one bit.
-///
-/// The phase is how a new entry is recognised at all — there is no tail to
-/// read — so a decoder that took it from the wrong bit would see either
-/// every entry or none.
+/// The phase tag is one bit, and with no tail to read it is how a new entry is found.
 #[test]
 fn a_completion_is_decoded_field_by_field() {
     let mut bytes = [0u8; COMPLETION_ENTRY_BYTES];
     bytes[0..4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
-    // DW2: submission head 0x0011, submission queue 0x0022.
     bytes[8..12].copy_from_slice(&0x0022_0011u32.to_le_bytes());
-    // DW3: command id 0x3344, phase set, status 0x0005.
     bytes[12..16].copy_from_slice(&((0x0005u32 << 17) | (1 << 16) | 0x3344).to_le_bytes());
 
     let completion = Completion::from_bytes(bytes);
@@ -408,8 +373,6 @@ fn a_completion_is_decoded_field_by_field() {
     assert_eq!(completion.status, 5);
     assert!(!completion.is_success());
 
-    // The phase bit must not leak into the status, which is the mistake
-    // that makes every completion look like a failure.
     bytes[12..16].copy_from_slice(&(1u32 << 16).to_le_bytes());
     let clean = Completion::from_bytes(bytes);
     assert!(clean.phase);
@@ -540,7 +503,7 @@ fn a_namespace_has_at_least_one_logical_block() {
 fn every_format_selector_stays_inside_the_negotiated_table() {
     for last in 0..=u8::MAX {
         let mut bytes = identify(1);
-        bytes[FORMAT_COUNT_OFFSET] = last;
+        bytes[identify::FORMAT_COUNT] = last;
         let parsed = Namespace::parse(&bytes);
         if last < MAX_LBA_FORMATS {
             assert!(parsed.is_ok(), "zero-based format count {last}");
@@ -556,8 +519,8 @@ fn every_format_selector_stays_inside_the_negotiated_table() {
     for last in 0..MAX_LBA_FORMATS {
         for formatted in 0..=u8::MAX {
             let mut bytes = identify(1);
-            bytes[FORMAT_COUNT_OFFSET] = last;
-            bytes[FORMATTED_OFFSET] = formatted;
+            bytes[identify::FORMAT_COUNT] = last;
+            bytes[identify::FORMATTED] = formatted;
             let selected = formatted & 0x0f;
             let parsed = Namespace::parse(&bytes);
             if formatted & 0x80 != 0 {
@@ -590,7 +553,7 @@ fn every_format_selector_stays_inside_the_negotiated_table() {
 fn every_lbads_value_has_one_explicit_policy() {
     for block_shift in 0..=u8::MAX {
         let mut bytes = identify(1);
-        bytes[LBA_FORMATS_OFFSET + 2] = block_shift;
+        bytes[identify::LBA_FORMATS + 2] = block_shift;
         let parsed = Namespace::parse(&bytes);
         if block_shift == SUPPORTED_BLOCK_SHIFT {
             assert_eq!(
@@ -608,7 +571,8 @@ fn every_lbads_value_has_one_explicit_policy() {
 fn every_metadata_and_protection_setting_is_explicit() {
     for metadata in 0..=u16::MAX {
         let mut bytes = identify(1);
-        bytes[LBA_FORMATS_OFFSET..LBA_FORMATS_OFFSET + 2].copy_from_slice(&metadata.to_le_bytes());
+        bytes[identify::LBA_FORMATS..identify::LBA_FORMATS + 2]
+            .copy_from_slice(&metadata.to_le_bytes());
         let parsed = Namespace::parse(&bytes);
         if metadata == 0 {
             assert!(parsed.is_ok());
@@ -619,7 +583,7 @@ fn every_metadata_and_protection_setting_is_explicit() {
 
     for protection in 0..=u8::MAX {
         let mut bytes = identify(1);
-        bytes[PROTECTION_SETTINGS_OFFSET] = protection;
+        bytes[identify::PROTECTION_SETTINGS] = protection;
         let parsed = Namespace::parse(&bytes);
         if protection == 0 {
             assert!(parsed.is_ok());
@@ -630,8 +594,8 @@ fn every_metadata_and_protection_setting_is_explicit() {
 
     for capabilities in 0..=u8::MAX {
         let mut bytes = identify(1);
-        bytes[METADATA_CAPABILITIES_OFFSET] = capabilities;
-        bytes[PROTECTION_CAPABILITIES_OFFSET] = capabilities;
+        bytes[identify::METADATA_CAPABILITIES] = capabilities;
+        bytes[identify::PROTECTION_CAPABILITIES] = capabilities;
         assert!(
             Namespace::parse(&bytes).is_ok(),
             "capabilities {capabilities:#04x} do not enable a transfer setting"
@@ -644,7 +608,7 @@ fn every_metadata_and_protection_setting_is_explicit() {
 fn every_lba_format_control_value_has_one_explicit_policy() {
     for control in 0..=u8::MAX {
         let mut bytes = identify(1);
-        bytes[LBA_FORMATS_OFFSET + 3] = control;
+        bytes[identify::LBA_FORMATS + 3] = control;
         let parsed = Namespace::parse(&bytes);
         if control <= 3 {
             assert!(parsed.is_ok(), "relative performance {control}");

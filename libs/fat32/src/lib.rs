@@ -1,9 +1,4 @@
 //! A read-only FAT32 reader over any source of sectors.
-//!
-//! The sector source is a trait so the same parser runs over a host corpus and
-//! a kernel controller (D-170). The reader allocates nothing and treats disk
-//! bytes as hostile: layouts and cluster numbers are checked, reserved FAT bits
-//! are masked, and every chain walk is bounded.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -12,22 +7,15 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-/// Bytes in the only sector size this reader supports.
-///
-/// Five hundred and twelve, and a volume that says otherwise is refused rather
-/// than misread. It is what lets every buffer here be a fixed array on the
-/// stack, which is what "no allocation" costs: a reader that supported 4096
-/// would need either a caller-supplied buffer everywhere or an allocator, and
-/// no volume this project builds or boots uses one.
+use core::fmt;
+
+/// Bytes in the only sector size this reader supports, so every buffer is a stack array.
 pub const SECTOR_BYTES: usize = 512;
 
 /// Bytes in one directory entry.
 pub const ENTRY_BYTES: usize = 32;
 
-/// The lowest cluster number that names data.
-///
-/// Zero is the media descriptor and one is the end-of-chain marker, so the
-/// data area begins at two and every cluster is biased by it.
+/// The lowest cluster number that names data; zero and one are reserved table entries.
 pub const FIRST_DATA_CLUSTER: u32 = 2;
 
 /// A FAT32 entry is twenty-eight bits; the top four are reserved.
@@ -43,11 +31,7 @@ const MIN_FAT32_CLUSTERS: u64 = 65_525;
 const FIRST_RESERVED_CLUSTER: u32 = 0x0FFF_FFF0;
 const MAX_FAT32_CLUSTERS: u64 = FIRST_RESERVED_CLUSTER as u64 - FIRST_DATA_CLUSTER as u64;
 
-/// The most entries one FAT directory may hold.
-///
-/// The specification caps a directory at 65,536 entries. Past the clusters
-/// that hold them, a chain that has not ended is malformed, so this bounds a
-/// directory walk independently of the volume's size (D-352).
+/// The specification's cap on entries in one directory.
 const MAX_DIRECTORY_ENTRIES: u32 = 65_536;
 const MIRRORING_DISABLED: u16 = 1 << 7;
 const ACTIVE_FAT_MASK: u16 = 0x000F;
@@ -58,39 +42,22 @@ const CASE_FLAGS: u8 = LOWERCASE_BASE | LOWERCASE_EXTENSION;
 
 /// Directory entry attributes.
 pub mod attribute {
-    /// Read only.
     pub const READ_ONLY: u8 = 0x01;
-    /// Hidden.
     pub const HIDDEN: u8 = 0x02;
-    /// A system file.
     pub const SYSTEM: u8 = 0x04;
     /// The volume label, which lives in the root directory and is not a file.
     pub const VOLUME_LABEL: u8 = 0x08;
-    /// A directory.
     pub const DIRECTORY: u8 = 0x10;
-    /// Archive.
     pub const ARCHIVE: u8 = 0x20;
-    /// The combination that marks a long-name fragment rather than an entry.
-    ///
-    /// All four of read-only, hidden, system and volume-label at once, which
-    /// no real entry ever is. A reader that did not skip these would return
-    /// fragments of UCS-2 as though they were 8.3 names.
+    /// A long-name fragment: all four low attributes at once, which no real entry carries.
     pub const LONG_NAME: u8 = READ_ONLY | HIDDEN | SYSTEM | VOLUME_LABEL;
 }
 
-/// Where sectors come from.
-///
-/// Host fixtures and kernel controllers implement the same boundary (D-170).
+/// Where sectors come from, for host fixtures and kernel controllers alike.
 pub trait Sectors {
-    /// What can go wrong down there.
     type Error;
 
-    /// Read one sector into `into`.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the source reports. A reader above this treats any error as
-    /// "the volume is unreadable" and stops.
+    /// Read one sector into `into`; any error makes the volume unreadable.
     fn read_sector(
         &mut self,
         sector: u64,
@@ -110,7 +77,7 @@ pub enum FatError {
     SectorSize(u16),
     /// Sectors per cluster is zero or not a power of two.
     ClusterSize(u8),
-    /// The boot fields describe an impossible layout.
+    /// The boot fields describe an impossible layout, or the partition base wraps.
     Malformed,
     /// A cluster number outside the data area.
     BadCluster(u32),
@@ -124,38 +91,32 @@ pub enum FatError {
     WrongKind,
 }
 
-impl core::fmt::Display for FatError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for FatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Unreadable => core::fmt::Write::write_str(f, "the sector source refused a read"),
+            Self::Unreadable => f.write_str("the sector source refused a read"),
             Self::NotABootSector => {
                 core::fmt::Write::write_str(f, "the boot sector signature is missing")
             }
             Self::SectorSize(bytes) => write!(f, "sector size {bytes} is unsupported"),
             Self::ClusterSize(sectors) => write!(f, "cluster size {sectors} is invalid"),
-            Self::Malformed => core::fmt::Write::write_str(f, "the FAT32 layout is malformed"),
+            Self::Malformed => f.write_str("the FAT32 layout is malformed"),
             Self::BadCluster(cluster) => {
                 write!(f, "cluster {cluster} is outside the data area")
             }
-            Self::Unbounded => {
-                core::fmt::Write::write_str(f, "the cluster chain did not terminate")
+            Self::Unbounded => f.write_str("the cluster chain did not terminate"),
+            Self::Truncated => {
+                f.write_str("the cluster chain ended before the advertised file size")
             }
-            Self::Truncated => core::fmt::Write::write_str(
-                f,
-                "the cluster chain ended before the advertised file size",
-            ),
-            Self::NotFound => core::fmt::Write::write_str(f, "the directory entry was not found"),
-            Self::WrongKind => {
-                core::fmt::Write::write_str(f, "the directory entry has the wrong kind")
-            }
+            Self::NotFound => f.write_str("the directory entry was not found"),
+            Self::WrongKind => f.write_str("the directory entry has the wrong kind"),
         }
     }
 }
 
 impl core::error::Error for FatError {}
 
-/// The BIOS parameter block, which is the only thing that says where anything
-/// is.
+/// The BIOS parameter block, which is the only thing that says where anything is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Bpb {
     sectors_per_cluster: u32,
@@ -168,15 +129,7 @@ pub struct Bpb {
 }
 
 impl Bpb {
-    /// Parse a boot sector.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::NotABootSector`] without the signature,
-    /// [`FatError::SectorSize`] for anything but 512,
-    /// [`FatError::ClusterSize`] for a cluster that is zero or not a power of
-    /// two, and [`FatError::Malformed`] when the fields cannot describe a
-    /// complete FAT32 layout.
+    /// Parse a boot sector, refusing any field that cannot describe a complete FAT32 layout.
     pub const fn parse(sector: &[u8; SECTOR_BYTES]) -> Result<Self, FatError> {
         if sector[510] != 0x55 || sector[511] != 0xAA {
             return Err(FatError::NotABootSector);
@@ -195,8 +148,6 @@ impl Bpb {
         let reserved_sectors = u16::from_le_bytes([sector[14], sector[15]]) as u32;
         let fats = sector[16] as u32;
         let root_entries = u16::from_le_bytes([sector[17], sector[18]]);
-        // The sixteen-bit count at 22 is zero on FAT32; the real one is at 36.
-        // Taking the small one divides by zero or overlays the tables.
         let sectors_per_fat = u32::from_le_bytes([sector[36], sector[37], sector[38], sector[39]]);
         let extended_flags = u16::from_le_bytes([sector[40], sector[41]]);
         let selector = extended_flags & ACTIVE_FAT_MASK;
@@ -238,8 +189,7 @@ impl Bpb {
         if data_clusters < MIN_FAT32_CLUSTERS || data_clusters > MAX_FAT32_CLUSTERS {
             return Err(FatError::Malformed);
         }
-        let fat_entries =
-            sectors_per_fat as u64 * SECTOR_BYTES as u64 / core::mem::size_of::<u32>() as u64;
+        let fat_entries = sectors_per_fat as u64 * SECTOR_BYTES as u64 / size_of::<u32>() as u64;
         if data_clusters + FIRST_DATA_CLUSTER as u64 > fat_entries {
             return Err(FatError::Malformed);
         }
@@ -258,24 +208,19 @@ impl Bpb {
         })
     }
 
-    /// Sectors in one cluster.
     pub const fn sectors_per_cluster(self) -> u32 {
         self.sectors_per_cluster
     }
 
-    /// Bytes in one cluster.
     pub const fn cluster_bytes(self) -> u32 {
         self.sectors_per_cluster * SECTOR_BYTES as u32
     }
 
-    /// The cluster the root directory begins at.
     pub const fn root_cluster(self) -> u32 {
         self.root_cluster
     }
 
-    /// The first sector of the data area.
-    ///
-    /// Past the reserved sectors and every copy of the table.
+    /// The first sector past the reserved sectors and every copy of the table.
     pub const fn first_data_sector(self) -> u64 {
         self.reserved_sectors as u64 + self.fats as u64 * self.sectors_per_fat as u64
     }
@@ -286,13 +231,7 @@ impl Bpb {
         (data / self.sectors_per_cluster as u64) as u32
     }
 
-    /// The most clusters a directory chain may span before it must have ended.
-    ///
-    /// A directory holds at most [`MAX_DIRECTORY_ENTRIES`] entries, so it needs
-    /// at most that many entry slots' worth of clusters. This does not grow
-    /// with the volume, so a cyclic or oversized directory on a large volume
-    /// cannot drive an unbounded read; the chain length is the tighter of this
-    /// and the data area (D-352).
+    /// The most clusters a directory chain may span, capped by entries rather than volume size.
     fn directory_cluster_limit(self) -> u32 {
         let per_cluster = self.cluster_bytes() / ENTRY_BYTES as u32;
         let by_entries = if per_cluster == 0 {
@@ -303,20 +242,11 @@ impl Bpb {
         by_entries.min(self.clusters())
     }
 
-    /// Whether `cluster` names data in this volume.
-    ///
-    /// Both ends: below two is a marker rather than data, and past the count
-    /// is off the volume. A chain that walks off the end is what a corrupt or
-    /// hostile table produces, and following it reads whatever is there.
+    /// Whether `cluster` names data in this volume, bounded at both ends.
     pub const fn holds(self, cluster: u32) -> bool {
         cluster >= FIRST_DATA_CLUSTER && cluster < FIRST_DATA_CLUSTER + self.clusters()
     }
 
-    /// The first sector of `cluster`.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::BadCluster`] for a cluster this volume does not hold.
     const fn sector_of(self, cluster: u32) -> Result<u64, FatError> {
         if !self.holds(cluster) {
             return Err(FatError::BadCluster(cluster));
@@ -326,7 +256,7 @@ impl Bpb {
     }
 
     const fn table_position(self, cluster: u32) -> (u64, usize) {
-        let byte = cluster as u64 * core::mem::size_of::<u32>() as u64;
+        let byte = cluster as u64 * size_of::<u32>() as u64;
         (
             self.reserved_sectors as u64
                 + self.active_fat as u64 * self.sectors_per_fat as u64
@@ -336,12 +266,10 @@ impl Bpb {
     }
 }
 
-/// What the table says follows `cluster`.
+/// What the table says follows a cluster.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Next {
-    /// Another cluster.
     Cluster(u32),
-    /// The chain ends here.
     End,
     /// The volume marked this cluster unusable.
     Bad,
@@ -349,12 +277,7 @@ pub enum Next {
     Free,
 }
 
-/// Decode one table entry.
-///
-/// **Twenty-eight bits.** The top four are reserved, and a reader that
-/// compared all thirty-two against the end-of-chain marker would follow a
-/// chain that has ended — into whatever those bits happened to be.
-///
+/// Decode one table entry from its low twenty-eight bits only.
 const fn decode_entry(raw: u32) -> Next {
     let value = raw & ENTRY_MASK;
     if value == 0 {
@@ -371,15 +294,13 @@ const fn decode_entry(raw: u32) -> Next {
 /// One directory entry, with its 8.3 name unpacked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
-    /// The name, without padding, upper case, with the dot restored.
+    /// The name, without padding, with the dot restored.
     name: [u8; 12],
-    /// How many of those bytes are the name.
     name_len: usize,
-    /// The attribute byte.
     pub attributes: u8,
     /// The first cluster of its contents.
     pub cluster: u32,
-    /// Bytes in the file. Zero for a directory, which FAT does not size.
+    /// Bytes in the file; zero for a directory, which FAT does not size.
     pub size: u32,
 }
 
@@ -392,14 +313,11 @@ impl Entry {
         size: 0,
     };
 
-    /// The name, as bytes.
     pub fn name(&self) -> &[u8] {
         &self.name[..self.name_len]
     }
 
-    /// An entry that names contents and nothing else.
-    ///
-    /// Its name is empty because the caller retained only cluster and size.
+    /// An unnamed entry for contents whose caller retained only cluster and size.
     pub const fn for_contents(cluster: u32, size: u32) -> Self {
         Self {
             name: [0u8; 12],
@@ -410,15 +328,11 @@ impl Entry {
         }
     }
 
-    /// Whether this entry is a directory.
     pub const fn is_directory(&self) -> bool {
         self.attributes & attribute::DIRECTORY != 0
     }
 
     /// Whether the name matches, ignoring case.
-    ///
-    /// FAT stores 8.3 names upper-cased, so a caller that asked for `hello.txt`
-    /// and compared byte for byte would never find `HELLO.TXT`.
     pub fn is_named(&self, wanted: &[u8]) -> bool {
         if wanted.len() != self.name_len {
             return false;
@@ -426,7 +340,7 @@ impl Entry {
         wanted
             .iter()
             .zip(self.name())
-            .all(|(wanted, actual)| upper(*wanted) == upper(*actual))
+            .all(|(wanted, observed)| upper(*wanted) == upper(*observed))
     }
 }
 
@@ -452,7 +366,7 @@ impl DirectoryCursor {
         }
     }
 
-    /// Whether the directory has reached an end marker or end of chain.
+    /// Whether the directory has reached an end slot or the end of its chain.
     pub const fn is_done(&self) -> bool {
         self.done
     }
@@ -523,22 +437,16 @@ const fn valid_short_name_byte(byte: u8) -> bool {
 /// What a thirty-two byte slot holds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
-    /// A usable entry.
     Entry(Entry),
     /// Deleted, and the directory continues past it.
     Deleted,
-    /// A long-name fragment, or the volume label: skip it.
+    /// A long-name fragment, or the volume label.
     Skip,
     /// The directory ends here and nothing after it is an entry.
     End,
 }
 
-/// Decode one directory slot.
-///
-/// The two markers are different things and confusing them is the classic
-/// mistake: **zero ends the directory**, and `0xE5` is one deleted entry with
-/// live entries possibly after it. A reader that stopped on `0xE5` loses files;
-/// one that continued past zero reads whatever the rest of the cluster holds.
+/// Decode one directory slot: zero ends the directory, while `0xE5` deletes one entry.
 const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
     if slot[0] == 0x00 {
         return Slot::End;
@@ -555,41 +463,40 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
     if case & !CASE_FLAGS != 0 {
         return Slot::Skip;
     }
-    // Long-name fragments carry the volume-label bit, so this excludes both.
     if attributes & attribute::VOLUME_LABEL != 0 {
         return Slot::Skip;
     }
 
-    let mut base_len = 0;
-    while base_len < 8 && slot[base_len] != b' ' {
-        base_len += 1;
-    }
-    let mut index = base_len;
-    while index < 8 {
-        if slot[index] != b' ' {
-            return Slot::Skip;
-        }
-        index += 1;
-    }
-    if base_len == 0 {
+    let Some((name, name_len)) = short_name(slot, case) else {
         return Slot::Skip;
-    }
+    };
+    let Some(cluster) = first_cluster(slot) else {
+        return Slot::Skip;
+    };
+    Slot::Entry(Entry {
+        name,
+        name_len,
+        attributes,
+        cluster,
+        size: u32::from_le_bytes([slot[28], slot[29], slot[30], slot[31]]),
+    })
+}
 
-    let mut extension_len = 0;
-    while extension_len < 3 && slot[8 + extension_len] != b' ' {
-        extension_len += 1;
+/// The unpacked 8.3 name and its length, or `None` for a malformed one.
+const fn short_name(slot: &[u8; ENTRY_BYTES], case: u8) -> Option<([u8; 12], usize)> {
+    let Some(base_len) = padded_len(slot, 0, 8) else {
+        return None;
+    };
+    if base_len == 0 {
+        return None;
     }
-    index = extension_len;
-    while index < 3 {
-        if slot[8 + index] != b' ' {
-            return Slot::Skip;
-        }
-        index += 1;
-    }
+    let Some(extension_len) = padded_len(slot, 8, 3) else {
+        return None;
+    };
 
     let mut name = [0u8; 12];
     let mut len = 0;
-    index = 0;
+    let mut index = 0;
     while index < base_len {
         let byte = if index == 0 && slot[index] == 0x05 {
             0xE5
@@ -597,16 +504,9 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
             slot[index]
         };
         if !valid_short_name_byte(byte) {
-            return Slot::Skip;
+            return None;
         }
-        // NTRes controls presentation; matching remains case-insensitive so
-        // the spelling enumeration returns is always traversable.
-        let canonical = upper(byte);
-        name[len] = if case & LOWERCASE_BASE != 0 {
-            lower(canonical)
-        } else {
-            canonical
-        };
+        name[len] = presented(byte, case & LOWERCASE_BASE);
         len += 1;
         index += 1;
     }
@@ -616,52 +516,63 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
         index = 0;
         while index < extension_len {
             if !valid_short_name_byte(slot[8 + index]) {
-                return Slot::Skip;
+                return None;
             }
-            let canonical = upper(slot[8 + index]);
-            name[len] = if case & LOWERCASE_EXTENSION != 0 {
-                lower(canonical)
-            } else {
-                canonical
-            };
+            name[len] = presented(slot[8 + index], case & LOWERCASE_EXTENSION);
             len += 1;
             index += 1;
         }
     }
+    Some((name, len))
+}
+
+/// The length of a space-padded field, or `None` if a byte follows the padding.
+const fn padded_len(slot: &[u8; ENTRY_BYTES], start: usize, width: usize) -> Option<usize> {
+    let mut len = 0;
+    while len < width && slot[start + len] != b' ' {
+        len += 1;
+    }
+    let mut index = len;
+    while index < width {
+        if slot[start + index] != b' ' {
+            return None;
+        }
+        index += 1;
+    }
+    Some(len)
+}
+
+/// `NTRes` case flags change only presentation, so lookups still match without case.
+const fn presented(byte: u8, lowercase: u8) -> u8 {
+    let canonical = upper(byte);
+    if lowercase != 0 {
+        lower(canonical)
+    } else {
+        canonical
+    }
+}
+
+/// The first cluster from its high word at 20 and its low word at 26.
+const fn first_cluster(slot: &[u8; ENTRY_BYTES]) -> Option<u32> {
     let high = u16::from_le_bytes([slot[20], slot[21]]) as u32;
     if high & 0xF000 != 0 {
-        return Slot::Skip;
+        return None;
     }
     let low = u16::from_le_bytes([slot[26], slot[27]]) as u32;
-    Slot::Entry(Entry {
-        name,
-        name_len: len,
-        attributes,
-        // Two halves, not adjacent: the high word is at 20 and the low at 26.
-        cluster: (high << 16) | low,
-        size: u32::from_le_bytes([slot[28], slot[29], slot[30], slot[31]]),
-    })
+    Some((high << 16) | low)
 }
 
 /// A mounted volume.
 #[derive(Debug)]
 pub struct Volume<S: Sectors> {
     source: S,
-    /// Where the volume begins on the source, in sectors.
-    ///
-    /// A partition offset, because a volume is rarely at sector zero and a
-    /// reader that assumed it was would be one a partition table could not be
-    /// put in front of.
+    /// The partition offset on the source, in sectors.
     base: u64,
     bpb: Bpb,
 }
 
 impl<S: Sectors> Volume<S> {
     /// Read the boot sector at `base` and mount what it describes.
-    ///
-    /// # Errors
-    ///
-    /// See [`FatError`].
     pub fn mount(mut source: S, base: u64) -> Result<Self, FatError> {
         let mut sector = [0u8; SECTOR_BYTES];
         <S as Sectors>::read_sector(&mut source, base, &mut sector)
@@ -670,7 +581,6 @@ impl<S: Sectors> Volume<S> {
         Ok(Self { source, base, bpb })
     }
 
-    /// What the boot sector said.
     pub const fn bpb(&self) -> Bpb {
         self.bpb
     }
@@ -684,13 +594,7 @@ impl<S: Sectors> Volume<S> {
         self.bpb.clusters()
     }
 
-    /// What follows `cluster`.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::BadCluster`] if either this cluster or the link stored in
-    /// its entry lies outside the data area, and [`FatError::Unreadable`] if
-    /// the table cannot be read.
+    /// What follows `cluster`, refusing either end outside the data area.
     pub fn next_cluster(&mut self, cluster: u32) -> Result<Next, FatError> {
         if !self.bpb.holds(cluster) {
             return Err(FatError::BadCluster(cluster));
@@ -719,7 +623,7 @@ impl<S: Sectors> Volume<S> {
                 Some(current) => match self.next_cluster(current) {
                     Ok(Next::Cluster(next)) => Some(next),
                     Ok(Next::End | Next::Bad | Next::Free) | Err(FatError::BadCluster(_)) => None,
-                    Err(error) => return Err(error),
+                    Err(reason) => return Err(reason),
                 },
                 None => None,
             };
@@ -727,16 +631,7 @@ impl<S: Sectors> Volume<S> {
         Ok(cluster)
     }
 
-    /// Read at most one sector of directory entries and advance `cursor`.
-    ///
-    /// The returned entries own their names. No borrow of the sector source
-    /// survives this call, so callers may release a device or controller lock
-    /// before inspecting them.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::Unbounded`] if the chain does not end, and whatever a read
-    /// refused with.
+    /// Read at most one sector of entries and advance `cursor`, catching a cycle by its hare.
     pub fn directory_chunk(
         &mut self,
         cursor: &mut DirectoryCursor,
@@ -754,8 +649,6 @@ impl<S: Sectors> Volume<S> {
                     if visited >= self.bpb.directory_cluster_limit() {
                         return Err(FatError::Unbounded);
                     }
-                    // A tortoise/hare check catches a cycle in the length of
-                    // the cycle, before the entry cap is reached (D-352).
                     let hare = self.advance_cycle_hare(cursor.hare)?;
                     if hare == Some(next) {
                         return Err(FatError::Unbounded);
@@ -798,10 +691,6 @@ impl<S: Sectors> Volume<S> {
     }
 
     /// Find `name` in the directory beginning at `cluster`.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::NotFound`] if it is not there.
     pub fn lookup(&mut self, cluster: u32, name: &[u8]) -> Result<Entry, FatError> {
         let mut cursor = DirectoryCursor::new(cluster);
         loop {
@@ -817,18 +706,7 @@ impl<S: Sectors> Volume<S> {
         }
     }
 
-    /// Read up to `into.len()` bytes of `entry`, starting `offset` bytes in.
-    ///
-    /// Returns how many bytes were read, which is fewer than asked for at the
-    /// end of the file and zero past it.
-    ///
-    /// **Offsets are per call**, which is D-152's rule arriving here: there is
-    /// no cursor on anything, and a caller that wants one keeps it.
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::WrongKind`] for a directory, and whatever the walk refused
-    /// with.
+    /// Read up to `into.len()` bytes of `entry` from `offset`, never past its size.
     pub fn read_file(
         &mut self,
         entry: &Entry,
@@ -842,8 +720,6 @@ impl<S: Sectors> Volume<S> {
             return Ok(0);
         }
 
-        // Bounded by the file's own size: past it, the last cluster's tail
-        // holds the previous occupant's data.
         let wanted = into.len().min((entry.size - offset) as usize);
         let cluster_bytes = self.bpb.cluster_bytes();
 
@@ -917,16 +793,7 @@ impl<S: Sectors> Volume<S> {
         Ok(done)
     }
 
-    /// Resolve a path of components from the root, and return what it names.
-    ///
-    /// Every component but the last must be a directory. There is **no
-    /// leading separator and no `..`** — callers provide already-validated
-    /// components (`012` §5).
-    ///
-    /// # Errors
-    ///
-    /// [`FatError::NotFound`], or [`FatError::WrongKind`] if a component that
-    /// must be a directory is not.
+    /// Resolve validated components from the root, descending only through directories.
     pub fn resolve(&mut self, components: &[&[u8]]) -> Result<Entry, FatError> {
         let mut cluster = self.bpb.root_cluster();
         let mut last = None;
