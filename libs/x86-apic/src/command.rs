@@ -1,23 +1,14 @@
-//! The interrupt command register.
-//!
-//! Writing it sends an interrupt to a processor. The only destination this
-//! kernel names is itself — the mechanism it uses to prove its own interrupt
-//! path end to end — and a command addressed by shorthand carries no
-//! destination, so the upper half of the register stays zero.
+//! The interrupt command register, which this kernel only ever addresses to itself.
 
 use crate::local_vector::DeliverableVector;
 
-/// Bits 8–10: delivery mode. Zero delivers the vector as written, which is
-/// everything short of the startup and reset commands that bring up another
-/// processor.
+/// Bits 10:8: delivery mode, fixed.
 const DELIVERY_FIXED: u32 = 0;
 
-/// Bit 14: asserted rather than de-asserted. The de-assert form exists only for
-/// the level-triggered INIT of very old multiprocessor firmware, so every
-/// command this kernel builds sets it.
+/// Bit 14: assert, which every command this kernel builds sets.
 const ASSERT: u32 = 1 << 14;
 
-/// Bits 18–19: destination shorthand. One means the processor that sent it.
+/// Bits 19:18: destination shorthand, one for the sending processor.
 const SHORTHAND_SELF: u32 = 1 << 18;
 
 /// The contents of [`crate::register::COMMAND`].
@@ -30,11 +21,7 @@ impl Command {
         Self(vector.get().get() as u32 | DELIVERY_FIXED | ASSERT | SHORTHAND_SELF)
     }
 
-    /// The value to write.
-    ///
-    /// The register is 64 bits wide and its upper half is the destination,
-    /// which a shorthand makes irrelevant — so a caller widens this and writes
-    /// zeros above it.
+    /// The low half of the register; a shorthand makes the destination above it zero.
     pub const fn bits(self) -> u32 {
         self.0
     }

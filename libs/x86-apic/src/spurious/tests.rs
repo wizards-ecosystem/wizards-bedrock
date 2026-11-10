@@ -35,11 +35,7 @@ fn a_vector_the_hardware_would_alter_is_refused() {
     let _ = Spurious::enabled(vector(0x30));
 }
 
-/// The hardwired nibble is four bits, not three.
-///
-/// Values ending in 0xF or 0x0 cannot distinguish 0x0F from 0x07. The
-/// literal anchor prevents accepting 0x27 when hardware delivers 0x2F
-/// (D-124).
+/// A literal anchor, since vectors ending in 0xF or 0x0 cannot tell 0x0F from 0x07.
 #[test]
 fn the_hardwired_low_bits_are_the_whole_nibble() {
     assert_eq!(HARDWIRED_LOW_BITS, 0b1111);
@@ -48,6 +44,5 @@ fn the_hardwired_low_bits_are_the_whole_nibble() {
 #[test]
 #[should_panic(expected = "spurious")]
 fn a_vector_whose_low_nibble_is_seven_is_refused() {
-    // 0b0111 passes a three-bit mask and fails a four-bit one.
     let _ = Spurious::enabled(vector(0x37));
 }

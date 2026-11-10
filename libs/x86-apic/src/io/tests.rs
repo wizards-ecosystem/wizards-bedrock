@@ -56,19 +56,15 @@ fn an_overlap_error_names_both_controller_indices() {
 
 #[test]
 fn a_version_register_yields_an_entry_count_only_when_it_is_plausible() {
-    // Every real part: version 0x11..=0x20, 1..=24 entries.
     assert_eq!(entries_from_version(0x0017_0011), Some(24));
     assert_eq!(entries_from_version(0x0017_0020), Some(24));
     assert_eq!(entries_from_version(0x0000_0011), Some(1));
-    // Reserved bits outside the two fields are ignored.
     assert_eq!(entries_from_version(0xFF17_8011), Some(24));
     assert_eq!(entries_from_version(0x00EF_0011), Some(240));
 
-    // Below the first shipped version, or above the last.
     assert_eq!(entries_from_version(0x0017_0010), None);
     assert_eq!(entries_from_version(0x0017_0021), None);
     assert_eq!(entries_from_version(0x0017_0000), None);
-    // More redirection entries than any I/O APIC can hold.
     assert_eq!(entries_from_version(0x00F0_0011), None);
     assert_eq!(entries_from_version(0x00FF_0011), None);
     assert_eq!(entries_from_version(0xFFFF_FFFF), None);

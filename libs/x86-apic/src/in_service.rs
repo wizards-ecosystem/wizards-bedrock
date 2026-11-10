@@ -8,7 +8,6 @@ use crate::vector::InterruptVector;
 pub enum FrameLiveness {
     /// The claimed frame is still the innermost active trap.
     Live,
-    /// The claimed frame is no longer active.
     Stale,
 }
 
@@ -17,14 +16,10 @@ pub enum FrameLiveness {
 pub enum DismissalOwnership {
     /// The claimed vector remains the highest-priority in-service vector.
     Owned,
-    /// No in-service dismissal belongs to the claim.
     Unowned,
 }
 
-/// Return the highest-priority vector present in the eight ISR words.
-///
-/// The APIC dismisses that vector when software writes EOI, so a lower set bit
-/// cannot authorize the write while a higher-priority delivery is nested.
+/// The highest-priority vector in the eight ISR words, which an EOI write dismisses.
 pub fn highest(registers: &[u32; 8]) -> Option<u8> {
     for (bank, bits) in registers.iter().enumerate().rev() {
         if *bits != 0 {

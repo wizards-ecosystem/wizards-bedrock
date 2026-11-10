@@ -21,7 +21,6 @@ impl InterruptVector {
         Some(Self(vector))
     }
 
-    /// The number written to interrupt-controller and descriptor-table fields.
     pub const fn get(self) -> u8 {
         self.0
     }

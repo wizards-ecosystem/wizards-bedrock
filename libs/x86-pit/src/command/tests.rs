@@ -1,7 +1,6 @@
 use super::*;
 
-/// The word the kernel calibrates with, checked as a whole byte against
-/// the datasheet's figure: counter 0, low-then-high, mode 0, binary.
+/// The datasheet's figure: counter 0, low then high, mode 0, binary.
 #[test]
 fn the_calibration_word_is_0x30() {
     let word = ControlWord::binary(
@@ -13,9 +12,7 @@ fn the_calibration_word_is_0x30() {
     assert_eq!(word.bits(), 0x30);
 }
 
-/// The byte every PC manual prints for the speaker — counter 2, square
-/// wave — which cross-checks all three fields at once against forty years
-/// of published listings.
+/// Counter 2 in square-wave mode, the speaker byte every PC manual prints.
 #[test]
 fn the_classic_speaker_word_is_0xb6() {
     let word = ControlWord::binary(Channel::Two, Access::LowHigh, OperatingMode::SquareWave);
@@ -30,8 +27,7 @@ fn a_latch_command_names_only_its_channel() {
     assert_eq!(ControlWord::latch(Channel::Two).bits(), 0x80);
 }
 
-/// The datasheet's read-back figure: 11 in the top bits, count latching
-/// suppressed, the counter one-hot — 0xE2 is the byte for counter 0.
+/// The datasheet's read-back figure: 11 on top, count latching suppressed, the counter one-hot.
 #[test]
 fn a_status_read_back_matches_the_datasheet() {
     assert_eq!(ControlWord::read_back_status(Channel::Zero).bits(), 0xE2);

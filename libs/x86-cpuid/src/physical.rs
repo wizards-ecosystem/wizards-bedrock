@@ -27,7 +27,6 @@ impl PhysicalAddressWidth {
         Some(Self(bits))
     }
 
-    /// The number of implemented physical-address bits.
     pub const fn bits(self) -> u8 {
         self.0
     }

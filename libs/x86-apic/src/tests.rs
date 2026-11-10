@@ -27,9 +27,7 @@ fn the_last_register_in_the_page_is_accepted() {
     );
 }
 
-/// Spot values from SDM Vol. 3A table 11-1's "MSR address" column. Getting
-/// this arithmetic wrong reads a neighbouring register, which answers
-/// plausibly and means something else entirely.
+/// Spot values from SDM Vol. 3A table 11-1's "MSR address" column.
 #[test]
 fn a_register_maps_to_the_msr_the_manual_gives() {
     assert_eq!(Register::new(0x020).msr(), 0x802, "id");
@@ -48,9 +46,7 @@ fn consecutive_slots_become_consecutive_registers() {
     assert_eq!(second.msr(), first.msr() + 1);
 }
 
-/// The whole page maps into the block the architecture reserves for it,
-/// 0x800 through 0x8FF, so no offset can ever name a register belonging to
-/// something else.
+/// The whole page maps into 0x800 through 0x8FF, the block the architecture reserves.
 #[test]
 fn no_register_escapes_the_reserved_msr_block() {
     for offset in (0..REGISTER_BYTES).step_by(REGISTER_STRIDE) {

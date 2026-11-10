@@ -1,9 +1,4 @@
-//! The spurious-interrupt vector register.
-//!
-//! Two unrelated things share one register: the vector the APIC delivers when
-//! it has committed to delivering something and then found it had nothing to
-//! say, and the bit that software-enables the controller. Writing the second is
-//! what turns the APIC on, so it is written once everything else is configured.
+//! The spurious-interrupt vector register, whose enable bit turns the APIC on once all else is set.
 
 use crate::vector::InterruptVector;
 
@@ -18,15 +13,7 @@ const HARDWIRED_LOW_BITS: u8 = 0x0F;
 pub struct Spurious(u32);
 
 impl Spurious {
-    /// An enabled APIC that delivers `vector` when it has nothing to say.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless the low four bits are all set. P6 and Pentium APICs
-    /// hardwire those bits, so any other
-    /// vector would silently become a different one there — and a spurious
-    /// interrupt arriving on a vector nobody is expecting is the hardest kind
-    /// of fault to read.
+    /// An enabled APIC delivering `vector`; panics unless its low nibble is set, as P6 wires it.
     pub const fn enabled(vector: InterruptVector) -> Self {
         let vector = vector.get();
         assert!(
@@ -36,12 +23,10 @@ impl Spurious {
         Self(vector as u32 | ENABLE)
     }
 
-    /// Interpret what the register returned.
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits)
     }
 
-    /// The value to write.
     pub const fn bits(self) -> u32 {
         self.0
     }

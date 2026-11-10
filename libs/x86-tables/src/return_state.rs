@@ -1,8 +1,6 @@
-//! Architectural checks for a 64-bit return to ring three.
-//!
-//! `iretq` consumes selectors, addresses and flags together. Keeping their
-//! pure admission rule here makes the final privileged adapter small and gives
-//! every field a host witness (D-368).
+//! Architectural checks for a 64-bit `iretq` to ring three, kept where every field has a host test.
+
+use core::fmt;
 
 use crate::Selector;
 
@@ -11,11 +9,7 @@ const ALWAYS_ONE: u64 = 1 << 1;
 /// Ring three remains preemptible after the return.
 const INTERRUPT: u64 = 1 << 9;
 
-/// Flags a 64-bit user context may carry through this kernel's `iretq`.
-///
-/// Condition codes, tracing, direction, resume, alignment checking and CPUID
-/// discovery are user state. System fields, virtual-8086 state and every
-/// reserved bit are deliberately absent.
+/// Flags a user context may carry through `iretq`; system, VM86 and reserved bits are absent.
 const USER_FLAGS: u64 = (1 << 0)
     | ALWAYS_ONE
     | (1 << 2)
@@ -58,17 +52,7 @@ impl UserReturnState {
         }
     }
 
-    /// Validate one return against the installed user selectors and low-half
-    /// address boundary.
-    ///
-    /// `user_end` is the first address outside admitted user register state.
-    /// Passing it in keeps paging policy at the caller while this crate owns
-    /// the architectural relationship among all five words.
-    ///
-    /// # Errors
-    ///
-    /// [`UserReturnError`] naming the first field that would make the return
-    /// unsafe or violate the kernel's ring-three contract.
+    /// Validate one return against the user selectors and `user_end`, the first non-user address.
     pub const fn validate(
         self,
         user_code: Selector,
@@ -116,8 +100,8 @@ pub enum UserReturnError {
     Flags(u64),
 }
 
-impl core::fmt::Display for UserReturnError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for UserReturnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (field, value) = match *self {
             Self::CodeSelector(value) => ("code selector", value),
             Self::StackSelector(value) => ("stack selector", value),

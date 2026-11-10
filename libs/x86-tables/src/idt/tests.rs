@@ -49,29 +49,14 @@ fn a_gate_rejects_a_stack_outside_the_table() {
     let _ = Gate::interrupt(0x1000, KERNEL_CODE, 8);
 }
 
-/// A user-callable gate differs from an ordinary one by its privilege and
-/// nothing else.
-///
-/// The bit that lets ring 3 in is the only one that may change. A gate
-/// that also became a trap gate, or lost its stack, would be a different
-/// kind of entry wearing the same name — and it would work, which is what
-/// makes it worth checking (D-96).
-///
-/// The equalities against `ordinary` are identities: `callable_from_user`
-/// delegates to `interrupt` and then sets two bits of `attributes`, so the
-/// handler, selector and stack are literally the same fields, and
-/// `((a | 0x60) >> 5) & 3 == 3` for every `a`. Transcribed bytes instead —
-/// the whole attribute word, against the manual (D-105).
+/// Whole attribute bytes from the manual; a low nibble of `0xE` keeps `IF` cleared on entry.
 #[test]
 fn a_user_callable_gate_differs_only_in_privilege() {
     let selector = Selector::new(1, 0);
     let ordinary = Gate::interrupt(0xffff_8000_0000_1234, selector, 0);
     let callable = Gate::callable_from_user(0xffff_8000_0000_1234, selector, 0);
 
-    // Present, DPL 0, 64-bit interrupt gate: `1_00_0_1110`.
     assert_eq!(ordinary.attributes, 0b1000_1110);
-    // Present, DPL 3, still an interrupt gate: the low nibble `0xE`, not
-    // `0xF`, is what keeps `IF` cleared on entry.
     assert_eq!(callable.attributes, 0b1110_1110);
     assert_eq!(callable.attributes & 0xF, 0xE, "it became a trap gate");
     assert_eq!(callable.privilege(), 3);
@@ -80,14 +65,7 @@ fn a_user_callable_gate_differs_only_in_privilege() {
     assert_ne!(ordinary.attributes & 0x80, 0);
 }
 
-/// The bytes the CPU reads are where the manual says they are.
-///
-/// `tss::TaskState` got these pins from D-95 and `Gate` did not, though it
-/// is equally a structure hardware parses byte for byte. Swapping
-/// `interrupt_stack` and `attributes` keeps the size at sixteen and leaves
-/// every accessor round-tripping through its own named field — the shipped
-/// table then reads IST where DPL should be, with every test green
-/// (D-105).
+/// Swapping `interrupt_stack` and `attributes` keeps the size and every accessor round trip.
 #[test]
 fn a_gate_is_laid_out_the_way_the_manual_says() {
     use core::mem::{align_of, offset_of, size_of};
@@ -103,13 +81,7 @@ fn a_gate_is_laid_out_the_way_the_manual_says() {
     assert_eq!(offset_of!(Gate, reserved), 12);
 }
 
-/// And every field of a built gate holds the value the manual asks for.
-///
-/// Read as fields rather than through the accessors, because an accessor
-/// and the field it names always agree — that is what left the split of
-/// the handler address across three fields unchecked. Together with the
-/// offsets above this is the sixteen bytes, which `libs/` cannot
-/// `transmute` to (D-105).
+/// Read as fields, since an accessor always agrees with the field it names.
 #[test]
 fn a_built_gate_holds_the_encoding_the_manual_asks_for() {
     let gate = Gate::interrupt(0xffff_8000_1234_5678, Selector::new(1, 0), 1);
@@ -122,7 +94,6 @@ fn a_built_gate_holds_the_encoding_the_manual_asks_for() {
     assert_eq!(gate.reserved, 0);
 }
 
-/// The missing gate admits nobody.
 #[test]
 fn the_missing_gate_is_not_user_callable() {
     assert_eq!(Gate::MISSING.privilege(), 0);

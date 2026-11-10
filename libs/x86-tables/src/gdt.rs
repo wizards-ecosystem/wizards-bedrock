@@ -1,37 +1,19 @@
-//! Global descriptor table entries.
-//!
-//! In 64-bit mode a code or data descriptor carries almost nothing: base and
-//! limit are ignored, and what remains is a handful of permission bits. System
-//! descriptors — the task-state segment is the only one this kernel uses — are
-//! twice as wide and do carry a base address.
+//! Global descriptor table entries: permission bits for code and data, a base for the TSS.
 
-/// The bits this crate sets. Ones it deliberately leaves clear — the privilege
-/// level of the kernel pair, granularity — are named in the tests that assert
-/// they stay clear.
+/// The bits this crate sets; the tests name the ones it leaves clear.
 mod bit {
-    /// Accessed, written already set (D-426).
-    ///
-    /// The processor sets it on the first load of a selector, which is a write
-    /// to the table. The first load of the user pair is the `iretq` inside the
-    /// paired-root exit, where the table is mapped read-only, so a clear bit
-    /// is a supervisor write fault there on hardware that enforces it.
+    /// Accessed, set already, since the user pair is first loaded from a read-only table.
     pub(super) const ACCESSED: u64 = 1 << 40;
     /// Readable for a code segment, writable for a data segment.
     pub(super) const ACCESS: u64 = 1 << 41;
-    /// Executable — the bit that makes a descriptor a code segment.
+    /// Executable, the bit that makes a descriptor a code segment.
     pub(super) const EXECUTABLE: u64 = 1 << 43;
-    /// Code or data rather than a system descriptor.
+    /// Code or data, as opposed to a system descriptor.
     pub(super) const CODE_OR_DATA: u64 = 1 << 44;
-    /// Descriptor privilege level three: ring 3 may load it.
-    ///
-    /// Both bits, because the field is two wide and ring 3 is the only
-    /// non-zero level this kernel uses — there is no ring 1 or 2 here, and
-    /// leaving one bit set would name a level nothing runs at.
+    /// Descriptor privilege level three, both bits, since no ring 1 or 2 exists here.
     pub(super) const RING_THREE: u64 = 0b11 << 45;
-    /// The descriptor is usable.
     pub(super) const PRESENT: u64 = 1 << 47;
-    /// 64-bit code. Must be clear for data, and pairs with a clear default-size
-    /// bit.
+    /// 64-bit code; clear for data, and paired with a clear default-size bit.
     pub(super) const LONG_MODE: u64 = 1 << 53;
 }
 
@@ -56,18 +38,13 @@ impl Descriptor {
             | bit::ACCESSED,
     );
 
-    /// Ring 0 data: present, writable, accessed.
-    ///
-    /// `SS` must name one of these even in 64-bit mode, where `iretq` reloads it
-    /// on every return from an exception.
+    /// Ring 0 data: present, writable, accessed; `SS` names it even in 64-bit mode.
     pub const KERNEL_DATA: Self =
         Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::ACCESSED);
 
     /// Ring 3 code: present, executable, readable, 64-bit, DPL 3, accessed.
     ///
-    /// `sysret` and `iretq` both require the user descriptors to sit at
-    /// specific indices relative to each other, which is why the order in the
-    /// table is fixed rather than incidental (D-96).
+    /// `sysret` and `iretq` fix the user descriptors' indices relative to each other.
     pub const USER_CODE: Self = Self(
         bit::PRESENT
             | bit::CODE_OR_DATA
@@ -98,17 +75,9 @@ pub struct SystemDescriptor {
 }
 
 impl SystemDescriptor {
-    /// Describe a task-state segment of `size` bytes at `base`.
+    /// A TSS of `size` bytes at `base`; a 16-bit size leaves the limit's high nibble zero.
     ///
-    /// The limit is one less than the size, which is what makes an offset equal
-    /// to the size — the value `iomap_base` carries to mean "no I/O bitmap" —
-    /// land outside the segment. A task-state segment cannot exceed a 16-bit
-    /// limit even with a full I/O bitmap, so the limit's high nibble is always
-    /// zero and is not encoded.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `size` is zero.
+    /// The limit is the size less one, so an `iomap_base` equal to the size falls outside it.
     pub const fn task_state(base: u64, size: u16) -> Self {
         assert!(size > 0, "a task-state segment cannot be empty");
         let limit = (size - 1) as u64;

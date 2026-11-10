@@ -37,16 +37,7 @@ const ALL: &[(&str, Register)] = &[
     ("divide configuration", DIVIDE_CONFIGURATION),
 ];
 
-/// `ALL` names every register the crate defines.
-///
-/// The comment above it says so, and nothing checked it. A fifteenth
-/// `pub const NAME: Register` added and left out would silently shrink
-/// three sweeps at once — the alignment check, the collision check and the
-/// MSR anchoring — and all three would go on reporting success (D-161).
-///
-/// Compared by offset rather than by count: a list that dropped one
-/// register and repeated another has the right length, and only the
-/// offsets say so.
+/// Compared by offset, since a list that drops one register and repeats another keeps its length.
 #[test]
 fn all_names_every_register_the_crate_defines() {
     let mut defined: Vec<usize> = include_str!("../register.rs")
@@ -70,8 +61,7 @@ fn all_names_every_register_the_crate_defines() {
     );
 }
 
-/// `Register::new` enforces this, but it is a `const` assertion that fires
-/// at compile time — this is the check that would notice it being loosened.
+/// `Register::new` asserts this at compile time; this test notices it being loosened.
 #[test]
 fn every_register_is_aligned_and_inside_the_page() {
     for (name, register) in ALL {
@@ -89,8 +79,7 @@ fn no_two_registers_share_an_offset() {
     }
 }
 
-/// Entries zero through five are consecutive slots. CMCI was added later
-/// at a lower address but remains entry six in the version-register order.
+/// CMCI was added later at a lower address and remains entry six in version-register order.
 #[test]
 fn the_local_vector_entries_sit_where_the_manual_puts_them() {
     assert_eq!(LVT_CMCI.offset(), 0x2F0);
@@ -114,8 +103,7 @@ fn the_local_vector_entries_sit_where_the_manual_puts_them() {
     );
 }
 
-/// The two count registers are adjacent slots; the divide configuration
-/// sits apart from them, past the slots the architecture reserves.
+/// The two count registers are adjacent; the divide configuration sits past the reserved slots.
 #[test]
 fn the_timer_registers_sit_where_the_manual_puts_them() {
     assert_eq!(INITIAL_COUNT.offset(), 0x380);
@@ -123,9 +111,7 @@ fn the_timer_registers_sit_where_the_manual_puts_them() {
     assert_eq!(DIVIDE_CONFIGURATION.offset(), 0x3E0);
 }
 
-/// SDM Vol. 3A table 11-1's "MSR address" column, for every register named
-/// here. Transcribed rather than derived, so the derivation has something
-/// independent to be wrong against.
+/// SDM Vol. 3A table 11-1's "MSR address" column, transcribed for every register named here.
 #[test]
 fn every_register_lands_on_the_msr_the_manual_gives() {
     let anchored = [
@@ -164,8 +150,6 @@ fn every_register_lands_on_the_msr_the_manual_gives() {
         ("divide configuration", DIVIDE_CONFIGURATION, 0x83E),
     ];
 
-    // Tied to `ALL`: a register this list forgets has no manual value
-    // behind it, and the loop alone would never say so.
     assert_eq!(
         anchored.len(),
         ALL.len(),

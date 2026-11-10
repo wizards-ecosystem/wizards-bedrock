@@ -1,9 +1,4 @@
-//! Width conversions for hardware register values.
-//!
-//! A 32-bit register read through a wider access arrives with reserved high
-//! bits. Readers ignore them here, in one place, before any comparison or
-//! decode, and never refuse a value because of them. Writes of a 64-bit
-//! operand to two 32-bit halves split it here too.
+//! Width conversions for register values; reserved high bits are ignored here, never refused.
 //!
 //! # Examples
 //!
@@ -23,8 +18,7 @@ const _: () = assert!(
     "a 64-bit register offset is a usize only on 64-bit targets"
 );
 
-/// The 32-bit register held in the low half of a 64-bit read, with the
-/// reserved high half ignored.
+/// The 32-bit register held in the low half of a 64-bit read, the reserved high half ignored.
 pub const fn low_u32(value: u64) -> u32 {
     value as u32
 }

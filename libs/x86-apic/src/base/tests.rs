@@ -8,26 +8,15 @@ fn x2apic_keeps_every_bit_that_is_already_set() {
     assert_eq!(again.bits(), TYPICAL | X2APIC, "the door is idempotent");
 }
 
-/// What a bootstrap processor with an enabled xAPIC at the architectural
-/// default address reports.
+/// A bootstrap processor's enabled xAPIC at the architectural default address.
 const TYPICAL: u64 = 0xFEE0_0900;
 
-/// The three flag bits sit where the manual puts them.
-///
-/// `TYPICAL = 0xFEE0_0900` sets both `BOOTSTRAP` and `ENABLE`, so swapping
-/// the two constants left all fifty-seven tests green — and
-/// `Base::enabled()` would then set the **read-only** bootstrap bit and
-/// never enable the APIC (D-142).
-///
-/// SDM Vol. 3A §11.4.4, `IA32_APIC_BASE`: bit 8 BSP, bit 10 x2APIC enable,
-/// bit 11 APIC global enable. Written as literals, against which the
-/// constants are checked one at a time.
+/// SDM Vol. 3A §11.4.4 as literals, since `TYPICAL` sets both bits a swap would exchange.
 #[test]
 fn the_base_flags_sit_where_the_manual_puts_them() {
     assert_eq!(BOOTSTRAP, 1 << 8, "BSP is bit 8");
     assert_eq!(X2APIC, 1 << 10, "x2APIC enable is bit 10");
     assert_eq!(ENABLE, 1 << 11, "APIC global enable is bit 11");
-    // Pairwise distinct, so no constant can stand in for another.
     assert_ne!(BOOTSTRAP, X2APIC);
     assert_ne!(X2APIC, ENABLE);
     assert_ne!(BOOTSTRAP, ENABLE);
@@ -88,8 +77,7 @@ fn asking_an_x2apic_for_x2apic_is_idempotent() {
     assert_eq!(extended.x2apic(), extended);
 }
 
-/// A disabled APIC asked for x2APIC must come back with both bits, not just
-/// the extended one — the pair 0b10 is the encoding the processor faults on.
+/// The pair 0b10 alone is the encoding the processor faults on.
 #[test]
 fn switching_a_disabled_apic_sets_the_enable_bit_too() {
     let disabled = Base::from_bits(TYPICAL & !ENABLE);
@@ -100,22 +88,15 @@ fn switching_a_disabled_apic_sets_the_enable_bit_too() {
     );
 }
 
-/// The base MSR's fields sit where the manual puts them.
-///
-/// Literal anchors keep an implementation constant from serving as its own
-/// oracle (D-105).
+/// SDM Vol. 3A table 11-5: MSR 0x1B is `IA32_APIC_BASE`, with x2APIC enable in bit 10.
 #[test]
 fn the_base_msr_fields_are_where_the_manual_puts_them() {
-    // SDM Vol. 3A §11.4.4 / table 11-5: bit 8 BSP, bit 10 x2APIC enable,
-    // bit 11 global enable; MSR 0x1B is IA32_APIC_BASE.
     assert_eq!(MSR, 0x1B);
     assert_eq!(X2APIC, 0x0000_0400);
 
-    // A word with only bit 10 set is x2APIC and nothing else.
     let only_mode = Base::from_bits(0x0000_0400);
     assert!(only_mode.is_x2apic());
     assert!(!only_mode.is_enabled());
 
-    // And bit 9 is not the mode bit.
     assert!(!Base::from_bits(0x0000_0200).is_x2apic());
 }

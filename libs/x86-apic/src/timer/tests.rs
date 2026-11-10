@@ -27,13 +27,7 @@ const ALL: &[Divide] = &[
     Divide::By128,
 ];
 
-/// `ALL` is every `Divide` there is.
-///
-/// The match is the check and the compiler runs it: a ninth variant makes
-/// it non-exhaustive and the crate stops building. The length is asserted
-/// after it because a variant can be added to the enum *and* to the match
-/// and still be missing from the list the other tests iterate — which
-/// would quietly shrink their coverage rather than fail (D-161).
+/// A ninth variant breaks the match, and the length catches one added there but missing from `ALL`.
 #[test]
 fn all_is_every_divide_the_enum_has() {
     for divide in ALL {
@@ -52,9 +46,7 @@ fn all_is_every_divide_the_enum_has() {
     assert_eq!(ALL.len(), 8, "ALL has fallen behind the enum");
 }
 
-/// SDM Vol. 3A §11.5.4's divide-value table, transcribed rather than
-/// derived: bits 1:0 carry the low half of the value and bit 3 the high
-/// bit, with divide-by-one the all-set case.
+/// SDM Vol. 3A §11.5.4's divide-value table, transcribed: bits 1:0 and 3, all set for one.
 #[test]
 fn every_divide_encoding_matches_the_manual() {
     for (divide, bits, factor) in [
@@ -72,8 +64,7 @@ fn every_divide_encoding_matches_the_manual() {
     }
 }
 
-/// Bit 2 is reserved, and the architecture faults on reserved bits in this
-/// register.
+/// Bit 2 is reserved, and the architecture faults on reserved bits in this register.
 #[test]
 fn the_reserved_bit_stays_clear() {
     for divide in ALL {
@@ -97,16 +88,13 @@ fn a_wait_inside_the_counter_is_the_count() {
     assert_eq!(initial_count(u64::from(u32::MAX)), u32::MAX);
 }
 
-/// The clamp that matters: a scheduler asking for a deadline that has
-/// already passed must get an interrupt, and a zero count would instead
-/// stop the timer for good.
+/// A deadline already passed must still interrupt, since a zero count stops the timer for good.
 #[test]
 fn a_wait_of_no_time_still_arms_the_timer() {
     assert_eq!(initial_count(0), 1);
 }
 
-/// The other clamp: a sleep longer than the counter can express is armed
-/// as far ahead as it goes, and the caller re-arms for the remainder.
+/// A sleep past the counter's range is armed as far as it goes, and the caller re-arms.
 #[test]
 fn a_wait_past_the_counter_is_the_counter() {
     assert_eq!(initial_count(u64::from(u32::MAX) + 1), u32::MAX);

@@ -1,13 +1,4 @@
-//! x86_64 descriptor table encoding.
-//!
-//! Which bit of a segment descriptor means present, where a 64-bit gate splits
-//! its handler address, what a task-state segment looks like in memory: all of
-//! it is arithmetic over bits with no hardware behind it, so it lives here and
-//! is unit-tested on the host. `wost` builds descriptors from this crate and
-//! does nothing to them but load them — see `docs/006-cpu-fundamentals.md`.
-//!
-//! Bit positions follow Intel SDM Vol. 3A ch. 3 (segment descriptors), ch. 6
-//! (gate descriptors) and ch. 7 (the 64-bit TSS).
+//! x86_64 descriptor table encoding, after Intel SDM Vol. 3A chapters 3, 6 and 7.
 //!
 //! # Examples
 //!
@@ -33,20 +24,12 @@ pub mod idt;
 pub mod return_state;
 pub mod tss;
 
-/// A reference to one descriptor table entry, as loaded into a segment register.
-///
-/// The low two bits are the requested privilege level and the third selects the
-/// local descriptor table, which this kernel never uses.
+/// A descriptor table reference: requested privilege in bits 1:0, the unused LDT bit in bit 2.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Selector(u16);
 
 impl Selector {
-    /// A selector for global descriptor table entry `index`, requesting ring
-    /// `privilege`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index` does not fit in thirteen bits or `privilege` exceeds 3.
+    /// GDT entry `index` at ring `privilege`; panics unless they fit thirteen bits and two.
     pub const fn new(index: u16, privilege: u16) -> Self {
         assert!(index < 0x2000, "descriptor index does not fit a selector");
         assert!(privilege < 4, "privilege level is two bits");
@@ -58,7 +41,6 @@ impl Selector {
         Self(bits)
     }
 
-    /// The value a segment register holds.
     pub const fn bits(self) -> u16 {
         self.0
     }

@@ -521,8 +521,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1387,
         file: "libs/x86-apic/src/timer.rs",
-        find: "        core::fmt::Write::write_str(f, \"the local APIC timer is still running\")",
-        replace: "        core::fmt::Write::write_str(f, \"timer error\")",
+        find: "        f.write_str(\"the local APIC timer is still running\")",
+        replace: "        f.write_str(\"timer error\")",
         breaks: "a one-shot refusal no longer identifies the still-running timer",
         reddens: Caught::HostTest {
             package: "x86-apic",
@@ -532,8 +532,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1531,
         file: "libs/x86-apic/src/io.rs",
-        find: "    let identity = version & 0xFF;\n    if identity < MIN_VERSION || identity > MAX_VERSION {\n        return None;\n    }",
-        replace: "    let identity = version & 0xFF;\n    let _ = (identity, MIN_VERSION, MAX_VERSION);",
+        find: "    let identity = low & 0xFF;\n    if identity < MIN_VERSION || identity > MAX_VERSION {\n        return None;\n    }",
+        replace: "    let identity = low & 0xFF;\n    let _ = (identity, MIN_VERSION, MAX_VERSION);",
         breaks: "the I/O APIC version decoder admits any version byte",
         reddens: Caught::HostTest {
             package: "x86-apic",
@@ -598,7 +598,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1760,
         file: "libs/x86-apic/src/version.rs",
-        find: "        (self.0 >> MAXIMUM_LVT_ENTRY_SHIFT) as u8",
+        find: "        u16_halves(self.0).1 as u8",
         replace: "        self.number()",
         breaks: "the APIC source inventory is decoded from the version byte instead of its independent maximum-LVT field",
         reddens: Caught::HostTest {

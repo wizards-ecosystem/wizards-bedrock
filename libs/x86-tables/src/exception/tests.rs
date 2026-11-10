@@ -1,18 +1,11 @@
 use super::*;
 
-/// Intel SDM Vol. 3A table 6-1, transcribed. The bitmask is unreadable by
-/// design — it exists so the assembler can test one expression per stub —
-/// so this is the readable copy it is checked against.
+/// Intel SDM Vol. 3A table 6-1, the readable copy the assembler's bitmask is checked against.
 const WITH_ERROR_CODE: [u8; 10] = [8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
 
-/// The named constants are the vectors `name` answers for.
-///
-/// Index with each named constant so a literal-only lookup cannot leave the
-/// constant itself unchecked; pin `COUNT` at its exact boundary (D-148).
+/// Each constant indexes SDM Vol. 3A table 6-1, so a wrong one gives the wrong name.
 #[test]
 fn the_named_vectors_are_the_ones_the_table_names() {
-    // SDM Vol. 3A table 6-1, transcribed. Each constant is used to *index*
-    // the table, so a wrong constant gives the wrong name.
     for (constant, expected) in [
         (BREAKPOINT, "breakpoint"),
         (INVALID_OPCODE, "invalid opcode"),
@@ -26,8 +19,6 @@ fn the_named_vectors_are_the_ones_the_table_names() {
         );
     }
 
-    // Thirty-two architectural vectors, exactly: 31 is the last reserved
-    // one and 32 is the first the APIC may deliver.
     assert_eq!(COUNT, 32);
     assert!(name(COUNT - 1).is_none(), "31 is reserved and unnamed");
     assert!(name(COUNT).is_none(), "32 is not an exception");
@@ -103,9 +94,6 @@ fn every_exception_name_matches_the_architecture() {
     }
 }
 
-/// A fault report that cannot name the vector it is reporting is the least
-/// useful message in the kernel, and these are the vectors that carry the
-/// detail worth reporting.
 #[test]
 fn every_vector_with_an_error_code_has_a_name() {
     for vector in WITH_ERROR_CODE {
