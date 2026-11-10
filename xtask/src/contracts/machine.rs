@@ -1005,9 +1005,7 @@ fn require_one_observation_epoch(block: &syn::Block, expected: &[&str], label: &
 #[test]
 fn allocator_ledgers_hold_one_interrupt_epoch() {
     let paths = Paths::discover().expect("workspace paths");
-    let source = std::fs::read_to_string(paths.root().join("kernel/src/selftest.rs"))
-        .expect("read kernel selftest source");
-    let syntax = syn::parse_file(&source).expect("parse kernel selftest source");
+    let syntax = super::module_syntax(&paths.root().join("kernel/src/selftest.rs"));
 
     let capture = syntax
         .items

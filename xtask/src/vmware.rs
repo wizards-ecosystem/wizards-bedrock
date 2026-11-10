@@ -703,27 +703,34 @@ fn verdict_count(field: Option<&str>, prefix: &str) -> Result<usize> {
 
 fn expected_selftest_checks(root: &Path) -> Result<usize> {
     let kernel = source_usize(
-        &[root.join("kernel/src/selftest.rs")],
+        &module_sources(root.join("kernel/src/selftest.rs"))?,
         "const EXPECTED_CHECKS: usize = ",
     )?;
-    let mut harness_sources = vec![root.join("xtask/src/qemu.rs")];
-    let mut pending = vec![root.join("xtask/src/qemu")];
+    let harness = source_usize(
+        &module_sources(root.join("xtask/src/qemu.rs"))?,
+        "const EXPECTED_SELFTEST_CHECKS: usize = ",
+    )?;
+    ensure!(
+        kernel == harness,
+        "kernel expects {kernel} checks but the harness expects {harness}"
+    );
+    Ok(kernel)
+}
+
+fn module_sources(file: PathBuf) -> Result<Vec<PathBuf>> {
+    let mut pending = vec![file.with_extension("")];
+    let mut sources = vec![file];
     while let Some(directory) = pending.pop() {
         for entry in paths::directory_entries(&directory)? {
             let path = entry.path();
             if entry.is_dir() {
                 pending.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
-                harness_sources.push(path);
+                sources.push(path);
             }
         }
     }
-    let harness = source_usize(&harness_sources, "const EXPECTED_SELFTEST_CHECKS: usize = ")?;
-    ensure!(
-        kernel == harness,
-        "kernel expects {kernel} checks but the harness expects {harness}"
-    );
-    Ok(kernel)
+    Ok(sources)
 }
 
 fn source_usize(sources: &[PathBuf], prefix: &str) -> Result<usize> {

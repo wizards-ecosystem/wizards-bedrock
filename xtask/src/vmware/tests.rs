@@ -138,8 +138,7 @@ fn selftest_transcript() -> String {
 
 #[test]
 fn the_delayed_read_marker_matches_the_unique_kernel_format_literal() {
-    let kernel = std::fs::read_to_string(repository_root().join("kernel/src/selftest.rs"))
-        .expect("reading kernel self-test source");
+    let kernel = crate::contracts::module_source(&repository_root(), "kernel/src/selftest.rs");
     let prefix = "\"selftest: delayed read evidence ";
     let occurrences = kernel.match_indices(prefix).collect::<Vec<_>>();
     assert_eq!(
