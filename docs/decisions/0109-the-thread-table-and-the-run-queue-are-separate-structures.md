@@ -3,10 +3,11 @@
 Status: Accepted, 2026-08-24.
 
 **Context.** `static THREADS` held one `Thread` per slot, carrying what a thread
-*is* (name, entry point) and everything the policy needs about it. Phase 4
-started there: one array, one lock, no boundary. Phase 5 gives a slot a second
-reason to change. `libs/eevdf` is already domain-agnostic and host-tested, so
-the seam that lets it be replaced is worth cutting now.
+*is* (name, entry point) and everything the policy needs about it. Phase 4 was
+right to start there: one array, one lock, no boundary to keep honest. Phase 5
+gives a slot a second reason to change. `libs/eevdf` is already domain-agnostic
+and host-tested, so the seam that would let it be replaced is worth cutting
+before more code is written across it.
 
 **Options.** Leave it; split the lock; or split the data.
 

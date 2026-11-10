@@ -19,10 +19,10 @@ Reserving four bits costs no design.
 
 The pointer rule guards against another breakage. `>> 47 == 0` is the common
 idiom and is correct today. It is wrong under LAM, 5-level paging and ChkTag,
-which all put non-address bits in the top of a pointer. ChkTag supersedes LAM,
-which is not worth building for. The rule holds anyway: a range check is as
-short as the shift and right in every case. `010` §10's own phrasing:
-range-check user pointers, never `>> 47 == 0`.
+which all put non-address bits in the top of a pointer. LAM itself is being
+superseded by ChkTag and is not worth building for. The rule holds anyway: a
+range check is as short as the shift and right in every case. `010` §10's own
+phrasing: range-check user pointers, never `>> 47 == 0`.
 
 **Alternatives.** Build PKS support (rejected: never merged upstream, Intel
 only, no caller). Say nothing and let the idiom appear (rejected: it is the

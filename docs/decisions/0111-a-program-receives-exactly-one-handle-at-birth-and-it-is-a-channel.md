@@ -12,8 +12,9 @@ D-110 there were no channels to give.
 **Decision.** `user::spawn` creates one opaque, typed bootstrap identity before
 the thread exists and puts it in a fresh `HandleTable` as the child's only
 entry. The table is made and filled inside the `Reserved` window
-`spawn_in_space` opens (D-106), so no moment exists at which a second entry
-could be seen. D-248 removed the original paired parent endpoint: no current
+`spawn_in_space` opens (D-106), so it is never observable holding anything else:
+not "we only ever insert once", but "there is no moment at which a second entry
+could be seen". D-248 removed the original paired parent endpoint: no current
 operation could use it, so creating and orphaning it gave a parent no authority.
 
 **Rationale.** The count matters most. "It has a bootstrap channel" would hold

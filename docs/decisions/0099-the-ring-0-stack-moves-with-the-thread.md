@@ -43,5 +43,5 @@ this belongs beside them.
   "another program" means "another pair of addresses".
 - Eager XSAVE is now reachable and still absent. Two threads can be in ring 3,
   so two can have floating-point state to lose. Nothing uses it yet (the program
-  is four bytes), but the gap is present from here and arrives with the
-  processes in the rest of this slice.
+  is four bytes), but the gap is real from here rather than hypothetical. Eager
+  XSAVE arrives with the processes in the rest of this slice.

@@ -40,12 +40,13 @@ Separate ports *and* completion queues give userspace two event planes to join.
 That is why io_uring grew `poll_add`, `futex`, `waitid` and `msg_ring`. A Zircon
 port already *is* a completion queue whose entries are events.
 
-The austerity follows io_uring's security record. The ~60% kernelCTF figure is
-confirmed, and frozen *because* Google still disables io_uring in 2026. NVD
-returns 143 io_uring CVEs and rising: 38 in 2024, 40 in 2025, 36 by partial 2026.
-They cluster in **newly added** surface: `zcrx`, provided buffers, `ublk`,
-passthrough. By class: 50 race/TOCTOU, 23 use-after-free, 10 refcount. The risk
-is feature velocity on a ring surface.
+The austerity is io_uring's security record read correctly. The ~60% kernelCTF
+figure is confirmed and Google still disables io_uring in 2026, but the
+statistic is frozen *because* they disabled it. NVD returns 143 io_uring CVEs
+and rising: 38 in 2024, 40 in 2025, 36 by partial 2026. They cluster in **newly
+added** surface: `zcrx`, provided buffers, `ublk`, passthrough. By class: 50
+race/TOCTOU, 23 use-after-free, 10 refcount. The risk is feature velocity on a
+ring surface, not io_uring the name.
 
 No global FIFO is the Scalable Commutativity Rule again. sv6's mail-server
 benchmark shows an ordered socket forces one shared queue, and an unordered one

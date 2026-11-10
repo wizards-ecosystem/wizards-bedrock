@@ -25,16 +25,15 @@ this ordering, and it is stronger for it: a device the kernel has not decided
 to map is unmappable, not merely unmapped.
 
 `AddressSpace::map_device` puts device windows in a reserved range
-(`0xffff_ff00_..`), uncacheable and never executable, between the direct
-map and the image. It returns a `DeviceMapping`, neither `Copy` nor `Clone`,
-so `DeviceMapping::claim` is a safe function returning an `MmioRegion`. The
-types discharge each clause of `MmioRegion::new`'s contract: the mapping is
-live (checked against the active tables),
-permanent (nothing unmaps), and exclusive in both virtual and physical
-interval registries (the token cannot be duplicated). RAM and
-firmware-backed storage are ineligible for device mapping. This is the
-sensitivity discipline `008` §4.1 took from Asterinas, in the form this
-kernel can enforce: `port::claim` answers "may two drivers have this?", and
+(`0xffff_ff00_..`), uncacheable and never executable, well clear of the direct
+map below and the image above. It returns a `DeviceMapping`, neither `Copy` nor
+`Clone`, so `DeviceMapping::claim` is a safe function returning an `MmioRegion`.
+The types discharge each clause of `MmioRegion::new`'s contract: the mapping is
+live (checked against the active tables), permanent (nothing unmaps), and
+exclusive in both virtual and physical interval registries (the token cannot be
+duplicated). RAM and firmware-backed storage are ineligible for device mapping.
+This is the sensitivity discipline `008` §4.1 took from Asterinas, in the form
+this kernel can enforce: `port::claim` answers "may two drivers have this?", and
 ownership of a `DeviceMapping` answers "may anyone have it at all?"
 
 **The parsing is host-tested, and that mattered.** `libs/acpi-tables` reads

@@ -39,7 +39,7 @@ of these asks the kernel to map something it should not:
 **Pages are filled before they are mapped.** `Segment::write_at` fills the
 frames while only the loader holds them, then the mapping is read-only and
 executable. Mapping writable, copying, then demoting has an instant where the
-page is both, and W^X must hold at every instant.
+page is both, and W^X is a property that holds at every instant or not at all.
 
 **Rationale.** The check doctors a copy of the *shipped* initrd one field at a
 time, so what is refused differs from what loads by exactly the thing under

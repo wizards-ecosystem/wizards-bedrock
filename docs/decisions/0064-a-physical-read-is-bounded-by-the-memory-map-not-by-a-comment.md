@@ -11,9 +11,9 @@ established that, and the window keeps the device's offset from a page
 boundary on purpose.
 
 Neither was reachable: `read_physical` runs before `activate`, where the
-bootloader maps everything, and every device mapped here is page-aligned. Both
-were one firmware quirk from live, and `read_physical`'s length comes from a
-firmware table's own header.
+bootloader maps everything, and every device mapped here happens to be
+page-aligned. Both were one firmware quirk from being real, and
+`read_physical`'s length comes from a firmware table's own header.
 
 **Decision.** There is no general safe physical-read operation. A
 `FirmwareMemory` capability copies with volatile reads only from ACPI

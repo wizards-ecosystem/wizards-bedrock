@@ -8,7 +8,8 @@ before a byte moves, so a bad pointer is refused instead of faulted on. But the
 walk and the copy are two moments, and **interrupts are on between them**. A
 thread preempted mid-copy whose pages are then unmapped faults on memory that
 was there when it looked. That fault was terminal, so a program could stop the
-machine. `011`'s close named it the last correctness hole in the boundary.
+machine by arranging it. `011`'s close named it the last correctness hole in the
+boundary.
 
 **Decision.** An exception table, the shape every kernel that solved this uses.
 The copy is hand-written assembly with the two instructions that can fault
@@ -18,9 +19,9 @@ many bytes were left. The caller turns that into `UserCopyError::Vanished`.
 
 **Assembly, not a loop**, because a compiler-generated `copy_nonoverlapping` has
 no stable instruction range, so nothing could say "a fault *here* is
-recoverable" about one. It copies a byte at a time. The ranges are a few bytes
-to a page, boundary correctness outweighs the speed, and a wider copy would need
-one fixup per width.
+recoverable" about one. It copies a byte at a time, which is slower and is the
+price: the ranges are a few bytes to a page, boundary correctness outweighs the
+speed, and a wider copy would need one fixup per width.
 
 **The redirect is `pub(super)` with exactly one caller.** "Set the instruction
 pointer" is the primitive every exploit wants, and this kernel should have no
@@ -44,8 +45,8 @@ just that some bytes did not move.
 **The check had to be driven through the unwalked form**, for the rule this
 project keeps relearning. `admits` refuses an unmapped address before a byte
 moves, so a check built on the walked copy tests that refusal and the recovery
-*not at all*. It would pass with the fixup deleted, so the check points the
-unwalked form at nothing.
+*not at all*. It would pass with the fixup deleted. Pointing the unwalked form
+at nothing is the mechanism itself.
 
 **Consequences.** 128 checks. `a_faulting_user_copy_resumes_and_reports` counts
 recoveries instead of inferring one from the machine still running. It requires
@@ -62,8 +63,9 @@ with that noted, because a reader would otherwise expect a red check.
 
 Left owed: nothing yet unmaps another thread's memory, so the window this
 recovers from is not reachable on this machine. The count stays at one, from the
-check that drives it. The mechanism is proved; the race it guards becomes
-constructible once a process has two threads.
+check that drives it deliberately. The mechanism is proved and the race it
+guards is not yet constructible. It becomes constructible the moment a process
+has two threads.
 
 **Amended by D-361.** On 2026-10-03 the budget stated above rose from 380 to
 381 lines for the painted stack meter's two single-line volatile accesses.

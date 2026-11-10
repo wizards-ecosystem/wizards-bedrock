@@ -9,7 +9,7 @@ toolchain ships no `as.exe`, so any crate reaching `getrandom >= 0.3.2` or
 `windows-sys >= 0.61` fails to build. §12 #35 made the sharper point. NrOS paid
 13.3:1 and Atmosphere 4.3:1 in proof-to-code for the same page-table logic, and
 the data layout made the difference. That layout is chosen when the ring and
-handle table are written.
+handle table are written, not afterwards.
 
 **Decision.** Phase 5 adopts two verification tiers, both scoped to the ring
 protocol:

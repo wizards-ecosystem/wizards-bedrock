@@ -57,19 +57,18 @@ measured, so the tick rate survives even a misfired divide write.
   them ride the MSR helpers whose gate D-33 built.
 
 **Amended 2026-08-20**, after the phase's adversarial audit, where two
-independent reviewers found one hole. The believability bounds miss a
-stall crossing the counter's 54.9 ms span mid-window: the fold inflates the
-rate two to four times, inside bounds that must span both targets' clocks.
-The window is now guarded in depth. No gap between counter observations may
-exceed ten milliseconds. The finished window must land within one such gap
-of its target. Two consecutive windows must agree to one part in sixty-four.
-A stall of exactly the wrong length defeats any single guard, but no stall
-forges the same wrong answer twice. A fourth guard came from the datasheet:
-the 8254 loads a written count only on the crystal edge after its high byte.
-So the baseline read waits on the read-back status byte's null-count flag,
-instant under both hypervisors and a measurable wait on real hardware.
-Attempts rose from three to five, leaving the agreeing pair room around
-discarded windows.
+independent reviewers converged on the same hole. The believability bounds miss
+a stall crossing the counter's 54.9 ms span mid-window: the fold inflates the
+rate two to four times, inside bounds that must span both targets' clocks. The
+window is now guarded in depth. No gap between counter observations may exceed
+ten milliseconds. The finished window must land within one such gap of its
+target. Two consecutive windows must agree to one part in sixty-four. A stall of
+exactly the wrong length defeats any single guard, but no stall forges the same
+wrong answer twice. A fourth guard came from the datasheet: the 8254 loads a
+written count only on the crystal edge after its high byte. So the baseline read
+waits on the read-back status byte's null-count flag, instant under both
+hypervisors and a measurable wait on real hardware. Attempts rose from three to
+five, leaving the agreeing pair room around discarded windows.
 
 **Superseded in part by D-57 (2026-08-23).** The tick, the interpolated
 uptime and the monotonic clamp are gone. The measurement survives (the same

@@ -66,23 +66,23 @@ D-96 and `011` called it *a trap gate* four times. The code builds an
 **interrupt gate at DPL 3**, and `libs/x86-tables` states that a trap gate "is
 deliberately unavailable". `011` still carried D-96's one-thread-in-ring-3
 limitation that D-99 had lifted. `xtask`'s program builder claimed a file-offset
-congruence it does not hold, describing the bug it avoided. And `USER_END` was
-open-coded twice in the checks, in the commit whose ADR says *"named once.
-Nothing computes it."*
+congruence it does not hold, describing the bug it says it avoided. And
+`USER_END` was open-coded twice in the checks, in the same commit whose ADR says
+*"named once. Nothing computes it."*
 
 **Rationale.** The first finding generalises. Every mitigation in this phase was
 reasoned from the kernel's side: is the window short, is the check before the
 copy, is the range right. The one that mattered was a bit the *program*
-controls, surviving a transition nobody had questioned. The audit found it in
-the manual's list of what interrupt delivery clears, by noticing what was
-absent.
+controls, surviving a transition nobody had asked what it preserved. The audit
+found it in the manual's list of what interrupt delivery clears, by noticing
+what was absent.
 
 **Consequences.**
 
 - One hundred and two named machine checks. The new one is driven by a hostile
   program that ships in the image.
-- `clac` costs a compare and a branch on every trap entry. This kernel has no
-  instruction patching, and `clac` is a `#UD` where SMAP is absent, which the
+- `clac` costs a compare and a branch on every trap entry, because this kernel
+  has no instruction patching. `clac` is a `#UD` where SMAP is absent, which the
   degraded boot (D-90) exercises.
 - **Two findings are recorded and not fixed.** `paging::translate` returns the
   *leaf* entry's flags without intersecting the parents', so four callers state

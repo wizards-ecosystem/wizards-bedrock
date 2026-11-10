@@ -44,10 +44,10 @@ btrfs-style log tree, and makes small random metadata updates affordable.
 **Rationale.** The design was never the cost. Read-only FAT32 tests the NVMe
 block path, VFS and buffer plumbing at zero on-disk-write risk. NVMe replaces
 the earlier virtio-blk wording because VMware, the milestone target, has no
-virtio (`010` §10). FAT32's deeper argument is that *the oracle already
-exists*: mature operating systems mount the image and judge the writer. Where
-every change lands with the check that proves it, nothing buildable for WizFS
-in one phase is stronger.
+virtio (`010` §10). FAT32's deeper argument is that *the oracle already exists*:
+mature operating systems mount the image and judge the writer. For a project
+whose rule is that every change lands with the check that proves it, that is
+categorically stronger than anything buildable for WizFS in one phase.
 
 For calibration, SerenityOS ships ext2 and FAT with hundreds of contributors;
 Redox has been committing to `redoxfs` since 2016.

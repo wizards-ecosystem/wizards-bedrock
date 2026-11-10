@@ -2,12 +2,12 @@
 
 Status: Accepted, 2026-08-22.
 
-**Context.** `008-research-notes-2.md` §4.2 named a bug class no lint here
-catches: sleep-in-atomic-context, and its memory-safety cousin, allocation
-from a handler that interrupted the allocator's own refill. It called the
-idea expressible on stable as a context token in the `PanicToken` idiom,
-worth an ADR once the heap landed. The heap landed in D-47. Slice 2 adds the
-first switch out of a handler, where the rule becomes breakable.
+**Context.** `008-research-notes-2.md` §4.2 named the bug class no lint here can
+catch: sleep-in-atomic-context, and its memory-safety cousin, allocation from a
+handler that interrupted the allocator's own refill. It called the idea
+expressible on stable as a context token in the `PanicToken` idiom, worth an ADR
+once the heap landed. The heap landed in D-47. Slice 2 adds the first switch out
+of a handler, where the rule becomes breakable.
 
 **Decision.** `wost::interrupt` keeps a trap-depth count, incremented around
 every handler call and zero in thread context. The heap's `alloc` asserts it

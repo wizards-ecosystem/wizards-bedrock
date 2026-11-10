@@ -61,10 +61,10 @@ freeing them was the one path where the type's purpose lapsed silently.
 
 `serve`'s silent `break` on a missing reservation would wedge a ring for a
 process's life: `outstanding()` never drains and `admit` returns zero for ever.
-D-112's model shows it unreachable, so it is now a `debug_assert`.
-`spawn_prepared` retires `wost`'s slot as well as the kernel's when binding
-fails. Releasing only one leaves the tables disagreeing, and every later spawn
-of that slot is refused for ever.
+D-112's model shows it unreachable, and it is now a `debug_assert` rather than a
+bug report nobody can diagnose. `spawn_prepared` retires `wost`'s slot as well
+as the kernel's when binding fails. Releasing only one leaves the tables
+disagreeing, and every later spawn of that slot is refused for ever.
 
 ### Nine checks that could not fail, and three that failed wrongly
 
@@ -74,8 +74,8 @@ mistake in three forms:
 - `a_rewritten_submission_cannot_change_what_was_served` read the completion
   slot 128 bytes away from the submission the "hostile rewrite" touched, so it
   reduced to `posted == posted`: **no line in `queue.rs` could falsify it.** It
-  now reads the rewritten submission back and asserts that serving again yields
-  nothing.
+  now reads the rewritten submission back, so the rewrite is shown to have
+  landed, and asserts that serving again yields nothing.
 - `xstate::extended_control()` began `if !is_enabled() { return 0 }`, so the
   check's `extended_control() == 0` conjunct read a Rust early return, not
   `XGETBV`. This is D-105's own `VERW`-arming finding again, three ADRs later.

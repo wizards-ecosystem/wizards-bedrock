@@ -49,9 +49,10 @@ existed.* A `wost`-held global reachable through a closure would put a lock
 where the kernel's own policy belongs, against D-43.
 
 **Alternatives.** Keep `activate` consuming and add a separate late-mapping API
-(rejected: two APIs for one operation, and the second needs the same refusal to
-be sound). The typestate (rejected on `010` §4's evidence). Leaving the space in
-`wost` (rejected on D-43: which ranges exist is policy).
+(rejected: two APIs for one operation, and the second would need the same
+refusal to be sound, so the first buys nothing). The typestate (rejected on
+`010` §4's evidence). Leaving the space in `wost` (rejected on D-43: which
+ranges exist is policy).
 
 **Consequences.**
 

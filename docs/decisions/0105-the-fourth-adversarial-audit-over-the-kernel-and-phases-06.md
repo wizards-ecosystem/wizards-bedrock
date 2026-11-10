@@ -34,7 +34,8 @@ rewrite", and lets the effective-permission fold move to `libs/`.
 *Evidence that proved the wrong thing.* `BootRegion` meant "the memory map
 describes this range", and a `Reserved` device hole is described. A writeback
 mapping over one is a cacheable alias of registers. `describe` now requires
-`MemoryKind::is_direct_mapped`, D-45's answer to what counts as memory.
+`MemoryKind::is_direct_mapped`, D-45's own answer to what counts as memory,
+which is the map this evidence exists to build.
 
 *A `#UD` a safe caller could arm.* `interrupt::arm_access_clear` is safe and
 public and installs a `clac` in the trap tail. Without SMAP that is an invalid
@@ -58,16 +59,16 @@ the `contents_fit` bound be isolated at all.
 
 *Defects outside the kernel.* `eevdf::Entity::charge` narrowed a widened product
 with `as`. A charge whose virtual value is a multiple of `2^64` advanced the
-clock by nothing, the outcome `MAX_WEIGHT`'s doc exists to prevent. It clamps
-now, as its two siblings always did. `xstate`'s `Layout::compacted` truncated
-its cursor to `u32`, giving two components one offset, while `is_consistent`,
-which the doc calls "the invariant a caller should assert before handing the
-size to an allocator", was a constant `true`. `xtask/src/elf.rs`, the verifier
-D-40 says must never panic on a malformed input, panicked on two:
-`e_shoff = u64::MAX` and `p_filesz = u64::MAX`. `handle_space::next_generation`
-panicked in the debug boot on a raw counter of `u32::MAX`. And the shipped-boot
-check ignored the panic flag after its settle window, so a panic in the final
-poll interval was reported as a clean boot.
+clock by nothing, the outcome `MAX_WEIGHT`'s own doc says it exists to prevent.
+It clamps now, as its two siblings always did. `xstate`'s `Layout::compacted`
+truncated its cursor to `u32`, giving two components one offset, while
+`is_consistent`, which the doc calls "the invariant a caller should assert
+before handing the size to an allocator", was a constant `true`.
+`xtask/src/elf.rs`, the verifier D-40 says must never panic on a malformed
+input, panicked on two: `e_shoff = u64::MAX` and `p_filesz = u64::MAX`.
+`handle_space::next_generation` panicked in the debug boot on a raw counter of
+`u32::MAX`. And the shipped-boot check ignored the panic flag after its settle
+window, so a panic in the final poll interval was reported as a clean boot.
 
 *Two rules, from what the check failures had in common.*
 

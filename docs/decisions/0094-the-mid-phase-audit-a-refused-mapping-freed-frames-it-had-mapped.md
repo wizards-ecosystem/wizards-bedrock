@@ -12,9 +12,11 @@ tautology in a check written four commits earlier, and six claims in prose that
 the code had outrun.
 
 **The worst was mine, introduced by the ADR closing the same class of hole.**
-D-87's contract for `map_owned` said that on failure nothing was mapped. It said
-the whole range is preflighted before any entry is written (D-77), so `run` is
-dropped and its frames go back to the allocator.
+D-87 gave `map_owned` this contract:
+
+> On failure nothing was mapped — the whole range is preflighted before any
+> entry is written (D-77) — so `run` is dropped and its frames go back to the
+> allocator.
 
 **There was no preflight.** `map_range` wrote each entry as it walked, so a
 range failing part-way left the earlier pages mapped. `map_owned` trusted its
@@ -23,7 +25,8 @@ mapped them `PRESENT | WRITABLE`. The next allocation hands out memory a live
 mapping can write, and a later `unmap` frees it a second time. Safe code could
 reach it in the live kernel space through a public `wost` export.
 
-The sentence came from D-77's summary, where it was true of the code then. A doc
+The sentence came from D-77's summary, where it was true of the code then.
+Restating a property in a new place is not the same as holding it, and a doc
 comment is not a check.
 
 **Decision: the six soundness and evidence fixes.**
@@ -64,22 +67,23 @@ for the analogous case.
 is D-77's own corrected failure mode, reappearing in the commit that added it.
 *unmapping refuses what it does not own* claimed to test the direct map's large
 pages but used the kernel's linked text address, and accepted either of two
-errors. It now checks six distinct refusals, with the direct-map address
-*probed*, because the first two megabytes are mapped in small pages. *an
-unmapped range returns its frames* counted free frames before a mapping that
-could allocate a page table, so it passed only because an earlier check had
-built that table. `libs/slab-layout`'s new test asserted `n*b >= n*b`, true by
-algebra; it now compares against counts and offsets transcribed by hand.
+errors, so it could not say which mechanism fired. It now checks six distinct
+refusals, with the direct-map address *probed* rather than assumed, because the
+first two megabytes are mapped in small pages. *an unmapped range returns its
+frames* counted free frames before a mapping that could allocate a page table,
+so it passed only because an earlier check had built that table.
+`libs/slab-layout`'s new test asserted `n*b >= n*b`, true by algebra; it now
+compares against counts and offsets transcribed by hand.
 
 **Decision: the prose.** `011`'s lock-order section claimed taking two spin
 locks is `E0499`. It is not: `ThreadContext::claim` mints a token wherever the
 interrupt flag says thread context, so a second one can be minted inside a live
 guard. The compile-time half is a strong default, not a proof: one visible,
-greppable line defeats it, audited like an `unsafe` block. It also referenced
-`libs/lock-rank`, which D-85 explains was never written. `009` claimed this
-kernel holds no lock across a call inside `wost`; `mm::with_memory_map` does.
-Four stale `SAFETY` comments and module docs in `paging.rs` still said nothing
-unmaps.
+greppable line defeats it, audited like an `unsafe` block. The section now says
+so. It also referenced `libs/lock-rank`, which D-85 explains was never written.
+`009` claimed this kernel holds no lock across a call inside `wost`;
+`mm::with_memory_map` does. Four stale `SAFETY` comments and module docs in
+`paging.rs` still said nothing unmaps.
 
 **Rationale.** Reading the code against its own documentation reached every
 finding, and the gate found none, because the checks had drifted toward

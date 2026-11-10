@@ -19,15 +19,15 @@ toolkit requirements". Redox ships it.
 the libc, windowing system, network stack and TLS work together against a real
 third-party codebase. "Browse the web" leaves `000-vision.md`.
 
-**Rationale.** It is a right-sized, achievable integration trophy, not web
-access. A roadmap promising web access while delivering the trophy reads as
-failure at the moment it should read as success.
+**Rationale.** It is a right-sized integration trophy, and it is demonstrably
+achievable. It is not web access. A roadmap promising web access while
+delivering the trophy reads as failure at the moment it should read as success.
 
 Alternatives weighed. Servo: Redox launched it in October 2025 and reported it
 crashes when a second page loads. Ladybird: pre-alpha after 25,000 commits of
 funded full-time work, targeting a stable release in 2028, requiring Qt 6.9+,
-Skia and Mesa, and closed to outside contributions since June 2026. Nobody
-solo has a working browser; SerenityOS needed 421 contributors and then spun
+Skia and Mesa, and closed to outside contributions since June 2026. Nobody solo
+has a working browser; SerenityOS needed 421 contributors and then had to spin
 its browser out into a funded nonprofit.
 
 **Consequences.**
