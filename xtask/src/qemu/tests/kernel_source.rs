@@ -430,7 +430,7 @@ fn the_serial_contract_matches_the_kernel_source() {
         .parent()
         .expect("xtask sits below the workspace root");
     let root = repository.join("kernel").join("src");
-    let selftest = std::fs::read_to_string(root.join("selftest.rs")).expect("selftest.rs");
+    let selftest = crate::contracts::module_source(&root, "selftest.rs");
     let main = std::fs::read_to_string(root.join("main.rs")).expect("main.rs");
     let devfs = std::fs::read_to_string(root.join("devfs.rs")).expect("devfs.rs");
     let tmpfs = std::fs::read_to_string(root.join("tmpfs.rs")).expect("tmpfs.rs");
@@ -690,8 +690,8 @@ fn the_namespaces_signature_is_the_one_the_kernel_looks_for() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask sits below the workspace root");
-    let selftest =
-        std::fs::read_to_string(root.join("kernel/src/selftest.rs")).expect("selftest.rs");
+    let selftest = std::fs::read_to_string(root.join("kernel/src/selftest/storage.rs"))
+        .expect("selftest/storage.rs");
 
     let kernel = selftest
         .lines()
@@ -810,8 +810,8 @@ fn the_corpus_the_kernel_looks_for_is_the_one_that_is_written() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask sits below the workspace root");
-    let selftest =
-        std::fs::read_to_string(root.join("kernel/src/selftest.rs")).expect("selftest.rs");
+    let selftest = std::fs::read_to_string(root.join("kernel/src/selftest/files.rs"))
+        .expect("selftest/files.rs");
     let fs = std::fs::read_to_string(root.join("kernel/src/fs.rs")).expect("fs.rs");
     use crate::image::corpus;
 
@@ -835,10 +835,11 @@ fn the_corpus_the_kernel_looks_for_is_the_one_that_is_written() {
             .lines()
             .find_map(|line| {
                 line.trim()
+                    .trim_start_matches("pub(super) ")
                     .strip_prefix(&format!("const {constant}: &[u8] = b\""))
             })
             .and_then(|rest| rest.split_once('\"').map(|(value, _)| value.to_string()))
-            .unwrap_or_else(|| panic!("no {constant} in selftest.rs"));
+            .unwrap_or_else(|| panic!("no {constant} in selftest/files.rs"));
         assert_eq!(declared, expected, "{constant} drifted");
     }
 

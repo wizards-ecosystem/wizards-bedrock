@@ -132,7 +132,7 @@ fn production_kernel_code_claims_no_port_by_number() {
             .to_string_lossy()
             .replace('\\', "/");
         // The self-test harness alone probes exclusivity with raw claims.
-        if relative == "kernel/src/selftest.rs" {
+        if relative == "kernel/src/selftest.rs" || relative.starts_with("kernel/src/selftest/") {
             continue;
         }
         let source = std::fs::read_to_string(&path)

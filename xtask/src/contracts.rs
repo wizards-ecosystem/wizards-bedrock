@@ -299,7 +299,7 @@ fn module_syntax(file: &std::path::Path) -> syn::File {
     syntax
 }
 
-fn module_source(root: &std::path::Path, relative: &str) -> String {
+pub(crate) fn module_source(root: &std::path::Path, relative: &str) -> String {
     let file = root.join(relative);
     let children = file.with_extension("");
     let mut files = vec![file];

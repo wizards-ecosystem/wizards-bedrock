@@ -309,7 +309,9 @@ fn one_production_owner_binds_and_retires_each_address_space() {
     let mut calls = Vec::new();
     for source in rust_sources_below(&paths.root().join("kernel/src")) {
         let relative = source.strip_prefix(paths.root()).unwrap_or(&source);
-        if relative == std::path::Path::new("kernel/src/selftest.rs") {
+        if relative == std::path::Path::new("kernel/src/selftest.rs")
+            || relative.starts_with("kernel/src/selftest")
+        {
             continue;
         }
         let text = std::fs::read_to_string(&source)
