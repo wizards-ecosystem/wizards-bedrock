@@ -479,7 +479,7 @@ The evidence is unusually one-directional: ◆
 4. It removes an entire class of right from the rights word, and by D-78's rule
    those bits would otherwise be syscall names.
 
-**The exception, stated honestly.** Directory enumeration cannot be made
+**The exception.** Directory enumeration cannot be made
 stateless the way byte reads can: entries are variable-length and the set
 mutates under you. Both 9P and Fuchsia keep a cursor here. Return an opaque
 `u64` cookie from `read_dir` and require it back — the cursor lives in the
@@ -508,7 +508,7 @@ protocol — every backend is a 9P server. Fuchsia is the same over channels:
 MemFS, MinFS and BlobFS are three processes speaking one protocol with no
 in-kernel vtable anywhere.
 
-**The honest judgement at three backends.**
+**The judgement at three backends.**
 
 The polymorphism is already mandatory and already free: a directory handle
 arrives over a channel and the receiver cannot tell tmpfs from devfs from a
@@ -540,7 +540,7 @@ conflation that WASI's own README rejects on exactly these grounds: *"Unix's
 'everything is a file' philosophy is in conflict with the goals of supporting
 modularity and the principle of least authority."* Let `lookup` on devfs return
 a device handle. Keep a small byte trait for file backends, where there are
-genuinely two implementations.
+two implementations.
 
 ---
 
@@ -570,7 +570,7 @@ sixteen-slot budget.
 
 1. **Always try inline with a nowait flag.** Free, and the common case.
 2. **For anything pollable, register a wait — never a thread.**
-3. **The only case genuinely needing a thread is a regular-file path that
+3. **The only case needing a thread is a regular-file path that
    sleeps.** If the block layer is submit-plus-completion, drive the read as a
    **state machine** and the answer may be **zero workers**. That is the
    direction Linux was travelling and could not finish only because it had to
