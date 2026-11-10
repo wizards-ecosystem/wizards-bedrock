@@ -369,6 +369,7 @@ impl Queues {
     }
 
     /// Post one operation's terminal completion, cancelled ones included, spending its reservation.
+    /// Every operation must post exactly one.
     pub const fn complete(&mut self) -> Option<usize> {
         if self.reserved == 0 {
             return None;

@@ -198,7 +198,7 @@ impl HeaderType {
         Self(bits)
     }
 
-    /// Whether the device has functions past zero (bit 7).
+    /// Whether the device has functions past zero (bit 7); probing all eight is only slower.
     pub const fn is_multifunction(self) -> bool {
         self.0 & 0x80 != 0
     }

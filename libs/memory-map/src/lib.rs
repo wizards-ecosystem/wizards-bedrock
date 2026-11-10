@@ -52,6 +52,7 @@ impl MemoryKind {
     }
 
     /// Whether the direct map covers this region; reserved ranges may be device holes.
+    /// Boot, image, framebuffer and table memory stay mapped, in use across the CR3 switch.
     pub const fn is_direct_mapped(self) -> bool {
         matches!(
             self,
@@ -223,11 +224,13 @@ impl MemoryMap {
     }
 
     /// Whether every byte of `start..end` lies inside described memory, which a device hole is not.
+    /// The distinction keeps any cacheable alias away from device registers.
     pub fn covers_memory(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, MemoryKind::is_direct_mapped)
     }
 
     /// The one cache type the direct map gives every byte of `start..end`, if there is one.
+    /// A mixed range gets `None`, because no single mapping type agrees for every page.
     pub fn direct_map_cache(&self, start: u64, end: u64) -> Option<DirectMapCache> {
         if !self.covers_memory(start, end) {
             return None;
@@ -264,6 +267,7 @@ impl MemoryMap {
     }
 
     /// Find a page-aligned, nonzero memory run of at least `len` bytes.
+    /// [`Self::covers_memory`] agrees the run is memory, so a caller never maps a device hole.
     pub fn first_memory_run(&self, len: u64) -> Option<u64> {
         if len == 0 {
             return None;

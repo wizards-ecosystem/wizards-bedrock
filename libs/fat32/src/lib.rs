@@ -1,4 +1,6 @@
 //! A read-only FAT32 reader over any source of sectors.
+//!
+//! Disk bytes are hostile: a malformed volume is an error, never a panic or out-of-bounds read.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -632,6 +634,7 @@ impl<S: Sectors> Volume<S> {
     }
 
     /// Read at most one sector of entries and advance `cursor`, catching a cycle by its hare.
+    /// The entries own their names, so a caller may release the device lock before reading them.
     pub fn directory_chunk(
         &mut self,
         cursor: &mut DirectoryCursor,
@@ -707,6 +710,7 @@ impl<S: Sectors> Volume<S> {
     }
 
     /// Read up to `into.len()` bytes of `entry` from `offset`, never past its size.
+    /// Past the size, the cluster tail holds a previous file's data.
     pub fn read_file(
         &mut self,
         entry: &Entry,

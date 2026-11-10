@@ -1,5 +1,7 @@
 //! Parsing for the ACPI tables this kernel reads.
 //!
+//! Firmware bytes are hostile: a malformed table is an error, never a panic or out-of-bounds read.
+//!
 //! ```
 //! use acpi_tables::{Rsdp, Sdt};
 //!

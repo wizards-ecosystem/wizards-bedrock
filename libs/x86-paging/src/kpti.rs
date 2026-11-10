@@ -228,7 +228,8 @@ pub struct FlushPremise {
 }
 
 impl FlushPremise {
-    /// Admit the flush policy over the flags of every present leaf either root reaches.
+    /// Admit the flush policy, refusing enabled PCID or any global leaf.
+    /// `leaf_domain` must contain the flags of every present leaf reachable through either root.
     pub fn new(pcid: PcidState, leaf_domain: &[Flags]) -> Result<Self, FlushPremiseError> {
         if matches!(pcid, PcidState::Enabled) {
             return Err(FlushPremiseError::PcidEnabled);
@@ -546,6 +547,7 @@ impl ObservedPage {
 }
 
 /// Whether no stack guard is covered by any leaf of either root; a malformed leaf fails closed.
+/// The caller must supply every present leaf that could cover a guard; an omission reads as absent.
 pub fn stack_guards_are_absent(
     stacks: &[EntryStackRange],
     full_present_pages: &[ObservedPage],
@@ -579,6 +581,7 @@ pub fn stack_guards_are_absent(
 }
 
 /// Whether every present stripped higher-half leaf, in any order, is exactly the expected enclave.
+/// `observed` must hold every such leaf, since an omitted extra leaf reads as absent.
 pub fn enclave_matches(expected: &[EnclavePage], observed: &[ObservedPage]) -> bool {
     if expected.is_empty() || expected.len() != observed.len() {
         return false;

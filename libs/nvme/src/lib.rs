@@ -71,12 +71,14 @@ pub const NAMESPACE_IDENTIFY_BYTES: usize =
     identify::LBA_FORMATS + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
 
 /// Publication state for the controller's sole outstanding command.
+/// [`Self::close`] frees no DMA memory; only a completion or verified quiescence returns it.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DmaState {
     state: DmaOwnership,
 }
 
 /// Proof, minted only by [`DmaState::publish_with`], that a prepared command is device-owned.
+/// The MMIO adapter consumes it while ringing the matching submission doorbell.
 #[derive(Debug)]
 pub struct DmaPublication<'state> {
     _state: &'state DmaState,
@@ -183,7 +185,8 @@ pub mod status {
     pub const FATAL: u32 = 1 << 1;
 }
 
-/// Register values that describe a controller unable to execute DMA, wherever they were read.
+/// `CC` and `CSTS` values that describe a controller unable to execute DMA.
+/// They prove nothing about where they were read, so hardware authority must keep the mapping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DisabledRegisters {
     cc: u32,
@@ -358,7 +361,7 @@ impl Capabilities {
         bytes.is_power_of_two() && shift >= self.min_page_shift() && shift <= self.max_page_shift()
     }
 
-    /// Whether `CSS` bit 37 advertises the NVM command set.
+    /// Whether `CAP` bit 37, which is `CSS` bit 0, advertises the NVM command set.
     pub const fn supports_nvm_command_set(self) -> bool {
         self.bits & (1 << 37) != 0
     }
@@ -426,6 +429,7 @@ impl Capacity {
 }
 
 /// Which half of a queue's doorbell pair an operation addresses.
+/// Doorbells are write-only, so the host shadows the tail it last published.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Doorbell {
     /// Publish a new submission tail.

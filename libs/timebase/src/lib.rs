@@ -161,6 +161,7 @@ impl Timebase {
 }
 
 /// The sequence counter of a lockless clock; the caller supplies both memory-ordering barriers.
+/// `kernel::timepage` supplies them, and a read must not span a full `u32` counter cycle.
 ///
 /// # Examples
 ///

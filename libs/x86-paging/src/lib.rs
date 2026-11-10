@@ -44,7 +44,8 @@ pub const MAX_PHYSICAL: u64 = ADDRESS_MASK + PAGE_SIZE;
 /// The first address that is not user memory; the canonical hole begins here.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
-/// The first address a user mapping may not cover, so no trap saves the non-canonical [`USER_END`].
+/// The first address a user mapping may not cover, which keeps the last canonical page unmapped.
+/// No trap can then save a RIP of [`USER_END`], whose return would #GP in ring 0.
 pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
 
 /// Whether `len` bytes at `at` lie wholly below [`USER_MAPPING_END`].
@@ -88,6 +89,7 @@ impl Flags {
     pub const NO_EXECUTE: Self = Self(1 << 63);
 
     /// Software bit 9 (an SDM `AVL` bit): the mapping owns its frame, so unmapping returns it.
+    /// Set it only on allocator frames: unmap frees them, and the entry is their only provenance.
     pub const OWNED: Self = Self(1 << 9);
 
     pub const NONE: Self = Self(0);
@@ -288,7 +290,8 @@ impl Entry {
         Self::encode(address, level.span(), flags)
     }
 
-    /// A `PRESENT | WRITABLE` table entry, with [`Flags::USER`] so user leaves below stay usable.
+    /// A `PRESENT | WRITABLE`, never `NO_EXECUTE` table entry; W^X is decided at the leaves.
+    /// It carries [`Flags::USER`] only for user privilege, so user leaves below stay usable.
     pub const fn table(address: u64, privilege: TablePrivilege) -> Result<Self, EntryError> {
         let mut flags = Flags::PRESENT.union(Flags::WRITABLE);
         if matches!(privilege, TablePrivilege::User) {

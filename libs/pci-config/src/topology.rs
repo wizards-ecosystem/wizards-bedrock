@@ -164,6 +164,7 @@ impl fmt::Display for TopologyError {
 impl core::error::Error for TopologyError {}
 
 /// A snapshot of one PCI segment that answers only once sealed; an error poisons it until reset.
+/// Observe each function once per snapshot; a later observation never replaces an earlier one.
 #[derive(PartialEq, Eq, Debug)]
 pub struct PciTopology {
     parent: [u32; BUSES],

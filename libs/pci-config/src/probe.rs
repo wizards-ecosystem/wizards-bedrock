@@ -201,6 +201,7 @@ pub struct ProbeRetry {
 }
 
 /// Probe every BAR with decode verified off; an uncertain restoration returns [`ProbeRetry`].
+/// The adapter holds its configuration lock for the closure; uncertainty leaves DMA and decode off.
 pub fn probe_bars<const N: usize, E>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,

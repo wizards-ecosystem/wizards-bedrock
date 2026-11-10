@@ -207,6 +207,7 @@ impl fmt::Display for EnableError {
 impl core::error::Error for EnableError {}
 
 /// Enable memory decode while explicitly withholding bus mastering.
+/// This is the first stage for a controller whose firmware DMA must stop before bus mastering.
 pub fn enable_memory_space<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -219,6 +220,7 @@ pub fn enable_memory_space<const N: usize>(
 }
 
 /// Fence one requester's bus mastering for a unit-wide transition; restoring it never revives BME.
+/// Keep the returned owner attached to the unit until its transition completes.
 pub fn fence_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -239,6 +241,7 @@ pub fn fence_bus_master<const N: usize>(
 }
 
 /// Freshly verify that one live command owner still has BME clear.
+/// The last check before a unit-wide VT-d write, which neither changes nor consumes the owner.
 pub fn verify_bus_master_fence<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,

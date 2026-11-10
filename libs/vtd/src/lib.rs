@@ -337,7 +337,7 @@ pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
     (status & gsts::CFIS) != 0
 }
 
-/// Whether firmware left translation, queued invalidation and interrupt remapping all inactive.
+/// Whether firmware left `TES`, `QIES`, `IRES` and `CFIS` all clear.
 ///
 /// Only from this state may an early owner program a new root, since a live SRTP or an
 /// unfinished firmware quiescence protocol cannot be trusted.
@@ -646,6 +646,7 @@ pub mod context_command {
 }
 
 /// IOTLB invalidation in the block [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
+/// Its register is reserved while queued invalidation is enabled.
 pub mod iotlb_command {
     /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;

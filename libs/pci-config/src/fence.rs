@@ -275,7 +275,8 @@ impl fmt::Display for HandoffFenceError {
 
 impl core::error::Error for HandoffFenceError {}
 
-/// Clear and verify BME on every bus, device and function; a refusal never re-enables BME.
+/// Clear and verify BME on every bus, device and function, whatever header or bridge hints say.
+/// A refusal never re-enables BME. The caller must own CF8/CFC and static-visibility authority.
 pub fn fence_dma_handoff(
     policy: HandoffFencePolicy,
     mut access: impl FnMut(Address, HandoffAccess) -> Option<u32>,

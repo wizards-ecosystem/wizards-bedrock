@@ -281,6 +281,7 @@ impl<'table> Dmar<'table> {
     }
 
     /// Segment of the one and only DRHD, or `None` for zero or multiple units.
+    /// A single-segment consumer must refuse every other shape before claiming complete coverage.
     pub fn sole_unit_segment(&self) -> Option<u16> {
         let mut units = self.drhds().map(|unit| unit.segment);
         let segment = units.next()?;
@@ -308,6 +309,8 @@ impl<'table> Dmar<'table> {
     }
 
     /// Register base of the sole catch-all DRHD for an RMRR-free `segment`.
+    /// The static deny-all proof: one unit governs every possible requester, not just those seen.
+    /// Any RMRR for the segment refuses early ownership before a unit write.
     pub fn sole_complete_unit_register_base(&self, segment: u16) -> Option<u64> {
         let register_base = self.sole_rmrr_free_unit_register_base(segment)?;
         self.entries()
@@ -355,6 +358,8 @@ impl<'table> Dmar<'table> {
     }
 
     /// Inventory every live requester of the selected function's DRHD, each rechecked.
+    /// `present` must report exactly whether each requester it is asked about exists now.
+    /// A sole RMRR-free catch-all unit scans the segment's whole requester-ID space via `present`.
     pub fn requester_inventory<const N: usize>(
         &self,
         selected: Bdf,
