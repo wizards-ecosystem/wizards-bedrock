@@ -136,8 +136,8 @@ On from the start:
 Deferred, each with its cost named where it was deferred:
 
 - **KASLR** via Limine (`kaslr: yes`) waits on the hardcoded load address in
-  `linker.ld`; deferred to Phase 12 with its interest recorded (D-46). It is
-  the only D-12 item deferred as far as Phase 12, and it is *not* "on from the
+  `linker.ld`; deferred to old Phase 12 with its interest recorded (D-46). It
+  is the only D-12 item deferred as far as old Phase 12, and it is *not* "on from the
   start". The stack exceptions this list used to carry are closed for every
   untrusted boundary (D-89, D-92, D-193).
 - Intel CET shadow stacks, signed boot chain, measured boot. CET is the one
@@ -177,7 +177,7 @@ Research-driven design rules [cited] (bcachefs/btrfs/BetrFS evidence,
   write hole (D-73). Scrub/repair machinery remains part of the design
 
 The format will live in `libs/wizfs-format` (no_std, host-testable + fuzzable)
-when Phase 13 starts it; that crate is intentionally absent today.
+when old Phase 13 starts it; that crate is intentionally absent today.
 
 ## App formats
 
@@ -190,7 +190,7 @@ when Phase 13 starts it; that crate is intentionally absent today.
   numbering, preopens and cursor state over the cursorless native operations
   (D-181). A module compiled for this OS survives an architecture port. Both
   reasons are delivered by `wasip1`. Runtime: a wasmi-class `no_std`
-  interpreter in user mode, pinned when Phase 7 starts rather than named here;
+  interpreter in user mode, pinned when old Phase 7 starts rather than named here;
   WASI host bindings implemented by us directly over native handles
   (wasmtime's host is tokio/std-coupled and does not fit this target; its
   cap-std/WasiCtx pattern is the shape to follow).
@@ -208,7 +208,7 @@ D-183 fixes the implementation boundary: the kernel and its in-kernel modules
 stay Rust, while every feasible first-party target-side program, service,
 library, shell, tool and application is Wizzy. "Native" means direct handles,
 completions and bootstrap protocols; it does not decide whether Wizzy's first
-execution engine is bytecode or AOT. Phase 7 product implementation is stopped
+execution engine is bytecode or AOT. Old Phase 7 product implementation is stopped
 until `015-wizzy-userland.md`'s compiler-readiness gate opens.
 
 D-184's `016-pre-wizzy-foundation.md` is the finite register of kernel,
