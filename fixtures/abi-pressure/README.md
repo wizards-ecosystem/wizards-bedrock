@@ -99,7 +99,7 @@ real hole, in a place three neighbouring decisions had already visited, and
 only a POSIX consumer would have looked there.
 
 1. ~~**`FS_BASE` is a fourth thing that must follow a thread.**~~ **Fixed by
-   D-118**, and it is the clearest return this exercise paid: `RSP0` (D-99),
+   D-118**: `RSP0` (D-99),
    `CR3` (D-106) and the extended state (D-108) all lived in `task::prepare`
    and this did not, because nothing native has thread-local storage and so
    nothing native had asked. `sys_tcb_set` is now WIRED with no remaining
@@ -155,7 +155,7 @@ anywhere, which is how a forward reference becomes a dead one:
 
 - **`dup2` to a chosen number.** Duplicating a handle is fine; choosing *which*
   value the copy gets is not. D-70 rule 7 gives the table no lowest-free
-  promise precisely so that two allocations in either order produce the same
+  promise so that two allocations in either order produce the same
   two handles, which is what makes allocation commutative and the table
   scalable. A caller that may name the result has re-introduced the ordering
   the rule deletes. Native duplication exists; chosen-number duplication does
