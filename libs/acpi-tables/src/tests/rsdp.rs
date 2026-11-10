@@ -215,8 +215,6 @@ fn either_rsdp_checksum_failing_is_refused() {
     first[10] = first[10].wrapping_add(1);
     assert_eq!(Rsdp::parse(&first), Err(AcpiError::BadChecksum));
 
-    // The extended checksum covers bytes the original one does not, so
-    // corrupting only those must still be caught.
     let mut second = rsdp(2);
     second[30] = second[30].wrapping_add(1);
     assert_eq!(Rsdp::parse(&second), Err(AcpiError::BadChecksum));
@@ -236,8 +234,6 @@ fn a_truncated_rsdp_is_refused_rather_than_read() {
 
 #[test]
 fn bytes_that_are_not_an_rsdp_are_named_by_their_signature() {
-    // An undefined revision must not out-rank the field that says whether
-    // these bytes describe an RSDP at all.
     let mut bytes = rsdp(0);
     bytes[0] = b'X';
     bytes[15] = 7;
@@ -450,10 +446,9 @@ fn a_pointer_list_stops_at_the_declared_length() {
     );
 }
 
+// Field widths from ACPI 6.5 table 5.4, independent of the parser.
 #[test]
 fn the_system_description_header_is_thirty_six_bytes() {
-    // Independent field widths from ACPI 6.5 table 5.4 prevent a
-    // self-referential fixture from accepting a changed header size.
     assert_eq!(Sdt::LEN, 36);
     assert_eq!(4 + 4 + 1 + 1 + 6 + 8 + 4 + 4 + 4, Sdt::LEN);
 }

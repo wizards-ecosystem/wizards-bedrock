@@ -106,10 +106,9 @@ fn a_truncated_dmar_structure_header_is_refused_not_read() {
     ));
 }
 
+// The corrupt input that would otherwise loop forever.
 #[test]
 fn a_dmar_structure_claiming_zero_length_invalidates_the_table() {
-    // The corrupt input that would otherwise loop forever: a length
-    // that never advances the cursor.
     let mut body = dmar_body(&[]);
     body.extend_from_slice(&[0, 0, 0, 0]); // kind 0 (DRHD), length 0
     let bytes = table(&Sdt::DMAR, &body);
@@ -172,11 +171,9 @@ fn an_unknown_dmar_structure_is_preserved_as_other_and_does_not_stop_the_walk() 
     );
 }
 
+// Field widths from the VT-d specification's DRHD, RMRR, ATSR and RHSA layouts.
 #[test]
 fn a_dmar_structure_shorter_than_its_fields_is_refused_not_read() {
-    // Independent field widths from the Intel VT-d specification's
-    // DRHD, RMRR, ATSR, and RHSA structure layouts keep the bounds from
-    // merely restating the parser (D-142).
     for (kind, minimum) in [(0u16, 16usize), (1, 24), (2, 8), (3, 20), (0x80, 4)] {
         let short_len = minimum - 1;
         let mut short = vec![0u8; short_len];
@@ -204,12 +201,9 @@ fn a_dmar_structure_shorter_than_its_fields_is_refused_not_read() {
     }
 }
 
+// Host address width, flags and ten reserved bytes, from the VT-d specification's DMAR header.
 #[test]
 fn the_first_remapping_structure_begins_after_the_dmar_preamble() {
-    // Independent field widths from the Intel VT-d specification's DMAR
-    // table header (host address width, flags, ten reserved bytes)
-    // prevent a self-referential fixture from accepting a changed
-    // preamble size.
     assert_eq!(DmarEntries::HEADER, 48);
     assert_eq!(Sdt::LEN + 1 + 1 + 10, DmarEntries::HEADER);
 }
@@ -242,8 +236,6 @@ fn an_inverted_reserved_region_is_refused_by_the_validated_view() {
     let rmrr = rmrr_bytes(0, 0x2000, 0x1000, &[]);
     let bytes = table(&Sdt::DMAR, &dmar_body(&rmrr));
 
-    // The raw walk does not know the domain rule and still yields the
-    // structure; only the validated `Dmar` view refuses it.
     assert!(DmarEntries::new(&bytes).is_ok());
     assert_eq!(
         Dmar::new(&bytes),
