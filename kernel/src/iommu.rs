@@ -42,6 +42,16 @@ use crate::mem::{self, DeviceRetirement};
 use crate::thread::ThreadContext;
 use crate::{acpi, info, pci, warn};
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+use selftest::{INSTALLED_REQUESTERS, SUCCESSFUL_RETARGETS};
+#[cfg(feature = "selftest")]
+pub(crate) use selftest::{
+    interrupt_boundary_is_deny_all_for_test, requester_fences_cover_shared_unit_for_test,
+    reserved_regions_are_supported_for_test,
+};
+
 /// Bytes of register window one remapping unit occupies.
 const REGISTER_WINDOW: u64 = 4096;
 
@@ -200,14 +210,6 @@ static RETAINED_FENCES: SpinLock<Option<UnitFences>> = SpinLock::new(None);
 /// available without an observed return.
 static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; pci::FUNCTION_AUTHORITY_LIMIT]);
-
-/// Last complete live requester inventory installed by a successful retarget.
-#[cfg(feature = "selftest")]
-static INSTALLED_REQUESTERS: AtomicUsize = AtomicUsize::new(0);
-
-/// Successful candidate retargets, including the candidate replaced by fallback.
-#[cfg(feature = "selftest")]
-static SUCCESSFUL_RETARGETS: AtomicUsize = AtomicUsize::new(0);
 
 /// Read and validate firmware's DMAR while the heap is still free to grow.
 ///
@@ -623,12 +625,6 @@ fn unit_for(at: Address) -> Option<Unit> {
     }
 }
 
-/// The exact lookup policy, for the machine check that feeds it regions.
-#[cfg(feature = "selftest")]
-pub(crate) fn reserved_regions_are_supported_for_test(reserved: &[(u64, u64)]) -> bool {
-    reserved_regions_are_supported(reserved.iter().copied())
-}
-
 /// Whether the candidate acquired a complete unit-wide DMA boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EstablishOutcome {
@@ -819,40 +815,6 @@ pub(crate) fn interrupt_boundary_active() -> bool {
         .lock()
         .as_ref()
         .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())
-}
-
-/// Whether the live PCI interrupt boundary retains every deny-all property.
-#[cfg(feature = "selftest")]
-pub(crate) fn interrupt_boundary_is_deny_all_for_test() -> bool {
-    if matches!(pci::topology_presence(), pci::TopologyPresence::Unsealed) {
-        return false;
-    }
-    INSTALLED.lock().as_ref().is_some_and(|unit| {
-        let facts = unit.facts();
-        unit.state == InstalledState::Ready
-            && facts.interrupt_remapping
-            && facts.queued_invalidation
-            && unit.boundary_active()
-    })
-}
-
-/// Whether the default machine retargeted one continuous owner twice while it
-/// still holds one fence for every non-selected requester.
-#[cfg(feature = "selftest")]
-pub(crate) fn requester_fences_cover_shared_unit_for_test() -> bool {
-    if DMAR.lock_leaf().is_none() {
-        return true;
-    }
-    let requesters = INSTALLED_REQUESTERS.load(Ordering::Acquire);
-    let installed = INSTALLED.lock();
-    requesters > 1
-        && SUCCESSFUL_RETARGETS.load(Ordering::Acquire) >= 2
-        && installed.as_ref().is_some_and(|unit| {
-            unit.state == InstalledState::Ready
-                && unit.fences.count + 1 == requesters
-                && unit.boundary_active()
-        })
-        && pci::claims() == requesters
 }
 
 fn install(unit: InstalledUnit) {

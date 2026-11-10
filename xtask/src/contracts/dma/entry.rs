@@ -29,7 +29,7 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .expect("proof-consuming memory initialization");
     assert!(proof < console && console < memory);
 
-    let iommu = source("kernel/src/iommu.rs");
+    let iommu = module_source("kernel/src/iommu.rs");
     let boundary = iommu
         .split_once("pub(crate) fn secure_handoff")
         .expect("secure handoff")
@@ -390,7 +390,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(fault_mask.contains("prior | fault_event_control::MASK"));
     assert!(fault_mask.contains("fault_event_control::masked(observed)"));
 
-    let iommu = source("kernel/src/iommu.rs");
+    let iommu = module_source("kernel/src/iommu.rs");
     for requirement in [
         "if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
         "if dmar.sole_unit_segment() != Some(SEGMENT) {",

@@ -819,7 +819,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("finish_candidate_stack", 2),
             ],
         ),
-        ("kernel/src/pci.rs", &[("OBSERVED_BUS_MASTER_REFUSAL", 3)]),
+        ("kernel/src/pci.rs", &[("OBSERVED_BUS_MASTER_REFUSAL", 4)]),
         (
             "kernel/src/arch/x86_64/i8042.rs",
             &[("CONTROL_COMMAND_REFUSED", 6)],

@@ -121,11 +121,7 @@ impl<'ast> Visit<'ast> for AddressSpaceSurface {
 #[test]
 fn no_item_mem_exposes_names_the_running_address_space() {
     let paths = Paths::discover().expect("workspace paths");
-    let source = paths.root().join("kernel/src/mem.rs");
-    let text = std::fs::read_to_string(&source)
-        .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
-    let syntax = syn::parse_file(&text)
-        .unwrap_or_else(|error| panic!("parsing {}: {error}", source.display()));
+    let syntax = super::module_syntax(&paths.root().join("kernel/src/mem.rs"));
 
     let mut surface = AddressSpaceSurface::default();
     surface.visit_file(&syntax);

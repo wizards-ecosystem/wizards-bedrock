@@ -610,7 +610,7 @@ fn mask_guard(statement: &Stmt) -> bool {
 
 #[test]
 fn external_controller_mask_authority_is_private_linear_and_exact() {
-    let syntax = parse("kernel/src/mem.rs");
+    let syntax = super::module_syntax(&root().join("kernel/src/mem.rs"));
     let preparation = syntax
         .items
         .iter()
