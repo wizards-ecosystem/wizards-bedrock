@@ -29,12 +29,7 @@ pub struct DeviceRange {
 }
 
 impl DeviceRange {
-    /// Validate one register range and every page its mapping would reach.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an empty or non-word-aligned range, arithmetic overflow, or an
-    /// extent whose rounded pages reach beyond `MAXPHYADDR`.
+    /// Validate one word-aligned register range and every page it reaches within `MAXPHYADDR`.
     pub const fn new(
         physical: u64,
         len: u64,
@@ -111,17 +106,17 @@ pub enum DeviceRangeError {
 }
 
 impl fmt::Display for DeviceRangeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Empty => core::fmt::Write::write_str(formatter, "the device range is empty"),
-            Self::Unaligned(at) => write!(formatter, "device address {at:#x} is not word aligned"),
-            Self::Overflow => core::fmt::Write::write_str(formatter, "the device range overflows"),
+            Self::Empty => f.write_str("the device range is empty"),
+            Self::Unaligned(at) => write!(f, "device address {at:#x} is not word aligned"),
+            Self::Overflow => f.write_str("the device range overflows"),
             Self::OutsideWidth {
                 bits,
                 page_start,
                 page_end,
             } => write!(
-                formatter,
+                f,
                 "device pages {page_start:#x}..{page_end:#x} do not fit MAXPHYADDR {bits}"
             ),
         }

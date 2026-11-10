@@ -1,14 +1,4 @@
-//! How a heap request maps onto a size class, and how a frame is carved into
-//! slots of it.
-//!
-//! The arithmetic half of the kernel heap; `wost::mm::heap` holds the free
-//! lists and the frames (D-47).
-//!
-//! Classes are powers of two from 16 to 2048 bytes. A frame is 4096-aligned
-//! and a class's slots sit at multiples of the class size, so every slot is
-//! aligned to its own class — which is why
-//! [`SizeClass::for_size_align`] meets an alignment by choosing a larger
-//! class rather than by padding.
+//! How a heap request maps onto a size class, and how a frame is carved into slots of it.
 //!
 //! ```
 //! use slab_layout::{SizeClass, Placement, place};
@@ -30,23 +20,21 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use core::fmt;
-
 #[cfg(any(test, feature = "selftest"))]
 mod ownership;
 
 #[cfg(any(test, feature = "selftest"))]
 pub use ownership::AllocatorOwnership;
 
-/// Bytes in a page frame — the unit a slab is carved from.
+use core::fmt;
+
+/// Bytes in a page frame, the unit a slab is carved from.
 pub const FRAME_SIZE: usize = 4096;
 
-/// Bytes in the smallest class. Below this a slot could not hold the free-list
-/// link that lives in it while it is free.
+/// Bytes in the smallest class, which must hold the free-list link a free slot stores.
 pub const MIN_CLASS: usize = 16;
 
-/// Bytes in the largest class. Above this a request takes whole frames, since
-/// a slab of two-per-frame slots wastes more than it saves.
+/// Bytes in the largest class; a slab of two slots per frame would waste more than it saves.
 pub const MAX_CLASS: usize = 2048;
 
 /// Number of size classes, from [`MIN_CLASS`] to [`MAX_CLASS`].
@@ -80,7 +68,6 @@ pub struct SizeClass {
 }
 
 impl SizeClass {
-    /// The class at `index`, or `None` if there is no such class.
     pub const fn from_index(index: usize) -> Option<Self> {
         if index < CLASSES {
             Some(Self { index })
@@ -114,19 +101,7 @@ impl SizeClass {
         slot * self.bytes()
     }
 
-    /// The smallest class holding `size` bytes at `align`, or `None` if no
-    /// class is large enough.
-    ///
-    /// Alignment is satisfied by *choosing a class*, never by padding: because
-    /// a frame is [`FRAME_SIZE`]-aligned and slots sit at multiples of the
-    /// class size, a slot is always aligned to its own class. So a request
-    /// needing 64-byte alignment takes the 64-byte class at least, whatever
-    /// its size.
-    ///
-    /// # Errors
-    ///
-    /// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power
-    /// of two, as a [`core::alloc::Layout`] requires.
+    /// The smallest class holding `size` at `align`, since every slot is aligned to its own class.
     pub const fn for_size_align(size: usize, align: usize) -> Result<Option<Self>, PlacementError> {
         if align == 0 || !align.is_power_of_two() {
             return Err(PlacementError::InvalidAlignment(align));
@@ -152,31 +127,18 @@ pub enum Placement {
     Slot(SizeClass),
     /// A run of whole frames, too big for any class.
     Frames {
-        /// Frames the request needs.
         count: usize,
         /// Alignment the run needs, in frames.
         align: usize,
     },
 }
 
-/// Decide where a request of `size` bytes at `align` is served from.
-///
-/// A zero-sized request is given the smallest slot that meets its alignment
-/// rather than refused: `Layout` permits a size of zero, `GlobalAlloc`
-/// requires a unique non-null address back, and one slot is the cheapest way
-/// to provide one. An alignment too large for any class takes a frame, which
-/// is the same answer one byte at that alignment would get.
-///
-/// # Errors
-///
-/// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power of
-/// two, as a [`core::alloc::Layout`] requires.
+/// Decide where `size` bytes at `align` are served from; zero bytes still get a unique address.
 pub const fn place(size: usize, align: usize) -> Result<Placement, PlacementError> {
     match SizeClass::for_size_align(size, align) {
-        Err(error) => Err(error),
+        Err(reason) => Err(reason),
         Ok(Some(class)) => Ok(Placement::Slot(class)),
-        // At least one frame: a zero-sized, over-aligned request lands here
-        // and `GlobalAlloc` owes it a unique non-null address.
+        // A zero-sized over-aligned request takes a frame, as `GlobalAlloc` owes it an address.
         Ok(None) if size == 0 => Ok(Placement::Frames {
             count: 1,
             align: align.div_ceil(FRAME_SIZE),

@@ -1,20 +1,4 @@
-//! Bounded exhaustion over the whole size-class domain.
-//!
-//! This tier needs no dependency at all: the domain is finite and small, so
-//! walking it is both cheaper than sampling it and a strictly stronger claim
-//! (D-242). Each test names its bound, so a bound that shrinks is a visible
-//! edit rather than a silent one.
-//!
-//! Every claim is transcribed from the module doc:
-//!
-//! > Classes are powers of two from 16 to 2048 bytes. A frame is 4096-aligned
-//! > and a class's slots sit at multiples of the class size, so every slot is
-//! > aligned to its own class — which is why `for_size_align` meets an
-//! > alignment by choosing a larger class rather than by padding.
-//!
-//! What is *not* here: anything about the free lists or the frames themselves.
-//! Those are `wost::mm::heap`'s, and this crate is deliberately only their
-//! arithmetic (D-47).
+//! Bounded exhaustion over the whole size-class domain; each test names its bound.
 
 use slab_layout::{CLASSES, FRAME_SIZE, MAX_CLASS, MIN_CLASS, SizeClass};
 
@@ -48,9 +32,6 @@ fn every_class_index_round_trips_and_is_a_power_of_two_in_range() {
 }
 
 /// Every slot of every class is aligned to its own class and inside the frame.
-///
-/// The doc's reason for the design: a slot that is not class-aligned is one an
-/// allocator would hand out for a request whose alignment it cannot meet.
 #[test]
 fn every_slot_of_every_class_is_class_aligned_and_tiles_the_frame() {
     for index in 0..CLASSES {
@@ -88,12 +69,7 @@ fn every_slot_of_every_class_is_class_aligned_and_tiles_the_frame() {
     }
 }
 
-/// Every request size to a frame, against every alignment to a frame, is met
-/// by a class at least that large and aligned to it.
-///
-/// 53,261 pairs — the complete domain, not a sample of it. The doc says an
-/// alignment is met "by choosing a larger class rather than by padding", so a
-/// class returned for a request must satisfy both halves at once.
+/// All 53,261 size and alignment pairs to a frame are met by a class that large and aligned.
 #[test]
 fn every_size_to_4096_against_every_alignment_to_4096_is_met_by_a_larger_class() {
     let mut satisfied = 0usize;
@@ -116,7 +92,7 @@ fn every_size_to_4096_against_every_alignment_to_4096_is_met_by_a_larger_class()
                     satisfied += 1;
                 }
                 Ok(None) => too_big += 1,
-                Err(error) => panic!("power-of-two alignment {align} was refused: {error:?}"),
+                Err(reason) => panic!("power-of-two alignment {align} was refused: {reason:?}"),
             }
         }
     }

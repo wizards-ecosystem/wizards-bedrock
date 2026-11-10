@@ -1,28 +1,9 @@
-//! Bounded exhaustion over every vector, and the agreement that once failed.
-//!
-//! The domain is 256 wide, so it is walked rather than sampled (D-242). No
-//! dependency is needed for that; `x86-tables` is a dev-dependency only because
-//! the second half of this file compares the two crates against each other.
-//!
-//! `libs/elf64`'s module doc records the precedent, and it is the reason this
-//! file exists: two crates privately transcribing the same architectural table
-//! "is how `x86-tables` and `trap-cause` came to disagree about vector 28".
-//! The disagreement was repaired; nothing since has checked that it stayed
-//! repaired, and both crates still name every vector separately.
-//!
-//! What is *not* here: whether either table matches the manual. Neither crate
-//! can answer that, and no amount of comparing them to each other will — they
-//! could agree and both be wrong. This checks that they agree, which is the
-//! defect that actually occurred.
+//! All 256 vectors, and agreement with `x86-tables`, which once disagreed about vector 28.
 
 use trap_cause::TrapCause;
 use x86_tables::exception;
 
-/// Every vector decodes to a cause that reports the vector it came from.
-///
-/// The whole domain, because a decode table's characteristic defect is one arm
-/// returning its neighbour's value, and a sample that skips the neighbour
-/// cannot see it.
+/// The whole domain, since a decode arm returning its neighbour's value escapes a sample.
 #[test]
 fn every_one_of_the_256_vectors_reports_the_vector_it_decoded_from() {
     for vector in 0..=u8::MAX {
@@ -40,12 +21,7 @@ fn every_one_of_the_256_vectors_reports_the_vector_it_decoded_from() {
     }
 }
 
-/// A vector is architectural in both crates or in neither.
-///
-/// `x86_tables::exception::name` returns `Some` exactly for the vectors the
-/// architecture defines; `trap_cause` calls those `Fault`. One crate calling a
-/// vector architectural while the other calls it a device interrupt is the
-/// vector-28 disagreement, in the general form.
+/// A vector is architectural in both crates or in neither, the general vector-28 disagreement.
 #[test]
 fn every_vector_is_architectural_in_both_crates_or_in_neither() {
     let mut architectural = 0usize;
@@ -68,11 +44,7 @@ fn every_vector_is_architectural_in_both_crates_or_in_neither() {
     );
 }
 
-/// Only an architectural vector pushes an error code.
-///
-/// The entry path sizes one frame for every vector (D-29), so a vector that
-/// claims to push an error code without being architectural would leave the
-/// frame and the stack disagreeing about how many words were pushed.
+/// Only an architectural vector pushes an error code, or the one entry frame would misalign.
 #[test]
 fn no_vector_pushes_an_error_code_without_being_architectural() {
     let mut pushing = 0usize;

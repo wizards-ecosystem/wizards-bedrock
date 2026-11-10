@@ -8,15 +8,9 @@ fn placement(size: usize, align: usize) -> Placement {
     place(size, align).expect("valid test alignment")
 }
 
-/// A size class reports the free list it uses, and the bytes follow it.
-///
-/// Check every index independently because `wost/src/mm/heap.rs` uses it
-/// directly and an offset largest class would index past the array
-/// (D-136).
+/// Every index is checked because `wost/src/mm/heap.rs` indexes its free-list array with it.
 #[test]
 fn a_size_class_reports_its_own_index_and_bytes() {
-    // Against the documented arithmetic, not the type itself: class `i`
-    // holds `MIN_CLASS << i` bytes.
     for index in 0..CLASSES {
         let class = SizeClass::from_index(index).expect("a class that exists");
         assert_eq!(class.index(), index, "class {index} reports another index");
@@ -26,8 +20,6 @@ fn a_size_class_reports_its_own_index_and_bytes() {
             "class {index} holds the wrong slot size"
         );
     }
-    // And there is no class past the last, so `index()` can never be used
-    // to reach beyond the free-list array.
     assert!(SizeClass::from_index(CLASSES).is_none());
 }
 
@@ -90,8 +82,7 @@ fn placement_errors_name_the_invalid_alignment() {
 
 #[test]
 fn alignment_is_met_by_taking_a_larger_class_not_by_padding() {
-    // Eight bytes needing 64-byte alignment: the 16-byte class would place
-    // it at a multiple of 16, which is not necessarily a multiple of 64.
+    // A 16-byte slot sits at a multiple of 16, which need not be a multiple of 64.
     let class = size_class(8, 64).expect("small enough");
     assert_eq!(class.bytes(), 64);
     assert_eq!(size_class(8, 2048).map(SizeClass::bytes), Some(2048));
@@ -102,14 +93,6 @@ fn alignment_is_met_by_taking_a_larger_class_not_by_padding() {
     );
 }
 
-/// A frame divides evenly into every class, and each class's slots run to
-/// the frame's end and no further.
-///
-/// `offset_of(slot)` is `slot * bytes()`, so `offset % bytes() == 0` is
-/// `(n·b) % b == 0` — true of every implementation. D-94 deleted this
-/// exact shape from the neighbouring test and left this one (D-105). The
-/// divisibility of `FRAME_SIZE` is the real half, and the coverage claim
-/// is what the arithmetic actually needs to hold.
 #[test]
 fn every_class_divides_the_frame_and_its_slots_fill_it() {
     for index in 0..CLASSES {
@@ -177,18 +160,14 @@ fn a_large_request_is_placed_in_whole_frames() {
 
 #[test]
 fn a_zero_sized_request_still_gets_a_slot() {
-    // `GlobalAlloc` must return a unique non-null pointer, so zero bytes
-    // are served rather than refused.
+    // `GlobalAlloc` must return a unique non-null pointer even for zero bytes.
     assert_eq!(
         placement(0, 1),
         Placement::Slot(SizeClass::from_index(0).expect("the smallest class"))
     );
 }
 
-/// The corner where the two rules above meet: nothing to store, but an
-/// alignment no class can meet. A run of *zero* frames is what the naive
-/// arithmetic gives, and an allocator handed one returns null — which
-/// `GlobalAlloc` reads as out of memory.
+/// The naive arithmetic gives zero frames here, and a null `GlobalAlloc` means out of memory.
 #[test]
 fn a_zero_sized_request_too_aligned_for_a_class_still_gets_a_frame() {
     assert_eq!(
@@ -215,20 +194,10 @@ fn invalid_alignments_are_refused_before_placement_arithmetic() {
     }
 }
 
-/// Every slot a frame is carved into is distinct, ordered, and wholly
-/// inside the frame.
-///
-/// **Against transcribed numbers, not against the formula.** The counts and
-/// offsets below are worked out from `FRAME_SIZE` by hand, so a broken
-/// `offset_of` or `slots_per_frame` disagrees with them instead of agreeing
-/// with itself.
-///
-/// It runs on the host because breaking this invariant on the machine can
-/// corrupt the allocator that later checks depend on (D-28, D-85).
+/// Counts and offsets are worked out by hand, so a broken formula disagrees with them.
 #[test]
 fn no_two_slots_of_any_class_overlap() {
-    // (class size, slots in a 4096-byte frame, offset of the last slot),
-    // transcribed rather than derived.
+    // (class size, slots in a 4096-byte frame, offset of the last slot).
     const EXPECTED: [(usize, usize, usize); CLASSES] = [
         (16, 256, 4080),
         (32, 128, 4064),
@@ -249,8 +218,6 @@ fn no_two_slots_of_any_class_overlap() {
         assert_eq!(class.offset_of(0), 0, "class {bytes} starts late");
         assert_eq!(class.offset_of(slots - 1), last, "class {bytes} ends wrong");
 
-        // Distinctness the one way that cannot restate the formula:
-        // collect every offset and compare them all against each other.
         let offsets: Vec<usize> = (0..slots).map(|slot| class.offset_of(slot)).collect();
         let mut sorted = offsets.clone();
         sorted.sort_unstable();

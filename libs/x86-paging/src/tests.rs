@@ -1,8 +1,6 @@
 use super::*;
 
-/// Bit positions, restated from Intel SDM Vol. 3A table 4-19 rather than
-/// from the constants above. A transcription error shows up here as a
-/// failure; copying the constants would only prove they equal themselves.
+/// Bit positions restated from Intel SDM Vol. 3A table 4-19, so a transcription error fails.
 #[test]
 fn flag_bits_match_the_manual() {
     assert_eq!(Flags::PRESENT.bits(), 1);
@@ -98,8 +96,6 @@ fn an_entry_round_trips_its_address_and_flags() {
 
 #[test]
 fn the_address_and_the_flags_never_overlap() {
-    // The highest representable address alongside every flag: neither may
-    // corrupt the other.
     let flags = Flags::PRESENT | Flags::NO_EXECUTE | Flags::GLOBAL;
     let top = MAX_PHYSICAL - PAGE_SIZE;
     let entry = Entry::page(Level::Pt, top, flags).expect("in range");
@@ -183,8 +179,7 @@ fn a_level_spans_what_its_shift_says() {
 
 #[test]
 fn indices_decompose_a_known_address() {
-    // The kernel's own base. Worked by hand from the bit layout:
-    // 0xffff_ffff_8000_0000 >> 39 = ...1ff, and the rest follow.
+    // The kernel's own base, worked by hand from the bit layout.
     let base = 0xffff_ffff_8000_0000;
     assert_eq!(Level::Pml4.index(base), 511);
     assert_eq!(Level::Pdpt.index(base), 510);
@@ -197,7 +192,6 @@ fn every_index_stays_inside_a_table() {
     for level in Level::WALK {
         assert_eq!(level.index(u64::MAX), ENTRIES - 1);
         assert_eq!(level.index(0), 0);
-        // One past this level's span wraps to the next slot, never out.
         assert_eq!(level.index(level.span()), 1);
         assert_eq!(level.index(level.span() * ENTRIES as u64), 0);
     }
@@ -361,8 +355,7 @@ fn no_user_mapping_reaches_the_last_canonical_page() {
     assert!(!user_mapping_fits(0, USER_END));
     assert!(!user_mapping_fits(u64::MAX, 1));
 
-    // The last byte a trap can follow is USER_MAPPING_END - 1, so the
-    // saved return address is at most USER_MAPPING_END, still canonical.
+    // A trap after the last mappable byte saves at most USER_MAPPING_END, still canonical.
     assert!(is_canonical(USER_MAPPING_END));
 }
 
@@ -522,12 +515,7 @@ fn mapping_range_errors_name_the_refused_value_or_rule() {
     }
 }
 
-/// The owned bit is software-only: the CPU never sees it, and it survives
-/// a round trip through an entry.
-///
-/// It sits in the architecture's `AVL` window (bits 9..11), clear of every
-/// flag the hardware defines and clear of the address field, so setting it
-/// changes neither where a mapping points nor what it permits.
+/// The owned bit sits in the `AVL` window (bits 9..11), clear of hardware flags and the address.
 #[test]
 fn the_owned_bit_is_software_only_and_survives_an_entry() {
     const AVL: u64 = 0b111 << 9;
@@ -569,7 +557,6 @@ fn the_owned_bit_is_software_only_and_survives_an_entry() {
     );
 }
 
-/// An absent entry maps nothing and permits nothing.
 #[test]
 fn an_absent_entry_is_present_to_nobody() {
     assert!(!Entry::ABSENT.is_present());
@@ -579,12 +566,6 @@ fn an_absent_entry_is_present_to_nobody() {
     assert!(!Entry::ABSENT.flags().contains(Flags::OWNED));
 }
 
-/// Intersection keeps what both hold, and nothing else.
-///
-/// The operation a walk uses to narrow a permission at every level, so it
-/// is worth its own check: an implementation that returned the union, or
-/// either operand, would make a walk report a permission the CPU does not
-/// grant.
 #[test]
 fn intersection_keeps_only_what_both_hold() {
     let user_write = Flags::USER.union(Flags::WRITABLE);
@@ -601,7 +582,6 @@ fn intersection_keeps_only_what_both_hold() {
         "disjoint flags intersected to something"
     );
 
-    // And it narrows: the result is contained in both operands.
     let left = Flags::USER.union(Flags::NO_EXECUTE).union(Flags::PRESENT);
     let right = Flags::USER.union(Flags::WRITABLE);
     let both = left.intersection(right);
@@ -635,9 +615,13 @@ fn a_narrower_parent_beats_a_wider_leaf() {
 #[test]
 fn no_execute_anywhere_on_the_path_forbids_execution() {
     let plain = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
-    let nx = plain.union(Flags::NO_EXECUTE);
+    let no_execute = plain.union(Flags::NO_EXECUTE);
 
-    for path in [[nx, plain, plain], [plain, nx, plain], [plain, plain, nx]] {
+    for path in [
+        [no_execute, plain, plain],
+        [plain, no_execute, plain],
+        [plain, plain, no_execute],
+    ] {
         let mut walked = Flags::EVERYTHING_ALLOWED;
         for entry in path {
             walked = walked.through(entry);

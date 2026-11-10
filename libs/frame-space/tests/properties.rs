@@ -1,28 +1,11 @@
-//! Property tests over the allocator's ledger.
-//!
-//! The module doc states the reason for the design, and it is a checkable
-//! claim rather than a description:
-//!
-//! > Two bitmaps, because one could not tell a double free from a frame that
-//! > was never ours — and `free` is what a `Drop` impl calls, the one place a
-//! > bug is silent.
-//!
-//! `allocate_contiguous` states another: "Allocate `count` consecutive frames
-//! whose first frame is a multiple of `align` ... `align` is rounded up to the
-//! next power of two." A run that is not aligned, or overlaps a live one, is
-//! two owners for one frame — the failure a frame allocator exists to prevent.
-//!
-//! What is *not* here: the policy. The doc says "Nothing here promises a
-//! policy", so no property asserts which frame comes back, only that whichever
-//! does is free, aligned, and nobody else's.
+//! Property tests over the allocator's ledger; none asserts which frame comes back.
 
 use frame_space::{FRAME_SIZE, FrameSpace, FreeError};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestRunner};
 
-/// Frames a `FrameSpace<1>` manages; small enough that a sequence can exhaust
-/// it, which is where the interesting refusals live.
+/// Frames a `FrameSpace<1>` manages, few enough that a sequence can exhaust them.
 const FRAMES: usize = 64;
 
 const LOWER_END: usize = 16;
@@ -86,10 +69,7 @@ fn request() -> impl Strategy<Value = (usize, usize)> {
 }
 
 proptest! {
-    /// A run is aligned, and no frame in it belongs to a live run.
-    ///
-    /// Two owners for one frame is the defect; a sequence of differently
-    /// aligned requests is what produces the near-misses that find it.
+    /// Differently aligned requests produce the near-misses that would give one frame two owners.
     #[test]
     fn an_allocated_run_is_aligned_and_nobody_elses(
         requests in prop::collection::vec(request(), 1..10),
@@ -117,11 +97,7 @@ proptest! {
         }
     }
 
-    /// Allocation and release return the ledger to exactly where it started.
-    ///
-    /// The count is checked after every step as well as at the end, so a
-    /// release that returns the wrong number of frames cannot be cancelled out
-    /// by a later one.
+    /// Checked after every step, so a wrong release count cannot be cancelled by a later one.
     #[test]
     fn the_free_count_returns_to_its_baseline(
         requests in prop::collection::vec(request(), 1..10),
@@ -148,7 +124,6 @@ proptest! {
         prop_assert_eq!(space.free_count(), baseline, "the ledger did not return to baseline");
     }
 
-    /// "One could not tell a double free from a frame that was never ours."
     #[test]
     fn a_double_free_is_refused(count in 1usize..8, align in 1usize..8) {
         let mut space = managed();
@@ -164,9 +139,7 @@ proptest! {
         );
     }
 
-    /// A frame that was never inserted is not ours to free — the other half of
-    /// the two-bitmap claim. A gapped map keeps that case inside the managed
-    /// physical extent, distinct from both owned and out-of-range frames.
+    /// A gapped map puts never-inserted frames inside the managed extent.
     #[test]
     fn release_authority_distinguishes_managed_in_range_unmanaged_and_out_of_range(
         (class, frame) in classified_frame(),
@@ -200,11 +173,7 @@ proptest! {
     }
 }
 
-/// How often a generated request is actually granted — D-242's obligation on a
-/// generated-input check.
-///
-/// Every run property skips a refused allocation, so a low grant rate would
-/// leave them asserting almost nothing.
+/// The run properties skip refused allocations, so a low grant rate would leave them empty.
 #[test]
 fn the_ledger_properties_reach_granted_allocations() {
     const SAMPLES: usize = 4096;

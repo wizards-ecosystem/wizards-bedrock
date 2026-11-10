@@ -1,25 +1,15 @@
-//! x86_64 four-level page table encoding.
-//!
-//! Entry bits, the index each level takes from a virtual address, and
-//! canonical form. `wost` owns the tables; the encoding is checkable on the
-//! host, so D-30 puts it here.
-//!
-//! Transcribed from Intel SDM Vol. 3A §4.5, tables 4-14 through 4-19. The
-//! tests restate each bit position from the manual rather than from this file,
-//! which is the only way a transcription error fails instead of agreeing with
-//! itself.
+//! x86_64 four-level page table encoding, from Intel SDM Vol. 3A §4.5.
 //!
 //! ```
 //! use x86_paging::{Entry, Flags, Level, MappingRange, PAGE_SIZE};
 //!
-//! // A read-only, executable mapping of physical 0x2000 — kernel text.
+//! // A read-only, executable mapping of physical 0x2000, as for kernel text.
 //! let text = Entry::page(Level::Pt, 0x2000, Flags::PRESENT)
 //!     .expect("aligned and in range");
 //! assert!(text.flags().contains(Flags::PRESENT));
 //! assert!(!text.flags().contains(Flags::WRITABLE));
 //! assert_eq!(text.address(), 0x2000);
 //!
-//! // The slot a virtual address takes in the top-level table.
 //! assert_eq!(Level::Pml4.index(0xffff_ffff_8000_0000), 511);
 //! assert_eq!(PAGE_SIZE, 4096);
 //!
@@ -30,11 +20,11 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use core::fmt;
-
 pub mod activation;
 pub mod device;
 pub mod kpti;
+
+use core::fmt;
 
 /// Bytes in the smallest page.
 pub const PAGE_SIZE: u64 = 4096;
@@ -45,11 +35,7 @@ pub const LARGE_PAGE_SIZE: u64 = 2 << 20;
 /// Entries in every table at every level.
 pub const ENTRIES: usize = 512;
 
-/// Bits of an entry that hold a physical address.
-///
-/// SDM: bits 51:12. The architecture reserves 63:52 for flags and the
-/// no-execute bit, and the low twelve bits are always zero because every
-/// target is page-aligned.
+/// Bits 51:12 of an entry, which hold a page-aligned physical address.
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 /// Physical addresses this encoding can represent.
@@ -58,12 +44,7 @@ pub const MAX_PHYSICAL: u64 = ADDRESS_MASK + PAGE_SIZE;
 /// The first address that is not user memory; the canonical hole begins here.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
-/// The first address a user mapping may not cover.
-///
-/// The last canonical page stays unmapped, so no user instruction can end at
-/// [`USER_END`]. A trap taken after such an instruction would save a
-/// non-canonical return address, and returning to it faults in the kernel
-/// (D-348).
+/// The first address a user mapping may not cover, so no trap saves the non-canonical [`USER_END`].
 pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
 
 /// Whether `len` bytes at `at` lie wholly below [`USER_MAPPING_END`].
@@ -82,65 +63,46 @@ pub const fn user_mapping_fits(at: u64, len: u64) -> bool {
     }
 }
 
-/// Flags of a page table entry.
-///
-/// A hand-rolled bit set rather than a `bitflags` dependency, on the
-/// `sha256.rs` precedent: one type, a handful of operations, and the
-/// alternative is a crate in the kernel's trusted path.
+/// Flags of a page table entry, hand-rolled to keep a `bitflags` crate out of the trusted path.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct Flags(u64);
 
 impl Flags {
-    /// The entry is valid. Without it the CPU ignores every other bit.
+    /// The entry is valid; without it the CPU ignores every other bit.
     pub const PRESENT: Self = Self(1 << 0);
-    /// Writes are permitted. Absent, the mapping is read-only.
     pub const WRITABLE: Self = Self(1 << 1);
-    /// Ring 3 may reach it. Absent, the mapping is supervisor-only.
+    /// Ring 3 may reach it.
     pub const USER: Self = Self(1 << 2);
-    /// Writes go straight to memory rather than being cached back.
     pub const WRITE_THROUGH: Self = Self(1 << 3);
-    /// The region is not cached at all — what device memory wants.
+    /// The region is not cached, as device memory needs.
     pub const NO_CACHE: Self = Self(1 << 4);
     /// The CPU has read through this entry since it was last cleared.
     pub const ACCESSED: Self = Self(1 << 5);
     /// The CPU has written through this entry since it was last cleared.
     pub const DIRTY: Self = Self(1 << 6);
-    /// At a page-directory or page-directory-pointer level, this entry maps a
-    /// large page directly instead of pointing at the table below.
+    /// At a page-directory or page-directory-pointer level, the entry maps a large page.
     pub const HUGE: Self = Self(1 << 7);
-    /// The mapping survives a `CR3` reload. For pages the kernel keeps in
-    /// every address space.
+    /// The mapping survives a `CR3` reload.
     pub const GLOBAL: Self = Self(1 << 8);
-    /// Instruction fetches from this mapping fault. Honoured only once
-    /// `EFER.NXE` is set, which is why it is enabled before any table is
-    /// built.
+    /// Instruction fetches fault once `EFER.NXE` is set, so NXE is enabled before any table.
     pub const NO_EXECUTE: Self = Self(1 << 63);
 
-    /// This mapping owns the frame beneath it, so unmapping returns that
-    /// frame to the allocator (D-88).
-    ///
-    /// Bit 9 is one of the three the architecture leaves to software in a page
-    /// entry (Intel SDM Vol. 3A ch. 4, the `AVL` bits); the CPU ignores it. It
-    /// is provenance written where the mapping is, which is the only place
-    /// that survives every path an unmap can be reached by — a frame the
-    /// allocator handed out must come back, and one the firmware placed must
-    /// not, and nothing outside the entry knows which is which.
+    /// Software bit 9 (an SDM `AVL` bit): the mapping owns its frame, so unmapping returns it.
     pub const OWNED: Self = Self(1 << 9);
 
-    /// No flags at all.
     pub const NONE: Self = Self(0);
 
-    /// The bits themselves.
+    /// The permissions a walk narrows rather than reads off the leaf.
+    pub const NARROWED: Self = Self::USER.union(Self::WRITABLE);
+
+    /// What a walk starts with, before any entry has narrowed it.
+    pub const EVERYTHING_ALLOWED: Self = Self::NARROWED;
+
     pub const fn bits(self) -> u64 {
         self.0
     }
 
     /// Only the flags in both.
-    ///
-    /// What a page walk needs to compute an *effective* permission: the
-    /// architecture grants `USER` and `WRITABLE` only where every level of the
-    /// walk grants them, so the answer is a conjunction rather than the leaf's
-    /// own opinion (D-103).
     #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
@@ -152,35 +114,24 @@ impl Flags {
         Self(self.0 | other.0)
     }
 
-    /// The permission a walk has left after passing through `self`.
-    ///
-    /// The architecture computes a page's effective permission from the whole
-    /// path, not from its leaf: `USER` and `WRITABLE` are the conjunction down
-    /// the walk, and `NO_EXECUTE` the disjunction. A caller that reads the
-    /// leaf alone states a stronger permission than the CPU will grant.
-    ///
-    /// `self` is what the walk has accumulated so far — start it at
-    /// [`Flags::EVERYTHING_ALLOWED`] — and `entry` is the level just read.
+    /// The walk permission after `entry`: `USER` and `WRITABLE` narrow, `NO_EXECUTE` accumulates.
     ///
     /// # Examples
-    ///
-    /// A supervisor table above a user page grants no user access, however
-    /// the leaf is written:
     ///
     /// ```
     /// use x86_paging::Flags;
     ///
+    /// // A supervisor table above a user page grants no user access.
     /// let supervisor = Flags::PRESENT.union(Flags::WRITABLE);
     /// let leaf = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
     /// let walked = Flags::EVERYTHING_ALLOWED.through(supervisor).through(leaf);
     /// assert!(!walked.effective_for(leaf).contains(Flags::USER));
     /// ```
     ///
-    /// And a `NO_EXECUTE` anywhere on the path forbids execution below it:
-    ///
     /// ```
     /// use x86_paging::Flags;
     ///
+    /// // A `NO_EXECUTE` anywhere on the path forbids execution below it.
     /// let no_execute = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::NO_EXECUTE);
     /// let leaf = Flags::PRESENT.union(Flags::WRITABLE);
     /// let walked = Flags::EVERYTHING_ALLOWED.through(no_execute).through(leaf);
@@ -195,23 +146,13 @@ impl Flags {
         narrowed.union(forbidden)
     }
 
-    /// Fold an accumulated walk back onto the leaf's own flags.
-    ///
-    /// The leaf keeps everything the walk does not narrow — its address bits'
-    /// companions, `PRESENT`, `HUGE`, `OWNED` — and gives up `USER` and
-    /// `WRITABLE` to the path, and gains `NO_EXECUTE` from it.
+    /// Fold a walk onto the leaf, which takes `USER`, `WRITABLE` and `NO_EXECUTE` from the path.
     #[must_use]
     pub const fn effective_for(self, leaf: Self) -> Self {
         let kept = leaf.difference(Self::NARROWED).difference(Self::NO_EXECUTE);
         kept.union(self.intersection(Self::NARROWED))
             .union(self.intersection(Self::NO_EXECUTE))
     }
-
-    /// The permissions a walk narrows rather than reads off the leaf.
-    pub const NARROWED: Self = Self::USER.union(Self::WRITABLE);
-
-    /// What a walk starts with, before any entry has narrowed it.
-    pub const EVERYTHING_ALLOWED: Self = Self::NARROWED;
 
     /// This set without the flags in `other`.
     #[must_use]
@@ -224,10 +165,7 @@ impl Flags {
         self.0 & other.0 == other.0
     }
 
-    /// Whether this mapping is both writable and executable.
-    ///
-    /// The predicate W^X is the absence of. Named here rather than spelled out
-    /// at each call site so the security baseline has one definition (D-12).
+    /// Whether this mapping is both writable and executable, the one definition W^X forbids.
     pub const fn is_write_execute(self) -> bool {
         self.contains(Self::PRESENT)
             && self.contains(Self::WRITABLE)
@@ -241,23 +179,6 @@ impl core::ops::BitOr for Flags {
     fn bitor(self, other: Self) -> Self {
         self.union(other)
     }
-}
-
-/// Whether one walk found the exact expected four-kilobyte leaf.
-///
-/// Accessed and dirty are omitted from identity because hardware may set them
-/// without changing the mapping's physical target or policy.
-pub const fn page_identity_matches(
-    mapped: u64,
-    flags: Flags,
-    span: u64,
-    expected: u64,
-    expected_flags: Flags,
-) -> bool {
-    let volatile = Flags::ACCESSED.union(Flags::DIRTY);
-    mapped == expected
-        && span == PAGE_SIZE
-        && flags.difference(volatile).bits() == expected_flags.difference(volatile).bits()
 }
 
 impl fmt::Debug for Flags {
@@ -277,16 +198,30 @@ impl fmt::Debug for Flags {
             (Self::OWNED, "owned"),
         ] {
             if self.contains(flag) {
-                core::fmt::Write::write_str(f, separator)?;
-                core::fmt::Write::write_str(f, name)?;
+                f.write_str(separator)?;
+                f.write_str(name)?;
                 separator = " ";
             }
         }
         if separator.is_empty() {
-            core::fmt::Write::write_str(f, "none")?;
+            f.write_str("none")?;
         }
         Ok(())
     }
+}
+
+/// Whether a walk found the expected 4 KiB leaf, ignoring the hardware-set accessed and dirty bits.
+pub const fn page_identity_matches(
+    mapped: u64,
+    flags: Flags,
+    span: u64,
+    expected: u64,
+    expected_flags: Flags,
+) -> bool {
+    let volatile = Flags::ACCESSED.union(Flags::DIRTY);
+    mapped == expected
+        && span == PAGE_SIZE
+        && flags.difference(volatile).bits() == expected_flags.difference(volatile).bits()
 }
 
 /// Why an entry could not be encoded.
@@ -310,7 +245,7 @@ impl fmt::Display for EntryError {
             Self::OutOfRange(address) => write!(f, "{address:#x} does not fit 52 bits"),
             Self::CannotMapPage(level) => write!(f, "{level:?} cannot map a page"),
             Self::HugeFlagIsDerived => {
-                core::fmt::Write::write_str(f, "the huge-page flag is derived from the leaf level")
+                f.write_str("the huge-page flag is derived from the leaf level")
             }
         }
     }
@@ -334,26 +269,10 @@ impl Entry {
         self.0
     }
 
-    /// An entry that maps nothing.
-    ///
-    /// What an unmapped slot holds: all zero, so `PRESENT` is clear and every
-    /// other bit with it. Writing this is how a mapping is taken away (D-88).
+    /// An all-zero entry that maps nothing; writing it takes a mapping away.
     pub const ABSENT: Self = Self(0);
 
-    /// A leaf entry at `level` mapping a page at `address` with `flags`.
-    ///
-    /// `PRESENT` is not added for you: an entry whose caller forgot it is a
-    /// mapping that silently does not exist, and that is worth a compile-time
-    /// habit of naming it.
-    ///
-    /// # Errors
-    ///
-    /// [`EntryError::CannotMapPage`] for [`Level::Pml4`],
-    /// [`EntryError::HugeFlagIsDerived`] if `flags` includes [`Flags::HUGE`],
-    /// [`EntryError::Misaligned`] unless `address` is aligned to the span of
-    /// `level`, and [`EntryError::OutOfRange`] if it needs more than 52 bits.
-    /// The huge-page bit is added for [`Level::Pd`] and [`Level::Pdpt`] and
-    /// omitted for [`Level::Pt`].
+    /// A leaf at `level` mapping `address`; `PRESENT` is never added and `HUGE` follows the level.
     pub const fn page(level: Level, address: u64, flags: Flags) -> Result<Self, EntryError> {
         if !level.can_map_page() {
             return Err(EntryError::CannotMapPage(level));
@@ -369,18 +288,7 @@ impl Entry {
         Self::encode(address, level.span(), flags)
     }
 
-    /// An entry pointing at the table below.
-    ///
-    /// Intermediate entries carry `PRESENT | WRITABLE` and never `NO_EXECUTE`.
-    /// A [`TablePrivilege::User`] entry also carries [`Flags::USER`]; otherwise
-    /// a parent would silently make every user leaf beneath it supervisor-only.
-    /// The effective permission of a mapping is the intersection down the
-    /// walk, so W^X remains enforced at the leaves.
-    ///
-    /// # Errors
-    ///
-    /// [`EntryError::Misaligned`] unless `address` is page-aligned, and
-    /// [`EntryError::OutOfRange`] if it needs more than 52 bits.
+    /// A `PRESENT | WRITABLE` table entry, with [`Flags::USER`] so user leaves below stay usable.
     pub const fn table(address: u64, privilege: TablePrivilege) -> Result<Self, EntryError> {
         let mut flags = Flags::PRESENT.union(Flags::WRITABLE);
         if matches!(privilege, TablePrivilege::User) {
@@ -404,19 +312,12 @@ impl Entry {
         self.flags().contains(Flags::PRESENT)
     }
 
-    /// Whether the entry maps a large page rather than naming a table.
-    ///
-    /// Meaningful only at [`Level::Pd`] and [`Level::Pdpt`]; the bit means
-    /// something else entirely at the other two.
+    /// Whether the entry maps a large page; meaningful only at [`Level::Pd`] and [`Level::Pdpt`].
     pub const fn is_huge(self) -> bool {
         self.flags().contains(Flags::HUGE)
     }
 
-    /// Whether another intermediate entry names the same table with the same
-    /// software-selected policy.
-    ///
-    /// Hardware may set [`Flags::ACCESSED`] during a page walk. Every other
-    /// bit, including the physical address, remains part of the identity.
+    /// Whether `found` names the same table with the same policy, apart from hardware `ACCESSED`.
     pub const fn table_identity_matches(self, found: Self) -> bool {
         self.address() == found.address()
             && self.flags().difference(Flags::ACCESSED).bits()
@@ -437,7 +338,7 @@ impl Entry {
 impl fmt::Debug for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.is_present() {
-            return core::fmt::Write::write_str(f, "Entry(absent)");
+            return f.write_str("Entry(absent)");
         }
         write!(f, "Entry({:#x} {:?})", self.address(), self.flags())
     }
@@ -459,20 +360,17 @@ pub enum Level {
     Pt = 1,
     /// The page directory: entries map 2 MiB pages or name a [`Pt`](Self::Pt).
     Pd = 2,
-    /// The page-directory-pointer table: entries map 1 GiB pages or name a
-    /// [`Pd`](Self::Pd).
+    /// The page-directory-pointer table: entries map 1 GiB pages or name a [`Pd`](Self::Pd).
     Pdpt = 3,
     /// The top-level table, whose physical address goes in `CR3`.
     Pml4 = 4,
 }
 
 impl Level {
-    /// Every level, top down — the order a walk visits them.
+    /// Every level in the order a walk visits them.
     pub const WALK: [Self; 4] = [Self::Pml4, Self::Pdpt, Self::Pd, Self::Pt];
 
-    /// The lowest bit of the virtual address this level's index occupies.
-    ///
-    /// Nine bits per level above the twelve-bit page offset: 12, 21, 30, 39.
+    /// The lowest virtual-address bit this level's index occupies: 12, 21, 30 or 39.
     pub const fn shift(self) -> u32 {
         12 + 9 * (self as u32 - 1)
     }
@@ -487,21 +385,13 @@ impl Level {
         (address >> self.shift()) as usize % ENTRIES
     }
 
-    /// Whether this level's entries may map a page directly.
-    ///
-    /// [`Pt`](Self::Pt) always does. [`Pd`](Self::Pd) and
-    /// [`Pdpt`](Self::Pdpt) do with [`Flags::HUGE`]. [`Pml4`](Self::Pml4)
-    /// never does on any shipping x86_64.
+    /// Whether entries may map a page directly, which a [`Pml4`](Self::Pml4) entry never does.
     pub const fn can_map_page(self) -> bool {
         !matches!(self, Self::Pml4)
     }
 }
 
-/// Whether `address` is canonical — bits 63:48 all copies of bit 47.
-///
-/// The CPU faults on a non-canonical address rather than truncating it, so
-/// this is worth checking before a walk rather than after a general-protection
-/// fault.
+/// Whether bits 63:48 of `address` all copy bit 47; the CPU faults on any other address.
 pub const fn is_canonical(address: u64) -> bool {
     let sign_extended = ((address as i64) << 16 >> 16) as u64;
     sign_extended == address
@@ -512,10 +402,8 @@ pub const fn is_canonical(address: u64) -> bool {
 pub struct CanonicalAddress(u64);
 
 impl CanonicalAddress {
-    /// The canonical null address.
     pub const ZERO: Self = Self(0);
 
-    /// Admit a value the processor accepts as a virtual address.
     pub const fn new(address: u64) -> Option<Self> {
         if is_canonical(address) {
             Some(Self(address))
@@ -524,17 +412,12 @@ impl CanonicalAddress {
         }
     }
 
-    /// Return the admitted address.
     pub const fn get(self) -> u64 {
         self.0
     }
 }
 
-/// A mapping range whose complete arithmetic has been checked up front.
-///
-/// Construct this before allocating or writing page tables. Every address the
-/// range can produce is page-aligned, canonical on the virtual side, and
-/// encodable in an x86_64 entry on the physical side.
+/// A mapping range whose alignment, canonical form and encodability are checked up front.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MappingRange {
     virtual_base: u64,
@@ -542,73 +425,8 @@ pub struct MappingRange {
     len: u64,
 }
 
-/// Why a complete mapping range cannot be represented safely.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub enum MappingRangeError {
-    /// An empty request does not describe a mapping.
-    ZeroLength,
-    /// The virtual base is not page-aligned.
-    MisalignedVirtualBase(u64),
-    /// The physical base is not page-aligned.
-    MisalignedPhysicalBase(u64),
-    /// The length is not a whole number of pages.
-    MisalignedLength(u64),
-    /// Computing the last virtual byte would wrap `u64`.
-    VirtualEndOverflow,
-    /// Computing the last physical byte would wrap `u64`.
-    PhysicalEndOverflow,
-    /// A virtual endpoint is not canonical.
-    NonCanonicalVirtual(u64),
-    /// Canonical endpoints lie on opposite sides of the noncanonical hole.
-    CrossesCanonicalHole,
-    /// A physical address needs bits outside the entry's address field.
-    PhysicalOutOfRange(u64),
-}
-
-impl fmt::Display for MappingRangeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::ZeroLength => core::fmt::Write::write_str(f, "mapping length is zero"),
-            Self::MisalignedVirtualBase(address) => {
-                write!(f, "virtual base {address:#x} is not page-aligned")
-            }
-            Self::MisalignedPhysicalBase(address) => {
-                write!(f, "physical base {address:#x} is not page-aligned")
-            }
-            Self::MisalignedLength(len) => {
-                write!(f, "mapping length {len} is not page-aligned")
-            }
-            Self::VirtualEndOverflow => {
-                core::fmt::Write::write_str(f, "virtual mapping end overflows")
-            }
-            Self::PhysicalEndOverflow => {
-                core::fmt::Write::write_str(f, "physical mapping end overflows")
-            }
-            Self::NonCanonicalVirtual(address) => {
-                write!(f, "virtual address {address:#x} is not canonical")
-            }
-            Self::CrossesCanonicalHole => {
-                core::fmt::Write::write_str(f, "virtual mapping crosses the noncanonical hole")
-            }
-            Self::PhysicalOutOfRange(address) => {
-                write!(f, "physical address {address:#x} does not fit 52 bits")
-            }
-        }
-    }
-}
-
-impl core::error::Error for MappingRangeError {}
-
 impl MappingRange {
-    /// Preflight a virtual-to-physical range before mutating page tables.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MappingRangeError`] unless `len` is non-zero and all three
-    /// values describe whole pages, both inclusive ends can be calculated,
-    /// the virtual range stays within one canonical half, and the physical
-    /// range fits the entry encoding.
+    /// Preflight a virtual-to-physical range before any page table is allocated or written.
     pub const fn new(
         virtual_base: u64,
         physical_base: u64,
@@ -656,17 +474,14 @@ impl MappingRange {
         })
     }
 
-    /// First virtual address in the range.
     pub const fn virtual_base(self) -> u64 {
         self.virtual_base
     }
 
-    /// First physical address in the range.
     pub const fn physical_base(self) -> u64 {
         self.physical_base
     }
 
-    /// Bytes in the range.
     #[expect(
         clippy::len_without_is_empty,
         reason = "construction refuses zero-length mapping ranges"
@@ -675,6 +490,57 @@ impl MappingRange {
         self.len
     }
 }
+
+/// Why a complete mapping range cannot be represented safely.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum MappingRangeError {
+    ZeroLength,
+    MisalignedVirtualBase(u64),
+    MisalignedPhysicalBase(u64),
+    /// The length is not a whole number of pages.
+    MisalignedLength(u64),
+    /// Computing the last virtual byte would wrap `u64`.
+    VirtualEndOverflow,
+    /// Computing the last physical byte would wrap `u64`.
+    PhysicalEndOverflow,
+    /// A virtual endpoint is not canonical.
+    NonCanonicalVirtual(u64),
+    /// Canonical endpoints lie on opposite sides of the noncanonical hole.
+    CrossesCanonicalHole,
+    /// A physical address needs bits outside the entry's address field.
+    PhysicalOutOfRange(u64),
+}
+
+impl fmt::Display for MappingRangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::ZeroLength => f.write_str("mapping length is zero"),
+            Self::MisalignedVirtualBase(address) => {
+                write!(f, "virtual base {address:#x} is not page-aligned")
+            }
+            Self::MisalignedPhysicalBase(address) => {
+                write!(f, "physical base {address:#x} is not page-aligned")
+            }
+            Self::MisalignedLength(len) => {
+                write!(f, "mapping length {len} is not page-aligned")
+            }
+            Self::VirtualEndOverflow => f.write_str("virtual mapping end overflows"),
+            Self::PhysicalEndOverflow => f.write_str("physical mapping end overflows"),
+            Self::NonCanonicalVirtual(address) => {
+                write!(f, "virtual address {address:#x} is not canonical")
+            }
+            Self::CrossesCanonicalHole => {
+                f.write_str("virtual mapping crosses the noncanonical hole")
+            }
+            Self::PhysicalOutOfRange(address) => {
+                write!(f, "physical address {address:#x} does not fit 52 bits")
+            }
+        }
+    }
+}
+
+impl core::error::Error for MappingRangeError {}
 
 #[cfg(test)]
 mod tests;
