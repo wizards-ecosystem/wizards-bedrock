@@ -19,10 +19,7 @@ impl Framebuffer {
         !self.back.is_empty() && self.back.len() == self.words()
     }
 
-    /// The pixel at (`x`, `y`), or `None` outside the visible area.
-    ///
-    /// Read from the shadow to avoid an uncached device read and make stray
-    /// cursor marks observable (D-137).
+    /// The pixel at (`x`, `y`) read from the shadow, so stray cursor marks show; `None` outside.
     #[cfg(feature = "selftest")]
     pub fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
         Some(self.word_at(self.layout.offset(x, y)?))

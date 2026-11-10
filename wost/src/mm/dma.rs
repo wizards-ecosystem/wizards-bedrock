@@ -7,13 +7,10 @@ use super::Paddr;
 use super::direct::DirectSpan;
 use super::frame::{Segment, allocate_contiguous};
 
-/// Frames made reachable by a device for direct memory access.
+/// Frames a device may reach by DMA; a live mapping keeps them from recycling even after drop.
 ///
-/// A command whose completion is uncertain cannot return its frames to the
-/// allocator: the device may still write through the physical address it was
-/// given. A live mapping prevents recycling even if its owner is dropped.
-/// [`retain`](Self::retain) additionally removes every safe way to access the
-/// allocation when completion or revocation is uncertain.
+/// A command of uncertain completion must never return its frames, since the device may write them.
+/// [`retain`](Self::retain) removes all safe access too when completion or revocation is uncertain.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DmaSegment {
     segment: Option<Segment>,
@@ -140,10 +137,7 @@ impl DmaSegment {
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
     }
 
-    /// Permanently withhold the run from both safe access and recycling.
-    ///
-    /// Idempotent, so a controller can retain everything it owns without
-    /// distinguishing the object that made its state uncertain.
+    /// Permanently withhold the run from safe access and recycling, idempotently for a controller.
     pub fn retain(&mut self) {
         if let Some(segment) = self.segment.take() {
             core::mem::forget(segment);
@@ -171,22 +165,16 @@ impl From<Segment> for DmaSegment {
 /// How an IOMMU reads the tables the CPU writes for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableWalks {
-    /// The unit snoops the processor caches, so a volatile write is visible to
-    /// it as soon as it lands.
+    /// The unit snoops the processor caches, so a volatile write is visible once it lands.
     Coherent,
-    /// The unit reads memory directly, so every written line is flushed out of
-    /// the caches before the unit may depend on it.
+    /// The unit reads memory directly, so each written line is flushed before the unit uses it.
     Uncached,
 }
 
-/// A run of kernel-owned frames an IOMMU walks: a root, context, or
-/// second-level table.
+/// Kernel-owned frames an IOMMU walks as a root, context or second-level table.
 ///
-/// The CPU writes it through the direct map and the unit reads it at the
-/// physical address, so it is never mapped into any device's translation and
-/// a device cannot reach the structure that constrains it. Unpublished tables
-/// free their frames on drop; PublishedIommuTable retains every allocation a
-/// unit may have observed (D-357).
+/// Never mapped into any device's translation, so no device reaches the structure constraining it.
+/// Unpublished tables free their frames on drop; [`PublishedIommuTable`] retains what a unit saw.
 #[derive(Debug)]
 pub(crate) struct IommuTable {
     frames: Segment,
@@ -194,8 +182,7 @@ pub(crate) struct IommuTable {
 }
 
 impl IommuTable {
-    /// Allocate `frames` contiguous zeroed frames for one structure or arena,
-    /// with the zeros already visible to a unit that walks `walks`.
+    /// Allocate `frames` contiguous zeroed frames, the zeros visible to a unit that walks `walks`.
     pub(crate) fn new(frames: usize, walks: TableWalks) -> Option<Self> {
         let mut segment = allocate_contiguous(frames, 1)?;
         if !segment.fill(0) {
@@ -226,7 +213,7 @@ impl IommuTable {
         let Some(span) = DirectSpan::from_segment(&self.frames) else {
             return false;
         };
-        let Some(offset) = index.checked_mul(core::mem::size_of::<u64>()) else {
+        let Some(offset) = index.checked_mul(size_of::<u64>()) else {
             return false;
         };
         if !span.write_u64_volatile_at(offset, value) {

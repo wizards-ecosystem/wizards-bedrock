@@ -1,4 +1,3 @@
-use core::mem::size_of;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use frame_space::{FRAME_SIZE, FrameSpace};
@@ -51,9 +50,6 @@ pub fn free_frames() -> usize {
 }
 
 /// Where the boot map covers `len` bytes with memory, or `None` before it is up.
-///
-/// See [`crate::boot::MemoryMap::first_memory_run`] for why a caller asks
-/// rather than names an address (D-177).
 #[cfg(feature = "selftest")]
 pub fn first_memory_run(len: u64) -> Option<Paddr> {
     MAP.lock_leaf()
@@ -62,10 +58,7 @@ pub fn first_memory_run(len: u64) -> Option<Paddr> {
 }
 
 impl Frame {
-    /// Whether every byte of the frame is zero, or `None` if the direct map
-    /// cannot reach it.
-    ///
-    /// This is the machine witness for the D-12 zero-on-allocation boundary.
+    /// Whether every byte of the frame is zero, or `None` if the direct map cannot reach it.
     #[cfg(feature = "selftest")]
     pub fn is_zero(&self) -> Option<bool> {
         const WORDS: usize = FRAME_SIZE as usize / size_of::<u64>();
@@ -74,10 +67,8 @@ impl Frame {
         let mut zero = true;
         for index in 0..WORDS {
             let word = base.wrapping_add(index);
-            // SAFETY: the frame `self` owns is allocatable memory and so is
-            // direct-mapped whichever map is in force, and `index` stays below
-            // the number of words in one frame. The direct map preserves the
-            // frame's `u64` alignment.
+            // SAFETY: allocatable, the owned frame is direct-mapped under either map; `index` stays
+            // below one frame's words, and the direct map keeps the frame's `u64` alignment.
             zero &= unsafe { word.read_volatile() } == 0;
         }
         Some(zero)
@@ -85,14 +76,9 @@ impl Frame {
 }
 
 impl Segment {
-    /// Read `into.len()` bytes from `offset` within the run.
+    /// Read `into.len()` bytes from `offset`, or `false` having written nothing if out of reach.
     ///
-    /// [`SharedBytes`] uses volatile copies and [`SharedRing`] reserves its
-    /// publication words for the architecture boundary. [`USegment`] exposes
-    /// no reader (D-107, D-221).
-    ///
-    /// `false` if the read would run past the run, or if the direct map cannot
-    /// reach it, having written nothing into `into`.
+    /// [`USegment`] exposes no reader; [`SharedBytes`] and [`SharedRing`] read only volatile.
     #[cfg(feature = "selftest")]
     #[must_use = "a refused segment read copied no bytes"]
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
@@ -356,9 +342,8 @@ impl ExternalZeroRefusal {
             return false;
         }
 
-        // SAFETY: `WITHHELD` is published only after the sole `Segment` handle
-        // is forgotten. `Segment::drop` publishes `RELEASED` instead, so this
-        // state proves no allocator owner can name these exact frames.
+        // SAFETY: `WITHHELD` is published only after the sole `Segment` is forgotten, and a drop
+        // publishes `RELEASED` instead, so no allocator owner can name these exact frames.
         let mut segment = unsafe { Segment::from_raw(self.address, self.count) };
         if !segment.zero() {
             core::mem::forget(segment);

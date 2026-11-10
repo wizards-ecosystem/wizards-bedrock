@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::mem::{align_of, size_of};
 
 use ring_proto::SharedLayout;
 
@@ -10,11 +9,9 @@ use super::selftest::observe_external_run_withheld_for_test;
 use super::{Paddr, direct_pointer};
 use crate::arch::current::shared_memory;
 
-/// A run of frames whose bytes are ring 3's.
+/// A run of frames whose bytes are ring 3's, outside kernel control and never trusted data.
 ///
-/// Its contents are outside kernel control and cannot be read as trusted data.
-/// Conversion is one-way except through [`reclaim`](Self::reclaim), which
-/// clears every byte before returning kernel ownership (D-44, D-107).
+/// It returns to kernel ownership only through [`reclaim`](Self::reclaim), which clears every byte.
 #[derive(PartialEq, Eq, Debug)]
 pub struct USegment {
     segment: Option<Segment>,
@@ -43,20 +40,15 @@ impl USegment {
         self.segment().len()
     }
 
-    /// Pin this run for sharing, giving up the right to map it as owned.
+    /// Pin this run for sharing, giving up for good the right to map it as owned.
     ///
-    /// Consuming, with no conversion back. `map_shared` writes no `OWNED` bit,
-    /// while `map_user` consumes a `USegment` and writes one, so one run cannot
-    /// enter both ownership paths (D-115).
+    /// `map_shared` writes no `OWNED` bit and `map_user` consumes a `USegment`: one path per run.
     #[must_use]
     pub fn share(self) -> Shared {
         Shared(Arc::new(SharedAllocation(self)))
     }
 
-    /// Take the run back for the kernel, with every byte cleared.
-    ///
-    /// `None` if clearing cannot reach the run. Such frames are withheld rather
-    /// than recycled with ring-3 bytes still present (D-12, D-107).
+    /// Take the run back for the kernel with every byte cleared, or `None` withholding it.
     pub fn reclaim(mut self) -> Option<Segment> {
         let Some(mut segment) = self.segment.take() else {
             panic!("an external segment no longer owns its frames");
@@ -64,8 +56,7 @@ impl USegment {
         if segment.zero() {
             return Some(segment);
         }
-        // Returning a failed clear would expose the previous external owner's
-        // bytes through the allocator's next handle (D-115).
+        // Never return a failed clear: the next handle would expose the external owner's bytes.
         core::mem::forget(segment);
         None
     }
@@ -113,10 +104,7 @@ impl Shared {
         SharedBytes(self.0)
     }
 
-    /// Consume the allocation into one checked ring partition.
-    ///
-    /// Returns the unchanged owner if the layout describes a different number
-    /// of bytes.
+    /// Consume the allocation into one checked ring partition, or return it if the sizes differ.
     pub fn into_ring<const WORDS: usize>(
         self,
         layout: SharedLayout<WORDS>,
@@ -210,30 +198,25 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         read_shared_volatile(&self.allocation, offset, into)
     }
 
-    /// Acquire-load one aligned little-endian publication index.
+    /// Acquire-load one aligned little-endian index, or `None` off a publication word or the map.
     ///
-    /// `None` means the offset is not one of this layout's publication words
-    /// or the word is not reachable through the direct map. An acquired
-    /// producer tail makes its earlier volatile payload writes visible; an
-    /// acquired consumer head makes its earlier payload reads precede reuse.
+    /// An acquired producer tail makes its earlier volatile payload writes visible.
+    /// An acquired consumer head makes its earlier payload reads precede reuse.
     pub fn load_acquire_u32(&self, offset: usize) -> Option<u32> {
         if !self.layout.contains_publication_word(offset) {
             return None;
         }
         let address = self.publication_address(offset)?;
-        // SAFETY: `publication_address` proves this exact word stays mapped
-        // and aligned for this borrow; `SharedAllocation` keeps its bytes
-        // external rather than representing them as a Rust object.
+        // SAFETY: `publication_address` proves this exact word mapped and aligned for this borrow,
+        // and `SharedAllocation` keeps its bytes external, never a Rust object.
         let value = unsafe { shared_memory::load_acquire_u32(address) };
         Some(u32::from_le(value))
     }
 
-    /// Release-store one aligned little-endian publication index.
+    /// Release-store one aligned little-endian index, or `false` off a publication word or the map.
     ///
-    /// `false` means the offset is not one of this layout's publication words
-    /// or the word is not reachable through the direct map. A producer
-    /// publishes completed volatile payload writes through a tail; a consumer
-    /// publishes completed payload reads before the producer may reuse them.
+    /// A producer publishes completed volatile payload writes through a tail.
+    /// A consumer publishes completed payload reads before the producer may reuse them.
     #[must_use = "a refused shared-memory publication stored no index"]
     pub fn store_release_u32(&self, offset: usize, value: u32) -> bool {
         if !self.layout.contains_publication_word(offset) {
@@ -242,9 +225,8 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         let Some(address) = self.publication_address(offset) else {
             return false;
         };
-        // SAFETY: `publication_address` proves this exact word stays mapped
-        // and aligned for this borrow; `SharedAllocation` keeps its bytes
-        // external rather than representing them as a Rust object.
+        // SAFETY: `publication_address` proves this exact word mapped and aligned for this borrow,
+        // and `SharedAllocation` keeps its bytes external, never a Rust object.
         unsafe { shared_memory::store_release_u32(address, value.to_le()) };
         true
     }

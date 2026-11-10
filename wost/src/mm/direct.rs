@@ -27,6 +27,9 @@ impl<'authority> DirectSpan<'authority> {
         unsafe { Self::from_proven_run(allocation.0.address(), allocation.0.len()) }
     }
 
+    /// # Safety
+    ///
+    /// The `len` bytes at `physical` must stay allocated and direct-mapped for `'authority`.
     pub(super) unsafe fn from_proven_run(physical: Paddr, len: u64) -> Option<Self> {
         let len = usize::try_from(len).ok()?;
         let base = direct_pointer(physical, len as u64)?;
@@ -78,11 +81,11 @@ impl<'authority> DirectSpan<'authority> {
     }
 
     pub(super) fn write_u64_volatile_at(&self, offset: usize, value: u64) -> bool {
-        let Some(end) = offset.checked_add(core::mem::size_of::<u64>()) else {
+        let Some(end) = offset.checked_add(size_of::<u64>()) else {
             return false;
         };
         let destination = self.base.wrapping_add(offset);
-        if end > self.len || !(destination as usize).is_multiple_of(core::mem::align_of::<u64>()) {
+        if end > self.len || !(destination as usize).is_multiple_of(align_of::<u64>()) {
             return false;
         }
         let word = destination.cast::<u64>();
@@ -148,8 +151,5 @@ impl<'authority> DirectSpan<'authority> {
     }
 }
 
-/// Bytes in one processor cache line, the granule `clflush` moves.
-///
-/// Every x86-64 processor reports 64, and the flush walks a table at this
-/// stride; a smaller line would be flushed in full by the same walk.
+/// Bytes in the `clflush` line every x86-64 processor reports; a smaller line is still covered.
 const CACHE_LINE: usize = 64;
