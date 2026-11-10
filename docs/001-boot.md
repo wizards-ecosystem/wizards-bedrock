@@ -43,7 +43,7 @@ whole of that dependency.
 
 ## Disk layout (built by `cargo xtask image`, pure Rust)
 
-64 MiB raw image, MBR partition table (not GPT, deliberately minimal and
+64 MiB raw image, MBR partition table (not GPT, minimal and
 hand-written in `xtask`; GPT comes when the OS grows a partitioning story):
 
 - partition 1: type `0xEF` (EFI System), FAT32, from LBA 2048
