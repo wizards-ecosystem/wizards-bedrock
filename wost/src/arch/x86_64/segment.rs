@@ -1,10 +1,7 @@
 //! The global descriptor table and the task-state segment.
 //!
-//! The bootloader leaves the kernel running on a descriptor table it owns and
-//! is entitled to reuse, so [`init`] installs ours before anything else touches
-//! the CPU. In 64-bit mode the table carries almost no information — the
-//! interesting part is the task-state segment it points at, which is where a
-//! gate finds the stack for a fault that cannot trust the current one.
+//! The bootloader's table is its own to reuse, so [`init`] installs ours before anything else
+//! touches the CPU; the segment holds the stack a gate takes for a fault that cannot trust its own.
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -31,26 +28,20 @@ pub const KERNEL_CODE: Selector = Selector::new(1, 0);
 /// Ring 0 data. Boot and common interrupt entry keep this in `SS`.
 pub const KERNEL_DATA: Selector = Selector::new(2, 0);
 
-/// The task-state segment. Being a system descriptor it is sixteen bytes, so it
-/// occupies this entry and the one after it.
+/// The task-state segment, a sixteen-byte system descriptor occupying this entry and the next.
 pub const TASK_STATE: Selector = Selector::new(3, 0);
 
-/// Ring 3 data. Loaded into `SS` by the `iretq` that enters user code.
+/// Ring 3 data, loaded into `SS` by the `iretq` that enters user code.
 ///
-/// Placed **before** the user code segment, which looks backwards and is what
-/// `sysret` requires: it derives `CS` from `STAR` + 16 and `SS` from
-/// `STAR` + 8, so the data descriptor has to come first. Changing this order
-/// would also renumber every selector shared with entry assembly (D-96).
+/// Before user code because `sysret` derives `CS` from `STAR` + 16 and `SS` from `STAR` + 8;
+/// changing the order would also renumber every selector shared with entry assembly.
 pub const USER_DATA: Selector = Selector::new(5, 3);
 
 /// Ring 3 code.
 pub const USER_CODE: Selector = Selector::new(6, 3);
 
-/// [`USER_DATA`]'s bits, for the `iretq` frame that enters ring 3.
-///
-/// A `const` operand in inline assembly must be an integer, and `Selector` is
-/// not one — so the value is named here rather than open-coded where it is
-/// pushed.
+/// [`USER_DATA`]'s bits for the `iretq` frame entering ring 3, since a `const` operand in inline
+/// assembly must be an integer and `Selector` is not one.
 pub(super) const USER_DATA_BITS: u16 = USER_DATA.bits();
 
 /// [`KERNEL_DATA`]'s bits, for common entry and the return-path `verw` operand.
@@ -65,8 +56,7 @@ pub const DOUBLE_FAULT_STACK: u8 = 1;
 /// Null, code, data, two for the task-state segment, then the user pair.
 const ENTRIES: usize = 7;
 
-/// Stack reserved for the double-fault handler. Generous because the fault it
-/// handles is usually "the last stack ran out".
+/// The double-fault handler's stack, generous since that fault usually means a stack ran out.
 const FAULT_STACK_BYTES: usize = 16 * 1024;
 
 /// Sixteen-byte aligned so the stack pointer handed to the CPU is too.
@@ -75,22 +65,14 @@ struct FaultStack([u8; FAULT_STACK_BYTES]);
 
 #[unsafe(link_section = ".kpti.tables.gdt")]
 static GDT: HardwareCell<[u64; ENTRIES]> = HardwareCell::new([0; ENTRIES]);
-/// The task-state segment, placed so its interrupt-stack entries are
-/// eight-byte aligned.
+/// The task-state segment, placed so its interrupt-stack entries are eight-byte aligned.
 ///
-/// The architecture puts `IST1` at offset `0x24`, and `TaskState` is
-/// `packed(4)` because the first stack pointer is at offset 4. Together those
-/// mean that in a segment on an eight-byte boundary, `IST1` sits at four *past*
-/// one — so an eight-byte store to it is misaligned, which is undefined
-/// behaviour however well x86 tolerates it in practice.
-///
-/// Four bytes of padding in front moves the whole segment to four-mod-eight,
-/// which puts `0x24` back on a boundary. That is what makes
-/// [`set_double_fault_stack`]'s store both sound and atomic, and a host test
-/// in `x86-tables` pins the offset it depends on (D-95).
+/// `IST1` is at `0x24` of the `packed(4)` `TaskState`, four past a boundary, where an eight-byte
+/// store is undefined however well x86 tolerates it. Four leading bytes put it back on one,
+/// making [`set_double_fault_stack`]'s store sound and atomic; an `x86-tables` host test pins it.
 #[repr(C, align(8))]
 struct AlignedTaskState {
-    /// Never read. Its only job is to shift `state` off the boundary.
+    /// Never read; it only shifts `state` off the boundary.
     _leading: u32,
     state: TaskState,
 }
@@ -103,8 +85,8 @@ static TASK_STATE_SEGMENT: HardwareCell<AlignedTaskState> = HardwareCell::new(Al
 
 /// The task-state segment itself, past the padding.
 fn task_state_pointer() -> *mut TaskState {
-    // SAFETY: `AlignedTaskState` is `repr(C)`, so this projects to a field of
-    // the live static rather than deriving a pointer from an integer.
+    // SAFETY: `AlignedTaskState` is `repr(C)`, so this projects to a field of the live static
+    // instead of deriving a pointer from an integer.
     unsafe { &raw mut (*TASK_STATE_SEGMENT.as_mut_ptr()).state }
 }
 #[unsafe(link_section = ".kpti.state.ist_stack")]
@@ -112,20 +94,16 @@ static FAULT_STACK: HardwareCell<FaultStack> =
     HardwareCell::new(FaultStack([0; FAULT_STACK_BYTES]));
 /// Guarded ordinary IST1 installed after paging comes alive.
 ///
-/// Paired tasks temporarily replace the hardware entry with the enclave IST.
-/// Keeping the pinned stack's address here lets the same interrupt-excluded
-/// task switch restore the ordinary fault path before a non-paired task runs.
+/// Paired tasks temporarily install the enclave IST instead; this address lets the same
+/// interrupt-excluded switch restore the ordinary fault path before a non-paired task runs.
 static ORDINARY_FAULT_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 static INIT: Once = Once::new();
 
 /// Install and load the kernel's descriptor table and task-state segment.
 ///
-/// Reloads `CS`, `SS`, `DS` and `ES` from the new table and points the task
-/// register at the new segment. `FS` and `GS` are left alone: nothing uses them
-/// until per-CPU data arrives, and loading one would discard a base the
-/// bootloader may still be relying on.
-///
-/// Does nothing after the first call.
+/// Reloads `CS`, `SS`, `DS` and `ES` and points the task register at the new segment. `FS` and
+/// `GS` stay: nothing uses them until per-CPU data, and loading one would discard a base the
+/// bootloader may still rely on. Does nothing after the first call.
 pub fn init() {
     if !INIT.claim() {
         return;
@@ -133,8 +111,8 @@ pub fn init() {
 
     let mut task_state = TaskState::new();
     task_state.set_interrupt_stack(DOUBLE_FAULT_STACK as usize, fault_stack_top());
-    // SAFETY: `INIT` admitted this caller alone, and nothing reads the segment
-    // until the `ltr` below, so no reference to it can exist yet.
+    // SAFETY: `INIT` admitted this caller alone, and nothing reads the segment until the `ltr`
+    // below, so no reference to it can exist yet.
     unsafe { core::ptr::write(task_state_pointer(), task_state) };
 
     let task_state_descriptor =
@@ -148,14 +126,12 @@ pub fn init() {
     entries[TASK_STATE.index() as usize + 1] = task_state_descriptor.high;
     entries[USER_DATA.index() as usize] = Descriptor::USER_DATA.bits();
     entries[USER_CODE.index() as usize] = Descriptor::USER_CODE.bits();
-    // SAFETY: as above — one writer, and the CPU is not pointed at the table
-    // until the `lgdt` below.
+    // SAFETY: as above: one writer, and the CPU is not pointed at the table until the `lgdt` below.
     unsafe { core::ptr::write(GDT.as_mut_ptr(), entries) };
 
     let pointer = TablePointer::new(GDT.address(), (size_of::<[u64; ENTRIES]>() - 1) as u16);
-    // SAFETY: `lgdt` reads ten bytes at the operand and points the CPU at the
-    // table they describe. Both are ours, correctly encoded and permanently
-    // resident, and the entry the current `CS` will be reloaded from is present.
+    // SAFETY: `lgdt` loads the table its ten-byte operand describes; both are ours, correctly
+    // encoded and permanently resident, and the entry `CS` will be reloaded from is present.
     unsafe {
         asm!(
             "lgdt [{pointer}]",
@@ -166,10 +142,8 @@ pub fn init() {
 
     reload_selectors();
 
-    // SAFETY: `ltr` marks the descriptor busy and points the task register at
-    // it. Entry `TASK_STATE` was just written as an available 64-bit
-    // task-state segment, and nothing has loaded it before — `INIT` guarantees
-    // this runs once, and loading a busy segment is the only way this faults.
+    // SAFETY: `ltr` loads entry `TASK_STATE`, just written as an available 64-bit segment, and
+    // marks it busy; `INIT` runs this once, and only loading a busy segment faults.
     unsafe {
         asm!(
             "ltr {selector:x}",
@@ -202,10 +176,8 @@ pub(super) fn current_code_selector() -> Selector {
 
 /// Load the segment registers from the table [`init`] just installed.
 fn reload_selectors() {
-    // SAFETY: a far return pops an instruction pointer and a code selector,
-    // both of which this sequence pushes: the address is a label inside the
-    // block, and the selector is the present, executable, ring 0 entry written
-    // above. `nostack` is deliberately absent — the stack is the mechanism.
+    // SAFETY: the far return pops the in-block label and the present, executable ring 0 selector
+    // this sequence pushes; `nostack` is deliberately absent, since the stack is the mechanism.
     unsafe {
         asm!(
             "push {selector}",
@@ -219,9 +191,8 @@ fn reload_selectors() {
         );
     }
 
-    // SAFETY: all three registers are loaded with a present, writable ring 0
-    // data selector. `DS` and `ES` are ignored in 64-bit mode; `SS` is not, and
-    // must name a valid descriptor before the first `iretq`.
+    // SAFETY: all three get a present, writable ring 0 data selector; 64-bit mode ignores `DS` and
+    // `ES` but not `SS`, which must name a valid descriptor before the first `iretq`.
     unsafe {
         asm!(
             "mov ss, {selector:x}",
@@ -283,9 +254,8 @@ fn write_stack(at: usize, top: u64) {
         .cast::<u8>()
         .wrapping_add(at)
         .cast::<u64>();
-    // SAFETY: the layout-owned offset is inside the live segment, and the
-    // assertion proves its eight-byte alignment. The naturally aligned store
-    // lets an arriving trap observe one complete stack or the other (D-95).
+    // SAFETY: the layout-owned offset is inside the live segment and the assertion proves it
+    // eight-byte aligned, so an arriving trap observes one complete stack or the other.
     unsafe { entry.write_volatile(top) };
 }
 
@@ -296,20 +266,15 @@ pub(super) fn kernel_stack() -> u64 {
 
 /// Move the double-fault handler onto a guarded stack.
 ///
-/// The stack `init` installs is a `.bss` array with nothing below it, which
-/// `002`'s security baseline records as owed: a double fault that overruns it
-/// runs into whatever the linker put next, silently. Once the tables are live a
-/// guarded region can be mapped and the handler pointed at it (D-89).
+/// `init`'s stack is a `.bss` array with nothing below it, so an overrun silently runs into
+/// whatever the linker put next; once the tables are live a guarded region replaces it.
 ///
-/// Safe for two reasons. [`PinnedStack`] makes the new mapping non-revocable,
-/// and the old one is a kernel-image array that cannot be unmapped. The
-/// interrupt-stack table entry is a single naturally-aligned eight-byte field,
-/// so this store is atomic on x86-64: a double fault arriving during it sees
-/// one complete mapped, writable value or the other.
+/// Safe: [`PinnedStack`] makes the new mapping non-revocable, the old one is a kernel-image array
+/// that cannot be unmapped, and the entry is one naturally aligned eight-byte field, so a double
+/// fault arriving during the store sees one complete mapped, writable value or the other.
 ///
-/// `false` if the stack does not belong to the address space this CPU is
-/// walking, or after paired entry owns the TSS stacks. Either case leaves the
-/// current interrupt-stack entry unchanged.
+/// `false` if the stack does not belong to the address space this CPU is walking, or after paired
+/// entry owns the TSS stacks; either case leaves the current interrupt-stack entry unchanged.
 #[must_use = "a refused double-fault stack install changed no TSS entry"]
 pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     if !stack.is_installed() || super::kpti::entry_is_ready() {
@@ -330,9 +295,8 @@ pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
         .wrapping_add(at)
         .cast::<u64>();
     let top = stack.top();
-    // SAFETY: the layout-owned offset is inside the live segment, and the
-    // assertion proves its eight-byte alignment. The naturally aligned store
-    // lets the CPU observe one complete value or the other.
+    // SAFETY: the layout-owned offset is inside the live segment and the assertion proves it
+    // eight-byte aligned, so the CPU observes one complete value or the other.
     unsafe { entry.write_volatile(top) };
     ORDINARY_FAULT_STACK_TOP.store(top, Ordering::Release);
     true
@@ -344,13 +308,10 @@ pub(super) fn double_fault_stack_address() -> u64 {
     ))
 }
 
-/// One stack pointer out of the segment, read the way it is written.
+/// One stack pointer out of the segment, read as one eight-byte load the way it is written.
 ///
-/// A single eight-byte load rather than a copy of the whole structure. The
-/// stores are careful to be atomic against a trap arriving mid-write (D-95),
-/// and a bulk `read_volatile` of a 104-byte structure undid that on the far
-/// side: `RSP0` moves on every context switch, so a preempted reader could
-/// see half of one stack and half of another (D-105).
+/// A bulk read of the 104-byte segment would undo the atomic stores: `RSP0` moves on every
+/// context switch, so a preempted reader could see half of one stack and half of another.
 fn read_stack(at: usize) -> u64 {
     assert!(
         task_state_pointer()
@@ -363,9 +324,8 @@ fn read_stack(at: usize) -> u64 {
         .cast::<u8>()
         .wrapping_add(at)
         .cast::<u64>();
-    // SAFETY: the layout-owned offset is inside the live segment, and the
-    // assertion proves its eight-byte alignment. The naturally aligned load
-    // observes one complete value written there (D-95).
+    // SAFETY: the layout-owned offset is inside the live segment and the assertion proves it
+    // eight-byte aligned, so the load observes one complete value written there.
     unsafe { entry.read_volatile() }
 }
 

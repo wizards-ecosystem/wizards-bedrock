@@ -1,14 +1,10 @@
-//! Eager x87, SSE, and AVX state isolation (D-82).
+//! Eager x87, SSE and AVX state isolation, since lazy switching is the CVE-2018-3665 disclosure.
 //!
-//! `x86_cpuid::xstate` owns the host-tested layout arithmetic; this module owns
-//! the control registers and save instructions. All fallible validation occurs
-//! before enabling user-visible state (D-115). Lazy switching is excluded by
-//! the CVE-2018-3665 class of register-state disclosure.
+//! `x86_cpuid::xstate` owns the host-tested layout arithmetic and this module the control
+//! registers and save instructions; all fallible validation precedes enabling user-visible state.
 
 use core::arch::asm;
 use core::arch::x86_64::__cpuid_count;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_cpuid::xstate::{self, Alignment, Component, Layout};
@@ -34,13 +30,10 @@ const XSAVE_SUPPORTED: u32 = 1 << 26;
 /// `CPUID.0DH.1:EAX` bit 1, the compacted save instruction.
 const XSAVEC_SUPPORTED: u32 = 1 << 1;
 
-/// Room for a save area, in bytes.
+/// Bytes `.bss` reserves per thread for a save area; the instructions get the `CPUID` size.
 ///
-/// A ceiling, not the size: the size comes from `CPUID` at boot and is what the
-/// instructions are given. This is what `.bss` reserves per thread, and
-/// [`init`] refuses rather than overrunning it — 576 bytes of legacy area and
-/// header plus 256 for AVX leaves generous room, and a mask this kernel does
-/// not set cannot make it larger.
+/// [`init`] refuses a larger size instead of overrunning it: 576 bytes of legacy area and header
+/// plus 256 for AVX leave generous room, and a mask this kernel does not set cannot grow it.
 pub const CEILING: usize = 1024;
 
 /// Bytes the save instructions actually write, or zero before [`init`].
@@ -65,19 +58,16 @@ pub struct Extended {
 
 /// Turn on extended-state saving, and report what it costs.
 ///
-/// `None` where the processor has no usable `XSAVE`; user launch then remains
-/// closed because thread switches cannot isolate that register state.
-///
-/// Safe: state bits and their instruction features are checked before any
-/// control register is changed.
+/// `None` without a usable `XSAVE`, so user launch stays closed: switches cannot isolate that
+/// state. Safe: state bits and their instruction features are checked before any control register
+/// is changed.
 pub fn init() -> Option<Extended> {
     let basic = __cpuid_count(1, 0);
     if basic.ecx & XSAVE_SUPPORTED == 0 {
         return None;
     }
 
-    // Preflight before enabling anything, so a refusal cannot leave SSE usable
-    // while the context switch still saves no extended state (D-115).
+    // Preflight first, so a refusal cannot leave SSE usable while switches save no extended state.
     let supported = __cpuid_count(XSTATE_LEAF, 0);
     let available = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
     if !xstate::has_permitted_components(available) {
@@ -87,8 +77,8 @@ pub fn init() -> Option<Extended> {
     if !xstate::avx_state_has_instruction_support(mask, basic.ecx) {
         return None;
     }
-    // x87 is mandatory in `XCR0`; a processor reporting otherwise is one this
-    // kernel does not understand, and writing the register would fault.
+    // x87 is mandatory in `XCR0`: a processor reporting otherwise is not understood here, and
+    // writing the register would fault.
     if mask & xstate::X87 == 0 {
         return None;
     }
@@ -138,8 +128,8 @@ pub fn init() -> Option<Extended> {
 
 /// What one component of the state costs and whether it wants alignment.
 fn describe(index: u32) -> Component {
-    // A sub-leaf the processor does not describe answers with zeros, which
-    // `Component::new` reads as absent.
+    // A sub-leaf the processor does not describe answers zeros, which `Component::new` reads as
+    // absent.
     let leaf = __cpuid_count(XSTATE_LEAF, index);
     Component::new(
         leaf.eax,
@@ -165,7 +155,7 @@ pub fn is_enabled() -> bool {
 pub fn user_state_is_isolated() -> bool {
     let isolated = configured_policy_is_live();
     #[cfg(feature = "selftest")]
-    let isolated = isolated && !REFUSE_USER_STATE_ISOLATION.load(Ordering::Acquire);
+    let isolated = isolated && !REFUSE_USER_STATE_ISOLATION.armed();
     isolated
 }
 
@@ -179,8 +169,8 @@ fn configured_policy_is_live() -> bool {
 ///
 /// # Safety
 ///
-/// `area` must be 64-byte aligned and at least [`bytes`] long, and
-/// writable for that whole span. Nothing else may be reading or writing it.
+/// `area` must be 64-byte aligned, at least [`bytes`] long and writable for that whole span.
+/// Nothing else may be reading or writing it.
 ///
 /// # Panics
 ///
@@ -192,8 +182,8 @@ pub(super) unsafe fn save(area: *mut u8) {
     );
     match FORM.load(Ordering::Acquire) {
         2 => {
-            // SAFETY: the caller's, plus `XSAVEC` needs only `CR4.OSXSAVE`,
-            // which `init` set before storing a non-zero form.
+            // SAFETY: the caller's, plus `XSAVEC` needs only `CR4.OSXSAVE`, which `init` set
+            // before storing a non-zero form.
             unsafe {
                 asm!(
                     "xsavec [{area}]",
@@ -224,10 +214,9 @@ pub(super) unsafe fn save(area: *mut u8) {
 ///
 /// # Safety
 ///
-/// `area` must satisfy [`save`]'s requirements and hold either a state [`save`]
-/// wrote or [`bytes`] fully zeroed bytes. A zero `XSTATE_BV` and `XCOMP_BV`
-/// encode architectural initial state in standard form; zero reserved header
-/// bytes satisfy `XRSTOR`'s format checks.
+/// `area` must satisfy [`save`]'s requirements and hold either a state [`save`] wrote or
+/// [`bytes`] fully zeroed bytes. A zero `XSTATE_BV` and `XCOMP_BV` encode architectural initial
+/// state in standard form; zero reserved header bytes satisfy `XRSTOR`'s format checks.
 ///
 /// # Panics
 ///
@@ -240,8 +229,8 @@ pub(super) unsafe fn restore(area: *const u8) {
         configured_policy_is_live(),
         "extended-state controls diverged from the sized restore policy"
     );
-    // SAFETY: the caller's, plus `CR4.OSXSAVE` is set — `init` stored a
-    // non-zero form only after setting it.
+    // SAFETY: the caller's, plus `CR4.OSXSAVE` is set: `init` stored a non-zero form only after
+    // setting it.
     unsafe {
         asm!(
             "xrstor [{area}]",
@@ -257,9 +246,8 @@ pub(super) unsafe fn restore(area: *const u8) {
 ///
 /// # Safety
 ///
-/// `CR4.OSXSAVE` must be set, and every bit of `mask` must be one
-/// `CPUID.0DH.0` reported as available with bit 0 among them — `XSETBV` faults
-/// otherwise.
+/// `CR4.OSXSAVE` must be set, and every bit of `mask` must be one `CPUID.0DH.0` reported as
+/// available, with bit 0 among them; `XSETBV` faults otherwise.
 unsafe fn set_extended_control(mask: u64) {
     let (low, high) = register_bits::u32_halves(mask);
     // SAFETY: the caller's.
@@ -276,17 +264,16 @@ unsafe fn set_extended_control(mask: u64) {
 
 /// Read `XCR0` back, for the check that the write took.
 ///
-/// Zero before [`init`] succeeds, which is also what a processor without
-/// `XSAVE` reports — the two are the same answer for the same reason.
+/// Zero before [`init`] succeeds, as on a processor without `XSAVE`, for the same reason.
 pub fn extended_control() -> u64 {
-    // `XGETBV` legality comes from live `CR4.OSXSAVE`, not the later `FORM`
-    // publication; consulting `FORM` here would make the read self-referential.
+    // `XGETBV` legality comes from live `CR4.OSXSAVE`; consulting the later `FORM` publication
+    // would make the read self-referential.
     if !cpu::extended_state_is_enabled() {
         return 0;
     }
     let (low, high): (u32, u32);
-    // SAFETY: `XGETBV` needs `CR4.OSXSAVE`, which is set whenever a form is
-    // stored, and reads a register with no side effects.
+    // SAFETY: `XGETBV` needs `CR4.OSXSAVE`, which is set whenever a form is stored, and reads a
+    // register with no side effects.
     unsafe {
         asm!(
             "xgetbv",

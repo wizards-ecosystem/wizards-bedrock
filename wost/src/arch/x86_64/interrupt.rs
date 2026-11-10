@@ -1,13 +1,8 @@
-//! Interrupt and exception entry.
+//! Interrupt and exception entry, and interrupt admission, whose safety needs this loaded table.
 //!
-//! Stable Rust has no interrupt calling convention, so assembly stubs normalize
-//! CPU frames before a common tail calls [`Handler`] (D-01).
-//!
-//! Every gate is an interrupt gate, so a handler starts with interrupts
-//! disabled. See `docs/006-cpu-fundamentals.md` for the frame layout argument.
-//!
-//! Interrupt admission lives here because its safety depends on a loaded table
-//! whose gates are all present.
+//! Stable Rust has no interrupt calling convention, so assembly stubs normalize CPU frames before
+//! a common tail calls [`Handler`]. Every gate is an interrupt gate, so a handler starts with
+//! interrupts disabled; `docs/006-cpu-fundamentals.md` argues the frame layout.
 
 use core::arch::asm;
 use core::marker::PhantomData;
@@ -64,19 +59,15 @@ static EXCLUSIONS: [ExclusionLedger; CONTEXTS] = [const { ExclusionLedger::new()
 /// `RFLAGS` bit 9: this CPU accepts maskable interrupts.
 pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
 
-/// Bytes each entry stub occupies.
+/// Bytes each entry stub occupies, padded so the table indexes by vector instead of 256 names.
 ///
-/// The generator pads every stub to this, which is what lets the table be
-/// indexed by vector instead of naming 256 handlers. [`init`] checks the
-/// assumption against the symbols bracketing the generated table rather than
-/// trusting it.
+/// [`init`] checks this against the symbols bracketing the generated table instead of trusting it.
 const STUB_BYTES: usize = 16;
 
 /// The registers the entry path leaves on the stack.
 ///
-/// Field order is not a matter of taste: it mirrors the pushes in the entry
-/// sequence exactly, lowest address first. The selftest checks the two still
-/// agree on a live machine, because nothing else can.
+/// Field order mirrors the entry pushes exactly, lowest address first; the selftest checks they
+/// still agree on a live machine, because nothing else can.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct RawTrapFrame {
@@ -116,9 +107,8 @@ const _: () = {
 
 /// A read-only snapshot of the registers saved on interrupt entry.
 ///
-/// The assembly-owned frame is deliberately not exposed. A handler can inspect
-/// where execution resumes, but safe code cannot redirect `iretq` or forge the
-/// frame identity accepted by the scheduler.
+/// The assembly-owned frame is deliberately not exposed: a handler can inspect where execution
+/// resumes, but safe code cannot redirect `iretq` or forge the frame identity the scheduler takes.
 #[derive(Debug)]
 pub struct TrapFrame {
     raw: RawTrapFrame,
@@ -176,22 +166,21 @@ impl TrapFrame {
 
 /// What the kernel does when a vector is raised.
 ///
-/// Runs with interrupts disabled, on the interrupted stack unless the gate
-/// selected a task-state-segment stack. Fault handlers must redirect or stop;
-/// their saved instruction pointer still names the faulting instruction.
+/// Runs with interrupts disabled, on the interrupted stack unless the gate selected a
+/// task-state-segment stack. Fault handlers must redirect or stop: their saved instruction
+/// pointer still names the faulting instruction.
 pub type Handler = fn(&TrapFrame);
 
 /// Retire a context whose outer-privilege frame cannot be consumed safely.
 ///
-/// The callback diverges because returning would hand the rejected frame to
-/// `iretq`. It runs after the ordinary handler, while that exact frame remains
-/// live and every device interrupt has been dismissed (D-368).
+/// Diverges because returning would hand the rejected frame to `iretq`. It runs after the
+/// ordinary handler, while that exact frame is live and every device interrupt is dismissed.
 pub type InvalidUserReturnHandler = fn(&TrapFrame, UserReturnError) -> !;
 
 /// The two kernel callbacks installed before the interrupt table is loaded.
 ///
-/// Keeping them in one immutable, statically lived value gives dispatch one
-/// typed registration pointer and one audited dereference (D-368).
+/// One immutable, statically lived value gives dispatch one typed registration pointer and one
+/// audited dereference.
 #[derive(Debug)]
 pub struct Handlers {
     on_trap: Handler,
@@ -214,16 +203,16 @@ static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
 static HANDLERS: AtomicPtr<Handlers> = AtomicPtr::new(core::ptr::null_mut());
 static INIT: Once = Once::new();
 
-/// How many trap handlers are on this CPU's stack — zero in thread context.
+/// How many trap handlers are on this CPU's stack, zero in thread context.
 ///
-/// The heap and scheduler consult this count. Context switches park it with
-/// the thread that owns the interrupted stack (D-55).
+/// The heap and scheduler consult it; context switches park it with the thread owning the
+/// interrupted stack.
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 /// The assembly frame behind the innermost handler's read-only snapshot.
 ///
-/// Its address is the evidence the scheduler needs; the snapshot's private
-/// origin is the only safe route back to it.
+/// Its address is the evidence the scheduler needs; the snapshot's private origin is the only
+/// safe route back to it.
 static LIVE_FRAME: AtomicPtr<RawTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Whether this CPU is inside a trap handler.
@@ -233,8 +222,7 @@ pub fn in_trap() -> bool {
 
 /// Bytes the entry path pushes before the dispatcher is called.
 ///
-/// The pushes and the struct that mirrors them have to agree on how many
-/// words that is, and only a live trap can say whether they still do.
+/// The pushes and the struct mirroring them must agree on the count, which only a live trap shows.
 #[cfg(feature = "selftest")]
 pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;
 
@@ -245,18 +233,15 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
 
 /// Resume a faulting user copy at its unforgeable fixup target.
 ///
-/// Refused unless `frame` is the innermost live one, as [`answer`] is: a stale
-/// snapshot's `origin` names a stack another thread is now standing on.
-///
-/// `false` if the frame is not live, having written nothing.
+/// Refused unless `frame` is the innermost live one, as [`answer`] is: a stale snapshot's
+/// `origin` names a stack another thread is now standing on. `false` writes nothing.
 #[must_use = "a refused resume changed no trap frame"]
 pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
-    // SAFETY: `origin` is the assembly frame the entry path pushed and the
-    // check above says it is still the innermost one, so it is on this
-    // thread's kernel stack and the stub has not yet popped it.
+    // SAFETY: `origin` is the pushed assembly frame, still the innermost by the check above, so it
+    // is on this thread's kernel stack and the stub has not yet popped it.
     let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).instruction_pointer) };
     // SAFETY: as above. Only `usercopy` can construct the target, from its
     // in-crate fixup label, so `iretq` cannot be redirected by another caller.
@@ -283,33 +268,29 @@ pub(super) fn resume_write_protection(
 
 /// Set the `rax` the interrupted context will resume with.
 ///
-/// Only the ABI return register is mutable; the remaining interrupted state
-/// stays a read-only snapshot (D-116).
+/// Only the ABI return register is mutable; the rest of the interrupted state stays a read-only
+/// snapshot.
 ///
-/// Refused unless `frame` is the innermost live one, for the same reason
-/// `switch_from_trap` refuses a foreign frame: a stale snapshot's `origin`
-/// names a stack another thread is now standing on.
-///
-/// `false` if the frame is not live, having written nothing.
+/// Refused unless `frame` is the innermost live one, as `switch_from_trap` refuses a foreign
+/// frame: a stale snapshot's `origin` names a stack another thread is now standing on. `false`
+/// writes nothing.
 #[must_use = "a refused answer changed no trap frame"]
 pub fn answer(frame: &TrapFrame, value: u64) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
-    // SAFETY: `origin` is the assembly frame the entry path pushed and the
-    // check above says it is still the innermost one, so it is on this
-    // thread's kernel stack and the stub has not yet popped it.
+    // SAFETY: `origin` is the pushed assembly frame, still the innermost by the check above, so it
+    // is on this thread's kernel stack and the stub has not yet popped it.
     let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).rax) };
-    // SAFETY: as above, and `rax` is caller-saved — no compiled code is
-    // holding the value being replaced.
+    // SAFETY: as above, and `rax` is caller-saved, so no compiled code holds the replaced value.
     unsafe { core::ptr::write(slot, value) };
     true
 }
 
 /// Take this context's trap state off the CPU, for a switch to another.
 ///
-/// Paired with [`resume_trap`] on the way back; between them the CPU runs a
-/// thread whose depth and live frame are its own.
+/// Paired with [`resume_trap`] on the way back; between them the CPU runs a thread whose depth and
+/// live frame are its own.
 pub(crate) fn suspend_trap() -> TrapSuspension {
     TrapSuspension {
         depth: TRAP_DEPTH.swap(0, Ordering::Relaxed),
@@ -329,17 +310,15 @@ pub(crate) struct TrapSuspension {
     frame: *mut RawTrapFrame,
 }
 
-/// Fill the interrupt descriptor table and load it, routing every vector to
-/// `handler`.
+/// Fill the interrupt descriptor table and load it, routing every vector to `handler`.
 ///
-/// All 256 gates are present so a stray vector reaches the common handler.
-/// Does nothing after the first call.
+/// All 256 gates are present so a stray vector reaches the common handler. Does nothing after the
+/// first call.
 ///
 /// # Panics
 ///
-/// Panics if the global descriptor table has not been installed — the gates
-/// name its code selector — or if the generated stub table is not the size the
-/// indexing assumes.
+/// If the global descriptor table, whose code selector the gates name, has not been installed, or
+/// the generated stub table is not the size the indexing assumes.
 pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     if !INIT.claim() {
         return;
@@ -359,9 +338,8 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
 
     HANDLERS.store(core::ptr::from_ref(handlers).cast_mut(), Ordering::Release);
 
-    // SAFETY: `INIT` admitted this caller alone and the table is reachable only
-    // through this module, so no other reference to it exists. The CPU is not
-    // pointed at it until the `lidt` below.
+    // SAFETY: `INIT` admitted this caller alone and only this module reaches the table, so no other
+    // reference exists, and the CPU is not pointed at it until the `lidt` below.
     let gates = unsafe { &mut *IDT.as_mut_ptr() };
     for (vector, gate) in gates.iter_mut().enumerate() {
         let stack = if vector == exception::DOUBLE_FAULT as usize {
@@ -370,8 +348,8 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
             0
         };
         let address = (base + vector * STUB_BYTES) as u64;
-        // Only the named gate is reachable from ring 3; a user `int` at any
-        // other vector faults, because a device's line is not a service (D-96).
+        // Only the named gate is reachable from ring 3; a user `int` at any other vector faults,
+        // because a device's line is not a service.
         *gate = if user_gate.is_some_and(|user| usize::from(user.get()) == vector) {
             Gate::callable_from_user(address, segment::KERNEL_CODE, stack)
         } else {
@@ -380,9 +358,8 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     }
 
     let pointer = TablePointer::new(IDT.address(), idt::TABLE_LIMIT);
-    // SAFETY: `lidt` reads ten bytes at the operand and points the CPU at the
-    // table they describe. Every gate in it was just written present, with a
-    // valid code selector and a handler address inside the stub table.
+    // SAFETY: `lidt` loads the table its ten-byte operand describes, every gate just written
+    // present with a valid code selector and a handler address inside the stub table.
     unsafe {
         asm!(
             "lidt [{pointer}]",
@@ -399,21 +376,18 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
 #[unsafe(link_section = ".kpti.state.route")]
 static mut SMAP_ARMED: u8 = 0;
 
-/// Let the entry path clear `AC` on the way in.
-///
-/// Called once, before ring 3 exists.
+/// Let the entry path clear `AC` on the way in; called once, before ring 3 exists.
 ///
 /// # Panics
 ///
-/// If SMAP is not enabled. `clac` would fault in the entry stub and re-enter
-/// the same path indefinitely; the safe API checks this itself (D-90, D-105).
+/// If SMAP is not enabled: `clac` would fault in the entry stub and re-enter the same path
+/// indefinitely, so the safe API checks this itself.
 pub fn arm_access_clear() {
     assert!(
         cpu::Protections::enabled().smap,
         "arming the access clear without smap would fault on every trap"
     );
-    // SAFETY: written once during boot, before any trap can be taken from
-    // ring 3 and on the one CPU there is.
+    // SAFETY: written once during boot, before any trap can be taken from ring 3, on the one CPU.
     unsafe { SMAP_ARMED = 1 };
 }
 
@@ -428,27 +402,25 @@ pub(super) const RECORD_BUFFER_CLEARS: usize = cfg!(feature = "selftest") as usi
 
 /// Public, immutable selector consumed by the post-CR3 `VERW` boundary.
 ///
-/// Keeping the operand in stripped-root read-only memory avoids writing even
-/// public scratch bytes back onto the already-scrubbed transition stack.
+/// Held in stripped-root read-only memory so no public scratch byte is written back onto the
+/// already-scrubbed transition stack.
 #[used]
 #[unsafe(link_section = ".kpti.rodata.verw_selector")]
 static KPTI_VERW_SELECTOR: u16 = segment::KERNEL_DATA_BITS;
 
 /// Turn on the buffer flush that precedes every return to ring 3.
 ///
-/// Idempotent, and meant to be called once before any user code exists. Where
-/// the processor reports `MDS_NO` this is never called and the return path
-/// skips the instruction entirely (D-98).
+/// Idempotent, and meant to be called once before any user code exists. Where the processor
+/// reports `MDS_NO` this is never called and the return path skips the instruction entirely.
 pub fn enable_buffer_clear() {
-    // SAFETY: written once during boot, before ring 3 exists and therefore
-    // before any return path can read it, on the one CPU there is.
+    // SAFETY: written once during boot, before ring 3 exists and so before any return path can
+    // read it, on the one CPU there is.
     unsafe { MDS_CLEAR = 1 };
 }
 
 fn idt_is_loaded() -> bool {
     let mut pointer = TablePointer::empty();
-    // SAFETY: `sidt` stores ten bytes at the operand, which is a `TablePointer`
-    // this call owns.
+    // SAFETY: `sidt` stores ten bytes at the operand, a `TablePointer` this call owns.
     unsafe {
         asm!(
             "sidt [{pointer}]",
@@ -461,9 +433,8 @@ fn idt_is_loaded() -> bool {
 
 /// One context's place in the interrupt-exclusion stack.
 ///
-/// Context switches park this state with the stack that owns it. Restoring an
-/// outer state first defers it until every inner state has unwound; it never
-/// enables interrupts through a still-live exclusion.
+/// Context switches park this state with the stack that owns it. Restoring an outer state first
+/// defers it until every inner state has unwound; it never enables through a live exclusion.
 #[must_use = "dropping this state intentionally leaves interrupts disabled"]
 #[derive(PartialEq, Eq, Debug)]
 pub struct InterruptState {
@@ -513,8 +484,8 @@ impl InterruptState {
 
         ledger.depth.store(0, Ordering::Relaxed);
         ledger.outer_was_enabled.store(false, Ordering::Relaxed);
-        // SAFETY: `sti; hlt` closes the lost-wakeup window and `cli`
-        // re-establishes this token's exclusion before compiled code resumes.
+        // SAFETY: `sti; hlt` closes the lost-wakeup window and `cli` re-establishes this token's
+        // exclusion before compiled code resumes.
         unsafe { asm!("sti", "hlt", "cli", options(nostack)) };
         assert_owner(self.owner);
         assert_eq!(
@@ -619,14 +590,12 @@ pub fn are_enabled() -> bool {
 
 /// Stop accepting maskable interrupts, reporting what it took to do so.
 ///
-/// The report is the argument for [`InterruptState::restore`]; dropping it
-/// leaves interrupts off, which is always safe and occasionally what a caller
-/// means.
+/// The report is the argument for [`InterruptState::restore`]; dropping it leaves interrupts off,
+/// which is always safe and occasionally what a caller means.
 pub fn disable() -> InterruptState {
     let previous = are_enabled();
-    // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
-    // has no preconditions in ring 0. `preserves_flags` is deliberately absent —
-    // modifying IF is the whole point.
+    // SAFETY: `cli` clears IF on this CPU, touching nothing else, with no ring 0 precondition;
+    // `preserves_flags` is deliberately absent, since modifying IF is the point.
     unsafe { asm!("cli", options(nostack)) };
     let owner = ACTIVE_CONTEXT.load(Ordering::Relaxed);
     let ledger = &EXCLUSIONS[owner];
@@ -654,8 +623,8 @@ pub fn disable() -> InterruptState {
 ///
 /// # Panics
 ///
-/// Panics unless the table is loaded and the legacy controller is silent;
-/// either omission can route the first interrupt into a reset.
+/// Panics unless the table is loaded and the legacy controller is silent; either omission can
+/// route the first interrupt into a reset.
 pub fn enable() {
     assert_enable_preconditions();
     set_flag();
@@ -693,9 +662,8 @@ fn assert_platform_enable_preconditions() {
 ///
 /// # Panics
 ///
-/// Panics if a spin lock is held: the flag is what keeps its holder from
-/// being interrupted, and an interrupt that then waits on the same lock waits
-/// on a context that cannot resume (D-66).
+/// Panics if a spin lock is held: the flag keeps its holder from being interrupted, and an
+/// interrupt that then waits on the same lock waits on a context that cannot resume.
 fn set_flag() {
     assert_eq!(
         EXCLUSIONS[ACTIVE_CONTEXT.load(Ordering::Relaxed)]
@@ -708,9 +676,8 @@ fn set_flag() {
         crate::sync::spinlocks_held() == 0 || crate::panic::is_panicking(),
         "a spin lock is held, so setting the interrupt flag would strand it"
     );
-    // SAFETY: `sti` sets IF on the current CPU and touches nothing else. Every
-    // caller either checked the preconditions or is restoring a flag whose
-    // caller did.
+    // SAFETY: `sti` sets IF on this CPU and touches nothing else; every caller checked the
+    // preconditions or restores a flag whose caller did.
     unsafe { asm!("sti", options(nostack)) };
 }
 
@@ -732,9 +699,8 @@ pub(super) fn context_is_clear(slot: usize) -> bool {
 /// The flags register.
 fn flags() -> u64 {
     let value: u64;
-    // SAFETY: `pushfq` pushes the flags register and `pop` takes the same eight
-    // bytes back off, so the stack ends as it started. `nomem` is accurate:
-    // nothing outside the asm can observe the slot in between.
+    // SAFETY: `pop` takes back the eight bytes `pushfq` pushed, so the stack ends as it started;
+    // `nomem` is accurate, since nothing outside the asm can observe the slot in between.
     unsafe {
         asm!(
             "pushfq",
@@ -753,13 +719,12 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
         cpu::halt_forever();
     }
 
-    // SAFETY: `init` stores only a statically lived `Handlers` reference before
-    // loading the IDT, and never changes it afterwards.
+    // SAFETY: `init` stores only a statically lived `Handlers` reference before loading the IDT,
+    // and never changes it afterwards.
     let handlers = unsafe { &*registered };
 
-    // SAFETY: the entry path passes a properly aligned, fully initialised
-    // register block with the exact `RawTrapFrame` layout. Copying it leaves
-    // the assembly-owned frame untouched for `iretq`.
+    // SAFETY: entry passes an aligned, fully initialised block with the exact `RawTrapFrame`
+    // layout, and copying it leaves the assembly-owned frame untouched for `iretq`.
     let saved = unsafe { core::ptr::read(raw) };
     #[cfg(feature = "selftest")]
     super::kpti::record_rust_entry(saved.code_selector);
@@ -809,9 +774,7 @@ fn invalid_user_return(frame: &TrapFrame) -> Option<UserReturnError> {
 }
 
 unsafe extern "C" {
-    /// First byte of the generated stub table. Declared as a function because
-    /// that is what it is, and because the address of one can be taken in safe
-    /// code.
+    /// First byte of the generated stub table, a function whose address safe code can take.
     #[link_name = "wost_interrupt_stubs"]
     fn stub_table();
 
@@ -826,11 +789,11 @@ unsafe extern "C" {
 ///
 /// # Safety
 ///
-/// `entry` must be user-executable, `stack_top` must be user-writable, and the
-/// live task must have a completely installed shared or paired entry route.
+/// `entry` must be user-executable, `stack_top` must be user-writable, and the live task must have
+/// a completely installed shared or paired entry route.
 pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
-    // SAFETY: the caller supplies the mapping and route facts required by the
-    // assembly boundary, which consumes both values before changing roots.
+    // SAFETY: the caller supplies the mapping and route facts the assembly boundary requires, and
+    // it consumes both values before changing roots.
     unsafe { wost_leave_for_user(entry, stack_top) }
 }
 
@@ -870,7 +833,7 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     "wost_interrupt_entry:",
     "cld",
     // Ring 3 controls `AC` and entry does not clear it, so every SMAP entry
-    // does (D-101); a branch, because `clac` faults without SMAP.
+    // does; a branch, because `clac` faults without SMAP.
     "cmp byte ptr [rip + {smap}], 0",
     "je 3f",
     "clac",
@@ -1075,7 +1038,7 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     "test byte ptr [rsp + 8], 3",
     "jz 2f",
     // `VERW` flushes MDS-visible buffers as the last instruction before the
-    // boundary, unless `MDS_NO` makes it pointless (D-81, D-98).
+    // boundary, unless `MDS_NO` makes it pointless.
     "cmp byte ptr [rip + {clear}], 0",
     "je 2f",
     "sub rsp, 8",
@@ -1128,14 +1091,14 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     user_frame_rip = const 15 * size_of::<u64>(),
     entry_stack_bytes = const super::kpti::STACK_BYTES,
     entry_stack_words = const super::kpti::STACK_BYTES / size_of::<u64>(),
-    route_state = const super::kpti::ROUTE_STATE_OFFSET,
-    route_full = const super::kpti::ROUTE_FULL_ROOT_OFFSET,
-    route_stripped = const super::kpti::ROUTE_STRIPPED_ROOT_OFFSET,
-    route_task_stack = const super::kpti::ROUTE_TASK_STACK_TOP_OFFSET,
-    route_transition_stack = const super::kpti::ROUTE_TRANSITION_STACK_TOP_OFFSET,
-    route_interrupt_stack = const super::kpti::ROUTE_INTERRUPT_STACK_TOP_OFFSET,
-    route_stripped_entries = const super::kpti::ROUTE_STRIPPED_ENTRIES_OFFSET,
-    route_prepared_returns = const super::kpti::ROUTE_PREPARED_RETURNS_OFFSET,
+    route_state = const super::kpti::route::STATE,
+    route_full = const super::kpti::route::FULL_ROOT,
+    route_stripped = const super::kpti::route::STRIPPED_ROOT,
+    route_task_stack = const super::kpti::route::TASK_STACK_TOP,
+    route_transition_stack = const super::kpti::route::TRANSITION_STACK_TOP,
+    route_interrupt_stack = const super::kpti::route::INTERRUPT_STACK_TOP,
+    route_stripped_entries = const super::kpti::route::STRIPPED_ENTRIES,
+    route_prepared_returns = const super::kpti::route::PREPARED_RETURNS,
     record_transition_evidence = const (super::kpti::RECORD_TRANSITION_EVIDENCE as usize),
     clear = sym MDS_CLEAR,
     verw_selector = sym KPTI_VERW_SELECTOR,

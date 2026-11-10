@@ -1,7 +1,7 @@
 //! Per-processor lock accounting.
 //!
-//! Every caller goes through [`current`], keeping today's singleton behind the
-//! lookup that a future multiprocessor implementation must replace (D-154).
+//! Every caller goes through [`current`], keeping today's singleton behind the lookup a future
+//! multiprocessor implementation must replace.
 
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicPtr;
@@ -17,15 +17,13 @@ pub(crate) enum LockKind {
     Leaf,
 }
 
-/// One processor's own state.
-///
-/// Atomics make interrupted updates observable to trap and panic paths.
+/// One processor's own state, in atomics so trap and panic paths observe interrupted updates.
 #[derive(Debug)]
 pub struct PerCpu {
     /// Spin locks this CPU is holding, of either kind.
     spinlocks_held: AtomicUsize,
 
-    /// Of those, how many are **leaf** guards.
+    /// Of those, how many are leaf guards.
     #[cfg(feature = "selftest")]
     leaves_held: AtomicUsize,
 
@@ -37,15 +35,13 @@ pub struct PerCpu {
     #[cfg(feature = "selftest")]
     the_leaf: AtomicPtr<core::panic::Location<'static>>,
 
-    /// The outermost leaf currently held, so a violation can name what it was
-    /// under. Recording every leaf acquisition would name whichever was taken
-    /// most recently, held or not.
+    /// The outermost leaf currently held, so a violation can name what it was under; recording
+    /// every leaf acquisition would name the most recent one, held or not.
     #[cfg(feature = "selftest")]
     last_leaf: AtomicPtr<core::panic::Location<'static>>,
 }
 
 impl PerCpu {
-    /// An unused block.
     const fn new() -> Self {
         Self {
             spinlocks_held: AtomicUsize::new(0),
@@ -100,8 +96,8 @@ impl PerCpu {
     #[cfg(feature = "selftest")]
     pub fn taken_under_a_leaf(&self) -> Option<&'static core::panic::Location<'static>> {
         let at = self.under_a_leaf.load(Ordering::Acquire);
-        // SAFETY: only ever stored from `Location::caller()`, which is
-        // `'static` by that function's signature, and never freed.
+        // SAFETY: only ever stored from `Location::caller()`, whose return type is `'static`, and
+        // never freed.
         (!at.is_null()).then(|| unsafe { &*at.cast_const() })
     }
 
