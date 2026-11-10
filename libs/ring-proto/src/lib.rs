@@ -1,9 +1,4 @@
-//! Submission/completion ring arithmetic and overflow-safe admission.
-//!
-//! Each accepted submission reserves a completion. The completion queue is a
-//! power of two and at least twice the submission queue, while free-running
-//! counters distinguish full from empty across wrap (D-79). This crate accepts
-//! copied values, never references to user-writable shared memory (D-221).
+//! Submission and completion ring arithmetic, over copied values, never shared memory.
 //!
 //! # Examples
 //!
@@ -31,11 +26,9 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-use core::mem::{align_of, size_of};
+use core::fmt;
 
-/// The version every ring structure carries.
-///
-/// Bumped whenever a reader-visible layout changes.
+/// The version every ring structure carries, bumped whenever a reader-visible layout changes.
 pub const VERSION: u32 = 1;
 
 /// Bytes in one shared-memory publication word.
@@ -62,10 +55,10 @@ pub enum SharedLayoutError {
     },
 }
 
-impl core::fmt::Display for SharedLayoutError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for SharedLayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Empty => core::fmt::Write::write_str(f, "a shared-ring layout cannot be empty"),
+            Self::Empty => f.write_str("a shared-ring layout cannot be empty"),
             Self::PublicationRangeOverflow(at) => {
                 write!(f, "the publication word at {at} overflows")
             }
@@ -84,11 +77,7 @@ impl core::fmt::Display for SharedLayoutError {
 
 impl core::error::Error for SharedLayoutError {}
 
-/// A complete payload/publication partition of one shared ring allocation.
-///
-/// The listed naturally aligned words are the only offsets usable for
-/// synchronized publication. Every other byte is payload; a payload range
-/// intersecting any listed word is refused whole.
+/// One shared ring allocation, split into its aligned publication words and payload.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SharedLayout<const WORDS: usize> {
     bytes: usize,
@@ -179,15 +168,14 @@ impl<const WORDS: usize> SharedLayout<WORDS> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum CapacityError {
-    /// Zero, or not a power of two. The mask arithmetic needs one.
+    /// Zero, or not a power of two, which the mask arithmetic needs.
     NotAPowerOfTwo(u32),
-    /// Large enough that the free-running counters could not distinguish a
-    /// full ring from an empty one.
+    /// Too large for the free-running counters to tell a full ring from an empty one.
     TooLarge(u32),
 }
 
-impl core::fmt::Display for CapacityError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for CapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::NotAPowerOfTwo(value) => write!(f, "{value} is not a power of two"),
             Self::TooLarge(value) => write!(f, "{value} entries is more than a ring may hold"),
@@ -202,21 +190,10 @@ impl core::error::Error for CapacityError {}
 pub struct Capacity(u32);
 
 impl Capacity {
-    /// The largest a ring may be.
-    ///
-    /// Half the counter range, so that `tail - head` is always a count and
-    /// never an ambiguity: with a larger ring, a producer far enough ahead of
-    /// a consumer would wrap into looking behind it.
+    /// Half the counter range, so that `tail - head` is always a count.
     pub const MAX: u32 = 1 << 31;
 
     /// A capacity of `entries`, or why not.
-    ///
-    /// # Errors
-    ///
-    /// [`CapacityError::NotAPowerOfTwo`] for zero or a non-power of two.
-    ///
-    /// [`CapacityError::TooLarge`] guards a wider future index type; no `u32`
-    /// power of two exceeds [`MAX`](Self::MAX).
     pub const fn new(entries: u32) -> Result<Self, CapacityError> {
         if entries == 0 || !entries.is_power_of_two() {
             return Err(CapacityError::NotAPowerOfTwo(entries));
@@ -256,15 +233,7 @@ impl Ring {
         }
     }
 
-    /// A ring whose counters came from somewhere else, if they are consistent.
-    ///
-    /// This is the validation half of read-once-then-validate: occupancy greater
-    /// than capacity is refused before indexing (D-79).
-    ///
-    /// # Errors
-    ///
-    /// `None` when the counters describe more outstanding entries than the
-    /// ring can hold.
+    /// A ring from counters read elsewhere, or `None` if they hold more than `capacity`.
     pub const fn adopt(capacity: Capacity, head: u32, tail: u32) -> Option<Self> {
         if tail.wrapping_sub(head) > capacity.entries() {
             return None;
@@ -276,11 +245,7 @@ impl Ring {
         })
     }
 
-    /// How many entries are waiting.
-    ///
-    /// A wrapping subtraction, which is what keeps this a count rather than a
-    /// comparison: it is correct across the wrap at `u32::MAX`, where `tail`
-    /// is numerically below `head` and the ring is not empty at all.
+    /// How many entries are waiting, correct across the wrap at `u32::MAX`.
     pub const fn occupied(&self) -> u32 {
         self.tail.wrapping_sub(self.head)
     }
@@ -300,7 +265,7 @@ impl Ring {
         self.capacity
     }
 
-    /// Where the next entry goes, advancing the tail — or `None` if full.
+    /// Where the next entry goes, advancing the tail, or `None` if full.
     pub const fn produce(&mut self) -> Option<usize> {
         if self.is_full() {
             return None;
@@ -310,7 +275,7 @@ impl Ring {
         Some(slot)
     }
 
-    /// Where the oldest entry is, advancing the head — or `None` if empty.
+    /// Where the oldest entry is, advancing the head, or `None` if empty.
     pub const fn consume(&mut self) -> Option<usize> {
         if self.is_empty() {
             return None;
@@ -344,8 +309,8 @@ pub enum PairError {
     },
 }
 
-impl core::fmt::Display for PairError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for PairError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::CompletionTooSmall {
                 submission,
@@ -360,10 +325,7 @@ impl core::fmt::Display for PairError {
 
 impl core::error::Error for PairError {}
 
-/// A submission queue and the completion queue it reports into.
-///
-/// Admission reserves report capacity, making completion overflow
-/// unrepresentable.
+/// A submission queue and the completion queue it reports into, with every completion reserved.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Queues {
     submission: Ring,
@@ -373,14 +335,7 @@ pub struct Queues {
 
 impl Queues {
     /// A pair, if the completion queue is at least twice the submission queue.
-    ///
-    /// # Errors
-    ///
-    /// [`PairError::CompletionTooSmall`] when the completion ring cannot hold
-    /// reservations for twice the submission ring.
     pub const fn new(submission: Capacity, completion: Capacity) -> Result<Self, PairError> {
-        // Widening preserves the exact comparison when twice `Capacity::MAX`
-        // no longer fits in `u32`; division on the completion side would round.
         if (completion.entries() as u64) < (submission.entries() as u64) * 2 {
             return Err(PairError::CompletionTooSmall {
                 submission: submission.entries(),
@@ -394,15 +349,8 @@ impl Queues {
         })
     }
 
-    /// Admit one operation, reserving the completion slot it will need.
-    ///
-    /// `None` when the submission queue is full **or** when every completion
-    /// slot is already spoken for. The second is the case that matters: it is
-    /// where a ring that would otherwise have to drop a completion instead
-    /// declines the work.
+    /// Admit one operation and reserve its completion, or `None` when either queue has no room.
     pub const fn submit(&mut self) -> Option<usize> {
-        // Posted and reserved completions both own slots; ignoring either can
-        // admit work with nowhere to report its result.
         if self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {
             return None;
         }
@@ -415,20 +363,12 @@ impl Queues {
         }
     }
 
-    /// Take the oldest submission for processing.
-    ///
-    /// Its reservation stays held: the operation is in flight, and the slot it
-    /// will report into is still its own.
+    /// Take the oldest submission for processing; its reservation stays held.
     pub const fn take(&mut self) -> Option<usize> {
         self.submission.consume()
     }
 
-    /// Report one operation's terminal completion, spending its reservation.
-    ///
-    /// `None` only when nothing is outstanding, which is a caller bug rather
-    /// than a full queue — the reservation taken at [`submit`](Self::submit)
-    /// is what guarantees the room. **Every operation posts exactly one of
-    /// these, always**, cancelled ones included (D-79).
+    /// Post one operation's terminal completion, cancelled ones included, spending its reservation.
     pub const fn complete(&mut self) -> Option<usize> {
         if self.reserved == 0 {
             return None;
@@ -438,8 +378,6 @@ impl Queues {
                 self.reserved -= 1;
                 Some(slot)
             }
-            // Unreachable while the reservation invariant holds; a return
-            // tells the caller that broke it instead of killing the machine.
             None => None,
         }
     }
@@ -480,9 +418,7 @@ impl Queues {
         &self.completion
     }
 
-    /// Whether the reservation invariant still holds.
-    ///
-    /// Outstanding and posted completions together must fit the completion queue.
+    /// Whether outstanding and posted completions together still fit the completion queue.
     pub const fn is_consistent(&self) -> bool {
         (self.reserved as u64) + (self.completion.occupied() as u64)
             <= self.completion.capacity().entries() as u64

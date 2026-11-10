@@ -2,14 +2,7 @@ use super::*;
 
 const SLICE: u64 = 30;
 
-/// A thread that has overrun its slice has none of it left.
-///
-/// Every test that looked like it covered this landed the thread
-/// *exactly* on its deadline, where `wrapping_sub` gives zero anyway. Run
-/// one past, and deleting the `slice_is_spent` guard survives the suite —
-/// `deadline.wrapping_sub(vruntime)` then wraps to near `u64::MAX`, and
-/// `kernel/src/thread.rs` arms the tickless timer with it. The thread is
-/// never preempted again (D-136).
+/// Past the deadline `deadline.wrapping_sub(vruntime)` wraps, which would arm the timer far away.
 #[test]
 fn a_thread_past_its_deadline_has_no_slice_left() {
     const SLICE: u64 = 3_000_000;
@@ -27,8 +20,6 @@ fn a_thread_past_its_deadline_has_no_slice_left() {
     assert!(entity.slice_is_spent());
     assert_eq!(entity.remaining_slice(), 0, "spent exactly is spent");
 
-    // And past it, where the wrap lives: a thread is charged when it is
-    // descheduled, not when its deadline passes, so overrun is ordinary.
     entity.charge(SLICE / 2);
     assert!(entity.slice_is_spent(), "still spent after overrunning");
     assert_eq!(
@@ -37,7 +28,6 @@ fn a_thread_past_its_deadline_has_no_slice_left() {
         "an overrun slice reported time remaining, which arms the timer far away"
     );
 
-    // Well past, at a spread that would wrap to most of the ring.
     entity.charge(SLICE * 1000);
     assert_eq!(entity.remaining_slice(), 0, "a long overrun is still zero");
 }
@@ -178,8 +168,7 @@ fn a_later_candidate_cannot_replace_an_earlier_deadline() {
     assert_eq!(pick(queue.iter().enumerate(), 0), Some(0));
 }
 
-/// The property the kernel's fallback path exists to catch if it ever
-/// fails: whatever the queue, someone is eligible.
+/// The kernel's fallback path exists to catch this property failing.
 #[test]
 fn a_non_empty_queue_always_has_an_eligible_entity() {
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
@@ -226,10 +215,7 @@ fn placement_keeps_a_debt_and_caps_a_credit() {
     assert_eq!(fresh.deadline, AVERAGE + slice_v);
 }
 
-/// What a tickless kernel asks before it arms anything: the answer must
-/// be the slice it was given, count down as the thread runs, and reach
-/// zero exactly where `slice_is_spent` turns true — at every weight,
-/// because the conversion out and back is where a weight could be lost.
+/// At every weight, because the conversion out and back is where a weight could be lost.
 #[test]
 fn the_remaining_slice_counts_down_to_the_deadline() {
     for weight in [1, BASE_WEIGHT / 4, BASE_WEIGHT, 8 * BASE_WEIGHT] {
@@ -253,16 +239,11 @@ fn the_remaining_slice_counts_down_to_the_deadline() {
     }
 }
 
-/// A slice long enough to matter to a tickless timer — milliseconds of
-/// nanoseconds — survives the trip through virtual time at every weight,
-/// which is the arithmetic that would overflow if the widening were
-/// dropped from either conversion.
+/// Milliseconds of nanoseconds would overflow either conversion without its widening.
 #[test]
 fn a_slice_of_nanoseconds_survives_the_round_trip() {
     const NANOSECONDS: u64 = 3_000_000;
 
-    // Include `MAX_WEIGHT`, where the documented one-unit bound is made
-    // (D-124).
     for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT, MAX_WEIGHT] {
         let mut entity = Entity::new(weight);
         entity.place(0, 0, NANOSECONDS);
@@ -270,8 +251,7 @@ fn a_slice_of_nanoseconds_survives_the_round_trip() {
     }
 }
 
-/// An entity that has never been placed has no slice, and a caller that
-/// arms a timer from this must be told to fire now rather than never.
+/// A caller arming a timer from this must be told to fire now rather than never.
 #[test]
 fn an_unplaced_entity_has_nothing_remaining() {
     assert_eq!(Entity::new(BASE_WEIGHT).remaining_slice(), 0);
@@ -300,10 +280,9 @@ fn a_slice_cannot_cross_the_wrapping_orders_half_range() {
     assert_eq!(entity.remaining_slice(), MAX_ORDERED_DELTA);
 }
 
-/// Drive the policy the way the kernel will: one unit of time per step,
-/// charged to whoever was picked, deadline renewed when spent.
+/// Drive the policy as the kernel does: one unit per step, charged to whoever was picked.
 fn simulate(weights: &[u32], steps: u32) -> Vec<u32> {
-    let mut queue: Vec<Entity> = weights.iter().map(|w| Entity::new(*w)).collect();
+    let mut queue: Vec<Entity> = weights.iter().map(|weight| Entity::new(*weight)).collect();
     for entity in &mut queue {
         entity.place(0, 0, SLICE);
     }
@@ -336,9 +315,7 @@ fn equal_weights_share_equally_and_nobody_starves() {
     }
 }
 
-/// Without the clamp, a thread that slept long enough could bank any
-/// amount of credit and then run unopposed. With it, the burst is one
-/// slice.
+/// Without the clamp, a long sleeper could bank any credit and then run unopposed.
 #[test]
 fn a_returning_sleeper_cannot_monopolise_the_cpu() {
     let mut queue = [Entity::new(BASE_WEIGHT), Entity::new(BASE_WEIGHT)];
@@ -357,10 +334,9 @@ fn a_returning_sleeper_cannot_monopolise_the_cpu() {
     assert!(ran[0] > 0, "the sleeper ran unopposed: {ran:?}");
 }
 
+/// At weight one, 2^44 real units is exactly 2^64 virtual, which a `u64` narrows to zero.
 #[test]
 fn a_huge_charge_still_moves_the_clock() {
-    // At weight one, 2^44 real units is exactly 2^64 virtual, which a `u64`
-    // narrows to zero: a thread whose clock never moves starves the rest (D-105).
     let mut entity = Entity::new(1);
     let before = entity.vruntime();
     entity.charge(1 << 44);
@@ -368,10 +344,9 @@ fn a_huge_charge_still_moves_the_clock() {
     assert!(entity.slice_is_spent(), "a charge that large left slice");
 }
 
+/// Every clamped charge stays inside the half-ring the wrapping comparison needs.
 #[test]
 fn charging_never_moves_the_clock_backwards_in_order() {
-    // Every clamped charge stays inside the half-ring the wrapping
-    // comparison needs, so a sequence of huge charges keeps advancing.
     let mut entity = Entity::new(1);
     let mut previous = entity.vruntime();
     for _ in 0..8 {
@@ -385,25 +360,17 @@ fn charging_never_moves_the_clock_backwards_in_order() {
     }
 }
 
-/// The two scale constants, transcribed, and the round trip exercised at
-/// the weight the doc bounds it at.
-///
-/// Other tests let `BASE_WEIGHT` and `RESOLUTION` cancel, so literal anchors
-/// and a `MAX_WEIGHT` round trip independently check both scales (D-124).
+/// Other tests let `BASE_WEIGHT` and `RESOLUTION` cancel, so literals anchor both scales.
 #[test]
 fn the_scale_constants_are_what_the_doc_says() {
     assert_eq!(BASE_WEIGHT, 1024);
     assert_eq!(RESOLUTION, 1024);
     assert_eq!(MAX_WEIGHT, 1_048_576);
 
-    // A charge at the base weight is real time times the resolution, with
-    // the literal on the right rather than the constant.
     let mut at_base = Entity::new(1024);
     at_base.charge(100);
     assert_eq!(at_base.vruntime(), 102_400);
 
-    // And the round trip holds at the heaviest weight the doc bounds it
-    // at, which the sweep beside it stops a factor of sixteen short of.
     for slice in [1u64, 3, 3_000_000] {
         let mut entity = Entity::new(MAX_WEIGHT);
         entity.place(0, 0, slice);

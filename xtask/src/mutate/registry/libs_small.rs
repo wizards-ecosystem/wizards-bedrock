@@ -37,8 +37,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 85,
         file: "libs/ring-proto/src/lib.rs",
-        find: "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        match *self {\n            Self::NotAPowerOfTwo(value) => write!(f, \"{value} is not a power of two\"),\n            Self::TooLarge(value) => write!(f, \"{value} entries is more than a ring may hold\"),\n        }\n    }",
-        replace: "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        let _ = (self, f);\n        Ok(())\n    }",
+        find: "    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        match *self {\n            Self::NotAPowerOfTwo(value) => write!(f, \"{value} is not a power of two\"),\n            Self::TooLarge(value) => write!(f, \"{value} entries is more than a ring may hold\"),\n        }\n    }",
+        replace: "    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        let _ = (self, f);\n        Ok(())\n    }",
         breaks: "capacity refusals lose the value and rule they report",
         reddens: Caught::HostTest {
             package: "ring-proto",
@@ -593,8 +593,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 582,
         file: "libs/pixel/src/lib.rs",
-        find: "            Self::Red => core::fmt::Write::write_str(f, \"red\"),",
-        replace: "            Self::Red => core::fmt::Write::write_str(f, \"\"),",
+        find: "            Self::Red => f.write_str(\"red\"),",
+        replace: "            Self::Red => f.write_str(\"\"),",
         breaks: "pixel diagnostics omit the red channel name",
         reddens: Caught::HostTest {
             package: "pixel",
@@ -615,8 +615,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 584,
         file: "libs/pixel/src/lib.rs",
-        find: "            Self::ZeroWidth => core::fmt::Write::write_str(f, \"framebuffer width is zero\"),",
-        replace: "            Self::ZeroWidth => core::fmt::Write::write_str(f, \"\"),",
+        find: "            Self::ZeroWidth => f.write_str(\"framebuffer width is zero\"),",
+        replace: "            Self::ZeroWidth => f.write_str(\"\"),",
         breaks: "a zero-width framebuffer loses its diagnostic reason",
         reddens: Caught::HostTest {
             package: "pixel",
@@ -664,7 +664,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "unioning a held handle right removes it",
         reddens: Caught::HostTest {
             package: "handle-space",
-            name: "tests::rights::attenuation_only_narrows",
+            name: "tests::rights::attenuation_never_widens_the_held_rights",
         },
     },
     Mutation {

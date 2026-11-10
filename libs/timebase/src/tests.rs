@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn a_monotonic_poll_limit_expires_by_time_not_iteration_rate() {
     let mut limit = PollLimit::after_ms(Some(1_000_000_000), 500, 1);
@@ -33,11 +35,8 @@ fn a_deadline_saturates_instead_of_wrapping_into_the_past() {
     assert!(limit.permit(Some(u64::MAX - 1)));
     assert!(!limit.permit(Some(u64::MAX)));
 }
-use super::*;
 
-/// Rates worth believing from a real machine: the 8254's crystal at the
-/// bottom, an APIC bus clock, the gigahertz QEMU models, two host CPUs,
-/// and a deliberately absurd one above them all.
+/// Real rates from the 8254's crystal up, and one deliberately absurd rate above them all.
 const PLAUSIBLE_HZ: &[u64] = &[
     1_193_182,
     66_000_000,
@@ -49,21 +48,9 @@ const PLAUSIBLE_HZ: &[u64] = &[
     50_000_000_000,
 ];
 
-/// The multiplier is the **nearest** integer to the exact ratio.
-///
-/// The implementation gets that with `+ denominator / 2`, and every test
-/// here passed with it changed to `+ denominator - 1` — round *up* — which
-/// doubles the worst-case error of every conversion and biases it in one
-/// direction. A clock whose error is one-sided drifts; one whose error is
-/// symmetric does not (D-155).
-///
-/// Checked against the two candidates rather than against the trick: the
-/// claim is "nearest", so the test computes both neighbours and their
-/// distances and requires the closer one.
+/// Rounding up would double the worst-case error and make it one-sided, so the clock would drift.
 #[test]
 fn the_multiplier_is_the_nearest_integer_not_the_ceiling() {
-    // Real frequencies with awkward ratios, one chosen so nearest and
-    // ceiling differ.
     for hz in [
         100_000_000u64,
         1_000_000_000,
@@ -104,10 +91,7 @@ fn a_gigahertz_counter_counts_nanoseconds_exactly() {
     }
 }
 
-/// The property everything else rests on: a second's worth of a clock's
-/// ticks is a second. The bound is four nanoseconds — the rounding of a
-/// thirty-one-bit multiplier over a billion, plus the final shift's floor
-/// — and it is tight enough that losing a bit of the multiplier breaks it.
+/// The four-nanosecond bound is tight enough that losing a bit of the multiplier breaks it.
 #[test]
 fn a_second_of_every_plausible_clock_converts_to_a_second() {
     for hz in PLAUSIBLE_HZ {
@@ -127,9 +111,7 @@ fn a_second_of_every_plausible_clock_converts_to_a_second() {
     }
 }
 
-/// A conversion out and back must land where it started, give or take the
-/// grain of the clock it went through — one tick's worth of nanoseconds,
-/// plus the part per billion each of the two multipliers may round away.
+/// The grain is one tick of nanoseconds plus the part per billion each multiplier may round away.
 #[test]
 fn a_round_trip_loses_less_than_one_tick() {
     for hz in PLAUSIBLE_HZ {
@@ -147,9 +129,7 @@ fn a_round_trip_loses_less_than_one_tick() {
     }
 }
 
-/// The counter is read for as long as the machine is up, so the error has
-/// to stay proportional rather than accumulate: a year of ticks converts
-/// to a year within a part per million.
+/// The counter is read for as long as the machine is up, so the error must not accumulate.
 #[test]
 fn a_year_of_ticks_stays_within_a_part_per_million() {
     const SECONDS_IN_A_YEAR: u64 = 365 * 24 * 60 * 60;
@@ -167,7 +147,7 @@ fn a_year_of_ticks_stays_within_a_part_per_million() {
 
 /// Time may not run backwards because the arithmetic under it did.
 #[test]
-fn conversion_never_decreases() {
+fn a_conversion_never_decreases_as_ticks_grow() {
     let elapsed = Timebase::nanoseconds(3_300_000_000).unwrap();
     let mut previous = 0;
     for ticks in (0..100_000).map(|step| step * 7919) {
@@ -197,9 +177,7 @@ fn a_clock_of_no_rate_has_no_conversion() {
     assert!(Timebase::new(1, 0).is_none());
 }
 
-/// A ratio no pair of clocks produces, refused rather than truncated: a
-/// clock over four billion times faster than the unit it converts into
-/// has no thirty-two-bit multiplier at any shift.
+/// A clock four billion times faster than its unit has no 32-bit multiplier at any shift.
 #[test]
 fn a_ratio_too_large_for_the_multiplier_is_refused() {
     assert!(Timebase::new(u64::MAX, 1).is_none());
@@ -207,10 +185,9 @@ fn a_ratio_too_large_for_the_multiplier_is_refused() {
     assert!(Timebase::ticks(u64::MAX).is_none());
 }
 
+/// At one hertz every tick is a second, so the output tops out long before the input.
 #[test]
 fn a_conversion_saturates_instead_of_wrapping() {
-    // One hertz: every tick is a full second of nanoseconds, so the top
-    // of the range is reached long before the top of the input.
     let elapsed = Timebase::nanoseconds(1).unwrap();
 
     assert_eq!(elapsed.convert(u64::MAX), u64::MAX);
@@ -270,7 +247,7 @@ fn published_arithmetic_distinguishes_the_u64_boundary_from_overflow() {
     assert_eq!(overflow.advance(0, 0, u64::MAX), (u64::MAX, 0));
 }
 
-/// Arbitrary stored bits must decode without producing an invalid shift.
+/// Arbitrary bits decode to a valid shift; `(2^64 - 1) * (2^32 - 1) >> 63` is 8_589_934_589.
 #[test]
 fn unpacking_nonsense_still_answers() {
     let nonsense = Timebase::from_bits(u64::MAX);
@@ -278,8 +255,6 @@ fn unpacking_nonsense_still_answers() {
     assert!(nonsense.is_calibrated());
     assert_eq!(nonsense, Timebase::from_bits(0x3F_FFFF_FFFF));
     assert_eq!(nonsense.convert(0), 0);
-    // The transcribed answer, not the expression `convert` evaluates:
-    // `(2^64 - 1) * (2^32 - 1) >> 63` is 8_589_934_589 (D-105).
     assert_eq!(nonsense.convert(u64::MAX), 8_589_934_589);
 }
 
@@ -291,8 +266,6 @@ fn the_search_takes_the_largest_shift_that_fits() {
             Timebase::nanoseconds(*hz).unwrap(),
             Timebase::ticks(*hz).unwrap(),
         ] {
-            // Only the final assertion tests the search; these two record
-            // representation bounds.
             assert!(conversion.multiplier <= MAX_MULTIPLIER, "{conversion:?}");
             assert!(conversion.shift <= MAX_SHIFT, "{conversion:?}");
             assert!(

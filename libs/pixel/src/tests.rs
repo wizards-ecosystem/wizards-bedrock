@@ -21,14 +21,7 @@ fn layout() -> FramebufferLayout {
     FramebufferLayout::new(0x1000, 1280, 720, 5120, 4).expect("valid layout")
 }
 
-/// A padded framebuffer spans its **pitch**, not its visible width.
-///
-/// Every other test here uses geometry where `pitch == width *
-/// bytes_per_pixel`, so the two are interchangeable and
-/// `row_bytes.checked_mul(height)` survives. On any framebuffer whose
-/// rows are padded — which is most real hardware, and what `pitch` exists
-/// to express — that maps short by `(pitch - row_bytes) * height` bytes,
-/// and the bottom of the screen is off the end of the mapping (D-155).
+/// Every other test has `pitch == width * bytes_per_pixel`, where a span of visible rows passes.
 #[test]
 fn a_padded_framebuffer_spans_its_pitch() {
     const WIDTH: usize = 1024;
@@ -47,8 +40,6 @@ fn a_padded_framebuffer_spans_its_pitch() {
         "the two are distinguishable here, which is the point"
     );
 
-    // And the last visible pixel is inside that span — the property the
-    // span exists to guarantee.
     let last = layout
         .offset(WIDTH - 1, HEIGHT - 1)
         .expect("the bottom-right pixel is visible");
@@ -177,10 +168,9 @@ fn from_hex_splits_the_channels() {
     );
 }
 
+/// On the framebuffers this boots against, a 0xRRGGBB theme colour survives packing untouched.
 #[test]
 fn packing_rgb888_is_the_identity_on_a_hex_literal() {
-    // The property the console relies on: on the framebuffers we actually
-    // boot against, a 0xRRGGBB theme colour survives packing untouched.
     for hex in [0x00_00_00, 0x0B_10_21, 0xE8_D5_A3, 0xFF_FF_FF] {
         assert_eq!(rgb888().pack(Rgb::from_hex(hex)), hex);
     }
@@ -395,10 +385,7 @@ fn a_one_bit_channel_overlap_is_still_an_overlap() {
     );
 }
 
-/// The 30-bit-colour layout real displays report — ten bits a channel in a
-/// 32-bit pixel. Full intensity must reach full scale: scaling by shifting
-/// left instead would stop three quarters of a step short, and white would
-/// come out very slightly grey on hardware nobody tests on.
+/// Scaling by a left shift would stop short of full scale, so white would come out slightly grey.
 #[test]
 fn a_ten_bit_channel_reaches_full_scale() {
     let xrgb2101010 = PixelFormat::new(
@@ -417,8 +404,6 @@ fn a_ten_bit_channel_reaches_full_scale() {
     );
 }
 
-/// Every width, from one bit to the whole word: nothing packs to more than
-/// its own bits, black is zero and white is every bit of the channel.
 #[test]
 fn every_channel_width_spans_exactly_its_own_bits() {
     for size in 1..=32u8 {
@@ -437,9 +422,7 @@ fn every_channel_width_spans_exactly_its_own_bits() {
     }
 }
 
-/// A brighter input can never encode darker, at any width — the property a
-/// scaling bug shows up as, and the one a shift-based version only has by
-/// accident.
+/// The property a scaling bug shows up as, and one a shift-based version has only by accident.
 #[test]
 fn encoding_is_monotonic_at_every_width() {
     for size in 1..=16u8 {
@@ -453,8 +436,7 @@ fn encoding_is_monotonic_at_every_width() {
     }
 }
 
-/// A shifted channel is the unshifted one moved, with nothing lost off
-/// either end — swept over every placement that fits a 32-bit pixel.
+/// Swept over every placement that fits a 32-bit pixel.
 #[test]
 fn shifting_a_channel_only_moves_it() {
     for size in 1..=8u8 {
@@ -467,9 +449,7 @@ fn shifting_a_channel_only_moves_it() {
     }
 }
 
-/// Nothing a bootloader can report may shift past the end of a pixel: the
-/// channel drops out instead, which loses a colour rather than panicking in
-/// debug or wrapping in release.
+/// The channel drops out rather than panicking in debug or wrapping in release.
 #[test]
 fn a_channel_that_cannot_fit_the_word_contributes_nothing() {
     for (shift, size) in [(32, 8), (25, 8), (0, 33), (255, 255), (31, 2)] {
@@ -481,8 +461,7 @@ fn a_channel_that_cannot_fit_the_word_contributes_nothing() {
     }
 }
 
-/// The boundary the case above sits next to: a channel ending exactly at
-/// bit 31 is legal and must still encode.
+/// The boundary beside the case above: a channel ending exactly at bit 31 is legal.
 #[test]
 fn a_channel_ending_at_the_top_of_the_word_still_encodes() {
     assert_eq!(Channel::new(24, 8).encode(u8::MAX), 0xFF00_0000);
@@ -575,18 +554,13 @@ fn a_pitch_shorter_than_the_visible_row_is_refused() {
     );
 }
 
-/// The modulus is four, not merely even.
-///
-/// Include an even value not divisible by four so a weaker modulus cannot
-/// satisfy the check. Otherwise later rows are misaligned and `write_u32`
-/// refuses the kernel's only output (D-105).
+/// An even value that is not a multiple of four rules out a weaker modulus.
 #[test]
 fn a_misaligned_mapping_base_is_refused() {
     assert_eq!(
         FramebufferLayout::new(1, 1, 1, 4, 4),
         Err(FramebufferLayoutError::MisalignedBase(1))
     );
-    // Even, and still not a multiple of four.
     assert_eq!(
         FramebufferLayout::new(2, 1, 1, 4, 4),
         Err(FramebufferLayoutError::MisalignedBase(2))
@@ -594,13 +568,13 @@ fn a_misaligned_mapping_base_is_refused() {
     assert!(FramebufferLayout::new(4, 1, 1, 4, 4).is_ok());
 }
 
+/// An even value that is not a multiple of four rules out a weaker modulus.
 #[test]
 fn a_misaligned_pitch_is_refused() {
     assert_eq!(
         FramebufferLayout::new(0, 1, 1, 5, 4),
         Err(FramebufferLayoutError::MisalignedPitch(5))
     );
-    // Even, and still not a multiple of four.
     assert_eq!(
         FramebufferLayout::new(0, 1, 1, 6, 4),
         Err(FramebufferLayoutError::MisalignedPitch(6))
@@ -624,18 +598,18 @@ fn a_framebuffer_address_range_that_wraps_is_refused() {
     );
 }
 
+/// 1280 visible pixels but a 5120-byte pitch: row 1 starts at 5120.
 #[test]
 fn offsets_follow_the_pitch_not_the_width() {
-    // 1280 visible pixels but a 5120-byte pitch: row 1 starts at 5120.
     assert_eq!(offset(0, 0, 5120, 4), Some(0));
     assert_eq!(offset(1, 0, 5120, 4), Some(4));
     assert_eq!(offset(0, 1, 5120, 4), Some(5120));
     assert_eq!(offset(2, 3, 5120, 4), Some(3 * 5120 + 8));
 }
 
+/// A 100-pixel row padded to 512 bytes rather than 400.
 #[test]
 fn offsets_respect_a_padded_pitch() {
-    // A 100-pixel row padded to 512 bytes rather than 400.
     assert_eq!(offset(0, 1, 512, 4), Some(512));
     assert_ne!(offset(0, 1, 512, 4), offset(100, 0, 512, 4));
 }
@@ -655,21 +629,15 @@ fn an_offset_with_an_overflowing_sum_is_refused() {
     assert_eq!(offset(1, 1, usize::MAX - 1, 2), None, "row plus column");
 }
 
-/// A channel that exactly fills the word is accepted, and one bit more is
-/// refused — at *both* copies of the bound.
-///
-/// Exercise the boundary in both `channel_mask` and `encode` so the
-/// duplicated checks cannot drift while refusing legal RGBx8888 (D-105).
+/// Both `channel_mask` and `encode` carry the bound, so the two copies cannot drift apart.
 #[test]
 fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
-    // 24 + 8 == 32: the top channel of a standard RGBx8888 report.
     let top = Channel::new(24, 8);
     assert_ne!(top.encode(0xFF), 0, "encode refused a channel that fits");
 
     let format = PixelFormat::new(Channel::new(0, 8), Channel::new(8, 8), top);
     assert!(format.is_ok(), "channel_mask refused a channel that fits");
 
-    // And one bit past the end is refused by both.
     let over = Channel::new(25, 8);
     assert_eq!(
         over.encode(0xFF),
@@ -682,12 +650,7 @@ fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
     );
 }
 
-/// Blending really reads both operands.
-///
-/// The endpoints `0x000000` and `0xFFFFFF` make `mix(0, 255, t) == t`, so
-/// the monotonicity sweep asserted `t >= t - 1` and multiplied the `from`
-/// operand by literal zero every iteration — it passed with `from` dropped
-/// from `mix` entirely (D-105).
+/// Black and white endpoints make `mix(0, 255, weight)` equal `weight`, hiding a dropped `from`.
 #[test]
 fn blending_reads_the_background_as_well_as_the_foreground() {
     let from = Rgb::from_hex(0x4080C0);
@@ -696,8 +659,6 @@ fn blending_reads_the_background_as_well_as_the_foreground() {
     assert_eq!(from.blend(to, 0), from, "t = 0 is the background");
     assert_eq!(from.blend(to, 255), to, "t = 255 is the foreground");
 
-    // Halfway depends on both: a `blend` that ignored `from` would give
-    // 96 / 32 / 0 instead of 128 / 95 / 95.
     let middle = from.blend(to, 128);
     assert_eq!(middle.red, mix(0x40, 0xC0, 128));
     assert_eq!(middle.red, 0x80);
