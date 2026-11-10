@@ -102,7 +102,6 @@ fn table_reads(extended_flags: u16) -> [u64; 2] {
 
 #[test]
 fn the_boot_sector_is_read_where_the_layout_puts_its_fields() {
-    // Pairwise-distinct fields expose swaps in the decoder (D-136).
     let bpb = Bpb::parse(&boot_sector()).expect("a valid boot sector");
 
     assert_eq!(bpb.sectors_per_cluster(), 8);
@@ -424,7 +423,7 @@ fn image_volume(sectors_per_cluster: u32, clusters: u32) -> Volume<SectorImage> 
 }
 
 fn set_link(volume: &mut Volume<SectorImage>, cluster: u32, next: u32) {
-    let offset = cluster as usize * core::mem::size_of::<u32>();
+    let offset = cluster as usize * size_of::<u32>();
     volume.source.sectors[1][offset..offset + 4].copy_from_slice(&next.to_le_bytes());
 }
 
@@ -526,8 +525,6 @@ fn directory_chunks_advance_one_sector_and_finish_idempotently() {
     let third = volume.directory_chunk(&mut cursor).expect("next cluster");
     assert!(third.entries().is_empty());
     assert_eq!((cursor.cluster, cursor.sector, cursor.visited), (3, 1, 1));
-    // The 2 -> 3 transition reads the FAT once for the cursor and twice
-    // more for the cycle hare, which advances two links from cluster 2.
     assert_eq!(volume.source.reads, [2, 3, 1, 1, 1, 4]);
 
     let fourth = volume.directory_chunk(&mut cursor).expect("last sector");
@@ -756,9 +753,6 @@ fn an_escaped_deleted_marker_names_a_live_entry() {
 
 #[test]
 fn a_cyclic_directory_chain_is_caught_by_the_hare_not_the_volume() {
-    // A million-cluster volume: the two-cycle is caught in a handful of
-    // steps, far short of the volume and the directory cluster cap, so a
-    // hostile cyclic directory cannot stall the walk.
     let bpb = tiny(1_000_000);
     assert!(bpb.clusters() > bpb.directory_cluster_limit());
     let mut volume = Volume {
@@ -795,13 +789,11 @@ fn a_cyclic_directory_chain_is_caught_by_the_hare_not_the_volume() {
     assert_eq!(cursor, before, "a refused transition changed the cursor");
 }
 
+// 512-byte clusters hold 16 entries, so 65,536 entries need 4,096 clusters.
 #[test]
 fn the_directory_cluster_limit_is_the_tighter_of_entries_and_volume() {
-    // 512-byte clusters hold 16 entries, so 65,536 entries need 4,096
-    // clusters, tighter than a large volume but not a small one.
     assert_eq!(tiny(1_000_000).directory_cluster_limit(), 4096);
     assert_eq!(tiny(100).directory_cluster_limit(), 100);
-    // Larger clusters hold more entries, so fewer of them bound a directory.
     let mut wide = tiny(1_000_000);
     wide.sectors_per_cluster = 8;
     assert_eq!(wide.directory_cluster_limit(), 512);
@@ -809,8 +801,6 @@ fn the_directory_cluster_limit_is_the_tighter_of_entries_and_volume() {
 
 #[test]
 fn a_huge_acyclic_directory_stops_at_the_entry_cap() {
-    // Big clusters make the cap small (128) while the volume stays large,
-    // so a never-ending linear chain stops at the cap, not the volume.
     let bpb = Bpb {
         sectors_per_cluster: 32,
         reserved_sectors: 1,
@@ -890,9 +880,9 @@ fn file_reads_match_the_concatenated_sector_bytes_at_every_boundary() {
         (1, 0),
     ] {
         let (mut volume, contents, entry) = file_volume();
-        let mut actual = vec![0xA5; requested];
+        let mut observed = vec![0xA5; requested];
         let read = volume
-            .read_file(&entry, offset as u32, &mut actual)
+            .read_file(&entry, offset as u32, &mut observed)
             .expect("a bounded valid read");
         let expected = if offset >= contents.len() {
             &[][..]
@@ -906,12 +896,12 @@ fn file_reads_match_the_concatenated_sector_bytes_at_every_boundary() {
             "offset={offset}, requested={requested}"
         );
         assert_eq!(
-            &actual[..read],
+            &observed[..read],
             expected,
             "offset={offset}, requested={requested}"
         );
         assert!(
-            actual[read..].iter().all(|byte| *byte == 0xA5),
+            observed[read..].iter().all(|byte| *byte == 0xA5),
             "the read wrote past its reported length"
         );
     }
@@ -1155,9 +1145,6 @@ fn a_maximum_file_offset_does_not_overflow_chain_progress() {
 
 #[test]
 fn a_file_skip_past_the_volume_is_refused_before_walking() {
-    // The chain is acyclic, so the hare never fires: only the volume
-    // bound can refuse a skip whose offset names more clusters than the
-    // volume holds, and it refuses before reading the table (D-238).
     let bpb = tiny(62);
     assert_eq!(bpb.clusters(), 62);
     let mut volume = Volume {
@@ -1239,16 +1226,13 @@ impl Sectors for CountedCycle {
             into[8..12].copy_from_slice(&3u32.to_le_bytes());
             into[12..16].copy_from_slice(&2u32.to_le_bytes());
         } else {
-            // Every slot deleted: the directory never reaches its end, so
-            // only the chain bound can stop the walk.
             into.fill(0xE5);
         }
         Ok(())
     }
 }
 
-/// A FAT whose every cluster links to the next: a linear, never-ending
-/// chain with no cycle, so only the entry cap can stop a walk of it.
+/// A FAT whose every cluster links to the next: a never-ending chain with no cycle.
 struct CountedLine;
 
 impl Sectors for CountedLine {
@@ -1259,7 +1243,6 @@ impl Sectors for CountedLine {
         sector: u64,
         into: &mut [u8; SECTOR_BYTES],
     ) -> Result<(), Self::Error> {
-        // The FAT sits in sectors 1..=64 here; each holds 128 entries.
         if (1..=64).contains(&sector) {
             let base = ((sector - 1) * 128) as u32;
             for (index, slot) in into.chunks_exact_mut(4).enumerate() {
@@ -1288,7 +1271,6 @@ fn tiny(clusters: u32) -> Bpb {
 fn a_cyclic_chain_is_refused_in_both_the_directory_and_file_paths() {
     let bpb = tiny(62);
     assert_eq!(bpb.clusters(), 62);
-    // Enough reads for the hare to lap the cycle a few times over.
     let ceiling = bpb.clusters() * 4;
 
     let mut volume = Volume {

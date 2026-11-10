@@ -1,39 +1,16 @@
 //! Register layout, queue arithmetic and command encoding for NVM Express.
 //!
-//! Everything about talking to an NVMe controller that is not an instruction.
-//! `wost` keeps the memory-mapped accesses; the kernel keeps the queues' pages
-//! and the waiting. What is here is arithmetic, where `cargo test`, a doctest
-//! and a mutation can all reach it.
-//!
-//! **The ring parallel is a trap** (`012` §3). This kernel already has a
-//! submission/completion ring with a doorbell, and two research passes
-//! independently concluded: *share the arithmetic, never the structure*. The
-//! invariant does generalise — Base 2.2 §3.3.1.2.1 puts the same obligation on
-//! a host that D-79 puts on the kernel, never admit work whose completion has
-//! nowhere to go — but four things differ and every one of them is a bug if
-//! assumed away:
-//!
-//! - **The completion tail is not visible to the host.** New entries are found
-//!   by their **phase tag**, which flips each time the queue wraps.
-//! - **Completions are correlated by command identifier**, not by slot. A
-//!   controller may complete out of order, and does.
-//! - **Capacity is `size - 1`.** A full queue and an empty one are the same
-//!   head and tail, so one entry is always left unused. The symptom of getting
-//!   it wrong is a **hang**, not an error.
-//! - **The doorbell is write-only.** The tail the controller believes is not
-//!   readable, so the host shadows it.
-//!
 //! # Examples
 //!
 //! ```
 //! use nvme::{Capacity, register};
 //!
 //! // A controller reporting MQES = 63 leads the driver to admit 64 entries.
-//! let cap = Capacity::new(64).expect("a real queue size");
-//! assert_eq!(cap.entries(), 64);
+//! let capacity = Capacity::new(64).expect("a real queue size");
+//! assert_eq!(capacity.entries(), 64);
 //!
 //! // It can have 63 commands outstanding, never 64.
-//! assert_eq!(cap.as_zero_based(), 63);
+//! assert_eq!(capacity.as_zero_based(), 63);
 //!
 //! assert_eq!(register::CAP, 0x00);
 //! ```
@@ -45,10 +22,12 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-/// Bytes of one submission entry. Fixed by the specification at 64.
+pub use timebase::PollLimit;
+
+use core::fmt;
+
 pub const SUBMISSION_ENTRY_BYTES: usize = 64;
 
-/// Bytes of one completion entry. Fixed by the specification at 16.
 pub const COMPLETION_ENTRY_BYTES: usize = 16;
 
 /// `CC.IOSQES`: the base-two logarithm of [`SUBMISSION_ENTRY_BYTES`].
@@ -60,52 +39,47 @@ pub const IOCQES: u32 = 4;
 /// Most logical blocks one command can encode in the zero-based NLB field.
 pub const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
 
-/// A hardware poll bounded either by monotonic time or by boot-time attempts.
-///
-/// Re-exported from `timebase`, which is where the rule lives now that the
-/// keyboard's human wait needs the same one (D-240).
-pub use timebase::PollLimit;
-
 /// Logical-block size the current storage caller can consume.
 pub const SUPPORTED_BLOCK_BYTES: u32 = 512;
 
 const NAMESPACE_SIZE_BYTES: usize = 8;
-const FORMAT_COUNT_OFFSET: usize = 25;
-const FORMATTED_OFFSET: usize = 26;
-#[cfg(test)]
-const METADATA_CAPABILITIES_OFFSET: usize = 27;
-#[cfg(test)]
-const PROTECTION_CAPABILITIES_OFFSET: usize = 28;
-const PROTECTION_SETTINGS_OFFSET: usize = 29;
-const LBA_FORMATS_OFFSET: usize = 128;
 const LBA_FORMAT_BYTES: usize = 4;
 const MAX_LBA_FORMATS: u8 = 16;
 const SUPPORTED_BLOCK_SHIFT: u8 = 9;
 const IDENTIFY_TRANSFER_BYTES: u64 = 4096;
 
+/// Byte offsets of the Identify Namespace data structure fields.
+mod identify {
+    /// `NLBAF`, the zero-based number of LBA formats.
+    pub(super) const FORMAT_COUNT: usize = 25;
+    /// `FLBAS`, the formatted LBA size.
+    pub(super) const FORMATTED: usize = 26;
+    /// `MC`, metadata capabilities.
+    #[cfg(test)]
+    pub(super) const METADATA_CAPABILITIES: usize = 27;
+    /// `DPC`, end-to-end data protection capabilities.
+    #[cfg(test)]
+    pub(super) const PROTECTION_CAPABILITIES: usize = 28;
+    /// `DPS`, end-to-end data protection type settings.
+    pub(super) const PROTECTION_SETTINGS: usize = 29;
+    /// `LBAF0`, the first LBA format descriptor.
+    pub(super) const LBA_FORMATS: usize = 128;
+}
+
 /// Identify Namespace prefix through all sixteen negotiated LBA formats.
 pub const NAMESPACE_IDENTIFY_BYTES: usize =
-    LBA_FORMATS_OFFSET + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
+    identify::LBA_FORMATS + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
 
 /// Publication state for the controller's sole outstanding command.
-///
-/// This type records only events which a hardware-free caller can prove. A
-/// matching completion returns to idle, while [`DmaState::close`] permanently
-/// closes publication. Whether a stopped device makes memory recyclable is a
-/// hardware authority and remains at the register-observation boundary.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DmaState {
     state: DmaOwnership,
 }
 
-/// Proof that a prepared DMA command has become device-owned.
-///
-/// Only [`DmaState::publish_with`] can mint this proof, after changing the
-/// reservation to the in-flight state. An MMIO adapter consumes it while
-/// ringing the matching submission doorbell.
+/// Proof, minted only by [`DmaState::publish_with`], that a prepared command is device-owned.
 #[derive(Debug)]
-pub struct DmaPublication<'a> {
-    _state: &'a DmaState,
+pub struct DmaPublication<'state> {
+    _state: &'state DmaState,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,17 +91,13 @@ enum DmaOwnership {
 }
 
 impl DmaState {
-    /// No command has made memory device-owned yet.
     pub const fn idle() -> Self {
         Self {
             state: DmaOwnership::Idle,
         }
     }
 
-    /// Reserve the sole command slot before preparing its queue entry.
-    ///
-    /// False while another reservation or command exists, or after controller
-    /// shutdown made the ownership decision terminal.
+    /// Reserve the sole command slot, refused while another command exists or after close.
     pub fn reserve(&mut self) -> bool {
         if self.state != DmaOwnership::Idle {
             return false;
@@ -137,10 +107,6 @@ impl DmaState {
     }
 
     /// Cancel a reservation that was never published to the controller.
-    ///
-    /// False unless a caller had successfully reserved the one in-flight
-    /// slot. Once a doorbell has been rung, only completion or quiescence may
-    /// return ownership instead.
     pub fn cancel_unpublished(&mut self) -> bool {
         if self.state != DmaOwnership::Reserved {
             return false;
@@ -149,12 +115,7 @@ impl DmaState {
         true
     }
 
-    /// Make a prepared command device-owned before invoking its handoff.
-    ///
-    /// The callback is the only publication window: it receives an opaque
-    /// proof after ownership changed, so an MMIO adapter can require that
-    /// proof instead of relying on a separately maintained source-order
-    /// convention.
+    /// Make a prepared command device-owned, then hand the proof to `handoff`.
     pub fn publish_with<T>(&mut self, handoff: impl FnOnce(DmaPublication<'_>) -> T) -> Option<T> {
         if self.state != DmaOwnership::Reserved {
             return None;
@@ -186,8 +147,7 @@ impl DmaState {
 
 /// Byte offsets of the controller registers, from Base 2.2 §3.1.
 pub mod register {
-    /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
-    /// §11 records that VMware's values are unmeasured.
+    /// Controller capabilities, 64 bits.
     pub const CAP: usize = 0x00;
     /// Controller configuration.
     pub const CC: usize = 0x14;
@@ -205,7 +165,7 @@ pub mod register {
 
 /// `CC` fields.
 pub mod configuration {
-    /// Enable.
+    /// `EN`, bit 0.
     pub const ENABLE: u32 = 1;
     /// Shift of `MPS`, the host page size as `log2(size) - 12`.
     pub const PAGE_SIZE_SHIFT: u32 = 7;
@@ -217,17 +177,13 @@ pub mod configuration {
 
 /// `CSTS` fields.
 pub mod status {
-    /// Ready.
+    /// `RDY`, bit 0.
     pub const READY: u32 = 1;
-    /// Controller fatal status. A controller that has given up says so here,
-    /// and a driver that only waits for `READY` waits for ever.
+    /// `CFS`, bit 1: the controller has given up and will never become ready.
     pub const FATAL: u32 = 1 << 1;
 }
 
-/// Register values that describe a controller unable to execute DMA.
-///
-/// This value classifies bits; it does not prove where they were observed.
-/// Hardware authority must also retain the exact register mapping.
+/// Register values that describe a controller unable to execute DMA, wherever they were read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DisabledRegisters {
     cc: u32,
@@ -235,12 +191,7 @@ pub struct DisabledRegisters {
 }
 
 impl DisabledRegisters {
-    /// Classify freshly read `CC` and `CSTS` values.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControllerStateError::Active`] when either `CC.EN` or
-    /// `CSTS.RDY` remains set.
+    /// Classify freshly read `CC` and `CSTS` values, refusing either `CC.EN` or `CSTS.RDY`.
     pub const fn from_bits(cc: u32, csts: u32) -> Result<Self, ControllerStateError> {
         if cc & configuration::ENABLE != 0 || csts & status::READY != 0 {
             return Err(ControllerStateError::Active { cc, csts });
@@ -248,7 +199,6 @@ impl DisabledRegisters {
         Ok(Self { cc, csts })
     }
 
-    /// The exact `CC` and `CSTS` values that passed classification.
     pub const fn bits(self) -> (u32, u32) {
         (self.cc, self.csts)
     }
@@ -259,22 +209,14 @@ impl DisabledRegisters {
 #[non_exhaustive]
 pub enum ControllerStateError {
     /// The controller remains enabled or ready.
-    Active {
-        /// Observed `CC` value.
-        cc: u32,
-        /// Observed `CSTS` value.
-        csts: u32,
-    },
+    Active { cc: u32, csts: u32 },
 }
 
-impl core::fmt::Display for ControllerStateError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ControllerStateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Active { cc, csts } => {
-                write!(
-                    formatter,
-                    "controller is active (cc={cc:#010x}, csts={csts:#010x})"
-                )
+                write!(f, "controller is active (cc={cc:#010x}, csts={csts:#010x})")
             }
         }
     }
@@ -282,10 +224,7 @@ impl core::fmt::Display for ControllerStateError {
 
 impl core::error::Error for ControllerStateError {}
 
-/// Exclusive register ownership while controller quiescence is unverified.
-///
-/// Each fallible access consumes and returns this value, so an error cannot
-/// discard the authority needed to retry or quarantine the controller.
+/// Register ownership, returned by every fallible access, while quiescence is unverified.
 #[derive(Debug)]
 #[must_use = "unverified controller ownership must be advanced or retained"]
 pub struct ControllerPreparation<T> {
@@ -309,7 +248,6 @@ pub struct PreparationFailure<P, E> {
 }
 
 impl<T> ControllerPreparation<T> {
-    /// Begin preparation with one exclusive register owner.
     pub const fn new(owner: T) -> Self {
         Self { owner }
     }
@@ -362,7 +300,6 @@ impl<T> DisabledPreparation<T> {
         }
     }
 
-    /// Recover the register owner after disabled state has been proven.
     pub fn into_owner(self) -> T {
         self.owner
     }
@@ -375,33 +312,23 @@ impl<P, E> PreparationFailure<P, E> {
     }
 }
 
-/// What `CAP` says, decoded.
-///
-/// **Read, never assumed.** Every field here changes what a correct driver
-/// does, and `012` §11 records that VMware's values have not been measured.
+/// What `CAP` says, decoded, because every field changes what a correct driver does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capabilities {
     bits: u64,
 }
 
 impl Capabilities {
-    /// Decode the `CAP` register.
     pub const fn from_bits(bits: u64) -> Self {
         Self { bits }
     }
 
-    /// `MQES`: the maximum queue size, **minus one**.
-    ///
-    /// The register holds one less than the number of entries, which is the
-    /// specification's own off-by-one and the first place to get it wrong.
+    /// `MQES` plus one, since the register holds one less than the number of entries.
     pub const fn max_queue_entries(self) -> u32 {
         (self.bits as u32 & 0xFFFF) + 1
     }
 
-    /// `TO`: the timeout, in units of 500 milliseconds.
-    ///
-    /// How long the controller may take to become ready. A driver that waits
-    /// a fixed time instead is a driver that works on one machine.
+    /// `TO`, the time the controller may take to become ready, from units of 500 milliseconds.
     pub const fn timeout_ms(self) -> u64 {
         ((self.bits >> 24) & 0xFF) * 500
     }
@@ -411,48 +338,33 @@ impl Capabilities {
         ((self.bits >> 32) & 0xF) as u32
     }
 
-    /// Bytes between one doorbell and the next.
-    ///
-    /// `4 << DSTRD`. A driver that assumes four bytes works on every controller
-    /// that reports zero and silently writes the wrong register on any that
-    /// does not.
+    /// Bytes between one doorbell and the next, `4 << DSTRD`.
     pub const fn doorbell_bytes(self) -> usize {
         4usize << self.doorbell_stride()
     }
 
-    /// `MPSMIN`: the smallest page size the controller supports, as
-    /// `log2(size) - 12`.
+    /// `MPSMIN`: the smallest page size the controller supports, as `log2(size)`.
     const fn min_page_shift(self) -> u32 {
         (((self.bits >> 48) & 0xF) as u32) + 12
     }
 
-    /// `MPSMAX`: the largest, likewise.
+    /// `MPSMAX`: the largest page size, as `log2(size)`.
     const fn max_page_shift(self) -> u32 {
         (((self.bits >> 52) & 0xF) as u32) + 12
     }
 
-    /// Whether the controller can work in pages of `bytes`.
     pub const fn supports_page_size(self, bytes: u64) -> bool {
         let shift = bytes.trailing_zeros();
         bytes.is_power_of_two() && shift >= self.min_page_shift() && shift <= self.max_page_shift()
     }
 
-    /// Whether the NVM command set is supported.
-    ///
-    /// `CSS` bit 0. A controller without it is not one this driver can read
-    /// from, and finding out at the first command rather than at
-    /// initialisation is finding out from a hang.
+    /// Whether `CSS` bit 37 advertises the NVM command set.
     pub const fn supports_nvm_command_set(self) -> bool {
         self.bits & (1 << 37) != 0
     }
 }
 
-/// How many entries a queue holds, and how many commands may be outstanding.
-///
-/// The `size - 1` rule, in a type, because it is the off-by-one whose symptom
-/// is a hang rather than an error (`012` §3). A queue's head and tail are equal
-/// when it is empty, so a producer that filled the last slot could not tell the
-/// two apart — one entry is always left unused, on every queue, for ever.
+/// Queue entries, of which one always stays unused because equal head and tail means empty.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Capacity {
     entries: u32,
@@ -462,15 +374,9 @@ impl Capacity {
     /// The smallest queue the specification allows: two entries, one usable.
     pub const MIN_ENTRIES: u32 = 2;
 
-    /// The largest a queue may be.
     pub const MAX_ENTRIES: u32 = 65536;
 
-    /// Build a capacity from a number of entries.
-    ///
-    /// # Errors
-    ///
-    /// `None` below two entries — a queue with one holds nothing at all — or
-    /// above 65536, which is what a sixteen-bit index reaches.
+    /// A capacity of `entries`, refused below two or above what a sixteen-bit index reaches.
     pub const fn new(entries: u32) -> Option<Self> {
         if entries < Self::MIN_ENTRIES || entries > Self::MAX_ENTRIES {
             return None;
@@ -478,7 +384,6 @@ impl Capacity {
         Some(Self { entries })
     }
 
-    /// Entries in the queue.
     pub const fn entries(self) -> u32 {
         self.entries
     }
@@ -488,12 +393,10 @@ impl Capacity {
         self.entries - 1
     }
 
-    /// Bytes a submission queue of this size occupies.
     pub const fn submission_bytes(self) -> u64 {
         self.entries as u64 * SUBMISSION_ENTRY_BYTES as u64
     }
 
-    /// Bytes a completion queue of this size occupies.
     pub const fn completion_bytes(self) -> u64 {
         self.entries as u64 * COMPLETION_ENTRY_BYTES as u64
     }
@@ -510,10 +413,7 @@ impl Capacity {
         }
     }
 
-    /// Whether a queue with this head and tail can take another entry.
-    ///
-    /// The `size - 1` rule applied: the tail may advance to one short of the
-    /// head and no further, because equal means empty.
+    /// Whether the tail may advance, which stops one short of the head.
     pub const fn has_room(self, head: u32, tail: u32) -> Option<bool> {
         if head >= self.entries {
             return None;
@@ -534,15 +434,7 @@ pub enum Doorbell {
     Completion,
 }
 
-/// Where a queue's doorbell lives, relative to the register file.
-///
-/// The formula from Base 2.2 §3.1.24: submission and completion doorbells
-/// alternate, and the stride comes from `CAP.DSTRD` rather than being four.
-///
-/// # Errors
-///
-/// `None` if the offset overflows, which a plausible stride and queue
-/// identifier cannot produce and a hostile pair can.
+/// Where a queue's doorbell lives, by Base 2.2 §3.1.24, or `None` if the offset overflows.
 ///
 /// # Examples
 ///
@@ -550,18 +442,18 @@ pub enum Doorbell {
 /// use nvme::{Capabilities, Doorbell, doorbell};
 ///
 /// // A controller with the usual stride of zero: four bytes apart.
-/// let cap = Capabilities::from_bits(0);
-/// assert_eq!(doorbell(cap, 0, Doorbell::Submission), Some(0x1000));
-/// assert_eq!(doorbell(cap, 0, Doorbell::Completion), Some(0x1004));
-/// assert_eq!(doorbell(cap, 1, Doorbell::Submission), Some(0x1008));
+/// let capabilities = Capabilities::from_bits(0);
+/// assert_eq!(doorbell(capabilities, 0, Doorbell::Submission), Some(0x1000));
+/// assert_eq!(doorbell(capabilities, 0, Doorbell::Completion), Some(0x1004));
+/// assert_eq!(doorbell(capabilities, 1, Doorbell::Submission), Some(0x1008));
 /// ```
-pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {
+pub const fn doorbell(capabilities: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {
     let pair_offset = match doorbell {
         Doorbell::Submission => 0,
         Doorbell::Completion => 1,
     };
     let index = (queue as usize) * 2 + pair_offset;
-    match index.checked_mul(cap.doorbell_bytes()) {
+    match index.checked_mul(capabilities.doorbell_bytes()) {
         Some(offset) => offset.checked_add(register::DOORBELLS),
         None => None,
     }
@@ -705,7 +597,6 @@ impl Command {
         Some(command)
     }
 
-    /// The command's identifier.
     pub const fn id(self) -> u16 {
         (self.words[0] >> 16) as u16
     }
@@ -729,9 +620,7 @@ impl Command {
 pub struct Completion {
     /// Command-specific result.
     pub result: u32,
-    /// Where the controller's submission head is now.
     pub submission_head: u16,
-    /// Which submission queue it came from.
     pub submission_queue: u16,
     /// Which command it answers.
     pub id: u16,
@@ -757,11 +646,7 @@ impl Completion {
         }
     }
 
-    /// Whether this completion proves the expected command was consumed.
-    ///
-    /// This driver publishes only one command at a time, so the controller's
-    /// submission head must equal the tail published for that command. Queue
-    /// identity and command identity are part of the same provenance check.
+    /// Whether queue, command and a head equal to the published tail prove the command consumed.
     pub const fn matches_submission(
         self,
         queue: u16,
@@ -775,7 +660,6 @@ impl Completion {
             && self.submission_head as u32 == published_tail
     }
 
-    /// Whether the command succeeded.
     pub const fn is_success(self) -> bool {
         self.status == 0
     }
@@ -795,13 +679,8 @@ pub enum NamespaceError {
     Empty,
     /// More formats were reported than this host negotiated.
     TooManyFormats(u16),
-    /// The formatted index is beyond the reported table.
-    FormatOutsideList {
-        /// Index named by `FLBAS`.
-        selected: u8,
-        /// Formats reported by zero-based `NLBAF`.
-        formats: u8,
-    },
+    /// The `FLBAS` index is beyond the zero-based `NLBAF` table.
+    FormatOutsideList { selected: u8, formats: u8 },
     /// A reserved bit was set in `FLBAS`.
     ReservedFormatBits(u8),
     /// A reserved bit was set in the selected `LBAF` entry.
@@ -814,10 +693,10 @@ pub enum NamespaceError {
     BlockSize(u8),
 }
 
-impl core::fmt::Display for NamespaceError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for NamespaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => core::fmt::Write::write_str(f, "the namespace has no logical blocks"),
+            Self::Empty => f.write_str("the namespace has no logical blocks"),
             Self::TooManyFormats(formats) => {
                 write!(f, "the namespace reports {formats} lba formats")
             }
@@ -847,15 +726,7 @@ impl core::fmt::Display for NamespaceError {
 impl core::error::Error for NamespaceError {}
 
 impl Namespace {
-    /// Parse the Identify Namespace prefix this driver negotiated.
-    ///
-    /// The high `FLBAS` index bits are ignored because this host does not
-    /// enable the 64-format extension. Metadata capability fields are likewise
-    /// not settings; the selected format and `DPS` decide the transfer shape.
-    ///
-    /// # Errors
-    ///
-    /// [`NamespaceError`] names an empty, malformed or unsupported format.
+    /// Parse the negotiated Identify Namespace prefix, ignoring the high `FLBAS` index bits.
     pub fn parse(identify: &[u8; NAMESPACE_IDENTIFY_BYTES]) -> Result<Self, NamespaceError> {
         let mut size = [0u8; NAMESPACE_SIZE_BYTES];
         size.copy_from_slice(&identify[..NAMESPACE_SIZE_BYTES]);
@@ -864,12 +735,12 @@ impl Namespace {
             return Err(NamespaceError::Empty);
         }
 
-        let last_format = identify[FORMAT_COUNT_OFFSET];
+        let last_format = identify[identify::FORMAT_COUNT];
         if last_format >= MAX_LBA_FORMATS {
             return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));
         }
 
-        let formatted = identify[FORMATTED_OFFSET];
+        let formatted = identify[identify::FORMATTED];
         if formatted & 0x80 != 0 {
             return Err(NamespaceError::ReservedFormatBits(formatted));
         }
@@ -881,7 +752,7 @@ impl Namespace {
             });
         }
 
-        let offset = LBA_FORMATS_OFFSET + usize::from(selected) * LBA_FORMAT_BYTES;
+        let offset = identify::LBA_FORMATS + usize::from(selected) * LBA_FORMAT_BYTES;
         let metadata = u16::from_le_bytes([identify[offset], identify[offset + 1]]);
         let block_shift = identify[offset + 2];
         let control = identify[offset + 3];
@@ -891,7 +762,7 @@ impl Namespace {
         if metadata != 0 {
             return Err(NamespaceError::Metadata(metadata));
         }
-        let protection = identify[PROTECTION_SETTINGS_OFFSET];
+        let protection = identify[identify::PROTECTION_SETTINGS];
         if protection != 0 {
             return Err(NamespaceError::Protection(protection));
         }
@@ -902,22 +773,16 @@ impl Namespace {
         Ok(Self { blocks })
     }
 
-    /// Logical blocks in the namespace.
     pub const fn blocks(self) -> u64 {
         self.blocks
     }
 
-    /// Bytes in each logical block.
     pub const fn block_bytes(self) -> u32 {
         SUPPORTED_BLOCK_BYTES
     }
 }
 
 /// A read whose command extent and DMA capacity have both been validated.
-///
-/// The fields stay private so command construction cannot accidentally return
-/// to raw counts after this boundary. D-195 makes this the only value the
-/// kernel's read submission path accepts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ReadTransfer {
     lba: u64,
@@ -945,32 +810,24 @@ pub enum TransferError {
     ControllerLimit,
 }
 
-impl core::fmt::Display for TransferError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Write::write_str(
-            f,
-            match self {
-                Self::Empty => "the transfer contains no logical blocks",
-                Self::TooManyBlocks => "the transfer does not fit the nlb field",
-                Self::BlockSize => "the logical-block size is zero",
-                Self::OutsideNamespace => "the transfer crosses the namespace boundary",
-                Self::LengthOverflow => "the transfer byte length overflows",
-                Self::BufferTooSmall => "the dma buffer is shorter than the transfer",
-                Self::ControllerLimit => "the transfer exceeds the proved controller limit",
-            },
-        )
+impl fmt::Display for TransferError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "the transfer contains no logical blocks",
+            Self::TooManyBlocks => "the transfer does not fit the nlb field",
+            Self::BlockSize => "the logical-block size is zero",
+            Self::OutsideNamespace => "the transfer crosses the namespace boundary",
+            Self::LengthOverflow => "the transfer byte length overflows",
+            Self::BufferTooSmall => "the dma buffer is shorter than the transfer",
+            Self::ControllerLimit => "the transfer exceeds the proved controller limit",
+        })
     }
 }
 
 impl core::error::Error for TransferError {}
 
 impl ReadTransfer {
-    /// Validate one logical-block read against its namespace and DMA owner.
-    ///
-    /// # Errors
-    ///
-    /// Names the first invalid boundary in command order: count encoding,
-    /// namespace extent, byte extent, then destination capacity.
+    /// Validate one read in command order: count, namespace extent, byte extent, then capacity.
     pub const fn new(
         lba: u64,
         blocks: u32,
@@ -1010,7 +867,6 @@ impl ReadTransfer {
         Ok(self)
     }
 
-    /// First logical block in the transfer.
     pub const fn lba(self) -> u64 {
         self.lba
     }

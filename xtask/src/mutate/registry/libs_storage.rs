@@ -26,8 +26,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 114,
         file: "libs/fat32/src/lib.rs",
-        find: "        wanted\n            .iter()\n            .zip(self.name())\n            .all(|(wanted, actual)| upper(*wanted) == upper(*actual))",
-        replace: "        wanted.iter().zip(self.name()).all(|_| true)",
+        find: "        wanted\n            .iter()\n            .zip(self.name())\n            .all(|(wanted, observed)| upper(*wanted) == upper(*observed))",
+        replace: "        wanted\n            .iter()\n            .zip(self.name())\n            .all(|_| true)",
         breaks: "a same-length different FAT name is accepted as a match",
         reddens: Caught::HostTest {
             package: "fat32",
@@ -37,8 +37,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 115,
         file: "libs/fat32/src/lib.rs",
-        find: "        if slot[8 + index] != b' ' {\n            return Slot::Skip;\n        }",
-        replace: "        if false && slot[8 + index] != b' ' {\n            return Slot::Skip;\n        }",
+        find: "        if slot[start + index] != b' ' {\n            return None;\n        }",
+        replace: "        if false && slot[start + index] != b' ' {\n            return None;\n        }",
         breaks: "a sparse FAT extension loses its only non-space byte",
         reddens: Caught::HostTest {
             package: "fat32",
@@ -473,7 +473,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 370,
         file: "libs/fat32/src/lib.rs",
-        find: "                Next::Cluster(next) => {\n                    let Some(visited) = cursor.visited.checked_add(1) else {\n                        return Err(FatError::Unbounded);\n                    };\n                    if visited >= self.bpb.directory_cluster_limit() {\n                        return Err(FatError::Unbounded);\n                    }\n                    // A tortoise/hare check catches a cycle in the length of\n                    // the cycle, before the entry cap is reached (D-352).\n                    let hare = self.advance_cycle_hare(cursor.hare)?;\n                    if hare == Some(next) {\n                        return Err(FatError::Unbounded);\n                    }\n                    cursor.cluster = next;\n                    cursor.sector = 0;\n                    cursor.visited = visited;\n                    cursor.hare = hare;\n                }\n                Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
+        find: "                Next::Cluster(next) => {\n                    let Some(visited) = cursor.visited.checked_add(1) else {\n                        return Err(FatError::Unbounded);\n                    };\n                    if visited >= self.bpb.directory_cluster_limit() {\n                        return Err(FatError::Unbounded);\n                    }\n                    let hare = self.advance_cycle_hare(cursor.hare)?;\n                    if hare == Some(next) {\n                        return Err(FatError::Unbounded);\n                    }\n                    cursor.cluster = next;\n                    cursor.sector = 0;\n                    cursor.visited = visited;\n                    cursor.hare = hare;\n                }\n                Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
         replace: "                Next::Cluster(_) | Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
         breaks: "a FAT directory walk silently stops after its first cluster",
         reddens: Caught::HostTest {
@@ -549,8 +549,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 576,
         file: "libs/elf64/src/lib.rs",
-        find: "            Self::NotAnElf => core::fmt::Write::write_str(f, \"does not begin with the elf magic\"),",
-        replace: "            Self::NotAnElf => core::fmt::Write::write_str(f, \"\"),",
+        find: "            Self::NotAnElf => f.write_str(\"does not begin with the elf magic\"),",
+        replace: "            Self::NotAnElf => f.write_str(\"\"),",
         breaks: "an ELF magic refusal loses its diagnostic reason",
         reddens: Caught::HostTest {
             package: "elf64",
@@ -736,8 +736,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 920,
         file: "libs/nvme/src/lib.rs",
-        find: "pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {",
-        replace: "pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: bool) -> Option<usize> {",
+        find: "pub const fn doorbell(capabilities: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {",
+        replace: "pub const fn doorbell(capabilities: Capabilities, queue: u16, doorbell: bool) -> Option<usize> {",
         breaks: "NVMe submission/completion doorbell selection becomes positional boolean state",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -868,8 +868,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1180,
         file: "libs/nvme/src/lib.rs",
-        find: "#[derive(Debug)]\npub struct DmaPublication<'a> {",
-        replace: "#[derive(Debug, Clone)]\npub struct DmaPublication<'a> {",
+        find: "#[derive(Debug)]\npub struct DmaPublication<'state> {",
+        replace: "#[derive(Debug, Clone)]\npub struct DmaPublication<'state> {",
         breaks: "a device-publication proof can be cloned while its source remains live",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -879,8 +879,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1181,
         file: "libs/nvme/src/lib.rs",
-        find: "#[derive(Debug)]\npub struct DmaPublication<'a> {",
-        replace: "#[derive(Debug, Clone, Copy)]\npub struct DmaPublication<'a> {",
+        find: "#[derive(Debug)]\npub struct DmaPublication<'state> {",
+        replace: "#[derive(Debug, Clone, Copy)]\npub struct DmaPublication<'state> {",
         breaks: "a device-publication proof can be copied without consuming its authority",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -945,8 +945,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1384,
         file: "libs/fat32/src/lib.rs",
-        find: "            Self::Unreadable => core::fmt::Write::write_str(f, \"the sector source refused a read\"),",
-        replace: "            Self::Unreadable => core::fmt::Write::write_str(f, \"unreadable\"),",
+        find: "            Self::Unreadable => f.write_str(\"the sector source refused a read\"),",
+        replace: "            Self::Unreadable => f.write_str(\"unreadable\"),",
         breaks: "a FAT refusal loses its actionable sector-source cause",
         reddens: Caught::HostTest {
             package: "fat32",
@@ -956,8 +956,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1385,
         file: "libs/path-walk/src/lib.rs",
-        find: "                Self::Empty => \"the path is empty\",",
-        replace: "                Self::Empty => \"empty\",",
+        find: "            Self::Empty => \"the path is empty\",",
+        replace: "            Self::Empty => \"empty\",",
         breaks: "a path refusal loses the argument it describes",
         reddens: Caught::HostTest {
             package: "path-walk",
