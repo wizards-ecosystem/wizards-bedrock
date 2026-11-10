@@ -524,7 +524,7 @@ fn main() {}
         .find(|node| node.label.contains("fn target"))
         .expect("target item")
         .id;
-    let mut merged = Uses::default();
+    let mut merged = GraphUses::default();
     let mut graphs = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
@@ -547,6 +547,7 @@ fn main() {}
                 .expect("read graph diagnostics");
             merged
                 .observe(
+                    0,
                     RootKind::Production,
                     &inventory,
                     &root,

@@ -19,13 +19,14 @@ fn cargo_metadata_not_a_conventional_filename_defines_a_target_root() {
     let catalog = CargoCatalog::parse(&root, &root, metadata.as_bytes(), &["fixture"], true)
         .expect("fixture metadata");
     let inventory = Inventory::discover_from_catalog(&root, &catalog).expect("metadata inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &["--crate-type", "lib"]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

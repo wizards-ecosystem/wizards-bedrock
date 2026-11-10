@@ -79,13 +79,14 @@ fn unicode_columns_instrument_the_exact_nested_item() {
         .find(|node| node.symbol == "nested")
         .map(|node| node.id)
         .expect("nested item node");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument Unicode fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -94,7 +95,7 @@ fn unicode_columns_instrument_the_exact_nested_item() {
         )
         .expect("read Unicode fixture diagnostics");
     }
-    assert!(uses.live(&inventory).contains(&nested));
+    assert!(uses.graphs[0].live(&inventory).contains(&nested));
     std::fs::remove_dir_all(root).expect("remove Unicode fixture");
 }
 
@@ -110,13 +111,14 @@ fn an_adjacent_call_is_outside_a_half_open_nested_item_span() {
         .find(|node| node.symbol == "api")
         .map(|node| node.id)
         .expect("fixture API node");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument adjacent-span fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -156,7 +158,7 @@ fn main() {
     let root = fixture(source);
 
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
             .instrument(&root, round)
@@ -180,6 +182,7 @@ fn main() {
         );
         let output = String::from_utf8_lossy(&result.stderr);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -237,7 +240,7 @@ mod tests {
         .find(|node| node.label.contains("fn test_only"))
         .expect("test-only item")
         .id;
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     let mut compiled = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
@@ -245,6 +248,7 @@ mod tests {
             .expect("instrument fixture");
         let production = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -310,13 +314,14 @@ fn main() { reachable_middle(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -358,13 +363,14 @@ fn a_module_local_main_is_not_a_runtime_root() {
     )
     .expect("out-of-line module source");
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -531,13 +537,14 @@ fn main() {}
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -576,13 +583,14 @@ fn main() {
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &["--cfg", "feature=\"selftest\""]);
         uses.observe(
+            0,
             RootKind::Verification,
             &inventory,
             &root,
@@ -664,13 +672,14 @@ fn main() { Active.call(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let insertions = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

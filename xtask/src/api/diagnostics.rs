@@ -174,20 +174,7 @@ pub(super) fn validate_cargo_diagnostic_origin(
     attributed_source: &str,
 ) -> Result<()> {
     let expected = &inventory.files[file].origin;
-    let expected_source =
-        std::fs::canonicalize(root.join(&expected.relative)).with_context(|| {
-            format!(
-                "canonicalizing expected Cargo target source {}",
-                expected.relative.display()
-            )
-        })?;
-    let reported_source =
-        std::fs::canonicalize(&diagnostic.origin.target_source).with_context(|| {
-            format!(
-                "canonicalizing reported Cargo target source {}",
-                diagnostic.origin.target_source.display()
-            )
-        })?;
+    let (expected_source, reported_source) = canonical_target_sources(diagnostic, expected, root)?;
     ensure!(
         diagnostic.origin.package_id == expected.package_id
             && diagnostic.origin.target_name == expected.name
@@ -218,6 +205,18 @@ pub(super) fn cargo_diagnostic_origin_matches(
     file: usize,
 ) -> Result<bool> {
     let expected = &inventory.files[file].origin;
+    let (expected_source, reported_source) = canonical_target_sources(diagnostic, expected, root)?;
+    Ok(diagnostic.origin.package_id == expected.package_id
+        && diagnostic.origin.target_name == expected.name
+        && diagnostic.origin.target_kind == expected.kind
+        && reported_source == expected_source)
+}
+
+fn canonical_target_sources(
+    diagnostic: &MarkerDiagnostic,
+    expected: &CargoTarget,
+    root: &Path,
+) -> Result<(PathBuf, PathBuf)> {
     let expected_source =
         std::fs::canonicalize(root.join(&expected.relative)).with_context(|| {
             format!(
@@ -232,10 +231,7 @@ pub(super) fn cargo_diagnostic_origin_matches(
                 diagnostic.origin.target_source.display()
             )
         })?;
-    Ok(diagnostic.origin.package_id == expected.package_id
-        && diagnostic.origin.target_name == expected.name
-        && diagnostic.origin.target_kind == expected.kind
-        && reported_source == expected_source)
+    Ok((expected_source, reported_source))
 }
 
 pub(super) fn cargo_diagnostic_location(

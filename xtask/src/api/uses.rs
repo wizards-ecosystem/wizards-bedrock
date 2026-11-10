@@ -67,107 +67,11 @@ impl Uses {
         for diagnostic in diagnostics {
             validate_marker_round(diagnostic.id, inventory, instrumentation)?;
             let Some(file) = inventory.file_index(root, &diagnostic.reported) else {
-                let expansion = diagnostic.immediate_expansion.as_ref().with_context(|| {
-                    format!(
-                        "an API diagnostic for item {} came from unclassified source `{}` without an immediate expansion callsite",
-                        diagnostic.id, diagnostic.reported
-                    )
-                })?;
-                ensure!(
-                    expansion.terminal,
-                    "an API diagnostic for item {} has an external primary span with a nested expansion chain",
-                    diagnostic.id
-                );
-                let expansion_file = inventory
-                    .file_index(root, &expansion.location.reported)
-                    .with_context(|| {
-                        format!(
-                            "an API diagnostic for item {} came from unclassified source `{}` and unclassified immediate expansion source `{}`",
-                            diagnostic.id, diagnostic.reported, expansion.location.reported
-                        )
-                    })?;
-                validate_cargo_diagnostic_origin(
-                    diagnostic,
-                    inventory,
-                    root,
-                    expansion_file,
-                    &expansion.location.reported,
-                )?;
-                let at = corrected_marker_location(
-                    expansion_file,
-                    expansion.location.line,
-                    expansion.location.column,
-                    instrumentation,
-                )?;
-                ensure!(
-                    inventory.is_opaque_macro_use(expansion_file, at),
-                    "an API diagnostic for item {} has an external primary span whose immediate expansion callsite at {}:{} is not an opaque macro invocation",
-                    diagnostic.id,
-                    inventory.files[expansion_file].relative.display(),
-                    expansion.location.line
-                );
+                validate_external_primary_span(diagnostic, inventory, root, instrumentation)?;
                 continue;
             };
-            let primary_at = corrected_marker_location(
-                file,
-                diagnostic.line,
-                diagnostic.column,
-                instrumentation,
-            )?;
             let entry_caller =
-                if cargo_diagnostic_origin_matches(diagnostic, inventory, root, file)? {
-                    None
-                } else {
-                    let authorized =
-                        diagnostic
-                            .immediate_expansion
-                            .as_ref()
-                            .and_then(|expansion| {
-                                let expansion_file =
-                                    inventory.file_index(root, &expansion.location.reported)?;
-                                let expansion_at = corrected_marker_location(
-                                    expansion_file,
-                                    expansion.location.line,
-                                    expansion.location.column,
-                                    instrumentation,
-                                )
-                                .ok()?;
-                                inventory
-                                    .exact_entry_contract_expansion_caller(
-                                        file,
-                                        primary_at,
-                                        diagnostic.id,
-                                        expansion_file,
-                                        expansion_at,
-                                        expansion,
-                                    )
-                                    .map(|caller| {
-                                        (
-                                            caller,
-                                            expansion_file,
-                                            expansion.location.reported.as_str(),
-                                        )
-                                    })
-                            });
-                    let Some((caller, expansion_file, expansion_source)) = authorized else {
-                        validate_cargo_diagnostic_origin(
-                            diagnostic,
-                            inventory,
-                            root,
-                            file,
-                            &diagnostic.reported,
-                        )?;
-                        bail!("API diagnostic origin changed while its entry route was classified");
-                    };
-                    validate_cargo_diagnostic_origin(
-                        diagnostic,
-                        inventory,
-                        root,
-                        expansion_file,
-                        expansion_source,
-                    )?;
-                    Some(caller)
-                };
+                entry_route_caller(diagnostic, inventory, root, file, instrumentation)?;
             self.observe_marker(
                 kind,
                 inventory,
@@ -581,6 +485,103 @@ impl Uses {
         }
         failures
     }
+}
+
+fn validate_external_primary_span(
+    diagnostic: &MarkerDiagnostic,
+    inventory: &Inventory,
+    root: &Path,
+    instrumentation: &Instrumentation,
+) -> Result<()> {
+    let expansion = diagnostic.immediate_expansion.as_ref().with_context(|| {
+        format!(
+            "an API diagnostic for item {} came from unclassified source `{}` without an immediate expansion callsite",
+            diagnostic.id, diagnostic.reported
+        )
+    })?;
+    ensure!(
+        expansion.terminal,
+        "an API diagnostic for item {} has an external primary span with a nested expansion chain",
+        diagnostic.id
+    );
+    let expansion_file = inventory
+        .file_index(root, &expansion.location.reported)
+        .with_context(|| {
+            format!(
+                "an API diagnostic for item {} came from unclassified source `{}` and unclassified immediate expansion source `{}`",
+                diagnostic.id, diagnostic.reported, expansion.location.reported
+            )
+        })?;
+    validate_cargo_diagnostic_origin(
+        diagnostic,
+        inventory,
+        root,
+        expansion_file,
+        &expansion.location.reported,
+    )?;
+    let at = corrected_marker_location(
+        expansion_file,
+        expansion.location.line,
+        expansion.location.column,
+        instrumentation,
+    )?;
+    ensure!(
+        inventory.is_opaque_macro_use(expansion_file, at),
+        "an API diagnostic for item {} has an external primary span whose immediate expansion callsite at {}:{} is not an opaque macro invocation",
+        diagnostic.id,
+        inventory.files[expansion_file].relative.display(),
+        expansion.location.line
+    );
+    Ok(())
+}
+
+fn entry_route_caller(
+    diagnostic: &MarkerDiagnostic,
+    inventory: &Inventory,
+    root: &Path,
+    file: usize,
+    instrumentation: &Instrumentation,
+) -> Result<Option<usize>> {
+    let primary_at =
+        corrected_marker_location(file, diagnostic.line, diagnostic.column, instrumentation)?;
+    if cargo_diagnostic_origin_matches(diagnostic, inventory, root, file)? {
+        return Ok(None);
+    }
+    let authorized = diagnostic
+        .immediate_expansion
+        .as_ref()
+        .and_then(|expansion| {
+            let expansion_file = inventory.file_index(root, &expansion.location.reported)?;
+            let expansion_at = corrected_marker_location(
+                expansion_file,
+                expansion.location.line,
+                expansion.location.column,
+                instrumentation,
+            )
+            .ok()?;
+            inventory
+                .exact_entry_contract_expansion_caller(
+                    file,
+                    primary_at,
+                    diagnostic.id,
+                    expansion_file,
+                    expansion_at,
+                    expansion,
+                )
+                .map(|caller| (caller, expansion_file, expansion.location.reported.as_str()))
+        });
+    let Some((caller, expansion_file, expansion_source)) = authorized else {
+        validate_cargo_diagnostic_origin(diagnostic, inventory, root, file, &diagnostic.reported)?;
+        bail!("API diagnostic origin changed while its entry route was classified");
+    };
+    validate_cargo_diagnostic_origin(
+        diagnostic,
+        inventory,
+        root,
+        expansion_file,
+        expansion_source,
+    )?;
+    Ok(Some(caller))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

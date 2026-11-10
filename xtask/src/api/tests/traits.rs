@@ -23,13 +23,14 @@ fn main() { let _ = format!("{}", Both); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -117,13 +118,14 @@ fn main() { Observe::observe(&Subject); }
     std::fs::write(root.join("libs/other/src/lib.rs"), "pub struct Subject;\n")
         .expect("other same-name type");
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -247,13 +249,14 @@ pub fn run() { fixture::Observer::observe(&Installed); }
     )
     .expect("external trait implementation");
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -285,7 +288,8 @@ fn main() { (Part, Part).act(); }
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
-        if let Err(error) = Uses::default().observe(
+        if let Err(error) = GraphUses::default().observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

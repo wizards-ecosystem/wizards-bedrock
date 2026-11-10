@@ -83,7 +83,7 @@ fn cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target() {
         .origin
         .package_id
         .clone();
-    let mut legitimate = Uses::default();
+    let mut legitimate = GraphUses::default();
     let mut observed_hostile = false;
     for round in 0..inventory.rounds {
         let instrumentation = inventory
@@ -137,6 +137,7 @@ fn cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target() {
         }
         legitimate
             .observe_cargo(
+                0,
                 RootKind::Production,
                 &inventory,
                 &root,
@@ -354,8 +355,9 @@ mod tests {
             "offset_of expansion did not identify the opaque invocation"
         );
     }
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     uses.observe_cargo(
+        0,
         RootKind::TestHarness,
         &inventory,
         &root,
@@ -363,9 +365,9 @@ mod tests {
         &instrumentation,
     )
     .expect("terminal opaque expansion diagnostics are discarded");
-    assert!(uses.roots.is_empty());
-    assert!(uses.edges.is_empty());
-    assert!(uses.constructions.is_empty());
+    assert!(uses.graphs[0].roots.is_empty());
+    assert!(uses.graphs[0].edges.is_empty());
+    assert!(uses.graphs[0].constructions.is_empty());
     assert!(uses.dead(&inventory).iter().any(|node| node.id == gate));
 
     let mut non_opaque = external[0].clone();
@@ -442,8 +444,9 @@ mod tests {
         !classified_nested.is_empty(),
         "nested offset_of emitted no classified nonterminal Gate diagnostic"
     );
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     uses.observe_cargo(
+        0,
         RootKind::TestHarness,
         &inventory,
         &root,
@@ -451,9 +454,9 @@ mod tests {
         &instrumentation,
     )
     .expect("a classified primary retains its lexical opaque-macro policy");
-    assert!(uses.roots.is_empty());
-    assert!(uses.edges.is_empty());
-    assert!(uses.constructions.is_empty());
+    assert!(uses.graphs[0].roots.is_empty());
+    assert!(uses.graphs[0].edges.is_empty());
+    assert!(uses.graphs[0].constructions.is_empty());
     assert!(uses.dead(&inventory).iter().any(|node| node.id == gate));
 
     let external_nested = diagnostics
@@ -603,8 +606,9 @@ fn a_diagnostic_id_must_be_instrumented_in_the_current_round() {
         target.id
     );
 
-    let error = Uses::default()
+    let error = GraphUses::default()
         .observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -643,8 +647,9 @@ fn an_unclassified_diagnostic_location_cannot_default_to_a_root() {
         target.id
     );
 
-    let error = Uses::default()
+    let error = GraphUses::default()
         .observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

@@ -19,13 +19,14 @@ fn main() { Active.call(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -68,13 +69,14 @@ fn main() { Active.act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -105,13 +107,14 @@ fn main() { pick(Active, Dormant).act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("ambiguous-dispatch inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument ambiguous dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -271,13 +274,14 @@ fn main() { let active = Active; active.act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("variable-dispatch inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument variable dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -311,13 +315,14 @@ fn main() { let active = Active; active.act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("ambiguous-variable inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument ambiguous variable dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -347,13 +352,14 @@ fn main() { let subject = Subject; let _ = <Subject as Clone>::clone(&subject); 
 "#,
     );
     let inventory = Inventory::discover(&root).expect("external-variable inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument external variable dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -438,13 +444,14 @@ fn main() { let subject = Subject; let _ = subject.clone(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("external-variable inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument external variable dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -477,13 +484,14 @@ fn main() { let _ = Subject.clone(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("exact external Self inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument exact external Self dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -522,13 +530,14 @@ fn main() { let _ = Subject.clone(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("inherent-collision inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument inherent collision");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -564,13 +573,14 @@ fn main() { let _ = add(Subject); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("free-call collision inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument free-call collision");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -610,13 +620,14 @@ fn main() { let _ = direct::<Product>(); let _ = where_bound::<Product>(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("generic-qself inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument generic-qself dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -663,13 +674,14 @@ fn main() { let _ = direct::<Product>(); let _ = where_bound::<Product>(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("parameterized generic inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument parameterized generic dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -746,13 +758,14 @@ fn main() {
 "#,
     );
     let inventory = Inventory::discover(&root).expect("unsupported generic inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument unsupported generic dispatches");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -761,7 +774,7 @@ fn main() {
         )
         .expect("read unsupported generic diagnostics");
     }
-    let failures = uses.dispatch_failures(&inventory);
+    let failures = uses.graphs[0].dispatch_failures(&inventory);
     assert_eq!(failures.len(), 3);
     assert!(failures.iter().all(|failure| failure.implementations == 0));
     std::fs::remove_dir_all(root).expect("remove unsupported generic fixture");
@@ -782,13 +795,14 @@ fn main() { <Defaulted as Action>::act(&Defaulted); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("local-default inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument local-default dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -885,13 +899,14 @@ fn main() { let _ = <Product as Factory>::make(Argument); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("concrete-qself inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument concrete-qself dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -931,13 +946,14 @@ fn main() { let _ = Product::make(Argument); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("type-qualified inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument type-qualified dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -977,13 +993,14 @@ fn main() { let _ = Product::from(Argument); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("type-qualified external inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument type-qualified external dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1023,13 +1040,14 @@ fn main() { let _ = Product::from(Argument); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("two-implementation inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument two-implementation dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1066,13 +1084,14 @@ fn main() { let _ = Alias::from(Argument); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("aliased-callee inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument aliased-callee dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1107,13 +1126,14 @@ fn main() { let value = Wrapper(0_u8); value.act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("generic-variable inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument generic variable dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1148,13 +1168,14 @@ fn main() { Wrapper::<Selected> { marker: PhantomData }.act(); }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("generic-dispatch inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument generic dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1199,13 +1220,14 @@ fn main() {
 "#,
     );
     let inventory = Inventory::discover(&root).expect("external-dispatch inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument external dispatch");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1241,13 +1263,14 @@ fn main() { Active.act(); let _ = Dormant; }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1276,13 +1299,14 @@ fn main() { let _installed = Installed; }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,
@@ -1312,13 +1336,14 @@ fn main() { let _ = Dormant; }
 "#,
     );
     let inventory = Inventory::discover(&root).expect("fixture inventory");
-    let mut uses = Uses::default();
+    let mut uses = GraphUses::default();
     for round in 0..inventory.rounds {
         let instrumentation = inventory
             .instrument(&root, round)
             .expect("instrument fixture");
         let output = compile_fixture(&root, &[]);
         uses.observe(
+            0,
             RootKind::Production,
             &inventory,
             &root,

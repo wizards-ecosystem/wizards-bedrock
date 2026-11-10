@@ -33,7 +33,7 @@ pub(super) enum DispatchKind {
     },
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct DispatchSites {
     pub(super) sites: Vec<DispatchSite>,
     generic_bounds: Vec<BTreeMap<String, BTreeSet<String>>>,
@@ -313,7 +313,7 @@ fn exact_dispatch_receiver_range(expression: &Expr) -> Option<ExactReceiver> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct ValueConstructions {
     pub(super) sites: Vec<ValueConstruction>,
 }

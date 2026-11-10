@@ -174,8 +174,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1028,
         file: "xtask/src/api/tests.rs",
-        find: "    #[cfg(test)]\n    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        if self.graphs.len() <= graph {\n            self.graphs.resize_with(graph + 1, Uses::default);\n        }",
-        replace: "    #[cfg(test)]\n    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        self.graphs.resize_with(graph + 1, Uses::default);",
+        find: "    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        if self.graphs.len() <= graph {\n            self.graphs.resize_with(graph + 1, Uses::default);\n        }",
+        replace: "    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        self.graphs.resize_with(graph + 1, Uses::default);",
         breaks: "a later compiler round erases every higher graph's accumulated API evidence",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -438,7 +438,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1052,
         file: "xtask/src/api/collector.rs",
-        find: "                        self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
+        find: "                self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
         replace: "                        true,",
         breaks: "a module-local function named main becomes a production runtime root",
         reddens: Caught::HostTest {
@@ -504,8 +504,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1058,
         file: "xtask/src/api/collector.rs",
-        find: "                        self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
-        replace: "                        self.language_main && self.scope.is_empty(),",
+        find: "                self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
+        replace: "                self.language_main && self.scope.is_empty(),",
         breaks: "a nested function named main inherits its target's language-root authority",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -592,8 +592,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1068,
         file: "xtask/src/api/collector.rs",
-        find: "                    let path = self\n                        .trait_imports\n                        .resolve_path(&self.scope, &path)\n                        .unwrap_or(path);",
-        replace: "                    let path = path;",
+        find: "        let path = self\n            .trait_imports\n            .resolve_path(&self.scope, &path)\n            .unwrap_or(path);",
+        replace: "        let path = path;",
         breaks: "imported self-type aliases no longer resolve before trait-implementation binding",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1109,7 +1109,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1115,
         file: "xtask/src/api/uses.rs",
-        find: "                    inventory.is_opaque_macro_use(expansion_file, at),",
+        find: "        inventory.is_opaque_macro_use(expansion_file, at),",
         replace: "                    true,",
         breaks: "a diagnostic at a non-macro expansion callsite is discarded as opaque",
         reddens: Caught::HostTest {
@@ -1120,8 +1120,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1116,
         file: "xtask/src/api/uses.rs",
-        find: "                    expansion.terminal,\n                    \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
-        replace: "                    true,\n                    \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
+        find: "        expansion.terminal,\n        \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
+        replace: "                    true,\n        \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
         breaks: "an external primary diagnostic traverses a nonterminal nested expansion chain",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1208,8 +1208,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1124,
         file: "xtask/src/api/uses.rs",
-        find: "                    validate_cargo_diagnostic_origin(\n                        diagnostic,\n                        inventory,\n                        root,\n                        expansion_file,\n                        expansion_source,\n                    )?;\n                    Some(caller)",
-        replace: "                    let _unchecked_entry_origin =\n                        (diagnostic, inventory, root, expansion_file, expansion_source);\n                    Some(caller)",
+        find: "    validate_cargo_diagnostic_origin(\n        diagnostic,\n        inventory,\n        root,\n        expansion_file,\n        expansion_source,\n    )?;\n    Ok(Some(caller))",
+        replace: "    let _unchecked_entry_origin =\n        (diagnostic, inventory, root, expansion_file, expansion_source);\n    Ok(Some(caller))",
         breaks: "an authorized entry path accepts a compiler origin unrelated to its expansion target",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1362,8 +1362,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1138,
         file: "xtask/src/api/collector.rs",
-        find: "                            recorded.reviewed_drop_producer =\n                                implementing_type.as_deref().and_then(|owner| {\n                                    reviewed_drop_producer(\n                                        self.relative,\n                                        owner,\n                                        &member.sig.ident.to_string(),\n                                        implemented_trait.as_deref(),\n                                    )\n                                });",
-        replace: "                            recorded.reviewed_drop_producer = None;",
+        find: "                recorded.reviewed_drop_producer =\n                    context.implementing_type.as_deref().and_then(|owner| {\n                        reviewed_drop_producer(\n                            self.relative,\n                            owner,\n                            &member.sig.ident.to_string(),\n                            context.implemented_trait.as_deref(),\n                        )\n                    });",
+        replace: "                recorded.reviewed_drop_producer = None;",
         breaks: "reviewed Drop producers no longer resolve to their current production nodes",
         reddens: Caught::HostTest {
             package: "xtask",

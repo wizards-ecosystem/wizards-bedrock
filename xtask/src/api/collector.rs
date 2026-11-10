@@ -2,7 +2,7 @@ use syn::visit::{self, Visit};
 
 use super::*;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(super) struct NonCallUses {
     pub(super) ranges: Vec<SourceRange>,
 }
@@ -28,6 +28,7 @@ impl<'ast> Visit<'ast> for NonCallUses {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct Collector<'source> {
     pub(super) audit: bool,
     pub(super) file: usize,
@@ -44,6 +45,7 @@ pub(super) struct Collector<'source> {
     pub(super) lexical_item_depth: usize,
 }
 
+#[derive(Debug)]
 struct NestedItems<'collector, 'source> {
     collector: &'collector mut Collector<'source>,
     availability: Availability,
@@ -76,6 +78,15 @@ impl Availability {
     }
 }
 
+#[derive(Debug)]
+struct ImplementationContext {
+    implemented_trait: Option<String>,
+    implementing_type: Option<String>,
+    exact_self_type: bool,
+    external_trait: bool,
+    implicit_trait: Option<ImplicitTrait>,
+}
+
 impl Collector<'_> {
     pub(super) fn item(&mut self, item: &Item, parent: Availability) {
         let availability = parent.for_item(item_attrs(item));
@@ -85,259 +96,15 @@ impl Collector<'_> {
                 "const",
                 &item.ident.to_string(),
                 item.span(),
-                self.audit && availability.is_production() && public(&item.vis),
+                self.reported(availability, &item.vis),
                 true,
                 RootSet::default(),
             ),
-            Item::Enum(item) => {
-                let report = self.audit && availability.is_production() && public(&item.vis);
-                self.record(
-                    "enum",
-                    &item.ident.to_string(),
-                    item.span(),
-                    report,
-                    true,
-                    RootSet::default(),
-                );
-                self.scope.push(item.ident.to_string());
-                if report {
-                    for variant in &item.variants {
-                        if verification_only(&variant.attrs) {
-                            continue;
-                        }
-                        self.record(
-                            "variant",
-                            &variant.ident.to_string(),
-                            variant.span(),
-                            true,
-                            true,
-                            RootSet::default(),
-                        );
-                    }
-                }
-                self.scope.pop();
-            }
-            Item::Fn(item) => {
-                let report = self.audit && availability.is_production() && public(&item.vis);
-                self.record(
-                    "fn",
-                    &item.sig.ident.to_string(),
-                    item.span(),
-                    report,
-                    true,
-                    function_roots(
-                        &item.sig.ident.to_string(),
-                        &item.attrs,
-                        availability,
-                        self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,
-                    ),
-                );
-                self.nested_items(&item.block, availability);
-            }
-            Item::ForeignMod(item) => {
-                for foreign in &item.items {
-                    match foreign {
-                        ForeignItem::Fn(item)
-                            if self.audit
-                                && availability.is_production()
-                                && public(&item.vis)
-                                && !verification_only(&item.attrs) =>
-                        {
-                            self.record(
-                                "foreign fn",
-                                &item.sig.ident.to_string(),
-                                item.span(),
-                                true,
-                                true,
-                                RootSet::default(),
-                            )
-                        }
-                        ForeignItem::Static(item)
-                            if self.audit
-                                && availability.is_production()
-                                && public(&item.vis)
-                                && !verification_only(&item.attrs) =>
-                        {
-                            self.record(
-                                "foreign static",
-                                &item.ident.to_string(),
-                                item.span(),
-                                true,
-                                true,
-                                RootSet::default(),
-                            )
-                        }
-                        ForeignItem::Type(item)
-                            if self.audit
-                                && availability.is_production()
-                                && public(&item.vis)
-                                && !verification_only(&item.attrs) =>
-                        {
-                            self.record(
-                                "foreign type",
-                                &item.ident.to_string(),
-                                item.span(),
-                                true,
-                                true,
-                                RootSet::default(),
-                            )
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Item::Impl(item) => {
-                let implemented_trait = item.trait_.as_ref().map(|(_, path, _)| trait_path(path));
-                let external_trait = implemented_trait
-                    .as_deref()
-                    .is_some_and(|path| self.trait_imports.external_trait(&self.scope, path));
-                let implicit_trait = implemented_trait.as_deref().and_then(|path| {
-                    self.trait_imports
-                        .implicit_standard_trait(&self.scope, path)
-                });
-                let implementing_type = self_type_path(&item.self_ty).map(|path| {
-                    let path = self
-                        .trait_imports
-                        .resolve_path(&self.scope, &path)
-                        .unwrap_or(path);
-                    if path.contains("::") || self.scope.is_empty() {
-                        path
-                    } else {
-                        format!("{}::{path}", self.scope.join("::"))
-                    }
-                });
-                let exact_self_type = exact_nominal_type_path(&item.self_ty).is_some();
-                self.scope.push("impl".to_string());
-                for member in &item.items {
-                    match member {
-                        ImplItem::Const(member) => {
-                            let member_availability = availability.for_item(&member.attrs);
-                            let mut recorded = self.new_node(
-                                "associated const",
-                                &member.ident.to_string(),
-                                member.span(),
-                                self.audit
-                                    && member_availability.is_production()
-                                    && public(&member.vis),
-                                implemented_trait.is_none(),
-                                RootSet::default(),
-                            );
-                            Self::mark_trait_implementation(
-                                &mut recorded,
-                                implemented_trait.as_deref(),
-                                &member.ident.to_string(),
-                                implementing_type.as_deref(),
-                                exact_self_type,
-                                external_trait,
-                                implicit_trait,
-                            );
-                            self.nodes.push(recorded);
-                        }
-                        ImplItem::Fn(member) => {
-                            let member_availability = availability.for_item(&member.attrs);
-                            let mut recorded = self.new_node(
-                                "method",
-                                &member.sig.ident.to_string(),
-                                member.span(),
-                                self.audit
-                                    && member_availability.is_production()
-                                    && public(&member.vis),
-                                implemented_trait.is_none(),
-                                function_roots(
-                                    &member.sig.ident.to_string(),
-                                    &member.attrs,
-                                    member_availability,
-                                    false,
-                                ),
-                            );
-                            recorded.implementation_owner = implementing_type.clone();
-                            recorded.direct_self_construction =
-                                directly_constructs_self(&member.block);
-                            recorded.reviewed_drop_producer =
-                                implementing_type.as_deref().and_then(|owner| {
-                                    reviewed_drop_producer(
-                                        self.relative,
-                                        owner,
-                                        &member.sig.ident.to_string(),
-                                        implemented_trait.as_deref(),
-                                    )
-                                });
-                            Self::mark_trait_implementation(
-                                &mut recorded,
-                                implemented_trait.as_deref(),
-                                &member.sig.ident.to_string(),
-                                implementing_type.as_deref(),
-                                exact_self_type,
-                                external_trait,
-                                implicit_trait,
-                            );
-                            self.nodes.push(recorded);
-                            self.nested_items(&member.block, member_availability);
-                        }
-                        ImplItem::Type(member) => {
-                            let member_availability = availability.for_item(&member.attrs);
-                            let mut recorded = self.new_node(
-                                "associated type",
-                                &member.ident.to_string(),
-                                member.span(),
-                                self.audit
-                                    && member_availability.is_production()
-                                    && public(&member.vis),
-                                implemented_trait.is_none(),
-                                RootSet::default(),
-                            );
-                            Self::mark_trait_implementation(
-                                &mut recorded,
-                                implemented_trait.as_deref(),
-                                &member.ident.to_string(),
-                                implementing_type.as_deref(),
-                                exact_self_type,
-                                external_trait,
-                                implicit_trait,
-                            );
-                            self.nodes.push(recorded);
-                        }
-                        _ => {}
-                    }
-                }
-                self.scope.pop();
-            }
-            Item::Macro(item) => {
-                if let Some(ident) = &item.ident {
-                    self.record(
-                        "macro",
-                        &ident.to_string(),
-                        item.span(),
-                        self.audit
-                            && availability.is_production()
-                            && has_attribute(&item.attrs, "macro_export"),
-                        true,
-                        RootSet::default(),
-                    );
-                } else {
-                    let name = item.mac.path.segments.last().map_or_else(
-                        || "<unknown>".to_string(),
-                        |segment| segment.ident.to_string(),
-                    );
-                    let claimed_entry = exact_path(&item.mac.path, &["wost", "entry"]);
-                    let runtime = self.runtime_item_macro(item);
-                    self.record(
-                        "item macro",
-                        &name,
-                        item.span(),
-                        false,
-                        false,
-                        RootSet {
-                            production: availability.is_production() && runtime,
-                            verification: availability == Availability::Verification && runtime,
-                        },
-                    );
-                    if (self.audit || claimed_entry) && !runtime {
-                        self.unsupported_macros
-                            .push(format!("{name} at line {}", item.span().start().line));
-                    }
-                }
-            }
+            Item::Enum(item) => self.enumeration(item, availability),
+            Item::Fn(item) => self.function(item, availability),
+            Item::ForeignMod(item) => self.foreign_items(item, availability),
+            Item::Impl(item) => self.implementation(item, availability),
+            Item::Macro(item) => self.item_macro(item, availability),
             Item::Mod(item) => {
                 if let Some((_, items)) = &item.content {
                     self.scope.push(item.ident.to_string());
@@ -347,97 +114,21 @@ impl Collector<'_> {
                     self.scope.pop();
                 }
             }
-            Item::Static(item) => {
-                let global_allocator = has_semantic_attribute(&item.attrs, "global_allocator");
-                let global_allocator_type = global_allocator
-                    .then(|| self.resolve_exact_nominal_type(&item.ty))
-                    .flatten();
-                let mut recorded = self.new_node(
-                    "static",
-                    &item.ident.to_string(),
-                    item.span(),
-                    self.audit && availability.is_production() && public(&item.vis),
-                    true,
-                    static_roots(&item.attrs, availability),
-                );
-                recorded.global_allocator = global_allocator;
-                recorded.global_allocator_type = global_allocator_type;
-                self.nodes.push(recorded);
-            }
+            Item::Static(item) => self.static_item(item, availability),
             Item::Struct(item) => self.record(
                 "struct",
                 &item.ident.to_string(),
                 item.span(),
-                self.audit && availability.is_production() && public(&item.vis),
+                self.reported(availability, &item.vis),
                 true,
                 RootSet::default(),
             ),
-            Item::Trait(item) => {
-                let report = self.audit && availability.is_production() && public(&item.vis);
-                self.record(
-                    "trait",
-                    &item.ident.to_string(),
-                    item.span(),
-                    report,
-                    true,
-                    RootSet::default(),
-                );
-                self.scope.push(item.ident.to_string());
-                for member in &item.items {
-                    match member {
-                        TraitItem::Const(member) => {
-                            let mut recorded = self.new_node(
-                                "trait const",
-                                &member.ident.to_string(),
-                                member.span(),
-                                report && !verification_only(&member.attrs),
-                                true,
-                                RootSet::default(),
-                            );
-                            self.mark_trait_declaration(&mut recorded, &member.ident.to_string());
-                            self.nodes.push(recorded);
-                        }
-                        TraitItem::Fn(member) => {
-                            let mut recorded = self.new_node(
-                                "trait method",
-                                &member.sig.ident.to_string(),
-                                member.span(),
-                                report && !verification_only(&member.attrs),
-                                true,
-                                RootSet::default(),
-                            );
-                            self.mark_trait_declaration(
-                                &mut recorded,
-                                &member.sig.ident.to_string(),
-                            );
-                            recorded.trait_default = member.default.is_some();
-                            self.nodes.push(recorded);
-                            if let Some(default) = &member.default {
-                                self.nested_items(default, availability.for_item(&member.attrs));
-                            }
-                        }
-                        TraitItem::Type(member) => {
-                            let mut recorded = self.new_node(
-                                "trait type",
-                                &member.ident.to_string(),
-                                member.span(),
-                                report && !verification_only(&member.attrs),
-                                true,
-                                RootSet::default(),
-                            );
-                            self.mark_trait_declaration(&mut recorded, &member.ident.to_string());
-                            self.nodes.push(recorded);
-                        }
-                        _ => {}
-                    }
-                }
-                self.scope.pop();
-            }
+            Item::Trait(item) => self.trait_declaration(item, availability),
             Item::Type(item) => self.record(
                 "type",
                 &item.ident.to_string(),
                 item.span(),
-                self.audit && availability.is_production() && public(&item.vis),
+                self.reported(availability, &item.vis),
                 true,
                 RootSet::default(),
             ),
@@ -445,12 +136,304 @@ impl Collector<'_> {
                 "union",
                 &item.ident.to_string(),
                 item.span(),
-                self.audit && availability.is_production() && public(&item.vis),
+                self.reported(availability, &item.vis),
                 true,
                 RootSet::default(),
             ),
             _ => {}
         }
+    }
+
+    fn reported(&self, availability: Availability, visibility: &Visibility) -> bool {
+        self.audit && availability.is_production() && public(visibility)
+    }
+
+    fn enumeration(&mut self, item: &syn::ItemEnum, availability: Availability) {
+        let report = self.reported(availability, &item.vis);
+        self.record(
+            "enum",
+            &item.ident.to_string(),
+            item.span(),
+            report,
+            true,
+            RootSet::default(),
+        );
+        self.scope.push(item.ident.to_string());
+        if report {
+            for variant in &item.variants {
+                if verification_only(&variant.attrs) {
+                    continue;
+                }
+                self.record(
+                    "variant",
+                    &variant.ident.to_string(),
+                    variant.span(),
+                    true,
+                    true,
+                    RootSet::default(),
+                );
+            }
+        }
+        self.scope.pop();
+    }
+
+    fn function(&mut self, item: &syn::ItemFn, availability: Availability) {
+        self.record(
+            "fn",
+            &item.sig.ident.to_string(),
+            item.span(),
+            self.reported(availability, &item.vis),
+            true,
+            function_roots(
+                &item.sig.ident.to_string(),
+                &item.attrs,
+                availability,
+                self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,
+            ),
+        );
+        self.nested_items(&item.block, availability);
+    }
+
+    fn foreign_items(&mut self, item: &syn::ItemForeignMod, availability: Availability) {
+        for foreign in &item.items {
+            let (kind, ident, visibility, attributes, span) = match foreign {
+                ForeignItem::Fn(item) => (
+                    "foreign fn",
+                    &item.sig.ident,
+                    &item.vis,
+                    &item.attrs,
+                    item.span(),
+                ),
+                ForeignItem::Static(item) => (
+                    "foreign static",
+                    &item.ident,
+                    &item.vis,
+                    &item.attrs,
+                    item.span(),
+                ),
+                ForeignItem::Type(item) => (
+                    "foreign type",
+                    &item.ident,
+                    &item.vis,
+                    &item.attrs,
+                    item.span(),
+                ),
+                _ => continue,
+            };
+            if self.reported(availability, visibility) && !verification_only(attributes) {
+                self.record(
+                    kind,
+                    &ident.to_string(),
+                    span,
+                    true,
+                    true,
+                    RootSet::default(),
+                );
+            }
+        }
+    }
+
+    fn implementation(&mut self, item: &syn::ItemImpl, availability: Availability) {
+        let implemented_trait = item.trait_.as_ref().map(|(_, path, _)| trait_path(path));
+        let context = ImplementationContext {
+            external_trait: implemented_trait
+                .as_deref()
+                .is_some_and(|path| self.trait_imports.external_trait(&self.scope, path)),
+            implicit_trait: implemented_trait.as_deref().and_then(|path| {
+                self.trait_imports
+                    .implicit_standard_trait(&self.scope, path)
+            }),
+            implementing_type: self.resolve_nominal_type(&item.self_ty),
+            exact_self_type: exact_nominal_type_path(&item.self_ty).is_some(),
+            implemented_trait,
+        };
+        self.scope.push("impl".to_string());
+        for member in &item.items {
+            self.implementation_member(member, availability, &context);
+        }
+        self.scope.pop();
+    }
+
+    fn implementation_member(
+        &mut self,
+        member: &ImplItem,
+        availability: Availability,
+        context: &ImplementationContext,
+    ) {
+        match member {
+            ImplItem::Const(member) => {
+                let member_availability = availability.for_item(&member.attrs);
+                let mut recorded = self.new_node(
+                    "associated const",
+                    &member.ident.to_string(),
+                    member.span(),
+                    self.reported(member_availability, &member.vis),
+                    context.implemented_trait.is_none(),
+                    RootSet::default(),
+                );
+                Self::mark_trait_implementation(&mut recorded, &member.ident.to_string(), context);
+                self.nodes.push(recorded);
+            }
+            ImplItem::Fn(member) => {
+                let member_availability = availability.for_item(&member.attrs);
+                let mut recorded = self.new_node(
+                    "method",
+                    &member.sig.ident.to_string(),
+                    member.span(),
+                    self.reported(member_availability, &member.vis),
+                    context.implemented_trait.is_none(),
+                    function_roots(
+                        &member.sig.ident.to_string(),
+                        &member.attrs,
+                        member_availability,
+                        false,
+                    ),
+                );
+                recorded.implementation_owner = context.implementing_type.clone();
+                recorded.direct_self_construction = directly_constructs_self(&member.block);
+                recorded.reviewed_drop_producer =
+                    context.implementing_type.as_deref().and_then(|owner| {
+                        reviewed_drop_producer(
+                            self.relative,
+                            owner,
+                            &member.sig.ident.to_string(),
+                            context.implemented_trait.as_deref(),
+                        )
+                    });
+                Self::mark_trait_implementation(
+                    &mut recorded,
+                    &member.sig.ident.to_string(),
+                    context,
+                );
+                self.nodes.push(recorded);
+                self.nested_items(&member.block, member_availability);
+            }
+            ImplItem::Type(member) => {
+                let member_availability = availability.for_item(&member.attrs);
+                let mut recorded = self.new_node(
+                    "associated type",
+                    &member.ident.to_string(),
+                    member.span(),
+                    self.reported(member_availability, &member.vis),
+                    context.implemented_trait.is_none(),
+                    RootSet::default(),
+                );
+                Self::mark_trait_implementation(&mut recorded, &member.ident.to_string(), context);
+                self.nodes.push(recorded);
+            }
+            _ => {}
+        }
+    }
+
+    fn item_macro(&mut self, item: &syn::ItemMacro, availability: Availability) {
+        if let Some(ident) = &item.ident {
+            self.record(
+                "macro",
+                &ident.to_string(),
+                item.span(),
+                self.audit
+                    && availability.is_production()
+                    && has_attribute(&item.attrs, "macro_export"),
+                true,
+                RootSet::default(),
+            );
+            return;
+        }
+        let name = item.mac.path.segments.last().map_or_else(
+            || "<unknown>".to_string(),
+            |segment| segment.ident.to_string(),
+        );
+        let claimed_entry = exact_path(&item.mac.path, &["wost", "entry"]);
+        let runtime = self.runtime_item_macro(item);
+        self.record(
+            "item macro",
+            &name,
+            item.span(),
+            false,
+            false,
+            RootSet {
+                production: availability.is_production() && runtime,
+                verification: availability == Availability::Verification && runtime,
+            },
+        );
+        if (self.audit || claimed_entry) && !runtime {
+            self.unsupported_macros
+                .push(format!("{name} at line {}", item.span().start().line));
+        }
+    }
+
+    fn static_item(&mut self, item: &syn::ItemStatic, availability: Availability) {
+        let global_allocator = has_semantic_attribute(&item.attrs, "global_allocator");
+        let global_allocator_type = global_allocator
+            .then(|| self.resolve_exact_nominal_type(&item.ty))
+            .flatten();
+        let mut recorded = self.new_node(
+            "static",
+            &item.ident.to_string(),
+            item.span(),
+            self.reported(availability, &item.vis),
+            true,
+            static_roots(&item.attrs, availability),
+        );
+        recorded.global_allocator = global_allocator;
+        recorded.global_allocator_type = global_allocator_type;
+        self.nodes.push(recorded);
+    }
+
+    fn trait_declaration(&mut self, item: &syn::ItemTrait, availability: Availability) {
+        let report = self.reported(availability, &item.vis);
+        self.record(
+            "trait",
+            &item.ident.to_string(),
+            item.span(),
+            report,
+            true,
+            RootSet::default(),
+        );
+        self.scope.push(item.ident.to_string());
+        for member in &item.items {
+            match member {
+                TraitItem::Const(member) => {
+                    let recorded = self.trait_member(
+                        "trait const",
+                        &member.ident.to_string(),
+                        member.span(),
+                        report && !verification_only(&member.attrs),
+                    );
+                    self.nodes.push(recorded);
+                }
+                TraitItem::Fn(member) => {
+                    let mut recorded = self.trait_member(
+                        "trait method",
+                        &member.sig.ident.to_string(),
+                        member.span(),
+                        report && !verification_only(&member.attrs),
+                    );
+                    recorded.trait_default = member.default.is_some();
+                    self.nodes.push(recorded);
+                    if let Some(default) = &member.default {
+                        self.nested_items(default, availability.for_item(&member.attrs));
+                    }
+                }
+                TraitItem::Type(member) => {
+                    let recorded = self.trait_member(
+                        "trait type",
+                        &member.ident.to_string(),
+                        member.span(),
+                        report && !verification_only(&member.attrs),
+                    );
+                    self.nodes.push(recorded);
+                }
+                _ => {}
+            }
+        }
+        self.scope.pop();
+    }
+
+    fn trait_member(&self, kind: &str, name: &str, span: Span, report: bool) -> Node {
+        let mut recorded = self.new_node(kind, name, span, report, true, RootSet::default());
+        self.mark_trait_declaration(&mut recorded, name);
+        recorded
     }
 
     fn runtime_item_macro(&mut self, item: &syn::ItemMacro) -> bool {
@@ -502,25 +485,21 @@ impl Collector<'_> {
 
     fn mark_trait_implementation(
         recorded: &mut Node,
-        trait_path: Option<&str>,
         member: &str,
-        self_type: Option<&str>,
-        exact_self_type: bool,
-        external: bool,
-        implicit: Option<ImplicitTrait>,
+        context: &ImplementationContext,
     ) {
-        let Some(trait_path) = trait_path else {
+        let Some(trait_path) = &context.implemented_trait else {
             return;
         };
         recorded.trait_route = Some(TraitRoute::Implementation {
             key: TraitMemberKey {
-                trait_path: trait_path.to_string(),
+                trait_path: trait_path.clone(),
                 member: member.to_string(),
             },
-            self_type: self_type.map(str::to_string),
-            exact_self_type,
-            external,
-            implicit,
+            self_type: context.implementing_type.clone(),
+            exact_self_type: context.exact_self_type,
+            external: context.external_trait,
+            implicit: context.implicit_trait,
         });
     }
 
