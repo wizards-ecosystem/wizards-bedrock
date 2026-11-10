@@ -10,6 +10,7 @@ enum Condition {
 }
 
 impl Condition {
+    #[must_use]
     fn not(self) -> Self {
         match self {
             Self::Always => Self::Never,
@@ -18,6 +19,7 @@ impl Condition {
         }
     }
 
+    #[must_use]
     fn and(self, other: Self) -> Self {
         match (self, other) {
             (Self::Never, _) | (_, Self::Never) => Self::Never,
@@ -26,6 +28,7 @@ impl Condition {
         }
     }
 
+    #[must_use]
     fn or(self, other: Self) -> Self {
         match (self, other) {
             (Self::Always, _) | (_, Self::Always) => Self::Always,
@@ -53,7 +56,7 @@ fn attribute_disables_production(attribute: &Attribute) -> bool {
         return false;
     };
     let mut arguments = arguments.iter();
-    let Some(predicate) = core::iter::Iterator::next(&mut arguments) else {
+    let Some(predicate) = arguments.next() else {
         return false;
     };
     cfg_condition(predicate) == Condition::Always && arguments.any(meta_disables_production)
@@ -79,7 +82,7 @@ fn meta_disables_production(meta: &Meta) -> bool {
         return false;
     };
     let mut arguments = arguments.iter();
-    let Some(predicate) = core::iter::Iterator::next(&mut arguments) else {
+    let Some(predicate) = arguments.next() else {
         return false;
     };
     cfg_condition(predicate) == Condition::Always && arguments.any(meta_disables_production)

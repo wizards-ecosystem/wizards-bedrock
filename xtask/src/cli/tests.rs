@@ -455,7 +455,7 @@ fn every_exceptional_task_is_named_in_the_not_in_ci_block() {
     let names: std::collections::BTreeSet<&str> = block
         .lines()
         .filter(|line| line.starts_with("    ") && !line.starts_with("                      "))
-        .filter_map(|line| core::iter::Iterator::next(&mut line.split_whitespace()))
+        .filter_map(|line| line.split_whitespace().next())
         .map(|name| name.split_once(' ').map_or(name, |(task, _)| task))
         .collect();
     assert_eq!(

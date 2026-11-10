@@ -429,7 +429,11 @@ pub(super) fn audited_source(root: &Path, path: &Path) -> bool {
         return true;
     }
     let mut components = relative.components();
-    core::iter::Iterator::next(&mut components).is_some_and(|part| part.as_os_str() == "libs")
-        && core::iter::Iterator::next(&mut components).is_some()
-        && core::iter::Iterator::next(&mut components).is_some_and(|part| part.as_os_str() == "src")
+    components
+        .next()
+        .is_some_and(|part| part.as_os_str() == "libs")
+        && components.next().is_some()
+        && components
+            .next()
+            .is_some_and(|part| part.as_os_str() == "src")
 }

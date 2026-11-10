@@ -235,8 +235,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 533,
         file: "xtask/src/qemu/serial.rs",
-        find: "        if core::iter::Iterator::next(&mut fields).is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
-        replace: "        if false && core::iter::Iterator::next(&mut fields).is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
+        find: "        if fields.next().is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
+        replace: "        if false && fields.next().is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
         breaks: "a performance record can append unversioned fields",
         reddens: Caught::HostTest {
             package: "xtask",

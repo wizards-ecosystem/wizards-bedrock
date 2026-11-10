@@ -43,10 +43,10 @@ fn invlpg_requires_canonical_address_authority() {
     assert!(matches!(public.vis, syn::Visibility::Public(_)));
     assert!(public.sig.unsafety.is_none());
     let mut arguments = public.sig.inputs.iter();
-    let Some(syn::FnArg::Typed(address)) = core::iter::Iterator::next(&mut arguments) else {
+    let Some(syn::FnArg::Typed(address)) = arguments.next() else {
         panic!("invalidate_page has no typed address authority");
     };
-    assert!(core::iter::Iterator::next(&mut arguments).is_none());
+    assert!(arguments.next().is_none());
     assert!(matches!(
         address.ty.as_ref(),
         syn::Type::Path(path)

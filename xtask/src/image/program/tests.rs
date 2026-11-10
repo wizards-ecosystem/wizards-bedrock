@@ -10,7 +10,7 @@ fn the_program_parses_as_the_kernel_will_read_it() {
     assert_eq!(elf.entry(), LOAD_ADDRESS);
     assert_eq!(elf.segment_count(), 1);
 
-    let segment = core::iter::Iterator::next(&mut elf.segments()).expect("one segment");
+    let segment = elf.segments().next().expect("one segment");
     assert_eq!(segment.kind(), SegmentKind::Load);
     assert_eq!(segment.address(), LOAD_ADDRESS);
     assert_eq!(segment.file_size(), code.len() as u64);
@@ -22,7 +22,10 @@ fn the_program_parses_as_the_kernel_will_read_it() {
 #[test]
 fn the_program_is_not_writable() {
     let image = build().expect("building the test program");
-    let segment = core::iter::Iterator::next(&mut Elf::parse(&image).expect("an elf64").segments())
+    let segment = Elf::parse(&image)
+        .expect("an elf64")
+        .segments()
+        .next()
         .expect("one segment");
 
     assert!(segment.is_readable());
@@ -51,7 +54,10 @@ fn the_entry_point_is_inside_a_loadable_segment() {
 fn the_bytes_are_where_the_header_says() {
     let image = build().expect("building the test program");
     let code = code().expect("building the test program code");
-    let segment = core::iter::Iterator::next(&mut Elf::parse(&image).expect("an elf64").segments())
+    let segment = Elf::parse(&image)
+        .expect("an elf64")
+        .segments()
+        .next()
         .expect("one segment");
 
     let at = segment.offset() as usize;
@@ -108,7 +114,7 @@ fn the_emitted_program_has_required_routes() {
     // indexed, so a behaviour added above moves the assertion with it.
     let flags = code
         .windows(10)
-        .position(|w| w == [0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9D])
+        .position(|window| window == [0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9D])
         .expect("pushfq; or qword [rsp], 0x40000; popfq");
 
     let ring = flags + 10;

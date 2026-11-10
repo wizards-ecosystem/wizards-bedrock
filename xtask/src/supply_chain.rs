@@ -327,19 +327,14 @@ where
 
 fn parse_inventory(text: &str) -> Result<Inventory> {
     let mut lines = text.lines();
-    ensure!(
-        core::iter::Iterator::next(&mut lines) == Some(MAGIC),
-        "unknown supply-chain format"
-    );
-    let created = core::iter::Iterator::next(&mut lines)
+    ensure!(lines.next() == Some(MAGIC), "unknown supply-chain format");
+    let created = lines
+        .next()
         .and_then(|line| line.strip_prefix("created|"))
         .context("inventory has no creation time")?
         .to_string();
     ensure!(valid_timestamp(&created), "invalid inventory creation time");
-    ensure!(
-        core::iter::Iterator::next(&mut lines) == Some(HEADER),
-        "invalid inventory header"
-    );
+    ensure!(lines.next() == Some(HEADER), "invalid inventory header");
 
     let mut entries = Vec::new();
     for (offset, line) in lines.enumerate() {
@@ -491,8 +486,9 @@ fn quoted(value: &str) -> Option<&str> {
 
 fn parse_dependency(spec: &str) -> Result<Dependency> {
     let mut parts = spec.split_whitespace();
-    let name = core::iter::Iterator::next(&mut parts).context("empty Cargo.lock dependency")?;
-    let version = core::iter::Iterator::next(&mut parts)
+    let name = parts.next().context("empty Cargo.lock dependency")?;
+    let version = parts
+        .next()
         .filter(|part| part.as_bytes().first().is_some_and(u8::is_ascii_digit));
     Ok(Dependency {
         name: name.to_string(),
@@ -670,7 +666,7 @@ fn manifest_array<'manifest>(manifest: &'manifest str, key: &str) -> Result<Vec<
         .with_context(|| format!("workspace manifest has no `{key}` array"))?;
     Ok(body
         .lines()
-        .map(|line| core::iter::Iterator::next(&mut line.split('#')).unwrap_or(line))
+        .map(|line| line.split('#').next().unwrap_or(line))
         .filter_map(|line| line.split('"').nth(1))
         .collect())
 }

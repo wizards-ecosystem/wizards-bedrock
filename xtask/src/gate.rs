@@ -3,9 +3,10 @@
 use std::fmt::Write;
 use std::path::Path;
 
+use anyhow::{Context, Result, ensure};
+
 use crate::cargo::Profile;
 use crate::paths;
-use anyhow::{Context, Result, ensure};
 
 const README_BYTES: u64 = 64 * 1024;
 const REGISTRY_START: &str = "<!-- CI-REGISTRY:START -->";

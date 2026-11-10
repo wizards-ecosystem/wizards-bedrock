@@ -236,6 +236,7 @@ impl Holding {
         self.owned > 0 || self.shared || self.escape
     }
 
+    #[must_use]
     const fn both(self, other: Self) -> Self {
         Self {
             owned: self.owned.saturating_add(other.owned),
@@ -244,6 +245,7 @@ impl Holding {
         }
     }
 
+    #[must_use]
     fn either(self, other: Self) -> Self {
         Self {
             owned: self.owned.max(other.owned),
@@ -252,6 +254,7 @@ impl Holding {
         }
     }
 
+    #[must_use]
     const fn times(self, count: u32) -> Self {
         Self {
             owned: self.owned.saturating_mul(count),
@@ -726,7 +729,7 @@ impl<'ast> Visit<'ast> for AuthorityInventory<'_> {
             }
         }
         let self_type = self.self_type.replace(held);
-        let previous = core::mem::replace(&mut self.owner, owner);
+        let previous = std::mem::replace(&mut self.owner, owner);
         visit::visit_item_impl(self, item);
         self.self_type = self_type;
         self.owner = previous;

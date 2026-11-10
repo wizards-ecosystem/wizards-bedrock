@@ -159,9 +159,9 @@ pub fn default_members(manifest: &str) -> Vec<String> {
         .and_then(|(_, rest)| rest.split_once(']'))
         .map(|(list, _)| {
             list.lines()
-                .map(|line| core::iter::Iterator::next(&mut line.split('#')).unwrap_or(line))
+                .map(|line| line.split('#').next().unwrap_or(line))
                 .filter_map(|line| line.split('"').nth(1))
-                .filter_map(|path| core::iter::Iterator::next(&mut path.rsplit('/')))
+                .filter_map(|path| path.rsplit('/').next())
                 .map(str::to_string)
                 .collect()
         })

@@ -1078,7 +1078,7 @@ fn parse_manifest(text: &str) -> Result<Record> {
     );
     let mut lines = text.lines();
     ensure!(
-        core::iter::Iterator::next(&mut lines) == Some(FORMAT),
+        lines.next() == Some(FORMAT),
         "evidence manifest has no supported format header"
     );
     let mut record = Record::default();

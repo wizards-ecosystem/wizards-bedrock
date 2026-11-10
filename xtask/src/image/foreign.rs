@@ -20,19 +20,18 @@ fn header<'text>(
     lines: &mut impl Iterator<Item = &'text str>,
     expected: &str,
 ) -> Result<&'text str> {
-    let line =
-        core::iter::Iterator::next(lines).with_context(|| format!("missing {expected} header"))?;
+    let line = lines
+        .next()
+        .with_context(|| format!("missing {expected} header"))?;
     let mut fields = line.split(' ');
     ensure!(
-        core::iter::Iterator::next(&mut fields) == Some(expected),
+        fields.next() == Some(expected),
         "expected {expected} header"
     );
-    let value = core::iter::Iterator::next(&mut fields)
+    let value = fields
+        .next()
         .with_context(|| format!("missing {expected} value"))?;
-    ensure!(
-        core::iter::Iterator::next(&mut fields).is_none(),
-        "extra field in {expected} header"
-    );
+    ensure!(fields.next().is_none(), "extra field in {expected} header");
     Ok(value)
 }
 
@@ -46,10 +45,7 @@ const fn nibble(byte: u8) -> Option<u8> {
 
 fn expand(source: &str) -> Result<Vec<u8>> {
     let mut lines = source.lines();
-    ensure!(
-        core::iter::Iterator::next(&mut lines) == Some(MAGIC),
-        "wrong sparse-envelope version"
-    );
+    ensure!(lines.next() == Some(MAGIC), "wrong sparse-envelope version");
 
     let bytes = <usize as core::str::FromStr>::from_str(header(&mut lines, "bytes")?)
         .context("parsing expanded byte length")?;
@@ -78,16 +74,15 @@ fn expand(source: &str) -> Result<Vec<u8>> {
         let line_number = line_index + 5;
         let mut fields = line.split(' ');
         ensure!(
-            core::iter::Iterator::next(&mut fields) == Some("sector"),
+            fields.next() == Some("sector"),
             "line {line_number} is not a sector record"
         );
-        let index = <usize as core::str::FromStr>::from_str(
-            core::iter::Iterator::next(&mut fields).context("missing sector index")?,
-        )
-        .with_context(|| format!("parsing sector index on line {line_number}"))?;
-        let encoded = core::iter::Iterator::next(&mut fields).context("missing encoded sector")?;
+        let index =
+            <usize as core::str::FromStr>::from_str(fields.next().context("missing sector index")?)
+                .with_context(|| format!("parsing sector index on line {line_number}"))?;
+        let encoded = fields.next().context("missing encoded sector")?;
         ensure!(
-            core::iter::Iterator::next(&mut fields).is_none(),
+            fields.next().is_none(),
             "extra field on sector line {line_number}"
         );
         ensure!(index < sectors, "sector {index} is outside the image");

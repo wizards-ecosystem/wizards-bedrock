@@ -11,11 +11,12 @@
 mod registry;
 pub mod workspace;
 
-use anyhow::{Context, Result, bail, ensure};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::paths::Paths;
 use crate::{qemu, qualification, sha256, tasks};

@@ -262,7 +262,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1036,
         file: "xtask/src/api.rs",
-        find: "    if core::iter::Iterator::next(&mut lines).is_some() {\n        return false;\n    }\n    let Some((identity, location)) = row.rsplit_once(\" at \") else {",
+        find: "    if lines.next().is_some() {\n        return false;\n    }\n    let Some((identity, location)) = row.rsplit_once(\" at \") else {",
         replace: "    let Some((identity, location)) = row.rsplit_once(\" at \") else {",
         breaks: "an API-audit mutation can be credited despite an additional dead item",
         reddens: Caught::HostTest {

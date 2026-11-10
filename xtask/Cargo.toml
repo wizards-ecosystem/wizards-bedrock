@@ -8,9 +8,7 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-# No `[lints] workspace = true`: missing_docs on build tooling is noise (D-22).
-# The doc-link lints are not noise, though — a link that no longer resolves is a
-# defect wherever it lives — so they are taken on their own.
+# Outside the workspace lints, whose missing_docs is noise here; a dead doc link is still a defect.
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"

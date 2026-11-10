@@ -331,11 +331,11 @@ pub(super) fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdic
             log_message(line, LogSeverity::Error).map(|message| (LogSeverity::Error, message))
         })?;
     let mut fields = message.strip_prefix(SELFTEST_VERDICT_PREFIX)?.split(' ');
-    let version = core::iter::Iterator::next(&mut fields);
-    let status = core::iter::Iterator::next(&mut fields);
-    let passed = core::iter::Iterator::next(&mut fields);
-    let failed = core::iter::Iterator::next(&mut fields);
-    let expected = core::iter::Iterator::next(&mut fields);
+    let version = fields.next();
+    let status = fields.next();
+    let passed = fields.next();
+    let failed = fields.next();
+    let expected = fields.next();
 
     let parsed = (|| {
         if version != Some(SELFTEST_VERDICT_VERSION) {
@@ -354,7 +354,7 @@ pub(super) fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdic
             ),
             "self-test verdict status has the wrong log severity"
         );
-        if core::iter::Iterator::next(&mut fields).is_some() {
+        if fields.next().is_some() {
             bail!("trailing fields in self-test verdict");
         }
 
@@ -387,47 +387,23 @@ pub(super) fn parse_performance_sample(line: &str) -> Option<Result<PerformanceS
     let message = log_message(line, LogSeverity::Info)?;
     let mut fields = message.strip_prefix(BASELINE_PREFIX)?.split(' ');
     let parsed = (|| {
-        if core::iter::Iterator::next(&mut fields) != Some("v1") {
+        if fields.next() != Some("v1") {
             bail!("unsupported foundation baseline version");
         }
         let sample = PerformanceSample {
-            boot_ns: parse_baseline_value(core::iter::Iterator::next(&mut fields), "boot_ns=")?,
-            frames_free: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "frames_free=",
-            )?,
-            heap_slab: parse_baseline_value(core::iter::Iterator::next(&mut fields), "heap_slab=")?,
-            heap_large: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "heap_large=",
-            )?,
-            heap_live: parse_baseline_value(core::iter::Iterator::next(&mut fields), "heap_live=")?,
-            handles_committed: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "handles_committed=",
-            )?,
-            handles_live: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "handles_live=",
-            )?,
-            trap_ticks: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "trap_ticks=",
-            )?,
-            storage_bytes: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "storage_bytes=",
-            )?,
-            storage_ticks: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "storage_ticks=",
-            )?,
-            counter_hz: parse_baseline_value(
-                core::iter::Iterator::next(&mut fields),
-                "counter_hz=",
-            )?,
+            boot_ns: parse_baseline_value(fields.next(), "boot_ns=")?,
+            frames_free: parse_baseline_value(fields.next(), "frames_free=")?,
+            heap_slab: parse_baseline_value(fields.next(), "heap_slab=")?,
+            heap_large: parse_baseline_value(fields.next(), "heap_large=")?,
+            heap_live: parse_baseline_value(fields.next(), "heap_live=")?,
+            handles_committed: parse_baseline_value(fields.next(), "handles_committed=")?,
+            handles_live: parse_baseline_value(fields.next(), "handles_live=")?,
+            trap_ticks: parse_baseline_value(fields.next(), "trap_ticks=")?,
+            storage_bytes: parse_baseline_value(fields.next(), "storage_bytes=")?,
+            storage_ticks: parse_baseline_value(fields.next(), "storage_ticks=")?,
+            counter_hz: parse_baseline_value(fields.next(), "counter_hz=")?,
         };
-        if core::iter::Iterator::next(&mut fields).is_some() {
+        if fields.next().is_some() {
             bail!("trailing fields in foundation baseline");
         }
         Ok(sample)
@@ -439,16 +415,16 @@ pub(super) fn parse_stack_sample(line: &str) -> Option<Result<StackSample>> {
     let message = log_message(line, LogSeverity::Info)?;
     let mut fields = message.strip_prefix(NVME_STACK_PREFIX)?.split(' ');
     let parsed = (|| {
-        if core::iter::Iterator::next(&mut fields) != Some("v2") {
+        if fields.next() != Some("v2") {
             bail!("unsupported NVMe stack record version");
         }
         let sample = StackSample {
-            used: parse_baseline_value(core::iter::Iterator::next(&mut fields), "used=")?,
-            capacity: parse_baseline_value(core::iter::Iterator::next(&mut fields), "capacity=")?,
-            headroom: parse_baseline_value(core::iter::Iterator::next(&mut fields), "headroom=")?,
-            leaf: parse_baseline_value(core::iter::Iterator::next(&mut fields), "leaf=")?,
+            used: parse_baseline_value(fields.next(), "used=")?,
+            capacity: parse_baseline_value(fields.next(), "capacity=")?,
+            headroom: parse_baseline_value(fields.next(), "headroom=")?,
+            leaf: parse_baseline_value(fields.next(), "leaf=")?,
         };
-        if core::iter::Iterator::next(&mut fields).is_some() {
+        if fields.next().is_some() {
             bail!("trailing fields in NVMe stack record");
         }
         Ok(sample)

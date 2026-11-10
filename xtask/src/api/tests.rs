@@ -178,16 +178,14 @@ impl Uses {
                 .context("an API diagnostic is not in short compiler format")?;
             let mut parts = location[..warning].rsplitn(3, ':');
             let column = <usize as core::str::FromStr>::from_str(
-                core::iter::Iterator::next(&mut parts)
-                    .context("an API diagnostic has no column")?,
+                parts.next().context("an API diagnostic has no column")?,
             )
             .context("an API diagnostic column is not a number")?;
             let source_line = <usize as core::str::FromStr>::from_str(
-                core::iter::Iterator::next(&mut parts).context("an API diagnostic has no line")?,
+                parts.next().context("an API diagnostic has no line")?,
             )
             .context("an API diagnostic line is not a number")?;
-            let reported =
-                core::iter::Iterator::next(&mut parts).context("an API diagnostic has no path")?;
+            let reported = parts.next().context("an API diagnostic has no path")?;
             let file = inventory.file_index(root, reported).with_context(|| {
                 format!(
                     "an API diagnostic for {} came from unclassified source `{reported}`",

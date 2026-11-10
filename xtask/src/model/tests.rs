@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::*;
 
 #[cfg(unix)]
@@ -152,7 +154,8 @@ fn every_terminal_cause_is_a_reachable_model_action() {
         let mut letters = cause.chars();
         let title = format!(
             "{}{}",
-            core::iter::Iterator::next(&mut letters)
+            letters
+                .next()
                 .expect("a nonempty cause")
                 .to_ascii_uppercase(),
             letters.as_str()
@@ -209,12 +212,12 @@ fn models_holds_the_model_and_nothing_else_unignored() {
 fn glob_lite(rule: &str, name: &str) -> bool {
     let mut rest = name;
     let mut parts = rule.split('*').peekable();
-    let first = core::iter::Iterator::next(&mut parts).unwrap_or_default();
+    let first = parts.next().unwrap_or_default();
     let Some(stripped) = rest.strip_prefix(first) else {
         return false;
     };
     rest = stripped;
-    while let Some(part) = core::iter::Iterator::next(&mut parts) {
+    while let Some(part) = parts.next() {
         if parts.peek().is_none() {
             return rest.ends_with(part);
         }

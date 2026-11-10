@@ -292,7 +292,7 @@ impl Image {
             faults.push(ImageError::EntryOutsideHigherHalf { entry: self.entry });
         }
 
-        for segment in self.segments.iter().filter(|s| s.is_loadable()) {
+        for segment in self.segments.iter().filter(|segment| segment.is_loadable()) {
             if segment.is_writable_and_executable() {
                 faults.push(ImageError::WritableAndExecutable {
                     vaddr: segment.vaddr,
@@ -311,7 +311,11 @@ impl Image {
             }
         }
 
-        for section in self.sections.iter().filter(|s| s.is_allocated()) {
+        for section in self
+            .sections
+            .iter()
+            .filter(|section| section.is_allocated())
+        {
             let Some(segment) = self.segment_for(section) else {
                 faults.push(ImageError::SectionNotLoaded {
                     name: section.name.clone(),
