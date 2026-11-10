@@ -73,8 +73,8 @@ Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------------
 
-\* `inflight` is bounded by the completion queue: operations taken from the submission queue stay
-\* in flight while more are submitted, each holding its reservation.
+\* `inflight` is bounded by the completion queue; TLC refutes a submission queue bound, because
+\* operations taken from it stay in flight while more are submitted, each holding a reservation.
 TypeOK ==
     /\ submitted \in 0..SubmissionSlots
     /\ inflight  \in 0..CompletionSlots
