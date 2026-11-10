@@ -1007,7 +1007,7 @@ fn each_recovery_adapter_binds_the_live_architectural_values() {
 
 #[test]
 fn every_instruction_pointer_writer_requires_its_opaque_authority() {
-    let syntax = parse("wost/src/arch/x86_64/interrupt.rs");
+    let syntax = super::module_syntax(&root().join("wost/src/arch/x86_64/interrupt.rs"));
     let expected = [
         ("resume_usercopy", "RecoveryTarget"),
         ("resume_write_protection", "WriteProtectionRecoveryTarget"),
@@ -1238,7 +1238,7 @@ fn recovery_authority_cannot_be_built_from_a_raw_address() {
     ];
 
     for (relative, name, recovery, symbol) in cases {
-        let syntax = parse(relative);
+        let syntax = super::module_syntax(&root().join(relative));
         let (structure, surface) = authority(&syntax, name);
         assert!(is_pub_super(&structure.vis), "`{name}` has the wrong scope");
         assert!(

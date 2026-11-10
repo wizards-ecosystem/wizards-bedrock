@@ -860,7 +860,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("mapping_refusal", 4),
             ],
         ),
-        ("wost/src/arch/x86_64/cpu.rs", &[("PAGE_INVALIDATIONS", 3)]),
+        ("wost/src/arch/x86_64/cpu.rs", &[("PAGE_INVALIDATIONS", 4)]),
         (
             "wost/src/arch/x86_64/apic.rs",
             &[("INIT_OBSERVATIONS", 4), ("INIT_OBSERVATION_FAILED", 4)],
@@ -902,16 +902,14 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
 #[test]
 fn buffer_clear_state_is_selftest_only() {
     let paths = Paths::discover().expect("workspace paths");
-    let interrupt = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/interrupt.rs"))
-        .expect("read interrupt source");
+    let interrupt = module_source(paths.root(), "wost/src/arch/x86_64/interrupt.rs");
     require_buffer_clear_state(&interrupt);
 }
 
 #[test]
 fn buffer_clear_assembly_writes_are_guarded() {
     let paths = Paths::discover().expect("workspace paths");
-    let interrupt = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/interrupt.rs"))
-        .expect("read interrupt source");
+    let interrupt = module_source(paths.root(), "wost/src/arch/x86_64/interrupt.rs");
     require_guarded_buffer_clear(
         &interrupt,
         "global_asm",

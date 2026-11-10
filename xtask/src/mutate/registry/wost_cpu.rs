@@ -98,7 +98,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 456,
-        file: "wost/src/arch/x86_64/cpu.rs",
+        file: "wost/src/arch/x86_64/cpu/selftest.rs",
         find: "    unsafe { core::arch::asm!(\"pushfq\", \"pop {}\", out(reg) flags, options(preserves_flags)) };",
         replace: "    unsafe { core::arch::asm!(\"pushfq\", \"pop {}\", out(reg) flags, options(nomem, preserves_flags)) };",
         breaks: "the flags probe claims no memory access while using a stack slot",

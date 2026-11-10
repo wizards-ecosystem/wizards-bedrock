@@ -526,8 +526,7 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
         "if let Some(pinned) = protected_stack_overlap(self.roots(), virtual_base, len)"
     ));
 
-    let task = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/task.rs"))
-        .expect("task source");
+    let task = module_source(paths.root(), "wost/src/arch/x86_64/task.rs");
     assert!(task.contains("stack_index: Option<usize>"));
     assert!(!task.contains("stack_top: Option<KernelStackTop"));
     assert!(task.contains("self.stacks.as_ref()?.stack_top(index)"));
