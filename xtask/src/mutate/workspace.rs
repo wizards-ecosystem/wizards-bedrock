@@ -1,8 +1,4 @@
 //! Crash-safe isolation and progress for mutation sweeps.
-//!
-//! Source the harness lays down is written, never copied. `fs::copy` carries
-//! the snapshot timestamp with it, and a source older than the object built
-//! from the mutation is exactly what Cargo declines to rebuild (D-237).
 
 mod journal;
 mod source;
@@ -35,18 +31,13 @@ const LOCK_NAME: &str = "LOCK";
 const STATE_ROOT_NAME: &str = "mutate";
 const MAX_STATE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// One completed mutation's exact outcome.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Outcome {
-    /// Its named check caught it.
     Caught,
-    /// Its named check stayed green.
     Survived,
-    /// The mutation did not reach a conclusive verdict.
     Inconclusive(String),
 }
 
-/// Identity of a current successful mutation sweep.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct PassEvidence {
     pub(crate) commit: String,
@@ -86,7 +77,6 @@ impl CurrentPass {
     }
 }
 
-/// One isolated, resumable sweep.
 pub struct Session {
     _lock: SweepLock,
     baseline: Baseline,
@@ -97,13 +87,7 @@ pub struct Session {
 }
 
 impl Session {
-    /// Open a fresh sweep or resume the interrupted sweep for this commit and
-    /// registry.
-    ///
-    /// # Errors
-    ///
-    /// If another sweep is live, the checkout is not clean, its source/index
-    /// digest changed, or the durable state is malformed.
+    /// Open a fresh sweep, or resume the interrupted sweep for this commit and registry.
     pub fn open(paths: &Paths, registry: &str, mutation_count: usize) -> Result<Self> {
         ensure!(is_digest(registry), "mutation registry digest is malformed");
         let state_root = prepare_state_root(paths.target_dir())?;
@@ -178,12 +162,7 @@ impl Session {
         self.journal.active
     }
 
-    /// Restore an interrupted mutation from the immutable snapshot so it can
-    /// be rerun.
-    ///
-    /// # Errors
-    ///
-    /// If the journal and registry disagree or exact restoration fails.
+    /// Restore an interrupted mutation from the immutable snapshot so it can be rerun.
     pub fn recover(&mut self, index: usize, relative: &str) -> Result<()> {
         validate_relative(relative)?;
         ensure!(
@@ -250,11 +229,7 @@ impl Session {
         self.store.save(&mut self.journal)
     }
 
-    /// Verify the source and index, write the final summary and retire the
-    /// resumable journal.
-    ///
-    /// `ids` are the registry's permanent identities in sweep order, so the
-    /// durable report names each outcome's mutation rather than its position.
+    /// `ids` are permanent identities in sweep order; the durable report names each outcome by them.
     pub fn complete(mut self, ids: &[u16]) -> Result<Vec<Outcome>> {
         ensure!(self.journal.active.is_none(), "a mutation is still active");
         ensure!(

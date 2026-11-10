@@ -1,12 +1,6 @@
-//! Persistent deliberate defects and the exact checks required to catch them.
-//!
-//! The cheap gate requires every source pattern to occur exactly once. The
-//! complete task applies each mutation in a clean, commit-pinned, journaled
-//! workspace, proves the witness class green first, and then requires the
-//! mutation's exact check, terminal marker or timeout, boot marker, or host-test
-//! verdict to go red. Another failure is inconclusive, and a selected-zero-tests
-//! host command proves nothing. Machine entries stay outside CI because each
-//! costs a boot.
+//! Persistent deliberate defects, each of which its exact named witness must turn red.
+//! Another failure is inconclusive, and a host command that selects zero tests proves nothing.
+//! Machine entries stay outside CI because each costs a boot.
 
 mod registry;
 pub mod workspace;
@@ -80,18 +74,27 @@ fn prove_green_baselines(paths: &Paths, mutations: &[Mutation]) -> Result<()> {
     Ok(())
 }
 
-/// Apply each mutation, run its exact machine or host witness, and require red.
-///
-/// # Errors
-///
-/// If a pattern no longer matches, if the tree cannot be restored, or if any
-/// mutation **survives** — which is the interesting failure and the reason
-/// this exists.
+/// A surviving mutation is a property nothing checks, the failure this task exists to find.
 pub fn run(paths: &Paths) -> Result<()> {
     let mutations = mutations().copied().collect::<Vec<_>>();
     let registry = registry_fingerprint();
     let qualification_attempt = qualification::begin_mutation(paths, &registry, mutations.len())?;
     let mut session = Session::open(paths, &registry, mutations.len())?;
+    let first = resume_interrupted(&mut session, &mutations)?;
+    run_remaining(&mut session, &mutations, first)?;
+    let ids = mutations
+        .iter()
+        .map(|mutation| mutation.id)
+        .collect::<Vec<_>>();
+    let outcomes = session.complete(&ids)?;
+    report_outcomes(&mutations, &outcomes)?;
+    let pass = workspace::current_pass(paths, &registry, mutations.len())?;
+    qualification_attempt.pass(&pass)?;
+    println!("[xtask] every mutation was caught by the check it names");
+    Ok(())
+}
+
+fn resume_interrupted(session: &mut Session, mutations: &[Mutation]) -> Result<usize> {
     if let Some(active) = session.active() {
         let mutation = mutations
             .get(active)
@@ -113,9 +116,13 @@ pub fn run(paths: &Paths) -> Result<()> {
             mutations.len()
         );
     }
+    Ok(first)
+}
+
+fn run_remaining(session: &mut Session, mutations: &[Mutation], first: usize) -> Result<()> {
     prove_green_baselines(session.paths(), &mutations[first..])?;
     for (index, mutation) in mutations.iter().enumerate().skip(first) {
-        ensure_target_is_rebuilt(mutation)?;
+        require_target_is_rebuilt(mutation)?;
         let original = session.original(mutation.file)?;
         let mutated = apply(&original, mutation)?;
 
@@ -127,7 +134,7 @@ pub fn run(paths: &Paths) -> Result<()> {
             mutation.breaks
         );
         session.begin(index)?;
-        Session::write(&session, mutation.file, &mutated)?;
+        Session::write(session, mutation.file, &mutated)?;
         let outcome = match mutation_reports(session.paths(), mutation.reddens) {
             Ok(true) => {
                 println!("[xtask]   caught");
@@ -138,23 +145,19 @@ pub fn run(paths: &Paths) -> Result<()> {
                 Outcome::Survived
             }
             Err(error) => {
-                // A different red verdict did not answer this mutation's
-                // question, so it is inconclusive rather than a survivor.
                 println!("[xtask]   inconclusive: {error}");
                 Outcome::Inconclusive(format!("{error:#}"))
             }
         };
         session.finish(index, mutation.file, outcome)?;
     }
+    Ok(())
+}
 
-    let ids = mutations
-        .iter()
-        .map(|mutation| mutation.id)
-        .collect::<Vec<_>>();
-    let outcomes = session.complete(&ids)?;
+fn report_outcomes(mutations: &[Mutation], outcomes: &[Outcome]) -> Result<()> {
     let mut survivors = Vec::new();
     let mut inconclusive = Vec::new();
-    for (mutation, outcome) in mutations.iter().zip(&outcomes) {
+    for (mutation, outcome) in mutations.iter().zip(outcomes) {
         match outcome {
             Outcome::Caught => {}
             Outcome::Survived => survivors.push(mutation),
@@ -162,9 +165,6 @@ pub fn run(paths: &Paths) -> Result<()> {
         }
     }
     if survivors.is_empty() && inconclusive.is_empty() {
-        let pass = workspace::current_pass(paths, &registry, mutations.len())?;
-        qualification_attempt.pass(&pass)?;
-        println!("[xtask] every mutation was caught by the check it names");
         return Ok(());
     }
     for survivor in &survivors {
@@ -248,8 +248,8 @@ pub(crate) fn registry_fingerprint() -> String {
     sha256::hex(&sha256::digest(&material))
 }
 
-/// Refuse source the already-running mutation driver would consume itself.
-fn ensure_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
+/// The already-running mutation driver would consume its own source unrebuilt.
+fn require_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
     let rebuilt_witness = matches!(
         mutation.reddens,
         Caught::HostTest {
@@ -267,7 +267,6 @@ fn ensure_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
     Ok(())
 }
 
-/// The mutated text, or an error naming why the pattern is no longer usable.
 fn apply(original: &str, mutation: &Mutation) -> Result<String> {
     match original.matches(mutation.find).count() {
         1 => Ok(original.replacen(mutation.find, mutation.replace, 1)),
@@ -284,8 +283,7 @@ fn apply(original: &str, mutation: &Mutation) -> Result<String> {
     }
 }
 
-/// Report whether this mutation reached its exact named red verdict.
-/// A compile refusal or another red verdict is inconclusive, not caught.
+/// A compile refusal or another red verdict is inconclusive: it did not answer this question.
 fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
     if let Caught::HostTest { package, name } = wanted {
         return host_test_reports(paths, package, name);
@@ -489,9 +487,7 @@ const HOST_TEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 static HOST_TEST_TEMPORARIES: AtomicU64 = AtomicU64::new(0);
 
-/// A caught mutation can strand fixed-name scratch below the temporary
-/// directory, which would redden every later witness that reserves it, so each
-/// host witness gets a new empty temporary directory of its own.
+/// A caught mutation can strand fixed-name scratch that would redden every later witness reserving it.
 fn fresh_host_test_temporary(paths: &Paths) -> Result<PathBuf> {
     let target = paths.target_dir();
     let parent = target.join("host-temp");

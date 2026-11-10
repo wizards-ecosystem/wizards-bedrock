@@ -16,8 +16,7 @@ use super::tree::{
 };
 use super::{STATE_ROOT_NAME, read_bounded_bytes};
 
-// Git may contend with the compiler-heavy host suite on release builders.
-// Keep the query bounded without making scheduler latency a gate failure.
+// Bounded, yet long enough that Git contending with the host suite on release builders never fails the gate.
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
@@ -67,8 +66,7 @@ pub(crate) fn with_clean_source_copy<T>(
     }
 }
 
-/// Populate an already-owned directory with newly written copies of every
-/// tracked file from one clean checkout, and prove that the copied bytes match.
+/// The destination must already be owned; every tracked file is written anew and its bytes proven.
 pub(crate) fn copy_clean_tracked_to(source: &Path, destination: &Path) -> Result<()> {
     let baseline = Baseline::discover(source)?;
     let destination =
@@ -254,13 +252,7 @@ pub(super) fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Resul
     Ok(())
 }
 
-/// Write a source file the way an editor would, so the build system sees it
-/// change.
-///
-/// `std::fs::copy` carries the source's timestamp onto the destination, which
-/// moves a restored file *backwards* in time — behind the object built from
-/// the mutation. Cargo calls that fresh and keeps the defect, in the package
-/// and in everything that inlined it (D-237).
+/// Never copied: `fs::copy` keeps an old timestamp, so Cargo would call a restore fresh and keep the defect.
 pub(super) fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
     write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))
 }
