@@ -552,7 +552,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .expect("non-PCI keyboard routing commit");
     assert!(boundary < rollback && rollback < returned && returned < commit);
 
-    let input = source("kernel/src/input.rs");
+    let input = module_source("kernel/src/input.rs");
     assert_eq!(
         input
             .matches("crate::time::is_calibrated() && interrupt::are_enabled()")
