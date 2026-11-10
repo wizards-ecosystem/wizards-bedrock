@@ -8,22 +8,23 @@ use wost::sync::SpinLock;
 use super::{BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES};
 #[cfg(feature = "selftest")]
 use crate::object::ObjectType;
-#[cfg(feature = "selftest")]
-use crate::queue;
-use crate::{thread, warn};
+use crate::{queue, thread, warn};
 
+#[derive(Debug)]
 enum ReclaimRefusal {
     TaskRelease,
     Mapping(MapError),
     Tables(ReclaimError),
 }
 
+#[derive(Debug)]
 struct ReclaimRetention {
     refusal: ReclaimRefusal,
     #[cfg(feature = "selftest")]
     observed_returned_pages: usize,
 }
 
+#[derive(Debug)]
 struct ReclaimSuccess {
     reclaimed: Reclaimed,
     #[cfg(feature = "selftest")]
@@ -156,6 +157,7 @@ impl CollectOutcome {
     }
 }
 
+#[derive(Debug)]
 struct ZombieTable {
     owners: [Option<Bootstrap>; thread::CAPACITY],
     settling: [bool; thread::CAPACITY],
@@ -225,9 +227,8 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
 
 /// Mark `slot`'s program dead, without freeing anything.
 ///
-/// Called from trap context on the retiring thread itself, so it must not
-/// allocate, block, or touch the space it is running on. Moving one `Option`
-/// between two arrays does none of those.
+/// Called from trap context on the retiring thread itself, so it must not allocate, block, or
+/// touch the space it is running on; moving one `Option` between two arrays does none of those.
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
     let stored = taken.is_some();
@@ -264,8 +265,7 @@ pub(crate) fn orphan(slot: usize) {
         );
         *room = Some(bootstrap);
     }
-    // Cleared, so a slot reused by a later program never finds the previous
-    // one's entry point (D-117).
+    // Cleared, so a slot reused by a later program never finds the previous one's entry point.
     let mut launches = LAUNCHES.lock_leaf();
     let Some(room) = launches.get_mut(slot) else {
         panic!("a retiring process slot remains in range");
@@ -279,14 +279,11 @@ pub(crate) fn orphan(slot: usize) {
 
 /// Collect one dead program's resources, if there are any.
 ///
-/// One per call rather than all of them: this runs where the machine had
-/// nothing better to do, and a loop that frees sixteen processes with
-/// interrupts on is a loop that can be preempted halfway through anyway. One
-/// at a time makes that unremarkable instead of something to reason about.
-///
+/// One per call: this runs when the machine had nothing better to do, and a loop freeing sixteen
+/// processes with interrupts on can be preempted halfway anyway, so one at a time is unremarkable.
 pub(crate) fn collect() -> CollectOutcome {
-    // The owner stays in the zombie table until its ring is quiet, so a
-    // refused terminal completion retries rather than reusing live pages (D-192).
+    // The owner stays in the zombie table until its ring is quiet, so a refused terminal
+    // completion is retried and live pages are never reused.
     let (found, another_collector) = {
         let mut zombies = ZOMBIES.lock_leaf();
         let another_collector = zombies.settling.iter().any(|owned| *owned)
@@ -320,71 +317,15 @@ pub(crate) fn collect() -> CollectOutcome {
         COLLECTION_IS_SETTLING.store(false, Ordering::Release);
     }
 
-    // Before the ring's pages go anywhere: every outstanding operation gets
-    // its terminal completion while the zombie still owns them (D-167, D-192).
+    // Before the ring's pages go anywhere, every outstanding operation gets its terminal
+    // completion while the zombie still owns them.
     let abandoned = ring.abandon();
     if !ring.is_quiet() {
-        let recorded = {
-            let mut zombies = ZOMBIES.lock_leaf();
-            let settling = zombies.settling.get(slot).copied().unwrap_or(false);
-            let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
-            let recorded = match zombies.owners.get_mut(slot).and_then(Option::as_mut) {
-                None => 0,
-                Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, &ring) => 1,
-                Some(_) if !settling || collecting => 2,
-                Some(bootstrap) => match bootstrap.abandoned.checked_add(abandoned) {
-                    Some(total) => {
-                        bootstrap.abandoned = total;
-                        4
-                    }
-                    None => 3,
-                },
-            };
-            if recorded == 4 {
-                zombies.settling[slot] = false;
-            }
-            recorded
-        };
-        match recorded {
-            4 => {}
-            0 => panic!("the unsettled zombie left its slot"),
-            1 => panic!("a zombie changed owners during settlement"),
-            2 => panic!("a zombie lost exclusive settlement ownership"),
-            3 => panic!("zombie abandonment accounting overflowed"),
-            _ => unreachable!(),
-        }
-        warn!("user: ring cleanup refused; the zombie remains owned");
-        #[cfg(feature = "selftest")]
-        REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
-        return CollectOutcome::Retained;
+        return retain_unsettled(slot, &ring, abandoned);
     }
-    // Taken out under the guard and reclaimed outside it: `reclaim` frees
-    // frames, which reaches the allocator, and this lock is a leaf (D-85).
-    let bootstrap = {
-        let mut zombies = ZOMBIES.lock_leaf();
-        let settling = zombies.settling.get(slot).copied().unwrap_or(false);
-        let Some(room) = zombies.owners.get_mut(slot) else {
-            panic!("a selected zombie slot remains in range");
-        };
-        let Some(current) = room.as_ref() else {
-            return if zombies.collecting[slot] {
-                CollectOutcome::Retained
-            } else {
-                CollectOutcome::Empty
-            };
-        };
-        if !alloc::sync::Arc::ptr_eq(&current.ring, &ring) {
-            return CollectOutcome::Retained;
-        }
-        if !settling {
-            return CollectOutcome::Retained;
-        }
-        let Some(bootstrap) = room.take() else {
-            unreachable!("the retained zombie was checked above");
-        };
-        zombies.settling[slot] = false;
-        zombies.collecting[slot] = true;
-        bootstrap
+    let bootstrap = match take_settled(slot, &ring) {
+        Ok(bootstrap) => bootstrap,
+        Err(outcome) => return outcome,
     };
     drop(ring);
     #[cfg(feature = "selftest")]
@@ -395,7 +336,84 @@ pub(crate) fn collect() -> CollectOutcome {
         }
         COLLECTION_IS_PAUSED.store(false, Ordering::Release);
     }
-    let mut bootstrap = bootstrap;
+    settle(slot, bootstrap, abandoned)
+}
+
+/// Record what an unquiet ring abandoned and leave its zombie owned for a later retry.
+fn retain_unsettled(
+    slot: usize,
+    ring: &alloc::sync::Arc<queue::Queue>,
+    abandoned: usize,
+) -> CollectOutcome {
+    let recorded = {
+        let mut zombies = ZOMBIES.lock_leaf();
+        let settling = zombies.settling.get(slot).copied().unwrap_or(false);
+        let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
+        let recorded = match zombies.owners.get_mut(slot).and_then(Option::as_mut) {
+            None => 0,
+            Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, ring) => 1,
+            Some(_) if !settling || collecting => 2,
+            Some(bootstrap) => match bootstrap.abandoned.checked_add(abandoned) {
+                Some(total) => {
+                    bootstrap.abandoned = total;
+                    4
+                }
+                None => 3,
+            },
+        };
+        if recorded == 4 {
+            zombies.settling[slot] = false;
+        }
+        recorded
+    };
+    match recorded {
+        4 => {}
+        0 => panic!("the unsettled zombie left its slot"),
+        1 => panic!("a zombie changed owners during settlement"),
+        2 => panic!("a zombie lost exclusive settlement ownership"),
+        3 => panic!("zombie abandonment accounting overflowed"),
+        _ => unreachable!(),
+    }
+    warn!("user: ring cleanup refused; the zombie remains owned");
+    #[cfg(feature = "selftest")]
+    REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
+    CollectOutcome::Retained
+}
+
+/// Take the settled zombie out under the guard so it is reclaimed outside it: `reclaim` frees
+/// frames, which reaches the allocator, and this lock is a leaf.
+fn take_settled(
+    slot: usize,
+    ring: &alloc::sync::Arc<queue::Queue>,
+) -> Result<Bootstrap, CollectOutcome> {
+    let mut zombies = ZOMBIES.lock_leaf();
+    let settling = zombies.settling.get(slot).copied().unwrap_or(false);
+    let Some(room) = zombies.owners.get_mut(slot) else {
+        panic!("a selected zombie slot remains in range");
+    };
+    let Some(current) = room.as_ref() else {
+        return Err(if zombies.collecting[slot] {
+            CollectOutcome::Retained
+        } else {
+            CollectOutcome::Empty
+        });
+    };
+    if !alloc::sync::Arc::ptr_eq(&current.ring, ring) {
+        return Err(CollectOutcome::Retained);
+    }
+    if !settling {
+        return Err(CollectOutcome::Retained);
+    }
+    let Some(bootstrap) = room.take() else {
+        unreachable!("the retained zombie was checked above");
+    };
+    zombies.settling[slot] = false;
+    zombies.collecting[slot] = true;
+    Ok(bootstrap)
+}
+
+/// Reclaim a taken zombie, or put it back owned when any cleanup step refuses.
+fn settle(slot: usize, mut bootstrap: Bootstrap, abandoned: usize) -> CollectOutcome {
     match reclaim(&mut bootstrap, abandoned) {
         Ok(success) => {
             drop(bootstrap);

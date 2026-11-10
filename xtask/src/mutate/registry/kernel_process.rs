@@ -400,7 +400,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 601,
         file: "kernel/src/user/load.rs",
-        find: "        if !at.is_multiple_of(PAGE_SIZE) {\n            return Err(LoadError::Unaligned(at));\n        }",
+        find: "    if !at.is_multiple_of(PAGE_SIZE) {\n        return Err(LoadError::Unaligned(at));\n    }",
         replace: "",
         breaks: "the loader reaches page mapping with an unaligned segment address",
         reddens: Caught::Check("the loader refuses what it may not map"),
@@ -533,8 +533,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1526,
         file: "kernel/src/user/load.rs",
-        find: "        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
-        replace: "        if mapped_end > wost::arch::current::usercopy::USER_END || segment.memory_size() == 0 {",
+        find: "    if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
+        replace: "    if mapped_end > wost::arch::current::usercopy::USER_END || segment.memory_size() == 0 {",
         breaks: "the loader places a segment on the last canonical page",
         reddens: Caught::Check("the loader refuses what it may not map"),
     },

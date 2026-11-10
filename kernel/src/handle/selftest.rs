@@ -28,12 +28,9 @@ impl HandleTable {
         Slot::decode(handle, self.mixer)
     }
 
-    /// The handle this table *would* use for `slot`.
-    ///
-    /// Test support, and it exists because without it the cross-table check
-    /// could not reach the ownership comparison at all: two tables' mixers
-    /// differ, so one's handle decodes in the other to an index that is almost
-    /// never in the arena, and the bounds check refuses it first (D-95).
+    /// The handle this table *would* use for `slot`, without which the cross-table check could
+    /// not reach the ownership comparison: mixers differ, so another table's handle decodes here to
+    /// an index almost never in the arena, and the bounds check refuses it first.
     pub(crate) fn handle_for(&self, slot: Slot) -> u32 {
         slot.encode(self.mixer)
     }
@@ -43,10 +40,9 @@ impl HandleTable {
         self.id.0
     }
 
-    /// Run one check with the identity sequence at a controlled boundary.
-    ///
-    /// The check must drop every table it constructs before returning. Machine
-    /// self-tests are single-driver, so no other constructor races this swap.
+    /// Run one check with the identity sequence at a controlled boundary. The check must drop
+    /// every table it constructs before returning; self-tests are single-driver, so nothing
+    /// races this swap.
     pub(crate) fn with_next_identity_for_test<T>(next: u64, check: impl FnOnce() -> T) -> T {
         let previous = {
             let mut arena = ARENA.lock_leaf();

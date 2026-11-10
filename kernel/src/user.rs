@@ -1,9 +1,5 @@
-//! The first thing that runs in ring 3.
-//!
-//! Not a program and not a process: a page of instructions, a page of stack,
-//! and a thread that stops being the kernel's. What it proves is the boundary
-//! — that the descriptors, the gate, the privilege stack and the return path
-//! all agree — before a loader makes disagreement harder to diagnose (D-96).
+//! The first thing that runs in ring 3, proving that the descriptors, the gate, the privilege
+//! stack and the return path all agree before a loader makes disagreement harder to diagnose.
 
 use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::task;
@@ -54,51 +50,34 @@ pub(crate) use selftest::{
     run_waiting, run_with_invalid_return_flags, run_with_invalid_return_stack,
 };
 
-/// Where the first user program's page of code goes.
-///
-/// Low half, far from anything the kernel maps: an address a user mapping can
-/// occupy is by definition one the kernel does not, and the split is bit 63
-/// (`010` §10's LASS note).
+/// Where the first user program's page of code goes: the low half, which by definition the kernel
+/// does not map, split from it at bit 63 (`010` §10's LASS note).
 #[cfg(feature = "selftest")]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
 /// Where its stack goes, well away from the code so a run-off hits nothing.
 pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
 
-/// Where its ring's shared pages go.
-///
-/// Every program gets one at the same address in its own space, which is what
-/// having a space of its own buys: a fixed ABI address costs nothing when no
-/// two programs share a table (D-113).
+/// Where its ring's shared pages go: one fixed ABI address in every program's own space, which
+/// costs nothing because no two programs share a table.
 pub(crate) const RING: u64 = 0x0000_2000_0000_0000;
 
-/// How far apart two programs' pages sit *within* their own spaces.
-///
-/// Page tables enforce isolation; this offset keeps neighbouring programs'
-/// recorded addresses distinct without re-reading those tables (D-106).
+/// How far apart two programs' pages sit *within* their own spaces: page tables isolate them,
+/// and this keeps their recorded addresses distinct without re-reading those tables.
 const APART: u64 = 0x1_0000;
 
-/// Bytes of the *program*'s stack, which is one page: it makes one call and
-/// never returns. Named apart from `thread::STACK_BYTES`, which is the
-/// thirty-two kilobytes a *kernel* thread gets — one name for two sizes reads
-/// like one size (D-124).
+/// Bytes of the *program*'s stack, one page because it makes one call and never returns; named
+/// apart from `thread::STACK_BYTES`, a *kernel* thread's 32 KiB, so two sizes never share a name.
 const USER_STACK_BYTES: u64 = PAGE_SIZE;
 
-/// The program's first four bytes, for the check that reads them back across
-/// the boundary.
-///
-/// `pop rcx` and the start of its version comparison — the program reading and
-/// validating the entry ABI before either payload word (D-102, D-182). Written
-/// by `xtask` into the image (D-100) rather than by the kernel, so this is a
-/// statement about the initrd and not a copy of something the kernel placed.
+/// The program's first four bytes: `pop rcx` and the start of the entry version check it makes
+/// before either payload word. `xtask` writes them, so reading them back is about the initrd.
 #[cfg(feature = "selftest")]
 pub(crate) const PROGRAM: [u8; 4] = [0x59, 0x48, 0x83, 0xF9];
 
-/// What a thread needs to find when it wakes up in a space of its own.
-///
-/// Arranged by [`spawn`] while the slot is still `Reserved`, so it is there
-/// before the thread's first instruction rather than racing it.
-#[derive(Clone, Copy)]
+/// What a thread finds when it wakes in a space of its own, arranged by [`spawn`] while the slot
+/// is still `Reserved` so it is there before the thread's first instruction.
+#[derive(Clone, Copy, Debug)]
 struct Launch {
     entry: u64,
     stack: u64,
@@ -114,9 +93,9 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
 
+#[derive(Debug)]
 struct Bootstrap {
-    /// Its tables, kept so they can be given back. `bind` borrows rather than
-    /// consumes for exactly this reason (D-117).
+    /// Its tables, kept so they can be given back: exactly why `bind` borrows the space.
     space: AddressSpace,
     /// The task table's one-shot authority to release these tables.
     authority: Option<BootstrapAuthority>,
@@ -125,22 +104,19 @@ struct Bootstrap {
     mapped: usize,
     returned_pages: usize,
     abandoned: usize,
-    /// Its handle table, behind an `Arc` for the reason [`Bootstrap::ring`] is:
-    /// `kind_of` takes the global arena's lock, and taking it under this
-    /// table's leaf guard is what `lock_leaf` forbids (D-121, D-124).
+    /// Its handle table, behind an `Arc` like [`Bootstrap::ring`]: `kind_of` takes the global
+    /// arena's lock, which `lock_leaf` forbids under this table's leaf guard.
     table: alloc::sync::Arc<HandleTable>,
-    /// Its ring. Held here because the shared pages are the kernel's and must
-    /// outlive the mapping that shows them to the program (D-113).
-    ///
-    /// Behind an `Arc` so serving can release `BOOTSTRAPS`' guard before
-    /// reading user memory, taking other locks and waking threads (D-121,
-    /// D-124).
+    /// Its ring, held because the kernel's shared pages must outlive the mapping showing them to
+    /// the program; an `Arc` so serving drops `BOOTSTRAPS`' guard before reading user memory,
+    /// taking other locks and waking threads.
     ring: alloc::sync::Arc<queue::Queue>,
     /// The birth handle retained for lifecycle checks.
     #[cfg(feature = "selftest")]
     observed_birth_handle: u32,
 }
 
+#[derive(Debug)]
 enum BootstrapAuthority {
     Bound(task::Bound),
     Released(task::Released),
@@ -151,6 +127,7 @@ static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
 
 /// Identity of a spawned program.
+#[derive(Debug)]
 pub(crate) struct Spawned {
     /// The thread slot it runs in.
     pub(crate) slot: usize,

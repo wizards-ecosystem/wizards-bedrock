@@ -29,14 +29,12 @@ pub(crate) fn run_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
     spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS)
 }
 
-/// The argument that makes the program ask for an unserved call.
-///
-/// Must match the behaviour `xtask/src/image/program.rs` emits for it.
+/// The argument that makes the program ask for an unserved call; must match the behaviour
+/// `xtask/src/image/program.rs` emits for it.
 #[cfg(feature = "selftest")]
 const PROBE: u64 = 2;
 
-/// Must match the hostile return behaviours emitted by
-/// `xtask/src/image/program.rs`.
+/// Must match the hostile return behaviours `xtask/src/image/program.rs` emits.
 #[cfg(feature = "selftest")]
 const INVALID_RETURN_STACK: u64 = 6;
 #[cfg(feature = "selftest")]
@@ -98,13 +96,9 @@ pub(crate) fn release_gated_cross() -> usize {
     CROSS_GATE.wake_all()
 }
 
-/// A sixth, which jumps into the kernel's user-copy window from ring 3.
-///
-/// The argument *is* the address: the program jumps to anything it is given in
-/// the kernel's half (D-126). Ring 3 cannot execute kernel memory, so this is
-/// an instruction-fetch fault whose `RIP` is inside the window the recovery
-/// arm looks at — which is the state that arm accepted without ever checking
-/// who faulted.
+/// A sixth, which jumps to its argument, the kernel's user-copy window, from ring 3: the
+/// instruction-fetch fault's `RIP` lies inside the window the recovery arm looks at, the state
+/// that arm once accepted without checking who faulted.
 #[cfg(feature = "selftest")]
 pub(crate) fn run_into_the_copy_window() -> Result<Spawned, SpawnError> {
     let (start, _) = usercopy::fault_window();

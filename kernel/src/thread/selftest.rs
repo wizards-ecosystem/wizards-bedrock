@@ -5,15 +5,13 @@ use wost::arch::current::paging::Binding;
 use wost::arch::current::task::{self, Bound};
 
 use super::{
-    Class, IDLE_STARTED, IDLE_STARTING, IDLE_STATE, IDLE_UNSTARTED, SpaceSpawnError, SpawnError,
-    SpawnPoint, State, THREADS, reschedule_timer, spawn_prepared,
+    Class, IDLE_STARTED, IDLE_STARTING, IDLE_STATE, IDLE_UNSTARTED, Prepared, SpaceSpawnError,
+    SpawnError, SpawnPoint, State, THREADS, reschedule_timer, spawn_prepared,
 };
 use crate::time;
 
-/// Times the policy had no answer and round-robin stood in for it.
-///
-/// Should stay at zero; a count that climbs is the policy disagreeing with
-/// its own host tests, which is worth knowing about immediately.
+/// Times the policy had no answer and round-robin stood in for it, which should stay zero: a
+/// climbing count is the policy disagreeing with its own host tests.
 #[cfg(feature = "selftest")]
 pub(super) static POLICY_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
@@ -29,8 +27,7 @@ pub(super) static BLOCKS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
 pub(super) static TRAP_WAITS: AtomicUsize = AtomicUsize::new(0);
 
-/// Times the idle thread has reached its halt: times the machine had nothing
-/// to do.
+/// Times the idle thread has reached its halt: times the machine had nothing to do.
 #[cfg(feature = "selftest")]
 pub(super) static IDLE_HALTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -112,10 +109,12 @@ pub(crate) fn spawn_weighted_for_test(
     weight: u32,
 ) -> Result<usize, SpawnError> {
     spawn_prepared(
-        name,
-        entry,
-        weight,
-        None,
+        Prepared {
+            name,
+            entry,
+            weight,
+            binding: None,
+        },
         |_, bound| {
             if bound.is_none() { Ok(()) } else { Err(bound) }
         },
@@ -133,10 +132,12 @@ pub(crate) fn spawn_in_space_refusing(
     arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
 ) -> Result<usize, SpaceSpawnError> {
     spawn_prepared(
-        name,
-        entry,
-        BASE_WEIGHT,
-        Some(binding),
+        Prepared {
+            name,
+            entry,
+            weight: BASE_WEIGHT,
+            binding: Some(binding),
+        },
         move |slot, bound| {
             let Some(bound) = bound else {
                 return Err(None);
@@ -151,10 +152,8 @@ pub(crate) fn spawn_in_space_refusing(
     })
 }
 
-/// How many threads have been retired from trap context.
-///
-/// Monotonic so self-tests can observe retirement even after its slot is
-/// reused (D-101).
+/// How many threads have been retired from trap context, monotonic so self-tests can observe a
+/// retirement even after its slot is reused.
 #[cfg(feature = "selftest")]
 pub(super) static RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -164,7 +163,7 @@ pub(crate) fn retirements() -> usize {
     RETIREMENTS.load(Ordering::Acquire)
 }
 
-/// Handler wakeups whose runnable thread needed an immediate timer arm (D-133).
+/// Handler wakeups whose runnable thread needed an immediate timer arm.
 #[cfg(feature = "selftest")]
 pub(super) static HANDLER_ARMS: AtomicUsize = AtomicUsize::new(0);
 

@@ -1,20 +1,14 @@
 //! Kernel threads: who exists, who is ready, who is asleep, and who runs next.
 //!
-//! The mechanism — stacks, saved state, the switch — is `wost::task`'s. What
-//! is here is policy, and policy is safe Rust: a table of names, states and
-//! scheduling entities over the same slot indices. The policy itself is
-//! `eevdf`, host-tested; this module feeds it the runnable entities and acts
-//! on the answer, with a round-robin fallback if the answer is ever missing
-//! (D-53). The timer preempts at trap exit (D-54).
+//! The mechanism is `wost::task`'s; this is policy in safe Rust: names, states and scheduling
+//! entities over the same slot indices, fed to the host-tested `eevdf` with a round-robin
+//! fallback if its answer is ever missing. The timer preempts at trap exit, and nothing runs on
+//! a tick: every path that changes who is runnable ends by arming the timer for the next due
+//! decision, or stopping it when there is none.
 //!
-//! Nothing runs on a tick. Every path that changes who is runnable ends by
-//! arming the timer for the next moment a decision is due, or stopping it
-//! when there is none (D-57).
-//!
-//! Lock order (`docs/009-multitasking.md`): `THREADS` is a leaf — nothing is
-//! taken while it is held. Every switch happens after the guard has dropped,
-//! with the interrupt flag clear throughout, so no expiry can preempt a
-//! half-made decision.
+//! Lock order (`docs/009-multitasking.md`): `THREADS` is a leaf, so nothing is taken while it is
+//! held. Every switch happens after the guard has dropped, with the interrupt flag clear
+//! throughout, so no expiry can preempt a half-made decision.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -44,11 +38,8 @@ pub(crate) use selftest::{
     spawn_weighted_for_test, trap_waits, wakes,
 };
 
-/// Threads that can exist at once, besides the boot thread.
-///
-/// Matches the recyclable stack arena's initial capacity (D-45, D-86, D-88).
-/// It stays fixed until a measured caller needs more; D-180 requires only four
-/// simultaneous processes.
+/// Threads that can exist at once besides the boot thread, matching the recyclable stack arena's
+/// initial capacity; fixed until a measured caller needs more, as only four processes must coexist.
 pub(crate) const STACK_SLOTS: usize = 16;
 
 /// Bytes per thread; the debug process-construction path exceeded 16 KiB.
@@ -57,17 +48,15 @@ const STACK_BYTES: u64 = 32 * 1024;
 /// Bytes of unmapped gap below each stack.
 const GUARD_BYTES: u64 = 4096;
 
-/// Where the arena sits: below the device window, far above the direct map,
-/// so a stack address is never mistaken for either (D-52).
+/// Where the arena sits: below the device window, far above the direct map, so a stack address is
+/// never mistaken for either.
 const WINDOW: u64 = 0xffff_fe00_0000_0000;
 
 /// Slots in the table, the boot thread's among them.
 pub(crate) const CAPACITY: usize = STACK_SLOTS + 1;
 
-/// Real time a thread may run before its deadline moves, in nanoseconds.
-///
-/// Three milliseconds, in the range mainline uses. The one tunable EEVDF has,
-/// and a tenth of what a tick-bounded slice could be (D-57).
+/// Real time a thread may run before its deadline moves, in nanoseconds: 3 ms, in the range
+/// mainline uses, and the one tunable EEVDF has.
 const SLICE_NS: u64 = 3 * NANOSECONDS_PER_MS;
 
 /// The arena the kernel asks `wost` to map.
@@ -75,29 +64,21 @@ pub(crate) fn layout() -> Option<StackLayout> {
     StackLayout::new(WINDOW, STACK_BYTES, GUARD_BYTES, STACK_SLOTS)
 }
 
-/// Where the double-fault handler's guarded stack goes.
-///
-/// Immediately above the thread arena and derived from it, so this adds no new
-/// hardcoded window and no entry to D-46's KASLR ledger. The geometry is the
-/// arena's own — one slot, one guard gap below it — which is arithmetic
-/// `libs/stack-layout` already has tests for.
+/// Where the double-fault handler's guarded stack goes: one arena slot and guard gap derived from
+/// the thread arena, so it adds no hardcoded window and no entry to the KASLR ledger.
 pub(crate) fn fault_stack_layout() -> Option<StackLayout> {
     StackLayout::new(layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
-/// Where the boot thread's own guarded stack goes.
-///
-/// Above the fault stack and derived from it, for the same reason: no new
-/// hardcoded window, and no entry on D-46's ledger. The boot thread starts on
-/// the bootloader's stack, which has nothing below it and lives inside the
-/// unsplittable direct map, so the only way to guard it is to leave it (D-92).
+/// Where the boot thread's own guarded stack goes, derived from the fault stack for the same
+/// reason. The bootloader's stack has nothing below it and lives in the unsplittable direct map,
+/// so the only way to guard it is to leave it.
 pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
     StackLayout::new(fault_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
 /// Why a thread could not be spawned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub(crate) enum SpawnError {
     /// The arena was never mapped, so there is nothing to run a thread on.
     Unavailable,
@@ -134,6 +115,7 @@ pub(crate) enum SpaceAuthority {
     Released(Released),
 }
 
+#[derive(Debug)]
 struct PreparedFailure {
     reason: SpawnError,
     authority: SpaceAuthority,
@@ -164,12 +146,10 @@ impl PreparedFailure {
 impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Unavailable => core::fmt::Write::write_str(f, "threads are unavailable"),
+            Self::Unavailable => f.write_str("threads are unavailable"),
             Self::Full => write!(f, "all {STACK_SLOTS} thread slots are live"),
-            Self::Task(error) => write!(f, "{error}"),
-            Self::Arrangement => {
-                core::fmt::Write::write_str(f, "the thread's launch state could not be arranged")
-            }
+            Self::Task(reason) => write!(f, "{reason}"),
+            Self::Arrangement => f.write_str("the thread's launch state could not be arranged"),
             Self::Retirement { slot, reason } => {
                 write!(
                     f,
@@ -215,18 +195,12 @@ enum State {
 enum Class {
     /// A thread the policy schedules.
     Normal,
-    /// The thread that runs when no normal one can, and never otherwise.
-    ///
-    /// Outside the policy, not at the bottom of it: a weight small enough to
-    /// ignore is still a weight, and eligibility would hand it the CPU now
-    /// and then — a wakeup spent on nothing.
+    /// The thread that runs when no normal one can, and never otherwise: outside the policy,
+    /// because any weight, however small, would win it the CPU now and then for nothing.
     Idle,
 }
 
-/// Who a thread is.
-///
-/// Changed by `spawn` and by `exit`, and read by nothing that schedules: the
-/// half of a thread the policy has no business seeing (D-109).
+/// Who a thread is: changed by `spawn` and `exit`, and read by nothing that schedules.
 #[derive(Clone, Copy, Debug)]
 struct Identity {
     name: &'static str,
@@ -240,11 +214,8 @@ impl Identity {
     };
 }
 
-/// Everything the policy needs about one slot, and nothing else.
-///
-/// Deliberately without a name or an entry point. Swapping `libs/eevdf` for
-/// another policy is a change to [`RunQueue`] and to this, and to nothing that
-/// knows what a thread *is* (D-109).
+/// Everything the policy needs about one slot and nothing else, so swapping `libs/eevdf` changes
+/// [`RunQueue`] and this, and nothing that knows what a thread *is*.
 #[derive(Clone, Copy, Debug)]
 struct Scheduled {
     state: State,
@@ -252,12 +223,10 @@ struct Scheduled {
     entity: Entity,
     /// Uptime, in nanoseconds, when it last went on the CPU.
     started: u64,
-    /// Uptime at which a sleeper becomes runnable again. Meaningless in every
-    /// other state.
+    /// Uptime at which a sleeper becomes runnable again; meaningless in every other state.
     wake_at: u64,
-    /// The lag it stopped being runnable carrying, which is what it is placed
-    /// back on the queue with — clamped to a slice either way by the policy,
-    /// so a brief wait sheds no debt and a long one banks no credit.
+    /// The lag it stopped being runnable with, which it is placed back with; the policy clamps it
+    /// to a slice either way, so a brief wait sheds no debt and a long one banks no credit.
     parked_with_lag: i64,
 }
 
@@ -281,21 +250,14 @@ impl Scheduled {
     }
 }
 
-/// Who runs next.
-///
-/// The scheduler's whole world: one [`Scheduled`] per slot and the policy over
-/// them. It cannot name a thread, which is the point of the boundary.
+/// Who runs next: one [`Scheduled`] per slot and the policy over them, unable to name a thread.
 #[derive(Debug)]
 struct RunQueue {
     slots: [Scheduled; CAPACITY],
 }
 
-/// Who exists, and who runs next.
-///
-/// One lock over both halves, because every decision that changes runnability
-/// happens with the other half settled. The split is a *structural* boundary
-/// and not a locking one: the queue's methods take `&RunQueue`, so a change to
-/// the policy cannot reach a name (D-109).
+/// Who exists, and who runs next, under one lock because every runnability decision happens with
+/// the other half settled; the queue's methods take `&RunQueue`, so the policy cannot reach a name.
 #[derive(Debug)]
 struct Threads {
     identities: [Identity; CAPACITY],
@@ -305,10 +267,8 @@ struct Threads {
 }
 
 impl Threads {
-    /// Give a slot back: nobody is there, and nothing schedules it.
-    ///
-    /// Both halves, in one call, because a slot free in one and not the other
-    /// is a thread with no name or a name with no thread (D-109).
+    /// Give a slot back in both halves in one call: a slot free in only one is a thread with no
+    /// name or a name with no thread.
     fn release(&mut self, slot: usize) {
         assert!(
             slot != BOOT && slot <= self.spawnable && self.queue.slots[slot].state != State::Free,
@@ -330,9 +290,8 @@ impl RunQueue {
         )
     }
 
-    /// How many threads the policy could pick right now. The idle thread is
-    /// not one of them, which is what makes an otherwise-empty machine
-    /// tickless rather than merely quiet.
+    /// How many threads the policy could pick right now, never the idle thread, which is what
+    /// makes an otherwise-empty machine tickless.
     fn runnable(&self) -> usize {
         self.slots
             .iter()
@@ -357,11 +316,9 @@ impl RunQueue {
         }
     }
 
-    /// Make every sleeper whose deadline has passed runnable again.
-    ///
-    /// Each comes back at the fair-share point offset by the lag it left
-    /// with, which is where D-53's clamp acts. Revoking the clock wakes every
-    /// sleeper because none may remain parked on an unreachable deadline.
+    /// Make every sleeper whose deadline has passed runnable again, at the fair-share point offset
+    /// by its lag; revoking the clock wakes them all, since none may remain parked on an
+    /// unreachable deadline.
     fn wake_due(&mut self, now: u64) {
         let clock_live = crate::time::is_calibrated();
         for slot in 0..CAPACITY {
@@ -373,8 +330,7 @@ impl RunQueue {
         }
     }
 
-    /// Put a parked thread back on the queue, at the fair-share point offset
-    /// by the lag it left with.
+    /// Put a parked thread back on the queue, at the fair-share point offset by its lag.
     fn make_ready(&mut self, slot: usize) {
         let average = self.average().unwrap_or(self.slots[slot].entity.vruntime());
         let lag = self.slots[slot].parked_with_lag;
@@ -393,13 +349,9 @@ impl RunQueue {
         thread.parked_with_lag = thread.entity.lag(average);
     }
 
-    /// Which runnable slot should run, considered in order starting just
-    /// after `current` so that equals take turns rather than the lowest index
-    /// winning every tie. `eligibility` says whether `current` is a candidate.
-    ///
-    /// A thread *leaving* the CPU records that before asking, so it is not a
-    /// candidate and the idle thread becomes reachable. A thread merely
-    /// offering the CPU is told to keep it when nobody else is owed one.
+    /// Which runnable slot should run, searched from just after `current` so equals take turns;
+    /// `eligibility` says whether `current` is a candidate. A thread *leaving* the CPU records that
+    /// first, making the idle thread reachable; one merely offering it keeps it if nobody is owed.
     fn choose(&self, current: usize, eligibility: CurrentEligibility) -> Option<usize> {
         let candidates = || {
             (1..=CAPACITY)
@@ -407,8 +359,8 @@ impl RunQueue {
                 .filter(|slot| *slot != current || eligibility == CurrentEligibility::Eligible)
                 .filter(|slot| self.slots[*slot].is_scheduled())
         };
-        // The idle thread is the answer only when there is no other, never a
-        // replacement for a normal thread that has the CPU.
+        // The idle thread answers only when there is no other, never replacing a normal thread
+        // that has the CPU.
         let Some(average) = self.average() else {
             return self.idle().filter(|slot| *slot != current);
         };
@@ -421,8 +373,8 @@ impl RunQueue {
             // With the running thread excluded, nobody eligible is an honest
             // answer: it is behind the average and keeps the CPU.
             None if eligibility == CurrentEligibility::Excluded => None,
-            // With everyone considered, nobody eligible cannot happen per
-            // `eevdf`'s tests; counted, and answered with round-robin (D-53).
+            // With everyone considered, nobody eligible cannot happen per `eevdf`'s tests;
+            // counted, and answered with round-robin.
             None => {
                 let fallback = core::iter::Iterator::next(&mut candidates());
                 #[cfg(feature = "selftest")]
@@ -434,12 +386,9 @@ impl RunQueue {
         }
     }
 
-    /// When the kernel next has a reason to be interrupted, given that
-    /// `running` is on the CPU — or `None` if it has none at all.
-    ///
-    /// Two reasons only. A slice ending matters just when somebody else could
-    /// take the CPU; a sleeper's deadline always does, because nothing else
-    /// will notice it.
+    /// When the kernel next has a reason to be interrupted while `running` is on the CPU, if ever:
+    /// a slice end only when somebody else could take the CPU, a sleeper's deadline always,
+    /// because nothing else will notice it.
     fn next_event(&self, running: usize, now: u64) -> Option<u64> {
         let slice_end = (self.runnable() > 1)
             .then(|| now.saturating_add(self.slots[running].entity.remaining_slice()));
@@ -485,11 +434,8 @@ const IDLE_STARTED: u8 = 2;
 /// Reserved while an idle spawn is in flight and committed only on success.
 static IDLE_STATE: AtomicU8 = AtomicU8::new(IDLE_UNSTARTED);
 
-/// Take the mapped arena into use, making the caller the boot thread.
-///
-/// # Errors
-///
-/// Whatever `wost` found wrong with the arena.
+/// Take the mapped arena into use, making the caller the boot thread, or say what `wost` found
+/// wrong with it.
 pub(crate) fn init(arena: StackArena) -> Result<usize, InitFailure> {
     let spawnable = task::init(arena)?;
     let mut threads = THREADS.lock_leaf();
@@ -514,13 +460,10 @@ pub(crate) fn is_available() -> bool {
     THREADS.lock_leaf().spawnable > 0
 }
 
-/// Start the thread that runs when nothing else can.
-///
-/// Outside the policy entirely (see [`Class::Idle`]), so a machine with
-/// nothing to do halts on this thread and still takes no interrupts — the
-/// difference being that everything else may now assume something is
-/// runnable. Does nothing once started, while another attempt is active, or
-/// with no threads. A refused spawn leaves a later call free to retry.
+/// Start the thread that runs when nothing else can, outside the policy ([`Class::Idle`]): an idle
+/// machine halts on it and takes no interrupts, and everything else may assume something runs.
+/// Does nothing once started, while another attempt is active, or with no threads; a refused
+/// spawn leaves a later call free to retry.
 pub(crate) fn start_idle() {
     if !is_available()
         || IDLE_STATE
@@ -536,10 +479,12 @@ pub(crate) fn start_idle() {
     }
 
     let spawned = spawn_prepared(
-        "idle",
-        idle_loop,
-        BASE_WEIGHT,
-        None,
+        Prepared {
+            name: "idle",
+            entry: idle_loop,
+            weight: BASE_WEIGHT,
+            binding: None,
+        },
         |slot, bound| {
             if bound.is_some() {
                 return Err(bound);
@@ -558,12 +503,11 @@ pub(crate) fn start_idle() {
 
 fn idle_loop() {
     loop {
-        // Reclaim one process per idle pass, away from its dying stack (D-117).
+        // Reclaim one process per idle pass, away from its dying stack.
         if crate::user::collect().is_some() {
             continue;
         }
-        // Syscall handlers defer reporting because they cannot take the console
-        // lock (D-122).
+        // Syscall handlers defer reporting because they cannot take the console lock.
         if crate::user::report_execution() || crate::user::report_refusals() {
             continue;
         }
@@ -574,18 +518,14 @@ fn idle_loop() {
 }
 
 /// Create a thread of the base weight that will run `entry`.
-///
-/// # Errors
-///
-/// [`SpawnError::Unavailable`] if the arena was never mapped,
-/// [`SpawnError::Full`] if no slot is free, or [`SpawnError::Task`] if
-/// `wost` refused the slot.
 pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError> {
     spawn_prepared(
-        name,
-        entry,
-        BASE_WEIGHT,
-        None,
+        Prepared {
+            name,
+            entry,
+            weight: BASE_WEIGHT,
+            binding: None,
+        },
         |_, bound| {
             if bound.is_none() { Ok(()) } else { Err(bound) }
         },
@@ -594,16 +534,10 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
     .map_err(|failure| failure.reason)
 }
 
-/// Create a thread that runs on `binding`'s tables rather than the kernel's.
-///
-/// `arrange` receives the installed-space token while the new slot is still
-/// reserved. It must store that token with the process state before the slot
-/// can become runnable (D-106).
-///
-/// # Errors
-///
-/// As [`spawn`], plus [`SpawnError::Task`] if `wost` refuses the
-/// binding or [`SpawnError::Arrangement`] if `arrange` returns the token.
+/// Create a thread that runs on `binding`'s tables, refused as [`spawn`] is, or when `wost`
+/// refuses the binding or `arrange` returns the token. `arrange` receives the installed-space
+/// token while the new slot is still reserved, and must store it with the process state before
+/// the slot can become runnable.
 pub(crate) fn spawn_in_space(
     name: &'static str,
     entry: fn(),
@@ -611,10 +545,12 @@ pub(crate) fn spawn_in_space(
     arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
 ) -> Result<usize, SpaceSpawnError> {
     spawn_prepared(
-        name,
-        entry,
-        BASE_WEIGHT,
-        Some(binding),
+        Prepared {
+            name,
+            entry,
+            weight: BASE_WEIGHT,
+            binding: Some(binding),
+        },
         move |slot, bound| {
             let Some(bound) = bound else {
                 return Err(None);
@@ -641,59 +577,45 @@ fn finish_refused_retirement(slot: usize, first: TaskError) {
     }
 }
 
-fn spawn_prepared(
+/// What a thread is spawned from: its identity, its weight, and any user address space.
+#[derive(Debug)]
+struct Prepared {
     name: &'static str,
     entry: fn(),
     weight: u32,
     binding: Option<Binding>,
+}
+
+fn spawn_prepared(
+    prepared: Prepared,
     arrange: impl FnOnce(usize, Option<Bound>) -> Result<(), Option<Bound>>,
     mut refuse: impl FnMut(SpawnPoint) -> bool,
 ) -> Result<usize, PreparedFailure> {
-    // Before looking for a slot: a machine too busy to idle would otherwise
-    // never collect, and a spawn is what most needs a freed slot (D-117).
+    let Prepared {
+        name,
+        entry,
+        weight,
+        binding,
+    } = prepared;
+    // Before looking for a slot: a machine too busy to idle would otherwise never collect, and a
+    // spawn is what most needs a freed slot.
     while crate::user::has_zombies() && crate::user::collect().is_some() {}
 
-    let zombie_slots = crate::user::zombie_slots_for_spawn();
-    let slot = {
-        let mut threads = THREADS.lock_leaf();
-        if threads.spawnable == 0 {
-            return Err(PreparedFailure::before_binding(
-                SpawnError::Unavailable,
-                binding,
-            ));
-        }
-        let Some(slot) = (1..=threads.spawnable)
-            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])
-        else {
-            drop(threads);
-            return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-        };
-        threads.identities[slot] = Identity {
-            name,
-            entry: Some(entry),
-        };
-        threads.queue.slots[slot] = Scheduled {
-            state: State::Reserved,
-            entity: Entity::new(weight),
-            ..Scheduled::FREE
-        };
-        slot
+    let slot = match reserve(name, entry, weight) {
+        Ok(slot) => slot,
+        Err(reason) => return Err(PreparedFailure::before_binding(reason, binding)),
     };
-    if crate::user::zombie_slots_for_spawn()[slot] {
-        THREADS.lock_leaf().release(slot);
-        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-    }
     if refuse(SpawnPoint::Reserved) {
         THREADS.lock_leaf().release(slot);
         return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
     }
 
-    // Outside the leaf: `fabricate` takes `wost`'s own lock, and the reserved
-    // slot cannot be chosen by another spawn or an expiry.
-    if let Err(error) = task::fabricate(slot, start, slot) {
+    // Outside the leaf: `fabricate` takes `wost`'s own lock, and the reserved slot cannot be
+    // chosen by another spawn or an expiry.
+    if let Err(reason) = task::fabricate(slot, start, slot) {
         THREADS.lock_leaf().release(slot);
         return Err(PreparedFailure::before_binding(
-            SpawnError::Task(error),
+            SpawnError::Task(reason),
             binding,
         ));
     }
@@ -708,28 +630,7 @@ fn spawn_prepared(
         return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
     }
 
-    // Still `Reserved`, so the tables and launch state are in place before
-    // the first instruction rather than racing it.
-    let bound = if let Some(binding) = binding {
-        match task::bind_address_space(slot, binding) {
-            Ok(bound) => Some(bound),
-            Err((error, binding)) => {
-                if let Err(reason) = retire_prepared(slot) {
-                    finish_refused_retirement(slot, reason);
-                    return Err(PreparedFailure::before_binding(
-                        SpawnError::Retirement { slot, reason },
-                        Some(binding),
-                    ));
-                }
-                return Err(PreparedFailure::before_binding(
-                    SpawnError::Task(error),
-                    Some(binding),
-                ));
-            }
-        }
-    } else {
-        None
-    };
+    let bound = bind(slot, binding)?;
     if refuse(SpawnPoint::Bound) {
         if let Err(reason) = retire_prepared(slot) {
             finish_refused_retirement(slot, reason);
@@ -754,8 +655,71 @@ fn spawn_prepared(
         ));
     }
 
-    // A second runnable thread is when the running slice starts mattering,
-    // so this arms even though nothing switches here.
+    make_runnable(slot);
+    Ok(slot)
+}
+
+/// Reserve a free slot no zombie still owns for `name`, not yet runnable.
+fn reserve(name: &'static str, entry: fn(), weight: u32) -> Result<usize, SpawnError> {
+    let zombie_slots = crate::user::zombie_slots_for_spawn();
+    let slot = {
+        let mut threads = THREADS.lock_leaf();
+        if threads.spawnable == 0 {
+            return Err(SpawnError::Unavailable);
+        }
+        let Some(slot) = (1..=threads.spawnable)
+            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])
+        else {
+            return Err(SpawnError::Full);
+        };
+        threads.identities[slot] = Identity {
+            name,
+            entry: Some(entry),
+        };
+        threads.queue.slots[slot] = Scheduled {
+            state: State::Reserved,
+            entity: Entity::new(weight),
+            ..Scheduled::FREE
+        };
+        slot
+    };
+    if crate::user::zombie_slots_for_spawn()[slot] {
+        THREADS.lock_leaf().release(slot);
+        return Err(SpawnError::Full);
+    }
+    Ok(slot)
+}
+
+/// Bind a fabricated slot to its user tables while it is still `Reserved`, so they and the launch
+/// state are in place before the first instruction; a refusal retires the slot.
+fn bind(slot: usize, binding: Option<Binding>) -> Result<Option<Bound>, PreparedFailure> {
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    match task::bind_address_space(slot, binding) {
+        Ok(bound) => Ok(Some(bound)),
+        Err((reason, binding)) => {
+            if let Err(retirement) = retire_prepared(slot) {
+                finish_refused_retirement(slot, retirement);
+                return Err(PreparedFailure::before_binding(
+                    SpawnError::Retirement {
+                        slot,
+                        reason: retirement,
+                    },
+                    Some(binding),
+                ));
+            }
+            Err(PreparedFailure::before_binding(
+                SpawnError::Task(reason),
+                Some(binding),
+            ))
+        }
+    }
+}
+
+/// Place a reserved slot at the fair-share point and make it ready, arming even though nothing
+/// switches here: a second runnable thread is when the running slice starts mattering.
+fn make_runnable(slot: usize) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
     let event = {
@@ -767,22 +731,15 @@ fn spawn_prepared(
     };
     reschedule_timer(event);
     saved.restore();
-    Ok(slot)
 }
 
-/// Let another runnable thread have the CPU, if any is owed it.
-///
-/// Returns when this thread is picked again — at once, if nothing else is
-/// eligible.
-///
-/// # Panics
-///
-/// Panics from trap context, where a switch would carry the handler's stack
-/// frame away with it (D-55), or if `wost` refuses the switch: the two
-/// tables disagree, which is a bug and not a condition.
+/// Let another runnable thread have the CPU, if any is owed it, returning when this thread is
+/// picked again, at once if nothing else is eligible. Panics from trap context, where a switch
+/// would carry the handler's stack frame away, or if `wost` refuses the switch: the two tables
+/// disagree, which is a bug.
 pub(crate) fn yield_now(context: &mut ThreadContext) {
-    // Flag clear from decision to switch, so an expiry cannot preempt between
-    // them and act on a table that says `next` is running when it is not.
+    // Flag clear from decision to switch, so an expiry cannot preempt between them and act on a
+    // table that says `next` is running when it is not.
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
     let (next, event) = {
@@ -799,36 +756,23 @@ pub(crate) fn yield_now(context: &mut ThreadContext) {
 
     reschedule_timer(event);
     if let Some(next) = next
-        && let Err(error) = task::switch_to(next)
+        && let Err(reason) = task::switch_to(next)
     {
-        panic!("yield to slot {next} refused: {error}");
+        panic!("yield to slot {next} refused: {reason}");
     }
     saved.restore();
 }
 
-/// Give the CPU up until `milliseconds` have passed.
-///
-/// Another runnable thread takes the CPU meanwhile; with none, the CPU halts
-/// here until the timer this armed goes off. Nothing is interrupted before
-/// the deadline unless somebody else asked for it.
-///
-/// Returns no earlier than the deadline and possibly later — the thread
-/// becomes runnable then, and runs when the policy picks it — or at once on a
-/// machine whose clock never started, where a wait would be a hang.
-///
-/// # Panics
-///
-/// Panics from trap context, where a switch would carry the handler's stack
-/// frame away with it (D-55), or if `wost` refuses a switch.
+/// Give the CPU up until `milliseconds` have passed, to another runnable thread or to a halt until
+/// the armed timer fires; nothing is interrupted earlier unless somebody else asked for it.
+/// Returns no earlier than the deadline, possibly later, or at once on a machine whose clock
+/// never started, where a wait would hang. Panics from trap context, where a switch would carry
+/// the handler's stack frame away, or if `wost` refuses a switch.
 pub(crate) fn sleep_ms(context: &mut ThreadContext, milliseconds: u64) {
     sleep_ns(context, milliseconds.saturating_mul(NANOSECONDS_PER_MS));
 }
 
-/// Give the CPU up until `nanoseconds` have passed. See [`sleep_ms`].
-///
-/// # Panics
-///
-/// As [`sleep_ms`].
+/// Give the CPU up until `nanoseconds` have passed, as [`sleep_ms`] does.
 pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
     if !time::is_calibrated() {
         return;
@@ -836,8 +780,7 @@ pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
 
     let mut saved = interrupt::disable();
     let wake_at = time::now_ns().saturating_add(nanoseconds);
-    // A loop: the halt below returns on any interrupt, and the deadline, not
-    // the wakeup, is what this promised.
+    // A loop: the halt below returns on any interrupt, and the deadline is what this promised.
     while time::is_calibrated() && time::now_ns() < wake_at {
         THREADS.lock(context).queue.slots[task::current()].wake_at = wake_at;
         park(context, State::Sleeping, Some(wake_at), &mut saved);
@@ -845,15 +788,10 @@ pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
     saved.restore();
 }
 
-/// Stop being runnable until something makes this thread ready again.
-///
-/// Mark the running thread `leaving`, record what it is owed, and hand the
-/// CPU on. With nobody to hand it to it keeps the CPU and halts, and the
-/// caller re-checks — a halt returns on any interrupt.
-///
-/// `until` bounds the arming, so a sleeper halting alone is woken by its own
-/// timer. Called with the flag already clear, and it stays clear until after
-/// the switch.
+/// Mark the running thread `leaving`, record what it is owed and hand the CPU on; with nobody to
+/// take it, keep it and halt, and the caller re-checks, since a halt returns on any interrupt.
+/// `until` bounds the arming so a sleeper halting alone wakes on its own timer. Called with the
+/// flag already clear, and it stays clear until after the switch.
 fn park(
     context: &mut ThreadContext,
     leaving: State,
@@ -871,8 +809,8 @@ fn park(
 
         match threads.queue.choose(current, CurrentEligibility::Excluded) {
             Some(next) => {
-                // Counted here, not at the call: a thread with nobody to hand
-                // the CPU to never leaves the run queue.
+                // Counted here, not at the call: a thread with nobody to hand the CPU to never
+                // leaves the run queue.
                 #[cfg(feature = "selftest")]
                 if leaving == State::Blocked {
                     BLOCKS.fetch_add(1, Ordering::Relaxed);
@@ -881,8 +819,7 @@ fn park(
                 threads.queue.slots[next].started = now;
                 (Some(next), threads.queue.next_event(next, now))
             }
-            // A sole runnable thread remains charged while it waits for an
-            // event because it still owns the CPU.
+            // A sole runnable thread remains charged while it waits, because it still owns the CPU.
             None => {
                 threads.queue.slots[current].state = State::Running;
                 let event = threads.queue.next_event(current, now);
@@ -894,28 +831,22 @@ fn park(
     reschedule_timer(event);
     match next {
         Some(next) => {
-            if let Err(error) = task::switch_to(next) {
-                panic!("park of slot {} refused: {error}", task::current());
+            if let Err(reason) = task::switch_to(next) {
+                panic!("park of slot {} refused: {reason}", task::current());
             }
         }
         None => {
-            // Enabling and halting must be one step, or the ending interrupt
-            // can land between them and nothing is left to wake the CPU.
+            // Enabling and halting must be one step, or the ending interrupt can land between them
+            // and nothing is left to wake the CPU.
             saved.wait_for_interrupt();
         }
     }
 }
 
-/// Take the trapping thread off the run queue for good, from trap context.
-///
-/// What a thread that has crossed into ring 3 and called back needs: it cannot
-/// `park`, because that wants a [`ThreadContext`] and trap context cannot mint
-/// one by construction (D-62). So this is `park`'s trap-side twin — mark the
-/// caller blocked with nothing that will ever wake it, and switch away at trap
-/// exit exactly as preemption does (D-54).
-///
-/// `false` if there is nobody to switch to, which cannot happen once the idle
-/// thread exists, or if `wost` refuses the switch.
+/// Take the trapping thread off the run queue for good, from trap context, which cannot mint the
+/// [`ThreadContext`] `park` wants; it switches away at trap exit exactly as preemption does.
+/// `false` if there is nobody to switch to, impossible once the idle thread exists, or if `wost`
+/// refuses the switch.
 pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     let now = time::scheduler_now_ns();
     let current = task::current();
@@ -924,8 +855,8 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
         threads.queue.charge(current, now);
         threads.queue.wake_due(now);
         threads.queue.park(current);
-        // The switch below leaves this stack permanently, so the scheduler
-        // slot can represent another live program (D-117).
+        // The switch below leaves this stack permanently, so the scheduler slot can represent
+        // another live program.
         threads.identities[current] = Identity::FREE;
         threads.queue.slots[current] = Scheduled::FREE;
         match threads.queue.choose(current, CurrentEligibility::Excluded) {
@@ -941,15 +872,15 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     reschedule_timer(event);
     match next {
         Some(next) => {
-            // A zombie: this thread stands on the stack and tables it would
-            // have to free, so it cannot be the one to free them (D-117).
+            // A zombie: this thread stands on the stack and tables it would have to free, so it
+            // cannot be the one to free them.
             crate::user::orphan(current);
-            // Published after `orphan` records the last rites, so an acquiring
-            // observer of the new generation can read them (D-203).
+            // Published after `orphan` records the last rites, so an acquiring observer of the new
+            // generation can read them.
             #[cfg(feature = "selftest")]
             RETIREMENTS.fetch_add(1, Ordering::AcqRel);
-            // `retire_to`, not `switch_from_trap`: `wost`'s slot must go `Dead`
-            // to match the `Free` just written, or the index is lost (D-117).
+            // `retire_to`, not `switch_from_trap`: `wost`'s slot must go `Dead` to match the
+            // `Free` just written, or the index is lost.
             task::retire_to(next, frame).is_ok()
         }
         None => false,
@@ -964,20 +895,16 @@ fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
     }
 }
 
-/// Stop being runnable until [`unblock`] names this thread.
-///
-/// The wait-queue half of [`park`]: no deadline, so nothing is armed and a
-/// machine with nothing else to do takes no interrupts until the event.
+/// Stop being runnable until [`unblock`] names this thread: no deadline, so nothing is armed and
+/// a machine with nothing else to do takes no interrupts until the event.
 pub(crate) fn block(context: &mut ThreadContext, saved: &mut interrupt::InterruptState) {
     park(context, State::Blocked, None, saved);
 }
 
-/// Make every blocked thread in `slots` runnable, and report how many that
-/// was.
-///
-/// A bitmask because the caller's caller is an interrupt handler, where D-55
-/// forbids the heap. A set-but-not-blocked slot is skipped: a thread that
-/// registered and then found nothing to wait for is still registered.
+/// Make every blocked thread in `slots` runnable and report how many: a bitmask because the
+/// caller's caller is an interrupt handler, where the heap is forbidden. A set slot that is not
+/// blocked is skipped: a thread that registered and then found nothing to wait for is still
+/// registered.
 pub(crate) fn unblock(slots: u32) -> usize {
     let woken = {
         let mut threads = THREADS.lock_leaf();
@@ -997,8 +924,8 @@ pub(crate) fn unblock(slots: u32) -> usize {
         woken
     };
 
-    // Arm unconditionally: the syscall path returns straight to ring 3 and
-    // would otherwise strand the woken thread on a tickless machine (D-133).
+    // Arm unconditionally: the syscall path returns straight to ring 3 and would otherwise strand
+    // the woken thread on a tickless machine.
     if woken > 0 {
         #[cfg(feature = "selftest")]
         if interrupt::in_trap() {
@@ -1014,10 +941,8 @@ pub(crate) fn current_slot() -> usize {
     task::current()
 }
 
-/// The name of the thread this CPU is running.
-///
-/// `try_lock`: the one caller is the panic handler, and a panic can be raised
-/// by the code holding this.
+/// The name of the thread this CPU is running, by `try_lock` because the one caller is the panic
+/// handler, and a panic can be raised by the code holding this.
 pub(crate) fn current_name() -> &'static str {
     let slot = task::current();
     match THREADS.try_lock_leaf() {
@@ -1027,10 +952,8 @@ pub(crate) fn current_name() -> &'static str {
     }
 }
 
-/// Charge, wake, optionally switch, and re-arm at trap exit.
-///
-/// A cleared interrupted flag prevents only the switch; deadlines still advance
-/// and re-arm because no later interrupt is guaranteed (D-31, D-54).
+/// Charge, wake, optionally switch, and re-arm at trap exit; a cleared interrupted flag prevents
+/// only the switch, and deadlines still advance and re-arm because no later interrupt is promised.
 pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::scheduler_now_ns();
     let switchable = frame.flags() & INTERRUPT_FLAG != 0;
@@ -1057,18 +980,16 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
 
     reschedule_timer(event);
     if let Some(next) = next
-        && let Err(error) = task::switch_from_trap(next, frame)
+        && let Err(reason) = task::switch_from_trap(next, frame)
     {
-        panic!("preemption to slot {next} refused: {error}");
+        panic!("preemption to slot {next} refused: {reason}");
     }
 }
 
-/// Give up the CPU for an event, optionally bounded by `wake_at`, from a trap.
-///
-/// Switching uses the saved frame because a handler has no [`ThreadContext`]
-/// (D-54, D-55). `false` means no peer or usable clock can end the wait. A
-/// refused switch is terminal because returning would leave two scheduler
-/// states claiming the CPU (D-200).
+/// Give up the CPU for an event, optionally bounded by `wake_at`, from a trap, switching through
+/// the saved frame because a handler has no [`ThreadContext`]. `false` means no peer or usable
+/// clock can end the wait; a refused switch is terminal, because returning would leave two
+/// scheduler states claiming the CPU.
 pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
     if wake_at.is_some() && !time::is_calibrated() {
         return false;
@@ -1104,8 +1025,8 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
                 threads.queue.slots[next].started = now;
                 (Some(next), threads.queue.next_event(next, now))
             }
-            // Nobody to hand the CPU to, and a handler cannot halt on the
-            // interrupted thread's stack, so the caller is told it did not sleep.
+            // Nobody to hand the CPU to, and a handler cannot halt on the interrupted thread's
+            // stack, so the caller is told it did not sleep.
             None => {
                 threads.queue.slots[current].state = State::Running;
                 (None, threads.queue.next_event(current, now))
@@ -1117,19 +1038,16 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
     let Some(next) = next else {
         return false;
     };
-    if let Err(error) = task::switch_from_trap(next, frame) {
-        panic!("trap wait switch to slot {next} refused: {error}");
+    if let Err(reason) = task::switch_from_trap(next, frame) {
+        panic!("trap wait switch to slot {next} refused: {reason}");
     }
     #[cfg(feature = "selftest")]
     TRAP_WAITS.fetch_add(1, Ordering::Relaxed);
     true
 }
 
-/// Arm the timer for the next thing owed a decision, or stop it if nothing
-/// is.
-///
-/// Every path that can change the answer ends here. An idle machine leaves
-/// with the timer stopped.
+/// Arm the timer for the next thing owed a decision, or stop it if nothing is; every path that
+/// can change the answer ends here, so an idle machine leaves with the timer stopped.
 fn reschedule_timer(event: Option<u64>) {
     match event {
         Some(deadline) => time::arm_at(deadline),
@@ -1137,28 +1055,22 @@ fn reschedule_timer(event: Option<u64>) {
     }
 }
 
-/// `RFLAGS` bit 9, restated here rather than imported: the test is against
-/// what the CPU pushed, not what a helper believes.
+/// `RFLAGS` bit 9, restated here because the test is against what the CPU pushed.
 const INTERRUPT_FLAG: u64 = 1 << 9;
 
-/// End the running thread and let the next runnable one run.
-///
-/// # Panics
-///
-/// Panics from the boot thread, which owns the stack everything else was
-/// started from, or if nothing is runnable — neither can happen while the
-/// boot thread is ready, which it is whenever it is not running.
+/// End the running thread and let the next runnable one run. Panics from the boot thread, which
+/// owns the stack everything else was started from, or if nothing is runnable; neither can happen
+/// while the boot thread is ready, which it is whenever it is not running.
 pub(crate) fn exit() -> ! {
-    // Never restored: an expiry between the decision and the switch would
-    // find a thread neither running nor free.
+    // Never restored: an expiry between the decision and the switch would find a thread neither
+    // running nor free.
     let _off = interrupt::disable();
     let now = time::scheduler_now_ns();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
         let current = task::current();
         assert!(current != BOOT, "the boot thread cannot exit");
-        // Charged before the slot clears, so the last slice is accounted
-        // like every other (D-105).
+        // Charged before the slot clears, so the last slice is accounted like every other.
         threads.queue.charge(current, now);
         threads.release(current);
         threads.queue.wake_due(now);
@@ -1170,8 +1082,8 @@ pub(crate) fn exit() -> ! {
     };
 
     reschedule_timer(event);
-    let error = task::exit_to(next);
-    panic!("exit to slot {next} refused: {error}");
+    let reason = task::exit_to(next);
+    panic!("exit to slot {next} refused: {reason}");
 }
 
 /// Where every spawned thread begins: run its entry, then leave.
