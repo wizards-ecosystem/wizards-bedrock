@@ -5,7 +5,10 @@ pub(super) const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ("kernel/src/nvme/queues.rs", "nvme::queues::QueuePair"),
     ("kernel/src/object.rs", "object::Channel"),
     ("kernel/src/queue.rs", "queue::Queue"),
-    ("kernel/src/user.rs", "user::ProcessConstruction"),
+    (
+        "kernel/src/user/construction.rs",
+        "user::construction::ProcessConstruction",
+    ),
     (
         "wost/src/arch/x86_64/apic.rs",
         "arch::x86_64::apic::EoiToken",
@@ -129,11 +132,11 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         produced: "queue::Queue",
     },
     ReviewedDropProducer {
-        relative: "kernel/src/user.rs",
-        owner: "user::ProcessConstruction",
+        relative: "kernel/src/user/construction.rs",
+        owner: "user::construction::ProcessConstruction",
         member: "new",
         implemented_trait: None,
-        produced: "user::ProcessConstruction",
+        produced: "user::construction::ProcessConstruction",
     },
     ReviewedDropProducer {
         relative: "wost/src/arch/x86_64/apic.rs",

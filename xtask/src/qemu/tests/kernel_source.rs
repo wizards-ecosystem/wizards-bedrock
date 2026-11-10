@@ -33,7 +33,16 @@ fn shipped_execution_evidence_requires_a_user_call_and_deferred_once_only_report
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
-    let user = std::fs::read_to_string(root.join("kernel/src/user.rs")).unwrap();
+    let user = [
+        "kernel/src/user.rs",
+        "kernel/src/user/call.rs",
+        "kernel/src/user/construction.rs",
+        "kernel/src/user/load.rs",
+        "kernel/src/user/reap.rs",
+        "kernel/src/user/selftest.rs",
+    ]
+    .map(|relative| std::fs::read_to_string(root.join(relative)).unwrap())
+    .concat();
     let thread = std::fs::read_to_string(root.join("kernel/src/thread.rs")).unwrap();
     let active = compact_cpp(&rust_without_comments(&user));
     for declaration in [
@@ -435,7 +444,16 @@ fn the_serial_contract_matches_the_kernel_source() {
     let devfs = std::fs::read_to_string(root.join("devfs.rs")).expect("devfs.rs");
     let tmpfs = std::fs::read_to_string(root.join("tmpfs.rs")).expect("tmpfs.rs");
     let panic = std::fs::read_to_string(root.join("panic.rs")).expect("panic.rs");
-    let user = std::fs::read_to_string(root.join("user.rs")).expect("user.rs");
+    let user = [
+        "user.rs",
+        "user/call.rs",
+        "user/construction.rs",
+        "user/load.rs",
+        "user/reap.rs",
+        "user/selftest.rs",
+    ]
+    .map(|relative| std::fs::read_to_string(root.join(relative)).expect(relative))
+    .concat();
     let apic = std::fs::read_to_string(repository.join("wost/src/arch/x86_64/apic.rs"))
         .expect("wost apic.rs");
     let cpu = std::fs::read_to_string(repository.join("wost/src/arch/x86_64/cpu.rs"))

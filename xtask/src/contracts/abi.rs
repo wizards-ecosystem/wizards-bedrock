@@ -1511,9 +1511,7 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
     assert!(queue.contains("table.resolve(submission.handle)"));
     assert!(!queue.contains("Self::ChannelReceive"));
 
-    let handles = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/handle.rs")).expect("handle.rs"),
-    );
+    let handles = rust_without_comments(&super::module_source(root, "kernel/src/handle.rs"));
     let objects = rust_without_comments(
         &std::fs::read_to_string(root.join("kernel/src/object.rs")).expect("object.rs"),
     );
@@ -1551,9 +1549,7 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
     assert!(!queue.contains("=> Self::Unmap"));
     assert!(!queue.contains("=> Self::AnonFree"));
 
-    let user = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/user.rs")).expect("user.rs"),
-    );
+    let user = rust_without_comments(&super::module_source(root, "kernel/src/user.rs"));
     assert_eq!(remainder("sys_libc_panic"), "PARTIAL");
     assert_eq!(remainder("sys_exit"), "PARTIAL");
     let exit = user
@@ -1575,9 +1571,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     let queue = rust_without_comments(
         &std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue.rs"),
     );
-    let user = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/user.rs")).expect("user.rs"),
-    );
+    let user = rust_without_comments(&super::module_source(root, "kernel/src/user.rs"));
     let proto = rust_without_comments(
         &std::fs::read_to_string(root.join("libs/ring-proto/src/lib.rs")).expect("ring-proto"),
     );
@@ -1833,7 +1827,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         "(ENTRY_BYTES as u64 + 15) & !15",
         "the initial stack pointer is not aligned beyond the entry block"
     );
-    let compact_cross = compact_cpp(&rust_function_body(&user, "fn cross() {"));
+    let compact_cross = compact_cpp(&rust_function_body(&user, "pub(super) fn cross() {"));
     assert!(
         compact_cross.contains("lettop=launch.stack+USER_STACK_BYTES-ENTRY_STACK_BYTES;"),
         "the kernel does not place the entry block at the initial stack pointer"

@@ -17,8 +17,6 @@
 //! half-made decision.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use eevdf::{BASE_WEIGHT, Entity};
@@ -31,6 +29,20 @@ use wost::sync::SpinLock;
 pub(crate) use wost::sync::ThreadContext;
 
 use crate::time::{self, NANOSECONDS_PER_MS};
+
+#[cfg(feature = "selftest")]
+mod selftest;
+
+#[cfg(feature = "selftest")]
+use selftest::{
+    BLOCKS, HANDLER_ARMS, IDLE_HALTS, POLICY_FALLBACKS, RETIREMENTS, TRAP_WAITS, WAKES,
+};
+#[cfg(feature = "selftest")]
+pub(crate) use selftest::{
+    blocks, free_slots, handler_arms, idle_halts, idle_is_started, idle_threads, policy_fallbacks,
+    rearm_current_for_test, restore_idle_retry_for_test, retirements, spawn_in_space_refusing,
+    spawn_weighted_for_test, trap_waits, wakes,
+};
 
 /// Threads that can exist at once, besides the boot thread.
 ///
@@ -466,30 +478,6 @@ static THREADS: SpinLock<Threads> = SpinLock::new(Threads {
     spawnable: 0,
 });
 
-/// Times the policy had no answer and round-robin stood in for it.
-///
-/// Should stay at zero; a count that climbs is the policy disagreeing with
-/// its own host tests, which is worth knowing about immediately.
-#[cfg(feature = "selftest")]
-static POLICY_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
-
-/// Parked threads put back on the queue.
-#[cfg(feature = "selftest")]
-static WAKES: AtomicUsize = AtomicUsize::new(0);
-
-/// Threads that have actually left the run queue to wait on a queue.
-#[cfg(feature = "selftest")]
-static BLOCKS: AtomicUsize = AtomicUsize::new(0);
-
-/// Trap-frame waits which actually handed the CPU to another thread.
-#[cfg(feature = "selftest")]
-static TRAP_WAITS: AtomicUsize = AtomicUsize::new(0);
-
-/// Times the idle thread has reached its halt: times the machine had nothing
-/// to do.
-#[cfg(feature = "selftest")]
-static IDLE_HALTS: AtomicUsize = AtomicUsize::new(0);
-
 const IDLE_UNSTARTED: u8 = 0;
 const IDLE_STARTING: u8 = 1;
 const IDLE_STARTED: u8 = 2;
@@ -524,77 +512,6 @@ pub(crate) fn init(arena: StackArena) -> Result<usize, InitFailure> {
 /// Whether threads can be spawned at all.
 pub(crate) fn is_available() -> bool {
     THREADS.lock_leaf().spawnable > 0
-}
-
-/// Slots with no live thread in them.
-#[cfg(feature = "selftest")]
-pub(crate) fn free_slots() -> usize {
-    let threads = THREADS.lock_leaf();
-    threads.queue.slots[1..=threads.spawnable]
-        .iter()
-        .filter(|slot| slot.state == State::Free)
-        .count()
-}
-
-/// How often the policy has been stood in for. See [`POLICY_FALLBACKS`].
-#[cfg(feature = "selftest")]
-pub(crate) fn policy_fallbacks() -> usize {
-    POLICY_FALLBACKS.load(Ordering::Relaxed)
-}
-
-/// How many parked threads have been put back on the queue.
-#[cfg(feature = "selftest")]
-pub(crate) fn wakes() -> usize {
-    WAKES.load(Ordering::Relaxed)
-}
-
-/// How many threads have blocked on a wait queue.
-#[cfg(feature = "selftest")]
-pub(crate) fn blocks() -> usize {
-    BLOCKS.load(Ordering::Relaxed)
-}
-
-/// Ring-3 waits which switched through their saved trap frame.
-#[cfg(feature = "selftest")]
-pub(crate) fn trap_waits() -> usize {
-    TRAP_WAITS.load(Ordering::Relaxed)
-}
-
-/// How many times the idle thread has had the CPU with nothing to do on it.
-#[cfg(feature = "selftest")]
-pub(crate) fn idle_halts() -> usize {
-    IDLE_HALTS.load(Ordering::Relaxed)
-}
-
-/// Whether the idle thread is running.
-#[cfg(feature = "selftest")]
-pub(crate) fn idle_is_started() -> bool {
-    IDLE_STATE.load(Ordering::Acquire) == IDLE_STARTED && THREADS.lock_leaf().queue.idle().is_some()
-}
-
-/// How many live slots are classified as idle.
-#[cfg(feature = "selftest")]
-pub(crate) fn idle_threads() -> usize {
-    THREADS
-        .lock_leaf()
-        .queue
-        .slots
-        .iter()
-        .filter(|slot| slot.class == Class::Idle && slot.state != State::Free)
-        .count()
-}
-
-/// Release a deliberately burned in-progress reservation after its check.
-#[cfg(feature = "selftest")]
-pub(crate) fn restore_idle_retry_for_test() -> bool {
-    IDLE_STATE
-        .compare_exchange(
-            IDLE_STARTING,
-            IDLE_UNSTARTED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
 }
 
 /// Start the thread that runs when nothing else can.
@@ -677,25 +594,6 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
     .map_err(|failure| failure.reason)
 }
 
-#[cfg(feature = "selftest")]
-pub(crate) fn spawn_weighted_for_test(
-    name: &'static str,
-    entry: fn(),
-    weight: u32,
-) -> Result<usize, SpawnError> {
-    spawn_prepared(
-        name,
-        entry,
-        weight,
-        None,
-        |_, bound| {
-            if bound.is_none() { Ok(()) } else { Err(bound) }
-        },
-        |_| false,
-    )
-    .map_err(|failure| failure.reason)
-}
-
 /// Create a thread that runs on `binding`'s tables rather than the kernel's.
 ///
 /// `arrange` receives the installed-space token while the new slot is still
@@ -724,33 +622,6 @@ pub(crate) fn spawn_in_space(
             arrange(slot, bound).map_err(Some)
         },
         |_| false,
-    )
-    .map_err(|failure| SpaceSpawnError {
-        reason: failure.reason,
-        authority: failure.authority,
-    })
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn spawn_in_space_refusing(
-    name: &'static str,
-    entry: fn(),
-    binding: Binding,
-    point: SpawnPoint,
-    arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
-) -> Result<usize, SpaceSpawnError> {
-    spawn_prepared(
-        name,
-        entry,
-        BASE_WEIGHT,
-        Some(binding),
-        move |slot, bound| {
-            let Some(bound) = bound else {
-                return Err(None);
-            };
-            arrange(slot, bound).map_err(Some)
-        },
-        move |seen| seen == point,
     )
     .map_err(|failure| SpaceSpawnError {
         reason: failure.reason,
@@ -1085,19 +956,6 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     }
 }
 
-/// How many threads have been retired from trap context.
-///
-/// Monotonic so self-tests can observe retirement even after its slot is
-/// reused (D-101).
-#[cfg(feature = "selftest")]
-static RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
-
-/// Threads retired from trap context since boot.
-#[cfg(feature = "selftest")]
-pub(crate) fn retirements() -> usize {
-    RETIREMENTS.load(Ordering::Acquire)
-}
-
 /// The sooner of two deadlines, either of which may be absent.
 fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
     match (one, other) {
@@ -1149,16 +1007,6 @@ pub(crate) fn unblock(slots: u32) -> usize {
         reschedule_timer(Some(time::scheduler_now_ns()));
     }
     woken
-}
-
-/// Handler wakeups whose runnable thread needed an immediate timer arm (D-133).
-#[cfg(feature = "selftest")]
-static HANDLER_ARMS: AtomicUsize = AtomicUsize::new(0);
-
-/// Wakes from a handler that armed the timer. See [`HANDLER_ARMS`].
-#[cfg(feature = "selftest")]
-pub(crate) fn handler_arms() -> usize {
-    HANDLER_ARMS.load(Ordering::Relaxed)
 }
 
 /// The slot this CPU is running on.
@@ -1287,20 +1135,6 @@ fn reschedule_timer(event: Option<u64>) {
         Some(deadline) => time::arm_at(deadline),
         None => time::disarm(),
     }
-}
-
-/// Restore the current scheduler appointment after a reversible clock check.
-#[cfg(feature = "selftest")]
-pub(crate) fn rearm_current_for_test() {
-    let now = time::scheduler_now_ns();
-    let event = {
-        let threads = THREADS.lock_leaf();
-        if threads.spawnable == 0 {
-            return;
-        }
-        threads.queue.next_event(task::current(), now)
-    };
-    reschedule_timer(event);
 }
 
 /// `RFLAGS` bit 9, restated here rather than imported: the test is against

@@ -6,7 +6,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // Trap-context logging is caught by ThreadLock's fail-stop (D-122).
     Mutation {
         id: 175,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "            REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);",
         replace: "            crate::warn!(\"refused\");",
         breaks: "an unserved call does not log from trap context",
@@ -19,7 +19,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // Inspecting the ring under the process-table guard recreates nested leaf locking.
     Mutation {
         id: 178,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "    let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
     Some((
@@ -38,7 +38,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 179,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "        .filter(|birth| birth.table == spawned.observed_table_incarnation)",
         replace: "        .filter(|birth| {\n            birth.table == spawned.observed_table_incarnation.wrapping_add(1)\n        })",
         breaks: "birth evidence belongs to the exact authority-table incarnation",
@@ -46,7 +46,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 182,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    let binding = construction\n        .space()?\n        .bind()\n        .map_err(SpawnError::NotBindable)?;",
         replace: "    let _duplicate_binding = AddressSpace::bind(construction.space()?);\n    let binding = construction\n        .space()?\n        .bind()\n        .map_err(SpawnError::NotBindable)?;",
         breaks: "a second production owner can bind one address space",
@@ -57,7 +57,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 183,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "            authority: Some(BootstrapAuthority::Bound(bound)),",
         replace: "            authority: None,",
         breaks: "a committed process discards its live address-space binding",
@@ -68,7 +68,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 184,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "        BootstrapAuthority::Bound(bound) => match task::release_address_space(bound) {\n            Ok(released) => Some(BootstrapAuthority::Released(released)),\n            Err(bound) => {\n                bootstrap.authority = Some(BootstrapAuthority::Bound(bound));\n                return Err(ReclaimRetention {\n                    refusal: ReclaimRefusal::TaskRelease,\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }\n        },",
         replace: "        BootstrapAuthority::Bound(bound) => Some(BootstrapAuthority::Bound(bound)),",
         breaks: "zombie reclamation skips release of a live address-space binding",
@@ -79,7 +79,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 185,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "    let tables = match bootstrap.space.reclaim(Some(released)) {",
         replace: "    let tables = match bootstrap.space.reclaim(None) {",
         breaks: "address-space reclamation withholds its exact release evidence",
@@ -178,7 +178,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // trap exercised Duplicate. Kernel source, because the driver cannot rebuild itself.
     Mutation {
         id: 286,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/selftest.rs",
         find: "    spawn(\"user-duplicate\", 6, DUPLICATE)",
         replace: "    spawn(\"user-duplicate\", 6, BEHAVE)",
         breaks: "the shipped program uses its bootstrap authority through Duplicate",
@@ -187,7 +187,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // Skip terminal table reclamation while reporting success.
     Mutation {
         id: 303,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "        match space.reclaim(released) {",
         replace: "        match { drop(released); Ok::<usize, wost::arch::current::paging::ReclaimFailure>(0) } {",
         breaks: "a refused process construction returns its page tables",
@@ -197,7 +197,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // valid, so this reaches mapping unless the entry participates in preflight.
     Mutation {
         id: 304,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/load.rs",
         find: "    if !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
         replace: "    if false && !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
         breaks: "an ELF entry must be inside executable program memory",
@@ -223,7 +223,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 308,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/load.rs",
         find: "                if let Err(refusal) = undo(space, &placements[..done]) {\n                    return Err(LoadError::Rollback {\n                        reason: refusal.reason,\n                        pages: refusal.pages,\n                    });\n                }",
         replace: "                if let Err(refusal) = undo(space, &placements[..done]) {\n                    let _ = refusal;\n                }",
         breaks: "a refused loader rollback is returned with its exact progress",
@@ -231,7 +231,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 309,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "                    #[cfg(feature = \"selftest\")]\n                    if CLEANUP_REFUSAL_INJECTED.swap(false, Ordering::AcqRel) {\n                        REFUSED_MAPPING_RECLAIMS.fetch_add(1, Ordering::AcqRel);\n                        continue;\n                    }",
         replace: "                    #[cfg(feature = \"selftest\")]\n                    if CLEANUP_REFUSAL_INJECTED.swap(false, Ordering::AcqRel) {\n                        REFUSED_MAPPING_RECLAIMS.fetch_add(1, Ordering::AcqRel);\n                        return;\n                    }",
         breaks: "construction cleanup retries the exact mapping that refused once",
@@ -239,7 +239,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 310,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    if !extended_state_is_isolated() {\n        return Err(SpawnError::NoExtendedState);\n    }",
         replace: "    if false && !extended_state_is_isolated() {\n        return Err(SpawnError::NoExtendedState);\n    }",
         breaks: "ring three stays closed without isolated extended state",
@@ -247,7 +247,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 317,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "            Err(bound) => {\n                bootstrap.authority = Some(BootstrapAuthority::Bound(bound));\n                return Err(ReclaimRetention {\n                    refusal: ReclaimRefusal::TaskRelease,\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }",
         replace: "            Err(bound) => {\n                drop(bound);\n                return Ok(ReclaimSuccess {\n                    reclaimed: Reclaimed::default(),\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }",
         breaks: "a refused task release retains its linear retry authority",
@@ -265,7 +265,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // explicit boundary state distinguishes this from a normal launch.
     Mutation {
         id: 322,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    if !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
         replace: "    if false && !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
         breaks: "an unguarded boot stack cannot open the user boundary",
@@ -281,7 +281,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 342,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    if !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
         replace: "    if false && !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
         breaks: "ring three requires enforced non-executable mappings",
@@ -289,7 +289,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 343,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    if !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
         replace: "    if false && !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
         breaks: "an uncalibrated boot never launches an unpreemptible program",
@@ -305,7 +305,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 346,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    if !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
         replace: "    if false && !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
         breaks: "ring three opens without a thread able to reclaim it",
@@ -313,7 +313,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 347,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "    if stored {\n        crate::queue::request_reap();\n    }",
         replace: "    let _ = stored;",
         breaks: "retirement leaves the service worker asleep beside a zombie",
@@ -345,7 +345,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 531,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/selftest.rs",
         find: "    spawn(\"user-baseline\", 8, MEASURE)",
         replace: "    spawn(\"user-baseline\", 8, 0)",
         breaks: "the ring boundary baseline never enables its timestamp witness",
@@ -353,7 +353,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 568,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "maskable interrupts are not admitted; ring 3 is closed",
         replace: "interrupt admission unavailable; ring 3 is closed",
         breaks: "the degraded boot loses the exact first user-boundary refusal",
@@ -372,7 +372,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 573,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "    assert!(answered, \"the live syscall frame could not be answered\");",
         replace: "    debug_assert!(answered, \"the live syscall frame could not be answered\");",
         breaks: "a release syscall can return with an unanswered stale register frame",
@@ -383,7 +383,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 592,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "            Some((process, bound)) => {\n                prepared = Some(process);\n                Err(bound)\n            }",
         replace: "            Some((process, bound)) => {\n                core::mem::forget(process);\n                Err(bound)\n            }",
         breaks: "a commit refusal loses the still-bound process owner",
@@ -399,7 +399,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 601,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/load.rs",
         find: "        if !at.is_multiple_of(PAGE_SIZE) {\n            return Err(LoadError::Unaligned(at));\n        }",
         replace: "",
         breaks: "the loader reaches page mapping with an unaligned segment address",
@@ -407,7 +407,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 602,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "    bootstrap.abandoned = bootstrap\n        .abandoned\n        .checked_add(abandoned)\n        .unwrap_or_else(|| panic!(\"zombie abandonment accounting overflowed\"));",
         replace: "    bootstrap.abandoned = bootstrap.abandoned.saturating_add(abandoned);",
         breaks: "zombie abandonment accounting silently saturates",
@@ -418,7 +418,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 609,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),",
         replace: "        crate::UserIsolation::Closed => AddressSpace::for_user(),",
         breaks: "ring three opens without an admitted shared or paired isolation mode",
@@ -426,7 +426,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 712,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "        return if another_collector {
             CollectOutcome::Retained
         } else {
@@ -442,7 +442,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 716,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "            if zombies.settling[slot] {\n                return None;\n            }",
         replace: "            if false && zombies.settling[slot] {\n                return None;\n            }",
         breaks: "the same zombie can acquire a second settlement collector",
@@ -454,7 +454,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 721,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "    if !crate::maskable_interrupts_are_ready() {\n        warn!(\"user {which}: maskable interrupts are not admitted\");\n        refuse_cross(slot);\n    }",
         replace: "    if false {\n        warn!(\"user {which}: maskable interrupts are not admitted\");\n        refuse_cross(slot);\n    }",
         breaks: "aged interrupt-readiness evidence can cross the final user-transition door",
@@ -462,7 +462,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 723,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "fn refuse_cross(slot: usize) -> ! {\n    let _disabled = interrupt::disable();\n    orphan(slot);\n    thread::exit()\n}",
         replace: "fn refuse_cross(slot: usize) -> ! {\n    let _disabled = interrupt::disable();\n    let _ = slot;\n    thread::exit()\n}",
         breaks: "a final user-transition refusal can abandon its committed process owner",
@@ -481,7 +481,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1170,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/construction.rs",
         find: "    xstate::user_state_is_isolated()",
         replace: "    xstate::is_enabled()",
         breaks: "ring three trusts remembered extended-state enablement instead of the live isolation predicate",
@@ -489,7 +489,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1331,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "                table: bootstrap.table.identity_for_test(),",
         replace: "                table: bootstrap.table.identity_for_test().wrapping_add(1),",
         breaks: "a zombie record names a different process incarnation",
@@ -497,7 +497,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1332,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "    (launches, bootstraps, zombies)",
         replace: "    (\n        launches,\n        bootstraps + usize::from(zombies != 0),\n        zombies,\n    )",
         breaks: "a retained zombie is also counted as a live bootstrap record",
@@ -505,7 +505,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1333,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "            RECLAIMED_PAGES.fetch_add(success.observed_returned_pages, Ordering::AcqRel);",
         replace: "            RECLAIMED_PAGES.fetch_add(\n                success.observed_returned_pages + 1,\n                Ordering::AcqRel,\n            );",
         breaks: "successful collection overcounts returned user pages",
@@ -513,7 +513,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1334,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/reap.rs",
         find: "            RECLAIMED_TABLES.fetch_add(success.reclaimed.tables, Ordering::AcqRel);",
         replace: "            RECLAIMED_TABLES.fetch_add(\n                success.reclaimed.tables + 1,\n                Ordering::AcqRel,\n            );",
         breaks: "successful collection overcounts returned page-table frames",
@@ -521,9 +521,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1338,
-        file: "kernel/src/user.rs",
-        find: "#[cfg(feature = \"selftest\")]\nstatic REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
-        replace: "static REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
+        file: "kernel/src/user/reap.rs",
+        find: "#[cfg(feature = \"selftest\")]\npub(super) static REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
+        replace: "pub(super) static REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
         breaks: "mapping-reclaim evidence state reaches the shipped kernel",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -532,7 +532,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1526,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/load.rs",
         find: "        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
         replace: "        if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {",
         breaks: "the loader places a segment on the last canonical page",
@@ -540,7 +540,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1630,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "    if refused == 0 || REPORTED.swap(1, Ordering::AcqRel) != 0 {",
         replace: "    if refused == 0 || REPORTED.swap(refused, Ordering::AcqRel) == refused {",
         breaks: "each new unknown syscall can re-arm synchronous UART warning output",
@@ -548,7 +548,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1649,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/selftest.rs",
         find: "const INVALID_RETURN_STACK: u64 = 6;",
         replace: "const INVALID_RETURN_STACK: u64 = 0;",
         breaks: "the noncanonical-stack machine witness launches an ordinary program",
@@ -556,7 +556,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1650,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/selftest.rs",
         find: "const INVALID_RETURN_FLAGS: u64 = 7;",
         replace: "const INVALID_RETURN_FLAGS: u64 = 0;",
         breaks: "the nested-task machine witness launches an ordinary program",
@@ -564,7 +564,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2298,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "        EXECUTED.store(true, Ordering::Release);",
         replace: "        let _ = &EXECUTED;",
         breaks: "the shipped image reports no observation after a real user call",
@@ -575,7 +575,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2299,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "    if frame.code_selector() & 0b11 == 3 {\n        EXECUTED.store",
         replace: "    if true {\n        EXECUTED.store",
         breaks: "a call without saved CPL 3 can earn the shipped execution marker",
@@ -597,7 +597,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2301,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: " || EXECUTION_REPORTED.swap(true, Ordering::AcqRel)",
         replace: " || false",
         breaks: "the shipped user execution marker is repeated on every idle pass",
@@ -608,7 +608,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2302,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "!EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap",
         replace: "EXECUTION_REPORTED.swap",
         breaks: "the idle thread publishes shipped execution without any user call",
@@ -619,7 +619,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2305,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "info!(\"user: ring 3 call observed\");",
         replace: "info!(\"user: ring 3 call expected\");",
         breaks: "the sole shipped user execution producer drifts from both consumers",
@@ -630,7 +630,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2306,
-        file: "kernel/src/user.rs",
+        file: "kernel/src/user/call.rs",
         find: "static EXECUTED: AtomicBool = AtomicBool::new(false);",
         replace: "static EXECUTED: AtomicBool = AtomicBool::new(true);",
         breaks: "the shipped execution observation starts earned before the first instruction",
