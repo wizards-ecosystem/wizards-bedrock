@@ -776,9 +776,7 @@ fn called_functions(arm: &syn::Arm) -> BTreeSet<String> {
 #[test]
 fn every_direct_door_has_an_explicit_wait_owner() {
     let paths = Paths::discover().expect("workspace paths");
-    let source = std::fs::read_to_string(paths.root().join("kernel/src/user.rs"))
-        .expect("read kernel user calls");
-    let syntax = syn::parse_file(&source).expect("parse kernel user calls");
+    let syntax = super::module_syntax(&paths.root().join("kernel/src/user.rs"));
 
     let variants = call_enum(&syntax.items)
         .variants

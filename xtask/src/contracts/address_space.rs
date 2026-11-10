@@ -328,12 +328,14 @@ fn one_production_owner_binds_and_retires_each_address_space() {
     calls.sort();
     assert_eq!(
         calls,
-        [("kernel/src/user.rs".into(), "spawn_transaction".into())],
+        [(
+            "kernel/src/user/construction.rs".into(),
+            "spawn_transaction".into()
+        )],
         "production address-space binding owners changed"
     );
 
-    let user = std::fs::read_to_string(paths.root().join("kernel/src/user.rs"))
-        .expect("user process source");
+    let user = super::module_source(paths.root(), "kernel/src/user.rs");
     let lifecycle = address_space_binding_calls(&user).expect("parse user process source");
     assert_eq!(lifecycle.bound_stores, ["commit"]);
     assert_eq!(lifecycle.bound_releases, ["reclaim"]);
