@@ -50,7 +50,7 @@ session finds them collected.
 
 Not this phase's debt, recorded so nobody mistakes it: the handle-table and
 rights-taxonomy doc and the queue-layout doc are owed **before Phase 5**
-(`002`, open questions), and KASLR waits for Phase 12 (D-46).
+(`002`, open questions), and KASLR waits for old Phase 12 (D-46).
 
 ## Order of work (proposal)
 
@@ -271,7 +271,7 @@ a handler parks the count with the thread that owns it. The token type
 sixty-first — "the policy never needed its fallback" — failed. Not a policy
 fault: the yield path excludes the running thread from the candidates but
 not from the average, so when the yielder is the one behind the average,
-"nobody else is eligible" is the honest answer, and the thread should keep
+"nobody else is eligible" is the correct answer, and the thread should keep
 the CPU rather than hand it to round-robin. The fallback now belongs only to
 the preemption path, where everyone is considered and the policy's own tests
 promise an answer. A counter that exists to make an inconsistency visible
