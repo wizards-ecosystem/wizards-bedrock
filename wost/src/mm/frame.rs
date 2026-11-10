@@ -139,7 +139,7 @@ impl Segment {
     /// # Safety
     ///
     /// `count` frames at `address` must be an [`allocate_contiguous`] run, its handle forgotten.
-    /// No other `Segment` may name them; dropping each frees them, so two handles double free.
+    /// No other `Segment` may name any of them; each frees them on drop, so overlaps double free.
     pub(crate) const unsafe fn from_raw(address: Paddr, count: usize) -> Self {
         Self {
             first: (address / FRAME_SIZE) as usize,

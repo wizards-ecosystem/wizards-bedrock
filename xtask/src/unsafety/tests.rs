@@ -147,13 +147,13 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/boot/limine_glue.rs",
         3,
         0,
-        "c7fbcc3472a09291981c75584f340c22193606d683ee8039b3a6656e75855ba4",
+        "338f9c1cb8276628abddb251e57d4199c7614385004f0f13979b4bacb996c546",
     ),
     (
         "wost/src/boot.rs",
         0,
         1,
-        "b1d86c7d648b99c74af922fa24dc90e5d6bccb2a127f7ff9d6ec70489d99d6ee",
+        "b2b3501e4903b76729ee1976875d16183dfdf56a3634bf9c49bd8155bf58ab8a",
     ),
     (
         "wost/src/cell.rs",
@@ -165,13 +165,13 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/mm/direct.rs",
         6,
         1,
-        "7c5c8d0d9672a331098dcb09ddaf4877136183bbdb6eddc2d3be10e26e237499",
+        "6a0bbe85e2771ce23c9fc41f82215564a9b3bfbcc80cd95f5e81bb0bb76dbb39",
     ),
     (
         "wost/src/mm/frame.rs",
         3,
         2,
-        "a9f9467d634737b7a4cfee16353be9bd3520f5190f82e0c0b62457c952dc8072",
+        "037c1051eb93bcbe642e79d4f71e414318861e660b62d75eb43751d40aba7f0a",
     ),
     (
         "wost/src/mm/heap.rs",
@@ -183,7 +183,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/mm/selftest.rs",
         5,
         0,
-        "745a3fa3bcf2797ed596ec8bedd3bf96e77bd3ee8ffe6955928e13668303f466",
+        "791e050d4a47f4f2333065a744e3faad99ec7360918c72aec3f611b0120aab87",
     ),
     (
         "wost/src/mm/shared.rs",

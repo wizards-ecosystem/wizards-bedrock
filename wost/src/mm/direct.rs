@@ -30,6 +30,7 @@ impl<'authority> DirectSpan<'authority> {
     /// # Safety
     ///
     /// The `len` bytes at `physical` must stay allocated and direct-mapped for `'authority`.
+    /// They must back no live Rust reference meanwhile, since the span writes them through `&self`.
     pub(super) unsafe fn from_proven_run(physical: Paddr, len: u64) -> Option<Self> {
         let len = usize::try_from(len).ok()?;
         let base = direct_pointer(physical, len as u64)?;
