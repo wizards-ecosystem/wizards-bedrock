@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::{MAX_MODEL_FILE_BYTES, MAX_MODEL_PATH_LIST_BYTES, tracked_tree_digest};
 
 #[test]
 fn semantic_artifacts_are_bounded_before_and_during_allocation() {
