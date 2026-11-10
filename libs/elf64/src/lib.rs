@@ -1,5 +1,7 @@
 //! Just enough ELF64 to load a program: the header, and the segments.
 //!
+//! User bytes are hostile: a malformed image is an error, never a panic or out-of-bounds read.
+//!
 //! # Examples
 //!
 //! ```
@@ -259,6 +261,7 @@ impl Segment {
     }
 
     /// Whether its file contents fit inside an image of `bytes` bytes, without overflow.
+    /// A loader must ask this before copying, since parsing never checks where a header points.
     pub const fn contents_fit(self, bytes: usize) -> bool {
         match self.offset.checked_add(self.file_size) {
             Some(end) => end <= bytes as u64,
@@ -267,6 +270,7 @@ impl Segment {
     }
 
     /// Whether it claims more file bytes than memory to put them in.
+    /// A loader must refuse it, since copying `file_size` bytes would write past the mapping.
     pub const fn is_oversized(self) -> bool {
         self.file_size > self.memory_size
     }

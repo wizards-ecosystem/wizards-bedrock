@@ -76,6 +76,7 @@ impl<'table> DmarEntries<'table> {
             };
             let kind = u16::from_le_bytes([prefix[0], prefix[1]]);
             let entry_len = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
+            // Each minimum, the unknown kind's 4 too, rejects a zero length that never advances.
             let (minimum, scope_start) = match kind {
                 0 => (16, Some(16)), // DRHD
                 1 => (24, Some(24)), // RMRR
