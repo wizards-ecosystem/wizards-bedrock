@@ -305,8 +305,9 @@ pub(crate) fn require_direct_file_if_present(
     Ok(true)
 }
 
-/// A path check alone cannot stop a link swapped in before an ordinary open,
-/// so the handle is checked.
+/// A path check alone cannot stop a link swapped in before an ordinary open, so the opened
+/// handle is checked. Only the final component is guarded: Windows opens it without following
+/// a link, and elsewhere the post-open entry check refuses a swap. Earlier ones are not checked.
 pub(crate) fn open_real_file(path: &Path, label: &str) -> Result<File> {
     let file =
         open_without_following(path).with_context(|| format!("opening {}", path.display()))?;
