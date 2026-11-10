@@ -26,8 +26,8 @@ The inherited system destination, now owned jointly with Realm, is an OS that ca
 - run its own **compositor + window system** (Wayland-inspired protocol,
   possibly more custom) with a native widget toolkit
 - store files on **WizFS**, our own filesystem, behind a VFS layer, reached
-  late; the phases before it run on a read-only third-party
-  format (D-73)
+  late and deliberately, after a content-addressed object store on raw NVMe
+  (D-73, D-452)
 
 ## Core decisions
 
@@ -40,9 +40,9 @@ The inherited system destination, now owned jointly with Realm, is an OS that ca
 | Kernel shape | Monolithic, modular |
 | ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports; see `002-architecture.md` |
 | Process model | `spawn()` only, with no native `fork()` (compat-fork gated for the POSIX layer) |
-| Filesystem | VFS first, then a read-only third-party format; WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
+| Filesystem | VFS first, then a read-only third-party format, then a content-addressed object store on raw NVMe (D-452); WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
 | App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item. An artifact format does not choose the first-party source language (D-72, D-183) |
-| Security | W^X, NX, SMEP/SMAP/UMIP live; **every stack guarded**: thread (D-52), double-fault (D-89) and boot (D-92); KASLR deferred to Phase 12 with its cost named (D-46) |
+| Security | W^X, NX, SMEP/SMAP/UMIP live; **every stack guarded**: thread (D-52), double-fault (D-89) and boot (D-92); KASLR deferred to old Phase 12 with its cost named (D-46) |
 | Scheduler | EEVDF-inspired virtual deadlines, tickless |
 | Theme | Wizard/magic at product level (app names, shell personality); conventional naming in code |
 | Dev loop | QEMU (UEFI, serial stdio) minute-to-minute; VMware Workstation as milestone target |
@@ -74,7 +74,7 @@ reference, not followed linearly). Docs are numbered in creation order.
    merits); the
    console back buffer; the I/O APIC, which retires the polled keyboard
    (D-37) and takes down D-33's wall; write-combining. KASLR is deferred to
-   Phase 12 with its cost named (D-46). Guarding the boot and double-fault
+   old Phase 12 with its cost named (D-46). Guarding the boot and double-fault
    stacks and moving to growable stacks were left to Phase 5 and done there
    (D-89, D-92); memory objects moved there too, with D-44's untyped
    decision.
@@ -126,3 +126,10 @@ reference, not followed linearly). Docs are numbered in creation order.
 
 From Phase 7 on, `021-roadmap.md` holds the order; it replaces the phases
 first listed here (D-452).
+
+Decisions before D-452 and older docs number later phases by the list it
+replaced: 7 userland, 8 network, 9 POSIX gateway and compatibility runtimes,
+10 pixels, 11 document web, 12 side-quests (SMP, USB, sound, CET shadow
+stacks, signed and measured boot, real hardware boot; D-46 also defers KASLR
+there), 13 WizFS. This doc and `002` write those as old Phase N; `021`
+numbers its phases differently.
