@@ -316,8 +316,8 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     };
     let base = top.address() - FRAME_BYTES;
     let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
-    // SAFETY: `init` found the top page writable, and `base` is eight-byte aligned inside it; the
-    // slot is not `Alive`, a dead thread never resumes, and the lock bars a racing fabrication.
+    // SAFETY: `init` found the top page writable; `base`, `FRAME_BYTES` below the page-aligned top,
+    // is aligned in that page, nothing uses a non-`Alive` slot's stack, and the lock is held.
     unsafe { core::ptr::write(base as usize as *mut [u64; FRAME_WORDS], frame) };
 
     let word = CONTEXTS.as_mut_ptr().cast::<u64>().wrapping_add(slot);
@@ -476,14 +476,16 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     let current = admit(&table, slot)?;
 
     // Revoke the old route before changing the logical current task, so an NMI during the
-    // bookkeeping fails closed instead of dispatching through the previous task's route.
+    // bookkeeping fails closed instead of dispatching through the previous task's otherwise-valid
+    // route.
     kpti::begin_route_update();
     table.slots[current].state = leaving;
     CURRENT.store(slot, Ordering::Release);
 
-    // Page-table and privilege-stack state move together, the kernel root for spaceless slots. A
-    // paired slot publishes its route and transition RSP0 in this interrupt-excluded transaction;
-    // every other slot clears the route and restores its ordinary RSP0 before it can run.
+    // Every switch moves page-table and privilege-stack state together, the kernel root for slots
+    // without a space. A paired slot publishes its complete route and transition RSP0 in this
+    // interrupt-excluded transaction; every other slot clears the route and restores its ordinary
+    // RSP0 before it can run.
     let roots = table.slots[slot].page_table;
     let wanted = roots
         .map(AddressSpaceRoots::full_root)
@@ -507,8 +509,8 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         restore_ordinary_entry(&table, slot);
     }
     if wanted != cpu::page_table_base() {
-        // SAFETY: binding matched each higher-half top-level entry to the kernel root, frozen at
-        // activation above later device maps; IF is clear and the lock bars interleaved CR3 writes.
+        // SAFETY: `bind_address_space` matched the higher half to the kernel root, frozen at
+        // activation so device maps stay under shared entries; IF is clear and the lock held.
         unsafe { cpu::set_page_table_base(wanted) };
     }
     if paired {
@@ -1015,8 +1017,8 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) ->
     );
     disabled.commit_disabled();
 
-    // SAFETY: `stack` proves a mapped, writable, guarded top nothing else holds, `is_installed`
-    // just confirmed the CPU walks its space, and `continuation` never returns, so none is owed.
+    // SAFETY: `stack` proves a mapped, writable, guarded top nothing else holds; `is_installed` saw
+    // the CPU walk its space; `continuation` never returns, so no return address is owed.
     unsafe { load_stack(stack.top(), continuation, arg) }
 }
 

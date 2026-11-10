@@ -1,4 +1,5 @@
-//! Interrupt and exception entry, and interrupt admission, whose safety needs this loaded table.
+//! Interrupt and exception entry, and interrupt admission, whose safety needs this table loaded
+//! with every gate present.
 //!
 //! Stable Rust has no interrupt calling convention, so assembly stubs normalize CPU frames before
 //! a common tail calls [`Handler`]. Every gate is an interrupt gate, so a handler starts with
@@ -387,7 +388,8 @@ pub fn arm_access_clear() {
         cpu::Protections::enabled().smap,
         "arming the access clear without smap would fault on every trap"
     );
-    // SAFETY: written once during boot, before any trap can be taken from ring 3, on the one CPU.
+    // SAFETY: written once during boot, before any trap can be taken from ring 3, on the one CPU
+    // there is.
     unsafe { SMAP_ARMED = 1 };
 }
 
@@ -793,7 +795,7 @@ unsafe extern "C" {
 /// a completely installed shared or paired entry route.
 pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
     // SAFETY: the caller supplies the mapping and route facts the assembly boundary requires, and
-    // it consumes both values before changing roots.
+    // the boundary consumes both values before changing roots.
     unsafe { wost_leave_for_user(entry, stack_top) }
 }
 

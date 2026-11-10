@@ -24,7 +24,8 @@ pub use super::paging::USER_END;
     "  mov rcx, rdx",
     "  test rcx, rcx",
     "  jz 3f",
-    // A fault between these two labels is the program's bad pointer, never the kernel's bug.
+    // Everything between these two labels can fault, and such a fault is the program's bad pointer,
+    // never the kernel's bug.
     ".globl wost_copy_fault_start",
     "wost_copy_fault_start:",
     "  mov al, [rsi]",
@@ -177,8 +178,8 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         if self.opened {
-            // SAFETY: as `open`; `clac` clears the flag `stac` set and is as much a memory barrier,
-            // since an access moved after it would fault.
+            // SAFETY: as `open`; `clac` clears the `AC` flag `stac` set and, like `stac`, is a
+            // memory barrier, since an access moved after it would fault.
             unsafe { asm!("clac", options(nostack)) };
         }
     }
@@ -226,8 +227,8 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     }
 
     let window = Window::open();
-    // SAFETY: `admits` proved every source page live and user-readable; `into` is a disjoint live
-    // kernel slice; the window covers this call, and the fixup returns a vanished page's remainder.
+    // SAFETY: `admits` proved each source page live and user-readable, `into` is a disjoint live
+    // kernel slice, the window covers exactly this call, and the fixup returns any remainder.
     let left = unsafe { wost_copy_across(into.as_mut_ptr(), from as *const u8, into.len()) };
     drop(window);
     if left != 0 {

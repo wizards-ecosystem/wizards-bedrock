@@ -317,7 +317,8 @@ pub(super) fn publish_route(
 
 fn refuse_route(reason: RouteError) -> Result<(), RouteError> {
     // `ROUTE_UPDATING` stays: it is no entry authority, and assembly makes every interrupt
-    // terminal until the caller clears it or stops, so a refused successor cannot revive the task.
+    // terminal until the caller clears it or stops, so no refused successor revives the published
+    // task.
     Err(reason)
 }
 

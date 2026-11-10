@@ -712,8 +712,8 @@ pub(crate) unsafe fn flush_cache_line(address: *const u8) {
 ///
 /// # Panics
 ///
-/// If `CR4.PCIDE` is set: a `CR3` reload flushes inactive roots, so tagged translations cannot
-/// be preserved.
+/// If `CR4.PCIDE` is set. This kernel flushes inactive roots by reloading `CR3`, and a tagged
+/// translation would survive that reload.
 pub(super) unsafe fn set_page_table_base(address: u64) {
     assert!(
         !page_table_context_ids_are_enabled(),
