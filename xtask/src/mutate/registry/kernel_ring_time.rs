@@ -3,7 +3,7 @@ use super::{Caught, Mutation};
 pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 169,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/ring.rs",
         find: "            if published == 0 || published > SUBMISSIONS {",
         replace: "            if published == 0 {",
         breaks: "a runaway submission tail is bounded",
@@ -107,7 +107,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // (D-173).
     Mutation {
         id: 272,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        if !held.contains(Rights::TRAVERSE) {
             return Some(refuse(token, STATUS_DENIED));
         }",
@@ -121,7 +121,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // path, and a right that grants nothing is a syscall name in disguise.
     Mutation {
         id: 273,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "                    request
                         .held
                         .intersection(Rights::UNIVERSAL)
@@ -140,7 +140,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // rights its parent gave up. TRAVERSE authorizes READ, not re-delegation.
     Mutation {
         id: 274,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "                    request
                         .held
                         .intersection(Rights::UNIVERSAL)
@@ -155,7 +155,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // identity must not copy rights its parent did not hold.
     Mutation {
         id: 275,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "                crate::vfs::Node::Directory(directory) => {
                     (crate::object::directory(directory), request.held)
                 }",
@@ -170,7 +170,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // table must report quota first, as Duplicate does.
     Mutation {
         id: 276,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        let Ok(reservation) = table.reserve_slot() else {
             return Some(refuse(token, STATUS_NO_HANDLE_SLOT));
         };
@@ -209,7 +209,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // alone says where the bytes came from.
     Mutation {
         id: 278,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {",
         replace: "        match crate::vfs::read(request.file, 0, &mut scratch[..request.wanted]) {",
         breaks: "a read starts where it was told to",
@@ -219,7 +219,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // only the driver's command counter can tell the kernels apart (D-173).
     Mutation {
         id: 279,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/ring.rs",
         find: "    (end <= DATA_BYTES).then_some((at, len))",
         replace: "    let _ = end;
     Some((at, len))",
@@ -243,7 +243,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // billion and one is answered with byte one.
     Mutation {
         id: 281,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);",
         replace: "        let offset = submission.offset as u32;",
         breaks: "an offset that does not fit is past the end",
@@ -283,7 +283,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 337,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "const WORK_DEPTH: usize = 8;",
         replace: "const WORK_DEPTH: usize = 7;",
         breaks: "file-work admission accepts its exact documented finite capacity",
@@ -342,7 +342,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 491,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/ring.rs",
         find: "        let tail = ring.protocol.completions().tail();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
         replace: "        let tail = ring.protocol.completions().tail();\n        drop(ring);\n        let mut ring = self.ring.lock_leaf();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
         breaks: "a later kernel completion can publish past an unwritten earlier slot",
@@ -421,7 +421,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 683,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "                && current == self.expected,",
         replace: "                && current != self.expected,",
         breaks: "refused file work can roll back a queued operation it no longer owns",
@@ -432,7 +432,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 684,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "                !entry.settling && *entry == self.work.expected,",
         replace: "                entry.settling && *entry == self.work.expected,",
         breaks: "running file work can start after its pending entry began settling",
@@ -455,7 +455,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // The forged head keeps every other empty-ring relation valid (D-396).
     Mutation {
         id: 686,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        if self.head >= WORK_DEPTH || self.tail >= WORK_DEPTH || self.len > WORK_DEPTH {",
         replace: "        if self.head > WORK_DEPTH || self.tail >= WORK_DEPTH || self.len > WORK_DEPTH {",
         breaks: "a work queue accepts its exclusive head bound as an index",
@@ -463,7 +463,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 687,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "            pending.checked_add(1)",
         replace: "            Some(pending.wrapping_add(1))",
         breaks: "reap request admission wraps its outstanding count through zero",
@@ -471,7 +471,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 688,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "            pending.checked_sub(1)",
         replace: "            Some(pending.wrapping_sub(1))",
         breaks: "an empty reap request counter wraps to the maximum",
@@ -479,7 +479,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 987,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "            WORKER_IS_PAUSED.store(true, Ordering::Release);",
         replace: "            WORKER_IS_PAUSED.store(false, Ordering::Release);",
         breaks: "the queue worker never acknowledges its release-race pause",
@@ -487,7 +487,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1539,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        *phase = WorkPhase::Running;",
         replace: "        *phase = WorkPhase::Queued;",
         breaks: "a read begins without advancing its pending entry into the running state",
@@ -498,7 +498,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1771,
-        file: "kernel/src/queue.rs",
+        file: "kernel/src/queue/work.rs",
         find: "        if !held.contains(Rights::TRAVERSE) {\n            return Some(refuse(token, STATUS_DENIED));\n        }\n\n        if !worker_is_ready() {",
         replace: "        if !held.contains(Rights::TRAVERSE) {\n            return Some(refuse(token, STATUS_DENIED));\n        }\n\n        if crate::vfs::resolve(directory, &path[..len]).is_err() {\n            return Some(refuse(token, STATUS_NO_ENTRY));\n        }\n        if !worker_is_ready() {",
         breaks: "OpenAt reaches filesystem and controller locks from RingEnter trap context",

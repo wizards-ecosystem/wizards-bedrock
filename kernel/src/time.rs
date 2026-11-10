@@ -14,8 +14,6 @@
 //! revocation.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use timebase::Timebase;
@@ -26,6 +24,21 @@ use x86_pit::calibrate::WatchdogVerdict;
 use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
 
 use crate::arch::current::pit::Pit;
+
+#[cfg(feature = "selftest")]
+mod selftest;
+
+#[cfg(feature = "selftest")]
+use selftest::{
+    APIC_HZ, EXPIRIES, LAST_WATCHDOG_EXPECTED, LAST_WATCHDOG_PIT, LAST_WATCHDOG_TSC,
+    REFUSE_CALIBRATION,
+};
+#[cfg(feature = "selftest")]
+pub(crate) use selftest::{
+    adjacent_readings_for_test, advance_scheduler_for_test, apic_hz,
+    every_refusal_reads_back_as_itself, expiries, last_watchdog_sample,
+    with_watchdog_disagreement_for_test, without_calibration_for_test,
+};
 
 /// Nanoseconds in a millisecond.
 pub(crate) const NANOSECONDS_PER_MS: u64 = 1_000_000;
@@ -114,10 +127,6 @@ static NANOSECONDS_TO_APIC: AtomicU64 = AtomicU64::new(0);
 /// The measured counter rate used by the watchdog and time page.
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 
-/// The measured APIC rate observed by the self-test.
-#[cfg(feature = "selftest")]
-static APIC_HZ: AtomicU64 = AtomicU64::new(0);
-
 /// Nanoseconds at which the timing subsystem was revoked.
 static REVOKED_AT_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -126,14 +135,6 @@ static SCHEDULER_NOW_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Why the live timing subsystem was revoked; zero means it remains active.
 static REVOCATION: AtomicUsize = AtomicUsize::new(0);
-
-/// Last live watchdog operands observed by the self-test.
-#[cfg(feature = "selftest")]
-static LAST_WATCHDOG_TSC: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "selftest")]
-static LAST_WATCHDOG_PIT: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "selftest")]
-static LAST_WATCHDOG_EXPECTED: AtomicU64 = AtomicU64::new(0);
 
 /// Consecutive conclusive watchdog disagreements.
 static WATCHDOG_DISAGREEMENTS: AtomicUsize = AtomicUsize::new(0);
@@ -179,9 +180,6 @@ impl Revocation {
         }
     }
 }
-
-#[cfg(feature = "selftest")]
-static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Why the clock could not be started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,38 +540,6 @@ impl Refusal {
     }
 }
 
-#[cfg(feature = "selftest")]
-impl Refusal {
-    /// Every refusal, so a check can sweep them without a list of its own.
-    ///
-    /// D-161: the list a test sweeps can itself fall behind.
-    pub(crate) const ALL: [Self; 7] = [
-        Self::None,
-        Self::CrystalStepped,
-        Self::NeverClosed,
-        Self::CounterWentBack,
-        Self::Overshot,
-        Self::NotBelievable,
-        Self::Disagreed,
-    ];
-}
-
-/// Every refusal reads back as the one that was recorded.
-///
-/// A diagnosis that names the wrong guard is worse than one that names none,
-/// and the way it comes to name the wrong guard is a discriminant and a `match`
-/// arm drifting apart — which nothing else here would notice (D-176).
-#[cfg(feature = "selftest")]
-pub(crate) fn every_refusal_reads_back_as_itself() -> bool {
-    let held = LAST_REFUSAL.load(Ordering::Relaxed);
-    let faithful = Refusal::ALL.iter().all(|&refusal| {
-        LAST_REFUSAL.store(refusal as usize, Ordering::Relaxed);
-        Refusal::last() == refusal
-    });
-    LAST_REFUSAL.store(held, Ordering::Relaxed);
-    faithful
-}
-
 /// The last reason a window was refused, for the warning that follows.
 static LAST_REFUSAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -686,18 +652,6 @@ fn nanoseconds_at(elapsed: Timebase, timestamp: u64) -> u64 {
     elapsed.convert(timestamp.wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
 }
 
-/// Adjacent counter readings converted through the public clock's timebase.
-#[cfg(feature = "selftest")]
-pub(crate) fn adjacent_readings_for_test() -> (u64, u64) {
-    let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
-    let first = cpu::timestamp();
-    let second = cpu::timestamp();
-    (
-        nanoseconds_at(elapsed, first),
-        nanoseconds_at(elapsed, second),
-    )
-}
-
 /// Nanoseconds used only for scheduler progress.
 ///
 /// Before revocation this is the public monotonic clock. Afterwards each APIC
@@ -747,20 +701,6 @@ pub(crate) fn is_calibrated() -> bool {
     #[cfg(feature = "selftest")]
     let calibrated = calibrated && !REFUSE_CALIBRATION.load(Ordering::Acquire);
     calibrated
-}
-
-#[cfg(feature = "selftest")]
-static REFUSE_CALIBRATION: AtomicBool = AtomicBool::new(false);
-
-/// Run a check through the production uncalibrated-clock predicate.
-#[cfg(feature = "selftest")]
-pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let disabled = interrupt::disable();
-    let refused = REFUSE_CALIBRATION.swap(true, Ordering::AcqRel);
-    let result = check();
-    REFUSE_CALIBRATION.store(refused, Ordering::Release);
-    disabled.restore();
-    result
 }
 
 /// Ask for a timer interrupt at `deadline`, or as soon as the hardware can
@@ -928,62 +868,7 @@ fn revoke(reason: Revocation) -> bool {
     true
 }
 
-/// Run a check while a stopped-TSC watchdog sample revokes the live clock.
-#[cfg(feature = "selftest")]
-pub(crate) fn with_watchdog_disagreement_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let disabled = interrupt::disable();
-    let expected = WINDOW_TICKS;
-    for _ in 0..WATCHDOG_FAILURES {
-        act_on_watchdog(calibrate::watchdog_verdict(
-            0,
-            0,
-            expected,
-            expected,
-            TSC_HZ.load(Ordering::Relaxed),
-        ));
-    }
-    let result = check();
-    WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release);
-    REVOCATION.store(Revocation::None as usize, Ordering::Release);
-    assert_eq!(
-        crate::timepage::publish(crate::timepage::MODE_COUNTER, origin_ticks(), conversion(),),
-        crate::timepage::Publication::Published,
-        "the restored time page refused the live clock"
-    );
-    disabled.restore();
-    result
-}
-
-/// Advance the private fallback epoch through its production conversion.
-#[cfg(feature = "selftest")]
-pub(crate) fn advance_scheduler_for_test() {
-    advance_scheduler(WINDOW_TICKS);
-}
-
-/// Operands behind the most recent live watchdog decision.
-#[cfg(feature = "selftest")]
-pub(crate) fn last_watchdog_sample() -> (u64, u64, u64) {
-    (
-        LAST_WATCHDOG_TSC.load(Ordering::Relaxed),
-        LAST_WATCHDOG_PIT.load(Ordering::Relaxed),
-        LAST_WATCHDOG_EXPECTED.load(Ordering::Relaxed),
-    )
-}
-
-/// Timer interrupts taken since the clock started.
-#[cfg(feature = "selftest")]
-pub(crate) fn expiries() -> u64 {
-    EXPIRIES.load(Ordering::Relaxed)
-}
-
 /// The measured rate of the timestamp counter; zero if calibration declined.
 pub(crate) fn counter_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)
-}
-
-/// The measured rate of the APIC timer's divided clock; zero if calibration
-/// declined.
-#[cfg(feature = "selftest")]
-pub(crate) fn apic_hz() -> u64 {
-    APIC_HZ.load(Ordering::Relaxed)
 }

@@ -131,7 +131,7 @@ mod tests {
                     std::fs::read_to_string(root.join(relative)).expect("wost mm source")
                 })
                 .concat(),
-            std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue source"),
+            crate::contracts::module_source(&root, "kernel/src/queue.rs"),
         )
     }
 
@@ -408,7 +408,7 @@ mod tests {
         );
 
         let take_start = queue
-            .find("    fn take(&self, snapshot: &Snapshot)")
+            .find("fn take(&self, snapshot: &Snapshot)")
             .expect("queue submission take");
         let take = method_at(&queue, take_start);
         let reserve = take
