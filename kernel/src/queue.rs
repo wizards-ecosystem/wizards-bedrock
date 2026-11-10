@@ -101,6 +101,8 @@ pub(crate) enum Opcode {
     /// Return the kernel's uptime in nanoseconds.
     Uptime,
     /// Duplicate `handle`, narrowing its rights to those `argument` carries.
+    ///
+    /// The completion's value is the new handle.
     Duplicate,
     /// Complete once `argument` nanoseconds have passed.
     Timer,
@@ -112,6 +114,7 @@ pub(crate) enum Opcode {
     /// Resolve a path from a directory handle and produce a handle for what it names.
     ///
     /// `handle` is the directory, and `argument` and `length` bound the path in the data area.
+    /// The completion's value is the new handle.
     OpenAt,
     /// Read bytes of file `handle` from `offset` into the data area.
     ///
@@ -157,6 +160,7 @@ pub(crate) struct Completion {
     pub(crate) token: u32,
     /// Zero, or the refusal.
     pub(crate) status: u32,
+    /// The operation's result.
     pub(crate) value: u64,
 }
 
@@ -383,8 +387,10 @@ impl Queue {
     ///
     /// As [`AddressSpace::map_shared_ring`].
     ///
-    /// `&mut self` reaches the run through `get_mut`: no leaf guard may be held across the
-    /// mapping's allocations, and copying the address out would hand the mapper a bare number.
+    /// `&mut self` reaches the run through `get_mut`, because mapping allocates page-table frames
+    /// and no leaf guard may span an allocation, which `lock_leaf` forbids.
+    /// Copying the address out instead would hand the mapper a bare number where the type is the
+    /// evidence.
     pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
         space.map_shared_ring(
             at,
@@ -498,7 +504,10 @@ impl Queue {
         }
     }
 
-    /// Record an operation as in flight and say when it is due, reading the clock before the leaf.
+    /// Record an operation as in flight and say when it is due.
+    ///
+    /// The clock is read before the guard is taken, because reading it is a call and a leaf guard
+    /// encloses no call.
     fn defer(&self, submission: Submission) -> Option<u64> {
         let deadline_ns = crate::time::now_ns().saturating_add(submission.argument);
         self.pending
