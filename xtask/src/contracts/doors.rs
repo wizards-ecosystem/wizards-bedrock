@@ -101,8 +101,7 @@ impl<'ast> Visit<'ast> for OpenAtBoundary {
 fn open_at_storage_work_is_deferred_out_of_trap_context() {
     const RELATIVE: &str = "kernel/src/queue.rs";
     let paths = Paths::discover().expect("workspace paths");
-    let source = std::fs::read_to_string(paths.root().join(RELATIVE)).expect("read queue source");
-    let syntax = syn::parse_file(&source).expect("parse queue source");
+    let syntax = super::module_syntax(&paths.root().join(RELATIVE));
 
     let mut admission = OpenAtBoundary::default();
     Visit::visit_impl_item_fn(

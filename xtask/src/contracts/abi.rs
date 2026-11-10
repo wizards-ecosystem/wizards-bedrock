@@ -1495,9 +1495,7 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
             .as_str()
     };
 
-    let queue = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue.rs"),
-    );
+    let queue = rust_without_comments(&super::module_source(root, "kernel/src/queue.rs"));
     let vfs = rust_without_comments(
         &std::fs::read_to_string(root.join("kernel/src/vfs.rs")).expect("vfs.rs"),
     );
@@ -1566,9 +1564,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         .expect("xtask sits below the workspace root");
     let header = std::fs::read_to_string(root.join("fixtures/abi-pressure/abi/wizard_abi.h"))
         .expect("fixtures/abi-pressure/abi/wizard_abi.h");
-    let queue = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue.rs"),
-    );
+    let queue = rust_without_comments(&super::module_source(root, "kernel/src/queue.rs"));
     let user = rust_without_comments(&super::module_source(root, "kernel/src/user.rs"));
     let proto = rust_without_comments(
         &std::fs::read_to_string(root.join("libs/ring-proto/src/lib.rs")).expect("ring-proto"),
@@ -1579,9 +1575,8 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     let x86_paging = rust_without_comments(
         &std::fs::read_to_string(root.join("libs/x86-paging/src/lib.rs")).expect("x86-paging"),
     );
-    let timepage_source = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/timepage.rs")).expect("timepage.rs"),
-    );
+    let timepage_source =
+        rust_without_comments(&super::module_source(root, "kernel/src/timepage.rs"));
     let vectors_source = rust_without_comments(
         &std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs")).expect("vector.rs"),
     );

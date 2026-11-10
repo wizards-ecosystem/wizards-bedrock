@@ -749,26 +749,26 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
         (
             "kernel/src/time.rs",
             &[
-                ("APIC_HZ", 3),
-                ("LAST_WATCHDOG_TSC", 3),
-                ("LAST_WATCHDOG_PIT", 3),
-                ("LAST_WATCHDOG_EXPECTED", 3),
-                ("EXPIRIES", 3),
+                ("APIC_HZ", 4),
+                ("LAST_WATCHDOG_TSC", 4),
+                ("LAST_WATCHDOG_PIT", 4),
+                ("LAST_WATCHDOG_EXPECTED", 4),
+                ("EXPIRIES", 4),
             ],
         ),
         (
             "kernel/src/timepage.rs",
-            &[("WINDOW_LEFT_PREEMPTIBLE", 3), ("WINDOW_NEVER_OPENED", 3)],
+            &[("WINDOW_LEFT_PREEMPTIBLE", 4), ("WINDOW_NEVER_OPENED", 4)],
         ),
         (
             "kernel/src/queue.rs",
             &[
                 ("settlement_refusals", 4),
-                ("LIVE_QUEUES", 4),
-                ("WORKER_REAPS", 3),
-                ("WORKER_RETAINED", 3),
-                ("WORKER_IS_PAUSED", 5),
-                ("WORK_RUNS", 3),
+                ("LIVE_QUEUES", 5),
+                ("WORKER_REAPS", 4),
+                ("WORKER_RETAINED", 4),
+                ("WORKER_IS_PAUSED", 6),
+                ("WORK_RUNS", 4),
             ],
         ),
         (
