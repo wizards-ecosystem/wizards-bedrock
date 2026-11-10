@@ -118,20 +118,7 @@ impl Inventory {
         targets: &[CargoTarget],
         authority: Option<&EntryContractAuthority>,
     ) -> Result<Self> {
-        let mut audited = BTreeSet::new();
-        for relative in SOURCE_ROOTS {
-            let mut paths = Vec::new();
-            collect_rust_files(&root.join(relative), &mut paths)?;
-            audited.extend(paths);
-        }
-        audited.retain(|path| audited_source(root, path));
-        let mut paths = Vec::new();
-        for directory in COPY_DIRECTORIES {
-            let directory = root.join(directory);
-            collect_optional_rust_files(&directory, &mut paths)?;
-        }
-        paths.sort();
-        paths.dedup();
+        let (audited, paths) = discover_sources(root)?;
         let contexts = discover_module_contexts(root, &paths, &audited, targets)?;
         let macro_policies = discover_macro_policies(root, &paths, &contexts)?;
 
@@ -157,22 +144,7 @@ impl Inventory {
             let Some(context) = contexts.get(&relative) else {
                 continue;
             };
-            let origins = targets
-                .iter()
-                .filter(|target| {
-                    target.package == context.package
-                        && target.relative == context.target_root
-                        && target.kind == context.target_kind
-                        && target.name.replace('-', "_") == context.crate_name
-                })
-                .collect::<Vec<_>>();
-            let [origin] = origins.as_slice() else {
-                bail!(
-                    "{} resolves to {} Cargo target origins",
-                    relative.display(),
-                    origins.len()
-                );
-            };
+            let origin = source_origin(&relative, context, targets)?;
             let syntax =
                 syn::parse_file(&text).with_context(|| format!("parsing {}", path.display()))?;
             validate_kernel_entry_source(&relative, context, &syntax)?;
@@ -180,26 +152,14 @@ impl Inventory {
             if audited.contains(&path) {
                 validate_audited_attributes(&relative, &syntax)?;
             }
-            let file = files.len();
-            let mut non_call_uses = NonCallUses::default();
-            non_call_uses.visit_file(&syntax);
-            let mut macro_syntax = MacroSyntax {
-                unqualified_standard: *macro_policies
-                    .get(&context.target_root)
-                    .context("a classified source has no macro-resolution policy")?,
-                ..MacroSyntax::default()
-            };
-            macro_syntax.visit_file(&syntax);
-            let mut dispatch_sites = DispatchSites::default();
-            dispatch_sites.visit_file(&syntax);
-            let mut value_constructions = ValueConstructions::default();
-            value_constructions.visit_file(&syntax);
+            let source =
+                SourceFile::scan(relative, context, origin, text, &syntax, &macro_policies)?;
             let trait_imports = TraitImports::collect_in_scope(&syntax.items, &context.scope);
-            {
-                let mut collector = Collector {
+            collect_source_nodes(
+                Collector {
                     audit: audited.contains(&path),
-                    file,
-                    relative: &relative,
+                    file: files.len(),
+                    relative: &source.relative,
                     nodes: &mut nodes,
                     trait_imports: &trait_imports,
                     unsupported_macros: Vec::new(),
@@ -210,58 +170,18 @@ impl Inventory {
                     target_kind: context.target_kind,
                     language_main: context.language_main,
                     lexical_item_depth: 0,
-                };
-                for item in &syntax.items {
-                    collector.item(item, context.availability);
-                }
-                ensure!(
-                    collector.unsupported_macros.is_empty(),
-                    "{} contains item macro invocation(s) whose public expansion the API audit cannot inventory: {}",
-                    relative.display(),
-                    collector.unsupported_macros.join(", ")
-                );
-            }
-            files.push(SourceFile {
-                relative,
-                crate_name: context.crate_name.clone(),
-                origin: (*origin).clone(),
-                text,
-                non_call_uses: non_call_uses.ranges,
-                macro_syntax: macro_syntax.ranges,
-                transparent_macros: macro_syntax.transparent,
-                macro_paths: macro_syntax.paths,
-                dispatch_sites: dispatch_sites.sites,
-                value_constructions: value_constructions.sites,
-            });
+                },
+                &syntax.items,
+                context.availability,
+            )?;
+            files.push(source);
         }
 
         ensure!(
             nodes.iter().any(|node| node.report),
             "the public API inventory is empty"
         );
-        nodes.sort_by_key(|node| {
-            (
-                files[node.file].relative.clone(),
-                node.insertion.line,
-                node.insertion.column,
-                node.label.clone(),
-            )
-        });
-        let codes = antichain_codes(nodes.iter().filter(|node| node.instrument).count());
-        let antichain_rounds = codes
-            .iter()
-            .map(|code| 64 - code.leading_zeros() as usize)
-            .max()
-            .unwrap_or(0);
-        let mut codes = codes.into_iter();
-        for (id, node) in nodes.iter_mut().enumerate() {
-            node.id = id;
-            if node.instrument {
-                node.code = codes
-                    .next()
-                    .with_context(|| format!("assigning an antichain code to {}", node.label))?;
-            }
-        }
+        let antichain_rounds = assign_ids_and_codes(&mut nodes, &files)?;
         let expects_entry = targets.iter().any(|target| {
             target.package == crate::paths::KERNEL_PACKAGE && target.kind == CargoTargetKind::Bin
         });
@@ -466,6 +386,129 @@ pub(super) fn range(span: Span) -> SourceRange {
         start: span.start(),
         end: span.end(),
     }
+}
+
+impl SourceFile {
+    fn scan(
+        relative: PathBuf,
+        context: &ModuleContext,
+        origin: &CargoTarget,
+        text: String,
+        syntax: &syn::File,
+        macro_policies: &BTreeMap<PathBuf, bool>,
+    ) -> Result<Self> {
+        let mut non_call_uses = NonCallUses::default();
+        non_call_uses.visit_file(syntax);
+        let mut macro_syntax = MacroSyntax {
+            unqualified_standard: *macro_policies
+                .get(&context.target_root)
+                .context("a classified source has no macro-resolution policy")?,
+            ..MacroSyntax::default()
+        };
+        macro_syntax.visit_file(syntax);
+        let mut dispatch_sites = DispatchSites::default();
+        dispatch_sites.visit_file(syntax);
+        let mut value_constructions = ValueConstructions::default();
+        value_constructions.visit_file(syntax);
+        Ok(Self {
+            relative,
+            crate_name: context.crate_name.clone(),
+            origin: origin.clone(),
+            text,
+            non_call_uses: non_call_uses.ranges,
+            macro_syntax: macro_syntax.ranges,
+            transparent_macros: macro_syntax.transparent,
+            macro_paths: macro_syntax.paths,
+            dispatch_sites: dispatch_sites.sites,
+            value_constructions: value_constructions.sites,
+        })
+    }
+}
+
+fn discover_sources(root: &Path) -> Result<(BTreeSet<PathBuf>, Vec<PathBuf>)> {
+    let mut audited = BTreeSet::new();
+    for relative in SOURCE_ROOTS {
+        let mut paths = Vec::new();
+        collect_rust_files(&root.join(relative), &mut paths)?;
+        audited.extend(paths);
+    }
+    audited.retain(|path| audited_source(root, path));
+    let mut paths = Vec::new();
+    for directory in COPY_DIRECTORIES {
+        let directory = root.join(directory);
+        collect_optional_rust_files(&directory, &mut paths)?;
+    }
+    paths.sort();
+    paths.dedup();
+    Ok((audited, paths))
+}
+
+fn source_origin<'targets>(
+    relative: &Path,
+    context: &ModuleContext,
+    targets: &'targets [CargoTarget],
+) -> Result<&'targets CargoTarget> {
+    let origins = targets
+        .iter()
+        .filter(|target| {
+            target.package == context.package
+                && target.relative == context.target_root
+                && target.kind == context.target_kind
+                && target.name.replace('-', "_") == context.crate_name
+        })
+        .collect::<Vec<_>>();
+    let [origin] = origins.as_slice() else {
+        bail!(
+            "{} resolves to {} Cargo target origins",
+            relative.display(),
+            origins.len()
+        );
+    };
+    Ok(*origin)
+}
+
+fn collect_source_nodes(
+    mut collector: Collector<'_>,
+    items: &[Item],
+    availability: Availability,
+) -> Result<()> {
+    for item in items {
+        collector.item(item, availability);
+    }
+    ensure!(
+        collector.unsupported_macros.is_empty(),
+        "{} contains item macro invocation(s) whose public expansion the API audit cannot inventory: {}",
+        collector.relative.display(),
+        collector.unsupported_macros.join(", ")
+    );
+    Ok(())
+}
+
+fn assign_ids_and_codes(nodes: &mut [Node], files: &[SourceFile]) -> Result<usize> {
+    nodes.sort_by_key(|node| {
+        (
+            files[node.file].relative.clone(),
+            node.insertion.line,
+            node.insertion.column,
+            node.label.clone(),
+        )
+    });
+    let codes = antichain_codes(nodes.iter().filter(|node| node.instrument).count());
+    let antichain_rounds = codes
+        .iter()
+        .map(|code| 64 - code.leading_zeros() as usize)
+        .max()
+        .unwrap_or(0);
+    let mut codes = codes.into_iter();
+    for (id, node) in nodes.iter_mut().enumerate() {
+        node.id = id;
+        if node.instrument {
+            node.code = codes
+                .next()
+                .with_context(|| format!("assigning an antichain code to {}", node.label))?;
+        }
+    }
+    Ok(antichain_rounds)
 }
 
 fn collect_rust_files(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {

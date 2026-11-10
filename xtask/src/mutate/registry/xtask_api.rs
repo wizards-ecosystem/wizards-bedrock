@@ -988,7 +988,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1104,
         file: "xtask/src/api/traits.rs",
-        find: "                    REVIEWED_IMPLICIT_DROP_TYPES\n                        .iter()\n                        .any(|(relative, symbol)| {\n                            file.relative == Path::new(relative) && declaration.symbol == *symbol\n                        }),",
+        find: "        REVIEWED_IMPLICIT_DROP_TYPES\n            .iter()\n            .any(|(relative, symbol)| {\n                file.relative == Path::new(relative) && declaration.symbol == *symbol\n            }),",
         replace: "                    true,",
         breaks: "an unreviewed nominal type enters the API audit's implicit Drop boundary",
         reddens: Caught::HostTest {
@@ -1351,7 +1351,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1137,
         file: "xtask/src/api/traits.rs",
-        find: "                    implicit_activations.push(ImplicitTraitActivation {\n                        trigger: ImplicitTraitTrigger::LiveNode(producer_node),\n                        implementation: node.id,\n                    });",
+        find: "        implicit_activations.push(ImplicitTraitActivation {\n            trigger: ImplicitTraitTrigger::LiveNode(producer_node),\n            implementation: node.id,\n        });",
         replace: "                    let _unchecked_reviewed_producer_trigger = (producer_node, node.id);",
         breaks: "a live reviewed owned-Self producer no longer activates its result type's Drop body",
         reddens: Caught::HostTest {
@@ -1373,8 +1373,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1139,
         file: "xtask/src/api/traits.rs",
-        find: "                    candidate.direct_self_construction\n                        && candidate.reviewed_drop_producer.is_none()\n                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
-        replace: "                    candidate.direct_self_construction\n                        && candidate.reviewed_drop_producer.is_none()\n                        && candidate.file == declaration.file\n                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
+        find: "        candidate.direct_self_construction\n            && candidate.reviewed_drop_producer.is_none()\n            && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
+        replace: "        candidate.direct_self_construction\n            && candidate.reviewed_drop_producer.is_none()\n                        && candidate.file == declaration.file\n                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
         breaks: "an unreviewed owned-Self Drop producer escapes review when declared in another source file",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1384,7 +1384,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1140,
         file: "xtask/src/api/traits.rs",
-        find: "                    unreviewed_producer.is_none(),",
+        find: "        unreviewed_producer.is_none(),",
         replace: "                    true,",
         breaks: "a new same-file owned-Self Drop producer enters the implicit activation boundary without review",
         reddens: Caught::HostTest {
@@ -1811,8 +1811,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1397,
         file: "xtask/src/api/inventory.rs",
-        find: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        && target.kind == context.target_kind\n                        && target.name.replace('-', \"_\") == context.crate_name",
-        replace: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        || target.kind == context.target_kind\n                            && target.name.replace('-', \"_\") == context.crate_name",
+        find: "            target.package == context.package\n                && target.relative == context.target_root\n                && target.kind == context.target_kind\n                && target.name.replace('-', \"_\") == context.crate_name",
+        replace: "            target.package == context.package\n                && target.relative == context.target_root\n                        || target.kind == context.target_kind\n                && target.name.replace('-', \"_\") == context.crate_name",
         breaks: "a same-kind target from another package and path becomes a compiler origin",
         reddens: Caught::HostTest {
             package: "xtask",
