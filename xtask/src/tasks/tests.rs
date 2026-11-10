@@ -1,24 +1,5 @@
 use super::*;
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &std::path::Path, link: &std::path::Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating cleanup directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &std::path::Path, link: &std::path::Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating cleanup directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating cleanup file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating cleanup file symlink");
-}
+use crate::test_support::{create_directory_symlink, create_file_symlink};
 
 fn clean_fixture(label: &str) -> std::path::PathBuf {
     crate::test_support::reserve_temp_directory(&format!("wizard-clean-{label}"))

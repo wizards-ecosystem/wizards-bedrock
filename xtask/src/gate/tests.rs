@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{README_BYTES, REGISTRY_END, REGISTRY_START, markdown, verify_documentation};
+use crate::test_support::create_file_symlink;
 
 fn fixture(name: &str) -> PathBuf {
     crate::test_support::reserve_temp_directory(&format!("wizard-gate-{name}"))
@@ -11,16 +12,6 @@ fn valid_readme() -> String {
         "before\n{REGISTRY_START}\n{}{REGISTRY_END}\nafter\n",
         markdown()
     )
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("create README link");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("create README link");
 }
 
 #[test]

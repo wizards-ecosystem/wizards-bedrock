@@ -3,19 +3,10 @@ use std::io::Cursor;
 use fatfs::FsOptions;
 
 use super::*;
+use crate::test_support::create_file_symlink;
 
 fn test_root(label: &str) -> std::path::PathBuf {
     crate::test_support::reserve_temp_directory(&format!("wizard-esp-{label}"))
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating ESP source symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating ESP source symlink");
 }
 
 #[test]

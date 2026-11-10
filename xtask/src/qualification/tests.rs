@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink, success_status};
 
 mod advisory;
 mod size_policy;
@@ -321,40 +322,6 @@ fn run_git(root: &Path, args: &[&str]) {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-#[cfg(unix)]
-fn success_status() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(windows)]
-fn success_status() -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating file symlink");
 }
 
 fn write_snapshot_bundle(root: &Path) {

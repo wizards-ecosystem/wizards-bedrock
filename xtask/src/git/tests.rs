@@ -1,8 +1,5 @@
 use super::*;
-
-fn repository_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
-}
+use crate::test_support::repository_root;
 
 fn run_fixture_git(git: &Git, root: &Path, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(&git.path);

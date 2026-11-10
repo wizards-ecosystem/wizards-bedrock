@@ -334,7 +334,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 49,
         file: "xtask/src/qualification/advisory.rs",
-        find: "    ensure!(\n        json_u64(\n            json_field(lockfile, \"dependency-count\")?,\n            \"dependency-count\"\n        )? != 0,\n        \"cargo-audit report names an empty lockfile\"\n    );",
+        find: "    ensure!(\n        json_u64(\n            json_field(lockfile, \"dependency-count\", JSON)?,\n            \"cargo-audit `dependency-count`\"\n        )? != 0,\n        \"cargo-audit report names an empty lockfile\"\n    );",
         replace: "    let _unchecked_advisory_dependency_count = lockfile;",
         breaks: "an empty reported lockfile can pose as the audited dependency graph",
         reddens: Caught::HostTest {
@@ -356,7 +356,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 51,
         file: "xtask/src/qualification/advisory.rs",
-        find: "    ensure!(\n        json_array(json_field(settings, \"target_arch\")?, \"target_arch\")?.is_empty()\n            && json_array(json_field(settings, \"target_os\")?, \"target_os\")?.is_empty()\n            && matches!(json_field(settings, \"severity\")?, JsonValue::Null)\n            && json_array(json_field(settings, \"ignore\")?, \"ignore\")?.is_empty()\n            && json_string_array(\n                json_field(settings, \"informational_warnings\")?,\n                \"informational_warnings\"\n            )? == [\"unmaintained\", \"unsound\", \"notice\"],\n        \"cargo-audit report was generated with different audit settings\"\n    );",
+        find: "    ensure!(\n        json_array(\n            json_field(settings, \"target_arch\", JSON)?,\n            \"cargo-audit `target_arch`\"\n        )?\n        .is_empty()\n            && json_array(\n                json_field(settings, \"target_os\", JSON)?,\n                \"cargo-audit `target_os`\"\n            )?\n            .is_empty()\n            && matches!(json_field(settings, \"severity\", JSON)?, JsonValue::Null)\n            && json_array(\n                json_field(settings, \"ignore\", JSON)?,\n                \"cargo-audit `ignore`\"\n            )?\n            .is_empty()\n            && json_string_array(\n                json_field(settings, \"informational_warnings\", JSON)?,\n                \"cargo-audit `informational_warnings`\"\n            )? == [\"unmaintained\", \"unsound\", \"notice\"],\n        \"cargo-audit report was generated with different audit settings\"\n    );",
         replace: "    let _unchecked_advisory_settings = settings;",
         breaks: "ignored advisories can be hidden inside a forged clean report",
         reddens: Caught::HostTest {
@@ -378,7 +378,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 53,
         file: "xtask/src/qualification/advisory.rs",
-        find: "    ensure!(\n        matches!(\n            json_field(vulnerabilities, \"found\")?,\n            JsonValue::Bool(false)\n        ) && json_u64(json_field(vulnerabilities, \"count\")?, \"vulnerability count\")? == 0\n            && json_array(json_field(vulnerabilities, \"list\")?, \"vulnerability list\")?.is_empty(),\n        \"cargo-audit report is not a consistent vulnerability-free result\"\n    );",
+        find: "    ensure!(\n        matches!(\n            json_field(vulnerabilities, \"found\", JSON)?,\n            JsonValue::Bool(false)\n        ) && json_u64(\n            json_field(vulnerabilities, \"count\", JSON)?,\n            \"cargo-audit `vulnerability count`\"\n        )? == 0\n            && json_array(\n                json_field(vulnerabilities, \"list\", JSON)?,\n                \"cargo-audit `vulnerability list`\"\n            )?\n            .is_empty(),\n        \"cargo-audit report is not a consistent vulnerability-free result\"\n    );",
         replace: "    let _unchecked_vulnerability_result = vulnerabilities;",
         breaks: "a vulnerable or internally inconsistent report can pose as clean",
         reddens: Caught::HostTest {
@@ -1136,9 +1136,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 680,
-        file: "xtask/src/evidence.rs",
+        file: "xtask/src/files.rs",
         find: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;\n    Ok(())\n}",
-        replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
+        replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    use anyhow::{Context, ensure};\n\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
         breaks: "an evidence root can hide a redirected ancestor behind a real final directory",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1147,9 +1147,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 681,
-        file: "xtask/src/qualification.rs",
+        file: "xtask/src/files.rs",
         find: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    crate::mutate::workspace::canonical_existing_real_directory(path, label)?;\n    Ok(())\n}",
-        replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
+        replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    use anyhow::{Context, ensure};\n\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
         breaks: "a qualification root can hide a redirected ancestor behind a real final directory",
         reddens: Caught::HostTest {
             package: "xtask",

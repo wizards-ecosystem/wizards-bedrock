@@ -1,18 +1,9 @@
 use std::fs::File;
 
 use super::*;
+use crate::test_support::create_file_symlink;
 
 const DIGEST: &str = "91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85";
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating vendor listing symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating vendor listing symlink");
-}
 
 #[test]
 fn parses_the_text_and_binary_forms() {

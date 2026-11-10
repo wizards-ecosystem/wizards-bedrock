@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::reserve_temp_directory;
+use crate::test_support::{create_directory_symlink, create_file_symlink, reserve_temp_directory};
 
 #[test]
 #[ignore]
@@ -500,26 +500,6 @@ fn a_broken_manifest_symlink_cannot_redirect_the_writer() {
     assert!(!std::fs::symlink_metadata(evidence.join(MANIFEST_TEMP)).is_ok());
     assert!(!external.exists());
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating broken manifest symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating broken manifest symlink");
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating directory symlink");
 }
 
 fn write_qualification_bundle_fixture(root: &Path) {

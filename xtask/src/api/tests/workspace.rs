@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::{create_directory_symlink, create_file_symlink};
 
 #[test]
 fn compiler_semantic_environment_is_refused_before_the_audit() {
@@ -296,26 +297,6 @@ fn authenticated_registry_source_cannot_mint_a_diagnostic_marker() {
         );
         std::fs::remove_dir_all(root).expect("remove registry marker fixture");
     }
-}
-
-#[cfg(unix)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating API directory symlink");
-}
-
-#[cfg(windows)]
-fn create_directory_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_dir(target, link).expect("creating API directory symlink");
-}
-
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("creating API file symlink");
-}
-
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) {
-    std::os::windows::fs::symlink_file(target, link).expect("creating API file symlink");
 }
 
 #[test]
