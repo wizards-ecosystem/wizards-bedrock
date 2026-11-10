@@ -181,7 +181,7 @@ nobody cites it as a rule later.
 ### 3.0 The Limine base revision — the live risk, and it is cheaper to fix than it looks
 
 This is the one finding that changes a *premise* rather than sharpening a
-choice, and it lands squarely on slice 1.
+choice, and it lands on slice 1.
 
 **The protocol has moved to base revision 6, and revisions 0–5 are marked
 deprecated** ◆. The revision history matters far more than the deprecation
@@ -198,7 +198,7 @@ notice does:
 carries this comment on `BootInfo`'s deleted direct map: *"under base revision
 3 it covers only the regions the memory map lists — not the device holes — so
 nothing in this phase could use it."* That sentence is a statement of a base
-revision 3 limitation, and base revision 4 is precisely the revision that
+revision 3 limitation, and base revision 4 is the revision that
 lifts it. It also hands slice 5 something it would otherwise have to build:
 the I/O APIC is discovered through the MADT, which means reading ACPI tables,
 which base revision 4 guarantees are mapped.
@@ -329,9 +329,9 @@ stated lesson.
 
 ### 3.3 Table access — direct map, with an explicit contract
 
-The direct map with 2 MiB pages is the modern standard, and the numbers are
-stark: Linux maps 32 GiB of physical memory in **132 KiB of page tables**
-using 2 MiB pages, with each TLB entry covering 2 MiB instead of 4 KiB.
+The direct map with 2 MiB pages is the modern standard: Linux maps 32 GiB of
+physical memory in **132 KiB of page tables** using 2 MiB pages, with each TLB
+entry covering 2 MiB instead of 4 KiB.
 Recursive mapping costs an address-space slot and awkward invariants for a
 benefit the HHDM already hands over.
 
@@ -467,7 +467,7 @@ Klint itself is a custom driver and sits outside the stable-only posture of
 D-01. But the *idea* is expressible in safe stable Rust: a context token —
 a marker value threaded through APIs that only a sleepable context can
 produce, so `alloc`-taking functions require one and IRQ handlers cannot
-obtain one. That is precisely the `SpinLock::force_unlock(PanicToken)` pattern
+obtain one. That is the `SpinLock::force_unlock(PanicToken)` pattern
 `005` already holds up as the house style: an obligation discharged by the
 type system rather than by a comment. Worth an ADR when the heap lands.
 
@@ -621,7 +621,7 @@ it in mind.
 Microsoft's CHERIoT — with UKRI's Digital Security by Design programme pushing
 CHERI-RISC-V toward market across several processor scales. Hardware tags
 every pointer with bounds, permissions, and a validity bit; violations fault.
-The honest relevance assessment: CHERI is a memory-safety story *for C and
+The relevance assessment: CHERI is a memory-safety story *for C and
 C++*. A Rust framekernel already has the property CHERI is bought to provide,
 and `002` pillar 5 is the software analogue of the same idea. The right
 treatment is as a **future architecture port target** — `arch/` exists for

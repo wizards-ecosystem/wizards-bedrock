@@ -16,7 +16,7 @@ Eleven parallel research angles, every one instructed to try to *refute* the
 project's own recorded claims, plus a local audit of the docs against the code
 and a set of claims compiled and run against the pinned toolchain.
 
-**Method and its honest limits.** Each angle fetched primary sources and
+**Method and its limits.** Each angle fetched primary sources and
 returned an explicit verdict per claim. Several angles exhausted their search
 budgets and say so; where a finding rests on a single source or on inference,
 this document says which. Marks used below:
@@ -265,7 +265,7 @@ per-type. And the rule that keeps it there:
 > A right must correspond to a distinction the kernel actually makes about that
 > object — never to a syscall name.
 
-That is precisely the rule WASI's rights violated.
+That is the rule WASI's rights violated.
 
 Two mechanisms to adopt from day one. **Attenuate-on-send**: Zircon's
 `zx_channel_write_etc` can strip rights during transfer, including stripping
@@ -450,7 +450,7 @@ hourly hang.
 
 **A caveat to internalise: Rust does not save you here.** Converos found 20
 concurrency bugs in 12 Asterinas modules. Theseus's `ActivePageTable` /
-`InactivePageTable` typestate was simply wrong once two cores existed.
+`InactivePageTable` typestate was wrong once two cores existed.
 
 ---
 
@@ -676,7 +676,7 @@ updates have to be propagated to several trees.**"* Of 26 unique
 crash-consistency bugs studied, **btrfs accounted for 24**. One went **seven
 years** undiscovered.
 
-The honest split: **CoW makes the crash-consistency *argument* simpler and the
+The split: **CoW makes the crash-consistency *argument* simpler and the
 *implementation* harder.** ZFS's "no fsck" rests on a single tree root and an
 atomic uberblock swap; the elegance stops once there are several interdependent
 trees. And you still need a log — ZFS has the ZIL, because `fsync` must be
@@ -720,7 +720,7 @@ lie about flushes**, which bcachefs calls *"historically a major (potentially
 disastrous) problem for COW filesystems"* — answered by journal scrub at mount
 plus a bounded journal rewind.
 
-Finally, a piece of good news: bcachefs's Principles of Operation is now a
+Finally, bcachefs's Principles of Operation is now a
 current, free, ~117-page architecture document (revision 1.39.2, dated
 **2026-08-22**) for exactly the system WizFS wants to be. It did not exist in
 this form when our rules were written. **Read it end to end before designing.**
@@ -739,7 +739,7 @@ kernel value should be mapped, not called for.* Full mitigations cost **+33%**
 on a syscall-bound server; KPTI's cost scales with syscall rate (<0.5% below
 10k/s/CPU, ~5% at 75k) and PCID cut it from 2.1% to 0.5%. seL4's IPC goes
 **468 → 687 cycles (+47%)** with mitigations — the cleanest isolation of the
-cost on a hot path. Notably, **Zen 5 gains essentially nothing from
+cost on a hot path. **Zen 5 gains essentially nothing from
 `mitigations=off`**, the first AMD architecture natively immune; but the list
 keeps growing, with 18 hardware-vulnerability documents in the kernel today.
 
@@ -821,7 +821,7 @@ wall is real, and it is passable with two version pins.**
 ### The wall, and the way through ✓
 
 `loom`, `shuttle` and `proptest` all fail to build here at their default
-versions. The root cause, diagnosed precisely: rustup's GNU toolchain ships a
+versions. The root cause: rustup's GNU toolchain ships a
 `self-contained` directory holding `dlltool.exe`, `ld.exe`, a mingw gcc and
 `libwinpthread-1.dll` — and **there is no `as.exe` anywhere on the machine**.
 Put `self-contained` on `PATH` and `dlltool` gets one step further before dying
@@ -894,7 +894,7 @@ through it — a `Relaxed` publish where `Release` is required, 2,000 iterations
 **It passed.** That is not a defect; it is the tool's design. Shuttle is a
 *scheduler-interleaving* checker and does not model weak memory, so it cannot
 see an ordering bug at all. The SMP angle listed "whether Shuttle models weak
-memory" as genuinely open; this answers it. **Loom, on the same shape, reports
+memory" as open; this answers it. **Loom, on the same shape, reports
 `FAILED — stale payload observed`.**
 
 So the two are complements, not alternatives: **shuttle for interleavings and
@@ -1027,7 +1027,7 @@ check, and SMEP/SMAP/UMIP. UEFI-only with no CSM remains correct and costs
 nothing.
 
 **D-33's x2APIC-only decision holds**, and the reasoning is better than it was:
-MSR access is a genuinely smaller `unsafe` surface than an MMIO APIC window. Two
+MSR access is a smaller `unsafe` surface than an MMIO APIC window. Two
 changes are owed. It should become a **checked, diagnosable boot precondition
 rather than an assumption** — and that is a real D-28 negative test, since
 `-cpu qemu64,-x2apic` can produce a machine without it. And I could not find a
@@ -1192,7 +1192,7 @@ cheap, and one of them is a factual error.
 
 **Outstanding from `008` §8:** of sixteen proposed actions, thirteen landed
 inside one phase — a good record. Two remain. **#15, the wasmi pin**, is
-genuinely overdue and §6 supersedes it anyway. **#10, Kani harnesses in the
+overdue and §6 supersedes it anyway. **#10, Kani harnesses in the
 page-table crate**, turns out to have been unactionable all along: Kani does not
 run on Windows (§9). Verus does, and is the better fit — so the proposal should
 be replaced rather than chased. The third, #16 (the queue-austerity checklist),
@@ -1421,7 +1421,7 @@ Adopting them now would be tooling in search of a subject.
     a maintained alternative and essentially no learning Phases 0–4 have not
     already delivered.
 40. **Kani** (§9) — Linux and macOS only, zero Windows artifacts. This was
-    `008`'s proposal #10 and its one genuinely overdue item; the reason it
+    `008`'s proposal #10 and its one overdue item; the reason it
     never landed turns out to be better than "not done". Revisit only if a
     Linux CI runner ever appears, at which point `--autoharness` makes it
     nearly free.
