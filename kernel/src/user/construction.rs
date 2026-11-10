@@ -3,7 +3,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
-use wost::arch::current::paging::{ActivateError, AddressSpace, Binding, MapError};
+use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};
 #[cfg(feature = "selftest")]
@@ -481,15 +481,65 @@ fn spawn_transaction(
     argument: u64,
     #[cfg(feature = "selftest")] fault: SpawnFault,
 ) -> Result<Spawned, SpawnError> {
-    let (process, binding) = prepare(
+    let mut construction = ProcessConstruction::new(admitted_space()?);
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Space)?;
+
+    let (image, stack) = map_program(
+        &mut construction,
         which,
-        argument,
         #[cfg(feature = "selftest")]
         fault,
     )?;
+    let ring = map_shared(
+        &mut construction,
+        #[cfg(feature = "selftest")]
+        fault,
+    )?;
+    let root = construction.space()?.root();
+
+    // Create the bootstrap identity before the thread can observe it.
+    let bootstrap = object::bootstrap_identity();
     #[cfg(feature = "selftest")]
-    let table_identity = process.table.identity_for_test();
-    let mut prepared = Some(process);
+    stop_after(fault, SpawnEdge::Channel)?;
+    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
+    #[cfg(feature = "selftest")]
+    let table_identity = table.identity_for_test();
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Table)?;
+    let handle = table
+        .insert(bootstrap, Rights::UNIVERSAL)
+        .map_err(SpawnError::NoBootstrap)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Handle)?;
+
+    let binding = construction
+        .space()?
+        .bind()
+        .map_err(SpawnError::NotBindable)?;
+    #[cfg(feature = "selftest")]
+    if let Err(reason) = stop_after(fault, SpawnEdge::Binding) {
+        construction.retain_authority(thread::SpaceAuthority::Released(task::release_uninstalled(
+            binding,
+        )));
+        return Err(reason);
+    }
+
+    let mut prepared = Some(PreparedProcess {
+        construction,
+        table: alloc::sync::Arc::new(table),
+        #[cfg(feature = "selftest")]
+        observed_birth_handle: handle,
+        ring,
+        launch: Launch {
+            entry: image.entry(),
+            stack,
+            argument,
+            bootstrap_handle: handle,
+            which,
+            root,
+        },
+    });
     let arrange = |slot, bound| {
         if slot >= thread::CAPACITY {
             return Err(bound);
@@ -549,71 +599,6 @@ fn spawn_transaction(
         #[cfg(feature = "selftest")]
         observed_table_incarnation: table_identity,
     })
-}
-
-/// Everything a process owns before its thread exists, and the binding that thread will run on.
-fn prepare(
-    which: u64,
-    argument: u64,
-    #[cfg(feature = "selftest")] fault: SpawnFault,
-) -> Result<(PreparedProcess, Binding), SpawnError> {
-    let mut construction = ProcessConstruction::new(admitted_space()?);
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Space)?;
-    let (image, stack) = map_program(
-        &mut construction,
-        which,
-        #[cfg(feature = "selftest")]
-        fault,
-    )?;
-    let ring = map_shared(
-        &mut construction,
-        #[cfg(feature = "selftest")]
-        fault,
-    )?;
-    let root = construction.space()?.root();
-
-    // Create the bootstrap identity before the thread can observe it.
-    let bootstrap = object::bootstrap_identity();
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Channel)?;
-    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Table)?;
-    let handle = table
-        .insert(bootstrap, Rights::UNIVERSAL)
-        .map_err(SpawnError::NoBootstrap)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Handle)?;
-
-    let binding = construction
-        .space()?
-        .bind()
-        .map_err(SpawnError::NotBindable)?;
-    #[cfg(feature = "selftest")]
-    if let Err(reason) = stop_after(fault, SpawnEdge::Binding) {
-        construction.retain_authority(thread::SpaceAuthority::Released(task::release_uninstalled(
-            binding,
-        )));
-        return Err(reason);
-    }
-
-    let process = PreparedProcess {
-        construction,
-        table: alloc::sync::Arc::new(table),
-        #[cfg(feature = "selftest")]
-        observed_birth_handle: handle,
-        ring,
-        launch: Launch {
-            entry: image.entry(),
-            stack,
-            argument,
-            bootstrap_handle: handle,
-            which,
-            root,
-        },
-    };
-    Ok((process, binding))
 }
 
 /// Refuse in this order unless every ring 3 precondition holds, then build the admitted space.
