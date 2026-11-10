@@ -1,58 +1,99 @@
 use super::*;
 
+#[derive(Debug)]
+struct SoleFunction {
+    at: Address,
+    identity: u32,
+    class: u32,
+    command: u16,
+    status: Option<u32>,
+    quiesces: u32,
+    written: Option<u16>,
+}
+
+impl SoleFunction {
+    fn new(at: Address, identity: u32, class: u32, command: u16) -> Self {
+        Self {
+            at,
+            identity,
+            class,
+            command,
+            status: None,
+            quiesces: 0,
+            written: None,
+        }
+    }
+
+    fn quiescing(self, status: Option<u32>) -> Self {
+        Self { status, ..self }
+    }
+
+    fn access(&mut self, candidate: Address, operation: HandoffAccess) -> Option<u32> {
+        if candidate.function_base() != self.at {
+            return elsewhere(operation);
+        }
+        match operation {
+            HandoffAccess::ReadIdentity => Some(self.identity),
+            HandoffAccess::ReadClass => Some(self.class),
+            HandoffAccess::ReadCommand => Some(u32::from(self.command)),
+            HandoffAccess::WriteCommand(value) => {
+                self.written = Some(value);
+                Some(0)
+            }
+            HandoffAccess::QuiesceIsaDma => {
+                self.quiesces += 1;
+                self.status
+            }
+        }
+    }
+
+    fn fence(
+        &mut self,
+        policy: HandoffFencePolicy,
+    ) -> Result<HandoffFenceReport, HandoffFenceError> {
+        fence_dma_handoff(policy, |at, operation| self.access(at, operation))
+    }
+}
+
+fn elsewhere(operation: HandoffAccess) -> Option<u32> {
+    matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX)
+}
+
+fn observation(at: Address, identity: u32, class: u32, command: u16) -> FunctionObservation {
+    FunctionObservation::new(
+        at,
+        identity,
+        class,
+        command,
+        Class::from_bits(class),
+        HeaderType::from_bits(0),
+        None,
+    )
+}
+
 #[test]
 fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
     let isa = Address::new(0, 7, 0, 0).expect("VMware ISA bridge");
     let identity = 0x7110_8086;
     let class = 0x06_01_00_00;
     let command = command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER;
-
-    let fence = |policy: HandoffFencePolicy,
-                 at: Address,
-                 identity: u32,
-                 class: u32,
-                 command: u16,
-                 status: Option<u32>,
-                 quiesces: &mut u32,
-                 written: &mut Option<u16>| {
-        fence_dma_handoff(policy, |candidate, operation| {
-            if candidate.function_base() != at {
-                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
-            }
-            match operation {
-                HandoffAccess::ReadIdentity => Some(identity),
-                HandoffAccess::ReadClass => Some(class),
-                HandoffAccess::ReadCommand => Some(u32::from(command)),
-                HandoffAccess::WriteCommand(value) => {
-                    *written = Some(value);
-                    Some(0)
-                }
-                HandoffAccess::QuiesceIsaDma => {
-                    *quiesces += 1;
-                    status
-                }
-            }
-        })
+    let quiet = |at, identity, class, command| {
+        SoleFunction::new(at, identity, class, command).quiescing(Some(0))
     };
 
-    let (mut quiesces, mut written) = (0, None);
-    let mut report = fence(
-        HandoffFencePolicy::vmware_440bx(),
-        isa,
-        identity,
-        class,
-        command,
-        Some(0x0f0f),
-        &mut quiesces,
-        &mut written,
-    )
-    .expect("the exact ISA bridge is quiesced at its 8237 controllers");
+    let mut bridge = SoleFunction::new(isa, identity, class, command).quiescing(Some(0x0f0f));
+    let mut report = bridge
+        .fence(HandoffFencePolicy::vmware_440bx())
+        .expect("the exact ISA bridge is quiesced at its 8237 controllers");
     assert_eq!(report.functions(), 1);
     assert_eq!(report.disabled(), 0);
     assert_eq!(report.retained_non_requesters(), 0);
     assert_eq!(report.quiesced_requesters(), 1);
-    assert_eq!(quiesces, 1);
-    assert_eq!(written, Some(command::IO_SPACE | command::MEMORY_SPACE));
+    assert_eq!(bridge.quiesces, 1);
+    assert_eq!(
+        bridge.written,
+        Some(command::IO_SPACE | command::MEMORY_SPACE)
+    );
 
     let authority = report
         .take_quiesced_requester()
@@ -60,18 +101,7 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
     assert_eq!(authority.address(), isa);
     let mut topology = PciTopology::new();
     topology
-        .observe_quiesced_requester(
-            authority,
-            FunctionObservation::new(
-                isa,
-                identity,
-                class,
-                command,
-                Class::from_bits(class),
-                HeaderType::from_bits(0),
-                None,
-            ),
-        )
+        .observe_quiesced_requester(authority, observation(isa, identity, class, command))
         .expect("quiesced requester topology observation");
     assert_eq!(topology.quiesced_requester(isa), None);
     topology.seal().expect("root-bus topology");
@@ -93,32 +123,15 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
         (isa, identity, class ^ 1, command),
         (isa, identity, class, command & !command::IO_SPACE),
     ] {
-        let (mut quiesces, mut written) = (0, None);
-        let changed = fence(
-            HandoffFencePolicy::vmware_440bx(),
-            isa,
-            identity,
-            class,
-            command,
-            Some(0),
-            &mut quiesces,
-            &mut written,
-        )
-        .expect("exact ISA bridge")
-        .take_quiesced_requester()
-        .expect("exact quiesce authority");
+        let changed = quiet(isa, identity, class, command)
+            .fence(HandoffFencePolicy::vmware_440bx())
+            .expect("exact ISA bridge")
+            .take_quiesced_requester()
+            .expect("exact quiesce authority");
         assert_eq!(
             PciTopology::new().observe_quiesced_requester(
                 changed,
-                FunctionObservation::new(
-                    at,
-                    later_identity,
-                    later_class,
-                    later_command,
-                    Class::from_bits(later_class),
-                    HeaderType::from_bits(0),
-                    None,
-                ),
+                observation(at, later_identity, later_class, later_command),
             ),
             Err(TopologyError::QuiescedRequesterChanged {
                 at: at.function_base(),
@@ -127,18 +140,9 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
     }
 
     for revision in [0u32, 1, u32::from(u8::MAX)] {
-        let (mut quiesces, mut written) = (0, None);
-        let report = fence(
-            HandoffFencePolicy::vmware_440bx(),
-            isa,
-            identity,
-            class | revision,
-            command,
-            Some(0),
-            &mut quiesces,
-            &mut written,
-        )
-        .expect("every PIIX4 revision is the same ISA bridge");
+        let report = quiet(isa, identity, class | revision, command)
+            .fence(HandoffFencePolicy::vmware_440bx())
+            .expect("every PIIX4 revision is the same ISA bridge");
         assert_eq!(report.quiesced_requesters(), 1);
     }
 
@@ -164,47 +168,27 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
         ),
         (other, identity, class, command),
     ] {
-        let (mut quiesces, mut written) = (0, None);
-        let refused = fence(
-            HandoffFencePolicy::vmware_440bx(),
-            at,
-            identity,
-            class,
-            command,
-            Some(0),
-            &mut quiesces,
-            &mut written,
-        );
+        let mut near_miss = quiet(at, identity, class, command);
+        let refused = near_miss.fence(HandoffFencePolicy::vmware_440bx());
         assert!(matches!(
             refused,
             Err(HandoffFenceError::CommandRefused { .. })
         ));
         assert_eq!(
-            quiesces, 0,
+            near_miss.quiesces, 0,
             "a near miss never touches the 8237 controllers"
         );
     }
 
-    let (mut quiesces, mut written) = (0, None);
-    let strict = fence(
-        HandoffFencePolicy::strict(),
-        isa,
-        identity,
-        class,
-        command,
-        Some(0),
-        &mut quiesces,
-        &mut written,
-    );
+    let mut strict_bridge = quiet(isa, identity, class, command);
+    let strict = strict_bridge.fence(HandoffFencePolicy::strict());
     assert!(matches!(
         strict,
         Err(HandoffFenceError::CommandRefused { .. })
     ));
-    assert_eq!(quiesces, 0);
+    assert_eq!(strict_bridge.quiesces, 0);
     assert!(!HandoffFencePolicy::strict().quiesces_isa_dma());
 
-    // The word before the clear and the word read back are each exact:
-    // one may not stand in for the other.
     for (first, second) in [
         (command & !command::IO_SPACE, command),
         (command, command & !command::IO_SPACE),
@@ -213,7 +197,7 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
         let mut quiesces = 0;
         let refused = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
             if at.function_base() != isa {
-                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                return elsewhere(operation);
             }
             match operation {
                 HandoffAccess::ReadIdentity => Some(identity),
@@ -237,17 +221,9 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
     }
 
     for pending in [0x0010, 0x0080, 0x1000, 0x8000, 0xf0f0] {
-        let (mut quiesces, mut written) = (0, None);
-        let refused = fence(
-            HandoffFencePolicy::vmware_440bx(),
-            isa,
-            identity,
-            class,
-            command,
-            Some(pending),
-            &mut quiesces,
-            &mut written,
-        );
+        let refused = SoleFunction::new(isa, identity, class, command)
+            .quiescing(Some(pending))
+            .fence(HandoffFencePolicy::vmware_440bx());
         assert_eq!(
             refused.err(),
             Some(HandoffFenceError::IsaDmaPending {
@@ -257,17 +233,8 @@ fn only_the_exact_vmware_piix4_isa_bridge_is_quiesced_and_stays_a_requester() {
         );
     }
 
-    let (mut quiesces, mut written) = (0, None);
-    let unavailable = fence(
-        HandoffFencePolicy::vmware_440bx(),
-        isa,
-        identity,
-        class,
-        command,
-        None,
-        &mut quiesces,
-        &mut written,
-    );
+    let unavailable =
+        SoleFunction::new(isa, identity, class, command).fence(HandoffFencePolicy::vmware_440bx());
     assert_eq!(
         unavailable.err(),
         Some(HandoffFenceError::Access {
@@ -291,29 +258,16 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
     let identity = 0x7190_8086;
     let class = 0x06_00_00_00;
     let command = command::MEMORY_SPACE | command::BUS_MASTER;
-    let mut written = None;
 
-    let mut report = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
-        if at.function_base() != host {
-            return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
-        }
-        match operation {
-            HandoffAccess::ReadIdentity => Some(identity),
-            HandoffAccess::ReadClass => Some(class),
-            HandoffAccess::ReadCommand => Some(u32::from(command)),
-            HandoffAccess::WriteCommand(value) => {
-                written = Some(value);
-                Some(0)
-            }
-            HandoffAccess::QuiesceIsaDma => None,
-        }
-    })
-    .expect("the qualified host bridge is not a PCI DMA requester");
+    let mut bridge = SoleFunction::new(host, identity, class, command);
+    let mut report = bridge
+        .fence(HandoffFencePolicy::vmware_440bx())
+        .expect("the qualified host bridge is not a PCI DMA requester");
 
     assert_eq!(report.functions(), 1);
     assert_eq!(report.disabled(), 0);
     assert_eq!(report.retained_non_requesters(), 1);
-    assert_eq!(written, Some(command::MEMORY_SPACE));
+    assert_eq!(bridge.written, Some(command::MEMORY_SPACE));
 
     for revision in [0u32, 1, u32::from(u8::MAX)] {
         assert!(
@@ -329,18 +283,7 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
     assert_eq!(report.retained_non_requesters(), 1);
     let mut topology = PciTopology::new();
     topology
-        .observe_non_requester(
-            authority,
-            FunctionObservation::new(
-                host,
-                identity,
-                class,
-                command,
-                Class::from_bits(class),
-                HeaderType::from_bits(0),
-                None,
-            ),
-        )
+        .observe_non_requester(authority, observation(host, identity, class, command))
         .expect("non-requester topology observation");
     topology.seal().expect("root-bus topology");
     assert!(topology.contains_function(host));
@@ -364,15 +307,7 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
         assert_eq!(
             changed_topology.observe_non_requester(
                 changed_authority,
-                FunctionObservation::new(
-                    at,
-                    later_identity,
-                    later_class,
-                    later_command,
-                    Class::from_bits(later_class),
-                    HeaderType::from_bits(0),
-                    None,
-                ),
+                observation(at, later_identity, later_class, later_command),
             ),
             Err(TopologyError::QualifiedNonRequesterChanged {
                 at: at.function_base(),
@@ -406,39 +341,16 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
             command,
         ),
     ] {
-        let refused = fence_dma_handoff(
-            HandoffFencePolicy::vmware_440bx(),
-            |candidate, operation| {
-                if candidate.function_base() != at {
-                    return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
-                }
-                match operation {
-                    HandoffAccess::ReadIdentity => Some(identity),
-                    HandoffAccess::ReadClass => Some(class),
-                    HandoffAccess::ReadCommand => Some(u32::from(command)),
-                    HandoffAccess::WriteCommand(_) => Some(0),
-                    HandoffAccess::QuiesceIsaDma => None,
-                }
-            },
-        );
+        let refused = SoleFunction::new(at, identity, class, command)
+            .fence(HandoffFencePolicy::vmware_440bx());
         assert!(matches!(
             refused,
             Err(HandoffFenceError::CommandRefused { .. })
         ));
     }
 
-    let strict = fence_dma_handoff(HandoffFencePolicy::strict(), |at, operation| {
-        if at.function_base() != host {
-            return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
-        }
-        match operation {
-            HandoffAccess::ReadIdentity => Some(identity),
-            HandoffAccess::ReadClass => Some(class),
-            HandoffAccess::ReadCommand => Some(u32::from(command)),
-            HandoffAccess::WriteCommand(_) => Some(0),
-            HandoffAccess::QuiesceIsaDma => None,
-        }
-    });
+    let strict =
+        SoleFunction::new(host, identity, class, command).fence(HandoffFencePolicy::strict());
     assert!(matches!(
         strict,
         Err(HandoffFenceError::CommandRefused { .. })
@@ -448,7 +360,7 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
     let unexpected_before =
         fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
             if at.function_base() != host {
-                return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+                return elsewhere(operation);
             }
             match operation {
                 HandoffAccess::ReadIdentity => Some(identity),
@@ -473,7 +385,7 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
     let mut command_reads = 0;
     let changed_command = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
         if at.function_base() != host {
-            return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            return elsewhere(operation);
         }
         match operation {
             HandoffAccess::ReadIdentity => Some(identity),
@@ -498,7 +410,7 @@ fn only_the_exact_vmware_440bx_host_bridge_may_retain_its_non_requester_command(
     let mut class_reads = 0;
     let changed_class = fence_dma_handoff(HandoffFencePolicy::vmware_440bx(), |at, operation| {
         if at.function_base() != host {
-            return matches!(operation, HandoffAccess::ReadIdentity).then_some(u32::MAX);
+            return elsewhere(operation);
         }
         match operation {
             HandoffAccess::ReadIdentity => Some(identity),

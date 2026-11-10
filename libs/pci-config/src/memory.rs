@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::claims::FunctionLease;
 use crate::command_state::{CommandPhase, admit_bus_master_with_leases, change_command};
 use crate::{
@@ -15,7 +17,6 @@ pub struct BarAuthority {
 }
 
 impl BarAuthority {
-    /// The BAR slot this authority names.
     pub const fn index(&self) -> usize {
         self.index
     }
@@ -38,12 +39,12 @@ pub enum BarAuthorityError {
     Busy,
 }
 
-impl core::fmt::Display for BarAuthorityError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BarAuthorityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stale => core::fmt::Write::write_str(f, "the BAR authority is stale or foreign"),
-            Self::NotMemory => core::fmt::Write::write_str(f, "the BAR is not a memory window"),
-            Self::Busy => core::fmt::Write::write_str(f, "the BAR already has a mapping authority"),
+            Self::Stale => f.write_str("the BAR authority is stale or foreign"),
+            Self::NotMemory => f.write_str("the BAR is not a memory window"),
+            Self::Busy => f.write_str("the BAR already has a mapping authority"),
         }
     }
 }
@@ -58,9 +59,9 @@ pub struct BarAuthorityFailure {
     authority: BarAuthority,
 }
 
-impl core::fmt::Display for BarAuthorityFailure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.reason, f)
+impl fmt::Display for BarAuthorityFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, f)
     }
 }
 
@@ -78,12 +79,12 @@ pub enum BarIdentityError {
     Changed,
 }
 
-impl core::fmt::Display for BarIdentityError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BarIdentityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stale => core::fmt::Write::write_str(f, "the BAR identity is stale or foreign"),
-            Self::Access => core::fmt::Write::write_str(f, "the BAR identity is unreadable"),
-            Self::Changed => core::fmt::Write::write_str(f, "the BAR identity changed"),
+            Self::Stale => f.write_str("the BAR identity is stale or foreign"),
+            Self::Access => f.write_str("the BAR identity is unreadable"),
+            Self::Changed => f.write_str("the BAR identity changed"),
         }
     }
 }
@@ -109,8 +110,8 @@ pub enum BarEnableError {
     Command(EnableError),
 }
 
-impl core::fmt::Display for BarEnableError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BarEnableError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Identity(reason) => write!(f, "BAR identity: {reason}"),
             Self::Command(reason) => write!(f, "memory decode: {reason}"),
@@ -138,14 +139,7 @@ impl<const N: usize> FunctionClaims<N> {
     }
 }
 
-/// Add bus mastering through one live function-bound BAR mapping, isolated by
-/// a DMA domain established for that same function.
-///
-/// # Errors
-///
-/// Refuses a domain for another function before any access, then a stale or
-/// foreign BAR mapping, a command state from another function, or any
-/// configuration access or exact-readback failure.
+/// Add bus mastering through one live BAR mapping isolated by a DMA domain for that function.
 pub fn admit_mapped_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &BarAuthority,
@@ -163,11 +157,6 @@ pub fn admit_mapped_bus_master<const N: usize>(
 }
 
 /// Reserve one probed memory BAR under its exact function generation.
-///
-/// # Errors
-///
-/// Refuses a stale or cross-function probe, a non-memory slot, or a BAR whose
-/// existing mapping authority has not been returned.
 pub fn bind_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -207,11 +196,6 @@ pub fn bind_memory_bar<const N: usize>(
 }
 
 /// Return one exact BAR mapping authority to its function registry.
-///
-/// # Errors
-///
-/// Returns the unchanged authority if its function generation or BAR slot is
-/// no longer live in this registry.
 pub fn release_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: BarAuthority,
@@ -244,16 +228,7 @@ pub fn release_memory_bar<const N: usize>(
     Ok(())
 }
 
-/// Re-read a mapped BAR and require its exact decoded identity to be unchanged.
-///
-/// The closure performs only reads. A caller can therefore compose this check
-/// and a command transaction under one hardware lock without any write before
-/// identity validation succeeds.
-///
-/// # Errors
-///
-/// Refuses a stale or foreign mapping authority, an inaccessible BAR half, or
-/// any decoded identity change.
+/// Re-read a mapped BAR through reads alone and require its decoded identity to be unchanged.
 fn verify_memory_bar<const N: usize>(
     functions: &FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -297,15 +272,7 @@ fn verify_memory_bar<const N: usize>(
     Ok(())
 }
 
-/// Enable memory decode from a staged probe after its BAR identity is re-proven.
-///
-/// BAR reads and the command transition share one closure so a platform
-/// adapter can hold its configuration lock across the complete sequence.
-///
-/// # Errors
-///
-/// Identity refusal performs no command access. Every command refusal leaves
-/// the caller's restoration authority in `state`.
+/// Enable memory decode after the BAR identity is re-proven, all under one configuration lock.
 pub fn enable_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -345,17 +312,16 @@ fn admit_memory_space_with_leases<const N: usize>(
     }
     let wanted = (current | command::MEMORY_SPACE) & !command::BUS_MASTER;
     state.phase = CommandPhase::Restoring(wanted);
-    let result = change_command(at, current, wanted, &mut access);
-    match result {
+    match change_command(at, current, wanted, &mut access) {
         Ok(()) => {
             state.installed = wanted;
             state.phase = CommandPhase::Installed;
             Ok(())
         }
         Err(EnableError::Restore) => Err(EnableError::Restore),
-        Err(error) => {
+        Err(reason) => {
             state.phase = CommandPhase::Installed;
-            Err(error)
+            Err(reason)
         }
     }
 }

@@ -125,9 +125,7 @@ fn every_handoff_fence_uncertainty_refuses_the_boundary() {
     ));
 }
 
-/// VMware Workstation 17.6's default segment as its entry fence saw it on
-/// 2026-10-20: BDF, identity, class dword, command before, command after
-/// a BME-clear write. `00:00.0` and `00:07.0` hard-wire bit 2.
+/// VMware 17.6's default segment at entry: BDF, identity, class, command before and after.
 type CapturedFunction = ((u8, u8, u8), u32, u32, u16, u16);
 
 const VMWARE_SEGMENT: &[CapturedFunction] = &[

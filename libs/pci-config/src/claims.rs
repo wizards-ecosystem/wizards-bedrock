@@ -1,12 +1,11 @@
+use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{Address, CommandLeases, HeaderType};
 
-/// The exclusive right to mutate one PCI function.
-///
-/// Its registry identity, generation and address are opaque. A token minted by
-/// another registry therefore cannot authorize a hardware adapter backed by
-/// this one, even when both name the same bus/device/function tuple.
+static NEXT_FUNCTION_REGISTRY: AtomicU64 = AtomicU64::new(1);
+
+/// The exclusive right to mutate one PCI function, valid only in the registry that minted it.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping function authority permanently retains its claim"]
 pub struct FunctionAuthority {
@@ -22,7 +21,6 @@ pub(crate) struct FunctionLease {
 }
 
 impl FunctionAuthority {
-    /// The claimed bus/device/function identity, with register offset zero.
     pub const fn address(&self) -> Address {
         self.lease.at
     }
@@ -43,10 +41,7 @@ pub struct FunctionClaims<const N: usize> {
     pub(crate) commands: CommandLeases<N>,
 }
 
-static NEXT_FUNCTION_REGISTRY: AtomicU64 = AtomicU64::new(1);
-
 impl<const N: usize> FunctionClaims<N> {
-    /// Create an empty function-authority registry.
     pub const fn new() -> Self {
         Self {
             slots: [None; N],
@@ -58,14 +53,6 @@ impl<const N: usize> FunctionClaims<N> {
     }
 
     /// Claim one function whose header layout was read from that function.
-    ///
-    /// The returned token is bound to this registry, a non-repeating
-    /// generation and the canonical function address.
-    ///
-    /// # Errors
-    ///
-    /// Refuses unsupported header layouts, a duplicate function, a full
-    /// registry or exhausted non-repeating identities before changing a slot.
     pub fn claim(
         &mut self,
         at: Address,
@@ -120,11 +107,6 @@ impl<const N: usize> FunctionClaims<N> {
         self.slots.iter().flatten().any(|held| held.at == at)
     }
 
-    /// Release one exact function authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged token if it is foreign or stale.
     pub(crate) fn release(
         &mut self,
         authority: FunctionAuthority,
@@ -146,7 +128,6 @@ impl<const N: usize> FunctionClaims<N> {
         Ok(())
     }
 
-    /// Functions recorded so far.
     #[expect(
         clippy::len_without_is_empty,
         reason = "the authority registry exposes a diagnostic count, not a collection API"
@@ -176,14 +157,12 @@ pub enum FunctionClaimError {
     Header(u8),
 }
 
-impl core::fmt::Display for FunctionClaimError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for FunctionClaimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Taken => core::fmt::Write::write_str(f, "the function is already claimed"),
-            Self::NoRoom => core::fmt::Write::write_str(f, "the function registry is full"),
-            Self::Exhausted => {
-                core::fmt::Write::write_str(f, "function claim generations are exhausted")
-            }
+            Self::Taken => f.write_str("the function is already claimed"),
+            Self::NoRoom => f.write_str("the function registry is full"),
+            Self::Exhausted => f.write_str("function claim generations are exhausted"),
             Self::Header(layout) => write!(f, "header layout {layout} is unsupported"),
         }
     }

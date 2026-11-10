@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::bar::io_window_size;
 use crate::claims::FunctionLease;
 use crate::{
@@ -6,26 +8,19 @@ use crate::{
 };
 
 /// One configuration-space cycle in a BAR-probe transaction.
-///
-/// A platform adapter implements these against its configuration mechanism.
-/// Keeping the sequence here makes its ordering and rollback host-testable;
-/// the adapter only has to keep its hardware lock for the closure's lifetime.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProbeAccess {
-    /// Read the command register. Only its low sixteen bits are consumed.
+    /// Only the low sixteen bits are consumed.
     ReadCommand,
-    /// Write only command bits. The status half of the dword must be zero.
+    /// Write command bits with a zero status half.
     WriteCommand(u16),
-    /// Read one BAR slot.
     ReadBar(usize),
-    /// Write one BAR slot.
     WriteBar(usize, u32),
 }
 
 /// One decoded and sized BAR window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Window {
-    /// What the register said.
     pub bar: Bar,
     /// How many bytes or ports it covers.
     pub size: u64,
@@ -60,7 +55,6 @@ struct BarSlots {
 }
 
 impl ProbedBars {
-    /// The decoded window in one BAR slot.
     pub fn window(&self, index: usize) -> Option<Window> {
         self.windows.get(index).copied().flatten()
     }
@@ -85,15 +79,14 @@ pub enum ProbeError<E> {
     Restore(E),
     /// A restoration readback did not equal the captured register word.
     RestoreChanged,
-    /// The header layout, BAR slot use, or memory encoding is unsupported, or
-    /// an I/O BAR address is outside the 16-bit port space.
+    /// The header layout, slot use or encoding is unsupported, or an I/O BAR leaves port space.
     Malformed,
     /// A device returned a mask or base that cannot describe its window.
     InvalidWindow,
 }
 
-impl<E: core::fmt::Display> core::fmt::Display for ProbeError<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<E: fmt::Display> fmt::Display for ProbeError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unavailable(reason) => {
                 write!(f, "bar probe authority is unavailable: {reason}")
@@ -104,16 +97,11 @@ impl<E: core::fmt::Display> core::fmt::Display for ProbeError<E> {
                 "command register refused decode-off value and read back {observed:#06x}"
             ),
             Self::Restore(reason) => write!(f, "configuration restoration failed: {reason}"),
-            Self::RestoreChanged => core::fmt::Write::write_str(
-                f,
-                "configuration restoration changed the captured register state",
-            ),
-            Self::Malformed => {
-                core::fmt::Write::write_str(f, "the function has an unsupported BAR layout")
+            Self::RestoreChanged => {
+                f.write_str("configuration restoration changed the captured register state")
             }
-            Self::InvalidWindow => {
-                core::fmt::Write::write_str(f, "a BAR returned an invalid memory window")
-            }
+            Self::Malformed => f.write_str("the function has an unsupported BAR layout"),
+            Self::InvalidWindow => f.write_str("a BAR returned an invalid memory window"),
         }
     }
 }
@@ -143,6 +131,15 @@ pub(crate) struct ProbeRestore {
 }
 
 impl ProbeRestore {
+    const fn bars(original: [u32; BARS], modified: u8, command: u16) -> Self {
+        Self {
+            original,
+            modified,
+            command,
+            phase: ProbeRestorePhase::Bars,
+        }
+    }
+
     const fn modified(&self, index: usize) -> bool {
         self.modified & (1 << index) != 0
     }
@@ -185,7 +182,6 @@ impl<E> ProbeFailure<E> {
         }
     }
 
-    /// Why the probe refused.
     pub const fn reason(&self) -> &ProbeError<E> {
         &self.reason
     }
@@ -204,21 +200,7 @@ pub struct ProbeRetry {
     restore: ProbeRestore,
 }
 
-/// Probe every BAR under one exclusive decode-off transaction.
-///
-/// The closure is called for configuration cycles while the platform adapter
-/// holds its configuration lock. I/O decode, memory decode and bus mastering
-/// are cleared and read back before the first BAR write. BARs are restored
-/// while that state remains verified; the successful result retains exclusive
-/// authority to restore the original command later. A 64-bit BAR has both
-/// halves filled with ones before either half is read.
-///
-/// # Errors
-///
-/// Refuses invalid layout, size, alignment, or configuration access. A clean
-/// failure restores every modified register and the original command;
-/// uncertain restoration keeps DMA and decode disabled and returns retry
-/// authority in [`ProbeFailure::into_retry`].
+/// Probe every BAR with decode verified off; an uncertain restoration returns [`ProbeRetry`].
 pub fn probe_bars<const N: usize, E>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -278,11 +260,6 @@ pub(crate) fn probe_bars_with_leases<const N: usize, E>(
 }
 
 /// Retry a BAR restoration through the same function reservation.
-///
-/// # Errors
-///
-/// Returns the unchanged retry authority when access or exact readback still
-/// cannot prove the captured device state.
 pub fn retry_probe<const N: usize, E>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -340,14 +317,14 @@ pub(crate) fn probe_bars_unleased<E>(
         });
     }
 
-    let command = access(ProbeAccess::ReadCommand).map_err(|error| RawProbeFailure {
-        reason: ProbeError::Access(error),
+    let command = access(ProbeAccess::ReadCommand).map_err(|reason| RawProbeFailure {
+        reason: ProbeError::Access(reason),
         restore: None,
     })? as u16;
     let mut original = [0u32; BARS];
     for (index, slot) in original.iter_mut().enumerate().take(registers) {
-        *slot = access(ProbeAccess::ReadBar(index)).map_err(|error| RawProbeFailure {
-            reason: ProbeError::Access(error),
+        *slot = access(ProbeAccess::ReadBar(index)).map_err(|reason| RawProbeFailure {
+            reason: ProbeError::Access(reason),
             restore: None,
         })?;
     }
@@ -359,103 +336,9 @@ pub(crate) fn probe_bars_unleased<E>(
         });
     };
 
-    let mut modified = 0u8;
-    let decode_off = command & !PROBE_DISABLED;
-    let command_restore = ProbeRestore {
-        original,
-        modified,
-        command,
-        phase: ProbeRestorePhase::Command,
-    };
-    if let Err(error) = access(ProbeAccess::WriteCommand(decode_off)) {
-        return Err(after_access_error(error, &mut access, command_restore));
-    }
-    match access(ProbeAccess::ReadCommand) {
-        Ok(bits) if bits as u16 == decode_off => {}
-        Ok(bits) => {
-            return Err(after_probe_error(
-                ProbeError::Refused(bits as u16),
-                &mut access,
-                command_restore,
-            ));
-        }
-        Err(error) => {
-            return Err(after_access_error(error, &mut access, command_restore));
-        }
-    }
-
-    let mut masks = [0u32; BARS];
-    for slots in plan.iter().flatten() {
-        let index = slots.low;
-        modified |= 1 << index;
-        if let Err(error) = access(ProbeAccess::WriteBar(index, u32::MAX)) {
-            return Err(after_access_error(
-                error,
-                &mut access,
-                ProbeRestore {
-                    original,
-                    modified,
-                    command,
-                    phase: ProbeRestorePhase::Bars,
-                },
-            ));
-        }
-        if let Some(high) = slots.high {
-            modified |= 1 << high;
-            if let Err(error) = access(ProbeAccess::WriteBar(high, u32::MAX)) {
-                return Err(after_access_error(
-                    error,
-                    &mut access,
-                    ProbeRestore {
-                        original,
-                        modified,
-                        command,
-                        phase: ProbeRestorePhase::Bars,
-                    },
-                ));
-            }
-        }
-
-        masks[index] = match access(ProbeAccess::ReadBar(index)) {
-            Ok(mask) => mask,
-            Err(error) => {
-                return Err(after_access_error(
-                    error,
-                    &mut access,
-                    ProbeRestore {
-                        original,
-                        modified,
-                        command,
-                        phase: ProbeRestorePhase::Bars,
-                    },
-                ));
-            }
-        };
-        if let Some(high) = slots.high {
-            masks[high] = match access(ProbeAccess::ReadBar(high)) {
-                Ok(mask) => mask,
-                Err(error) => {
-                    return Err(after_access_error(
-                        error,
-                        &mut access,
-                        ProbeRestore {
-                            original,
-                            modified,
-                            command,
-                            phase: ProbeRestorePhase::Bars,
-                        },
-                    ));
-                }
-            };
-        }
-    }
-
-    let restore = ProbeRestore {
-        original,
-        modified,
-        command,
-        phase: ProbeRestorePhase::Bars,
-    };
+    disable_decode(original, command, &mut access)?;
+    let (masks, modified) = read_masks(&plan, original, command, &mut access)?;
+    let restore = ProbeRestore::bars(original, modified, command);
     let restore = match restore_probe_bars(restore, &mut access) {
         Ok(restore) => restore,
         Err((reason, restore)) => {
@@ -478,6 +361,75 @@ pub(crate) fn probe_bars_unleased<E>(
     })
 }
 
+fn disable_decode<E>(
+    original: [u32; BARS],
+    command: u16,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<(), RawProbeFailure<E>> {
+    let decode_off = command & !PROBE_DISABLED;
+    let command_restore = ProbeRestore {
+        original,
+        modified: 0,
+        command,
+        phase: ProbeRestorePhase::Command,
+    };
+    if let Err(reason) = access(ProbeAccess::WriteCommand(decode_off)) {
+        return Err(after_access_error(reason, access, command_restore));
+    }
+    match access(ProbeAccess::ReadCommand) {
+        Ok(bits) if bits as u16 == decode_off => Ok(()),
+        Ok(bits) => Err(after_probe_error(
+            ProbeError::Refused(bits as u16),
+            access,
+            command_restore,
+        )),
+        Err(reason) => Err(after_access_error(reason, access, command_restore)),
+    }
+}
+
+fn read_masks<E>(
+    plan: &[Option<BarSlots>; BARS],
+    original: [u32; BARS],
+    command: u16,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<([u32; BARS], u8), RawProbeFailure<E>> {
+    let mut masks = [0u32; BARS];
+    let mut modified = 0u8;
+    for slots in plan.iter().flatten() {
+        let index = slots.low;
+        modified |= 1 << index;
+        if let Err(reason) = access(ProbeAccess::WriteBar(index, u32::MAX)) {
+            let restore = ProbeRestore::bars(original, modified, command);
+            return Err(after_access_error(reason, access, restore));
+        }
+        if let Some(high) = slots.high {
+            modified |= 1 << high;
+            if let Err(reason) = access(ProbeAccess::WriteBar(high, u32::MAX)) {
+                let restore = ProbeRestore::bars(original, modified, command);
+                return Err(after_access_error(reason, access, restore));
+            }
+        }
+
+        masks[index] = match access(ProbeAccess::ReadBar(index)) {
+            Ok(mask) => mask,
+            Err(reason) => {
+                let restore = ProbeRestore::bars(original, modified, command);
+                return Err(after_access_error(reason, access, restore));
+            }
+        };
+        if let Some(high) = slots.high {
+            masks[high] = match access(ProbeAccess::ReadBar(high)) {
+                Ok(mask) => mask,
+                Err(reason) => {
+                    let restore = ProbeRestore::bars(original, modified, command);
+                    return Err(after_access_error(reason, access, restore));
+                }
+            };
+        }
+    }
+    Ok((masks, modified))
+}
+
 fn restore_probe_bars<E>(
     mut restore: ProbeRestore,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
@@ -488,7 +440,7 @@ fn restore_probe_bars<E>(
         match access(ProbeAccess::ReadCommand) {
             Ok(bits) if bits as u16 == decode_off => {}
             Ok(_) => return Err((ProbeError::RestoreChanged, restore)),
-            Err(error) => return Err((ProbeError::Restore(error), restore)),
+            Err(reason) => return Err((ProbeError::Restore(reason), restore)),
         }
 
         for index in (0..BARS).rev() {
@@ -503,7 +455,7 @@ fn restore_probe_bars<E>(
             match access(ProbeAccess::ReadBar(index)) {
                 Ok(bits) if bits == restore.original[index] => {}
                 Ok(_) => return Err((ProbeError::RestoreChanged, restore)),
-                Err(error) => return Err((ProbeError::Restore(error), restore)),
+                Err(reason) => return Err((ProbeError::Restore(reason), restore)),
             }
         }
         restore.phase = ProbeRestorePhase::Command;
@@ -520,7 +472,7 @@ pub(crate) fn finish_probe_restoration<E>(
     match access(ProbeAccess::ReadCommand) {
         Ok(bits) if bits as u16 == restore.command => Ok(()),
         Ok(_) => Err((ProbeError::RestoreChanged, restore)),
-        Err(error) => Err((ProbeError::Restore(error), restore)),
+        Err(reason) => Err((ProbeError::Restore(reason), restore)),
     }
 }
 
@@ -556,11 +508,11 @@ fn bar_slots(registers: usize, original: &[u32; BARS]) -> Option<[Option<BarSlot
 }
 
 fn after_access_error<E>(
-    error: E,
+    reason: E,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
     restore: ProbeRestore,
 ) -> RawProbeFailure<E> {
-    after_probe_error(ProbeError::Access(error), access, restore)
+    after_probe_error(ProbeError::Access(reason), access, restore)
 }
 
 fn after_probe_error<E>(

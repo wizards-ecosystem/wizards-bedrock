@@ -293,7 +293,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 238,
         file: "libs/pci-config/src/command_state.rs",
-        find: "            Self::Access => core::fmt::Write::write_str(f, \"configuration access failed\"),",
+        find: "            Self::Access => f.write_str(\"configuration access failed\"),",
         replace: "            Self::Access => Ok(()),",
         breaks: "every pci enable error has a diagnostic description",
         reddens: Caught::HostTest {
@@ -508,8 +508,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 762,
         file: "libs/pci-config/src/command_state.rs",
-        find: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    state.phase = CommandPhase::Restoring(wanted);\n    let result = change_command(at, current, wanted, &mut access);",
-        replace: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    let result = change_command(at, current, wanted, &mut access);",
+        find: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    state.phase = CommandPhase::Restoring(wanted);\n    match change_command(at, current, wanted, &mut access) {",
+        replace: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    match change_command(at, current, wanted, &mut access) {",
         breaks: "an interrupted command upgrade publishes no restoration phase before its write",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -585,8 +585,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 791,
         file: "libs/pci-config/src/probe.rs",
-        find: "        Ok(bits) if bits as u16 == decode_off => {}\n        Ok(bits) => {\n            return Err(after_probe_error(\n                ProbeError::Refused(bits as u16),\n                &mut access,\n                command_restore,\n            ));\n        }",
-        replace: "        Ok(_) => {}",
+        find: "        Ok(bits) if bits as u16 == decode_off => Ok(()),\n        Ok(bits) => Err(after_probe_error(\n            ProbeError::Refused(bits as u16),\n            access,\n            command_restore,\n        )),",
+        replace: "        Ok(_) => Ok(()),",
         breaks: "a BAR probe accesses windows after the device ignored decode-off",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -684,8 +684,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1275,
         file: "libs/pci-config/src/command_state.rs",
-        find: "        Err(error) => {\n            if error != EnableError::Restore {\n                state.phase = CommandPhase::Installed;\n            }\n            Err(error)\n        }",
-        replace: "        Err(error) => {\n            state.phase = CommandPhase::Installed;\n            Err(error)\n        }",
+        find: "        Err(reason) => {\n            if reason != EnableError::Restore {\n                state.phase = CommandPhase::Installed;\n            }\n            Err(reason)\n        }",
+        replace: "        Err(reason) => {\n            state.phase = CommandPhase::Installed;\n            Err(reason)\n        }",
         breaks: "an uncertain bus-master rollback loses its retry phase",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -926,8 +926,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1652,
         file: "libs/pci-config/src/command_state.rs",
-        find: "    if current != state.installed && pending != Some(current) {\n        return Err(EnableError::Changed(current));\n    }\n\n    // `current` is now one of the command owner's exact recorded words. Make",
-        replace: "    if current != state.installed {\n        return Err(EnableError::Changed(current));\n    }\n\n    // `current` is now one of the command owner's exact recorded words. Make",
+        find: "    if current != state.installed && pending != Some(current) {\n        return Err(EnableError::Changed(current));\n    }",
+        replace: "    if current != state.installed {\n        return Err(EnableError::Changed(current));\n    }",
         breaks: "an interrupted bus-master transition cannot settle through its recorded pending word",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -959,8 +959,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1671,
         file: "libs/pci-config/src/command_state.rs",
-        find: "    // `begin_command` verified the installed word exactly. From this point a\n    // later restoration is deliberately safe rather than firmware-exact.\n    state.before &= !command::BUS_MASTER;",
-        replace: "    // The inherited BME bit was incorrectly left in the restoration target.",
+        find: "    )?;\n    state.before &= !command::BUS_MASTER;\n    Ok(state)",
+        replace: "    )?;\n    // The inherited BME bit was incorrectly left in the restoration target.\n    Ok(state)",
         breaks: "requester-fence release restores inherited bus mastering",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1146,8 +1146,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1824,
         file: "libs/pci-config/src/fence.rs",
-        find: "                let expected = before & !command::BUS_MASTER;",
-        replace: "                let expected = before;",
+        find: "    let expected = before & !command::BUS_MASTER;",
+        replace: "    let expected = before;",
         breaks: "the entry fence inventories inherited bus masters without disabling them",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1157,8 +1157,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1825,
         file: "libs/pci-config/src/fence.rs",
-        find: "                let retained_class = if found != expected {",
-        replace: "                let retained_class = if false && found != expected {",
+        find: "    let fenced = if found != expected {",
+        replace: "    let fenced = if false && found != expected {",
         breaks: "an ignored bus-master clear is treated as a completed entry fence",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1168,8 +1168,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1826,
         file: "libs/pci-config/src/fence.rs",
-        find: "                if current != identity {",
-        replace: "                if false && current != identity {",
+        find: "    if current != identity {",
+        replace: "    if false && current != identity {",
         breaks: "a requester identity change during the entry fence is accepted as static topology",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1234,8 +1234,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1846,
         file: "libs/pci-config/src/fence.rs",
-        find: "                    if current_class != class {",
-        replace: "                    if false && current_class != class {",
+        find: "    if current_class != class {",
+        replace: "    if false && current_class != class {",
         breaks: "the qualified host-bridge class can change after its refused command write",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1245,8 +1245,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1848,
         file: "libs/pci-config/src/fence.rs",
-        find: "                            retained_non_requesters += 1;\n                            retained_non_requester = Some(authority);",
-        replace: "                            disabled += 1;\n                            retained_non_requesters += 1;\n                            retained_non_requester = Some(authority);",
+        find: "                self.retained_non_requesters += 1;\n                self.retained_non_requester = Some(authority);",
+        replace: "                self.disabled += 1;\n                self.retained_non_requesters += 1;\n                self.retained_non_requester = Some(authority);",
         breaks: "an attempted but refused VMware host-bridge clear is counted as a disabled requester",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1388,8 +1388,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2277,
         file: "libs/pci-config/src/fence.rs",
-        find: "                        let status = access(at, HandoffAccess::QuiesceIsaDma).ok_or(",
-        replace: "                        let status = Some(0u32).ok_or(",
+        find: "    let status = access(at, HandoffAccess::QuiesceIsaDma).ok_or(",
+        replace: "    let status = Some(0u32).ok_or(",
         breaks: "the ISA bridge is admitted without ever masking its 8237 controllers",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1399,8 +1399,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2278,
         file: "libs/pci-config/src/fence.rs",
-        find: "                        if status & ISA_DMA_PENDING_REQUESTS != 0 {",
-        replace: "                        if false && status & ISA_DMA_PENDING_REQUESTS != 0 {",
+        find: "    if status & ISA_DMA_PENDING_REQUESTS != 0 {",
+        replace: "    if false && status & ISA_DMA_PENDING_REQUESTS != 0 {",
         breaks: "a pending 8237 request after masking still mints quiesce authority",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1476,8 +1476,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2338,
         file: "libs/pci-config/src/topology.rs",
-        find: "            self.observation_failure = Some(error);",
-        replace: "            let _ = error;\n            self.observation_failure = None;",
+        find: "            self.observation_failure = Some(reason);",
+        replace: "            let _ = reason;\n            self.observation_failure = None;",
         breaks: "The first locally rejected observation cannot be resealed as structurally complete.",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1498,8 +1498,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2340,
         file: "libs/pci-config/src/topology.rs",
-        find: "        match self.observation_failure {\n            Some(error) => Err(error),\n            None => Ok(()),\n        }",
-        replace: "        match self.observation_failure {\n            Some(_error) => Ok(()),\n            None => Ok(()),\n        }",
+        find: "        match self.observation_failure {\n            Some(reason) => Err(reason),\n            None => Ok(()),\n        }",
+        replace: "        match self.observation_failure {\n            Some(_reason) => Ok(()),\n            None => Ok(()),\n        }",
         breaks: "A later valid observation must still return the original error; a different invalid observation cannot replace it.",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -1553,7 +1553,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2345,
         file: "libs/pci-config/src/topology.rs",
-        find: "        if let Some(error) = self.observation_failure {\n            return Err(error);\n        }",
+        find: "        if let Some(reason) = self.observation_failure {\n            return Err(reason);\n        }",
         replace: "",
         breaks: "A structurally valid partial snapshot cannot gain a seal after the earlier observation failure, including repeated seal attempts.",
         reddens: Caught::HostTest {
