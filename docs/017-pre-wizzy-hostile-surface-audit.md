@@ -134,10 +134,9 @@ Host tooling handles locally hostile paths and bytes even though a user able to
 race the repository already has the contributor's authority. A checked path is
 opened without following its final component, and the opened handle must
 describe one real file (D-344), so a link swapped in after the check is never
-read. Because the standard library offers no directory-relative open on
-Windows, replacing the whole parent directory between validation and use
-remains an explicit limit (limit 3); the tooling must not claim that path
-preflight eliminates it.
+read. Replacing the whole parent directory between validation and use
+remains an explicit limit, for the reason limit 3 gives; the tooling must not
+claim that path preflight eliminates it.
 
 | Boundary | Untrusted input | Validator or authority | Fail-closed invariant | Proof or open owner | Consumer or trigger |
 |---|---|---|---|---|---|
@@ -152,7 +151,7 @@ preflight eliminates it.
 | VMware generation and transcript | Boot image, selector paths, generated VM files, `vmrun` identity/list output and serial log | [`vmware.rs`](../xtask/src/vmware.rs) and VMware qualification records | Selectors own distinct state; output links are untouched; the receipt binds the source-rendered VMX, every generated assignment remains unchanged, and only constrained runtime additions are accepted; raw runtime VMX and serial bytes stay exact while transcript parsing admits LF/CRLF and refuses embedded controls, duplicate generations and unordered witnesses (D-365). D-431 permits only an optional complete enabled VNC runtime group at literal `127.0.0.1:5997`, with observed host listener ownership before input and removal after stop; partial groups, alternate values and every other `RemoteDisplay` key refuse. Isolation is one exact canonical `[info ]` physical line: paired selection for either selector, forced-paired with retained `rdcl_no` only for self-test, or shared `rdcl_no` only for shipped; D-427 also requires exactly one canonical `user: ring 3 call observed` info record in shipped transcripts, earned after saved-CPL3 entry and reported once from idle | Host hostile-path/transcript/configuration fixtures, D-431's exact complete/absent VNC witness and retained mutations 2,327 through 2,337, selector matrix and kernel-producer binding reject warnings, duplicates and cross-selector markers; the exact verifier is implemented, while fresh-machine qualification remains v0.2.0 closed `PW-003`, `PW-004`, `PW-579`, `PW-580`, `PW-706` (D-449) | Phase close only |
 | Debugger | Resolved GDB identity, command script, symbols/source and child output | [`debugger.rs`](../xtask/src/debugger.rs) | Only the reviewed identity and exact entry marker/source satisfy proof; direct child and capture are bounded | Identity/script/parked-child host tests | Optional `debug` task |
 | Model checker | Model/config bytes, Java/TLC identities, stdout/stderr and process status | [`model.rs`](../xtask/src/model.rs) with [`bounded_process.rs`](../xtask/src/bounded_process.rs) | Every registered clean/mutant run has one exact terminal classification and bounded transcript; timeout, mixed diagnostics or missing trace is not evidence | Host transcript/process fixtures; the source-bound model record, bundle and D-330's exact documentation child remain v0.2.0 closed `PW-002`, `PW-009` (D-449); on Windows every process a run starts ends with its job (D-347) | Phase close only |
-| Mutation registry and isolated workspace | Mutation patterns, Git source snapshot, child results, journals, locks, workspace paths and observer deadlines | [`mutate.rs`](../xtask/src/mutate.rs) and [`mutate/workspace.rs`](../xtask/src/mutate/workspace.rs) | Every pattern/check is unique and live; Git's raw tracked-path inventory is strictly ordered before path conversion; only the named red is caught; source edits stay in a canonical private copy; verbatim target paths become equivalent ordinary absolutes only at toolchain boundaries; Git-dependent unit fixtures own private repositories; torn/interrupted state cannot publish a pass. Ordinary check and panic mutations receive the explicit 180-second machine-observation budget needed for late exact witnesses, while timeout mutations retain their registered exact deadline | Host workspace/journal/child fixtures; timeout selection and forwarding have source tests and retained mutations 2,076/2,077. Mutation 1,630's process-local once-per-boot witness and mutation 1,665's extended late VT-d witness are implemented but still require the replacement sweep. The complete 2,133-entry run on `0dfcb76` caught 2,132 with no inconclusive outcome, but permanent mutation 2,036 survived because owned metadata did not independently assert the `managed` profile type; D-422 requires that witness and keeps the mutation active. Raw-order, GNU-path and borrowed-Git defects closed by `PW-030` through `PW-032`; v0.2.0 closed `PW-001` (D-449); the independent grader is D-425's continuous campaign, which superseded `PW-025` as a release prerequisite | Phase close only |
+| Mutation registry and isolated workspace | Mutation patterns, Git source snapshot, child results, journals, locks, workspace paths and observer deadlines | [`mutate.rs`](../xtask/src/mutate.rs), [`mutate/registry/`](../xtask/src/mutate/registry/) and [`mutate/workspace.rs`](../xtask/src/mutate/workspace.rs) | Every pattern/check is unique and live; Git's raw tracked-path inventory is strictly ordered before path conversion; only the named red is caught; source edits stay in a canonical private copy; verbatim target paths become equivalent ordinary absolutes only at toolchain boundaries; Git-dependent unit fixtures own private repositories; torn/interrupted state cannot publish a pass. Ordinary check and panic mutations receive the explicit 180-second machine-observation budget needed for late exact witnesses, while timeout mutations retain their registered exact deadline | Host workspace/journal/child fixtures; timeout selection and forwarding have source tests and retained mutations 2,076/2,077. Mutation 1,630's process-local once-per-boot witness and mutation 1,665's extended late VT-d witness are implemented but still require the replacement sweep. The complete 2,133-entry run on `0dfcb76` caught 2,132 with no inconclusive outcome, but permanent mutation 2,036 survived because owned metadata did not independently assert the `managed` profile type; D-422 requires that witness and keeps the mutation active. Raw-order, GNU-path and borrowed-Git defects closed by `PW-030` through `PW-032`; v0.2.0 closed `PW-001` (D-449); the independent grader is D-425's continuous campaign, which superseded `PW-025` as a release prerequisite | Phase close only |
 | External-process capture | Child timing, exit/kill races, descendant processes, stdout/stderr volume and capture paths | [`bounded_process.rs`](../xtask/src/bounded_process.rs) | Caller deadline, byte cap and bounded post-kill poll apply before collection; partial reservations roll back; control failure remains inconclusive; on Windows the child is assigned to a job object before it runs, and the job is terminated whenever the command completes, times out, overruns its capture limit or cannot be observed (D-347) | Parked/noisy/delayed-exit and injected-I/O host fakes; parked-grandchild fixtures with mutations 1,522 and 1,523 | Shared by exceptional tasks; a hard external kill of `xtask` and a non-Windows host (`PW-708`) stay outside the job |
 | Git identity and checked reads | The `git` that `PATH` names, its version text and bytes, its commit, tree and cleanliness answers, and every artifact path a reader checks before opening | [`git.rs`](../xtask/src/git.rs) resolves Git once per run; `open_real_file` in [`mutate/workspace/tree.rs`](../xtask/src/mutate/workspace/tree.rs) | Every Git query spawns the one canonical executable resolved at first use from its own directory with a fixed-only environment and absolute repository bindings; system/global configuration and fixed helper surfaces are disabled, every effective local/included/worktree content-filter driver is boundedly discovered and neutralized, and a discovery/configuration failure becomes an invalid command; an executable whose version does not name Git is refused; its path, version, length and SHA-256 enter every qualification record and evidence manifest and are remeasured before commit; a checked path is opened through `open_real_file` and must describe one real file without accepting a final-component link before payload reading. D-436 routes `read_bounded_bytes_with`, `digest_tracked` and `digest_file_with` through that same boundary while preserving byte limits, streaming hashes, framing and post-use checks; contract probes are exclusive beneath `target/contract-probes` (D-344, D-406) | Real fsmonitor and tracked/worktree/info-attribute filter poisons, local/include/worktree configuration, malformed-config, linked-worktree/gitfile, fixed-environment, resolved-program, non-Git decoy, version-identity, changed-executable and field-validation tests; source/path/probe contracts and retained mutations; the checked-path AST witness now recognizes both confined-path helper names, while two direct final-link fixtures and their exact reds remain pending under `PW-717` | Qualification records and evidence; same-account replacement between bounded filter discovery and the immediate query, or a parent directory replaced between check and open, remains outside the boundary; this change does not add hard-link identity or same-account content authentication |
 | Qualification records | Git identity/cleanliness, tool identities, artifacts, transcripts, timestamps and prior records | [`qualification.rs`](../xtask/src/qualification.rs), [`mutants_grade.rs`](../xtask/src/mutants_grade.rs) and [`security_deep.rs`](../xtask/src/security_deep.rs) exact v6 schemas | An attempt invalidates older success first and every record binds the resolved Git (D-344); `xtask` alone starts and contains the full cargo-mutants command under its exact isolated tool environment, reads only private output, replays inventory/outcomes/phases and admits only tracked exact-diff adjudications, then matches the live exit to those complete counters with timeout precedence (D-429); D-406 likewise gives only the Windows Job-owned, pinned Deep MCP session a non-`Clone` PASS capability, requires one exact start/completion dialogue and private scratch with a sampled fail-stop budget, validates exact completion content and the canonical result/report, binds the complete isolated Python-owned tree, four-file adjacent Codex runtime and fixed qualified worker shell environment, remeasures source, plugin, Node, Python, Codex runtime and Git after their last use, removes the exact reserved scratch child, and only then mints PASS. D-416 requires exactly one non-authoritative Daybreak access advisory on that dialogue after tool discovery and before the one Deep start/completion pair; advisory status cannot change inputs, entitlement or PASS. D-417 rotates only one exact official Node and content-pinned Codex tuple after remeasuring two empty-home default and generated-system-skill projections; manual Authenticode review establishes provenance, while automated qualification binds exact bytes and inventory without enforcing signer identity. D-419 corrects only the unchanged generated tree's identity to production ordinal path order and refuses the legacy culture-sorted digest. D-420 supplies the owned clean tracked clone, credential-alias refusal and intended strict MXC worker boundary. D-422 corrects its provider integration for official pinned Codex Security 0.1.32: every request carries the exact managed root-read-plus-explicit-deny provider envelope; the wrapper validates and preserves the provider-generated app-server permission profile unchanged; and every initial or resumed exec profile is validated and replaced exactly once by the root-deny, read-allowlisted, network-denied effective profile with MXC forced last, daemon disabled and ambient configuration/rules ignored. D-424 retains fresh-file and listener denial while adding separate existing-readable-file append/truncate/overwrite and outbound loopback-connection denial. The v9 environment and v8 execution authority bind `provider-envelope=managed-root-read+explicit-deny;effective-worker=exec-only:backend=mxc,root=deny,minimal+owned-repository+scan+plugin+qualified-runtime=read,repository-metadata+credential=deny,outside-canary=default-deny-probed,network=false` plus canonical digests of the provider metadata, provider profile, effective exec profile and effective MXC state. The canonical v3 ledger joins seven plan-exact pinned Codex/MXC preflight counts to identity-bearing real-plugin transitions: one app-server launch receipt per worker attempt, an actual `thread.started` receipt sealed before forwarding for every initial or resumed exec, and a zero-exit receipt paired to its exact start. It retains exact completion `threadIds` and `executionThreadIds`, requires the nonempty execution set to be a subset of the completed set and covered by initial starts, and requires same-worker initial ancestry for resumes; multiple app-server launches are valid. The separately bound effective-state digest is its canonical expected projection, not compiler-observed output. Diagnostic `--begin`/`--verify` cannot commit, and both online and offline consumers cross the same owned-record verifier | Host schema/path/source/tool/process/protocol fixtures and retained external/relation/authority mutations, including 2,070 for the once-only pre-start advisory, 2,071 for strict JSON-RPC error envelopes, 2,078 through 2,082 for URL, Unicode-control, presentation-channel and error-subclause strictness, 2,084 for detached-stream non-authority, 2,085 for active originless notification refusal, 2,093 through 2,095 for ordinal system-skill identity, replacement mutations 2,033 through 2,035 and mutations 2,125 through 2,150 for clone-backed default-deny isolation. D-422 implements the independent mutation-2,036 witness, app-server pass-through and initial/resumed exec attenuation. D-424 requires positive controls, all allowed/denied reads, two denied fresh-file creates, three denied existing-readable-file mutations, a denied loopback listener, a denied outbound loopback connection and a descendant's denied read without claiming the proprietary model selected those operations. Focused transition witnesses also cover completion-set retention and subset, provider-ID coverage, same-worker resume ancestry, JSONL identity matching and start/exit pairing. The replacement sweep remains required, while the grade and the real owned Deep run are D-425's continuous campaigns whose records enter only a release with the same source; v0.2.0 closed `PW-009`, `PW-028` (D-449) | Phase-close artifact source; implementation and configuration witnesses are not runtime qualification |
@@ -168,9 +167,9 @@ literal's callgraph. A fresh human VMware transcript remains required by
 `PW-003`; the source-literal check cannot substitute for observing the machine.
 
 D-422 likewise implements a qualification route without supplying qualification.
-The completed 2,133-entry mutation run on `0dfcb76` caught 2,132 entries with no
-inconclusive result, but survivor 2,036 exposed the missing independent
-`managed` metadata-type assertion. Inspection of official pinned Codex Security
+In the completed 2,133-entry mutation run on `0dfcb76` (see the mutation
+registry row), survivor 2,036 exposed the missing independent `managed`
+metadata-type assertion. Inspection of official pinned Codex Security
 0.1.32 then established that its root-readable managed provider envelope and
 exact app-server profile comparison are mandatory. The accepted split preserves
 that measured authenticated control plane's provider-generated permission
@@ -178,19 +177,21 @@ profile unchanged while injecting its safety overrides, and attenuates only
 every initial or resumed exec to the strict effective worker profile. Runtime
 proof now has two mandatory parts: identity-bearing real-plugin transitions and
 a pinned Codex/MXC preflight that explicitly compiles and selects the
-exact effective named profile for all allowed/denied reads, two denied
-fresh-file creates, denied append/truncate/overwrite against an existing
-readable canary, a denied loopback listener, a denied outbound loopback
-connection and a descendant's denied read. The v3 canonical ledger records an
-app-server launch for every worker attempt, seals each exec's actual
-`thread.started` identity before forwarding, pairs zero-exit receipts to their
-exact starts, retains both exact completion thread sets, requires every reported
-execution identity to have an initial start and requires same-worker ancestry
-for resumes. It also binds the provider-profile, effective-profile and
-independently rendered effective-state digests and all seven plan-exact split
-probe counts. The identities prove every reported execution thread's validated
-default-profile wiring and the preflight proves the
-pinned resolver's enforcement; neither claims identical CLI shapes or that the
+exact effective named profile from the owned scan root for all allowed/denied
+reads, two denied fresh-file creates, denied append/truncate/overwrite against
+an existing readable canary, a denied loopback listener, a denied outbound
+loopback connection and a descendant's denied read. The v3 canonical ledger
+records every real app-server launch per worker attempt, seals each initial or
+resumed exec's actual `thread.started` identity before forwarding, pairs every
+zero-exit receipt to the same process, worker, arguments, profile and start,
+retains both exact completion thread sets, requires the nonempty execution set
+to be a subset of the completed set and covered by initial starts, and requires
+same-worker initial ancestry for resumes. It also binds the provider-profile,
+effective-profile and independently rendered effective-state digests and all
+seven plan-exact split probe counts. The retained identities prove the real
+plugin crossings, the exact exec profile wiring and every reported execution
+thread's validated default-profile wiring, and the preflight proves the pinned
+resolver's negative enforcement; neither claims identical CLI shapes or that the
 proprietary model selected each negative operation. v0.2.0 qualified
 `694061f` with the curated sweep (PW-001) and declared the continuous Deep
 campaign `deferred` (D-425, D-449). A later bundle includes a Deep record only
@@ -214,20 +215,16 @@ record. D-373 removes the supported elevation of an arbitrary caller-selected
 result directory into PASS; it does not claim that checksummed local files
 authenticate against the operator account that owns them. The release flow
 requires an exclusive clean run under that account, while offline transport
-uses the recorded hashes to detect later substitution. A
-run resolves Git once, refuses an executable whose version does not name Git,
-and binds its path, version, length and SHA-256 into every qualification record
-and the evidence manifest, measured again before either is committed; checked
-paths open without following their final component (D-344, `88d529d`). The
+uses the recorded hashes to detect later substitution. Git's identity and
+checked-path opening are bound as the Git identity and checked reads row states
+(D-344, `88d529d`). The
 manifest also binds QEMU and both firmware images by digest (D-216), and
 `cargo xtask verify-evidence` requires the verifying host to match. QMP runs
 over the QEMU child's own standard streams and no boot binds a control listener
 (D-346, `2889b75`); the `debug` task's loopback GDB server serves a paused
-private machine that no record reads (D-231). A bounded command's Windows job
-ends with the command, its timeout or its failure; a hard external kill of
-`xtask` leaves the job's processes running, and a non-Windows host stops only
-the direct child until `PW-708` (D-347, `c26f083`). VMware boots remain a human
-trust boundary. The `xtask` grade owns its complete bounded process tree and
+private machine that no record reads (D-231). A bounded command's Windows job,
+and the processes outside it, are limit 4 (D-347, `c26f083`). VMware boots
+remain a human trust boundary. The `xtask` grade owns its complete bounded process tree and
 uses only source-controlled adjudications. D-406 gives Deep the same local
 exclusive-run trust boundary only for a pinned Windows Job-owned live MCP
 session; imported output remains diagnostic and has no PASS authority. D-420
@@ -243,23 +240,9 @@ validated and its named profile attenuated exactly once to root-deny with MXC
 forced last, explicit read grants, credential and repository-metadata denies,
 and network disabled. The live credential still has exactly one name before
 its one owned projection, both names remain explicitly denied and
-identity-checked for model workers. The canonical v3 ledger records every real
-app-server launch per worker attempt and each initial or resumed exec's actual
-`thread.started` identity before the event is forwarded. It pairs every
-zero-exit receipt to the same process, worker, arguments, profile and start,
-retains both exact completion thread sets, requires the nonempty execution set
-to be a subset of the completed set and covered by initial starts, and requires
-same-worker initial ancestry for resumes. It also binds the provider-profile,
-effective-profile and independently rendered effective-state digests and records
-seven plan-exact pinned Codex/MXC preflight counts while explicitly compiling
-and selecting that effective named profile from the owned scan root: allowed
-reads, denied reads, two denied fresh-file creates, three denied existing-file
-mutations, one denied loopback listener, one denied outbound loopback
-connection and one descendant's denied read. The retained identities prove the
-real plugin crossings and exact exec profile wiring; the preflight proves the
-pinned resolver's negative enforcement
-without claiming identical CLI shapes or that the proprietary model selected
-each negative operation. This implemented split remains unqualified until a
+identity-checked for model workers. The canonical v3 ledger, the pinned
+Codex/MXC preflight and what each proves are stated once, after the host
+tooling table. This implemented split remains unqualified until a
 complete clean frozen owned run passes; D-425 superseded PW-026 as a release
 prerequisite, so that run's record enters only a release with the same source.
 
@@ -340,9 +323,7 @@ all PCI interrupt delivery through an empty interrupt-remapping table and keeps
 legacy I/O APIC lines masked. Still stopped: AMD units have no backend
 (`PW-711`), and a device sees the physical addresses of its buffers (`PW-712`).
 
-**Census limits.** The four limits below are what the census cannot discharge:
-mapping and instruction contracts, ignored device writes, a parent directory
-replaced between check and open, and processes outside the Windows job.
+**Census limits.** The four limits below are what the census cannot discharge.
 
 
 ## Cross-cutting closure obligations
