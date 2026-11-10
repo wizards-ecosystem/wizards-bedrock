@@ -121,12 +121,7 @@ fn worker_transition_argument_digest(arguments: &[OsString]) -> Result<String> {
 
 fn require_worker_transition_shape(receipt: &WorkerTransitionReceipt) -> Result<()> {
     ensure!(
-        receipt.process_id != 0
-            && receipt.source_commit.len() == 40
-            && receipt
-                .source_commit
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        receipt.process_id != 0 && is_source_commit(&receipt.source_commit),
         "private Codex transition identity is malformed"
     );
     match (
@@ -410,81 +405,7 @@ pub(super) fn render_worker_transition_ledger(
         app_server >= 1 && exec_initial >= 1,
         "private Codex transition ledger lacks an app-server or initial exec crossing"
     );
-    let initial_starts = receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.kind == WorkerTransitionKind::ExecInitialAttenuated
-                && receipt.stage == WorkerTransitionStage::Started
-        })
-        .collect::<Vec<_>>();
-    let mut initial_threads = BTreeSet::new();
-    let mut initial_pairs = BTreeSet::new();
-    for receipt in &initial_starts {
-        let thread = receipt
-            .execution_thread
-            .as_ref()
-            .context("private Codex initial transition has no execution thread")?;
-        ensure!(
-            initial_threads.insert(thread.clone()),
-            "private Codex initial execution thread is duplicated"
-        );
-        initial_pairs.insert((receipt.worker.clone(), thread.clone()));
-    }
-    ensure!(
-        execution_threads.is_subset(&initial_threads),
-        "Codex Security completion execution threads lack observed initial wrapper starts"
-    );
-    for receipt in receipts.iter().filter(|receipt| {
-        receipt.kind == WorkerTransitionKind::ExecResumedAttenuated
-            && receipt.stage == WorkerTransitionStage::Started
-    }) {
-        let thread = receipt
-            .execution_thread
-            .as_ref()
-            .context("private Codex resumed transition has no execution thread")?;
-        ensure!(
-            initial_pairs.contains(&(receipt.worker.clone(), thread.clone())),
-            "private Codex resumed execution thread lacks same-worker initial ancestry"
-        );
-    }
-    let mut app_server_by_worker = BTreeMap::new();
-    let mut exec_starts_by_worker = BTreeMap::new();
-    for receipt in &receipts {
-        if receipt.kind == WorkerTransitionKind::AppServerPassThrough
-            && receipt.stage == WorkerTransitionStage::Launched
-        {
-            *app_server_by_worker
-                .entry(receipt.worker.clone())
-                .or_insert(0usize) += 1;
-        } else if receipt.stage == WorkerTransitionStage::Started {
-            *exec_starts_by_worker
-                .entry(receipt.worker.clone())
-                .or_insert(0usize) += 1;
-        }
-    }
-    for (worker, exec_starts) in exec_starts_by_worker {
-        ensure!(
-            app_server_by_worker.get(&worker).copied().unwrap_or(0) >= exec_starts,
-            "private Codex exec starts lack same-worker app-server launches"
-        );
-    }
-    for receipt in receipts
-        .iter()
-        .filter(|receipt| receipt.stage == WorkerTransitionStage::ExitedZero)
-    {
-        ensure!(
-            receipts.iter().any(|started| {
-                started.stage == WorkerTransitionStage::Started
-                    && started.kind == receipt.kind
-                    && started.process_id == receipt.process_id
-                    && started.worker == receipt.worker
-                    && started.execution_thread == receipt.execution_thread
-                    && started.applied_profile == receipt.applied_profile
-                    && started.arguments == receipt.arguments
-            }),
-            "private Codex zero-exit transition lacks its matching start"
-        );
-    }
+    require_worker_transition_ancestry(&receipts, execution_threads)?;
     let mut body = format!(
         "{WORKER_TRANSITIONS_SCHEMA}\nsource.commit={}\nprofile.provider.sha256={}\nprofile.effective.sha256={}\nprofile.effective-state.sha256={}\npreflight.allowed-reads={}\npreflight.denied-reads={}\npreflight.denied-write-creates={}\npreflight.denied-write-mutations={}\npreflight.denied-network-listeners={}\npreflight.denied-network-connections={}\npreflight.denied-descendants={}\ncompletion.threads={}\ncompletion.execution-threads={}\ntransition.app-server-launched={}\ntransition.exec-initial-started={}\ntransition.exec-resumed-started={}\ntransition.exec-exited-zero={}\ntransition.count={}\n",
         source.commit,
@@ -542,6 +463,88 @@ pub(super) fn render_worker_transition_ledger(
         execution_threads: execution_threads.clone(),
         probes: probes.clone(),
     })
+}
+
+fn require_worker_transition_ancestry(
+    receipts: &[WorkerTransitionReceipt],
+    execution_threads: &BTreeSet<String>,
+) -> Result<()> {
+    let initial_starts = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.kind == WorkerTransitionKind::ExecInitialAttenuated
+                && receipt.stage == WorkerTransitionStage::Started
+        })
+        .collect::<Vec<_>>();
+    let mut initial_threads = BTreeSet::new();
+    let mut initial_pairs = BTreeSet::new();
+    for receipt in &initial_starts {
+        let thread = receipt
+            .execution_thread
+            .as_ref()
+            .context("private Codex initial transition has no execution thread")?;
+        ensure!(
+            initial_threads.insert(thread.clone()),
+            "private Codex initial execution thread is duplicated"
+        );
+        initial_pairs.insert((receipt.worker.clone(), thread.clone()));
+    }
+    ensure!(
+        execution_threads.is_subset(&initial_threads),
+        "Codex Security completion execution threads lack observed initial wrapper starts"
+    );
+    for receipt in receipts.iter().filter(|receipt| {
+        receipt.kind == WorkerTransitionKind::ExecResumedAttenuated
+            && receipt.stage == WorkerTransitionStage::Started
+    }) {
+        let thread = receipt
+            .execution_thread
+            .as_ref()
+            .context("private Codex resumed transition has no execution thread")?;
+        ensure!(
+            initial_pairs.contains(&(receipt.worker.clone(), thread.clone())),
+            "private Codex resumed execution thread lacks same-worker initial ancestry"
+        );
+    }
+    let mut app_server_by_worker = BTreeMap::new();
+    let mut exec_starts_by_worker = BTreeMap::new();
+    for receipt in receipts {
+        if receipt.kind == WorkerTransitionKind::AppServerPassThrough
+            && receipt.stage == WorkerTransitionStage::Launched
+        {
+            *app_server_by_worker
+                .entry(receipt.worker.clone())
+                .or_insert(0usize) += 1;
+        } else if receipt.stage == WorkerTransitionStage::Started {
+            *exec_starts_by_worker
+                .entry(receipt.worker.clone())
+                .or_insert(0usize) += 1;
+        }
+    }
+    for (worker, exec_starts) in exec_starts_by_worker {
+        ensure!(
+            app_server_by_worker.get(&worker).copied().unwrap_or(0) >= exec_starts,
+            "private Codex exec starts lack same-worker app-server launches"
+        );
+    }
+    for receipt in receipts
+        .iter()
+        .filter(|receipt| receipt.stage == WorkerTransitionStage::ExitedZero)
+    {
+        ensure!(
+            receipts.iter().any(|started| {
+                started.stage == WorkerTransitionStage::Started
+                    && started.kind == receipt.kind
+                    && started.process_id == receipt.process_id
+                    && started.worker == receipt.worker
+                    && started.execution_thread == receipt.execution_thread
+                    && started.applied_profile == receipt.applied_profile
+                    && started.arguments == receipt.arguments
+            }),
+            "private Codex zero-exit transition lacks its matching start"
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn require_worker_thread_sets(
@@ -641,72 +644,85 @@ pub(super) fn verify_worker_transition_ledger(
         lines.next() == Some(WORKER_TRANSITIONS_SCHEMA),
         "sealed private Codex transition ledger schema differs"
     );
-    let read_field = |lines: &mut std::str::Lines<'_>, expected: &str| -> Result<String> {
-        let line = lines
-            .next()
-            .with_context(|| format!("sealed private Codex transition ledger has no {expected}"))?;
-        let (key, value) = line
-            .split_once('=')
-            .context("sealed private Codex transition field has no separator")?;
-        ensure!(
-            key == expected && !value.is_empty(),
-            "sealed private Codex transition field order differs"
-        );
-        Ok(value.to_string())
-    };
     ensure!(
-        read_field(&mut lines, "source.commit")? == source.commit
-            && read_field(&mut lines, "profile.provider.sha256")? == permissions.provider_profile
-            && read_field(&mut lines, "profile.effective.sha256")? == permissions.effective_profile
-            && read_field(&mut lines, "profile.effective-state.sha256")?
+        read_sealed_field(&mut lines, "source.commit")? == source.commit
+            && read_sealed_field(&mut lines, "profile.provider.sha256")?
+                == permissions.provider_profile
+            && read_sealed_field(&mut lines, "profile.effective.sha256")?
+                == permissions.effective_profile
+            && read_sealed_field(&mut lines, "profile.effective-state.sha256")?
                 == permissions.effective_state,
         "sealed private Codex transition ledger source or profiles differ"
     );
     let probes = WorkerProbeSummary {
-        allowed_reads: read_field(&mut lines, "preflight.allowed-reads")?
-            .parse::<usize>()
-            .context("sealed allowed-read preflight count is not an integer")?,
-        denied_reads: read_field(&mut lines, "preflight.denied-reads")?
-            .parse::<usize>()
-            .context("sealed denied-read preflight count is not an integer")?,
-        denied_write_creates: read_field(&mut lines, "preflight.denied-write-creates")?
-            .parse::<usize>()
-            .context("sealed denied-write-create preflight count is not an integer")?,
-        denied_write_mutations: read_field(&mut lines, "preflight.denied-write-mutations")?
-            .parse::<usize>()
-            .context("sealed denied-write-mutation preflight count is not an integer")?,
-        denied_network_listeners: read_field(&mut lines, "preflight.denied-network-listeners")?
-            .parse::<usize>()
-            .context("sealed denied-network-listener preflight count is not an integer")?,
-        denied_network_connections: read_field(&mut lines, "preflight.denied-network-connections")?
-            .parse::<usize>()
-            .context("sealed denied-network-connection preflight count is not an integer")?,
-        denied_descendants: read_field(&mut lines, "preflight.denied-descendants")?
-            .parse::<usize>()
-            .context("sealed denied-descendant preflight count is not an integer")?,
+        allowed_reads: read_sealed_count(
+            &mut lines,
+            "preflight.allowed-reads",
+            "sealed allowed-read preflight count",
+        )?,
+        denied_reads: read_sealed_count(
+            &mut lines,
+            "preflight.denied-reads",
+            "sealed denied-read preflight count",
+        )?,
+        denied_write_creates: read_sealed_count(
+            &mut lines,
+            "preflight.denied-write-creates",
+            "sealed denied-write-create preflight count",
+        )?,
+        denied_write_mutations: read_sealed_count(
+            &mut lines,
+            "preflight.denied-write-mutations",
+            "sealed denied-write-mutation preflight count",
+        )?,
+        denied_network_listeners: read_sealed_count(
+            &mut lines,
+            "preflight.denied-network-listeners",
+            "sealed denied-network-listener preflight count",
+        )?,
+        denied_network_connections: read_sealed_count(
+            &mut lines,
+            "preflight.denied-network-connections",
+            "sealed denied-network-connection preflight count",
+        )?,
+        denied_descendants: read_sealed_count(
+            &mut lines,
+            "preflight.denied-descendants",
+            "sealed denied-descendant preflight count",
+        )?,
     };
     probes.require_complete()?;
-    let thread_count = read_field(&mut lines, "completion.threads")?
-        .parse::<usize>()
-        .context("sealed completion thread count is not an integer")?;
-    let execution_thread_count = read_field(&mut lines, "completion.execution-threads")?
-        .parse::<usize>()
-        .context("sealed completion execution-thread count is not an integer")?;
-    let app_server = read_field(&mut lines, "transition.app-server-launched")?
-        .parse::<usize>()
-        .context("sealed app-server transition count is not an integer")?;
-    let exec_initial = read_field(&mut lines, "transition.exec-initial-started")?
-        .parse::<usize>()
-        .context("sealed initial-exec transition count is not an integer")?;
-    let exec_resumed = read_field(&mut lines, "transition.exec-resumed-started")?
-        .parse::<usize>()
-        .context("sealed resumed-exec transition count is not an integer")?;
-    let exec_exited_zero = read_field(&mut lines, "transition.exec-exited-zero")?
-        .parse::<usize>()
-        .context("sealed zero-exit transition count is not an integer")?;
-    let count = read_field(&mut lines, "transition.count")?
-        .parse::<usize>()
-        .context("sealed transition count is not an integer")?;
+    let thread_count = read_sealed_count(
+        &mut lines,
+        "completion.threads",
+        "sealed completion thread count",
+    )?;
+    let execution_thread_count = read_sealed_count(
+        &mut lines,
+        "completion.execution-threads",
+        "sealed completion execution-thread count",
+    )?;
+    let app_server = read_sealed_count(
+        &mut lines,
+        "transition.app-server-launched",
+        "sealed app-server transition count",
+    )?;
+    let exec_initial = read_sealed_count(
+        &mut lines,
+        "transition.exec-initial-started",
+        "sealed initial-exec transition count",
+    )?;
+    let exec_resumed = read_sealed_count(
+        &mut lines,
+        "transition.exec-resumed-started",
+        "sealed resumed-exec transition count",
+    )?;
+    let exec_exited_zero = read_sealed_count(
+        &mut lines,
+        "transition.exec-exited-zero",
+        "sealed zero-exit transition count",
+    )?;
+    let count = read_sealed_count(&mut lines, "transition.count", "sealed transition count")?;
     ensure!(
         count <= MAX_WORKER_TRANSITIONS
             && thread_count <= MAX_WORKER_TRANSITIONS
@@ -716,81 +732,29 @@ pub(super) fn verify_worker_transition_ledger(
             && count == app_server + exec_initial + exec_resumed + exec_exited_zero,
         "sealed private Codex transition counts differ"
     );
-    let mut thread_ids = BTreeSet::new();
-    for index in 0..thread_count {
-        let thread = read_field(&mut lines, &format!("completion.thread.{index:04}"))?;
-        require_safe_identity(&thread, "sealed completion thread identity")?;
-        ensure!(
-            thread_ids.insert(thread),
-            "sealed completion thread identity is duplicated"
-        );
-    }
-    let mut execution_threads = BTreeSet::new();
-    for index in 0..execution_thread_count {
-        let thread = read_field(
-            &mut lines,
-            &format!("completion.execution-thread.{index:04}"),
-        )?;
-        require_safe_identity(&thread, "sealed completion execution-thread identity")?;
-        ensure!(
-            execution_threads.insert(thread),
-            "sealed completion execution-thread identity is duplicated"
-        );
-    }
+    let thread_ids = read_sealed_threads(
+        &mut lines,
+        thread_count,
+        "completion.thread",
+        "sealed completion thread identity",
+    )?;
+    let execution_threads = read_sealed_threads(
+        &mut lines,
+        execution_thread_count,
+        "completion.execution-thread",
+        "sealed completion execution-thread identity",
+    )?;
     require_worker_thread_sets(&thread_ids, &execution_threads)?;
     let mut receipts = Vec::with_capacity(count);
     let mut process_stages = BTreeSet::new();
     for index in 0..count {
-        let kind = WorkerTransitionKind::parse(&read_field(
+        receipts.push(read_sealed_receipt(
             &mut lines,
-            &format!("transition.{index:04}.kind"),
-        )?)?;
-        let stage = WorkerTransitionStage::parse(&read_field(
-            &mut lines,
-            &format!("transition.{index:04}.stage"),
-        )?)?;
-        let process_id = read_field(&mut lines, &format!("transition.{index:04}.wrapper"))?
-            .parse::<u32>()
-            .context("sealed transition wrapper identity is not an integer")?;
-        ensure!(
-            process_id != 0 && process_stages.insert((process_id, stage)),
-            "sealed transition wrapper stage is zero or duplicated"
-        );
-        let worker = read_field(&mut lines, &format!("transition.{index:04}.worker.sha256"))?;
-        let execution_thread = match read_field(
-            &mut lines,
-            &format!("transition.{index:04}.execution.thread"),
-        )?
-        .as_str()
-        {
-            "none" => None,
-            value => Some(value.to_string()),
-        };
-        let applied_profile = read_field(
-            &mut lines,
-            &format!("transition.{index:04}.profile.applied.sha256"),
-        )?;
-        let arguments = read_field(
-            &mut lines,
-            &format!("transition.{index:04}.arguments.sha256"),
-        )?;
-        require_sha256(&worker, "sealed transition worker digest")?;
-        require_sha256(&applied_profile, "sealed transition applied-profile digest")?;
-        require_sha256(&arguments, "sealed transition argument digest")?;
-        let receipt = WorkerTransitionReceipt {
-            kind,
-            stage,
-            process_id,
-            source_commit: source.commit.clone(),
-            provider_profile: permissions.provider_profile.clone(),
-            effective_profile: permissions.effective_profile.clone(),
-            applied_profile,
-            worker,
-            execution_thread,
-            arguments,
-        };
-        require_worker_transition_receipt(&receipt, source, permissions)?;
-        receipts.push(receipt);
+            index,
+            source,
+            permissions,
+            &mut process_stages,
+        )?);
     }
     let checksum = lines
         .next()
@@ -815,4 +779,99 @@ pub(super) fn verify_worker_transition_ledger(
         "sealed private Codex transition ledger is noncanonical or has an invalid checksum"
     );
     Ok(canonical)
+}
+
+fn read_sealed_field(lines: &mut std::str::Lines<'_>, expected: &str) -> Result<String> {
+    let line = lines
+        .next()
+        .with_context(|| format!("sealed private Codex transition ledger has no {expected}"))?;
+    let (key, value) = line
+        .split_once('=')
+        .context("sealed private Codex transition field has no separator")?;
+    ensure!(
+        key == expected && !value.is_empty(),
+        "sealed private Codex transition field order differs"
+    );
+    Ok(value.to_string())
+}
+
+fn read_sealed_count(
+    lines: &mut std::str::Lines<'_>,
+    expected: &str,
+    label: &str,
+) -> Result<usize> {
+    read_sealed_field(lines, expected)?
+        .parse::<usize>()
+        .with_context(|| format!("{label} is not an integer"))
+}
+
+fn read_sealed_threads(
+    lines: &mut std::str::Lines<'_>,
+    count: usize,
+    prefix: &str,
+    label: &str,
+) -> Result<BTreeSet<String>> {
+    let mut threads = BTreeSet::new();
+    for index in 0..count {
+        let thread = read_sealed_field(lines, &format!("{prefix}.{index:04}"))?;
+        require_safe_identity(&thread, label)?;
+        ensure!(threads.insert(thread), "{label} is duplicated");
+    }
+    Ok(threads)
+}
+
+fn read_sealed_receipt(
+    lines: &mut std::str::Lines<'_>,
+    index: usize,
+    source: &SourceIdentity,
+    permissions: &WorkerPermissionDigests,
+    process_stages: &mut BTreeSet<(u32, WorkerTransitionStage)>,
+) -> Result<WorkerTransitionReceipt> {
+    let kind = WorkerTransitionKind::parse(&read_sealed_field(
+        lines,
+        &format!("transition.{index:04}.kind"),
+    )?)?;
+    let stage = WorkerTransitionStage::parse(&read_sealed_field(
+        lines,
+        &format!("transition.{index:04}.stage"),
+    )?)?;
+    let process_id = read_sealed_field(lines, &format!("transition.{index:04}.wrapper"))?
+        .parse::<u32>()
+        .context("sealed transition wrapper identity is not an integer")?;
+    ensure!(
+        process_id != 0 && process_stages.insert((process_id, stage)),
+        "sealed transition wrapper stage is zero or duplicated"
+    );
+    let worker = read_sealed_field(lines, &format!("transition.{index:04}.worker.sha256"))?;
+    let execution_thread = match read_sealed_field(
+        lines,
+        &format!("transition.{index:04}.execution.thread"),
+    )?
+    .as_str()
+    {
+        "none" => None,
+        value => Some(value.to_string()),
+    };
+    let applied_profile = read_sealed_field(
+        lines,
+        &format!("transition.{index:04}.profile.applied.sha256"),
+    )?;
+    let arguments = read_sealed_field(lines, &format!("transition.{index:04}.arguments.sha256"))?;
+    require_sha256(&worker, "sealed transition worker digest")?;
+    require_sha256(&applied_profile, "sealed transition applied-profile digest")?;
+    require_sha256(&arguments, "sealed transition argument digest")?;
+    let receipt = WorkerTransitionReceipt {
+        kind,
+        stage,
+        process_id,
+        source_commit: source.commit.clone(),
+        provider_profile: permissions.provider_profile.clone(),
+        effective_profile: permissions.effective_profile.clone(),
+        applied_profile,
+        worker,
+        execution_thread,
+        arguments,
+    };
+    require_worker_transition_receipt(&receipt, source, permissions)?;
+    Ok(receipt)
 }

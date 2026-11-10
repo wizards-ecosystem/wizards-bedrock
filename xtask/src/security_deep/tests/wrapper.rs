@@ -246,111 +246,10 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
     );
     assert_eq!(&injected[app_server..], &app[4..]);
 
-    let repository = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
-    let scan_root = root.join("scans");
-    let scan_directory = scan_root
-        .join(repository.file_name().unwrap())
-        .join(format!("{}_20261014T000000_abcd", source().commit));
-    let artifacts = scan_directory.join("artifacts");
-    let worker_output = artifacts
-        .join("deep_discovery")
-        .join("workers")
-        .join("discovery-0001")
-        .join("output");
-    let plugin = root.join("plugin");
-    let pycache = root.join("pycache");
-    std::fs::create_dir_all(&worker_output).unwrap();
-    std::fs::create_dir_all(plugin.join("mcp")).unwrap();
-    std::fs::create_dir(&pycache).unwrap();
-    let scan_root = std::fs::canonicalize(scan_root).unwrap();
-    let worker_output = std::fs::canonicalize(worker_output).unwrap();
-    let plugin = std::fs::canonicalize(plugin).unwrap();
-    let pycache = std::fs::canonicalize(pycache).unwrap();
-    let python_wrapper = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-    let node = root.join("node.exe");
-    std::fs::write(&node, b"synthetic node").unwrap();
-    let node = std::fs::canonicalize(node).unwrap();
-    let (node_bytes, node_digest) = measure_file(&node, 1024, "synthetic Node").unwrap();
-    let artifact_node = ToolIdentity {
-        path: node.clone(),
-        bytes: node_bytes,
-        sha256: sha256::hex(&node_digest),
-        version: "synthetic".to_string(),
-    };
-    let python_real = root.join("python.exe");
-    std::fs::write(&python_real, b"synthetic python").unwrap();
-    std::fs::write(root.join("python3.dll"), b"synthetic python3").unwrap();
-    std::fs::write(root.join("python312.dll"), b"synthetic python312").unwrap();
-    std::fs::write(root.join("vcruntime140.dll"), b"synthetic runtime").unwrap();
-    std::fs::create_dir(root.join("DLLs")).unwrap();
-    std::fs::create_dir(root.join("Lib")).unwrap();
-    std::fs::write(root.join("DLLs").join("probe.dll"), b"probe").unwrap();
-    std::fs::write(root.join("Lib").join("probe.py"), b"probe").unwrap();
-    let python_real = std::fs::canonicalize(python_real).unwrap();
-    let codex_runtime_root = root.join("codex-runtime");
-    std::fs::create_dir(&codex_runtime_root).unwrap();
-    let codex_runtime_root = std::fs::canonicalize(codex_runtime_root).unwrap();
-    let live_auth = root.join("live").join("auth.json");
-    let projected_auth = root.join("codex-home").join("auth.json");
-    let context = PrivateExecutionContext {
-        scan_root,
-        plugin_mirror: plugin.clone(),
-        repository: repository.clone(),
-        python_wrapper: python_wrapper.clone(),
-        python_runtime: PythonRuntimeIdentity {
-            root: python_real.parent().unwrap().to_path_buf(),
-            entries: 1,
-            bytes: 1,
-            sha256: "f".repeat(64),
-        },
-        python_real,
-        pycache,
-        artifact_node,
-        codex_runtime: CodexRuntimeIdentity {
-            root: codex_runtime_root,
-            entries: 1,
-            bytes: 1,
-            sha256: "e".repeat(64),
-        },
-        live_auth,
-        projected_auth,
-        shell_environment: ShellEnvironmentPolicy {
-            system_root: PathBuf::from(r"C:\WINDOWS"),
-            command_processor: PathBuf::from(r"C:\WINDOWS\System32\cmd.exe"),
-            search_path: OsString::from(r"C:\owned\bin;C:\WINDOWS\System32"),
-            temporary: root.join("temp"),
-        },
-        marker: format!("{WRAPPER_MARKER_PREFIX}{}", source().commit),
-    };
+    let (context, worker_output) = exec_context_fixture(&root);
     let (provider_permission, worker_permission) =
         context_named_permission_profiles(&context).unwrap();
-    let (python_reads, python_denies, _) =
-        python_worker_policy_entries(&context.python_runtime).unwrap();
-    let mut readable_entries = vec![
-        context.repository.clone(),
-        context.plugin_mirror.clone(),
-        context.scan_root.clone(),
-        context.artifact_node.path.clone(),
-        context.codex_runtime.root.clone(),
-        context.python_wrapper.clone(),
-    ];
-    readable_entries.extend(python_reads);
-    let mut denied_entries = vec![context.repository.join(".git")];
-    denied_entries.extend(python_denies);
-    let equivalent_policy = ManagedWorkerPolicy {
-        repository: context.repository.clone(),
-        probe_directory: context.scan_root.clone(),
-        readable_entries,
-        denied_entries,
-        readable_probes: Vec::new(),
-        denied_probes: Vec::new(),
-        denied_write_probes: Vec::new(),
-        existing_write_probe: context.scan_root.join(WORKER_ALLOWED_CANARY_NAME),
-        repository_metadata_probe: context.repository.join(".git").join("HEAD"),
-        live_auth: context.live_auth.clone(),
-        projected_auth: context.projected_auth.clone(),
-        denied_canary: root.join(WORKER_DENIED_CANARY_NAME),
-    };
+    let equivalent_policy = equivalent_worker_policy(&context, &root);
     assert_eq!(
         provider_permission,
         provider_named_permission_profile(&equivalent_policy).unwrap()
@@ -359,61 +258,8 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         worker_permission,
         effective_worker_named_permission_profile(&equivalent_policy).unwrap()
     );
-    let discovery_context = object([
-        ("scanId", text_value(TEST_SCAN_ID)),
-        ("pluginRoot", text_value(plugin.to_str().unwrap())),
-        ("targetPath", text_value(repository.to_str().unwrap())),
-        ("scope", text_value(".")),
-        ("userContext", JsonValue::Null),
-        ("workerLabel", text_value("discovery-0001")),
-        ("subagents", JsonValue::Number("3".to_string())),
-    ]);
-    let prompt = format!(
-        "{DISCOVERY_PROMPT_PREFIX}{}\n```\n{DISCOVERY_PROMPT_BODY_PREFIX}",
-        render_json(&discovery_context).unwrap()
-    );
-    std::fs::write(worker_output.parent().unwrap().join("prompt.md"), prompt).unwrap();
-    let provider_configs = vec![
-        "default_permissions=\"codex_security_deep_scan_worker\"".to_string(),
-        provider_permission.clone(),
-        format!("model_reasoning_effort=\"{REASONING}\""),
-        "mcp_servers.codex-security.command=\"node\"".to_string(),
-        "mcp_servers.codex-security.enabled=false".to_string(),
-        format!(
-            "mcp_servers.cs_artifacts.command={}",
-            quote_toml_string(&node.to_string_lossy())
-        ),
-        format!(
-            "mcp_servers.cs_artifacts.args=[{}, \"--artifact-writer\", \"--stdio\"]",
-            quote_toml_string(&plugin.join("mcp").join("server.mjs").to_string_lossy())
-        ),
-        "mcp_servers.cs_artifacts.required=true".to_string(),
-        "mcp_servers.cs_artifacts.startup_timeout_sec=180".to_string(),
-        "mcp_servers.cs_artifacts.tool_timeout_sec=86400".to_string(),
-        "agents.max_threads=3".to_string(),
-        "features.multi_agent_v2.enabled=false".to_string(),
-        "features.multi_agent_v2.max_concurrent_threads_per_session=4".to_string(),
-        "approval_policy=\"never\"".to_string(),
-        format!(
-            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_ARTIFACT_ROOT={}",
-            quote_toml_string(worker_output.to_str().unwrap())
-        ),
-        format!(
-            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_REPO_ROOT={}",
-            quote_toml_string(repository.to_str().unwrap())
-        ),
-        "mcp_servers.cs_artifacts.env.CODEX_SECURITY_ARTIFACT_LAYOUT=\"worker\"".to_string(),
-        format!("mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCAN_ID=\"{TEST_SCAN_ID}\""),
-        format!(
-            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_PLUGIN_ROOT={}",
-            quote_toml_string(plugin.to_str().unwrap())
-        ),
-        "mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCOPE=\".\"".to_string(),
-        format!(
-            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_PYTHON_COMMAND={}",
-            quote_toml_string(python_wrapper.to_str().unwrap())
-        ),
-    ];
+    write_discovery_prompt(&context, &worker_output);
+    let provider_configs = provider_exec_configs(&context, &worker_output, &provider_permission);
     let make_exec = |resume: bool| {
         let mut exec = vec![
             OsString::from("exec"),
@@ -440,15 +286,17 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         }
         exec
     };
+    let inject = |arguments: &[OsString], worker: &str| {
+        inject_wrapper_overrides_for_scan_root(
+            arguments,
+            &overrides,
+            Some(&context),
+            &provider_permission,
+            worker,
+        )
+    };
     let exec = make_exec(true);
-    let injected = inject_wrapper_overrides_for_scan_root(
-        &exec,
-        &overrides,
-        Some(&context),
-        &provider_permission,
-        &worker_permission,
-    )
-    .unwrap();
+    let injected = inject(&exec, &worker_permission).unwrap();
     assert_eq!(
         injected.transition,
         WorkerTransitionKind::ExecResumedAttenuated
@@ -462,16 +310,7 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
     let wrong_worker_permission =
         worker_permission.replace("\":minimal\"=\"read\"", "\":minimal\"=\"deny\"");
     assert_ne!(wrong_worker_permission, worker_permission);
-    assert!(
-        inject_wrapper_overrides_for_scan_root(
-            &exec,
-            &overrides,
-            Some(&context),
-            &provider_permission,
-            &wrong_worker_permission,
-        )
-        .is_err()
-    );
+    assert!(inject(&exec, &wrong_worker_permission).is_err());
     let resume = injected.iter().position(|value| value == "resume").unwrap();
     assert_eq!(
         resume,
@@ -516,30 +355,14 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         );
         let mut supplied = make_exec(false);
         supplied.push(OsString::from(isolation));
-        assert!(
-            inject_wrapper_overrides_for_scan_root(
-                &supplied,
-                &overrides,
-                Some(&context),
-                &provider_permission,
-                &worker_permission,
-            )
-            .is_err()
-        );
+        assert!(inject(&supplied, &worker_permission).is_err());
     }
     for private in context.artifact_overrides().unwrap() {
         assert!(injected.contains(&OsString::from(private)));
     }
 
     let initial = make_exec(false);
-    let initial_injected = inject_wrapper_overrides_for_scan_root(
-        &initial,
-        &overrides,
-        Some(&context),
-        &provider_permission,
-        &worker_permission,
-    )
-    .unwrap();
+    let initial_injected = inject(&initial, &worker_permission).unwrap();
     assert_eq!(
         initial_injected.transition,
         WorkerTransitionKind::ExecInitialAttenuated
@@ -583,14 +406,7 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         let mut rejected = initial.clone();
         rejected.extend([OsString::from(forbidden), OsString::from("value")]);
         assert!(
-            inject_wrapper_overrides_for_scan_root(
-                &rejected,
-                &overrides,
-                Some(&context),
-                &provider_permission,
-                &worker_permission,
-            )
-            .is_err(),
+            inject(&rejected, &worker_permission).is_err(),
             "accepted forbidden {forbidden}"
         );
     }
@@ -634,14 +450,7 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         ("wrong scan identity", wrong_scan),
     ] {
         assert!(
-            inject_wrapper_overrides_for_scan_root(
-                &rejected,
-                &overrides,
-                Some(&context),
-                &provider_permission,
-                &worker_permission,
-            )
-            .is_err(),
+            inject(&rejected, &worker_permission).is_err(),
             "accepted {name}"
         );
     }
@@ -653,20 +462,197 @@ fn wrapper_injects_safety_last_and_rejects_unpinned_shapes() {
         vec!["exec", "--experimental-json", "resume", "thread", "extra"],
     ] {
         let rejected = rejected.into_iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(
-            inject_wrapper_overrides_for_scan_root(
-                &rejected,
-                &overrides,
-                Some(&context),
-                &provider_permission,
-                &worker_permission,
-            )
-            .is_err()
-        );
+        assert!(inject(&rejected, &worker_permission).is_err());
     }
     let metadata = std::fs::symlink_metadata(&root).unwrap();
     remove_entry_no_follow(&root, &metadata).unwrap();
     std::fs::remove_dir(&outer).unwrap();
+}
+
+#[cfg(windows)]
+fn exec_context_fixture(root: &Path) -> (PrivateExecutionContext, PathBuf) {
+    let repository = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let scan_root = root.join("scans");
+    let scan_directory = scan_root
+        .join(repository.file_name().unwrap())
+        .join(format!("{}_20261014T000000_abcd", source().commit));
+    let artifacts = scan_directory.join("artifacts");
+    let worker_output = artifacts
+        .join("deep_discovery")
+        .join("workers")
+        .join("discovery-0001")
+        .join("output");
+    let plugin = root.join("plugin");
+    let pycache = root.join("pycache");
+    std::fs::create_dir_all(&worker_output).unwrap();
+    std::fs::create_dir_all(plugin.join("mcp")).unwrap();
+    std::fs::create_dir(&pycache).unwrap();
+    let scan_root = std::fs::canonicalize(scan_root).unwrap();
+    let worker_output = std::fs::canonicalize(worker_output).unwrap();
+    let plugin = std::fs::canonicalize(plugin).unwrap();
+    let pycache = std::fs::canonicalize(pycache).unwrap();
+    let python_wrapper = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let node = root.join("node.exe");
+    std::fs::write(&node, b"synthetic node").unwrap();
+    let node = std::fs::canonicalize(node).unwrap();
+    let (node_bytes, node_digest) = measure_file(&node, 1024, "synthetic Node").unwrap();
+    let artifact_node = ToolIdentity {
+        path: node,
+        bytes: node_bytes,
+        sha256: sha256::hex(&node_digest),
+        version: "synthetic".to_string(),
+    };
+    let python_real = root.join("python.exe");
+    std::fs::write(&python_real, b"synthetic python").unwrap();
+    std::fs::write(root.join("python3.dll"), b"synthetic python3").unwrap();
+    std::fs::write(root.join("python312.dll"), b"synthetic python312").unwrap();
+    std::fs::write(root.join("vcruntime140.dll"), b"synthetic runtime").unwrap();
+    std::fs::create_dir(root.join("DLLs")).unwrap();
+    std::fs::create_dir(root.join("Lib")).unwrap();
+    std::fs::write(root.join("DLLs").join("probe.dll"), b"probe").unwrap();
+    std::fs::write(root.join("Lib").join("probe.py"), b"probe").unwrap();
+    let python_real = std::fs::canonicalize(python_real).unwrap();
+    let codex_runtime_root = root.join("codex-runtime");
+    std::fs::create_dir(&codex_runtime_root).unwrap();
+    let codex_runtime_root = std::fs::canonicalize(codex_runtime_root).unwrap();
+    let live_auth = root.join("live").join("auth.json");
+    let projected_auth = root.join("codex-home").join("auth.json");
+    let context = PrivateExecutionContext {
+        scan_root,
+        plugin_mirror: plugin,
+        repository,
+        python_wrapper,
+        python_runtime: PythonRuntimeIdentity {
+            root: python_real.parent().unwrap().to_path_buf(),
+            entries: 1,
+            bytes: 1,
+            sha256: "f".repeat(64),
+        },
+        python_real,
+        pycache,
+        artifact_node,
+        codex_runtime: CodexRuntimeIdentity {
+            root: codex_runtime_root,
+            entries: 1,
+            bytes: 1,
+            sha256: "e".repeat(64),
+        },
+        live_auth,
+        projected_auth,
+        shell_environment: ShellEnvironmentPolicy {
+            system_root: PathBuf::from(r"C:\WINDOWS"),
+            command_processor: PathBuf::from(r"C:\WINDOWS\System32\cmd.exe"),
+            search_path: OsString::from(r"C:\owned\bin;C:\WINDOWS\System32"),
+            temporary: root.join("temp"),
+        },
+        marker: format!("{WRAPPER_MARKER_PREFIX}{}", source().commit),
+    };
+    (context, worker_output)
+}
+
+#[cfg(windows)]
+fn equivalent_worker_policy(context: &PrivateExecutionContext, root: &Path) -> ManagedWorkerPolicy {
+    let (python_reads, python_denies, _) =
+        python_worker_policy_entries(&context.python_runtime).unwrap();
+    let mut readable_entries = vec![
+        context.repository.clone(),
+        context.plugin_mirror.clone(),
+        context.scan_root.clone(),
+        context.artifact_node.path.clone(),
+        context.codex_runtime.root.clone(),
+        context.python_wrapper.clone(),
+    ];
+    readable_entries.extend(python_reads);
+    let mut denied_entries = vec![context.repository.join(".git")];
+    denied_entries.extend(python_denies);
+    ManagedWorkerPolicy {
+        repository: context.repository.clone(),
+        probe_directory: context.scan_root.clone(),
+        readable_entries,
+        denied_entries,
+        readable_probes: Vec::new(),
+        denied_probes: Vec::new(),
+        denied_write_probes: Vec::new(),
+        existing_write_probe: context.scan_root.join(WORKER_ALLOWED_CANARY_NAME),
+        repository_metadata_probe: context.repository.join(".git").join("HEAD"),
+        live_auth: context.live_auth.clone(),
+        projected_auth: context.projected_auth.clone(),
+        denied_canary: root.join(WORKER_DENIED_CANARY_NAME),
+    }
+}
+
+#[cfg(windows)]
+fn write_discovery_prompt(context: &PrivateExecutionContext, worker_output: &Path) {
+    let discovery_context = object([
+        ("scanId", text_value(TEST_SCAN_ID)),
+        (
+            "pluginRoot",
+            text_value(context.plugin_mirror.to_str().unwrap()),
+        ),
+        (
+            "targetPath",
+            text_value(context.repository.to_str().unwrap()),
+        ),
+        ("scope", text_value(".")),
+        ("userContext", JsonValue::Null),
+        ("workerLabel", text_value("discovery-0001")),
+        ("subagents", JsonValue::Number("3".to_string())),
+    ]);
+    let prompt = format!(
+        "{DISCOVERY_PROMPT_PREFIX}{}\n```\n{DISCOVERY_PROMPT_BODY_PREFIX}",
+        render_json(&discovery_context).unwrap()
+    );
+    std::fs::write(worker_output.parent().unwrap().join("prompt.md"), prompt).unwrap();
+}
+
+#[cfg(windows)]
+fn provider_exec_configs(
+    context: &PrivateExecutionContext,
+    worker_output: &Path,
+    provider_permission: &str,
+) -> Vec<String> {
+    let plugin = &context.plugin_mirror;
+    vec![
+        "default_permissions=\"codex_security_deep_scan_worker\"".to_string(),
+        provider_permission.to_string(),
+        format!("model_reasoning_effort=\"{REASONING}\""),
+        "mcp_servers.codex-security.command=\"node\"".to_string(),
+        "mcp_servers.codex-security.enabled=false".to_string(),
+        format!(
+            "mcp_servers.cs_artifacts.command={}",
+            quote_toml_string(&context.artifact_node.path.to_string_lossy())
+        ),
+        format!(
+            "mcp_servers.cs_artifacts.args=[{}, \"--artifact-writer\", \"--stdio\"]",
+            quote_toml_string(&plugin.join("mcp").join("server.mjs").to_string_lossy())
+        ),
+        "mcp_servers.cs_artifacts.required=true".to_string(),
+        "mcp_servers.cs_artifacts.startup_timeout_sec=180".to_string(),
+        "mcp_servers.cs_artifacts.tool_timeout_sec=86400".to_string(),
+        "agents.max_threads=3".to_string(),
+        "features.multi_agent_v2.enabled=false".to_string(),
+        "features.multi_agent_v2.max_concurrent_threads_per_session=4".to_string(),
+        "approval_policy=\"never\"".to_string(),
+        format!(
+            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_ARTIFACT_ROOT={}",
+            quote_toml_string(worker_output.to_str().unwrap())
+        ),
+        format!(
+            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_REPO_ROOT={}",
+            quote_toml_string(context.repository.to_str().unwrap())
+        ),
+        "mcp_servers.cs_artifacts.env.CODEX_SECURITY_ARTIFACT_LAYOUT=\"worker\"".to_string(),
+        format!("mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCAN_ID=\"{TEST_SCAN_ID}\""),
+        format!(
+            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_PLUGIN_ROOT={}",
+            quote_toml_string(plugin.to_str().unwrap())
+        ),
+        "mcp_servers.cs_artifacts.env.CODEX_SECURITY_SCOPE=\".\"".to_string(),
+        format!(
+            "mcp_servers.cs_artifacts.env.CODEX_SECURITY_PYTHON_COMMAND={}",
+            quote_toml_string(context.python_wrapper.to_str().unwrap())
+        ),
+    ]
 }
 
 #[test]
@@ -684,8 +670,7 @@ fn raw_config_segments_and_inert_routes_are_exact() {
             .any(|value| value.contains(".\"node_repl\"."))
     );
 
-    // The pinned CLI treats quotes in a dotted override as literal name
-    // bytes, so accepting this would create a second, still-enabled route.
+    // The pinned CLI takes quoted dotted names literally, so this adds a second, still-enabled route.
     let quoted = r#"mcp_servers."node_repl".enabled=false"#;
     let literal_name = quoted
         .strip_prefix("mcp_servers.")

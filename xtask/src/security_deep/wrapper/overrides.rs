@@ -20,7 +20,7 @@ pub(crate) fn require_owned_path(path: &Path, root: &Path, label: &str) -> Resul
     let components = relative.components().collect::<Vec<_>>();
     for (index, component) in components.iter().enumerate() {
         let std::path::Component::Normal(name) = component else {
-            unreachable!();
+            unreachable!("every owned path component was checked to be normal");
         };
         current.push(name);
         if missing {
@@ -292,6 +292,73 @@ struct ValidatedExecArguments {
     resumed_thread: Option<String>,
 }
 
+#[derive(Default, Debug)]
+struct ProviderExecConfigs {
+    approval: usize,
+    default_permissions: usize,
+    permission_profile: usize,
+    reasoning: usize,
+    codex_security_command: usize,
+    codex_security_enabled: usize,
+    artifact_command: usize,
+    artifact_args: usize,
+    artifact_required: usize,
+    artifact_startup: usize,
+    artifact_tool: usize,
+    agents: usize,
+    multi_agent_enabled: usize,
+    multi_agent_maximum: usize,
+    optional_configs: BTreeSet<&'static str>,
+    artifact_environment: BTreeMap<String, String>,
+}
+
+impl ProviderExecConfigs {
+    fn record(&mut self, config: ProviderExecConfig) -> Result<()> {
+        match config {
+            ProviderExecConfig::Approval => self.approval += 1,
+            ProviderExecConfig::DefaultPermissions => self.default_permissions += 1,
+            ProviderExecConfig::PermissionProfile => self.permission_profile += 1,
+            ProviderExecConfig::Reasoning => self.reasoning += 1,
+            ProviderExecConfig::CodexSecurityCommand => self.codex_security_command += 1,
+            ProviderExecConfig::CodexSecurityEnabled => self.codex_security_enabled += 1,
+            ProviderExecConfig::ArtifactCommand => self.artifact_command += 1,
+            ProviderExecConfig::ArtifactArgs => self.artifact_args += 1,
+            ProviderExecConfig::ArtifactRequired => self.artifact_required += 1,
+            ProviderExecConfig::ArtifactStartup => self.artifact_startup += 1,
+            ProviderExecConfig::ArtifactTool => self.artifact_tool += 1,
+            ProviderExecConfig::Agents => self.agents += 1,
+            ProviderExecConfig::MultiAgentEnabled => self.multi_agent_enabled += 1,
+            ProviderExecConfig::MultiAgentMaximum => self.multi_agent_maximum += 1,
+            ProviderExecConfig::Optional(name) => ensure!(
+                self.optional_configs.insert(name),
+                "private Codex exec optional configuration is duplicated"
+            ),
+            ProviderExecConfig::ArtifactEnvironment(name, value) => ensure!(
+                self.artifact_environment.insert(name, value).is_none(),
+                "private Codex artifact environment is duplicated"
+            ),
+        }
+        Ok(())
+    }
+
+    fn is_exact(&self) -> bool {
+        self.approval == 1
+            && self.default_permissions == 1
+            && self.permission_profile == 1
+            && self.reasoning == 1
+            && self.codex_security_command == 1
+            && self.codex_security_enabled == 1
+            && self.artifact_command == 1
+            && self.artifact_args == 1
+            && self.artifact_required == 1
+            && self.artifact_startup == 1
+            && self.artifact_tool == 1
+            && self.agents == 1
+            && self.multi_agent_enabled == 1
+            && self.multi_agent_maximum == 1
+    }
+}
+
 pub(crate) fn inject_wrapper_overrides_for_scan_root(
     arguments: &[OsString],
     overrides: &[String],
@@ -481,22 +548,7 @@ fn validate_exec_arguments(
     let mut thread_source = 0usize;
     let mut working_directory = 0usize;
     let mut skip_git = 0usize;
-    let mut approval = 0usize;
-    let mut default_permissions = 0usize;
-    let mut permission_profile = 0usize;
-    let mut reasoning = 0usize;
-    let mut codex_security_command = 0usize;
-    let mut codex_security_enabled = 0usize;
-    let mut artifact_command = 0usize;
-    let mut artifact_args = 0usize;
-    let mut artifact_required = 0usize;
-    let mut artifact_startup = 0usize;
-    let mut artifact_tool = 0usize;
-    let mut agents = 0usize;
-    let mut multi_agent_enabled = 0usize;
-    let mut multi_agent_maximum = 0usize;
-    let mut optional_configs = BTreeSet::new();
-    let mut artifact_environment = BTreeMap::new();
+    let mut provider_configs = ProviderExecConfigs::default();
     let mut worker_directory = None;
     let mut resumed_thread = None;
     while index < arguments.len() {
@@ -554,38 +606,13 @@ fn validate_exec_arguments(
                 worker_directory = Some(require_worker_directory(Path::new(value), &scan_root)?);
                 working_directory += 1;
             }
-            "--config" => {
-                match require_provider_exec_config(
-                    value,
-                    &plugin_mirror,
-                    &context.artifact_node,
-                    provider_permission,
-                )? {
-                    ProviderExecConfig::Approval => approval += 1,
-                    ProviderExecConfig::DefaultPermissions => default_permissions += 1,
-                    ProviderExecConfig::PermissionProfile => permission_profile += 1,
-                    ProviderExecConfig::Reasoning => reasoning += 1,
-                    ProviderExecConfig::CodexSecurityCommand => codex_security_command += 1,
-                    ProviderExecConfig::CodexSecurityEnabled => codex_security_enabled += 1,
-                    ProviderExecConfig::ArtifactCommand => artifact_command += 1,
-                    ProviderExecConfig::ArtifactArgs => artifact_args += 1,
-                    ProviderExecConfig::ArtifactRequired => artifact_required += 1,
-                    ProviderExecConfig::ArtifactStartup => artifact_startup += 1,
-                    ProviderExecConfig::ArtifactTool => artifact_tool += 1,
-                    ProviderExecConfig::Agents => agents += 1,
-                    ProviderExecConfig::MultiAgentEnabled => multi_agent_enabled += 1,
-                    ProviderExecConfig::MultiAgentMaximum => multi_agent_maximum += 1,
-                    ProviderExecConfig::Optional(name) => ensure!(
-                        optional_configs.insert(name),
-                        "private Codex exec optional configuration is duplicated"
-                    ),
-                    ProviderExecConfig::ArtifactEnvironment(name, value) => ensure!(
-                        artifact_environment.insert(name, value).is_none(),
-                        "private Codex artifact environment is duplicated"
-                    ),
-                }
-            }
-            _ => unreachable!(),
+            "--config" => provider_configs.record(require_provider_exec_config(
+                value,
+                &plugin_mirror,
+                &context.artifact_node,
+                provider_permission,
+            )?)?,
+            _ => unreachable!("exec options outside the matched set were refused"),
         }
         index += 2;
     }
@@ -599,25 +626,12 @@ fn validate_exec_arguments(
         "private Codex exec source and resume policy differs"
     );
     ensure!(
-        approval == 1
-            && default_permissions == 1
-            && permission_profile == 1
-            && reasoning == 1
-            && codex_security_command == 1
-            && codex_security_enabled == 1
-            && artifact_command == 1
-            && artifact_args == 1
-            && artifact_required == 1
-            && artifact_startup == 1
-            && artifact_tool == 1
-            && agents == 1
-            && multi_agent_enabled == 1
-            && multi_agent_maximum == 1,
+        provider_configs.is_exact(),
         "private Codex exec provider configuration is incomplete or duplicated"
     );
     let worker = worker_directory.context("private Codex exec has no worker directory")?;
     require_artifact_environment(
-        &artifact_environment,
+        &provider_configs.artifact_environment,
         &worker,
         &scan_root,
         &repository,
