@@ -129,7 +129,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/boot.rs",
         0,
         1,
-        "ef4fd0dcbf2c1d6ca31501b4d60ed3d7386fbce18bea96b3c672d47ecd7556c1",
+        "25e8e2e9dea71d331ba754fbec134d06b9f8e272c123557175d8404d206a21ed",
     ),
     (
         "wost/src/cell.rs",
@@ -138,16 +138,40 @@ const AUDITED: &[AuditRecord] = &[
         "92e1579f8d90b74e8d0897dc5a1da8e23b238131d156d7a565b36ae82b6b4ce9",
     ),
     (
+        "wost/src/mm/direct.rs",
+        6,
+        1,
+        "d0946cb000e2bb610eb212500e7cbd8c7e531879f4cf817592b2fd1e47f15b2b",
+    ),
+    (
+        "wost/src/mm/frame.rs",
+        3,
+        2,
+        "e3b995d403e9f70382972fb525414b4f59ade0276ec459ee00dfa04a2bfaa037",
+    ),
+    (
         "wost/src/mm/heap.rs",
         6,
         5,
         "b2d97609f9612aced46b2c9d0becb825b12cb202fbe0357bdefc5c708a65a741",
     ),
     (
+        "wost/src/mm/selftest.rs",
+        5,
+        0,
+        "1a7ea52a96d4175f87bd1fa1142e1997fa10964def16b1c2b980e9a08dedce58",
+    ),
+    (
+        "wost/src/mm/shared.rs",
+        2,
+        0,
+        "8bc5feb39e5e98e68fb57adcb1e615bb4d685b4052c5e06835c7b5b37fb2a625",
+    ),
+    (
         "wost/src/mm.rs",
-        17,
-        3,
-        "66e17b25a7c89df8c26342a8f97f64cf1d974b7b6310aeba69805307c7c7b470",
+        1,
+        0,
+        "ae74ff94eb059f9f246c1937ebd552f7ee6f4f2aec5ebb17e5e13f5f19c9b7df",
     ),
     (
         "wost/src/mmio.rs",
@@ -159,7 +183,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/sync.rs",
         4,
         4,
-        "feda23d612ceb63311ffbe033360da789f2c7a319c5537c6edb1f6431b9058c5",
+        "184ff84494b31684d1e927bda0b9707999c3df5717d3cd1fe2e0dd33146bdb2d",
     ),
 ];
 

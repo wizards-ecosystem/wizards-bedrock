@@ -3,7 +3,7 @@ use super::{Caught, Mutation};
 pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 168,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if segment.zero() {\n            return Some(segment);\n        }",
         replace: "        return Some(segment);\n        #[allow(unreachable_code)]\n        if segment.zero() {\n            return Some(segment);\n        }",
         breaks: "a reclaimed frame is cleared before the kernel sees it",
@@ -13,7 +13,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // still gone, so only the allocator count can distinguish this defect.
     Mutation {
         id: 299,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        if let Some(segment) = self.segment.take() {\n            core::mem::forget(segment);\n        }",
         replace: "        if let Some(segment) = self.segment.take() {\n            drop(segment);\n        }",
         breaks: "retained dma memory never returns to the allocator",
@@ -21,7 +21,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 319,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/frame.rs",
         find: "        let released = FRAMES.lock_leaf().free(self.index);",
         replace: "        let released = FRAMES.lock_leaf().free(usize::MAX);",
         breaks: "an impossible frame-ledger refusal fails stopped",
@@ -32,7 +32,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 320,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/frame.rs",
         find: "        let released = FRAMES.lock_leaf().free_contiguous(self.first, self.count);",
         replace: "        let released = FRAMES.lock_leaf().free_contiguous(usize::MAX, self.count);",
         breaks: "an impossible segment-ledger refusal fails stopped",
@@ -45,7 +45,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     // the lock still excludes, so the witness must read the reason.
     Mutation {
         id: 323,
-        file: "wost/src/sync.rs",
+        file: "wost/src/sync/selftest.rs",
         find: "        self.lock.forgotten_for_test.store(true, Ordering::Release);",
         replace: "        self.lock.forgotten_for_test.store(false, Ordering::Release);",
         breaks: "deliberately forgotten ownership is distinct from ordinary contention",
@@ -75,7 +75,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 487,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        let value = unsafe { shared_memory::load_acquire_u32(address) };",
         replace: "        let value = unsafe { (address as *const u32).read_volatile() };",
         breaks: "a hostile ring-3 writer races a non-atomic volatile publication load",
@@ -86,7 +86,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 488,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        unsafe { shared_memory::store_release_u32(address, value.to_le()) };",
         replace: "        unsafe { (address as *mut u32).write_volatile(value.to_le()) };",
         breaks: "a hostile ring-3 writer races a non-atomic volatile publication store",
@@ -97,7 +97,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 489,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/direct.rs",
         find: "        unsafe { destination.write_volatile(byte) };",
         replace: "        unsafe { destination.write(byte) };",
         breaks: "the compiler can merge or elide shared payload writes",
@@ -188,7 +188,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 608,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "    #[must_use = \"a refused shared-memory write changed no bytes\"]\n    pub fn write_volatile_at",
         replace: "    pub fn write_volatile_at",
         breaks: "a shared-memory operation refusal can become silently discardable",
@@ -199,7 +199,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 713,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "impl Drop for USegment {\n    fn drop(&mut self) {\n        let Some(mut segment) = self.segment.take() else {\n            return;\n        };\n        if !segment.zero() {",
         replace: "impl Drop for USegment {\n    fn drop(&mut self) {\n        let Some(mut segment) = self.segment.take() else {\n            return;\n        };\n        if false {",
         breaks: "a failed external-byte zeroing attempt still returns the page to the allocator",
@@ -207,7 +207,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 714,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "impl Drop for USegment {",
         replace: "#[cfg(any())]\nimpl Drop for USegment {",
         breaks: "natural user-segment drop returns external bytes without zeroing them",
@@ -215,7 +215,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 715,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if !segment.zero() {\n            #[cfg(feature = \"selftest\")]\n            let address = segment.address();\n            core::mem::forget(segment);\n            #[cfg(feature = \"selftest\")]\n            observe_external_run_withheld_for_test(address);\n        }",
         replace: "        if !segment.zero() {\n            #[cfg(feature = \"selftest\")]\n            let address = segment.address();\n            drop(segment);\n            #[cfg(feature = \"selftest\")]\n            observe_external_run_withheld_for_test(address);\n        }",
         breaks: "a refused external clear returns a dirty run after deciding to withhold it",
@@ -231,7 +231,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 834,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "impl Shared {\n    /// Consume the allocation into volatile byte-only access.",
         replace: "impl Shared {\n    /// Write through the unpartitioned shared owner.\n    #[must_use]\n    pub fn write_volatile_at(&mut self, offset: usize, bytes: &[u8]) -> bool {\n        write_shared_volatile(&self.0, offset, bytes)\n    }\n\n    /// Consume the allocation into volatile byte-only access.",
         breaks: "an unpartitioned shared allocation retains a raw byte-write door",
@@ -242,7 +242,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 835,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if !self.layout.contains_payload(offset, bytes.len()) {",
         replace: "        if false && !self.layout.contains_payload(offset, bytes.len()) {",
         breaks: "a shared ring payload write can enter its publication-word partition",
@@ -253,7 +253,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 853,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/direct.rs",
         find: "        let Ok(range) = AccessRange::repeated(offset, bytes.len(), 1, self.len) else {",
         replace: "        let Ok(range) =\n            AccessRange::repeated(offset, bytes.len(), 1, self.len.saturating_sub(1))\n        else {",
         breaks: "DMA byte writes refuse the exact final byte of their owned run",
@@ -294,7 +294,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1176,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "#[derive(Debug)]\npub struct Shared(Arc<SharedAllocation>);",
         replace: "#[derive(Debug, Clone)]\npub struct Shared(Arc<SharedAllocation>);",
         breaks: "an unpartitioned shared allocation can be cloned into overlapping access modes",
@@ -305,7 +305,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1177,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "#[derive(Debug)]\npub struct SharedBytes(Arc<SharedAllocation>);",
         replace: "#[derive(Debug, Clone)]\npub struct SharedBytes(Arc<SharedAllocation>);",
         breaks: "a volatile-byte shared-memory partition can be duplicated",
@@ -316,7 +316,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1178,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "#[derive(Debug)]\npub struct SharedRing<const WORDS: usize> {",
         replace: "#[derive(Debug, Clone)]\npub struct SharedRing<const WORDS: usize> {",
         breaks: "a ring-partitioned shared allocation can be duplicated",
@@ -327,7 +327,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1305,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if !self.layout.contains_publication_word(offset) {\n            return None;\n        }",
         replace: "        if false && !self.layout.contains_publication_word(offset) {\n            return None;\n        }",
         breaks: "a publication load can address bytes outside its immutable word partition",
@@ -338,7 +338,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1306,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if !self.layout.contains_publication_word(offset) {\n            return false;\n        }",
         replace: "        if false && !self.layout.contains_publication_word(offset) {\n            return false;\n        }",
         breaks: "a publication store can address bytes outside its immutable word partition",
@@ -349,7 +349,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1307,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        let end = offset.checked_add(size_of::<u32>())?;",
         replace: "        let end = offset.wrapping_add(size_of::<u32>());",
         breaks: "publication-word end arithmetic can wrap into an apparently in-range address",
@@ -360,7 +360,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1308,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if end as u64 > self.len() {\n            return None;\n        }",
         replace: "        if false && end as u64 > self.len() {\n            return None;\n        }",
         breaks: "a publication word can extend beyond its retained allocation",
@@ -371,7 +371,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1309,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        let address = base.addr().checked_add(offset)?;",
         replace: "        let address = base.addr().wrapping_add(offset);",
         breaks: "publication pointer arithmetic can wrap away from its checked direct-map base",
@@ -382,7 +382,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1310,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/shared.rs",
         find: "        if !address.is_multiple_of(align_of::<u32>()) {\n            return None;\n        }",
         replace: "        if false && !address.is_multiple_of(align_of::<u32>()) {\n            return None;\n        }",
         breaks: "a misaligned publication word reaches an indivisibility-dependent instruction",
@@ -393,7 +393,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1341,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/selftest.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn free_frames() -> usize {",
         replace: "pub fn free_frames() -> usize {",
         breaks: "the free-frame observer reaches the shipped wost API",
@@ -404,7 +404,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1343,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/selftest.rs",
         find: "    #[cfg(feature = \"selftest\")]\n    #[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {",
         replace: "    #[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {",
         breaks: "the owned-segment byte observer reaches shipped wost",
@@ -448,7 +448,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1791,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        if !span.write_u64_volatile_at(offset, value) {",
         replace: "        if !span.write_volatile_at(offset, &value.to_le_bytes()) {",
         breaks: "a live VT-d entry is published through eight byte stores",
@@ -459,7 +459,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1794,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/direct.rs",
         find: "        unsafe { word.write_volatile(value.to_le()) };",
         replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { word.write_volatile(value.to_le()) };",
         breaks: "a permission byte becomes visible before the atomic VT-d entry publication",
@@ -470,7 +470,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 1801,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        if !span.write_u64_volatile_at(offset, value) {",
         replace: "        let _ = span.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        if !span.write_u64_volatile_at(offset, value) {",
         breaks: "the table writer exposes a permission byte before its atomic qword publication",
@@ -489,7 +489,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2349,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        if self.mapping_owner.is_some() {\n            self.retain();\n        }",
         replace: "        if false && self.mapping_owner.is_some() {\n            self.retain();\n        }",
         breaks: "dropping a still-mapped DMA segment recycles device-reachable frames",
@@ -497,7 +497,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2350,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "            core::mem::forget(table);",
         replace: "            drop(table);",
         breaks: "dropping a published IOMMU table recycles a possible hardware table",
@@ -505,7 +505,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2351,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        if self.segment.is_none() || self.mapping_owner.is_some() {",
         replace: "        if self.segment.is_none() {",
         breaks: "a second mapping replaces a segment lease before its first revocation",
@@ -513,7 +513,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2352,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        self.mapping_owner == Some(owner)",
         replace: "        let _ = owner;\n        self.mapping_owner.is_some()",
         breaks: "a foreign root releases another unit's DMA mapping lease",
@@ -521,7 +521,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2353,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        self.mapping_owner = Some(owner);",
         replace: "        let _ = owner;",
         breaks: "mapping acquisition returns success without recording its frame-retention lease",
@@ -532,7 +532,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2354,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "        self.mapping_owner = None;",
         replace: "        let _unreleased_mapping = self.mapping_owner;",
         breaks: "proved revocation leaves the old segment mapping lease live",
@@ -543,7 +543,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2369,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/selftest.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn dma_mapping_owner_drop_retains_for_test() -> bool {\n    let compact = size_of::<Option<DmaMappingOwner>>() == size_of::<Paddr>();\n    let before = free_frames();\n    let (Some(mapped), Some(revoked)) = (allocate_contiguous(1, 1), allocate_contiguous(2, 1))\n    else {\n        return false;\n    };\n    let owner = DmaMappingOwner::new(mapped.address());\n    let foreign = DmaMappingOwner::new(revoked.address());\n    let mut mapped = DmaSegment::from(mapped);\n    let mut revoked = DmaSegment::from(revoked);\n    let mapped_ok = mapped.begin_mapping(owner);\n    let refused = !mapped.begin_mapping(owner)\n        && !mapped.begin_mapping(foreign)\n        && !mapped.release_mapping(foreign)\n        && mapped.is_mapped_by(owner);\n    let released = !revoked.release_mapping(owner)\n        && revoked.begin_mapping(owner)\n        && revoked.release_mapping(owner)\n        && !revoked.is_mapped_by(owner)\n        && !revoked.release_mapping(owner);\n    drop(revoked);\n    let reclaimed = free_frames() == before - 1;\n    drop(mapped);\n    compact && mapped_ok && refused && released && reclaimed && free_frames() == before - 1\n}",
         replace: "pub fn dma_mapping_owner_drop_retains_for_test() -> bool { true }",
         breaks: "the dma_mapping_owner_drop_retains_for_test machine-only driver becomes a shipped public API",
@@ -554,7 +554,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2370,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/selftest.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn published_iommu_table_drop_retains_for_test() -> bool {\n    let before = free_frames();\n    let Some(unpublished) = IommuTable::new(1, TableWalks::Coherent) else {\n        return false;\n    };\n    let allocated = free_frames() == before - 1;\n    drop(unpublished);\n    if !allocated || free_frames() != before {\n        return false;\n    }\n    let mut retained = 0;\n    for frames in [1, 2, 3, 4, 5] {\n        let Some(table) = IommuTable::new(frames, TableWalks::Coherent) else {\n            return false;\n        };\n        let address = table.address();\n        let mut published = PublishedIommuTable::new(table);\n        let exact = published.address() == address\n            && published.write_u64(0, address)\n            && published.read_u64(0) == Some(address);\n        retained += frames;\n        drop(published);\n        if !exact || free_frames() != before - retained {\n            return false;\n        }\n    }\n    true\n}",
         replace: "pub fn published_iommu_table_drop_retains_for_test() -> bool { true }",
         breaks: "the published_iommu_table_drop_retains_for_test machine-only driver becomes a shipped public API",
@@ -565,7 +565,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 2429,
-        file: "wost/src/mm.rs",
+        file: "wost/src/mm/dma.rs",
         find: "#[repr(transparent)]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct DmaMappingOwner(NonZeroU64);\n\nimpl DmaMappingOwner {\n    /// Name a root whose published owner permanently withholds its allocation.\n    ///\n    /// # Panics\n    ///\n    /// Panics if the root is not frame aligned.\n    pub(crate) const fn new(root: Paddr) -> Self {\n        let Some(identity) = frame_identity(root) else {\n            panic!(\"a DMA mapping owner root is not frame aligned\");\n        };\n        Self(identity)\n    }\n}",
         replace: "#[repr(transparent)]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub(crate) struct DmaMappingOwner(Option<NonZeroU64>);\n\nimpl DmaMappingOwner {\n    /// Name a root whose published owner permanently withholds its allocation.\n    ///\n    /// # Panics\n    ///\n    /// Panics if the root is not frame aligned.\n    pub(crate) const fn new(root: Paddr) -> Self {\n        let Some(identity) = frame_identity(root) else {\n            panic!(\"a DMA mapping owner root is not frame aligned\");\n        };\n        Self(Some(identity))\n    }\n}",
         breaks: "optional DMA mapping ownership occupies a second word and inflates the candidate stack",

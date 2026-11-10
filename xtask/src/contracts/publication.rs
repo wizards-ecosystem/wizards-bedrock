@@ -126,7 +126,11 @@ mod tests {
     fn sources() -> (String, String) {
         let root = root();
         (
-            std::fs::read_to_string(root.join("wost/src/mm.rs")).expect("wost mm source"),
+            ["wost/src/mm/direct.rs", "wost/src/mm/shared.rs"]
+                .map(|relative| {
+                    std::fs::read_to_string(root.join(relative)).expect("wost mm source")
+                })
+                .concat(),
             std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue source"),
         )
     }

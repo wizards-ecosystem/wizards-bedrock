@@ -13,19 +13,26 @@ pub extern "C" fn runtime() { sync::construct(); mm::mention(); }
 "#,
     )
     .expect("drop fixture crate root");
+    std::fs::create_dir_all(root.join("wost/src/sync")).expect("drop fixture sync module");
+    std::fs::write(
+        root.join("wost/src/sync/selftest.rs"),
+        r#"pub struct ForgottenSpinLockGuard(pub u8);
+impl std::ops::Drop for ForgottenSpinLockGuard { fn drop(&mut self) { super::tuple_dropped(); } }
+"#,
+    )
+    .expect("drop fixture sync child");
     std::fs::write(
         root.join("wost/src/sync.rs"),
-        r#"pub fn unit_dropped() {}
+        r#"pub mod selftest;
+pub fn unit_dropped() {}
 pub fn tuple_dropped() {}
 pub fn record_dropped() {}
 pub struct SpinLockGuard;
 impl std::ops::Drop for SpinLockGuard { fn drop(&mut self) { unit_dropped(); } }
-pub struct ForgottenSpinLockGuard(pub u8);
-impl std::ops::Drop for ForgottenSpinLockGuard { fn drop(&mut self) { tuple_dropped(); } }
 pub struct ThreadLockGuard { pub value: u8 }
 impl std::ops::Drop for ThreadLockGuard { fn drop(&mut self) { record_dropped(); } }
 use self::{
-    ForgottenSpinLockGuard as TupleAlias,
+    selftest::ForgottenSpinLockGuard as TupleAlias,
     SpinLockGuard as UnitAlias,
     ThreadLockGuard as RecordAlias,
 };
@@ -39,17 +46,13 @@ pub fn construct() {
     .expect("drop fixture constructors");
     std::fs::create_dir_all(root.join("wost/src/mm")).expect("drop fixture module");
     std::fs::write(
-        root.join("wost/src/mm.rs"),
-        r#"pub fn dormant_drop() {}
-pub fn type_only_drop() {}
-pub fn static_drop() {}
-pub fn custom_drop() {}
-pub struct Frame;
-impl std::ops::Drop for Frame { fn drop(&mut self) { dormant_drop(); } }
+        root.join("wost/src/mm/frame.rs"),
+        r#"pub struct Frame;
+impl std::ops::Drop for Frame { fn drop(&mut self) { super::dormant_drop(); } }
 impl Frame { pub fn from_raw() -> Self { Self } }
 pub fn construct_dormant() { let _ = Frame; }
 pub struct Segment;
-impl std::ops::Drop for Segment { fn drop(&mut self) { type_only_drop(); } }
+impl std::ops::Drop for Segment { fn drop(&mut self) { super::type_only_drop(); } }
 impl Segment {
     pub fn from_raw() -> Self { Self }
     pub const SIZE: usize = 1;
@@ -57,10 +60,32 @@ impl Segment {
     pub const Segment: usize = 2;
     pub fn size() -> usize { Self::SIZE }
 }
-pub struct USegment;
-impl std::ops::Drop for USegment { fn drop(&mut self) { static_drop(); } }
+pub fn mention() {
+    let _ = std::mem::size_of::<Segment>();
+    let _ = Segment::SIZE;
+    let _ = Segment::Segment;
+    let _ = Segment::size();
+}
+"#,
+    )
+    .expect("drop fixture frame negative cases");
+    std::fs::write(
+        root.join("wost/src/mm/shared.rs"),
+        r#"pub struct USegment;
+impl std::ops::Drop for USegment { fn drop(&mut self) { super::static_drop(); } }
 impl From<()> for USegment { fn from(_: ()) -> Self { Self } }
 pub static STATIC_VALUE: USegment = USegment;
+"#,
+    )
+    .expect("drop fixture shared negative cases");
+    std::fs::write(
+        root.join("wost/src/mm.rs"),
+        r#"pub mod frame;
+pub mod shared;
+pub fn dormant_drop() {}
+pub fn type_only_drop() {}
+pub fn static_drop() {}
+pub fn custom_drop() {}
 mod hostile {
     pub trait Drop { fn drop(&mut self); }
     pub struct Live;
@@ -68,11 +93,8 @@ mod hostile {
     pub fn construct() { let _ = Live; }
 }
 pub fn mention() {
-    let _ = std::mem::size_of::<Segment>();
-    let _ = Segment::SIZE;
-    let _ = Segment::Segment;
-    let _ = Segment::size();
-    let _ = &STATIC_VALUE;
+    frame::mention();
+    let _ = &shared::STATIC_VALUE;
     hostile::construct();
 }
 "#,
@@ -185,17 +207,21 @@ fn plain_type_from_dispatch_reaches_the_reviewed_usegment_drop_producer() {
         r#"#![warn(deprecated)]
 pub mod mm;
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime() { mm::construct(); }
+pub extern "C" fn runtime() { mm::shared::construct(); }
 "#,
     )
     .expect("USegment producer fixture root");
     std::fs::write(
         root.join("wost/src/mm.rs"),
-        r#"pub fn drop_body_api() {}
-pub struct Segment;
+        "pub mod shared;\npub fn drop_body_api() {}\n",
+    )
+    .expect("USegment producer fixture module");
+    std::fs::write(
+        root.join("wost/src/mm/shared.rs"),
+        r#"pub struct Segment;
 pub struct USegment;
 impl From<Segment> for USegment { fn from(_: Segment) -> Self { Self } }
-impl core::ops::Drop for USegment { fn drop(&mut self) { drop_body_api(); } }
+impl core::ops::Drop for USegment { fn drop(&mut self) { super::drop_body_api(); } }
 pub fn construct() { let _ = <USegment as From<Segment>>::from(Segment); }
 "#,
     )
@@ -249,7 +275,7 @@ fn reviewed_dma_owners_activate_drop_only_from_exact_owned_producers() {
                 r#"#![warn(deprecated)]
 pub mod mm;
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime() { mm::exercise(); }
+pub extern "C" fn runtime() { mm::dma::exercise(); }
 "#,
             )
             .expect("DMA Drop fixture root");
@@ -260,7 +286,12 @@ pub extern "C" fn runtime() { mm::exercise(); }
             };
             std::fs::write(
                 root.join("wost/src/mm.rs"),
-                format!("pub fn drop_body_api() {{}}\n{definition}\nimpl core::ops::Drop for {owner} {{ fn drop(&mut self) {{ drop_body_api(); }} }}\npub fn exercise() {{ {body} }}\n"),
+                "pub mod dma;\npub fn drop_body_api() {}\n",
+            )
+            .expect("DMA Drop fixture module");
+            std::fs::write(
+                root.join("wost/src/mm/dma.rs"),
+                format!("{definition}\nimpl core::ops::Drop for {owner} {{ fn drop(&mut self) {{ super::drop_body_api(); }} }}\npub fn exercise() {{ {body} }}\n"),
             ).expect("DMA Drop fixture source");
             let inventory = Inventory::discover(&root).expect("reviewed DMA Drop inventory");
             let mut uses = Uses::default();

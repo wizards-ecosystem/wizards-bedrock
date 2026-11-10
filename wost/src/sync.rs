@@ -1,5 +1,8 @@
 //! Synchronisation primitives.
 
+#[cfg(feature = "selftest")]
+mod selftest;
+
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::hint::spin_loop;
@@ -13,6 +16,10 @@ use crate::arch::current::percpu;
 #[cfg(feature = "selftest")]
 use crate::arch::current::percpu::LockKind;
 use crate::panic::PanicToken;
+#[cfg(feature = "selftest")]
+pub use selftest::{
+    ForgottenSpinLockGuard, SpinLockWitness, taken_under_a_leaf, the_leaf_it_was_under,
+};
 
 /// How many spin locks this CPU holds.
 ///
@@ -20,21 +27,6 @@ use crate::panic::PanicToken;
 /// the counter is the runtime backstop for paths type borrows cannot see.
 pub(crate) fn spinlocks_held() -> usize {
     percpu::current().spinlocks_held()
-}
-
-/// Where a lock was taken while a leaf guard was held, if anywhere.
-///
-/// `None` when the leaf obligation held. Both locations expose the forbidden
-/// ordering edge instead of reducing it to a count.
-#[cfg(feature = "selftest")]
-pub fn taken_under_a_leaf() -> Option<&'static core::panic::Location<'static>> {
-    percpu::current().taken_under_a_leaf()
-}
-
-/// The leaf guard a violation happened under, if there was one.
-#[cfg(feature = "selftest")]
-pub fn the_leaf_it_was_under() -> Option<&'static core::panic::Location<'static>> {
-    percpu::current().the_leaf_it_was_under()
 }
 
 /// Evidence that the caller is in thread context, not inside a trap handler.
@@ -107,22 +99,6 @@ pub struct SpinLock<T> {
     #[cfg(feature = "selftest")]
     forgotten_for_test: AtomicBool,
     value: UnsafeCell<T>,
-}
-
-/// The observable ownership state of a spin lock in a machine-test image.
-///
-/// This exists only to distinguish a live ordinary holder from the controlled
-/// forgotten-guard witness in D-194. Shipped code has neither this state nor
-/// the operation that creates [`Self::Forgotten`].
-#[cfg(feature = "selftest")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpinLockWitness {
-    /// No guard owns the lock.
-    Free,
-    /// A guard owns the lock normally.
-    Contended,
-    /// The controlled witness deliberately forgot the original guard.
-    Forgotten,
 }
 
 // SAFETY: `SpinLock` hands out a reference to its value only through a guard,
@@ -251,18 +227,6 @@ impl<T> SpinLock<T> {
         self.locked.load(Ordering::Relaxed)
     }
 
-    /// Classify this lock for D-194's controlled machine witness.
-    #[cfg(feature = "selftest")]
-    pub fn witness_for_test(&self) -> SpinLockWitness {
-        if self.forgotten_for_test.load(Ordering::Acquire) {
-            SpinLockWitness::Forgotten
-        } else if self.is_locked() {
-            SpinLockWitness::Contended
-        } else {
-            SpinLockWitness::Free
-        }
-    }
-
     /// Release the lock regardless of who holds it.
     ///
     /// [`PanicToken`] proves the interrupted holder never resumes. Its cleared
@@ -322,26 +286,6 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
     }
 }
 
-impl<'a, T> SpinLockGuard<'a, T> {
-    /// Deliberately forget this guard while retaining test-only recovery.
-    ///
-    /// Transfers interrupt state to a non-dereferencing recovery owner before
-    /// using safe `core::mem::forget`; available only for D-194's self-test.
-    #[cfg(feature = "selftest")]
-    pub fn forget_for_test(mut self) -> ForgottenSpinLockGuard<'a, T> {
-        let interrupts = self.interrupts.take_for_transfer();
-        let recovery = ForgottenSpinLockGuard {
-            lock: self.lock,
-            kind: self.kind,
-            interrupts,
-            stays_here: PhantomData,
-        };
-        self.lock.forgotten_for_test.store(true, Ordering::Release);
-        core::mem::forget(self);
-        recovery
-    }
-}
-
 impl<T> Drop for SpinLockGuard<'_, T> {
     /// Release, then restore. The other order would open a window in which an
     /// interrupt could arrive at code still holding this lock.
@@ -350,37 +294,6 @@ impl<T> Drop for SpinLockGuard<'_, T> {
             #[cfg(feature = "selftest")]
             self.kind,
         );
-        self.lock.locked.store(false, Ordering::Release);
-        self.interrupts.restore_in_place();
-    }
-}
-
-/// Test-only ownership which recovers a deliberately forgotten spin guard.
-///
-/// It deliberately exposes no reference to the protected value. Dropping it
-/// performs the one release the consumed original guard can no longer perform.
-#[cfg(feature = "selftest")]
-#[must_use = "forgetting the recovery owner would deliberately strand the test kernel"]
-pub struct ForgottenSpinLockGuard<'a, T> {
-    lock: &'a SpinLock<T>,
-    kind: LockKind,
-    interrupts: InterruptState,
-    stays_here: PhantomData<*const ()>,
-}
-
-#[cfg(feature = "selftest")]
-impl<T> fmt::Debug for ForgottenSpinLockGuard<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ForgottenSpinLockGuard")
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "selftest")]
-impl<T> Drop for ForgottenSpinLockGuard<'_, T> {
-    fn drop(&mut self) {
-        self.lock.forgotten_for_test.store(false, Ordering::Release);
-        percpu::current().released_lock(self.kind);
         self.lock.locked.store(false, Ordering::Release);
         self.interrupts.restore_in_place();
     }
