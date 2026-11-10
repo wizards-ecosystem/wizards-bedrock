@@ -1,6 +1,8 @@
 //! Where each piece of extended processor state sits in a compacted save area.
 //!
-//! Standard offsets are unordered (APX, component 19, sits at 960), so nothing sorts by offset.
+//! Standard offsets are unordered (APX, component 19, sits at 960).
+//!
+//! Nothing may sort by offset or assume index order implies address order.
 //!
 //! # Examples
 //!
@@ -49,6 +51,8 @@ pub const fn matches_permitted_configuration(configured: u64) -> bool {
 }
 
 /// Whether AVX state in `mask` has the leaf 1 AVX instruction support `CPUID.0DH` does not imply.
+///
+/// Checked before `XCR0.AVX` is enabled.
 pub const fn avx_state_has_instruction_support(mask: u64, basic_ecx: u32) -> bool {
     mask & AVX == 0 || basic_ecx & AVX_SUPPORTED != 0
 }
@@ -116,6 +120,12 @@ pub struct Layout {
 
 impl Layout {
     /// Lay out the components `mask` enables, asking `info` only about enabled indices from two.
+    ///
+    /// An `info` wired to `CPUID.0DH` thus never queries a sub-leaf the CPU did not advertise.
+    ///
+    /// Bits from [`COMPONENTS`] up are ignored, not rejected.
+    ///
+    /// AVX without SSE, or an enabled component with an absent sub-leaf, is an inconsistent layout.
     pub fn compacted(mask: u64, info: impl Fn(u32) -> Component) -> Self {
         let mut offsets = [None; COMPONENTS];
         let mut cursor = HEADER_BYTES;

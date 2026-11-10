@@ -15,6 +15,8 @@ pub const DOUBLE_FAULT: u8 = 8;
 pub const PAGE_FAULT: u8 = 14;
 
 /// One bit per vector with an error code, which the stub generator in `wost` assembles against.
+///
+/// The entry stubs push a zero for every other vector so the saved frame has one shape.
 pub const ERROR_CODE_VECTORS: u32 = 0x6022_7D00;
 
 /// Whether the CPU pushes an error code before entering `vector`'s handler.

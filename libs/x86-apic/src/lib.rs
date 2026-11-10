@@ -1,5 +1,7 @@
 //! Local and I/O APIC register encoding and range policy, after Intel SDM Vol. 3A ch. 11.
 //!
+//! Only x2APIC MSRs are reachable: the xAPIC page stays unmapped until the kernel owns page tables.
+//!
 //! # Examples
 //!
 //! ```
@@ -50,6 +52,7 @@ pub struct Register(usize);
 impl Register {
     /// The register `offset` bytes into the page; panics unless it is inside and aligned.
     pub const fn new(offset: usize) -> Self {
+        // Subtraction, because `offset + 4` wraps near `usize::MAX`.
         assert!(
             offset <= REGISTER_BYTES - size_of::<u32>(),
             "register lies outside the local APIC page"

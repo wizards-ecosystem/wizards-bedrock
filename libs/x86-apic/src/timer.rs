@@ -75,6 +75,8 @@ impl Divide {
 }
 
 /// The one-shot count for `ticks`, clamped to 1 since zero stops the timer, and to `u32::MAX`.
+///
+/// After a clamped `u32::MAX` expires, the caller must re-arm for the remainder.
 pub const fn initial_count(ticks: u64) -> u32 {
     if ticks == 0 {
         return 1;

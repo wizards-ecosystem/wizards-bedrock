@@ -60,6 +60,8 @@ impl Gate {
     }
 
     /// The same interrupt gate at DPL 3, opened only for the kernel's entry.
+    ///
+    /// An interrupt gate, so IF is clear before kernel stack discipline exists; others stay DPL 0.
     pub const fn callable_from_user(handler: u64, selector: Selector, stack: u8) -> Self {
         let mut gate = Self::interrupt(handler, selector, stack);
         gate.attributes |= 0b11 << 5;

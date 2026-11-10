@@ -3,6 +3,8 @@
 use crate::vector::InterruptVector;
 
 /// The highest-priority vector in the eight IRR words, audited before the first `sti`.
+///
+/// Every bank is audited, so no request latched before remapping takeover crosses that `sti`.
 pub fn highest(registers: &[u32; 8]) -> Option<u8> {
     for (bank, bits) in registers.iter().enumerate().rev() {
         if *bits != 0 {

@@ -44,7 +44,9 @@ impl Base {
         Self(self.0 | ENABLE)
     }
 
-    /// The same register in x2APIC mode, enabled too, since disabled to x2APIC in one write faults.
+    /// The same register in x2APIC mode, enabled too.
+    ///
+    /// From disabled, write [`Self::enabled`] first: this value in one write from disabled faults.
     #[must_use]
     pub const fn x2apic(self) -> Self {
         Self(self.0 | ENABLE | X2APIC)
