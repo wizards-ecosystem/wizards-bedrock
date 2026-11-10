@@ -39,7 +39,8 @@ pub(crate) use selftest::{
 };
 
 /// Threads that can exist at once besides the boot thread, matching the recyclable stack arena's
-/// initial capacity; fixed until a measured caller needs more, as only four processes must coexist.
+/// initial capacity; fixed until a measured caller needs more, since at least four processes must
+/// be able to coexist.
 pub(crate) const STACK_SLOTS: usize = 16;
 
 /// Bytes per thread; the debug process-construction path exceeded 16 KiB.
@@ -351,7 +352,8 @@ impl RunQueue {
 
     /// Which runnable slot should run, searched from just after `current` so equals take turns;
     /// `eligibility` says whether `current` is a candidate. A thread *leaving* the CPU records that
-    /// first, making the idle thread reachable; one merely offering it keeps it if nobody is owed.
+    /// first, making the idle thread reachable; one merely offering it keeps it if nobody else is
+    /// owed one.
     fn choose(&self, current: usize, eligibility: CurrentEligibility) -> Option<usize> {
         let candidates = || {
             (1..=CAPACITY)
@@ -386,9 +388,9 @@ impl RunQueue {
         }
     }
 
-    /// When the kernel next has a reason to be interrupted while `running` is on the CPU, if ever:
-    /// a slice end only when somebody else could take the CPU, a sleeper's deadline always,
-    /// because nothing else will notice it.
+    /// When the kernel next has a reason to be interrupted while `running` is on the CPU, if ever.
+    /// Two reasons only: a slice end when somebody else could take the CPU, and a sleeper's
+    /// deadline always, because nothing else will notice it.
     fn next_event(&self, running: usize, now: u64) -> Option<u64> {
         let slice_end = (self.runnable() > 1)
             .then(|| now.saturating_add(self.slots[running].entity.remaining_slice()));

@@ -19,7 +19,8 @@ pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     if !stack.zero() {
         return None;
     }
-    // Untyped from here: the program writes this stack, so nothing later read from it is believed.
+    // Untyped from here: the program writes this stack, so nothing the kernel later reads out of
+    // these frames may be believed.
     space
         .map_user(at, stack.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .ok()?;
@@ -130,10 +131,11 @@ impl core::error::Error for LoadError {}
 /// Load the initrd's program into `space`, at `shift` above where it asks to be.
 ///
 /// Every segment is checked before *any* page is taken: inside the image, inside user memory,
-/// never both writable and executable, never overlapping another. W^X is not relaxed for a
-/// program that asks: an image wanting a writable executable page is refused, because loading
-/// it anyway only faults later and blames the kernel. Pages are filled before they are mapped,
-/// so an executable segment is never writable even for the instant it is being written.
+/// never both writable and executable, never overlapping another segment's pages. W^X is not
+/// relaxed for a program that asks: an image wanting a writable executable page is refused, since
+/// one that needs it does not work without it and would only fault later and blame the kernel.
+/// Pages are filled before they are mapped, so an executable segment is never writable even for
+/// the instant it is being written.
 pub(super) fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
     load_image(space, bytes, shift)
@@ -257,7 +259,8 @@ fn overlaps(a: &Placement, b: &Placement) -> bool {
 }
 
 /// The most segments this loader will place: a fixed bound because validation holds every
-/// placement before the first page is taken, and a larger image is refused, never partly loaded.
+/// placement before the first page is taken, and an image with more segments is refused, never
+/// partly loaded.
 pub(super) const MAX_SEGMENTS: usize = 8;
 
 /// Where one validated segment goes, and what it is allowed to be.
