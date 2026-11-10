@@ -3,9 +3,9 @@ use super::*;
 /// A mixer that is not zero, so the mixing is actually exercised.
 const MIXER: Mixer = Mixer::new(0x5A5A_1234);
 
+/// Distinct values expose swapped accessors.
 #[test]
 fn a_decoded_slot_reports_the_index_and_generation_it_holds() {
-    // Distinct values expose swapped accessors (D-136).
     const INDEX: u32 = 37;
     const GENERATION: u32 = 1234;
 
@@ -28,9 +28,9 @@ fn a_decoded_slot_reports_the_index_and_generation_it_holds() {
     );
 }
 
+/// The policy values are pinned as literals beside the formulas that relate them.
 #[test]
 fn the_widths_tile_the_word() {
-    // Pin the policy values, not only their internally consistent formulas.
     assert_eq!(RESERVED_BITS, 2, "the low two bits are reserved (D-78)");
     assert_eq!(INDEX_BITS, 18, "eighteen bits of arena index");
     assert_eq!(GENERATION_BITS, 12, "and twelve of generation");
@@ -140,9 +140,9 @@ fn a_handle_does_not_travel_between_tables() {
     assert_ne!(Slot::decode(slot.encode(here), there), Some(slot));
 }
 
+/// Newton iteration derives the multiplier's inverse instead of restating it.
 #[test]
 fn no_table_number_gets_a_mixer_that_mixes_nothing() {
-    // Newton iteration derives the inverse instead of restating it.
     let mut inverse = MULTIPLIER;
     for _ in 0..5 {
         inverse = inverse.wrapping_mul(2u32.wrapping_sub(MULTIPLIER.wrapping_mul(inverse)));

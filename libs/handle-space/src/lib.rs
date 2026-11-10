@@ -1,10 +1,5 @@
 //! Opaque handle encoding and quota arithmetic.
 //!
-//! A handle combines a slot index, generation, reserved bits, and table mixer.
-//! Generations reject common stale reuse; mixers make equal slots differ across
-//! tables but are not authority. The kernel's non-repeating table identity is
-//! the authority check (D-78, D-204).
-//!
 //! # Examples
 //!
 //! ```
@@ -27,22 +22,16 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-/// Bits at the bottom of every handle, always set, never part of the slot.
-///
-/// They keep zero invalid and the encoding non-dense (D-70 rule 7).
+/// Bits at the bottom of every handle, always set, so that zero is never a handle.
 pub const RESERVED_BITS: u32 = 2;
 
 /// The reserved pattern itself.
 pub const RESERVED: u32 = 0b11;
 
-/// Bits of a handle naming which arena slot it is.
-///
-/// The global arena therefore has 262,144 slots (D-78).
+/// Bits of a handle naming its arena slot, which gives the arena 262,144 slots.
 pub const INDEX_BITS: u32 = 18;
 
-/// Bits counting how many times a slot has been reused.
-///
-/// The counter rejects common stale handles but wraps after 4,096 generations.
+/// Bits counting a slot's reuses, which wrap after 4,096 generations.
 pub const GENERATION_BITS: u32 = 32 - INDEX_BITS - RESERVED_BITS;
 
 /// Slots the arena can hold.
@@ -51,53 +40,38 @@ pub const SLOTS: u32 = 1 << INDEX_BITS;
 /// Generations a slot passes through before repeating.
 pub const GENERATIONS: u32 = 1 << GENERATION_BITS;
 
-/// The successor of a never-reused table identity.
-///
-/// The kernel stores the next identity it will issue and reserves `u64::MAX`
-/// as the exhausted-state sentinel. Checked addition makes wrapping into an
-/// identity that may still own arena entries unrepresentable (D-204).
+/// The identity after `identity`, or `None` once `u64::MAX`, the exhausted state, is reached.
 pub const fn next_table_identity(identity: u64) -> Option<u64> {
     identity.checked_add(1)
 }
 
-/// A table-derived constant that usually makes the same slot look different.
-///
-/// It is not a secret or an authority boundary; it prevents accidental reuse.
+/// A table-derived constant that usually makes the same slot look different; never an authority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Mixer(u32);
 
-/// What a table number is multiplied by to become a mixer.
-///
-/// Being odd makes multiplication a bijection over `u32`.
+/// Odd, so that multiplying by it is a bijection over `u32`.
 const MULTIPLIER: u32 = 0x9E37_79B9;
 
-/// What is added after the multiply, so that table zero is not a fixed point.
+/// Added after the multiply, so that table zero is not a fixed point.
 const ADDEND: u32 = 0x7F4A_7C15;
 
 impl Mixer {
-    /// A mixer built from `seed`.
-    ///
-    /// Reserved bits are cleared. Zero is the legal identity mixer; tables use
-    /// [`for_table`](Self::for_table) instead.
+    /// A mixer built from `seed` with the reserved bits cleared; zero is the identity.
     pub const fn new(seed: u32) -> Self {
         Self(seed & !RESERVED)
     }
 
     /// A mixer for table number `id`, distinct and never the identity.
-    ///
-    /// The odd multiply is bijective; a cleared result falls back to the odd
-    /// multiplier so no table receives the identity (D-95, D-132).
     pub const fn for_table(id: u32) -> Self {
         let mixed = Self::new(id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND));
         if mixed.is_identity() {
-            // The multiplier itself, which is odd and so survives the clearing.
             Self::new(MULTIPLIER)
         } else {
             mixed
         }
     }
 
-    /// Whether this mixer actually mixes.
+    /// Whether this mixer mixes nothing.
     pub const fn is_identity(self) -> bool {
         self.0 == 0
     }
@@ -109,8 +83,6 @@ impl Mixer {
 }
 
 /// Which arena slot a handle names, and which use of it.
-///
-/// This decoded value remains distinct from the encoded process-visible word.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Slot {
     index: u32,
@@ -136,9 +108,7 @@ impl Slot {
         self.generation
     }
 
-    /// The next use of this slot, wrapping when the counter is exhausted.
-    ///
-    /// Saturation would make the last generation permanently reusable.
+    /// The next use of this slot, wrapping, since saturating would make the last one reusable.
     #[must_use]
     pub const fn reused(self) -> Self {
         Self {
@@ -153,10 +123,7 @@ impl Slot {
         ((base << RESERVED_BITS) | RESERVED) ^ mixer.bits()
     }
 
-    /// What `value` names in the table `mixer` belongs to, if anything.
-    ///
-    /// `Some` proves only that the encoding is well formed; the arena still
-    /// validates occupancy and generation.
+    /// What `value` names under `mixer`; `Some` proves only that the encoding is well formed.
     pub const fn decode(value: u32, mixer: Mixer) -> Option<Self> {
         let base = value ^ mixer.bits();
         if base & RESERVED != RESERVED {
@@ -167,20 +134,12 @@ impl Slot {
     }
 }
 
-/// The generation a slot moves to when its handle is closed.
-///
-/// The free function also serves table teardown, which holds only a raw counter.
+/// The generation after `generation`, free for table teardown's raw counters, even `u32::MAX`.
 pub const fn next_generation(generation: u32) -> u32 {
-    // Raw counters may be `u32::MAX`; checked addition would panic in debug.
     generation.wrapping_add(1) % GENERATIONS
 }
 
-/// A table's occupancy: handles it holds, and slots promised to operations
-/// that have not finished.
-///
-/// Admission reserves capacity before an operation can produce a handle. Live
-/// plus reserved slots are bounded together, with both counters packed into
-/// one word for an atomic transition (D-78).
+/// A table's held handles and promised slots, packed into one word for an atomic transition.
 ///
 /// # Examples
 ///
@@ -216,18 +175,12 @@ impl Quota {
         (bits >> 32) as u32
     }
 
-    /// What the limit bounds: held plus promised.
-    ///
-    /// `u64` because two `u32`s can sum past one, and a limit check that
-    /// wrapped would admit exactly the operation it exists to refuse.
+    /// Held plus promised, as a `u64` so that a limit check cannot wrap.
     pub const fn charged(bits: u64) -> u64 {
         Self::live(bits) as u64 + Self::reserved(bits) as u64
     }
 
-    /// Promise a slot to an operation being admitted.
-    ///
-    /// `None` when the combined quota or reserved half is full, before work is
-    /// accepted (D-151).
+    /// Promise a slot to an operation being admitted, or `None` when the quota is full.
     pub const fn reserve(bits: u64, limit: usize) -> Option<u64> {
         if Self::reserved(bits) == u32::MAX || Self::charged(bits) >= limit as u64 {
             return None;
@@ -235,9 +188,7 @@ impl Quota {
         Some(bits + (1 << 32))
     }
 
-    /// Turn a promise into a held handle.
-    ///
-    /// `None` if nothing was promised, which is a caller committing twice.
+    /// Turn a promise into a held handle, or `None` if nothing was promised.
     pub const fn commit(bits: u64) -> Option<u64> {
         if Self::reserved(bits) == 0 || Self::live(bits) == u32::MAX {
             return None;
@@ -253,10 +204,7 @@ impl Quota {
         Some(bits - (1 << 32))
     }
 
-    /// Take a slot outright, with no promise before it.
-    ///
-    /// What an ordinary insert does: the caller is holding the answer already,
-    /// so there is nothing to admit and nothing to refuse later.
+    /// Take a slot outright with no promise before it, as an ordinary insert does.
     pub const fn take(bits: u64, limit: usize) -> Option<u64> {
         if Self::live(bits) == u32::MAX || Self::charged(bits) >= limit as u64 {
             return None;
@@ -265,26 +213,18 @@ impl Quota {
     }
 }
 
-/// What a handle permits.
-///
-/// Rights name distinctions the kernel makes about an object, not syscall
-/// names; universal rights remain separate from per-type rights (D-78).
+/// What a handle permits, with universal rights kept apart from per-type rights.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rights(u32);
 
 impl Rights {
-    /// None at all. A handle with no rights is still a reference — it keeps
-    /// the object alive — and that is deliberate.
+    /// None at all; a handle with no rights still keeps the object alive.
     pub const NONE: Self = Self(0);
 
     /// May be duplicated, at these rights or fewer.
     pub const DUPLICATE: Self = Self(1 << 0);
 
-    /// May be sent through a channel.
-    ///
-    /// Strippable on its own, which is the point: removing it yields a handle
-    /// the holder can use and cannot pass on, and that is one bit rather than
-    /// a mechanism (D-78).
+    /// May be sent through a channel; strippable on its own.
     pub const TRANSFER: Self = Self(1 << 1);
 
     /// May be waited on for the object's signals.
@@ -293,10 +233,7 @@ impl Rights {
     /// May be asked what it is.
     pub const INSPECT: Self = Self(1 << 3);
 
-    /// Every right that means the same thing for every object type.
-    ///
-    /// Zircon's `RIGHTS_BASIC`. Splitting these from per-type rights is what
-    /// keeps a right's meaning from depending on what it is attached to.
+    /// Every right that means the same thing for every object type (Zircon's `RIGHTS_BASIC`).
     pub const UNIVERSAL: Self = Self(0b1111);
 
     /// May read or receive this object's data.
@@ -305,20 +242,13 @@ impl Rights {
     /// May write or send this object's data.
     pub const WRITE: Self = Self(1 << 9);
 
-    /// The memory behind it may be executed.
-    ///
-    /// Never held together with [`WRITE`](Self::WRITE) in a mapping: W^X is a
-    /// property of the page tables (D-12), and this right is what a caller
-    /// must present to ask for it at all.
+    /// The memory behind it may be executed; never held with [`WRITE`](Self::WRITE) in a mapping.
     pub const EXECUTE: Self = Self(1 << 10);
 
     /// May be placed into an address space.
     pub const MAP: Self = Self(1 << 11);
 
-    /// May resolve a name inside this directory that the holder already knows.
-    ///
-    /// Kept distinct from [`ENUMERATE`](Self::ENUMERATE): resolving a known
-    /// name does not confer directory discovery (`012` §4).
+    /// May resolve a name it already knows in this directory, without listing it.
     pub const TRAVERSE: Self = Self(1 << 12);
 
     /// May list the names in this directory.
@@ -327,12 +257,7 @@ impl Rights {
     /// May change what names this directory holds.
     pub const MODIFY: Self = Self(1 << 14);
 
-    /// Rights from raw bits, or `None` if any undefined bit is set.
-    ///
-    /// Undefined bits are refused rather than masked away. Masking would make
-    /// a caller asking for a right this kernel does not have yet succeed
-    /// quietly, and the whole point of a rights word is that what it does not
-    /// grant, it denies.
+    /// Rights from raw bits, or `None` for any undefined bit, since masking would grant quietly.
     pub const fn from_bits(bits: u32) -> Option<Self> {
         if bits & !Self::ALL.0 != 0 {
             return None;
@@ -341,8 +266,6 @@ impl Rights {
     }
 
     /// Every right this kernel defines.
-    ///
-    /// The union avoids a second literal copy of the rights list (D-173).
     pub const ALL: Self = Self(
         Self::DUPLICATE.0
             | Self::TRANSFER.0
@@ -363,16 +286,19 @@ impl Rights {
     }
 
     /// Both sets together.
+    #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
     /// Only the rights present in both sets.
+    #[must_use]
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
 
     /// This set without `other`.
+    #[must_use]
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
@@ -382,8 +308,7 @@ impl Rights {
         self.0 & other.0 == other.0
     }
 
-    /// Whether every right here is one that can mean something for an object
-    /// with `per_type` as its per-type set.
+    /// Whether every right here can mean something for an object whose per-type set is `per_type`.
     pub const fn are_meaningful_for(self, per_type: Self) -> bool {
         self.difference(Self::UNIVERSAL).difference(per_type).0 == 0
     }

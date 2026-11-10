@@ -1,8 +1,8 @@
 use crate::*;
 
+/// The rights are read from the source instead of from a second list.
 #[test]
 fn the_two_halves_do_not_overlap() {
-    // Read the domain from source instead of maintaining a second list.
     const COMPOSITE: [&str; 4] = ["NONE", "UNIVERSAL", "ALL", "EMPTY"];
     let named: Vec<&str> = include_str!("../lib.rs")
         .lines()
@@ -78,7 +78,7 @@ fn an_undefined_right_is_refused() {
 }
 
 #[test]
-fn attenuation_only_narrows() {
+fn attenuation_never_widens_the_held_rights() {
     let held = Rights::READ.union(Rights::WRITE).union(Rights::TRANSFER);
 
     assert_eq!(held.union(Rights::READ), held, "union removed a held right");
@@ -102,8 +102,8 @@ fn attenuation_only_narrows() {
         let Some(wanted) = Rights::from_bits(bits) else {
             continue;
         };
-        if let Some(got) = held.attenuate(wanted) {
-            assert!(held.contains(got), "attenuation widened {bits:#x}");
+        if let Some(attenuated) = held.attenuate(wanted) {
+            assert!(held.contains(attenuated), "attenuation widened {bits:#x}");
         }
     }
 }

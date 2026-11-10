@@ -1,9 +1,4 @@
-//! Colour and framebuffer address arithmetic.
-//!
-//! Pure logic with no hardware behind it: this is the layer that decides which
-//! byte a pixel lands on and what value goes into it. It lives in its own crate
-//! so it can be unit-tested on the host, which is where arithmetic like this
-//! actually gets verified — see `docs/005-code-conventions.md`.
+//! Colour and framebuffer address arithmetic, kept off the hardware so the host can test it.
 //!
 //! # Examples
 //!
@@ -64,8 +59,8 @@ impl Rgb {
 }
 
 const fn mix(from: u8, to: u8, intensity: u8) -> u8 {
-    let (from, to, t) = (from as u32, to as u32, intensity as u32);
-    ((from * (255 - t) + to * t) / 255) as u8
+    let (from, to, weight) = (from as u32, to as u32, intensity as u32);
+    ((from * (255 - weight) + to * weight) / 255) as u8
 }
 
 /// One colour channel's position and width within a packed pixel.
@@ -81,14 +76,7 @@ impl Channel {
         Self { shift, size }
     }
 
-    /// Scale an 8-bit intensity to this channel's width and shift it into place.
-    ///
-    /// The scaling is proportional — full intensity lands on full scale at
-    /// every width — which is what makes a ten-bit channel reach white instead
-    /// of stopping a quarter short of it. Total on every `shift` and `size` a
-    /// bootloader could report, including ones no framebuffer has: a channel
-    /// that does not fit a 32-bit pixel contributes nothing rather than
-    /// shifting past the end of one.
+    /// Scale an intensity proportionally to this channel's width, or zero if it leaves the pixel.
     pub const fn encode(self, intensity: u8) -> u32 {
         let size = self.size as u32;
         let shift = self.shift as u32;
@@ -100,16 +88,12 @@ impl Channel {
         } else {
             (1 << size) - 1
         };
-        // Both factors are bounded by `u32::MAX`, so this is done in 64 bits.
         let scaled = (intensity as u64 * full_scale as u64 / u8::MAX as u64) as u32;
         scaled << shift
     }
 }
 
-/// How a framebuffer packs colour channels into a word.
-///
-/// Reading this from the bootloader rather than assuming `0xRRGGBB` is what
-/// makes the console correct on a BGR or reduced-depth display.
+/// How a framebuffer packs colour channels into a word, as the bootloader reports it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PixelFormat {
     red: Channel,
@@ -131,9 +115,9 @@ pub enum ColourChannel {
 impl fmt::Display for ColourChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Red => core::fmt::Write::write_str(f, "red"),
-            Self::Green => core::fmt::Write::write_str(f, "green"),
-            Self::Blue => core::fmt::Write::write_str(f, "blue"),
+            Self::Red => f.write_str("red"),
+            Self::Green => f.write_str("green"),
+            Self::Blue => f.write_str("blue"),
         }
     }
 }
@@ -185,12 +169,6 @@ impl core::error::Error for PixelFormatError {}
 
 impl PixelFormat {
     /// A format with three non-empty, in-range, disjoint channel placements.
-    ///
-    /// # Errors
-    ///
-    /// [`PixelFormatError::EmptyChannel`] if any channel has no bits,
-    /// [`PixelFormatError::ChannelOutOfRange`] if one does not fit in a `u32`,
-    /// or [`PixelFormatError::OverlappingChannels`] if two share a bit.
     pub const fn new(
         red: Channel,
         green: Channel,
@@ -198,15 +176,15 @@ impl PixelFormat {
     ) -> Result<Self, PixelFormatError> {
         let red_mask = match channel_mask(red, ColourChannel::Red) {
             Ok(mask) => mask,
-            Err(error) => return Err(error),
+            Err(reason) => return Err(reason),
         };
         let green_mask = match channel_mask(green, ColourChannel::Green) {
             Ok(mask) => mask,
-            Err(error) => return Err(error),
+            Err(reason) => return Err(reason),
         };
         let blue_mask = match channel_mask(blue, ColourChannel::Blue) {
             Ok(mask) => mask,
-            Err(error) => return Err(error),
+            Err(reason) => return Err(reason),
         };
         if red_mask & green_mask != 0 {
             return Err(PixelFormatError::OverlappingChannels {
@@ -258,11 +236,7 @@ const fn channel_mask(channel: Channel, name: ColourChannel) -> Result<u32, Pixe
     Ok(bits << shift)
 }
 
-/// Checked geometry for a linear framebuffer accessed as 32-bit pixels.
-///
-/// Construction proves that every visible pixel begins at a 4-byte-aligned
-/// offset, every row fits within its pitch, and the complete mapping span can
-/// be represented without wrapping either its length or its address range.
+/// Checked geometry for a linear framebuffer of aligned 32-bit pixels whose span cannot wrap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FramebufferLayout {
     width: usize,
@@ -295,10 +269,7 @@ pub struct RowCopySpan {
 }
 
 impl RowCopySpan {
-    /// Borrow the source words after checking the complete shadow bound.
-    ///
-    /// Returns `None` when `shadow` is shorter than the layout that produced
-    /// this span.
+    /// The source words, or `None` when `shadow` is shorter than the layout that made this span.
     pub fn source(self, shadow: &[u32]) -> Option<&[u32]> {
         if !self.fits(shadow.len()) {
             return None;
@@ -306,10 +277,7 @@ impl RowCopySpan {
         shadow.get(self.source_start..self.source_end)
     }
 
-    /// Copy this row after checking the complete shadow bound.
-    ///
-    /// Returns `None` without changing `shadow` when it is shorter than the
-    /// layout that produced this span.
+    /// Copy this row, or `None` without a change when `shadow` is shorter than its layout.
     pub fn copy_within(self, shadow: &mut [u32]) -> Option<()> {
         if !self.fits(shadow.len()) {
             return None;
@@ -394,20 +362,16 @@ pub enum FramebufferLayoutError {
 impl fmt::Display for FramebufferLayoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::ZeroWidth => core::fmt::Write::write_str(f, "framebuffer width is zero"),
-            Self::ZeroHeight => core::fmt::Write::write_str(f, "framebuffer height is zero"),
-            Self::ZeroBytesPerPixel => {
-                core::fmt::Write::write_str(f, "framebuffer bytes per pixel is zero")
-            }
+            Self::ZeroWidth => f.write_str("framebuffer width is zero"),
+            Self::ZeroHeight => f.write_str("framebuffer height is zero"),
+            Self::ZeroBytesPerPixel => f.write_str("framebuffer bytes per pixel is zero"),
             Self::UnsupportedBytesPerPixel(bytes) => {
                 write!(
                     f,
                     "framebuffer uses {bytes} bytes per pixel, expected {WORD_SIZE}"
                 )
             }
-            Self::RowBytesOverflow => {
-                core::fmt::Write::write_str(f, "visible row byte count overflows")
-            }
+            Self::RowBytesOverflow => f.write_str("visible row byte count overflows"),
             Self::PitchTooSmall { row_bytes, pitch } => {
                 write!(f, "row needs {row_bytes} bytes but pitch is {pitch}")
             }
@@ -423,10 +387,8 @@ impl fmt::Display for FramebufferLayoutError {
                     "framebuffer pitch {pitch} is not {WORD_SIZE}-byte aligned"
                 )
             }
-            Self::SpanOverflow => core::fmt::Write::write_str(f, "framebuffer span overflows"),
-            Self::AddressRangeOverflow => {
-                core::fmt::Write::write_str(f, "framebuffer address range overflows")
-            }
+            Self::SpanOverflow => f.write_str("framebuffer span overflows"),
+            Self::AddressRangeOverflow => f.write_str("framebuffer address range overflows"),
         }
     }
 }
@@ -435,12 +397,6 @@ impl core::error::Error for FramebufferLayoutError {}
 
 impl FramebufferLayout {
     /// Validate geometry for a framebuffer mapping starting at `base_address`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FramebufferLayoutError`] if a dimension is zero, pixels are
-    /// not 32 bits wide, visible rows exceed the pitch, any required
-    /// arithmetic wraps, or the mapping and its rows are not 4-byte aligned.
     pub const fn new(
         base_address: usize,
         width: usize,
@@ -502,10 +458,7 @@ impl FramebufferLayout {
         offset(x, y, self.pitch, self.bytes_per_pixel)
     }
 
-    /// Plan an upward copy of visible rows, clipped to this framebuffer.
-    ///
-    /// Padding determines row starts but is not copied. Returns `None` when
-    /// `to_y` is below `from_y`; overlapping copies are safe in yielded order.
+    /// Plan a clipped upward copy of visible rows, or `None` if `to_y` is below `from_y`.
     pub fn copy_rows_up(self, from_y: usize, to_y: usize, rows: usize) -> Option<RowCopyPlan> {
         if to_y > from_y {
             return None;
@@ -527,8 +480,6 @@ impl FramebufferLayout {
             });
         }
 
-        // Rows are clipped to the height and the constructor keeps every row
-        // inside `pitch × height`, so no plan can leave the span.
         let source_word = from_y.checked_mul(stride_words)?;
         let destination_word = to_y.checked_mul(stride_words)?;
         let destination_offset = to_y.checked_mul(self.pitch)?;
@@ -545,10 +496,7 @@ impl FramebufferLayout {
     }
 }
 
-/// Byte offset of the pixel at (`x`, `y`), or `None` if it does not fit.
-///
-/// `pitch` is the distance between the starts of consecutive rows, which is not
-/// always `width * bytes_per_pixel`.
+/// Byte offset of the pixel at (`x`, `y`) with rows `pitch` bytes apart, or `None` on overflow.
 pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) -> Option<usize> {
     let Some(row) = y.checked_mul(pitch) else {
         return None;

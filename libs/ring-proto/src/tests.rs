@@ -4,7 +4,7 @@ fn capacity(entries: u32) -> Capacity {
     Capacity::new(entries).expect("a usable capacity")
 }
 
-/// Pin the externally visible version independently of its users (D-148).
+/// Pin the externally visible version independently of its users.
 #[test]
 fn the_wire_version_is_one() {
     assert_eq!(VERSION, 1, "the ring layout has not changed");
@@ -208,11 +208,7 @@ fn pair_errors_name_both_capacities_and_the_rule() {
     );
 }
 
-/// **Full and empty are different states**, which is the whole reason the
-/// counters count operations rather than slots.
-///
-/// A ring that stored slot indices would have `head == tail` for both, and
-/// would have to sacrifice an entry to tell them apart.
+/// Counting operations rather than slots tells full from empty without sacrificing an entry.
 #[test]
 fn full_and_empty_are_not_the_same_state() {
     let mut ring = Ring::new(capacity(4));
@@ -252,6 +248,7 @@ fn counter_accessors_report_counts_not_masked_slots() {
     assert_eq!(ring.tail(), 45);
 }
 
+/// The head starts at `u32::MAX - 3`, which is `0xFFFF_FFFC`, and `0xFFFF_FFFC & 7` is 4.
 #[test]
 fn the_counters_survive_the_wrap() {
     let capacity = capacity(8);
@@ -267,8 +264,6 @@ fn the_counters_survive_the_wrap() {
     );
     assert_eq!(ring.occupied(), 8);
 
-    // Independent arithmetic: the head starts at
-    // `u32::MAX - 3`, which is `0xFFFF_FFFC`, and `0xFFFF_FFFC & 7` is 4.
     let slots: Vec<usize> = (0..8).filter_map(|_| ring.consume()).collect();
     assert_eq!(slots, [4, 5, 6, 7, 0, 1, 2, 3]);
     assert!(ring.is_empty());
@@ -284,6 +279,7 @@ fn impossible_counters_are_refused() {
     assert_eq!(Ring::adopt(capacity, u32::MAX, 10), None);
 }
 
+/// Widening must make twice the largest capacity a refusal, not wrap it.
 #[test]
 fn a_completion_queue_is_at_least_twice_the_submission_queue() {
     assert!(Queues::new(capacity(4), capacity(8)).is_ok());
@@ -295,7 +291,6 @@ fn a_completion_queue_is_at_least_twice_the_submission_queue() {
             completion: 4
         })
     );
-    // Widening must make twice the largest capacity a refusal, not wrap it.
     assert!(Queues::new(capacity(Capacity::MAX), capacity(Capacity::MAX)).is_err());
 }
 
@@ -341,13 +336,13 @@ fn admission_stops_before_a_completion_could_be_dropped() {
     assert_eq!(queues.complete(), None, "reported more than was admitted");
 }
 
+/// A fixed walk makes failures reproducible without another dependency.
 #[test]
 fn the_reservation_invariant_holds_under_interleaving() {
     let mut queues = Queues::new(capacity(2), capacity(4)).expect("a valid pair");
     let mut admitted = 0u32;
     let mut reported = 0u32;
 
-    // A fixed walk makes failures reproducible without another dependency.
     let mut state = 0x2545_F491u32;
     for _ in 0..10_000 {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -393,10 +388,9 @@ fn a_completion_with_no_reservation_is_refused() {
     assert!(queues.is_consistent());
 }
 
+/// Checked rather than reasoned: no `u32` passes the power-of-two refusal and then exceeds `MAX`.
 #[test]
 fn every_power_of_two_a_u32_holds_is_accepted() {
-    // Checked rather than reasoned: nothing a `u32` holds survives the
-    // power-of-two refusal and then exceeds `MAX` (D-105).
     for shift in 0..u32::BITS {
         let entries = 1u32 << shift;
         assert!(Capacity::new(entries).is_ok(), "{entries} was refused");

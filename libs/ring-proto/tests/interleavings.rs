@@ -1,7 +1,4 @@
-//! Scheduled producer, worker, and consumer calls through the real ring model.
-//!
-//! Shuttle explores call ordering under sequential consistency; the TLA+
-//! model owns weak-memory ordering (D-112).
+//! Scheduled ring calls under sequential consistency; the TLA+ model owns weak-memory ordering.
 
 use ring_proto::{Capacity, Queues};
 use shuttle::sync::{Arc, Mutex};

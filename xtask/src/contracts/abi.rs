@@ -1634,7 +1634,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     let rights_close = matching(handle_space.as_bytes(), rights_open, b'{', b'}');
     let rights_impl = &handle_space[rights_open + 1..rights_close];
     assert!(
-        !rights_impl.contains("#["),
+        !rights_impl.contains("#[cfg"),
         "impl Rights contains a conditionally visible item"
     );
     let compact_rights: String = rights_impl
