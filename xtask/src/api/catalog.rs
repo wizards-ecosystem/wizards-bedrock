@@ -174,27 +174,7 @@ impl CargoCatalog {
         reject_custom_harness_manifests(root)?;
         let value = crate::json::parse_json(bytes, "Cargo metadata JSON")?;
         let document = crate::json::json_object(&value, "Cargo metadata JSON")?;
-        ensure!(
-            crate::json::json_u64(
-                crate::json::json_field(document, "version", "Cargo metadata JSON")?,
-                "Cargo metadata `version`"
-            )? == 1,
-            "Cargo metadata has an unsupported format version"
-        );
-
-        let declared_root = PathBuf::from(crate::json::json_string(
-            crate::json::json_field(document, "workspace_root", "Cargo metadata JSON")?,
-            "Cargo metadata `workspace_root`",
-        )?);
-        let canonical_root = std::fs::canonicalize(root)
-            .with_context(|| format!("canonicalizing API audit root {}", root.display()))?;
-        ensure!(
-            std::fs::canonicalize(&declared_root).with_context(|| format!(
-                "canonicalizing Cargo metadata workspace root {}",
-                declared_root.display()
-            ))? == canonical_root,
-            "Cargo metadata describes a different workspace root"
-        );
+        let canonical_root = require_metadata_root(document, root)?;
 
         let members = crate::json::json_string_array(
             crate::json::json_field(document, "workspace_members", "Cargo metadata JSON")?,
@@ -206,6 +186,105 @@ impl CargoCatalog {
             crate::json::json_field(document, "packages", "Cargo metadata JSON")?,
             "Cargo metadata `packages`",
         )?;
+        let index = PackageIndex::parse(package_values, &members)?;
+
+        let resolved = parse_resolved_dependencies(document, &index.package_names)?;
+        let workspace_ids = members
+            .iter()
+            .map(|id| {
+                index
+                    .package_names
+                    .get(*id)
+                    .map(|name| (name.clone(), (*id).to_string()))
+                    .with_context(|| format!("workspace member `{id}` has no package definition"))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let root_ids = selected_packages
+            .iter()
+            .map(|name| {
+                workspace_ids.get(*name).cloned().with_context(|| {
+                    format!("registered Cargo package `{name}` is absent from metadata")
+                })
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        let active = active_resolved_packages(&resolved, &root_ids, include_root_dev_dependencies)?;
+        reject_reserved_dependency_roots(
+            &resolved,
+            &active,
+            &root_ids,
+            include_root_dev_dependencies,
+            &index.package_names,
+        )?;
+        if let Some((_, name)) = index
+            .procedural_macros
+            .iter()
+            .find(|(id, _)| active.contains(*id))
+        {
+            bail!(
+                "active procedural-macro package `{name}` is outside the API audit's syntactic trust boundary"
+            );
+        }
+        validate_dependency_build_scripts(root, &active, &index.dependency_build_scripts)?;
+        validate_active_external_package_roots(registry_source, package_values, &members, &active)?;
+
+        let packages = workspace_packages(&canonical_root, package_values, &members, &active)?;
+        Ok(Self { packages, resolved })
+    }
+
+    pub(super) fn targets(&self) -> impl Iterator<Item = &CargoTarget> {
+        self.packages.values().flatten()
+    }
+
+    pub(super) fn package(&self, name: &str) -> Result<&[CargoTarget]> {
+        self.packages
+            .get(name)
+            .map(Vec::as_slice)
+            .with_context(|| format!("registered Cargo package `{name}` is absent from metadata"))
+    }
+
+    pub(super) fn has_direct_normal_dependency(
+        &self,
+        package: &str,
+        dependency_name: &str,
+        dependency_package: &str,
+    ) -> bool {
+        let Some(package_id) = self
+            .packages
+            .get(package)
+            .and_then(|targets| targets.first())
+            .map(|target| target.package_id.as_str())
+        else {
+            return false;
+        };
+        let Some(dependency_id) = self
+            .packages
+            .get(dependency_package)
+            .and_then(|targets| targets.first())
+            .map(|target| target.package_id.as_str())
+        else {
+            return false;
+        };
+        self.resolved
+            .get(package_id)
+            .into_iter()
+            .flatten()
+            .any(|dependency| {
+                dependency.normal
+                    && dependency.package_id == dependency_id
+                    && dependency.name == dependency_name
+            })
+    }
+}
+
+#[derive(Debug)]
+struct PackageIndex {
+    package_names: BTreeMap<String, String>,
+    procedural_macros: BTreeMap<String, String>,
+    dependency_build_scripts: BTreeMap<String, DependencyBuildScript>,
+}
+
+impl PackageIndex {
+    fn parse(package_values: &[crate::json::JsonValue], members: &BTreeSet<&str>) -> Result<Self> {
         let mut package_names = BTreeMap::new();
         let mut procedural_macros = BTreeMap::new();
         let mut dependency_build_scripts = BTreeMap::new();
@@ -261,129 +340,88 @@ impl CargoCatalog {
                 );
             }
         }
+        Ok(Self {
+            package_names,
+            procedural_macros,
+            dependency_build_scripts,
+        })
+    }
+}
 
-        let resolved = parse_resolved_dependencies(document, &package_names)?;
-        let workspace_ids = members
-            .iter()
-            .map(|id| {
-                package_names
-                    .get(*id)
-                    .map(|name| (name.clone(), (*id).to_string()))
-                    .with_context(|| format!("workspace member `{id}` has no package definition"))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        let root_ids = selected_packages
-            .iter()
-            .map(|name| {
-                workspace_ids.get(*name).cloned().with_context(|| {
-                    format!("registered Cargo package `{name}` is absent from metadata")
-                })
-            })
-            .collect::<Result<BTreeSet<_>>>()?;
-        let active = active_resolved_packages(&resolved, &root_ids, include_root_dev_dependencies)?;
-        reject_reserved_dependency_roots(
-            &resolved,
-            &active,
-            &root_ids,
-            include_root_dev_dependencies,
-            &package_names,
+fn require_metadata_root(
+    document: &BTreeMap<String, crate::json::JsonValue>,
+    root: &Path,
+) -> Result<PathBuf> {
+    ensure!(
+        crate::json::json_u64(
+            crate::json::json_field(document, "version", "Cargo metadata JSON")?,
+            "Cargo metadata `version`"
+        )? == 1,
+        "Cargo metadata has an unsupported format version"
+    );
+
+    let declared_root = PathBuf::from(crate::json::json_string(
+        crate::json::json_field(document, "workspace_root", "Cargo metadata JSON")?,
+        "Cargo metadata `workspace_root`",
+    )?);
+    let canonical_root = std::fs::canonicalize(root)
+        .with_context(|| format!("canonicalizing API audit root {}", root.display()))?;
+    ensure!(
+        std::fs::canonicalize(&declared_root).with_context(|| format!(
+            "canonicalizing Cargo metadata workspace root {}",
+            declared_root.display()
+        ))? == canonical_root,
+        "Cargo metadata describes a different workspace root"
+    );
+    Ok(canonical_root)
+}
+
+fn workspace_packages(
+    canonical_root: &Path,
+    package_values: &[crate::json::JsonValue],
+    members: &BTreeSet<&str>,
+    active: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Vec<CargoTarget>>> {
+    let mut packages = BTreeMap::new();
+    for package_value in package_values {
+        let package = crate::json::json_object(package_value, "Cargo metadata package")?;
+        let id = crate::json::json_string(
+            crate::json::json_field(package, "id", "Cargo metadata package")?,
+            "Cargo metadata package `id`",
         )?;
-        if let Some((_, name)) = procedural_macros
-            .iter()
-            .find(|(id, _)| active.contains(*id))
-        {
-            bail!(
-                "active procedural-macro package `{name}` is outside the API audit's syntactic trust boundary"
-            );
+        let name = crate::json::json_string(
+            crate::json::json_field(package, "name", "Cargo metadata package")?,
+            "Cargo metadata package `name`",
+        )?;
+        let target_values = crate::json::json_array(
+            crate::json::json_field(package, "targets", "Cargo metadata package")?,
+            "Cargo metadata package `targets`",
+        )?;
+        if !members.contains(id) {
+            continue;
         }
-        validate_dependency_build_scripts(root, &active, &dependency_build_scripts)?;
-        validate_active_external_package_roots(registry_source, package_values, &members, &active)?;
-
-        let mut packages = BTreeMap::new();
-        for package_value in package_values {
-            let package = crate::json::json_object(package_value, "Cargo metadata package")?;
-            let id = crate::json::json_string(
-                crate::json::json_field(package, "id", "Cargo metadata package")?,
-                "Cargo metadata package `id`",
-            )?;
-            let name = crate::json::json_string(
-                crate::json::json_field(package, "name", "Cargo metadata package")?,
-                "Cargo metadata package `name`",
-            )?;
-            let target_values = crate::json::json_array(
-                crate::json::json_field(package, "targets", "Cargo metadata package")?,
-                "Cargo metadata package `targets`",
-            )?;
-            if !members.contains(id) {
-                continue;
+        let mut targets = Vec::new();
+        for target_value in target_values {
+            let target = parse_cargo_target(canonical_root, name, id, target_value)?;
+            if active.contains(id) && target.kind == CargoTargetKind::CustomBuild {
+                validate_workspace_build_script(canonical_root, name, &target)?;
             }
-            let mut targets = Vec::new();
-            for target_value in target_values {
-                let target = parse_cargo_target(&canonical_root, name, id, target_value)?;
-                if active.contains(id) && target.kind == CargoTargetKind::CustomBuild {
-                    validate_workspace_build_script(&canonical_root, name, &target)?;
-                }
-                targets.push(target);
-            }
-            ensure!(
-                !targets.is_empty(),
-                "Cargo workspace package `{name}` has no target"
-            );
-            ensure!(
-                packages.insert(name.to_string(), targets).is_none(),
-                "Cargo workspace contains duplicate package name `{name}`"
-            );
+            targets.push(target);
         }
         ensure!(
-            packages.len() == members.len(),
-            "Cargo metadata omitted one or more workspace members"
+            !targets.is_empty(),
+            "Cargo workspace package `{name}` has no target"
         );
-        Ok(Self { packages, resolved })
+        ensure!(
+            packages.insert(name.to_string(), targets).is_none(),
+            "Cargo workspace contains duplicate package name `{name}`"
+        );
     }
-
-    pub(super) fn targets(&self) -> impl Iterator<Item = &CargoTarget> {
-        self.packages.values().flatten()
-    }
-
-    pub(super) fn package(&self, name: &str) -> Result<&[CargoTarget]> {
-        self.packages
-            .get(name)
-            .map(Vec::as_slice)
-            .with_context(|| format!("registered Cargo package `{name}` is absent from metadata"))
-    }
-
-    pub(super) fn has_direct_normal_dependency(
-        &self,
-        package: &str,
-        dependency_name: &str,
-        dependency_package: &str,
-    ) -> bool {
-        let Some(package_id) = self
-            .packages
-            .get(package)
-            .and_then(|targets| targets.first())
-            .map(|target| target.package_id.as_str())
-        else {
-            return false;
-        };
-        let Some(dependency_id) = self
-            .packages
-            .get(dependency_package)
-            .and_then(|targets| targets.first())
-            .map(|target| target.package_id.as_str())
-        else {
-            return false;
-        };
-        self.resolved
-            .get(package_id)
-            .into_iter()
-            .flatten()
-            .any(|dependency| {
-                dependency.normal
-                    && dependency.package_id == dependency_id
-                    && dependency.name == dependency_name
-            })
-    }
+    ensure!(
+        packages.len() == members.len(),
+        "Cargo metadata omitted one or more workspace members"
+    );
+    Ok(packages)
 }
 
 fn validate_active_external_package_roots(

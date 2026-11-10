@@ -30,7 +30,6 @@ const PRODUCTION: &str = concat!(
     include_str!("../api.rs"),
 );
 
-#[cfg(test)]
 fn fixture_targets(root: &Path) -> Result<Vec<CargoTarget>> {
     let mut paths = Vec::new();
     for directory in COPY_DIRECTORIES {
@@ -123,20 +122,17 @@ fn cargo_test_output(bytes: &[u8], selected: &CargoTarget) -> Result<Vec<MarkerD
 }
 
 impl Inventory {
-    #[cfg(test)]
     fn discover(root: &Path) -> Result<Self> {
         let targets = fixture_targets(root)?;
         Self::discover_with_targets(root, &targets)
     }
 
-    #[cfg(test)]
     fn discover_with_targets(root: &Path, targets: &[CargoTarget]) -> Result<Self> {
         Self::discover_with_targets_and_entry_authority(root, targets, None)
     }
 }
 
 impl TraitImports {
-    #[cfg(test)]
     fn collect(items: &[Item]) -> Self {
         Self::collect_in_scope(items, &[])
     }

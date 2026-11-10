@@ -188,6 +188,36 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
         read_bounded_authority_text(&root.join(relative), "API audit wost entry-contract source")?;
     let syntax =
         syn::parse_file(&source).with_context(|| format!("parsing {}", relative.display()))?;
+    let entry = wost_entry_macro(&syntax, relative)?;
+    let expanded = normalized_entry_expansion(entry)?;
+    let generated = syn::parse2::<syn::File>(expanded.clone())
+        .context("parsing the normalized `wost::entry` expansion")?;
+    let entry_point = validated_entry_point(&generated)?;
+    let requests = entry_point_requests(entry_point)?;
+    let expected = expected_wost_entry_expansion()?;
+    ensure!(
+        expanded.to_string() == expected.to_string(),
+        "the `wost::entry` expansion changed outside its exact audited contract"
+    );
+    Ok([
+        entry_contract_use(&generated, "boot::BootInfo", "wost::boot::BootInfo")?,
+        entry_contract_use(
+            &generated,
+            "boot::limine_glue::base_revision",
+            "wost::boot::__macro::base_revision",
+        )?,
+        entry_contract_use(&generated, "boot::limine_glue::enter", "wost::boot::enter")?,
+        EntryContractUse {
+            symbol: "boot::limine_glue::Requests",
+            primary: range(requests.span()),
+        },
+    ])
+}
+
+fn wost_entry_macro<'syntax>(
+    syntax: &'syntax syn::File,
+    relative: &Path,
+) -> Result<&'syntax syn::ItemMacro> {
     let candidates = syntax
         .items
         .iter()
@@ -217,6 +247,10 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
                     && matches!(&attribute.meta, Meta::Path(_))),
         "the `wost::entry` declaration lost its exported macro identity"
     );
+    Ok(entry)
+}
+
+fn normalized_entry_expansion(entry: &syn::ItemMacro) -> Result<TokenStream> {
     let tokens = entry.mac.tokens.clone().into_iter().collect::<Vec<_>>();
     ensure!(
         matches!(tokens.as_slice(), [TokenTree::Group(_), TokenTree::Punct(equal), TokenTree::Punct(arrow), TokenTree::Group(_), TokenTree::Punct(semi)]
@@ -244,8 +278,10 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
         handler_uses == 1,
         "the `wost::entry` expansion must bind its handler exactly once"
     );
-    let generated = syn::parse2::<syn::File>(expanded.clone())
-        .context("parsing the normalized `wost::entry` expansion")?;
+    Ok(expanded)
+}
+
+fn validated_entry_point(generated: &syn::File) -> Result<&syn::ItemFn> {
     let expected_statics = [
         "__WOST_REQUESTS_START",
         "__WOST_BASE_REVISION",
@@ -316,6 +352,10 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
     let Some(entry_point) = entry_point else {
         bail!("the `wost::entry` expansion must define one `kmain`");
     };
+    Ok(entry_point)
+}
+
+fn entry_point_requests(entry_point: &syn::ItemFn) -> Result<&syn::ExprStruct> {
     ensure!(
         entry_point
             .sig
@@ -366,24 +406,7 @@ pub(super) fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContract
             && matches!(&call.args[1], Expr::Path(path) if path.path.is_ident("__WOST_ENTRY_SIGNATURE")),
         "the `wost::entry` `kmain` must pass the exact request block and bound handler directly to `boot::enter`"
     );
-    let expected = expected_wost_entry_expansion()?;
-    ensure!(
-        expanded.to_string() == expected.to_string(),
-        "the `wost::entry` expansion changed outside its exact audited contract"
-    );
-    Ok([
-        entry_contract_use(&generated, "boot::BootInfo", "wost::boot::BootInfo")?,
-        entry_contract_use(
-            &generated,
-            "boot::limine_glue::base_revision",
-            "wost::boot::__macro::base_revision",
-        )?,
-        entry_contract_use(&generated, "boot::limine_glue::enter", "wost::boot::enter")?,
-        EntryContractUse {
-            symbol: "boot::limine_glue::Requests",
-            primary: range(requests.span()),
-        },
-    ])
+    Ok(requests)
 }
 
 fn expected_wost_entry_expansion() -> Result<TokenStream> {

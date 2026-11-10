@@ -68,6 +68,82 @@ pub(super) fn trait_activations(
     Vec<ImplicitTraitActivation>,
     BTreeSet<usize>,
 )> {
+    let reviewed_producer_nodes = reviewed_drop_producer_nodes(nodes, files)?;
+    let declarations = nodes
+        .iter()
+        .filter_map(|node| match &node.trait_route {
+            Some(TraitRoute::Declaration(key)) => Some((key, node.id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let allocator_types = global_allocator_types(nodes, files)?;
+    let mut activations = Vec::new();
+    let mut implicit_activations = Vec::new();
+    let mut unresolved = BTreeSet::new();
+    for node in nodes {
+        let Some(TraitRoute::Implementation {
+            key,
+            self_type,
+            exact_self_type,
+            external,
+            implicit,
+        }) = &node.trait_route
+        else {
+            continue;
+        };
+        let declarations = implementation_declarations(nodes, files, &declarations, key);
+        let self_types = self_type
+            .iter()
+            .flat_map(|name| matching_type_nodes(nodes, files, node, name))
+            .collect::<Vec<_>>();
+        if self_types.len() != 1 || declarations.len() > 1 || declarations.is_empty() && !*external
+        {
+            unresolved.insert(node.id);
+            continue;
+        }
+        let self_type = self_types[0];
+        activations.push(TraitActivation {
+            self_type,
+            exact_self_type: *exact_self_type,
+            declaration: declarations.first().copied(),
+            key: key.clone(),
+            implementation: node.id,
+        });
+        match implicit {
+            Some(ImplicitTrait::Drop) if key.member == "drop" => implicit_drop_activations(
+                nodes,
+                files,
+                node,
+                self_type,
+                &reviewed_producer_nodes,
+                &mut implicit_activations,
+            )?,
+            Some(ImplicitTrait::GlobalAlloc) => {
+                ensure!(
+                    *exact_self_type,
+                    "standard GlobalAlloc implementation {} has a generic or qualified self type",
+                    node.label
+                );
+                implicit_activations.extend(
+                    allocator_types
+                        .iter()
+                        .filter(|(_, allocator_type)| *allocator_type == self_type)
+                        .map(|(allocator, _)| ImplicitTraitActivation {
+                            trigger: ImplicitTraitTrigger::LiveNode(*allocator),
+                            implementation: node.id,
+                        }),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok((activations, implicit_activations, unresolved))
+}
+
+fn reviewed_drop_producer_nodes(
+    nodes: &[Node],
+    files: &[SourceFile],
+) -> Result<BTreeMap<usize, usize>> {
     for producer in REVIEWED_IMPLICIT_DROP_PRODUCERS {
         ensure!(
             REVIEWED_IMPLICIT_DROP_TYPES
@@ -158,13 +234,10 @@ pub(super) fn trait_activations(
         );
         reviewed_producer_nodes.insert(producer_index, producers[0].id);
     }
-    let declarations = nodes
-        .iter()
-        .filter_map(|node| match &node.trait_route {
-            Some(TraitRoute::Declaration(key)) => Some((key, node.id)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    Ok(reviewed_producer_nodes)
+}
+
+fn global_allocator_types(nodes: &[Node], files: &[SourceFile]) -> Result<Vec<(usize, usize)>> {
     let mut allocator_types = Vec::new();
     for allocator in nodes.iter().filter(|node| node.global_allocator) {
         let name = allocator
@@ -190,136 +263,98 @@ pub(super) fn trait_activations(
         );
         allocator_types.push((allocator.id, candidates[0]));
     }
-    let mut activations = Vec::new();
-    let mut implicit_activations = Vec::new();
-    let mut unresolved = BTreeSet::new();
-    for node in nodes {
-        let Some(TraitRoute::Implementation {
-            key,
-            self_type,
-            exact_self_type,
-            external,
-            implicit,
-        }) = &node.trait_route
-        else {
-            continue;
-        };
-        let exact = declarations
+    Ok(allocator_types)
+}
+
+fn implementation_declarations(
+    nodes: &[Node],
+    files: &[SourceFile],
+    declarations: &[(&TraitMemberKey, usize)],
+    key: &TraitMemberKey,
+) -> Vec<usize> {
+    let exact = declarations
+        .iter()
+        .filter(|(declaration, _)| *declaration == key)
+        .map(|(_, id)| *id)
+        .collect::<Vec<_>>();
+    let qualified = declarations
+        .iter()
+        .filter(|(declaration, id)| {
+            workspace_trait_matches(declaration, key, &files[nodes[*id].file].crate_name)
+        })
+        .map(|(_, id)| *id)
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        exact
+    } else if !qualified.is_empty() {
+        qualified
+    } else if !key.trait_path.contains("::") {
+        declarations
             .iter()
-            .filter(|(declaration, _)| *declaration == key)
+            .filter(|(declaration, _)| trait_member_matches(declaration, key))
             .map(|(_, id)| *id)
-            .collect::<Vec<_>>();
-        let qualified = declarations
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    }
+}
+
+fn implicit_drop_activations(
+    nodes: &[Node],
+    files: &[SourceFile],
+    node: &Node,
+    self_type: usize,
+    reviewed_producer_nodes: &BTreeMap<usize, usize>,
+    implicit_activations: &mut Vec<ImplicitTraitActivation>,
+) -> Result<()> {
+    let declaration = &nodes[self_type];
+    let file = &files[declaration.file];
+    let identity = source_item_path(file, &declaration.symbol);
+    ensure!(
+        REVIEWED_IMPLICIT_DROP_TYPES
             .iter()
-            .filter(|(declaration, id)| {
-                workspace_trait_matches(declaration, key, &files[nodes[*id].file].crate_name)
-            })
-            .map(|(_, id)| *id)
-            .collect::<Vec<_>>();
-        let declarations = if !exact.is_empty() {
-            exact
-        } else if !qualified.is_empty() {
-            qualified
-        } else if !key.trait_path.contains("::") {
-            declarations
-                .iter()
-                .filter(|(declaration, _)| trait_member_matches(declaration, key))
-                .map(|(_, id)| *id)
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let self_types = self_type
-            .iter()
-            .flat_map(|name| matching_type_nodes(nodes, files, node, name))
-            .collect::<Vec<_>>();
-        if self_types.len() != 1 || declarations.len() > 1 || declarations.is_empty() && !*external
+            .any(|(relative, symbol)| {
+                file.relative == Path::new(relative) && declaration.symbol == *symbol
+            }),
+        "standard Drop implementation for `{identity}` is outside the API audit's reviewed implicit-drop boundary"
+    );
+    implicit_activations.push(ImplicitTraitActivation {
+        trigger: ImplicitTraitTrigger::ConstructedType(self_type),
+        implementation: node.id,
+    });
+    for (producer_index, producer) in REVIEWED_IMPLICIT_DROP_PRODUCERS.iter().enumerate() {
+        if file.relative != Path::new(producer.relative) || declaration.symbol != producer.produced
         {
-            unresolved.insert(node.id);
             continue;
         }
-        let self_type = self_types[0];
-        activations.push(TraitActivation {
-            self_type,
-            exact_self_type: *exact_self_type,
-            declaration: declarations.first().copied(),
-            key: key.clone(),
+        let producer_node = reviewed_producer_nodes
+            .get(&producer_index)
+            .copied()
+            .with_context(|| {
+                format!(
+                    "reviewed implicit Drop producer {}::{} was not validated",
+                    producer.owner, producer.member
+                )
+            })?;
+        implicit_activations.push(ImplicitTraitActivation {
+            trigger: ImplicitTraitTrigger::LiveNode(producer_node),
             implementation: node.id,
         });
-        match implicit {
-            Some(ImplicitTrait::Drop) if key.member == "drop" => {
-                let declaration = &nodes[self_type];
-                let file = &files[declaration.file];
-                let identity = source_item_path(file, &declaration.symbol);
-                ensure!(
-                    REVIEWED_IMPLICIT_DROP_TYPES
-                        .iter()
-                        .any(|(relative, symbol)| {
-                            file.relative == Path::new(relative) && declaration.symbol == *symbol
-                        }),
-                    "standard Drop implementation for `{identity}` is outside the API audit's reviewed implicit-drop boundary"
-                );
-                implicit_activations.push(ImplicitTraitActivation {
-                    trigger: ImplicitTraitTrigger::ConstructedType(self_type),
-                    implementation: node.id,
-                });
-                for (producer_index, producer) in
-                    REVIEWED_IMPLICIT_DROP_PRODUCERS.iter().enumerate()
-                {
-                    if file.relative != Path::new(producer.relative)
-                        || declaration.symbol != producer.produced
-                    {
-                        continue;
-                    }
-                    let producer_node = reviewed_producer_nodes
-                        .get(&producer_index)
-                        .copied()
-                        .with_context(|| {
-                            format!(
-                                "reviewed implicit Drop producer {}::{} was not validated",
-                                producer.owner, producer.member
-                            )
-                        })?;
-                    implicit_activations.push(ImplicitTraitActivation {
-                        trigger: ImplicitTraitTrigger::LiveNode(producer_node),
-                        implementation: node.id,
-                    });
-                }
-                let unreviewed_producer = nodes.iter().find(|candidate| {
-                    let Some(owner) = candidate.implementation_owner.as_deref() else {
-                        return false;
-                    };
-                    candidate.direct_self_construction
-                        && candidate.reviewed_drop_producer.is_none()
-                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)
-                });
-                ensure!(
-                    unreviewed_producer.is_none(),
-                    "{} is an unreviewed implicit Drop producer for `{identity}`",
-                    unreviewed_producer
-                        .map_or("an unknown method", |producer| producer.label.as_str())
-                );
-            }
-            Some(ImplicitTrait::GlobalAlloc) => {
-                ensure!(
-                    *exact_self_type,
-                    "standard GlobalAlloc implementation {} has a generic or qualified self type",
-                    node.label
-                );
-                implicit_activations.extend(
-                    allocator_types
-                        .iter()
-                        .filter(|(_, allocator_type)| *allocator_type == self_type)
-                        .map(|(allocator, _)| ImplicitTraitActivation {
-                            trigger: ImplicitTraitTrigger::LiveNode(*allocator),
-                            implementation: node.id,
-                        }),
-                );
-            }
-            _ => {}
-        }
     }
-    Ok((activations, implicit_activations, unresolved))
+    let unreviewed_producer = nodes.iter().find(|candidate| {
+        let Some(owner) = candidate.implementation_owner.as_deref() else {
+            return false;
+        };
+        candidate.direct_self_construction
+            && candidate.reviewed_drop_producer.is_none()
+            && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)
+    });
+    ensure!(
+        unreviewed_producer.is_none(),
+        "{} is an unreviewed implicit Drop producer for `{identity}`",
+        unreviewed_producer.map_or("an unknown method", |producer| producer.label.as_str())
+    );
+    Ok(())
 }
 
 fn matching_type_nodes(
@@ -388,7 +423,7 @@ impl TraitActivation {
                 trait_qualifier, ..
             } = &site.kind;
             // A callee path that names `Self` lets the audited implementation
-            // inventory stand in for the trait qualifier (D-295).
+            // inventory stand in for the trait qualifier.
             if self.declaration.is_none()
                 && trait_qualifier.is_none()
                 && !site.callee_names(callee_nodes, exact_self_type)
