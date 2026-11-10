@@ -348,7 +348,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 818,
         file: "wost/src/arch/x86_64/paging/stack.rs",
         find: "        current_mapping_root(self.identity.roots)\n            .is_some_and(|current| self.identity.invalid_page_in(current).is_none())",
-        replace: "        is_active()\n            && active_root() == self.identity.roots.full_root()\n            && self\n                .identity\n                .invalid_page_in(self.identity.roots.full_root())\n                .is_none()",
+        replace: "        is_active()\n            && super::active_root() == self.identity.roots.full_root()\n            && self\n                .identity\n                .invalid_page_in(self.identity.roots.full_root())\n                .is_none()",
         breaks: "a stack token authenticates its recorded root instead of the root actually loaded",
         reddens: Caught::Check("a stale shared root cannot authenticate a stack"),
     },
