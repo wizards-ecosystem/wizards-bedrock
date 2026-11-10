@@ -103,7 +103,7 @@ impl core::error::Error for DmaHandoffFenceError {}
 
 /// Permanently clear and verify BME on every present segment-zero function.
 ///
-/// Valid only once, before any function authority has been minted; `pci-config` owns the policy.
+/// Valid once and only before any function authority is minted; `pci-config` owns the policy.
 ///
 /// # Errors
 ///

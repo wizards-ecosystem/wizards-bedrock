@@ -383,7 +383,8 @@ impl<const N: usize> PortBlock<N> {
             offset.checked_add(width).is_some_and(|end| end <= N),
             "a {width}-byte access at register {offset} leaves a {N}-port block"
         );
-        // Cannot overflow: `new` bounded `base + N` to I/O space and the assertion bounds `offset`.
+        // Cannot overflow: `new` bounded `base + N` to I/O space and the assertion keeps
+        // `offset + width <= N`.
         self.base + offset as u16
     }
 }

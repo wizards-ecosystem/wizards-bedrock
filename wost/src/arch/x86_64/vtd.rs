@@ -808,8 +808,9 @@ impl Vtd {
 
     /// Revoke the selected context while keeping translation default-deny.
     ///
-    /// The root entry goes absent before invalidation and a full drain, and only then are context
-    /// and second-level bytes cleared; TE, IRE, the window and both roots stay owned for the boot.
+    /// The root entry goes absent before global invalidation and a full drain, and only then are
+    /// context and second-level bytes cleared.
+    /// TE, IRE, the register window and both kernel roots stay owned for the rest of the boot.
     pub fn park(&mut self) -> Result<(), VtdError> {
         if !self.boundary_active() {
             return Err(VtdError::InterruptBoundaryLost);
@@ -1043,7 +1044,7 @@ impl Vtd {
 
     /// Permanently mask the unit's own fault-event MSI.
     ///
-    /// It never traverses interrupt remapping, so polling fault records is the only default-deny.
+    /// It never traverses interrupt remapping, so default-deny can only poll the fault records.
     fn mask_fault_interrupt(&mut self) -> Result<(), VtdError> {
         let prior = read_u32(&self.registers, vtd::FECTL)?;
         write_u32(
@@ -1074,7 +1075,7 @@ impl Vtd {
     }
 
     /// Complete an architected read and write drain once every requester is behind translation or
-    /// its root or leaves are clear, so later requests fault before reaching recyclable memory.
+    /// its root or leaves are clear, so later requests fault instead of reaching recyclable memory.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
         let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER;
