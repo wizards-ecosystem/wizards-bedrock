@@ -1,8 +1,8 @@
 # 004 - Decision log
 
-One file per decision in `decisions/`. Statuses: Accepted, Verified (backed by the verified
-research in `003`), Provisional (built on, with a falsification condition, D-71). Decisions up to
-D-20 were made 2026-07-18.
+Each decision is one file in `decisions/`. A status is Accepted, Verified (backed by research
+verified in `003`) or Provisional (built on, with a falsification condition, D-71). Decisions up
+to D-20 were made on 2026-07-18.
 
 | Decision | Status | Date |
 |---|---|---|
