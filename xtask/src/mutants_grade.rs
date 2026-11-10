@@ -226,8 +226,8 @@ fn run_campaign(paths: &Paths) -> Result<()> {
     let (mut grade, noncaught) = parse_outcomes(&outcomes, &candidates)?;
     grade.adjudicated = verify_adjudications(&adjudications, &noncaught)?;
     require_campaign_success(result.status, &grade, &root)?;
-    // Rebind source and both tools after inventory and doctests use them,
-    // immediately before any pass.
+    // Inventory is another grader invocation and doctests run the pinned Cargo toolchain, so
+    // source and both tools are rebound after their final use, immediately before any pass.
     require_campaign_identity(
         attempt.source(),
         &qualification::source_identity(paths.root())?,

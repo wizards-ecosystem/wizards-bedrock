@@ -1,4 +1,6 @@
 //! Persistent deliberate defects, each of which its exact named witness must turn red.
+//! The task proves each witness class green first, then applies every mutation in a clean,
+//! commit-pinned, journaled workspace.
 //! Another failure is inconclusive, and a host command that selects zero tests proves nothing.
 //! Machine entries stay outside CI because each costs a boot.
 
