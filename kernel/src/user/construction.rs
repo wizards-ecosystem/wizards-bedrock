@@ -1,13 +1,13 @@
 use core::fmt;
 #[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
-use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
+use wost::arch::current::paging::{ActivateError, AddressSpace, Binding, MapError};
 use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};
 #[cfg(feature = "selftest")]
-use wost::sync::SpinLock;
+use wost::sync::{Injection, SpinLock};
 #[cfg(feature = "selftest")]
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -18,7 +18,7 @@ use super::call::cross;
 use super::load::CLEANUP_REFUSAL_INJECTED;
 #[cfg(feature = "selftest")]
 use super::load::MAX_SEGMENTS;
-use super::load::{LoadError, load, place_stack, unmap_for_cleanup};
+use super::load::{LoadError, LoadedImage, load, place_stack, unmap_for_cleanup};
 #[cfg(feature = "selftest")]
 use super::reap::REFUSED_MAPPING_RECLAIMS;
 use super::reap::slot_has_zombie;
@@ -73,6 +73,7 @@ pub(crate) fn maximum_cleanup_ledger_is_total_for_test() -> bool {
 }
 
 /// A process that is not yet observable and therefore must be undone on drop.
+#[derive(Debug)]
 struct ProcessConstruction {
     space: Option<AddressSpace>,
     authority: thread::SpaceAuthority,
@@ -155,6 +156,7 @@ impl Drop for ProcessConstruction {
     }
 }
 
+#[derive(Debug)]
 struct PreparedProcess {
     construction: ProcessConstruction,
     table: alloc::sync::Arc<HandleTable>,
@@ -164,6 +166,7 @@ struct PreparedProcess {
     launch: Launch,
 }
 
+#[derive(Debug)]
 struct CommitOutcome {
     retained: Option<(PreparedProcess, task::Bound)>,
 }
@@ -257,10 +260,8 @@ impl PreparedProcess {
     }
 }
 
-/// Handles a process may hold at once.
-///
-/// A quota, and the answer to kernel-memory exhaustion at the handle layer
-/// (D-78). Small enough to bound kernel memory and large enough for delegation.
+/// Handles a process may hold at once: small enough to bound kernel memory, large enough to
+/// delegate.
 const HANDLE_QUOTA: usize = 64;
 
 /// What process construction committed before the first user instruction.
@@ -350,7 +351,7 @@ impl SpawnEdge {
 }
 
 #[cfg(feature = "selftest")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum SpawnFault {
     Never,
     At(SpawnEdge),
@@ -420,43 +421,29 @@ pub(crate) enum SpawnError {
 impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoInterruptAdmission => core::fmt::Write::write_str(
-                f,
-                "maskable interrupts are not admitted; ring 3 is closed",
-            ),
+            Self::NoInterruptAdmission => {
+                f.write_str("maskable interrupts are not admitted; ring 3 is closed")
+            }
             Self::NoUserIsolation => {
-                core::fmt::Write::write_str(f, "no admitted user isolation mode; ring 3 is closed")
+                f.write_str("no admitted user isolation mode; ring 3 is closed")
             }
-            Self::NoExecuteProtection => {
-                core::fmt::Write::write_str(f, "no execute protection; ring 3 is closed")
+            Self::NoExecuteProtection => f.write_str("no execute protection; ring 3 is closed"),
+            Self::NoExtendedState => f.write_str("no isolated extended state; ring 3 is closed"),
+            Self::NoClock => f.write_str("no calibrated clock; ring 3 is closed"),
+            Self::NoServiceWorker => f.write_str("no service worker; ring 3 is closed"),
+            Self::UnguardedBootStack => {
+                f.write_str("the boot thread has no guarded stack; ring 3 is closed")
             }
-            Self::NoExtendedState => {
-                core::fmt::Write::write_str(f, "no isolated extended state; ring 3 is closed")
-            }
-            Self::NoClock => {
-                core::fmt::Write::write_str(f, "no calibrated clock; ring 3 is closed")
-            }
-            Self::NoServiceWorker => {
-                core::fmt::Write::write_str(f, "no service worker; ring 3 is closed")
-            }
-            Self::UnguardedBootStack => core::fmt::Write::write_str(
-                f,
-                "the boot thread has no guarded stack; ring 3 is closed",
-            ),
-            Self::NoSpace(error) => write!(f, "no address space: {error}"),
-            Self::Load(error) => write!(f, "{error}"),
-            Self::NoStack => core::fmt::Write::write_str(f, "no memory for a stack"),
-            Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
-            Self::NoThread(error) => write!(f, "no thread: {error}"),
-            Self::Incomplete => {
-                core::fmt::Write::write_str(f, "the process construction is incomplete")
-            }
-            Self::TooManyMappings => {
-                core::fmt::Write::write_str(f, "the process has too many owned mappings")
-            }
-            Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
-            Self::NoTimePage(error) => write!(f, "the time page: {error}"),
-            Self::NoRing => core::fmt::Write::write_str(f, "no memory for a ring"),
+            Self::NoSpace(reason) => write!(f, "no address space: {reason}"),
+            Self::Load(reason) => write!(f, "{reason}"),
+            Self::NoStack => f.write_str("no memory for a stack"),
+            Self::NotBindable(reason) => write!(f, "the space cannot be installed: {reason}"),
+            Self::NoThread(reason) => write!(f, "no thread: {reason}"),
+            Self::Incomplete => f.write_str("the process construction is incomplete"),
+            Self::TooManyMappings => f.write_str("the process has too many owned mappings"),
+            Self::NoBootstrap(reason) => write!(f, "no bootstrap channel: {reason}"),
+            Self::NoTimePage(reason) => write!(f, "the time page: {reason}"),
+            Self::NoRing => f.write_str("no memory for a ring"),
             #[cfg(feature = "selftest")]
             Self::Injected(edge) => write!(f, "construction was stopped after {edge:?}"),
         }
@@ -468,7 +455,6 @@ impl core::error::Error for SpawnError {}
 #[cfg(feature = "selftest")]
 fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {
     if fault.refuses(edge) {
-        #[cfg(feature = "selftest")]
         return Err(SpawnError::Injected(edge));
     }
     Ok(())
@@ -476,20 +462,12 @@ fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {
 
 /// Start a program in an address space of its own.
 ///
-/// The order is forced and each step is why the next one is possible: a space
-/// that shares only the kernel's higher half (D-104), the image loaded into
-/// *that* space rather than into the running one, a stack, the binding that
-/// proves the space is installable, and a thread whose tables are set before
-/// anything can schedule it (D-106).
-///
-/// Until the reserved thread is made runnable, [`ProcessConstruction`] owns
-/// every mapped region and the tables that reach it. Any refusal drops that
-/// transaction, retires a partially fabricated task if necessary and returns
-/// every resource before the error escapes (D-191).
-///
-/// # Errors
-///
-/// [`SpawnError`], naming which of those steps refused.
+/// The order is forced, each step making the next possible: a space sharing only the kernel's
+/// higher half, the image loaded into *that* space, a stack, the binding that proves the space
+/// installable, and a thread whose tables are set before anything can schedule it.
+/// Until the reserved thread is runnable, [`ProcessConstruction`] owns every mapped region and
+/// the tables reaching it; any refusal drops it, retiring a partly fabricated task if necessary,
+/// and returns every resource before the error escapes.
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
     #[cfg(feature = "selftest")]
     return spawn_transaction(name, which, argument, SpawnFault::Never);
@@ -503,107 +481,15 @@ fn spawn_transaction(
     argument: u64,
     #[cfg(feature = "selftest")] fault: SpawnFault,
 ) -> Result<Spawned, SpawnError> {
-    if !crate::maskable_interrupts_are_ready() {
-        return Err(SpawnError::NoInterruptAdmission);
-    }
-    if !crate::user_launch_is_safe() {
-        return Err(SpawnError::UnguardedBootStack);
-    }
-    let isolation = crate::user_isolation();
-    if !no_execute_is_enabled() {
-        return Err(SpawnError::NoExecuteProtection);
-    }
-    if !extended_state_is_isolated() {
-        return Err(SpawnError::NoExtendedState);
-    }
-    if !crate::time::is_calibrated() {
-        return Err(SpawnError::NoClock);
-    }
-    if !crate::queue::worker_is_ready() {
-        return Err(SpawnError::NoServiceWorker);
-    }
-    let space = match isolation {
-        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
-        crate::UserIsolation::Shared => AddressSpace::for_user(),
-        crate::UserIsolation::Paired => AddressSpace::for_user_isolated(),
-    }
-    .map_err(SpawnError::NoSpace)?;
-    let mut construction = ProcessConstruction::new(space);
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Space)?;
-
-    let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
-    for (at, len) in image.regions() {
-        construction.remember(at, len)?;
-    }
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Image)?;
-
-    let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
-    construction.remember(stack, USER_STACK_BYTES)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Stack)?;
-
-    // Time before the ring: a process is refused rather than launched with a
-    // hole in its ABI (D-166). Ring pages stay the ring's, not the ledger's (D-113).
-    crate::timepage::install(construction.space()?).map_err(SpawnError::NoTimePage)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::TimePage)?;
-
-    let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Ring)?;
-    alloc::sync::Arc::get_mut(&mut ring)
-        .ok_or(SpawnError::Incomplete)?
-        .install(construction.space()?, RING)
-        .map_err(SpawnError::NoSpace)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::RingMapping)?;
-
-    let root = construction.space()?.root();
-
-    // Create the bootstrap identity before the thread can observe it.
-    let bootstrap = object::bootstrap_identity();
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Channel)?;
-    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
-    #[cfg(feature = "selftest")]
-    let table_identity = table.identity_for_test();
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Table)?;
-    let handle = table
-        .insert(bootstrap, Rights::UNIVERSAL)
-        .map_err(SpawnError::NoBootstrap)?;
-    #[cfg(feature = "selftest")]
-    stop_after(fault, SpawnEdge::Handle)?;
-
-    let binding = construction
-        .space()?
-        .bind()
-        .map_err(SpawnError::NotBindable)?;
-    #[cfg(feature = "selftest")]
-    if let Err(error) = stop_after(fault, SpawnEdge::Binding) {
-        construction.retain_authority(thread::SpaceAuthority::Released(task::release_uninstalled(
-            binding,
-        )));
-        return Err(error);
-    }
-
-    let mut prepared = Some(PreparedProcess {
-        construction,
-        table: alloc::sync::Arc::new(table),
+    let (process, binding) = prepare(
+        which,
+        argument,
         #[cfg(feature = "selftest")]
-        observed_birth_handle: handle,
-        ring,
-        launch: Launch {
-            entry: image.entry(),
-            stack,
-            argument,
-            bootstrap_handle: handle,
-            which,
-            root,
-        },
-    });
+        fault,
+    )?;
+    #[cfg(feature = "selftest")]
+    let table_identity = process.table.identity_for_test();
+    let mut prepared = Some(process);
     let arrange = |slot, bound| {
         if slot >= thread::CAPACITY {
             return Err(bound);
@@ -665,11 +551,147 @@ fn spawn_transaction(
     })
 }
 
+/// Everything a process owns before its thread exists, and the binding that thread will run on.
+fn prepare(
+    which: u64,
+    argument: u64,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<(PreparedProcess, Binding), SpawnError> {
+    let mut construction = ProcessConstruction::new(admitted_space()?);
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Space)?;
+    let (image, stack) = map_program(
+        &mut construction,
+        which,
+        #[cfg(feature = "selftest")]
+        fault,
+    )?;
+    let ring = map_shared(
+        &mut construction,
+        #[cfg(feature = "selftest")]
+        fault,
+    )?;
+    let root = construction.space()?.root();
+
+    // Create the bootstrap identity before the thread can observe it.
+    let bootstrap = object::bootstrap_identity();
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Channel)?;
+    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Table)?;
+    let handle = table
+        .insert(bootstrap, Rights::UNIVERSAL)
+        .map_err(SpawnError::NoBootstrap)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Handle)?;
+
+    let binding = construction
+        .space()?
+        .bind()
+        .map_err(SpawnError::NotBindable)?;
+    #[cfg(feature = "selftest")]
+    if let Err(reason) = stop_after(fault, SpawnEdge::Binding) {
+        construction.retain_authority(thread::SpaceAuthority::Released(task::release_uninstalled(
+            binding,
+        )));
+        return Err(reason);
+    }
+
+    let process = PreparedProcess {
+        construction,
+        table: alloc::sync::Arc::new(table),
+        #[cfg(feature = "selftest")]
+        observed_birth_handle: handle,
+        ring,
+        launch: Launch {
+            entry: image.entry(),
+            stack,
+            argument,
+            bootstrap_handle: handle,
+            which,
+            root,
+        },
+    };
+    Ok((process, binding))
+}
+
+/// Refuse in this order unless every ring 3 precondition holds, then build the admitted space.
+fn admitted_space() -> Result<AddressSpace, SpawnError> {
+    if !crate::maskable_interrupts_are_ready() {
+        return Err(SpawnError::NoInterruptAdmission);
+    }
+    if !crate::user_launch_is_safe() {
+        return Err(SpawnError::UnguardedBootStack);
+    }
+    let isolation = crate::user_isolation();
+    if !no_execute_is_enabled() {
+        return Err(SpawnError::NoExecuteProtection);
+    }
+    if !extended_state_is_isolated() {
+        return Err(SpawnError::NoExtendedState);
+    }
+    if !crate::time::is_calibrated() {
+        return Err(SpawnError::NoClock);
+    }
+    if !crate::queue::worker_is_ready() {
+        return Err(SpawnError::NoServiceWorker);
+    }
+    match isolation {
+        crate::UserIsolation::Closed => return Err(SpawnError::NoUserIsolation),
+        crate::UserIsolation::Shared => AddressSpace::for_user(),
+        crate::UserIsolation::Paired => AddressSpace::for_user_isolated(),
+    }
+    .map_err(SpawnError::NoSpace)
+}
+
+/// Load the image into the new space and map its stack, recording both for cleanup.
+fn map_program(
+    construction: &mut ProcessConstruction,
+    which: u64,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<(LoadedImage, u64), SpawnError> {
+    let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
+    for (at, len) in image.regions() {
+        construction.remember(at, len)?;
+    }
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Image)?;
+
+    let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
+    construction.remember(stack, USER_STACK_BYTES)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Stack)?;
+    Ok((image, stack))
+}
+
+/// Show the time page before the ring, so no process launches with a hole in its ABI, then map
+/// the ring, whose pages stay the ring's and never enter the cleanup ledger.
+fn map_shared(
+    construction: &mut ProcessConstruction,
+    #[cfg(feature = "selftest")] fault: SpawnFault,
+) -> Result<alloc::sync::Arc<queue::Queue>, SpawnError> {
+    crate::timepage::install(construction.space()?).map_err(SpawnError::NoTimePage)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::TimePage)?;
+
+    let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::Ring)?;
+    alloc::sync::Arc::get_mut(&mut ring)
+        .ok_or(SpawnError::Incomplete)?
+        .install(construction.space()?, RING)
+        .map_err(SpawnError::NoSpace)?;
+    #[cfg(feature = "selftest")]
+    stop_after(fault, SpawnEdge::RingMapping)?;
+    Ok(ring)
+}
+
 /// Whether the CPU will enforce every non-executable user mapping.
 fn no_execute_is_enabled() -> bool {
     let enabled = cpu::Protections::enabled().nx;
     #[cfg(feature = "selftest")]
-    let enabled = enabled && !REFUSE_NO_EXECUTE.load(Ordering::Acquire);
+    let enabled = enabled && !REFUSE_NO_EXECUTE.armed();
     enabled
 }
 
@@ -678,15 +700,12 @@ fn extended_state_is_isolated() -> bool {
 }
 
 #[cfg(feature = "selftest")]
-static REFUSE_NO_EXECUTE: AtomicBool = AtomicBool::new(false);
+static REFUSE_NO_EXECUTE: Injection = Injection::new();
 
 /// Run a check as if the protection read-back had omitted NX.
 #[cfg(feature = "selftest")]
 pub(crate) fn without_no_execute_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let refused = REFUSE_NO_EXECUTE.swap(true, Ordering::AcqRel);
-    let result = check();
-    REFUSE_NO_EXECUTE.store(refused, Ordering::Release);
-    result
+    REFUSE_NO_EXECUTE.with(true, check)
 }
 
 /// Run a check as if thread switches could not isolate extended state.

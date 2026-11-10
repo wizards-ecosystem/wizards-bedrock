@@ -324,10 +324,7 @@ fn one_production_owner_binds_and_retires_each_address_space() {
     calls.sort();
     assert_eq!(
         calls,
-        [(
-            "kernel/src/user/construction.rs".into(),
-            "spawn_transaction".into()
-        )],
+        [("kernel/src/user/construction.rs".into(), "prepare".into())],
         "production address-space binding owners changed"
     );
 
