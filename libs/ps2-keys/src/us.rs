@@ -60,6 +60,7 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         Key::Space => ' ',
         Key::Enter | Key::KeypadEnter => '\n',
         Key::Tab => '\t',
+        // The one action typed as a character; another action key needs its own channel.
         Key::Backspace => '\u{8}',
         Key::Keypad0 => '0',
         Key::Keypad1 => '1',

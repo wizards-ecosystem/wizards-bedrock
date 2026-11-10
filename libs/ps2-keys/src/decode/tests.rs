@@ -53,7 +53,8 @@ fn set_1_pause_is_six_bytes() {
     );
 }
 
-/// Swallowing `AA` in set 1 would hold shift down for ever, so the reset path reads the self-test result first.
+/// Swallowing `AA` in set 1 would hold shift down for ever.
+/// The reset path reads the self-test result before scanning, where no decoder sees it.
 #[test]
 fn set_1_reads_aa_as_a_shift_release_not_a_self_test_result() {
     let mut decoder = Decoder::translated();
@@ -126,7 +127,8 @@ fn an_extended_break_decodes() {
     );
 }
 
-/// Transcribed, since a truncated `PAUSE_SEQUENCE` compared with itself passed every test and left phantom releases.
+/// Transcribed, since a truncated `PAUSE_SEQUENCE` compared with itself passed every test
+/// and left phantom releases.
 #[test]
 fn the_pause_sequence_yields_one_press_and_no_break() {
     const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
@@ -286,7 +288,8 @@ fn typematic_repeat_is_a_press_per_make() {
     );
 }
 
-/// Pause prefixes come from the constant, so every `Pause(n)` state, where the indexing is, stays covered.
+/// Recovery may take a retry when the byte itself opened a prefix.
+/// Pause prefixes come from the constant, so every indexed `Pause(n)` state stays covered.
 #[test]
 fn no_byte_in_no_state_panics_or_wedges() {
     let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];

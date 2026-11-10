@@ -1,4 +1,5 @@
-//! Allocation-free panic record framing; a hostile body's line breaks and backslashes are escaped so it cannot forge the framing.
+//! Allocation-free panic record framing for a hostile body.
+//! Its line breaks and backslashes are escaped so it cannot forge the framing.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -52,7 +53,8 @@ impl<W: fmt::Write> fmt::Write for SingleLine<'_, W> {
     }
 }
 
-/// Write one terminal panic record, withholding the completion line unless `writer` accepted every earlier write.
+/// Write one terminal panic record.
+/// The completion line is withheld unless `writer` accepted every earlier write.
 ///
 /// # Examples
 ///

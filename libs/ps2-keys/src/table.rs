@@ -1,8 +1,10 @@
-//! Scan code set 2's base and `E0` tables, per the IBM PS/2 specification; a code with no name here is no error.
+//! Scan code set 2's base and `E0` tables, per the IBM PS/2 specification.
+//! A code with no name here is not an error: a keyboard may have keys this kernel cannot name.
 
 use crate::key::Key;
 
-/// The key a bare set 2 make code names; F7 is `0x83`, so the table spans the byte and breaks need `F0`.
+/// The key a bare set 2 make code names.
+/// F7 is `0x83`, so the table spans the whole byte and breaks need their `F0` prefix.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::F9,
