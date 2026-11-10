@@ -509,6 +509,26 @@ fn campaign_status_is_exactly_pass_or_deferred() {
     }
 }
 
+fn security_deep_children() -> Vec<String> {
+    let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src/security_deep")];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() == "tests" || path.file_name().unwrap() == "tests.rs" {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(std::fs::read_to_string(path).unwrap());
+            }
+        }
+    }
+    assert!(!sources.is_empty(), "security_deep children were not found");
+    sources
+}
+
 #[test]
 fn deep_and_mutants_attempts_are_separate_capability_types() {
     let implementation = PRODUCTION;
@@ -540,10 +560,15 @@ fn deep_and_mutants_attempts_are_separate_capability_types() {
 
     let security = include_str!("../security_deep.rs");
     let security_tests = security.find("#[cfg(test)]").unwrap();
+    let children = security_deep_children()
+        .iter()
+        .map(|source| source.matches("DeepAuthority::new()").count())
+        .sum::<usize>();
     assert_eq!(
         security[..security_tests]
             .matches("DeepAuthority::new()")
-            .count(),
+            .count()
+            + children,
         1
     );
     let token = security

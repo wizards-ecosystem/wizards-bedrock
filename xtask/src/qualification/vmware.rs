@@ -182,27 +182,7 @@ impl VmwareAttempt {
             current_tool.path == self.vmrun.path && current == self.record,
             "source or vmrun changed during VMware transcript qualification"
         );
-        let generated_directory = require_vmware_layout(&self.paths, self.kind, artifacts)?;
-        ensure!(
-            artifacts.transcript
-                == generated_transcript_path(artifacts.receipt, kernel_for(self.kind)?)?,
-            "VMware transcript belongs to another generation"
-        );
-        verify_generation_directory(
-            &self.paths,
-            self.kind,
-            &generated_directory,
-            artifacts.transcript,
-        )?;
-        ensure!(
-            digest_file(artifacts.image)? == digest_file(&self.paths.image())?,
-            "VMware boot image differs from the current generated input"
-        );
-        ensure!(
-            digest_file(artifacts.namespace)?
-                == digest_file(&crate::qemu::nvme_path(self.paths.root()))?,
-            "VMware storage namespace differs from the current generated input"
-        );
+        let generated_directory = self.require_current_generation(artifacts)?;
         let observation = observe_running_vm(self.paths.root(), &self.vmrun, artifacts.vmx)?;
         let qualification_directory = kind_directory(&self.paths, self.kind)?;
         let captured = CapturedVmwareGeneration::read(artifacts, &qualification_directory)?;
@@ -230,10 +210,42 @@ impl VmwareAttempt {
         self.record
             .insert("execution.vmrun.command", "-T ws list")?;
         self.record.insert("execution.vmrun.running", "1")?;
+        self.verify_published_generation(&qualification_directory)?;
+        self.require_unchanged_generation(artifacts, &generated_directory, &captured)?;
+        self.record.insert("result", PASS)?;
+        commit_record(&self.paths, self.kind, &self.record)
+    }
+
+    fn require_current_generation(&self, artifacts: &VmwareArtifacts<'_>) -> Result<PathBuf> {
+        let generated_directory = require_vmware_layout(&self.paths, self.kind, artifacts)?;
+        ensure!(
+            artifacts.transcript
+                == generated_transcript_path(artifacts.receipt, kernel_for(self.kind)?)?,
+            "VMware transcript belongs to another generation"
+        );
         verify_generation_directory(
             &self.paths,
             self.kind,
-            &qualification_directory,
+            &generated_directory,
+            artifacts.transcript,
+        )?;
+        ensure!(
+            digest_file(artifacts.image)? == digest_file(&self.paths.image())?,
+            "VMware boot image differs from the current generated input"
+        );
+        ensure!(
+            digest_file(artifacts.namespace)?
+                == digest_file(&crate::qemu::nvme_path(self.paths.root()))?,
+            "VMware storage namespace differs from the current generated input"
+        );
+        Ok(generated_directory)
+    }
+
+    fn verify_published_generation(&self, qualification_directory: &Path) -> Result<()> {
+        verify_generation_directory(
+            &self.paths,
+            self.kind,
+            qualification_directory,
             &qualification_directory.join(VMWARE_TRANSCRIPT),
         )?;
         ensure!(
@@ -251,7 +263,15 @@ impl VmwareAttempt {
             MAX_VMWARE_TRANSCRIPT_BYTES,
             "copied VMware transcript",
         )?;
-        crate::vmware::verify_transcript(self.paths.root(), kernel_for(self.kind)?, &transcript)?;
+        crate::vmware::verify_transcript(self.paths.root(), kernel_for(self.kind)?, &transcript)
+    }
+
+    fn require_unchanged_generation(
+        &self,
+        artifacts: &VmwareArtifacts<'_>,
+        generated_directory: &Path,
+        captured: &CapturedVmwareGeneration,
+    ) -> Result<()> {
         let (current_tool, current) = current_vmware_record(&self.paths, self.kind)?;
         ensure!(
             current_tool.path == self.vmrun.path,
@@ -267,7 +287,7 @@ impl VmwareAttempt {
         verify_generation_directory(
             &self.paths,
             self.kind,
-            &generated_directory,
+            generated_directory,
             artifacts.transcript,
         )?;
         ensure!(
@@ -279,9 +299,7 @@ impl VmwareAttempt {
                 == digest_file(&crate::qemu::nvme_path(self.paths.root()))?,
             "current namespace changed after the VMware generation was captured"
         );
-        captured.verify_sources()?;
-        self.record.insert("result", PASS)?;
-        commit_record(&self.paths, self.kind, &self.record)
+        captured.verify_sources()
     }
 }
 
@@ -829,22 +847,7 @@ pub(super) fn capture_vmware_file_with<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    let (maximum, exact, label) = match name {
-        VMWARE_IMAGE => (image_bytes, true, "VMware boot image"),
-        VMWARE_NAMESPACE => (namespace_bytes, true, "VMware storage namespace"),
-        VMWARE_HANDOFF => (
-            acpi_tables::DmaHandoff::LEN as u64,
-            true,
-            "VMware DMA handoff authority",
-        ),
-        VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false, "VMware transcript"),
-        VMWARE_GENERATION_RECEIPT
-        | VMWARE_VMDK
-        | VMWARE_NAMESPACE_VMDK
-        | VMWARE_VMX
-        | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false, "VMware text artifact"),
-        _ => bail!("unregistered VMware artifact `{name}`"),
-    };
+    let (maximum, exact, label) = vmware_capture_policy(name, image_bytes, namespace_bytes)?;
     let mut input = crate::mutate::workspace::open_real_file(source, label)?;
     let initial = input
         .metadata()
@@ -862,26 +865,7 @@ where
         );
     }
     after_measurement()?;
-    let mut options = OpenOptions::new();
-    OpenOptions::create_new(&mut options, true);
-    OpenOptions::write(&mut options, true);
-    let mut output = OpenOptions::open(&options, destination)
-        .with_context(|| format!("creating captured {label} {}", destination.display()))?;
-    let copied = std::io::copy(
-        &mut (&mut input).take(
-            maximum
-                .checked_add(1)
-                .context("VMware capture limit overflowed")?,
-        ),
-        &mut output,
-    )
-    .with_context(|| {
-        format!(
-            "streaming {label} {} to {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    let (captured, copied) = stream_capture(&mut input, source, destination, maximum, label)?;
     ensure!(
         copied <= maximum,
         "{label} grew beyond its {maximum}-byte capture limit while being copied"
@@ -890,10 +874,10 @@ where
         !exact || copied == maximum,
         "{label} changed outside its exact {maximum}-byte capture extent"
     );
-    output
+    captured
         .sync_all()
         .with_context(|| format!("syncing captured {label} {}", destination.display()))?;
-    drop(output);
+    drop(captured);
     require_regular_file(destination, "captured VMware artifact")?;
     ensure!(
         input
@@ -909,6 +893,59 @@ where
         "captured {label} changed before its digest was bound"
     );
     Ok(digest)
+}
+
+fn vmware_capture_policy(
+    name: &str,
+    image_bytes: u64,
+    namespace_bytes: u64,
+) -> Result<(u64, bool, &'static str)> {
+    Ok(match name {
+        VMWARE_IMAGE => (image_bytes, true, "VMware boot image"),
+        VMWARE_NAMESPACE => (namespace_bytes, true, "VMware storage namespace"),
+        VMWARE_HANDOFF => (
+            acpi_tables::DmaHandoff::LEN as u64,
+            true,
+            "VMware DMA handoff authority",
+        ),
+        VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false, "VMware transcript"),
+        VMWARE_GENERATION_RECEIPT
+        | VMWARE_VMDK
+        | VMWARE_NAMESPACE_VMDK
+        | VMWARE_VMX
+        | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false, "VMware text artifact"),
+        _ => bail!("unregistered VMware artifact `{name}`"),
+    })
+}
+
+fn stream_capture(
+    input: &mut File,
+    source: &Path,
+    destination: &Path,
+    maximum: u64,
+    label: &str,
+) -> Result<(File, u64)> {
+    let mut options = OpenOptions::new();
+    OpenOptions::create_new(&mut options, true);
+    OpenOptions::write(&mut options, true);
+    let mut captured = OpenOptions::open(&options, destination)
+        .with_context(|| format!("creating captured {label} {}", destination.display()))?;
+    let copied = std::io::copy(
+        &mut input.take(
+            maximum
+                .checked_add(1)
+                .context("VMware capture limit overflowed")?,
+        ),
+        &mut captured,
+    )
+    .with_context(|| {
+        format!(
+            "streaming {label} {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok((captured, copied))
 }
 
 /// The VMware Workstation control executable, if it can be resolved.

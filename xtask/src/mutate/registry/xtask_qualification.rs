@@ -1038,8 +1038,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 652,
         file: "xtask/src/qualification.rs",
-        find: "    let result = crate::bounded_process::output(command, timeout, &label)?;",
-        replace: "    let result = crate::bounded_process::output(command, timeout.saturating_mul(20), &label)?;",
+        find: "    let captured = crate::bounded_process::output(command, timeout, &label)?;",
+        replace: "    let captured = crate::bounded_process::output(command, timeout.saturating_mul(20), &label)?;",
         breaks: "an exceptional qualification probe outlives its named direct-child deadline",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1750,8 +1750,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1379,
         file: "xtask/src/qualification/verify.rs",
-        find: "        ensure!(\n            record.get(\"database.last-updated\")? == attestation.last_updated,\n            \"advisory record names another database update time\"\n        );",
-        replace: "        let _unchecked_attested_update_time = attestation.last_updated;",
+        find: "    ensure!(\n        record.get(\"database.last-updated\")? == attestation.last_updated,\n        \"advisory record names another database update time\"\n    );",
+        replace: "    let _unchecked_attested_update_time = attestation.last_updated;",
         breaks: "an advisory record can name an update time its population transcript does not attest",
         reddens: Caught::HostTest {
             package: "xtask",

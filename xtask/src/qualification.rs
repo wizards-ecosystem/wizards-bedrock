@@ -166,7 +166,6 @@ const MAX_DIGEST_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// One resolved executable and the version it reported.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Tool {
     pub(crate) path: PathBuf,
@@ -448,7 +447,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
 const DEFERRED: &str = "deferred";
 
 /// The grade and Deep run continuously against `main`, so a release bundle
-/// carries either their exact-source record or an explicit deferral (D-425).
+/// carries either their exact-source record or an explicit deferral.
 const DEFERRABLE: [Kind; 2] = [Kind::CargoMutantsGrade, Kind::CodexSecurityDeep];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -466,14 +465,12 @@ impl CampaignState {
     }
 }
 
-/// Whether each continuous campaign passed for a bundle's source or was deferred.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct CampaignStates {
     states: [CampaignState; 2],
 }
 
 impl CampaignStates {
-    /// Observe which continuous campaigns carry a record below `root`.
     pub(crate) fn observe(root: &Path) -> Result<Self> {
         let mut states = [CampaignState::Deferred; 2];
         for (state, kind) in states.iter_mut().zip(DEFERRABLE) {
@@ -494,7 +491,7 @@ impl CampaignStates {
         self.states.map(CampaignState::label)
     }
 
-    /// Parse declared manifest values, which are exactly `pass` or `deferred`.
+    /// Declared manifest values, each exactly `pass` or `deferred`.
     pub(crate) fn from_labels(labels: [&str; 2]) -> Result<Self> {
         let mut states = [CampaignState::Deferred; 2];
         for ((state, label), kind) in states.iter_mut().zip(labels).zip(DEFERRABLE) {
@@ -510,7 +507,6 @@ impl CampaignStates {
         Ok(Self { states })
     }
 
-    /// Whether `kind` is a continuous campaign this bundle deferred.
     pub(crate) fn deferred(&self, kind: Kind) -> bool {
         DEFERRABLE
             .iter()
@@ -588,7 +584,6 @@ impl RetainedMutationPass {
 }
 
 impl Snapshot {
-    /// The campaign states this snapshot observed and digested.
     pub(crate) fn campaigns(&self) -> CampaignStates {
         self.campaigns
     }
@@ -864,10 +859,13 @@ fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
-    let mut output = OpenOptions::open(&options, destination)
+    let mut destination_file = OpenOptions::open(&options, destination)
         .with_context(|| format!("creating {}", destination.display()))?;
-    let copied = std::io::copy(&mut (&mut input).take(expected.bytes + 1), &mut output)
-        .with_context(|| format!("copying {} to {}", source.display(), destination.display()))?;
+    let copied = std::io::copy(
+        &mut (&mut input).take(expected.bytes + 1),
+        &mut destination_file,
+    )
+    .with_context(|| format!("copying {} to {}", source.display(), destination.display()))?;
     ensure!(
         copied == expected.bytes
             && input
@@ -878,10 +876,10 @@ fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()
         "{} changed length while entering qualification evidence",
         source.display()
     );
-    output
+    destination_file
         .sync_all()
         .with_context(|| format!("syncing {}", destination.display()))?;
-    drop(output);
+    drop(destination_file);
     ensure!(
         digest_file(destination)? == *expected,
         "{} changed while entering qualification evidence",
@@ -1193,17 +1191,17 @@ fn output_with_timeout(
     } else {
         format!("{} {}", program.display(), args.join(" "))
     };
-    let result = crate::bounded_process::output(command, timeout, &label)?;
+    let captured = crate::bounded_process::output(command, timeout, &label)?;
     ensure!(
-        policy == ExitPolicy::Any || result.status.success(),
+        policy == ExitPolicy::Any || captured.status.success(),
         "{} {} failed ({})",
         program.display(),
         args.join(" "),
-        result.status
+        captured.status
     );
-    let stdout = String::from_utf8(result.stdout)
+    let stdout = String::from_utf8(captured.stdout)
         .with_context(|| format!("{} output is not UTF-8", program.display()))?;
-    let stderr = String::from_utf8(result.stderr)
+    let stderr = String::from_utf8(captured.stderr)
         .with_context(|| format!("{} diagnostic output is not UTF-8", program.display()))?;
     let mut combined = normalize(&stdout);
     let diagnostic = normalize(&stderr);
