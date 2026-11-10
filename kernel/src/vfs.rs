@@ -11,7 +11,8 @@
 use fat32::FatError;
 use path_walk::PathError;
 
-/// Components a path may have, so the length of a ring 3 argument cannot set the resolver's work.
+/// Components a path may have: deeper than anything the one volume holds, and fixed so the
+/// length of a ring 3 argument cannot set the resolver's work.
 const MAX_DEPTH: usize = 16;
 
 /// A directory, whichever backend it belongs to.
@@ -114,8 +115,8 @@ pub(crate) const fn dev_root() -> Directory {
     Directory::Dev
 }
 
-/// Resolve `path` from `at` inside one mount, node to node, so nothing is looked up twice and no
-/// component changes between being judged a directory and used (`openat2`'s gap).
+/// Resolve `path` from `at` inside one mount. Each step uses the node it judged and never
+/// re-derives one from a name, so nothing is looked up twice (`openat2`'s gap).
 /// Absolute and escaping paths are malformed `Path` arguments, since no root or parent exists.
 pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, VfsError> {
     let mut components = [b"".as_slice(); MAX_DEPTH];
@@ -191,8 +192,9 @@ fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, VfsError> {
     })
 }
 
-/// Read `into.len()` bytes of `file` from `offset`; offsets are per operation (`012` §6), since a
-/// shared cursor would be a hot-path lock and a covert channel between two handles to one file.
+/// Read `into.len()` bytes of `file` from `offset`; offsets are per operation (`012` §6).
+/// No object has a seek, tell or cursor: a shared cursor would be a hot-path lock and the only
+/// coupling two handles to one file could have, and userspace builds one from these offsets.
 pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, VfsError> {
     match file {
         File::Fat { cluster, size } => crate::fs::mount()

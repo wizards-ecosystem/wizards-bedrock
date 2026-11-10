@@ -247,7 +247,7 @@ pub(crate) fn list(directory: usize) -> Option<Listing> {
 }
 
 /// Copy bytes of a file into `into` from `offset`: how many were copied, fewer at the end of the
-/// file and zero past it, with per-operation offsets as in every backend.
+/// file and zero past it; offsets are per operation and nothing here holds a cursor.
 pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usize {
     if offset >= len {
         return 0;
