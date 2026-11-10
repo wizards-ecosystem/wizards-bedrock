@@ -142,8 +142,8 @@ pub fn init() {
 
     reload_selectors();
 
-    // SAFETY: `ltr` loads entry `TASK_STATE`, just written as an available 64-bit segment, and
-    // marks it busy; `INIT` runs this once, and only loading a busy segment faults.
+    // SAFETY: `ltr` loads `TASK_STATE`, just written as a present, available 64-bit task-state
+    // segment, and marks it busy; `INIT` runs this once, so it cannot already be busy.
     unsafe {
         asm!(
             "ltr {selector:x}",

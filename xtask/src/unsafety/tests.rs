@@ -21,7 +21,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/cpu.rs",
         19,
         3,
-        "27bf4f0b248bff8e656a29be5212af65701c2cababaa232248dda5a7430cf33c",
+        "06a79c948761eebed24e9fa2d6cd493a6edcc92faef96c108c3cffaf3250e557",
     ),
     (
         "wost/src/arch/x86_64/interrupt/selftest.rs",
@@ -33,7 +33,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/interrupt.rs",
         18,
         2,
-        "08a9ed8e585ce741be685dd5105d4f850ccb64ad8cd774ca0cec330fa80e173a",
+        "e656955d81c65b526ccf73dbe2f0a01361e0104d34201a8a8c79411a1d8e00c6",
     ),
     (
         "wost/src/arch/x86_64/kpti/selftest.rs",
@@ -111,7 +111,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/segment.rs",
         11,
         0,
-        "be3f210bab1821404aea54d700adb26ca7135f73e24da2cdacab2a32098355b8",
+        "7d91f7aba0dcec7fec0fcc073019488048f538dabad4fc9d68d261303e9c1e8a",
     ),
     (
         "wost/src/arch/x86_64/shared_memory.rs",
@@ -123,13 +123,13 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/task.rs",
         14,
         2,
-        "a0fb58e15e2303aadae86602bda429d6b479d16c19bd621b6bcf5742e7cbe356",
+        "82675d87bbd8a07768526277b368444560f31164fa4b8049184eb1be5489752e",
     ),
     (
         "wost/src/arch/x86_64/usercopy.rs",
         5,
         1,
-        "0da087f637bbf6c348a3622d8310e989c9d3da27738ba47d3b481a45b0e55d0e",
+        "8ee4552dc01709fa0c3a44036adbf164a0692ef14563731230d99f46ddeecd57",
     ),
     (
         "wost/src/arch/x86_64/xstate/selftest.rs",
