@@ -188,7 +188,7 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
     assert_eq!(admitted.mapped_admissions, 1);
     assert_eq!(admitted.exact_mapped_admissions, 1);
 
-    let kernel_pci = parse("kernel/src/pci.rs");
+    let kernel_pci = parse_module("kernel/src/pci.rs");
     assert!(method(&kernel_pci, "Device", "enable_bus_master").is_none());
     let device_admission = method(&kernel_pci, "Device", "admit_bus_master")
         .expect("device bus-master admission boundary");

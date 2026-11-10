@@ -37,6 +37,16 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::thread::ThreadContext;
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+use selftest::{FORCED_BUS_MASTER_REFUSALS, OBSERVED_BUS_MASTER_REFUSAL, REFUSE_CLEAN_PREPARATION};
+#[cfg(feature = "selftest")]
+pub(crate) use selftest::{
+    bus_master_refusal_was_observed, claims, is_claimed, refuse_clean_preparation_for_test,
+    repeated_secondaries_do_not_hide_a_later_bus_for_test,
+};
+
 /// Base address registers a type 0 header has.
 pub(crate) const BARS: usize = pci_config::BARS;
 
@@ -170,21 +180,6 @@ impl Worklist {
         self.next += 1;
         Some(bus)
     }
-}
-
-/// Whether a bus named by many bridges still leaves room for a later one.
-#[cfg(feature = "selftest")]
-pub(crate) fn repeated_secondaries_do_not_hide_a_later_bus_for_test() -> bool {
-    let mut worklist = Worklist::new();
-    worklist.push(0);
-    for _ in 0..255 {
-        worklist.push(1);
-    }
-    worklist.push(5)
-        && worklist.pop() == Some(0)
-        && worklist.pop() == Some(1)
-        && worklist.pop() == Some(5)
-        && worklist.pop().is_none()
 }
 
 /// What one walk of the bus covered.
@@ -391,17 +386,6 @@ static RETAINED_RELEASES: SpinLock<[Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
 /// Bare function claims whose final sublease-free release remained refused.
 static RETAINED_FUNCTIONS: SpinLock<[Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
-
-/// Make the first real DMA admission exercise the post-disable rollback path.
-#[cfg(feature = "selftest")]
-static FORCED_BUS_MASTER_REFUSALS: AtomicUsize = AtomicUsize::new(1);
-
-/// Exercise cleanup after the function and its BAR shape have been claimed.
-#[cfg(feature = "selftest")]
-static REFUSE_CLEAN_PREPARATION: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "selftest")]
-static OBSERVED_BUS_MASTER_REFUSAL: AtomicBool = AtomicBool::new(false);
 
 /// Why a device could not be claimed.
 #[derive(Debug)]
@@ -1052,21 +1036,6 @@ impl Device {
     }
 }
 
-/// Whether the deterministic post-disable DMA-admission refusal was consumed.
-#[cfg(feature = "selftest")]
-pub(crate) fn bus_master_refusal_was_observed() -> bool {
-    OBSERVED_BUS_MASTER_REFUSAL.load(Ordering::Acquire)
-}
-
-/// Refuse the next clean preparation after its BAR probe has settled.
-#[cfg(feature = "selftest")]
-pub(crate) fn refuse_clean_preparation_for_test() {
-    assert!(
-        !REFUSE_CLEAN_PREPARATION.swap(true, Ordering::Relaxed),
-        "a clean PCI preparation refusal was already armed"
-    );
-}
-
 /// Keep a command-mismatched device claimed after storage selection stops.
 pub(crate) fn retain_failed_commit(device: Device) {
     let mut retained = RETAINED_COMMAND.lock_leaf();
@@ -1227,16 +1196,4 @@ fn restore_staged_function(
             authority: ProbeRecoveryAuthority::Command(failure.into_state()),
         }),
     }
-}
-
-/// Whether the function at `at` is claimed.
-#[cfg(feature = "selftest")]
-pub(crate) fn is_claimed(at: Address) -> bool {
-    pci::is_claimed(at)
-}
-
-/// How many functions are claimed.
-#[cfg(feature = "selftest")]
-pub(crate) fn claims() -> usize {
-    pci::claims()
 }
