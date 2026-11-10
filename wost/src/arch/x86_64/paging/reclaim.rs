@@ -48,18 +48,13 @@ impl AddressSpace {
         Ok((address, link))
     }
 
-    /// Give this space's own table frames back to the allocator.
+    /// Give this space's own table frames back to the allocator; mappings must be removed first.
     ///
-    /// Mappings must be removed first; reclaim owns only table frames. It
-    /// refuses an active or bound space so no current or future `CR3` can walk
-    /// freed tables.
-    ///
-    /// A refusal leaves the space and one-shot release evidence reusable. A
-    /// success empties the space and makes every later operation refuse
-    /// (D-123).
+    /// Refuses an active or bound space, so no current or future `CR3` walks freed tables. A
+    /// refusal leaves the space and its one-shot release evidence reusable; a success makes every
+    /// later operation refuse.
     pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimFailure> {
-        // A bound space needs the task table's linear `Released` evidence, and
-        // a repeat could mint an owner for frame zero (D-123, D-139).
+        // A repeat could mint an owner for frame zero.
         if self.is_reclaimed() {
             assert!(
                 self.pair_authority.is_none(),
@@ -74,6 +69,40 @@ impl AddressSpace {
         }
         let roots = self.roots();
         let root = roots.full_root();
+        self.assert_pair_authority(roots);
+        if let Some(reason) = self.reclaim_refusal(roots, released.as_ref()) {
+            return Err(ReclaimFailure { reason, released });
+        }
+
+        let returned = self.tables.len() + roots.frames();
+        for table in self.tables.drain(..) {
+            // SAFETY: `take_owned_table` allocated and forgot each for this space, so this rebuilds
+            // its one handle as the space empties for good; the refusals prove nothing walks it.
+            drop(unsafe { mm::Frame::from_raw(table.frame) });
+        }
+        if let Some(stripped) = roots.stripped_root() {
+            // SAFETY: paired construction allocated and forgot this distinct
+            // root exactly once, and the active-root refusal covers it too.
+            drop(unsafe { mm::Frame::from_raw(stripped) });
+        }
+        // SAFETY: construction allocated and forgot the full root exactly once, before anything
+        // could record it, and the active-root refusal covers it too.
+        drop(unsafe { mm::Frame::from_raw(root) });
+        if let Some(authority) = self.pair_authority.take() {
+            assert_eq!(
+                authority.settle(returned),
+                Ok(PairCleanupState::Released),
+                "paired cleanup returned an incomplete frame set"
+            );
+        }
+        // Kept as an empty value so later safe operations refuse.
+        self.roots = None;
+        self.shared.clear();
+
+        Ok(returned)
+    }
+
+    fn assert_pair_authority(&self, roots: AddressSpaceRoots) {
         if roots.is_paired() {
             let authority = self
                 .pair_authority
@@ -94,84 +123,49 @@ impl AddressSpace {
                 "a shared-root space retained paired frame authority"
             );
         }
+    }
+
+    fn reclaim_refusal(
+        &self,
+        roots: AddressSpaceRoots,
+        released: Option<&Released>,
+    ) -> Option<ReclaimError> {
+        let root = roots.full_root();
         if self.owned_pages != 0 {
-            return Err(ReclaimFailure {
-                reason: ReclaimError::Mapped(self.owned_pages),
-                released,
-            });
+            return Some(ReclaimError::Mapped(self.owned_pages));
         }
         if let Some(reason) = self.device_reclaim_error() {
-            return Err(ReclaimFailure { reason, released });
+            return Some(reason);
         }
         if !self.bound
-            && let Some(evidence) = released.as_ref()
+            && let Some(evidence) = released
         {
-            return Err(ReclaimFailure {
-                reason: ReclaimError::UnexpectedRelease(evidence.roots().full_root()),
-                released,
-            });
+            return Some(ReclaimError::UnexpectedRelease(
+                evidence.roots().full_root(),
+            ));
         }
+        // A bound space needs the task table's linear `Released` evidence.
         if self.bound {
-            match released.as_ref() {
-                None => {
-                    return Err(ReclaimFailure {
-                        reason: ReclaimError::StillBound(root),
-                        released,
-                    });
-                }
+            match released {
+                None => return Some(ReclaimError::StillBound(root)),
                 Some(evidence) if evidence.roots() != roots => {
-                    return Err(ReclaimFailure {
-                        reason: ReclaimError::WrongRelease {
-                            expected: root,
-                            found: evidence.roots().full_root(),
-                        },
-                        released,
+                    return Some(ReclaimError::WrongRelease {
+                        expected: root,
+                        found: evidence.roots().full_root(),
                     });
                 }
                 Some(_) => {}
             }
         }
         if Self::roots_are_active(roots, cpu::page_table_base()) {
-            return Err(ReclaimFailure {
-                reason: ReclaimError::Active(cpu::page_table_base()),
-                released,
-            });
+            return Some(ReclaimError::Active(cpu::page_table_base()));
         }
-
-        let returned = self.tables.len() + roots.frames();
-        for table in self.tables.drain(..) {
-            // SAFETY: each was allocated by `take_table` for this space and
-            // forgotten there, so exactly one handle is being rebuilt for it;
-            // the space is terminally emptied here. The refusal above
-            // establishes that nothing is walking it.
-            drop(unsafe { mm::Frame::from_raw(table.frame) });
-        }
-        if let Some(stripped) = roots.stripped_root() {
-            // SAFETY: paired construction allocated and forgot this distinct
-            // root exactly once, and the active-root refusal covers it too.
-            drop(unsafe { mm::Frame::from_raw(stripped) });
-        }
-        // The full root, which construction took before there was anywhere to
-        // record it. SAFETY: as above.
-        drop(unsafe { mm::Frame::from_raw(root) });
-        if let Some(authority) = self.pair_authority.take() {
-            assert_eq!(
-                authority.settle(returned),
-                Ok(PairCleanupState::Released),
-                "paired cleanup returned an incomplete frame set"
-            );
-        }
-        // Kept as an empty value so later safe operations refuse.
-        self.roots = None;
-        self.shared.clear();
-
-        Ok(returned)
+        None
     }
 
-    /// Whether this space's tables have gone back to the allocator.
+    /// Whether this space's tables went back to the allocator, after which it answers nothing.
     ///
-    /// A reclaimed space answers nothing and maps nothing. It is kept as a
-    /// value rather than consumed so a refused reclaim can give it back.
+    /// It maps nothing either, and stays a value so a refused reclaim can give it back.
     pub const fn is_reclaimed(&self) -> bool {
         self.roots.is_none()
     }

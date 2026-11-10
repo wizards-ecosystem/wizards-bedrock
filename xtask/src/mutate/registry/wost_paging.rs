@@ -72,9 +72,9 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 180,
         file: "wost/src/arch/x86_64/paging/reclaim.rs",
         find: "        if self.bound {
-            match released.as_ref() {",
+            match released {",
         replace: "        if false && self.bound {
-            match released.as_ref() {",
+            match released {",
         breaks: "a bound space is not reclaimed under its own thread",
         reddens: Caught::Check("a bound space is not reclaimed"),
     },

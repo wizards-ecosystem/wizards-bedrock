@@ -5,12 +5,62 @@ impl AddressSpace {
         &mut self,
         enclave: super::kpti::EntryEnclave,
     ) -> Result<(), MapError> {
-        let mappings = enclave.mappings();
-        let pages = mappings.iter().try_fold(0usize, |total, mapping| {
-            let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
-                .map_err(|_| MapError::OutOfMemory)?;
-            total.checked_add(pages).ok_or(MapError::OutOfMemory)
-        })?;
+        let pages = enclave_pages(enclave)?;
+        let expected_stripped = self.expected_enclave(enclave, pages)?;
+        if let Some(address) = mapped_guard(self.root(), enclave)? {
+            return Err(MapError::InvalidEntryEnclave(address));
+        }
+
+        let mark = self.tables.len();
+        let mut written = 0usize;
+        for page in &expected_stripped {
+            let flags = enclave_flags(page.permission());
+            if let Err(reason) = self.set_in(
+                TableRoot::Stripped,
+                page.virtual_address(),
+                page.physical_address(),
+                flags,
+                Level::Pt,
+            ) {
+                self.rollback_stripped_enclave(&expected_stripped, written, mark);
+                return Err(reason);
+            }
+            written += 1;
+        }
+
+        let stripped = self
+            .roots()
+            .stripped_root()
+            .ok_or(MapError::InvalidEntryEnclave(self.root()))?;
+        if let Some(address) = mapped_guard(stripped, enclave)? {
+            self.rollback_stripped_enclave(&expected_stripped, written, mark);
+            return Err(MapError::InvalidEntryEnclave(address));
+        }
+        let observed = match observe_stripped_higher_half(stripped, pages) {
+            Ok(observed) => observed,
+            Err(reason) => {
+                self.rollback_stripped_enclave(&expected_stripped, written, mark);
+                return Err(reason);
+            }
+        };
+        if !enclave_matches(&expected_stripped, &observed) {
+            self.rollback_stripped_enclave(&expected_stripped, written, mark);
+            return Err(MapError::InvalidEntryEnclave(
+                expected_stripped
+                    .first()
+                    .map_or(stripped, |page| page.virtual_address()),
+            ));
+        }
+        paired_flush_premise(self.roots())?;
+        Ok(())
+    }
+
+    /// The stripped root's enclave pages, once the full root maps exactly the enclave.
+    fn expected_enclave(
+        &self,
+        enclave: super::kpti::EntryEnclave,
+        pages: usize,
+    ) -> Result<Vec<EnclavePage>, MapError> {
         let mut expected_full = Vec::new();
         let mut expected_stripped = Vec::new();
         let mut observed_full = Vec::new();
@@ -24,7 +74,7 @@ impl AddressSpace {
             .try_reserve_exact(pages)
             .map_err(|_| MapError::OutOfMemory)?;
 
-        for mapping in mappings {
+        for mapping in enclave.mappings() {
             let section = mapping.section();
             let mut address = section.start;
             while address < section.end {
@@ -54,68 +104,7 @@ impl AddressSpace {
                     .map_or(self.root(), |page| page.virtual_address()),
             ));
         }
-        for guard in enclave.guards() {
-            let mut address = guard.start;
-            while address < guard.end {
-                if translate_in(self.root(), address).is_some() {
-                    return Err(MapError::InvalidEntryEnclave(address));
-                }
-                address = address
-                    .checked_add(PAGE_SIZE)
-                    .ok_or(MapError::InvalidEntryEnclave(address))?;
-            }
-        }
-
-        let mark = self.tables.len();
-        let mut written = 0usize;
-        for page in &expected_stripped {
-            let flags = enclave_flags(page.permission());
-            if let Err(reason) = self.set_in(
-                TableRoot::Stripped,
-                page.virtual_address(),
-                page.physical_address(),
-                flags,
-                Level::Pt,
-            ) {
-                self.rollback_stripped_enclave(&expected_stripped, written, mark);
-                return Err(reason);
-            }
-            written += 1;
-        }
-
-        let stripped = self
-            .roots()
-            .stripped_root()
-            .ok_or(MapError::InvalidEntryEnclave(self.root()))?;
-        for guard in enclave.guards() {
-            let mut address = guard.start;
-            while address < guard.end {
-                if translate_in(stripped, address).is_some() {
-                    self.rollback_stripped_enclave(&expected_stripped, written, mark);
-                    return Err(MapError::InvalidEntryEnclave(address));
-                }
-                address = address
-                    .checked_add(PAGE_SIZE)
-                    .ok_or(MapError::InvalidEntryEnclave(address))?;
-            }
-        }
-        let observed = match observe_stripped_higher_half(stripped, pages) {
-            Ok(observed) => observed,
-            Err(reason) => {
-                self.rollback_stripped_enclave(&expected_stripped, written, mark);
-                return Err(reason);
-            }
-        };
-        if !enclave_matches(&expected_stripped, &observed) {
-            self.rollback_stripped_enclave(&expected_stripped, written, mark);
-            return Err(MapError::InvalidEntryEnclave(
-                expected_stripped
-                    .first()
-                    .map_or(stripped, |page| page.virtual_address()),
-            ));
-        }
-        paired_flush_premise(self.roots())?;
-        Ok(())
+        Ok(expected_stripped)
     }
 
     fn rollback_stripped_enclave(
@@ -158,6 +147,32 @@ impl AddressSpace {
         EntrySlot::write(&slot, link);
         Ok(())
     }
+}
+
+fn enclave_pages(enclave: super::kpti::EntryEnclave) -> Result<usize, MapError> {
+    enclave
+        .mappings()
+        .iter()
+        .try_fold(0usize, |total, mapping| {
+            let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
+                .map_err(|_| MapError::OutOfMemory)?;
+            total.checked_add(pages).ok_or(MapError::OutOfMemory)
+        })
+}
+
+fn mapped_guard(root: Paddr, enclave: super::kpti::EntryEnclave) -> Result<Option<u64>, MapError> {
+    for guard in enclave.guards() {
+        let mut address = guard.start;
+        while address < guard.end {
+            if translate_in(root, address).is_some() {
+                return Ok(Some(address));
+            }
+            address = address
+                .checked_add(PAGE_SIZE)
+                .ok_or(MapError::InvalidEntryEnclave(address))?;
+        }
+    }
+    Ok(None)
 }
 
 pub(super) const fn enclave_permission(access: super::kpti::Access) -> EnclavePermission {

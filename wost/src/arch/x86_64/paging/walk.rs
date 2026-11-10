@@ -13,9 +13,8 @@ impl EntrySlot {
     }
 
     pub(super) fn write(&self, entry: Entry) {
-        // SAFETY: the private callers supply a live table frame; construction
-        // proves this aligned pointer names one complete entry inside it.
-        // Callers own the protocol that excludes conflicting writers.
+        // SAFETY: private callers supply a live table frame and own the protocol excluding other
+        // writers; construction proves this aligned pointer names one complete entry inside it.
         unsafe { self.pointer.as_ptr().write_volatile(entry) };
     }
 }
@@ -151,9 +150,6 @@ fn image_sections() -> Option<[(crate::boot::Section, bool, bool); 9]> {
     ])
 }
 
-/// The first direct-map address `root` gets wrong, if any: every frame access
-/// after the switch is raw arithmetic against this mapping, so a gap must be
-/// refused while the refusal can still be a `Result`.
 #[derive(Clone, Copy)]
 struct ImagePhysicalExtent {
     start: Paddr,
@@ -190,6 +186,8 @@ fn image_physical_extents(current_root: Paddr) -> Option<[ImagePhysicalExtent; 9
     Some(extents)
 }
 
+/// The first direct-map address `root` gets wrong, refused while the switch can still fail,
+/// because every frame access after it is raw arithmetic against this mapping.
 pub(super) fn direct_map_gap(root: Paddr, current_root: Paddr) -> Option<u64> {
     let Some(direct) = mm::direct_map() else {
         return Some(0);
@@ -259,10 +257,7 @@ pub(super) fn direct_map_gap(root: Paddr, current_root: Paddr) -> Option<u64> {
     None
 }
 
-/// What the table the CPU is walking maps `virtual_address` to.
-///
-/// Reads `CR3` rather than any remembered root, so it reports what the machine
-/// is actually using — which is the whole point of a read-back check.
+/// What the table in `CR3`, never a remembered root, maps `virtual_address` to.
 pub fn translate(virtual_address: u64) -> Option<(Paddr, Flags)> {
     translate_in(cpu::page_table_base(), virtual_address)
 }
@@ -271,15 +266,13 @@ pub(super) fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, 
     walk(root, virtual_address).map(|(physical, flags, _)| (physical, flags))
 }
 
-/// As [`translate_in`], but also naming the leaf's span, so a sweep can step
-/// by whole entries.
+/// As [`translate_in`], also naming the leaf's span so a sweep can step by whole entries.
 pub(super) fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
     if !x86_paging::is_canonical(virtual_address) {
         return None;
     }
 
-    // The host-tested fold stays in `x86-paging`; safe construction cannot
-    // build a hierarchy whose parent is narrower than its child (D-105).
+    // The fold is host-tested in `x86-paging`; no safe parent is narrower than its child.
     let mut walked = Flags::EVERYTHING_ALLOWED;
 
     let mut table = root;
@@ -290,8 +283,7 @@ pub(super) fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u
             return None;
         }
 
-        // The huge bit means something else entirely in a leaf table, so the
-        // level is checked first.
+        // The huge bit means something else in a leaf table, so the level is checked first.
         walked = walked.through(entry.flags());
 
         if level == Level::Pt || entry.is_huge() {

@@ -217,9 +217,8 @@ impl AddressSpace {
             return None;
         }
 
-        // SAFETY: the complete higher half was just compared with the current
-        // root; activation freezes new higher-half top-level entries, and
-        // `self` owns its live, aligned lower-half root for the call.
+        // SAFETY: the whole higher half was just compared with the current root, and activation
+        // froze new top-level entries there; `self` owns its live, aligned lower-half root here.
         unsafe { cpu::set_page_table_base(self.root()) };
         let result = operation();
         // SAFETY: `current` was the live root immediately before the temporary
@@ -377,10 +376,7 @@ impl AddressSpace {
     }
 }
 
-/// Doors refused because the space had been reclaimed.
-///
-/// Counted inside each guard because a recycled table can coincidentally
-/// produce the same absent answer as a refusal (D-139).
+/// Doors refused for a reclaimed space, counted in each guard: a recycled table can answer alike.
 #[cfg(feature = "selftest")]
 pub(super) static RECLAIMED_REFUSALS: AtomicUsize = AtomicUsize::new(0);
 
@@ -836,10 +832,8 @@ impl MappedStack {
 }
 
 impl Unmapped {
-    /// Hand back kernel-only frames.
-    ///
-    /// Returns `None` when ring 3 could reach the range; those frames must pass
-    /// through [`USegment::reclaim`](crate::mm::USegment::reclaim) to be cleared.
+    /// Hand back kernel-only frames, or `None` for ones ring 3 could reach, which must be cleared
+    /// through [`USegment::reclaim`](crate::mm::USegment::reclaim).
     #[cfg(feature = "selftest")]
     pub fn into_kernel(mut self) -> Option<Segment> {
         if self.was_user {
@@ -848,10 +842,8 @@ impl Unmapped {
         self.frames.take()
     }
 
-    /// Hand back what ring 3 could reach as untyped user frames.
-    ///
-    /// The only conversion to kernel-owned frames is [`USegment::reclaim`],
-    /// which clears the program's bytes.
+    /// Hand back what ring 3 could reach as user frames; only [`USegment::reclaim`] makes them
+    /// kernel frames, clearing the program's bytes.
     #[cfg(feature = "selftest")]
     pub fn into_user(mut self) -> Option<USegment> {
         self.was_user
@@ -867,10 +859,7 @@ impl Unmapped {
     }
 }
 
-/// User frames cleared on the way back to the allocator.
-///
-/// A tally makes drop observable without assuming which freed frame the
-/// allocator returns next (D-123).
+/// User frames cleared on the way back, counted without assuming the allocator's next frame.
 #[cfg(feature = "selftest")]
 pub(super) static CLEARED_ON_DROP: AtomicUsize = AtomicUsize::new(0);
 

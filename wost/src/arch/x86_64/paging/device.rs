@@ -60,15 +60,9 @@ impl AdmittedDeviceRange {
     }
 }
 
-/// Admit every physical byte a device mapping would reach.
+/// Admit every physical byte a device mapping would reach, refusing any page of RAM or firmware.
 ///
-/// The boot memory map is initialized once, so this proof cannot be invalidated
-/// before a mapping consumes it.
-///
-/// # Errors
-///
-/// Refuses an absent or invalid CPU width, invalid range arithmetic, or any
-/// page overlapping RAM or firmware storage.
+/// The boot memory map is initialized once, so this proof stays valid until a mapping consumes it.
 pub fn admit_device_range(physical: Paddr, len: u64) -> Result<AdmittedDeviceRange, MapError> {
     let width = cpu::physical_address_width().ok_or(MapError::PhysicalWidthUnavailable)?;
     let physical_bits = width.bits();
@@ -94,15 +88,7 @@ pub fn admit_device_range(physical: Paddr, len: u64) -> Result<AdmittedDeviceRan
 }
 
 impl AddressSpace {
-    /// Map an admitted device range, and hand back the claim on it.
-    ///
-    /// Uncacheable and never executable, at an address in the device window
-    /// rather than the physical one.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if the device
-    /// window is exhausted.
+    /// Map an admitted device range uncacheable and never executable in the device window.
     pub fn map_device(&mut self, admitted: AdmittedDeviceRange) -> Result<DeviceMapping, MapError> {
         self.map_device_range(&admitted)
     }
@@ -112,20 +98,14 @@ impl AddressSpace {
         admitted: &AdmittedDeviceRange,
     ) -> Result<DeviceMapping, MapError> {
         let physical = admitted.physical();
-        let len_usize = admitted.len;
-        let page_start = admitted.page_start();
-        let page_end = admitted.page_end();
+        let base = admitted.page_start();
         self.may_reach(DEVICE_WINDOW_START, DEVICE_WINDOW_END - DEVICE_WINDOW_START)?;
-        let Some(physical_extent) = AddressRange::new(page_start, page_end - page_start) else {
+        let pages = admitted.page_end() - base;
+        let Some(physical_extent) = AddressRange::new(base, pages) else {
             panic!("an admitted device range always describes complete pages");
         };
-        let base = page_start;
         let offset = physical - base;
-        let pages = page_end - page_start;
-        if self.devices.iter().flatten().any(|extent| {
-            physical_extent.base() < extent.physical.end()
-                && extent.physical.base() < physical_extent.end()
-        }) {
+        if self.owns_device_bytes(physical_extent) {
             return Err(MapError::DeviceOverlap(physical));
         }
         let device_slot = match self.devices.iter().position(Option::is_none) {
@@ -180,7 +160,7 @@ impl AddressSpace {
         Ok(DeviceMapping {
             address: virtual_base + offset,
             physical,
-            len: len_usize,
+            len: admitted.len,
             roots: self.roots(),
             virtual_base,
             pages,
@@ -189,12 +169,13 @@ impl AddressSpace {
         })
     }
 
-    /// Map one exact function-bound PCI BAR.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged BAR authority with the same reasons as
-    /// [`map_device`](Self::map_device).
+    fn owns_device_bytes(&self, physical: AddressRange) -> bool {
+        self.devices.iter().flatten().any(|extent| {
+            physical.base() < extent.physical.end() && extent.physical.base() < physical.end()
+        })
+    }
+
+    /// Map one exact function-bound PCI BAR, returning its authority unchanged on refusal.
     pub fn map_pci_bar(
         &mut self,
         admitted: pci::AdmittedBar,
@@ -209,18 +190,9 @@ impl AddressSpace {
         }
     }
 
-    /// Remove the exact mapping behind a transient device region.
+    /// Remove the exact mapping behind a transient device region, dropping its access first.
     ///
-    /// The region is consumed and its access capability dropped before any
-    /// leaf is cleared. The whole range is preflighted first, so a refusal
-    /// changes neither page tables nor ownership records (D-199).
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::NotYours`] if another space minted it,
-    /// [`MapError::NotMapped`] if its ownership record or a leaf is gone, and
-    /// [`MapError::Discontiguous`] if a leaf no longer names the exact device
-    /// extent.
+    /// The whole range is preflighted, so a refusal changes neither page tables nor ownership.
     pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), DeviceUnmapFailure> {
         if let Err(reason) = self.verify_device_unmap(&region) {
             return Err(DeviceUnmapFailure { reason, region });
@@ -243,10 +215,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Remove one PCI BAR mapping while retaining its exact BAR authority.
-    ///
-    /// A refusal returns the unchanged BAR on any device-unmap preflight
-    /// failure.
+    /// Remove one PCI BAR mapping, returning its exact BAR authority either way.
     pub fn unmap_pci_bar(&mut self, bar: pci::ReleasableBar) -> BarUnmapOutcome {
         let pci::ReleasableBar { authority, region } = bar;
         match self.unmap_device(region) {
@@ -296,10 +265,7 @@ impl AddressSpace {
     }
 }
 
-/// First address of the window device registers are mapped into.
-///
-/// Well clear of the direct map below it and the kernel image above it, so a
-/// device address is never mistaken for either.
+/// First address of the device window, clear of the direct map below and the kernel image above.
 pub(super) const DEVICE_WINDOW_START: u64 = 0xffff_ff00_0000_0000;
 
 /// One page past the last address device registers may occupy.
@@ -314,11 +280,9 @@ pub(super) struct DeviceExtent {
     virtual_range: AddressRange,
 }
 
-/// A claim on a device's registers, made while the tables were being built.
+/// A linear claim on a device's registers, made while the tables were being built.
 ///
-/// Linear ownership prevents duplicate claims. The root distinguishes equal
-/// window addresses minted by different spaces before
-/// [`claim_releasable`](Self::claim_releasable).
+/// The root tells apart equal window addresses that different spaces minted.
 #[derive(Debug)]
 pub struct DeviceMapping {
     address: u64,
@@ -337,20 +301,13 @@ impl DeviceMapping {
         self.address
     }
 
-    /// Take a region which can later return this exact device mapping.
-    ///
-    /// The mapping is not promised permanent: the unique region retains this
-    /// token, and
-    /// [`AddressSpace::unmap_device`] consumes both before clearing it.
+    /// Take a region holding this token; [`AddressSpace::unmap_device`] consumes both to clear it.
     pub fn claim_releasable(self) -> Result<ReleasableDevice, Self> {
         if !self.is_live() {
             return Err(self);
         }
-        // SAFETY: `is_live` verified the complete mapping in the active root.
-        // Activation reserved its top-level device table before any user root
-        // and freezes later top-level additions, so every runnable root shares
-        // it. `self` moves beside the region and is consumed before unmapping;
-        // `map_device` established four-byte alignment.
+        // SAFETY: `is_live` proved every page live, `map_device` four-byte alignment; all runnable
+        // roots share its device table, reserved then frozen; the region keeps `self` until unmap.
         let registers = unsafe { MmioRegion::new(self.address as *mut u8, self.len) };
         Ok(ReleasableDevice {
             mapping: self,
@@ -427,10 +384,7 @@ impl ReleasableDevice {
         MmioRegion::write_u32(&mut self.registers, offset, value)
     }
 
-    /// Keep this mapping permanently and return its register access.
-    ///
-    /// Consuming the removal token makes the selected controller's mapping
-    /// intentionally permanent; rejected candidates return theirs.
+    /// Keep this mapping for good, consuming its removal token; rejected candidates return theirs.
     #[must_use]
     pub fn retain(self) -> MmioRegion {
         let Self {

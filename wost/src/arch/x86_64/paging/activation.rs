@@ -103,19 +103,11 @@ pub(super) fn activation_state(state: &AtomicU8) -> ActivationState {
     state
 }
 
-/// Switch this CPU to `space`, keeping it for the life of the kernel.
+/// Switch this CPU to `space` for the kernel's life, after walking it for this code and stack.
 ///
-/// Safe because it walks the new tables first, for this function's own code
-/// and its stack. A table that would not survive the switch is refused with
-/// the old one still loaded, so the failure is a `Result` and not a reset.
-///
-/// # Errors
-///
-/// [`ActivateError`] naming which address the new tables would have lost, or
-/// [`ActivateError::AlreadyActive`] on a second call.
+/// A table that would not survive the switch is refused with the old one still loaded.
 pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
-    /// Headroom below the stack pointer that must also be mapped, so the
-    /// first push after the switch has somewhere to go.
+    /// Headroom below the stack pointer that must be mapped too, for the first push.
     const STACK_HEADROOM: u64 = PAGE_SIZE;
 
     if space.is_reclaimed() {
@@ -174,15 +166,12 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
         return Err(ActivateError::DirectMapGap(gap));
     }
 
-    // SAFETY: the walks above prove this code executable, its stack writable,
-    // and the direct map complete at unchanged addresses. The device window's
-    // top-level table now exists and later higher-half topology is frozen.
-    // Active roots cannot be reclaimed, so every table outlives this switch.
+    // SAFETY: the walks prove this code executable, its stack writable, the direct map whole and
+    // unmoved; the device table exists, higher-half topology froze, active roots are not reclaimed.
     unsafe { cpu::set_page_table_base(root) };
     activation.commit(root);
 
-    // `set` refuses to repoint present entries; a previously absent mapping
-    // cannot already have a cached translation (D-86).
+    // `set` never repoints a present entry, and an absent one has no cached translation to flush.
     Ok(())
 }
 
@@ -191,10 +180,9 @@ pub fn is_active() -> bool {
     activation_state(&ACTIVE_STATE) == ActivationState::Ready
 }
 
-/// The root of the space this kernel installed.
+/// The root this kernel installed, to compare with [`cpu::page_table_base`] after the switch.
 ///
-/// Compare with [`cpu::page_table_base`] to verify the switch. [`is_active`]
-/// distinguishes pre-activation because physical zero is a valid root.
+/// Only [`is_active`] tells pre-activation apart, because physical zero is a valid root.
 pub fn active_root() -> Paddr {
     ACTIVE_ROOT.load(Ordering::Acquire)
 }
