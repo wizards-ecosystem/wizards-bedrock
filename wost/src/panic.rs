@@ -11,8 +11,9 @@ static PANICKING: AtomicBool = AtomicBool::new(false);
 #[derive(Debug)]
 pub(crate) struct PanicToken(());
 
-/// Enter the terminal panic path, reclaim this crate's locks, and report; a second call halts.
+/// Enter the terminal panic path, reclaim this crate's locks, and report.
 ///
+/// A second call halts rather than recurse through a reporter whose locks may be held.
 /// `report` is a function pointer because a lock guard cannot be carried across reclamation.
 /// Single-CPU only: this stops the calling CPU resuming interrupted code, never another CPU.
 pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
@@ -25,7 +26,11 @@ pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
     report(info)
 }
 
-/// Whether the panic path began, so a [`ThreadLock`](crate::sync::ThreadLock) serves trap context.
+/// Whether the panic path began, which waives both refusals of [`ThreadLock::lock`].
+///
+/// A trap handler or a held spin lock is then allowed, since the interrupted code never resumes.
+///
+/// [`ThreadLock::lock`]: crate::sync::ThreadLock::lock
 pub(crate) fn is_panicking() -> bool {
     PANICKING.load(Ordering::Relaxed)
 }

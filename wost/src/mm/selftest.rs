@@ -50,6 +50,8 @@ pub fn free_frames() -> usize {
 }
 
 /// Where the boot map covers `len` bytes with memory, or `None` before it is up.
+///
+/// Callers ask the map rather than name an address, which would be one machine's firmware layout.
 #[cfg(feature = "selftest")]
 pub fn first_memory_run(len: u64) -> Option<Paddr> {
     MAP.lock_leaf()

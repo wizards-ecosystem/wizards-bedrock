@@ -38,7 +38,9 @@ pub struct FramebufferInfo {
 
 /// A linear framebuffer the bootloader mapped; with a back buffer, reads come from RAM.
 ///
+/// Every write then reaches both the device and the shadow.
 /// Framebuffer memory is uncached, so the shadow keeps scrolling off device reads.
+/// The shadow is also the precondition for ever mapping the framebuffer write-combining.
 /// A refused MMIO access is geometry corruption, stopped before shadow and device diverge.
 #[derive(Debug)]
 pub struct Framebuffer {
@@ -336,8 +338,9 @@ pub struct EntryEnclaveSections {
 /// Where the linker put each protection class of this kernel.
 ///
 /// The linker script must define every symbol read here, so a missing one fails to link.
+/// Never make one weak or `PROVIDE`d: a zero address would map the kernel's text writable.
 pub fn sections() -> Sections {
-    // Storage-less symbols: only addresses are taken, so `u8` is harmless and `&raw const` safe.
+    // Storage-less symbols that must never be read; only addresses are taken, so `u8` is fine.
     unsafe extern "C" {
         static __text_start: u8;
         static __text_end: u8;

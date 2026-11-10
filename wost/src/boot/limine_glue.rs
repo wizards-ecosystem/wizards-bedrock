@@ -175,8 +175,8 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         format,
     };
 
-    // SAFETY: nothing owns the live mapping after handoff, and `layout` checked span and alignment;
-    // paging activation verifies it before the switch; later roots share the frozen higher half.
+    // SAFETY: the live mapping has no other owner after handoff; `layout` checked span and align;
+    // activation verifies this direct-map extent first; user roots share the frozen higher half.
     let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };
 
     Ok(Framebuffer::new(region, info, layout))
