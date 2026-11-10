@@ -36,7 +36,7 @@ const STATE_ROOT_NAME: &str = "mutate";
 const MAX_STATE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One completed mutation's exact outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Outcome {
     /// Its named check caught it.
     Caught,
@@ -47,7 +47,7 @@ pub enum Outcome {
 }
 
 /// Identity of a current successful mutation sweep.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct PassEvidence {
     pub(crate) commit: String,
     pub(crate) registry: String,

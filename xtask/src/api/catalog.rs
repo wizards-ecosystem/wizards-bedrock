@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum CargoTargetKind {
     Library,
     Bin,
@@ -41,7 +41,7 @@ impl CargoTargetKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct CargoTarget {
     pub(super) package: String,
     pub(super) package_id: String,
@@ -75,7 +75,7 @@ impl CargoTarget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct ResolvedDependency {
     pub(super) name: String,
     pub(super) package_id: String,

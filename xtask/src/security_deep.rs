@@ -213,7 +213,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 const DEEP_TIMEOUT: Duration = Duration::from_secs(349_200);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Scan {
     id: String,
     producer_name: String,
@@ -226,7 +226,7 @@ struct Scan {
     informational: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ToolIdentity {
     path: PathBuf,
     bytes: u64,
@@ -234,7 +234,7 @@ struct ToolIdentity {
     version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Toolchain {
     node: ToolIdentity,
     python: ToolIdentity,
@@ -243,7 +243,7 @@ struct Toolchain {
     codex_runtime: CodexRuntimeIdentity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ShellEnvironmentPolicy {
     system_root: PathBuf,
     command_processor: PathBuf,
@@ -261,7 +261,7 @@ struct OwnedMcpInvocation<'a> {
     shell_environment: &'a ShellEnvironmentPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct PythonRuntimeIdentity {
     root: PathBuf,
     entries: u64,
@@ -269,7 +269,7 @@ struct PythonRuntimeIdentity {
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct CodexRuntimeIdentity {
     root: PathBuf,
     entries: u64,
@@ -277,7 +277,7 @@ struct CodexRuntimeIdentity {
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct GitIdentity {
     path: PathBuf,
     bytes: u64,
@@ -285,21 +285,21 @@ struct GitIdentity {
     version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct PluginFile {
     relative: PathBuf,
     slash_path: String,
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct PluginPackage {
     root: PathBuf,
     integrity: Vec<u8>,
     files: Vec<PluginFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct OwnedScratch {
     root: PathBuf,
     repository_parent: PathBuf,
@@ -320,7 +320,7 @@ impl OwnedScratch {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ManagedWorkerPolicy {
     repository: PathBuf,
     probe_directory: PathBuf,
@@ -347,7 +347,7 @@ impl DeepAuthority {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkerReadDecision {
     Deny,
     Allow,
@@ -630,7 +630,7 @@ fn context_named_permission_profiles(
     ))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct WorkerPermissionDigests {
     parent_state: String,
     provider_profile: String,
@@ -638,7 +638,7 @@ struct WorkerPermissionDigests {
     effective_state: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct WorkerProbeSummary {
     allowed_reads: usize,
     denied_reads: usize,
@@ -649,7 +649,7 @@ struct WorkerProbeSummary {
     denied_descendants: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct WorkerProbeExpectation {
     label: &'static str,
     exit: i32,
@@ -810,7 +810,7 @@ impl Drop for PrivateCodexCredential {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct FileIdentity {
     id: String,
     links: u64,
@@ -866,7 +866,7 @@ fn open_locked_auth(path: &Path) -> Result<std::fs::File> {
         .context("opening the ChatGPT credential")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct PrivateExecutionContext {
     scan_root: PathBuf,
     plugin_mirror: PathBuf,

@@ -32,7 +32,7 @@ const PAGE_SIZE_NAMES: [&str; 2] = ["PAGE_SIZE", "FRAME_SIZE"];
 const ROOTS: [&str; 3] = ["libs", "wost/src", "kernel/src"];
 
 /// One definition of a machine constant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Definition {
     /// Where it is, relative to the workspace root.
     pub file: String,

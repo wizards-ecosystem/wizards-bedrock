@@ -37,19 +37,19 @@ const LICENSES: &[&str] = &[
     "MIT AND Unicode-3.0",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Kind {
     Artifact,
     Crate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
     Development,
     Runtime,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct InventoryEntry {
     kind: Kind,
     name: String,
@@ -66,13 +66,13 @@ impl InventoryEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Inventory {
     created: String,
     entries: Vec<InventoryEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct LockedPackage {
     name: String,
     version: String,
@@ -81,13 +81,13 @@ struct LockedPackage {
     dependencies: Vec<Dependency>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Dependency {
     name: String,
     version: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct Identity {
     name: String,
     version: String,

@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct McpOutcome {
     pub(super) scan_id: String,
     pub(super) scan_directory: PathBuf,
@@ -8,13 +8,13 @@ pub(super) struct McpOutcome {
     pub(super) execution_threads: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum McpReply {
     Success(JsonValue),
     Error(JsonValue),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DaybreakStatus {
     Granted,
     NotGranted,
@@ -31,7 +31,7 @@ impl DaybreakStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct DaybreakAdvisory {
     status: DaybreakStatus,
     programs: Vec<String>,
@@ -39,7 +39,7 @@ pub(super) struct DaybreakAdvisory {
     stale: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum DaybreakPresentation {
     Standard(String),
     Warning(String),

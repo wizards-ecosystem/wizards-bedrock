@@ -180,14 +180,14 @@ struct Compilation {
     diagnostics: Vec<MarkerDiagnostic>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 enum CompilationMode {
     RegisteredPass,
     Example(CargoTarget),
     TestHarness(CargoTarget),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct CompilationPlan {
     pass: gate::CargoPass,
     target: String,

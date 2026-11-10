@@ -8,7 +8,7 @@ pub(super) const SELFTEST_PASSED: i32 = 33;
 pub(super) const SELFTEST_FAILED: i32 = 35;
 
 /// A complete, structurally valid self-test machine outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SelftestOutcome {
     /// Every registered check passed.
     Passed,
@@ -25,7 +25,7 @@ pub enum SelftestOutcome {
 }
 
 /// A complete degraded-boot outcome.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DegradedOutcome {
     /// Every required refusal and fallback marker preceded a settled boot.
     Settled,
@@ -38,13 +38,13 @@ pub enum DegradedOutcome {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum VerdictStatus {
     Pass,
     Fail,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct SelftestVerdict {
     pub(super) status: VerdictStatus,
     pub(super) passed: usize,
@@ -53,7 +53,7 @@ pub(super) struct SelftestVerdict {
 }
 
 /// One guest-side foundation measurement from a clean self-test boot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct PerformanceSample {
     pub(crate) boot_ns: u64,
     pub(crate) frames_free: u64,
@@ -68,7 +68,7 @@ pub(crate) struct PerformanceSample {
     pub(crate) counter_hz: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct StackSample {
     pub(super) used: u64,
     pub(super) capacity: u64,
@@ -76,7 +76,7 @@ pub(super) struct StackSample {
     pub(super) leaf: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
 pub(super) struct SerialObservation {
     pub(super) verdict: Option<SelftestVerdict>,
     pub(super) baseline: Option<PerformanceSample>,
@@ -90,20 +90,20 @@ pub(super) struct SerialObservation {
     pub(super) panic_complete: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
 pub(super) struct BootSerialObservation {
     pub(super) panic: Option<String>,
     pub(super) panic_complete: bool,
     pub(super) no_x2apic_before_panic: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PanicTransition {
     Unchanged,
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum LogSeverity {
     Info,
     Warning,
@@ -120,7 +120,7 @@ impl LogSeverity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct RequiredLogRecord {
     pub(super) severity: LogSeverity,
     pub(super) message: &'static str,
@@ -276,13 +276,13 @@ pub(super) const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(TRANSLATED_MARKER),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum InteractiveMarkerOrder {
     Strict,
     Mutation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum InjectionAction {
     Wait,
     Inject,

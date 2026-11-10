@@ -30,7 +30,7 @@ pub const JAR_DIGEST: &str = "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d3297890
 const MODEL_DIR: &str = "models";
 const TRANSCRIPT_FORMAT: &str = "wizard-model-transcript-v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TranscriptArtifact {
     pub(crate) prefix: &'static str,
     pub(crate) name: &'static str,
@@ -63,13 +63,13 @@ pub(crate) const TRANSCRIPT_ARTIFACTS: &[TranscriptArtifact] = &[
     },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Expected {
     Clean,
     Violates(&'static str),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Run {
     artifact: TranscriptArtifact,
     model: &'static str,
@@ -121,13 +121,13 @@ const CLEAN: &str = "Model checking completed. No error has been found.";
 const BEHAVIOR: &str = "Error: The behavior up to this point is:";
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum Verdict {
     Clean,
     Violated(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct RunTranscript {
     artifact: TranscriptArtifact,
     bytes: Vec<u8>,

@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) enum TraitRoute {
     Declaration(TraitMemberKey),
     Implementation {
@@ -12,19 +12,19 @@ pub(super) enum TraitRoute {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ImplicitTrait {
     Drop,
     GlobalAlloc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct TraitMemberKey {
     pub(super) trait_path: String,
     pub(super) member: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct TraitActivation {
     pub(super) self_type: usize,
     pub(super) exact_self_type: bool,
@@ -33,26 +33,26 @@ pub(super) struct TraitActivation {
     pub(super) implementation: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct ImplicitTraitActivation {
     pub(super) trigger: ImplicitTraitTrigger,
     pub(super) implementation: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum ImplicitTraitTrigger {
     ConstructedType(usize),
     LiveNode(usize),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ImportOrigin {
     Standard,
     Dependency,
     Other,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default, Debug)]
 pub(super) struct TraitImports {
     paths: BTreeMap<Vec<String>, BTreeMap<String, Option<Vec<String>>>>,
     local_names: BTreeMap<Vec<String>, BTreeSet<String>>,

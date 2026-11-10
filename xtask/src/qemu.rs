@@ -47,7 +47,7 @@ const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
 
 /// Whether the fixed machine presents the DMA-remapping unit storage requires.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Remapping {
     /// The ordinary machine: an Intel unit ahead of every PCI device (D-357).
     Present,
@@ -136,7 +136,7 @@ const CODE_FIRMWARE: &str = "edk2-x86_64-code.fd";
 const VARS_FIRMWARE: &str = "edk2-i386-vars.fd";
 
 /// Resolved emulator and firmware inputs used by every QEMU runner.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Installation {
     pub(crate) emulator: PathBuf,
     pub(crate) code_firmware: PathBuf,

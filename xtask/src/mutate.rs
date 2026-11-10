@@ -23,7 +23,7 @@ use crate::{qemu, qualification, sha256, tasks};
 pub use self::registry::{Caught, Mutation, NEXT_MUTATION_ID, RETIRED_MUTATION_IDS, mutations};
 use self::workspace::{Outcome, Session};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 struct Baselines {
     host: bool,
     api: bool,

@@ -277,7 +277,7 @@ pub(crate) fn inject_wrapper_overrides(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct InjectedCodexInvocation {
     pub(crate) arguments: Vec<OsString>,
     pub(crate) transition: WorkerTransitionKind,
@@ -285,7 +285,7 @@ pub(crate) struct InjectedCodexInvocation {
     pub(crate) expected_thread: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct ValidatedExecArguments {
     insertion: usize,
     worker: WorkerDirectory,

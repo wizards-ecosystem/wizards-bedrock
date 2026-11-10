@@ -53,7 +53,7 @@ const fn ranges_overlap(left: u64, left_size: u64, right: u64, right_size: u64) 
 }
 
 /// One loadable segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Segment {
     /// `p_type`.
     pub kind: u32,
@@ -105,7 +105,7 @@ impl Segment {
 }
 
 /// One section header, with its name resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Section {
     /// The name from the section header string table.
     pub name: String,
@@ -132,7 +132,7 @@ impl Section {
 }
 
 /// A linked ELF64 image, reduced to what the checks below need.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Image {
     /// The entry point address.
     pub entry: u64,
@@ -143,7 +143,7 @@ pub struct Image {
 }
 
 /// Why an image is not the one the linker script describes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ImageError {
     /// The entry point is outside the higher half the kernel is linked at.

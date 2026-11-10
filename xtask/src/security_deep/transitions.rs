@@ -1,13 +1,13 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum WorkerTransitionKind {
     AppServerPassThrough,
     ExecInitialAttenuated,
     ExecResumedAttenuated,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) enum WorkerTransitionStage {
     Launched,
     Started,
@@ -59,7 +59,7 @@ impl WorkerTransitionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(super) struct WorkerTransitionReceipt {
     pub(super) kind: WorkerTransitionKind,
     pub(super) stage: WorkerTransitionStage,
@@ -73,7 +73,7 @@ pub(super) struct WorkerTransitionReceipt {
     pub(super) arguments: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct WorkerTransitionLedger {
     pub(super) bytes: Vec<u8>,
     pub(super) app_server: usize,

@@ -2,7 +2,7 @@ use syn::visit::{self, Visit};
 
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct EntrySpec {
     pub(super) file: usize,
     pub(super) invocation: SourceRange,
@@ -11,24 +11,24 @@ pub(super) struct EntrySpec {
     pub(super) handler: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct EntryContractUse {
     symbol: &'static str,
     primary: SourceRange,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct EntryContractAuthority {
     pub(super) uses: [EntryContractUse; 4],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct EntryContractNode {
     pub(super) id: usize,
     pub(super) primary: SourceRange,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct EntryLink {
     pub(super) file: usize,
     pub(super) invocation: SourceRange,

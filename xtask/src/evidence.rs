@@ -38,7 +38,7 @@ const ALTERNATE_BUILD_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MIRROR_ENTRY_LIMIT: usize = 100_000;
 const MIRROR_DEPTH_LIMIT: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Digest {
     bytes: u64,
     sha256: String,
@@ -50,7 +50,7 @@ struct ReproducedRelease {
     host_roots: [PathBuf; 3],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ArtifactSpec {
     prefix: &'static str,
     relative: &'static str,
@@ -75,12 +75,12 @@ const ARTIFACTS: &[ArtifactSpec] = &[
     },
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
 struct Record {
     fields: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct QualificationRelation {
     qualified: qualification::SourceIdentity,
     policy: &'static str,
@@ -772,7 +772,7 @@ fn add_optional_tool(
     add_tool_identity(record, prefix, &identity)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum ToolIdentity {
     Available { version: String, digest: Digest },
     Unavailable,

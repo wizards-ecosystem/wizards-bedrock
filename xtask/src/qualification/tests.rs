@@ -581,7 +581,7 @@ fn deep_and_mutants_attempts_are_separate_capability_types() {
         .find("#[derive(Debug)]\npub(crate) struct DeepAuthority {")
         .unwrap();
     let token_end = security[token..]
-        .find("\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
+        .find("\n#[derive(Clone, Copy, PartialEq, Eq, Debug)]")
         .unwrap()
         + token;
     let token_definition = &security[token..token_end];

@@ -16,7 +16,7 @@ const RUNS: usize = 3;
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Band {
     minimum: u64,
     maximum: u64,
@@ -44,7 +44,7 @@ impl Band {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Limits {
     kernel_bytes: Band,
     boot_ns: Band,
@@ -90,7 +90,7 @@ const DEBUG: Limits = Limits {
     counter_hz: Band::new(3_000_000_000, 4_000_000_000),
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Derived {
     trap_ns: u64,
     storage_bytes_per_second: u64,

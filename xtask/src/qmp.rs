@@ -38,7 +38,7 @@ pub static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum Message {
     Greeting,
     Return {

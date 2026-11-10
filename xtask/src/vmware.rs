@@ -57,7 +57,7 @@ const HEADS: u64 = 255;
 const SECTORS_PER_TRACK: u64 = 63;
 
 /// A disk geometry for a VMDK descriptor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Geometry {
     /// Cylinder count.
     pub cylinders: u64,
@@ -330,7 +330,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum TranscriptMarker {
     Exact(&'static str),
     Isolation(Kernel),

@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Default, Debug)]
 struct UnsafeFacts {
     lines: usize,
     blocks: usize,

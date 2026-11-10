@@ -14,7 +14,7 @@ const VIRTUAL_CARGO_ROOT: &str = "/wizard/cargo";
 const ENCODED_FLAG_SEPARATOR: char = '\u{1f}';
 
 /// Which cargo profile to build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Profile {
     /// Unoptimised, for quick iteration.
     Dev,

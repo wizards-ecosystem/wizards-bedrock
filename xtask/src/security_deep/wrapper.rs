@@ -8,7 +8,7 @@ pub(super) use self::overrides::*;
 pub(super) use self::python::*;
 pub(super) use self::workbench::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PrivateWrapperKind {
     Codex,
     Python,

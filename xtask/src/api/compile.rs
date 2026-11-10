@@ -686,7 +686,7 @@ pub(super) fn require_build_script_authority_unchanged(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BuildScriptAuthorityPath {
     Output,
     OutRoot,

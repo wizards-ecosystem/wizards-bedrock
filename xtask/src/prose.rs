@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 /// A `libs/` crate the documents name and the tree does not have.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Absent {
     /// The directory name it would have under `libs/`.
     pub crate_name: &'static str,

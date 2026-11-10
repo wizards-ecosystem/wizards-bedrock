@@ -82,7 +82,7 @@ pub(super) fn reject_authority_diagnostic_marker(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct MarkerObservation {
     pub(super) file: usize,
     pub(super) id: usize,
@@ -90,7 +90,7 @@ pub(super) struct MarkerObservation {
     pub(super) column: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct CargoDiagnosticOrigin {
     pub(super) package_id: String,
     pub(super) target_name: String,
@@ -98,7 +98,7 @@ pub(super) struct CargoDiagnosticOrigin {
     pub(super) target_source: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct MarkerDiagnostic {
     pub(super) id: usize,
     pub(super) origin: CargoDiagnosticOrigin,
@@ -108,14 +108,14 @@ pub(super) struct MarkerDiagnostic {
     pub(super) immediate_expansion: Option<DiagnosticExpansion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct DiagnosticLocation {
     pub(super) reported: String,
     pub(super) line: usize,
     pub(super) column: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct DiagnosticExpansion {
     pub(super) location: DiagnosticLocation,
     pub(super) terminal: bool,

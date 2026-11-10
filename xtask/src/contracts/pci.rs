@@ -218,7 +218,7 @@ const UNBOUNDED: u32 = u32::MAX;
 
 /// How a type holds PCI authority: owned copies, a shared view, or a channel
 /// the inventory cannot count.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 struct Holding {
     owned: u32,
     shared: bool,
@@ -1038,7 +1038,7 @@ fn the_pci_authority_inventory_counts_every_door_and_channel() {
     );
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum PciBarAdmissionEvent {
     Admit,
     Map,

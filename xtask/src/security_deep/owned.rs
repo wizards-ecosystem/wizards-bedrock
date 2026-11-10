@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(super) struct TreeIdentity {
     pub(super) entries: u64,
     pub(super) bytes: u64,
