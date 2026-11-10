@@ -159,7 +159,7 @@ where it is:
 > A right must correspond to a distinction the kernel actually makes about that
 > object — never to a syscall name.
 
-That is precisely the rule WASI's rights violated.
+That is the rule WASI's rights violated.
 
 **Type encodings get headroom for 64 object types, not 8.** Zircon is at 26 and
 still growing. Policy is **monotonic and frozen** — tighten-only, immutable
@@ -233,7 +233,7 @@ synchronous will deliver the 1.06×.
 
 **Ports and completion queues are the same shape; build one.** A Zircon port
 *is* a completion queue whose entries are events. Building both gives userspace
-two event planes to join, which is exactly why io_uring grew `poll_add`,
+two event planes to join, which is why io_uring grew `poll_add`,
 `futex`, `waitid` and `msg_ring`. Zircon's four semantic wins move into the CQ
 instead: one-shot arming by default, edge-versus-level as an explicit flag,
 cancellation that purges already-queued entries, and exactly one waiter
@@ -312,7 +312,7 @@ checks is what OSTD ships, and here the second is the one that cannot be
 side-stepped.
 
 D-194 closes the remaining `Drop` question as a bounded liveness contract,
-not a stronger type claim. Safe code can forget a guard or simply never
+not a stronger type claim. Safe code can forget a guard or never
 return, and no closure or token can guarantee progress against either. Such a
 caller can strand this CPU and the lock's waiters but gains no memory or
 privilege authority. Every transition which would abandon that holder keeps
@@ -403,7 +403,7 @@ ring operation posts exactly one terminal completion, cancelled ones included.
 
 That spawn check is the one worth naming twice. `002` pillar 1 had claimed
 channels were the sole delegation mechanism, which is false even of Zircon.
-Slice 7 replaced it with the load-bearing part that remains checkable:
+Slice 7 replaced it with the part that remains checkable:
 
 > A process receives exactly one handle at spawn — its bootstrap channel.
 
@@ -447,7 +447,7 @@ takes up front are those where writing code first would waste the most work.
   `wost` is where the sound-wrapper standard is enforced. The rule says
   `kernel`; say so explicitly rather than by omission.
 - **How large the ring pages are, and who counts them.** Kernel-allocated ring
-  pages mean a process's rings are kernel memory, which is exactly what the
+  pages mean a process's rings are kernel memory, which is what the
   quota is for — so the quota's unit has to be decided with the ring's, not
   after it.
 - **Whether `syscall`/`sysret` or a trap gate carries the synchronous set.**
@@ -458,7 +458,7 @@ takes up front are those where writing code first would waste the most work.
 - **How much of the entry path is rebuilt in slice 4 versus grown into.** 256
   vector-aware stubs work today and the FRED-shaped table is strictly better —
   but the existing trampoline is the most battle-tested assembly in the repo,
-  and Phase 4 already declined to convert it once for exactly that reason.
+  and Phase 4 already declined to convert it once for that reason.
 - **What the mlibc slice does if it cannot compile.** The vendored clang is the
   plan; the fallback is authored sources and a recorded wall. Decide the
   threshold before starting, not while overrunning.
@@ -568,9 +568,9 @@ any more. `map_owned` takes frames the caller owns and moves them in;
 map covers, page-aligned, non-empty and non-overflowing; `map_device` was
 already the narrowest.
 
-The two cases genuinely differ and neither collapses into the other. The direct
+The two cases differ and neither collapses into the other. The direct
 map and the kernel image are nobody's frames — firmware placed them — so
-demanding ownership there would be a fiction. What can honestly be demanded is
+demanding ownership there would be a fiction. What can be demanded is
 that the handoff described them, which is the bound D-64 gave physical reads.
 
 **Unmap pays translation debt before returning frame ownership.** A CPU may
@@ -884,7 +884,7 @@ is armed unless the processor claims `MDS_NO` instead, because `verw` exists on
 every x86-64 and `MD_CLEAR` says only whether it also flushes. A machine whose
 capability word cannot be read gets the instruction rather than the assumption.
 
-**Three items moved, each with a reason rather than a shrug.**
+**Three items moved, each with a reason.**
 
 - **`syscall`/`sysret`, `arch::percpu` and `swapgs`** → the slice that measures
   them. The descriptor order is fixed for `sysret` already: `USER_DATA` sits
@@ -938,7 +938,7 @@ says where it went.
 | `swapgs` and the GS base | **Not paid, and the reason changed.** D-154 moved the held-lock count behind the real `arch::percpu` seam. There is still one CPU and no `syscall` entry, so nothing needs a `gs:` accessor or `swapgs`; those move with SMP to Phase 12 |
 | No ring-3 descriptors | **Paid.** D-96 |
 | The lock discipline in the borrow checker | **Paid.** D-85, first, so nothing here was written twice |
-| No preempt-disable mechanism | **Not paid, and it should be said plainly.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
+| No preempt-disable mechanism | **Not paid.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
 | The per-CPU word widens | **Structural seam paid by D-154; GS-backed CPU selection not paid.** One CPU and D-96's interrupt gate need neither a `gs:` accessor nor `swapgs`; both remain with SMP in Phase 12 |
 | Per-process quota | **Paid at the handle layer** (D-111: 64 handles per process). **Not paid** for frames or for per-message allocation, which is D-44's other half and needs an accounting owner |
 | A wait with a timeout, and a wait on two queues | **Half paid.** D-164 made `RingWait` sleep until the earliest operation deadline. A wait on multiple queues remains absent because nothing calls for one |
