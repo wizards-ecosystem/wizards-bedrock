@@ -474,7 +474,7 @@ fn mmio_whole_span_check(local: &Local) -> bool {
     };
     pattern_is_ident(&local.pat, "range")
         && initializer.diverge.is_none()
-        && call.method == "check_words"
+        && call.method == "range_of_words"
         && call.turbofish.is_none()
         && expression_is_ident(&call.receiver, "self")
         && call.args.len() == 2

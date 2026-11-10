@@ -21,8 +21,7 @@ impl Vtd {
         Some(root_table_address(pointer) == self.root.address())
     }
 
-    /// Every page the second-level tree the unit walks currently reaches,
-    /// read back from the table frames rather than from any shadow of them.
+    /// Every page the second-level tree the unit walks reaches, read back from the table frames.
     #[cfg(feature = "selftest")]
     pub fn reachable_pages_for_test(&self) -> Option<Vec<u64>> {
         let mut pages = Vec::new();

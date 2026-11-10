@@ -1,9 +1,5 @@
-//! Memory-mapped I/O regions.
-//!
-//! An [`MmioRegion`] is constructed once from a mapping the caller vouches for,
-//! then hands out bounds- and alignment-checked volatile accesses in safe code.
-//! Every access returns a [`Result`]: a driver bug becomes an error value, not
-//! a stray write into whatever follows the device.
+//! Memory-mapped I/O regions whose every access is checked, so a driver bug is an error value and
+//! never a stray write into whatever follows the device.
 
 use core::fmt;
 use mmio_range::{AccessError, AccessRange};
@@ -14,27 +10,14 @@ use mmio_range::{AccessError, AccessRange};
 pub enum MmioError {
     /// The access would extend past the end of the region.
     OutOfBounds {
-        /// Byte offset the access started at.
         offset: usize,
-        /// Length of the access in bytes.
         len: usize,
-        /// Size of the region in bytes.
         region_len: usize,
     },
     /// The offset is not aligned for an access of this width.
-    Misaligned {
-        /// Byte offset the access started at.
-        offset: usize,
-        /// Alignment the access required.
-        align: usize,
-    },
+    Misaligned { offset: usize, align: usize },
     /// Repeated-access arithmetic overflowed before a range could be formed.
-    Overflow {
-        /// Byte offset the access started at.
-        offset: usize,
-        /// Number of words requested.
-        count: usize,
-    },
+    Overflow { offset: usize, count: usize },
 }
 
 impl fmt::Display for MmioError {
@@ -67,9 +50,8 @@ pub struct MmioRegion {
     len: usize,
 }
 
-// SAFETY: `MmioRegion` is a base pointer plus a length, and the raw pointer
-// keeps it `!Sync`, so accesses cannot race across CPUs. `new` requires the
-// same live mapping in every page-table root that can run.
+// SAFETY: a base pointer and a length, kept `!Sync` by the raw pointer so accesses cannot race
+// across CPUs; `new` requires the same live mapping in every page-table root that can run.
 unsafe impl Send for MmioRegion {}
 
 impl MmioRegion {
@@ -77,18 +59,14 @@ impl MmioRegion {
     ///
     /// # Safety
     ///
-    /// `base` must name the same live, 4-byte-aligned mapping of at least `len`
-    /// bytes in every page-table root that can run for this region's lifetime,
-    /// and no other code may access that memory while this region exists.
+    /// `base` must name the same live, 4-byte-aligned mapping of at least `len` bytes in every
+    /// page-table root that can run for this region's lifetime, and no other code may access that
+    /// memory while this region exists.
     pub(crate) const unsafe fn new(base: *mut u8, len: usize) -> Self {
         Self { base, len }
     }
 
-    /// The address the region begins at.
-    ///
-    /// For a caller that needs to describe the same memory another way — the
-    /// framebuffer, which is remapped with a different memory type once the
-    /// kernel owns its page tables.
+    /// The address the region begins at, for the framebuffer's remap under another memory type.
     #[cfg(feature = "selftest")]
     pub(crate) const fn base_address(&self) -> *mut u8 {
         self.base
@@ -101,10 +79,10 @@ impl MmioRegion {
 
     /// Read one 32-bit word at `offset`.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
-        let offset = self.check_words(offset, 1)?.offset();
+        let offset = self.range_of_words(offset, 1)?.offset();
         let word = self.base.wrapping_add(offset).cast::<u32>();
-        // SAFETY: `check_words` proved the word is contained and aligned in the
-        // live mapping promised by `new`.
+        // SAFETY: `range_of_words` proved the word is contained and aligned in the live mapping
+        // promised by `new`.
         Ok(unsafe { word.read_volatile() })
     }
 
@@ -123,18 +101,17 @@ impl MmioRegion {
         offset: usize,
         values: impl ExactSizeIterator<Item = u32>,
     ) -> Result<(), MmioError> {
-        let range = self.check_words(offset, values.len())?;
+        let range = self.range_of_words(offset, values.len())?;
         for (cursor, value) in range.offsets().zip(values) {
             let word = self.base.wrapping_add(cursor).cast::<u32>();
-            // SAFETY: `range` proves each word is aligned and contained by
-            // this unique device mapping.
+            // SAFETY: `range` proves each word aligned and contained by this unique device mapping.
             unsafe { word.write_volatile(value) };
         }
         Ok(())
     }
 
     /// Confirm repeated word accesses are in bounds and aligned.
-    fn check_words(&self, offset: usize, count: usize) -> Result<AccessRange, MmioError> {
+    fn range_of_words(&self, offset: usize, count: usize) -> Result<AccessRange, MmioError> {
         AccessRange::repeated(offset, count, WORD, self.len).map_err(|error| match error {
             AccessError::Misaligned { offset, align } => MmioError::Misaligned { offset, align },
             AccessError::OutOfBounds {

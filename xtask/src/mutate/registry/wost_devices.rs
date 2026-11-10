@@ -148,8 +148,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 851,
         file: "wost/src/arch/x86_64/apic.rs",
-        find: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        spurious.bits().into(),\n    );\n    if InitializationRegisters::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR)\n        != u64::from(spurious.bits())\n    {\n        return Err(ApicError::NotResponding);\n    }",
-        replace: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        spurious.bits().into(),\n    );",
+        find: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        sources.spurious.bits().into(),\n    );\n    if InitializationRegisters::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR)\n        != u64::from(sources.spurious.bits())\n    {\n        return Err(ApicError::NotResponding);\n    }",
+        replace: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        sources.spurious.bits().into(),\n    );",
         breaks: "an ignored APIC software-enable write can publish readiness",
         reddens: Caught::Check(
             "every late or ignored-write apic refusal stays unavailable and terminal",
@@ -322,8 +322,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1451,
         file: "wost/src/mmio.rs",
-        find: "        let range = self.check_words(offset, values.len())?;",
-        replace: "        let range = self.check_words(offset, values.len().min(1))?;",
+        find: "        let range = self.range_of_words(offset, values.len())?;",
+        replace: "        let range = self.range_of_words(offset, values.len().min(1))?;",
         breaks: "checked MMIO publishes more words than the span it proved",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -388,8 +388,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1481,
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "/// Functions that may be held by drivers at once.\n",
-        replace: "macro_rules! claim_twin {\n    ($claim:expr) => {\n        // SAFETY: the claim is one valid aligned value; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read($claim) }\n    };\n}\n\n/// Functions that may be held by drivers at once.\n",
+        find: "const FUNCTION_CLAIMS: usize",
+        replace: "macro_rules! claim_twin {\n    ($claim:expr) => {\n        // SAFETY: the claim is one valid aligned value; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read($claim) }\n    };\n}\n\nconst FUNCTION_CLAIMS: usize",
         breaks: "a macro can generate PCI authority doors the inventory cannot see",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -409,8 +409,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1545,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last {",
-        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last + PAGE {",
+        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        physical: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len\n            .checked_sub(1)\n            .and_then(|last| physical.checked_add(last))\n        else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = physical & !(PAGE - 1);\n        let mut page = start;\n        while page <= last {",
+        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        physical: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len\n            .checked_sub(1)\n            .and_then(|last| physical.checked_add(last))\n        else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = physical & !(PAGE - 1);\n        let mut page = start;\n        while page <= last + PAGE {",
         breaks: "every mapped segment reaches one frame past its end",
         reddens: Caught::Check("the dma domain reaches exactly the live queue frames"),
     },
@@ -428,8 +428,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1547,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.switch_interrupt_remapping(true)?;\n        self.switch_translation(true)?;\n        self.drain_dma()?;",
-        replace: "        self.switch_interrupt_remapping(true)?;\n        self.drain_dma()?;",
+        find: "        self.switch_interrupt_remapping(Switch::On)?;\n        self.switch_translation(Switch::On)?;\n        self.drain_dma()?;",
+        replace: "        self.switch_interrupt_remapping(Switch::On)?;\n        self.drain_dma()?;",
         breaks: "the unit is programmed but translation is never switched on",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -492,8 +492,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1623,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {",
-        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers(last) {",
+        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        physical: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len\n            .checked_sub(1)\n            .and_then(|last| physical.checked_add(last))\n        else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {",
+        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        physical: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len\n            .checked_sub(1)\n            .and_then(|last| physical.checked_add(last))\n        else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers(last) {",
         breaks: "the production DMA mapping seam ignores the unit's MGAW",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -563,8 +563,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1675,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.switch_translation(true)?;\n        self.drain_dma()?;\n        self.boundary_active()",
-        replace: "        self.switch_translation(true)?;\n        self.boundary_active()",
+        find: "        self.switch_translation(Switch::On)?;\n        self.drain_dma()?;\n        self.boundary_active()",
+        replace: "        self.switch_translation(Switch::On)?;\n        self.boundary_active()",
         breaks: "pre-boundary DMA is not drained after the empty root becomes active",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -618,8 +618,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1714,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.switch_queued_invalidation(true)?;\n        let observed_queue = read_u64(&self.registers, vtd::IQA)?;",
-        replace: "        let observed_queue = read_u64(&self.registers, vtd::IQA)?;\n        self.switch_queued_invalidation(true)?;",
+        find: "        self.switch_queued_invalidation(Switch::On)?;\n        let observed_queue = read_u64(&self.registers, vtd::IQA)?;",
+        replace: "        let observed_queue = read_u64(&self.registers, vtd::IQA)?;\n        self.switch_queued_invalidation(Switch::On)?;",
         breaks: "the invalidation queue is read back before the hardware enables queued invalidation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -706,7 +706,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1730,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        let disabled = self.switch_queued_invalidation(false);",
+        find: "        let disabled = self.switch_queued_invalidation(Switch::Off);",
         replace: "        let disabled = Ok(());",
         breaks: "queued invalidation remains enabled after the private IEC flush completes",
         reddens: Caught::HostTest {
@@ -781,7 +781,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1742,
         file: "wost/src/arch/x86_64/vtd.rs",
         find: "        let function = self.function.ok_or(VtdError::NoActiveDomain)?;\n        write_entry(&mut self.root, function.bus(), 0, 0)?;",
-        replace: "        let function = self.function.ok_or(VtdError::NoActiveDomain)?;\n        self.switch_translation(false)?;\n        write_entry(&mut self.root, function.bus(), 0, 0)?;",
+        replace: "        let function = self.function.ok_or(VtdError::NoActiveDomain)?;\n        self.switch_translation(Switch::Off)?;\n        write_entry(&mut self.root, function.bus(), 0, 0)?;",
         breaks: "candidate retirement opens an unrestricted-DMA interval before fallback",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -824,7 +824,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1776,
         file: "wost/src/arch/x86_64/vtd.rs",
         find: "        if let Err(reason) = self.drain_dma() {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
-        replace: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
+        replace: "        if let Err(reason) = self.invalidate(Caches::Iotlb) {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
         breaks: "live VT-d unmap recycles frames after invalidation without draining older DMA",
         reddens: Caught::Check("a device write into an unmapped frame faults and changes nothing"),
     },
@@ -832,7 +832,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         id: 1777,
         file: "wost/src/arch/x86_64/vtd.rs",
         find: "        if let Err(reason) = self.drain_dma() {\n            failure.get_or_insert(reason);\n        }\n        failure.map_or(Ok(()), Err)",
-        replace: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        failure.map_or(Ok(()), Err)",
+        replace: "        if let Err(reason) = self.invalidate(Caches::Iotlb) {\n            failure.get_or_insert(reason);\n        }\n        failure.map_or(Ok(()), Err)",
         breaks: "partial VT-d mapping rollback recycles frames without draining older DMA",
         reddens: Caught::HostTest {
             package: "xtask",

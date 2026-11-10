@@ -323,14 +323,14 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
     exact_self_method_call(
         method(&vtd_syntax, "Vtd", "map_segment_with").expect("directional mapping boundary"),
         "map_range",
-        &["paddr", "len"],
+        &["physical", "len"],
     );
     exact_self_method_call(
         method(&vtd_syntax, "Vtd", "map_range").expect("directional mapping walk"),
         "map_page",
         &["page"],
     );
-    assert!(vtd.contains("self.map_range::<DEVICE_READS, DEVICE_WRITES>(paddr, len)"));
+    assert!(vtd.contains("self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical, len)"));
     assert!(vtd.contains("self.map_page::<DEVICE_READS, DEVICE_WRITES>(page)"));
     let map_page = method(&vtd_syntax, "Vtd", "map_page").expect("leaf mapping boundary");
     struct LeafPublications<'ast>(Vec<&'ast ExprMethodCall>);
@@ -1252,7 +1252,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     assert!(
         matches!(&*outcome.expr, Expr::MethodCall(call) if call.method == "map_range"
         && path_expression_is(&call.receiver, &["self"]) && call.args.len() == 2
-        && path_expression_is(&call.args[0], &["paddr"]) && path_expression_is(&call.args[1], &["len"]))
+        && path_expression_is(&call.args[0], &["physical"]) && path_expression_is(&call.args[1], &["len"]))
     );
     assert_eq!(outcome.arms.len(), 3);
     for (index, kind) in [(0, "Retained"), (1, "Refused")] {

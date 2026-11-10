@@ -9,7 +9,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/apic.rs",
         3,
         0,
-        "8e61d9472c4b24740071ec4845dae30a1c9e5f5801f22b652603c7bf80d5a229",
+        "6522356ff50119ef4e690430ab0db62409a871de0d01747a0061880cc24d06a6",
     ),
     (
         "wost/src/arch/x86_64/cpu/selftest.rs",
@@ -99,7 +99,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/arch/x86_64/port.rs",
         16,
         10,
-        "0d260694cc20490e307b7939758cc60bd27e0551e1c4147eeaebc3cc769a6518",
+        "3c051502595444b6ab5d5d57c550def7fb304d23c56ec935ea814de17d7be216",
     ),
     (
         "wost/src/arch/x86_64/segment/selftest.rs",
@@ -201,7 +201,7 @@ const AUDITED: &[AuditRecord] = &[
         "wost/src/mmio.rs",
         2,
         2,
-        "d8b01b81f794cf8a315e826e536a1ce24ed5670e19be2aa56f01cb5204ced83f",
+        "d63b7d820b38a4526b3c4433d886866f5bf8d0bd83a774ecd4364ecb6582a82e",
     ),
     (
         "wost/src/sync.rs",

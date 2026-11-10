@@ -9,11 +9,7 @@ pub fn refuse_span_release_for_test() {
     REFUSE_SPAN_RELEASE.store(true, Ordering::Release);
 }
 
-/// Whether `len` ports from `port` are already claimed, without minting one.
-///
-/// The self-test proves exclusivity by asking whether a device driver's ports
-/// are spoken for; a probe answers that without handing back a usable [`Port`]
-/// that would itself claim them (D-351).
+/// Whether `len` ports from `port` are already claimed, without minting a [`Port`] over them.
 #[cfg(feature = "selftest")]
 pub fn is_claimed(port: u16, len: usize) -> bool {
     !CLAIMED.lock_leaf().is_available(port as usize, len)
