@@ -1,6 +1,8 @@
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use wost::sync::Injection;
+
 use super::ring::{
     publish_index, read_entry_u32, read_entry_u64, write_entry_u32, write_entry_u64,
 };
@@ -13,7 +15,7 @@ use super::{
 };
 
 #[cfg(feature = "selftest")]
-pub(super) static REFUSE_WORKER: AtomicBool = AtomicBool::new(false);
+pub(super) static REFUSE_WORKER: Injection = Injection::new();
 
 #[cfg(feature = "selftest")]
 pub(super) static WORKER_REAPS: AtomicUsize = AtomicUsize::new(0);
@@ -35,10 +37,6 @@ pub(super) static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
 
 impl Submission {
     /// A submission naming a handle and one argument about it.
-    ///
-    /// `Duplicate` and `Cancel`-by-handle: the handle goes in the field made
-    /// for it rather than packed into the argument, which is what the widened
-    /// entry bought (D-173).
     #[cfg(feature = "selftest")]
     pub(crate) const fn about(opcode: Opcode, token: u32, handle: u32, argument: u64) -> Self {
         Self {
@@ -52,12 +50,6 @@ impl Submission {
     }
 
     /// A submission whose whole input is one argument.
-    ///
-    /// `Echo`, `Timer` and `Cancel`: the fields the widened entry added mean
-    /// nothing to them. A constructor rather than four zeroes at every call
-    /// site, because a zero handle is a *value* — writing it out invites a
-    /// reader to think it matters, and the next person to add a field would
-    /// have to touch every one of them (D-173).
     #[cfg(feature = "selftest")]
     pub(crate) const fn simple(opcode: Opcode, token: u32, argument: u64) -> Self {
         Self {
@@ -68,6 +60,18 @@ impl Submission {
             offset: 0,
             argument,
         }
+    }
+
+    /// This submission with `length` bytes at its argument's place in the data area.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn length(self, length: u32) -> Self {
+        Self { length, ..self }
+    }
+
+    /// This submission starting at `offset` in its file.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn offset(self, offset: u64) -> Self {
+        Self { offset, ..self }
     }
 }
 
@@ -97,14 +101,9 @@ pub(crate) fn pending_identity_exhaustion_is_terminal_for_test() -> bool {
 }
 
 impl Queue {
-    /// Reserve `count` completion slots without serving anything.
+    /// Reserve `count` completion slots without serving anything, to check admission alone.
     ///
-    /// **Not part of the ABI.** `serve` reserves as it goes, which is what the
-    /// design requires; this exists so a check can exercise admission on its
-    /// own — filling a completion queue and asking whether the next
-    /// reservation is refused, without a program in the way. Using it and then
-    /// publishing a tail would double-count, and the checks do one or the
-    /// other.
+    /// A check must use this or publish a tail, never both, which would double-count.
     #[cfg(feature = "selftest")]
     pub(crate) fn reserve_for_test(&self, count: usize) -> usize {
         let mut ring = self.ring.lock_leaf();
@@ -178,15 +177,10 @@ impl Queue {
         self.settlement_refusals.load(Ordering::Acquire)
     }
 
-    /// Write a submission into the shared page as a program would.
-    ///
-    /// For the checks. The kernel side must be exercised against bytes that
-    /// arrived through the page rather than through a function call, because
-    /// the page is the boundary and the function call is not.
+    /// Write a submission into the shared page as a program would, since the page is the boundary.
     #[cfg(feature = "selftest")]
     pub(crate) fn post_submission_for_test(&self, slot: usize, submission: Submission) {
-        // Exhaustive on purpose: an opcode added to `decode` and forgotten
-        // here is a build failure, not a check exercising `Unknown` (D-161).
+        // Exhaustive, so an opcode added to `decode` and forgotten here fails the build.
         let opcode = match submission.opcode {
             Opcode::Echo => 1,
             Opcode::Uptime => 2,
@@ -223,11 +217,7 @@ impl Queue {
         publish_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD, head);
     }
 
-    /// Read a submission back out of the shared page.
-    ///
-    /// So a check can show that a hostile rewrite *landed* — without it, a
-    /// check comparing only the completion is comparing two places the rewrite
-    /// never touched, which is true whatever the kernel does (D-115).
+    /// Read a submission back out of the shared page, so a check can show a hostile rewrite landed.
     #[cfg(feature = "selftest")]
     pub(crate) fn read_submission(&self, slot: usize) -> Submission {
         let mut bytes = [0u8; SUBMISSION_BYTES];
@@ -261,29 +251,6 @@ impl Queue {
             .read_payload_at(DATA_AT + at, into)
     }
 
-    /// A submission that names a handle, an offset, a buffer and a length.
-    ///
-    /// Test support: the four-field form is what `Read` and `OpenAt` use, and
-    /// building it here keeps the field order in one place.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn about_at(
-        opcode: Opcode,
-        token: u32,
-        handle: u32,
-        offset: u64,
-        at: u64,
-        length: u32,
-    ) -> Submission {
-        Submission {
-            opcode,
-            token,
-            handle,
-            length,
-            offset,
-            argument: at,
-        }
-    }
-
     /// Read a completion back out of the shared page as a program would.
     #[cfg(feature = "selftest")]
     pub(crate) fn read_completion(&self, slot: usize) -> Completion {
@@ -300,14 +267,10 @@ impl Queue {
         }
     }
 
-    /// The shape the **kernel** believes this ring has.
+    /// The shape the kernel believes this ring has, from `protocol`, which ring 3 cannot reach.
     ///
-    /// From `protocol`, which ring 3 cannot reach. The header page carries the
-    /// same three numbers for a program to read, and a check that asked *it*
-    /// would be asking ring 3 what shape its own ring is — which a program
-    /// installed at `user::RING` can answer however it likes, including with a
-    /// `submissions` whose double overflows a `u32` and panics the debug
-    /// kernel (D-115).
+    /// The header's copy is a program's to rewrite, even to a count whose double overflows a `u32`
+    /// and panics the debug kernel.
     #[cfg(feature = "selftest")]
     pub(crate) fn shape(&self) -> (u32, u32, u32) {
         let ring = self.ring.lock_leaf();
@@ -320,10 +283,8 @@ impl Queue {
 
     /// The header page, as a program would read it.
     ///
-    /// Every number here is ring 3's the moment the ring is installed, so a
-    /// caller must treat it as an assertion about *publication* and never as
-    /// one about shape. The only honest use is comparing it against
-    /// [`shape`](Self::shape) on a ring no program has been given.
+    /// Ring 3's once installed, so a caller must treat it as publication, never shape, and compare
+    /// it with [`shape`](Self::shape) only on a ring no program has been given.
     #[cfg(feature = "selftest")]
     pub(crate) fn published_shape(&self) -> (u32, u32, u32) {
         let ring = self.ring.lock_leaf();
@@ -337,10 +298,7 @@ impl Queue {
 /// Run a check through the production missing-worker predicate.
 #[cfg(feature = "selftest")]
 pub(crate) fn without_worker_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let refused = REFUSE_WORKER.swap(true, Ordering::AcqRel);
-    let result = check();
-    REFUSE_WORKER.store(refused, Ordering::Release);
-    result
+    REFUSE_WORKER.with(true, check)
 }
 
 /// Stop or resume work before it leaves the bounded queue.

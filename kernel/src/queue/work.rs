@@ -17,8 +17,8 @@ use super::{
 use crate::handle::{HandleTable, SlotReservation};
 use crate::wait::WaitQueue;
 
-/// Global file-work admission. One worker makes controller ownership and
-/// completion order explicit; the bound makes overload an immediate refusal.
+/// Global file-work admission: one worker makes controller ownership and completion order
+/// explicit, and the bound makes overload an immediate refusal.
 const WORK_DEPTH: usize = 8;
 
 #[derive(Debug)]
@@ -27,9 +27,8 @@ pub(super) struct Work {
     pending: usize,
     expected: Pending,
     tag: WorkTag,
-    /// Present exactly for `OpenAt`. Keeping the bounded path inline avoids a
-    /// fallible heap allocation in trap-side admission while every queue slot
-    /// remains statically accounted (D-381).
+    /// Present exactly for `OpenAt`, inline so trap-side admission makes no fallible heap
+    /// allocation and every queue slot stays statically accounted.
     open_at: Option<OpenRequest>,
 }
 
@@ -200,9 +199,8 @@ impl FileWorkQueue {
 
     fn take(&self) -> Option<RunningWork> {
         loop {
-            // Copy only the key while holding the queue leaf. Claiming the
-            // pending entry takes the ring's distinct leaf and therefore must
-            // happen after this guard is gone (D-85).
+            // Copy only the key under the queue leaf: claiming the pending entry takes the ring's
+            // distinct leaf, so it must happen after this guard is gone.
             let key = {
                 let state = self.state.lock_leaf();
                 state.front().map(Work::key)
@@ -432,10 +430,8 @@ impl Queue {
 
     /// Read bytes of a file into the ring's data area.
     ///
-    /// **Offsets are per operation** (`012` §6, D-152): the submission says
-    /// where to start, and nothing anywhere holds a cursor. Two handles to one
-    /// file have no observable coupling, which in a capability system is the
-    /// difference between an interface and a covert channel.
+    /// The submission says where to start and nothing anywhere holds a cursor, so two handles to
+    /// one file have no observable coupling, which would be a covert channel (`012` §6).
     pub(super) fn read(
         self: &Arc<Self>,
         submission: Submission,
@@ -453,15 +449,13 @@ impl Queue {
             return Some(refuse(token, STATUS_DENIED));
         }
 
-        // Bounded before anything is read: a length past the data area would
-        // be the kernel writing outside the pages it shares.
+        // Bounded before anything is read, or the kernel would write outside the pages it shares.
         let Some(bounds) = data_bounds(submission.argument, submission.length) else {
             return Some(refuse(token, STATUS_BAD_BUFFER));
         };
 
         let wanted = (bounds.1).min(MAX_READ);
-        // An offset past every possible file reads nothing; a cast would wrap
-        // it to somewhere inside the file (D-174).
+        // An offset past every possible file reads nothing; a cast would wrap it inside the file.
         let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);
         let request = ReadRequest {
             file,
@@ -586,8 +580,7 @@ pub(super) fn work_state_round_trip_is_exact_for_test() -> bool {
         .all(|id| state.pop().is_some_and(|work| work.expected.id == id));
 
     let empty = state.pop().is_none() && state.is_consistent();
-    // Keep the empty ring's modulo relation valid so only the exclusive head
-    // bound rejects this forged state (D-396).
+    // Keep the empty ring's modulo relation valid so only the exclusive head bound rejects this.
     state.head = WORK_DEPTH;
     state.tail = 0;
     let bad_head = !state.is_consistent();
@@ -663,7 +656,7 @@ pub(crate) fn start_worker() {
 pub(crate) fn worker_is_ready() -> bool {
     let ready = WORKER_READY.load(Ordering::Acquire);
     #[cfg(feature = "selftest")]
-    let ready = ready && !REFUSE_WORKER.load(Ordering::Acquire);
+    let ready = ready && !REFUSE_WORKER.armed();
     ready
 }
 
@@ -797,8 +790,8 @@ fn service(mut running: RunningWork) {
 }
 
 fn finish_work(mut running: RunningWork, status: u32, value: u64) {
-    // Admission reserved the completion; the only refusal is D-192's
-    // transient self-test injection, so keep ownership until it posts.
+    // Admission reserved the completion; the only refusal is the transient self-test injection,
+    // so keep ownership until it posts.
     loop {
         match running.finish(status, value) {
             None => break,
@@ -810,16 +803,10 @@ fn finish_work(mut running: RunningWork, status: u32, value: u64) {
     }
 }
 
-/// The longest path an `OpenAt` may name.
-///
-/// Bounded because the buffer is on this stack, and bounded *here* rather than
-/// by the data area's size because a kernel stack is thirty-two kilobytes and
-/// a page is four.
+/// The longest path an `OpenAt` may name, far below a page because the buffer is on a 32 KiB
+/// kernel stack.
 const MAX_PATH: usize = 256;
 
-/// The most bytes one `Read` moves.
-///
-/// The same reasoning: it is a stack buffer, and a caller asking for more gets
-/// fewer bytes rather than a refusal — which is what every short read in this
-/// kernel does and what a caller must already handle.
+/// The most bytes one `Read` moves, from a stack buffer. A caller asking for more gets a short
+/// read, as every short read in this kernel does, which a caller must already handle.
 const MAX_READ: usize = 512;
