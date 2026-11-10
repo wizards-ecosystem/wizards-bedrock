@@ -1,8 +1,6 @@
-//! The things a handle can name.
+//! The things a handle can name; channels are only the bootstrap identity.
 //!
-//! Channels currently provide only the opaque identity used by the bootstrap
-//! handle. File and directory references are copyable VFS identities. Message
-//! transport waits for a concrete Wizzy caller (D-248).
+//! Message transport waits for a concrete Wizzy caller.
 
 use alloc::sync::Arc;
 #[cfg(feature = "selftest")]
@@ -14,7 +12,6 @@ use handle_space::Rights;
 
 /// What kind of thing a handle names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub(crate) enum ObjectType {
     /// An opaque bootstrap identity.
     Channel,
@@ -28,8 +25,7 @@ impl ObjectType {
     /// The rights that mean something for this kind of object.
     pub(crate) const fn per_type_rights(self) -> Rights {
         match self {
-            // Bootstrap channels expose identity, not data operations. The
-            // universal rights remain meaningful for every object.
+            // Channels expose identity only; the universal rights still apply to every object.
             Self::Channel => Rights::NONE,
             Self::File => Rights::READ,
             Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),

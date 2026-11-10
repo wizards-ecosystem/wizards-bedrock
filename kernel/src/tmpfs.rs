@@ -1,19 +1,6 @@
-//! A filesystem made of memory.
-//!
-//! The second backend, and `014` says why there has to be one: *the VFS needs
-//! at least two backends before its abstraction is anything but a guess.* A
-//! directory trait with one implementation is a description of that
-//! implementation.
-//!
-//! **Deliberately unlike FAT32 in the ways that matter.** It has no clusters,
-//! no chains, no on-disk anything, and its directories are a flat table with
-//! parent indices rather than a linked structure on a device. If the VFS's
-//! three operations fit both, they are about directories rather than about
-//! FAT.
-//!
-//! **Fixed-size and read-only before the Wizzy gate.** The arena is a `static`;
-//! admitting growth here would invent the post-gate write protocol before its
-//! caller. What is here is populated once, at boot.
+//! A filesystem made of memory: the VFS's second backend, unlike FAT32 so the abstraction is not
+//! FAT's (`014`). Fixed-size, read-only and populated once at boot until the Wizzy gate, since
+//! growth would invent the post-gate write protocol before its caller.
 
 use wost::sync::{Once, SpinLock};
 
@@ -84,8 +71,7 @@ pub(crate) fn init() {
     assert!(INIT.claim(), "tmpfs initialized twice");
     let mut arena = Arena::EMPTY;
 
-    // The root, which is its own parent — the only entry that is, and the
-    // reason nothing needs a separate "is the root" flag.
+    // The root is its own parent, the only entry that is, so no "is the root" flag is needed.
     arena.entries[ROOT] = Entry {
         name: [0; MAX_NAME],
         name_len: 0,
@@ -183,8 +169,7 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     let arena = ARENA.lock_leaf();
     for index in 0..arena.used {
         let entry = &arena.entries[index];
-        // The parent is the whole containment check; `index != ROOT` stops
-        // the root, its own parent, from being found inside itself.
+        // The parent is the whole containment check; skipping `ROOT` keeps it out of itself.
         if index == ROOT || entry.parent != directory {
             continue;
         }
@@ -261,12 +246,8 @@ pub(crate) fn list(directory: usize) -> Option<Listing> {
     Some(listing)
 }
 
-/// Copy bytes of a file into `into`, starting `offset` in.
-///
-/// Returns how many were copied, which is fewer than asked for at the end of
-/// the file and zero past it — the same shape as every other backend's, and
-/// with the same reason: **offsets are per operation** and nothing here holds
-/// a cursor (D-152, D-171).
+/// Copy bytes of a file into `into` from `offset`: how many were copied, fewer at the end of the
+/// file and zero past it, with per-operation offsets as in every backend.
 pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usize {
     if offset >= len {
         return 0;

@@ -14,23 +14,15 @@ pub(super) struct QueuePair {
     pub(super) submission: DmaSegment,
     /// The completion entries, likewise.
     pub(super) completion: DmaSegment,
-    /// Whether each segment may still have a live or cached VT-d translation.
-    ///
-    /// These are conservative hardware-ownership facts, not publication
-    /// shadows. An uncertain map or unmap leaves its bit set and retains the
-    /// segment, so neither `Drop` nor candidate teardown can recycle it.
+    /// Whether each segment may still have a live or cached VT-d translation; an uncertain map or
+    /// unmap leaves it set and retains the segment, so neither `Drop` nor teardown recycles it.
     submission_mapped: bool,
     completion_mapped: bool,
-    /// Where the host will write next. **Shadowed**, because the doorbell is
-    /// write-only and the controller's idea of the tail cannot be read back.
+    /// Where the host writes next, shadowed because the doorbell is write-only.
     pub(super) tail: u32,
     pub(super) submission_head: u32,
     pub(super) completion_head: u32,
-    /// The phase a *new* completion carries.
-    ///
-    /// There is no tail to read: an entry is new when its phase tag differs
-    /// from the last pass's. A zeroed queue starts at zero, so the first pass
-    /// looks for one.
+    /// The phase a new completion carries; a zeroed queue reads zero, so the first pass wants one.
     pub(super) phase: bool,
 }
 
@@ -42,8 +34,7 @@ impl QueuePair {
 
         let mut submission = DmaSegment::from(mm::allocate_contiguous(submission_frames, 1)?);
         let mut completion = DmaSegment::from(mm::allocate_contiguous(completion_frames, 1)?);
-        // Cleared, because the phase tag of an unwritten entry is what says
-        // "nothing here yet", and stale memory says whatever it last held.
+        // Cleared: an unwritten entry's phase tag says "nothing here yet", and stale memory lies.
         if !submission.zero() || !completion.zero() {
             return None;
         }
@@ -82,7 +73,7 @@ impl QueuePair {
         self.submission_mapped || self.completion_mapped
     }
 
-    /// Make both queues reachable by the device, or neither (D-357).
+    /// Make both queues reachable by the device, or neither.
     #[must_use = "unmapped queues cannot be published to the controller"]
     pub(super) fn map_into(&mut self, isolation: &mut Vtd) -> bool {
         if self.has_mappings() {

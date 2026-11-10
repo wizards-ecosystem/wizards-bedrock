@@ -87,12 +87,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 260,
         file: "kernel/src/nvme/io.rs",
-        find: "                if completion_head == 0 {
-                    queue.phase = !queue.phase;
-                }",
-        replace: "                if false {
-                    queue.phase = !queue.phase;
-                }",
+        find: "        if completion_head == 0 {\n            queue.phase = !queue.phase;\n        }",
+        replace: "        if false {\n            queue.phase = !queue.phase;\n        }",
         breaks: "a completion queue wraps and stays readable",
         reddens: Caught::Check("the queues wrap and the phase tag still works"),
     },
@@ -164,7 +160,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 300,
         file: "kernel/src/nvme/io.rs",
-        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)",
+        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation, mapping)",
         replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
         breaks: "a command timeout settles dma before returning",
         reddens: Caught::Check("an nvme timeout quiesces before dma memory returns"),
