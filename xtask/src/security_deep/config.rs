@@ -593,11 +593,11 @@ fn named_enablement(
         .collect()
 }
 
-fn optional_object<'a>(
-    object: &'a BTreeMap<String, JsonValue>,
+fn optional_object<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
     field: &str,
     label: &str,
-) -> Result<Option<&'a BTreeMap<String, JsonValue>>> {
+) -> Result<Option<&'json BTreeMap<String, JsonValue>>> {
     match object.get(field) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => json_object(value, label).map(Some),

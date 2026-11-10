@@ -658,8 +658,8 @@ pub(super) fn assert_clock_arithmetic(source: &str) {
     );
 }
 
-struct CIntegerParser<'a> {
-    source: &'a [u8],
+struct CIntegerParser<'source> {
+    source: &'source [u8],
     at: usize,
 }
 

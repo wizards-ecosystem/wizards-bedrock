@@ -492,9 +492,9 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
 }
 
 fn exact_self_method_call(boundary: &syn::ImplItemFn, called: &str, arguments: &[&str]) {
-    struct Calls<'a> {
-        called: &'a str,
-        arguments: &'a [&'a str],
+    struct Calls<'expected> {
+        called: &'expected str,
+        arguments: &'expected [&'expected str],
         total: usize,
         exact: usize,
     }
@@ -745,7 +745,7 @@ impl Visit<'_> for PciTopologyConstructions {
     }
 }
 
-fn for_loop_named<'a>(block: &'a syn::Block, name: &str) -> &'a syn::ExprForLoop {
+fn for_loop_named<'ast>(block: &'ast syn::Block, name: &str) -> &'ast syn::ExprForLoop {
     block
         .stmts
         .iter()
@@ -1032,7 +1032,7 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
 fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     use syn::parse::Parser;
 
-    fn local_value<'a>(statement: &'a Stmt, name: &str) -> &'a Expr {
+    fn local_value<'ast>(statement: &'ast Stmt, name: &str) -> &'ast Expr {
         let Stmt::Local(local) = statement else {
             panic!("missing {name} local");
         };

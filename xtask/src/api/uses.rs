@@ -387,12 +387,12 @@ impl Uses {
         !applicable && !unresolved
     }
 
-    fn dispatch_matches<'a>(
+    fn dispatch_matches<'inventory>(
         &self,
-        inventory: &'a Inventory,
+        inventory: &'inventory Inventory,
         site: &DispatchSite,
         evidence: &DispatchEvidence,
-    ) -> Vec<&'a TraitActivation> {
+    ) -> Vec<&'inventory TraitActivation> {
         let exact_self_type = self.exact_self_type(inventory, site, evidence);
         let has_trait_declaration_evidence = evidence.callee_nodes.iter().any(|node| {
             matches!(
@@ -624,7 +624,10 @@ impl GraphUses {
         self.graphs[graph].observe_cargo(kind, inventory, root, diagnostics, instrumentation)
     }
 
-    pub(super) fn dead<'a>(&self, inventory: &'a Inventory) -> Vec<&'a Node> {
+    pub(super) fn dead<'inventory>(
+        &self,
+        inventory: &'inventory Inventory,
+    ) -> Vec<&'inventory Node> {
         let live = self
             .graphs
             .iter()

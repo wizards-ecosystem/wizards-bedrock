@@ -479,7 +479,7 @@ fn parse_lock(text: &str) -> Result<Vec<LockedPackage>> {
     Ok(packages)
 }
 
-fn value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+fn value<'line>(line: &'line str, key: &str) -> Option<&'line str> {
     line.strip_prefix(key)
         .and_then(|rest| rest.strip_prefix(" = "))
         .and_then(quoted)
@@ -661,7 +661,7 @@ fn local_normal_dependencies(
     Ok(dependencies)
 }
 
-fn manifest_array<'a>(manifest: &'a str, key: &str) -> Result<Vec<&'a str>> {
+fn manifest_array<'manifest>(manifest: &'manifest str, key: &str) -> Result<Vec<&'manifest str>> {
     let start = format!("{key} = [");
     let body = manifest
         .split_once(&start)
@@ -1033,15 +1033,15 @@ fn render_spdx(inventory: &Inventory, source: &str) -> Result<String> {
     Ok(out)
 }
 
-struct PackageRecord<'a> {
-    name: &'a str,
-    id: &'a str,
-    version: &'a str,
-    digest: Option<&'a str>,
-    concluded_license: &'a str,
-    declared_license: &'a str,
-    comment: &'a str,
-    download: &'a str,
+struct PackageRecord<'inventory> {
+    name: &'inventory str,
+    id: &'inventory str,
+    version: &'inventory str,
+    digest: Option<&'inventory str>,
+    concluded_license: &'inventory str,
+    declared_license: &'inventory str,
+    comment: &'inventory str,
+    download: &'inventory str,
 }
 
 impl PackageRecord<'_> {

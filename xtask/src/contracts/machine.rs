@@ -920,8 +920,8 @@ fn buffer_clear_assembly_writes_are_guarded() {
     );
 }
 
-struct ObservationEpoch<'a> {
-    expected: &'a [&'a str],
+struct ObservationEpoch<'expected> {
+    expected: &'expected [&'expected str],
     observations: Vec<String>,
     outside: Vec<String>,
     disables: usize,

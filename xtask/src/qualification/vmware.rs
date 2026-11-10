@@ -8,15 +8,15 @@ pub(crate) struct VmwareAttempt {
     vmrun: Tool,
 }
 
-pub(crate) struct VmwareArtifacts<'a> {
-    pub(crate) image: &'a Path,
-    pub(crate) namespace: &'a Path,
-    pub(crate) vmdk: &'a Path,
-    pub(crate) namespace_vmdk: &'a Path,
-    pub(crate) vmx: &'a Path,
-    pub(crate) handoff: &'a Path,
-    pub(crate) transcript: &'a Path,
-    pub(crate) receipt: &'a Path,
+pub(crate) struct VmwareArtifacts<'artifacts> {
+    pub(crate) image: &'artifacts Path,
+    pub(crate) namespace: &'artifacts Path,
+    pub(crate) vmdk: &'artifacts Path,
+    pub(crate) namespace_vmdk: &'artifacts Path,
+    pub(crate) vmx: &'artifacts Path,
+    pub(crate) handoff: &'artifacts Path,
+    pub(crate) transcript: &'artifacts Path,
+    pub(crate) receipt: &'artifacts Path,
 }
 
 #[derive(Debug)]
@@ -133,9 +133,9 @@ impl CapturedVmwareGeneration {
     }
 }
 
-fn vmware_artifact_sources<'a>(
-    artifacts: &VmwareArtifacts<'a>,
-) -> [(&'static str, &'static str, &'a Path); 8] {
+fn vmware_artifact_sources<'artifacts>(
+    artifacts: &VmwareArtifacts<'artifacts>,
+) -> [(&'static str, &'static str, &'artifacts Path); 8] {
     [
         (
             "artifact.generation",

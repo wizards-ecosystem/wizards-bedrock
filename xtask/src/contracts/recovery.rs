@@ -22,7 +22,7 @@ fn parse(relative: &str) -> syn::File {
     syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"))
 }
 
-fn function<'a>(syntax: &'a syn::File, name: &str) -> &'a ItemFn {
+fn function<'ast>(syntax: &'ast syn::File, name: &str) -> &'ast ItemFn {
     syntax
         .items
         .iter()
@@ -796,7 +796,10 @@ fn is_exact_address_observer(method: &syn::ImplItemFn) -> bool {
         && address_returns_private_field(method)
 }
 
-fn authority<'a>(syntax: &'a syn::File, name: &str) -> (&'a ItemStruct, AuthoritySurface<'a>) {
+fn authority<'ast>(
+    syntax: &'ast syn::File,
+    name: &str,
+) -> (&'ast ItemStruct, AuthoritySurface<'ast>) {
     let structure = syntax
         .items
         .iter()

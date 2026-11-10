@@ -73,14 +73,14 @@ fn field_chain_is(expression: &Expr, root: &str, fields: &[&str]) -> bool {
         if member_is(&field.member, last) && field_chain_is(&field.base, root, prefix))
 }
 
-fn call_is<'a>(expression: &'a Expr, name: &str) -> Option<&'a ExprCall> {
+fn call_is<'ast>(expression: &'ast Expr, name: &str) -> Option<&'ast ExprCall> {
     let Expr::Call(call) = expression else {
         return None;
     };
     path_expression_is(&call.func, &[name]).then_some(call)
 }
 
-fn function<'a>(syntax: &'a syn::File, name: &str) -> &'a ItemFn {
+fn function<'ast>(syntax: &'ast syn::File, name: &str) -> &'ast ItemFn {
     syntax
         .items
         .iter()
@@ -114,12 +114,12 @@ impl<'ast> Visit<'ast> for MethodFinder<'_, 'ast> {
     }
 }
 
-fn find_method<'a>(
-    syntax: &'a syn::File,
+fn find_method<'ast>(
+    syntax: &'ast syn::File,
     owner: &str,
     name: &str,
     inherent_only: bool,
-) -> Option<&'a syn::ImplItemFn> {
+) -> Option<&'ast syn::ImplItemFn> {
     let mut methods = MethodFinder {
         owner,
         name,
@@ -130,15 +130,15 @@ fn find_method<'a>(
     core::iter::Iterator::next(&mut methods.found.into_iter())
 }
 
-fn method<'a>(syntax: &'a syn::File, owner: &str, name: &str) -> Option<&'a syn::ImplItemFn> {
+fn method<'ast>(syntax: &'ast syn::File, owner: &str, name: &str) -> Option<&'ast syn::ImplItemFn> {
     find_method(syntax, owner, name, true)
 }
 
-fn implemented_method<'a>(
-    syntax: &'a syn::File,
+fn implemented_method<'ast>(
+    syntax: &'ast syn::File,
     owner: &str,
     name: &str,
-) -> Option<&'a syn::ImplItemFn> {
+) -> Option<&'ast syn::ImplItemFn> {
     find_method(syntax, owner, name, false)
 }
 

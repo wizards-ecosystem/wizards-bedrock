@@ -426,7 +426,7 @@ fn canonical_usize_field(line: &str, prefix: &str) -> Result<usize> {
     Ok(parsed)
 }
 
-fn digest_field<'a>(line: &'a str, prefix: &str) -> Result<&'a str> {
+fn digest_field<'line>(line: &'line str, prefix: &str) -> Result<&'line str> {
     let value = line
         .strip_prefix(prefix)
         .with_context(|| format!("cargo-audit transcript has no `{prefix}` field"))?;

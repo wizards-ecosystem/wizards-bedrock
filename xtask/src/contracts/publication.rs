@@ -28,7 +28,7 @@ mod tests {
             .to_path_buf()
     }
 
-    fn method<'a>(source: &'a str, name: &str) -> &'a str {
+    fn method<'source>(source: &'source str, name: &str) -> &'source str {
         let signatures = [
             format!("    pub fn {name}"),
             format!("    pub const fn {name}"),
@@ -140,7 +140,7 @@ mod tests {
             .expect("ring protocol source")
     }
 
-    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    fn between<'source>(source: &'source str, start: &str, end: &str) -> &'source str {
         let rest = source
             .split_once(start)
             .unwrap_or_else(|| panic!("missing source marker {start:?}"))

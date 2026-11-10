@@ -261,8 +261,8 @@ impl Holding {
 }
 
 #[derive(Clone, Copy)]
-struct AuthorityTypes<'a> {
-    carriers: &'a BTreeMap<String, Holding>,
+struct AuthorityTypes<'carriers> {
+    carriers: &'carriers BTreeMap<String, Holding>,
     self_type: Option<Holding>,
 }
 
@@ -376,8 +376,8 @@ impl AuthorityTypes<'_> {
     }
 }
 
-struct AuthorityNames<'a> {
-    types: AuthorityTypes<'a>,
+struct AuthorityNames<'carriers> {
+    types: AuthorityTypes<'carriers>,
     found: bool,
 }
 
@@ -392,9 +392,9 @@ impl<'ast> Visit<'ast> for AuthorityNames<'_> {
     }
 }
 
-fn authority_fields<'f>(
+fn authority_fields<'ast>(
     types: AuthorityTypes<'_>,
-    fields: impl IntoIterator<Item = &'f syn::Field>,
+    fields: impl IntoIterator<Item = &'ast syn::Field>,
 ) -> Holding {
     fields.into_iter().fold(Holding::default(), |held, field| {
         held.both(types.holding(&field.ty))
@@ -475,9 +475,9 @@ fn copies(count: u32) -> String {
     }
 }
 
-struct AuthorityInventory<'a> {
-    file: &'a str,
-    carriers: &'a BTreeMap<String, Holding>,
+struct AuthorityInventory<'carriers> {
+    file: &'carriers str,
+    carriers: &'carriers BTreeMap<String, Holding>,
     names_authority: bool,
     self_type: Option<Holding>,
     owner: Option<String>,
@@ -485,8 +485,8 @@ struct AuthorityInventory<'a> {
     mints: BTreeMap<String, usize>,
 }
 
-impl<'a> AuthorityInventory<'a> {
-    const fn types(&self) -> AuthorityTypes<'a> {
+impl<'carriers> AuthorityInventory<'carriers> {
+    const fn types(&self) -> AuthorityTypes<'carriers> {
         AuthorityTypes {
             carriers: self.carriers,
             self_type: self.self_type,
@@ -497,10 +497,10 @@ impl<'a> AuthorityInventory<'a> {
         self.violations.push(format!("{}: {reason}", self.file));
     }
 
-    fn require_fields<'f>(
+    fn require_fields<'ast>(
         &mut self,
         owner: &syn::Ident,
-        fields: impl IntoIterator<Item = &'f syn::Field>,
+        fields: impl IntoIterator<Item = &'ast syn::Field>,
     ) {
         let types = AuthorityTypes {
             carriers: self.carriers,

@@ -251,14 +251,14 @@ struct ShellEnvironmentPolicy {
     temporary: PathBuf,
 }
 
-struct OwnedMcpInvocation<'a> {
-    source: &'a SourceIdentity,
-    scratch: &'a OwnedScratch,
-    worker_policy: &'a ManagedWorkerPolicy,
-    tools: &'a Toolchain,
-    git: &'a Path,
-    overrides: &'a [String],
-    shell_environment: &'a ShellEnvironmentPolicy,
+struct OwnedMcpInvocation<'run> {
+    source: &'run SourceIdentity,
+    scratch: &'run OwnedScratch,
+    worker_policy: &'run ManagedWorkerPolicy,
+    tools: &'run Toolchain,
+    git: &'run Path,
+    overrides: &'run [String],
+    shell_environment: &'run ShellEnvironmentPolicy,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

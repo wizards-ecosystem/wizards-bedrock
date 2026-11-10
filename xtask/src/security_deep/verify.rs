@@ -432,7 +432,10 @@ fn require_document(root: &BTreeMap<String, JsonValue>, document: &str) -> Resul
     Ok(())
 }
 
-fn require_scope<'a>(value: &'a JsonValue, label: &str) -> Result<&'a BTreeMap<String, JsonValue>> {
+fn require_scope<'json>(
+    value: &'json JsonValue,
+    label: &str,
+) -> Result<&'json BTreeMap<String, JsonValue>> {
     let scope = json_object(value, label)?;
     require_allowed_json_fields(
         scope,
@@ -561,11 +564,11 @@ fn require_allowed_json_fields(
     Ok(())
 }
 
-fn optional_nonempty_string<'a>(
-    object: &'a BTreeMap<String, JsonValue>,
+fn optional_nonempty_string<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
     field: &str,
     label: &str,
-) -> Result<Option<&'a str>> {
+) -> Result<Option<&'json str>> {
     let Some(value) = object.get(field) else {
         return Ok(None);
     };
@@ -750,22 +753,22 @@ fn verify_manifest_artifacts(value: &JsonValue, findings: &[u8], coverage: &[u8]
     Ok(())
 }
 
-pub(super) fn string<'a>(
-    object: &'a BTreeMap<String, JsonValue>,
+pub(super) fn string<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
     field: &str,
     label: &str,
-) -> Result<&'a str> {
+) -> Result<&'json str> {
     json_string(
         json_field(object, field, label)?,
         &format!("{label} `{field}`"),
     )
 }
 
-pub(super) fn nonempty_string<'a>(
-    object: &'a BTreeMap<String, JsonValue>,
+pub(super) fn nonempty_string<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
     field: &str,
     label: &str,
-) -> Result<&'a str> {
+) -> Result<&'json str> {
     let value = string(object, field, label)?;
     ensure!(!value.is_empty(), "{label} `{field}` is empty");
     Ok(value)

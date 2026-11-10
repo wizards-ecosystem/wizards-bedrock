@@ -48,11 +48,11 @@ const TRANSPARENT_MACROS: &[&str] = &[
 
 const TOKEN_GRAMMAR_STATEMENT_MACROS: &[&str] = &["asm", "naked_asm"];
 
-pub(super) struct MacroShadowPolicy<'a> {
+pub(super) struct MacroShadowPolicy<'context> {
     pub(super) shadows_standard: bool,
     pub(super) reserved_root_rebinding: Option<String>,
-    pub(super) context: &'a ModuleContext,
-    pub(super) relative: &'a Path,
+    pub(super) context: &'context ModuleContext,
+    pub(super) relative: &'context Path,
 }
 
 impl<'ast> Visit<'ast> for MacroShadowPolicy<'_> {

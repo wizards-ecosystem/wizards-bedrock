@@ -84,9 +84,9 @@ const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
 /// Names in a vendored directory that neither an entry nor the directory's own
 /// paperwork accounts for, sorted so the report is stable.
-pub fn unaccounted<'a, I>(present: I, entries: &[Entry]) -> Vec<String>
+pub fn unaccounted<'name, I>(present: I, entries: &[Entry]) -> Vec<String>
 where
-    I: IntoIterator<Item = &'a str>,
+    I: IntoIterator<Item = &'name str>,
 {
     let mut extra: Vec<String> = present
         .into_iter()

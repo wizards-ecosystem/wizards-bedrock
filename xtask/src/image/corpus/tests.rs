@@ -2,7 +2,7 @@ use super::*;
 
 /// A source of sectors backed by a slice, which is what the host has where
 /// the kernel has a controller.
-struct Bytes<'a>(&'a [u8]);
+struct Bytes<'bytes>(&'bytes [u8]);
 
 impl fat32::Sectors for Bytes<'_> {
     type Error = ();

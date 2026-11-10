@@ -1077,11 +1077,11 @@ fn parse_json(bytes: &[u8]) -> Result<JsonValue> {
     crate::json::parse_json(bytes, "cargo-audit JSON")
 }
 
-fn json_array<'a>(value: &'a JsonValue, label: &str) -> Result<&'a [JsonValue]> {
+fn json_array<'json>(value: &'json JsonValue, label: &str) -> Result<&'json [JsonValue]> {
     parse_json_array(value, &format!("cargo-audit `{label}`"))
 }
 
-fn json_string_array<'a>(value: &'a JsonValue, label: &str) -> Result<Vec<&'a str>> {
+fn json_string_array<'json>(value: &'json JsonValue, label: &str) -> Result<Vec<&'json str>> {
     parse_json_string_array(value, &format!("cargo-audit `{label}`"))
 }
 
@@ -1089,7 +1089,10 @@ fn json_u64(value: &JsonValue, label: &str) -> Result<u64> {
     parse_json_u64(value, &format!("cargo-audit `{label}`"))
 }
 
-fn json_field<'a>(object: &'a BTreeMap<String, JsonValue>, name: &str) -> Result<&'a JsonValue> {
+fn json_field<'json>(
+    object: &'json BTreeMap<String, JsonValue>,
+    name: &str,
+) -> Result<&'json JsonValue> {
     parse_json_field(object, name, "cargo-audit JSON")
 }
 

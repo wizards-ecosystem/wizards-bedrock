@@ -226,7 +226,7 @@ impl Uses {
     }
 
     #[cfg(test)]
-    fn dead<'a>(&self, inventory: &'a Inventory) -> Vec<&'a Node> {
+    fn dead<'inventory>(&self, inventory: &'inventory Inventory) -> Vec<&'inventory Node> {
         let live = self.live(inventory);
         inventory
             .nodes

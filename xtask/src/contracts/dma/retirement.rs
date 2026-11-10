@@ -13,14 +13,14 @@ fn dereferenced_path_is(expression: &Expr, names: &[&str]) -> bool {
         if matches!(unary.op, syn::UnOp::Deref(_)) && path_expression_is(&unary.expr, names))
 }
 
-fn tried_call_is<'a>(statement: &'a Stmt, name: &str) -> Option<&'a ExprCall> {
+fn tried_call_is<'ast>(statement: &'ast Stmt, name: &str) -> Option<&'ast ExprCall> {
     let Stmt::Expr(Expr::Try(tried), Some(_)) = statement else {
         return None;
     };
     call_is(&tried.expr, name)
 }
 
-fn tried_local_initializer<'a>(statement: &'a Stmt, name: &str) -> Option<&'a Expr> {
+fn tried_local_initializer<'ast>(statement: &'ast Stmt, name: &str) -> Option<&'ast Expr> {
     let Stmt::Local(local) = statement else {
         return None;
     };
@@ -49,7 +49,7 @@ impl<'ast> Visit<'ast> for Implementations<'ast, '_> {
     }
 }
 
-fn implementations<'a>(syntax: &'a syn::File, owner: &str) -> Vec<&'a ItemImpl> {
+fn implementations<'ast>(syntax: &'ast syn::File, owner: &str) -> Vec<&'ast ItemImpl> {
     let mut found = Implementations {
         owner,
         items: Vec::new(),
