@@ -2336,4 +2336,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "api::tests::compile::windows_hosts_link_with_sysroot_lld_and_other_hosts_with_cc",
         },
     },
+    Mutation {
+        id: 2474,
+        file: "xtask/src/api/compile.rs",
+        find: "        .env_remove(\"GCC_EXEC_PREFIX\")\n        .env_remove(\"LIBRARY_PATH\")\n",
+        replace: "",
+        breaks: "an ambient gcc search prefix or library path reaches the pinned host C driver",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::workspace::every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers",
+        },
+    },
 ];

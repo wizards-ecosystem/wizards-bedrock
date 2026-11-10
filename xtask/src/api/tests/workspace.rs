@@ -135,6 +135,9 @@ fn every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers() {
         environment.get(std::ffi::OsStr::new("PATH")),
         Some(&Some(compiler.tool_path.clone()))
     );
+    for ambient in ["GCC_EXEC_PREFIX", "LIBRARY_PATH"] {
+        assert_eq!(environment.get(std::ffi::OsStr::new(ambient)), Some(&None));
+    }
     assert_eq!(
         environment.get(std::ffi::OsStr::new("COMPILER_PATH")),
         compiler
