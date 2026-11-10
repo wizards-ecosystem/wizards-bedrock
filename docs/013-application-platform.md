@@ -59,7 +59,7 @@ historical charter describes the eventual platform need.
 | Debt | Where recorded | What 6.5 does |
 |---|---|---|
 | No completion carries a handle, so the ring cannot be the delegation path the channels are | `011` close | Pays it, in the phase whose first operation produces one |
-| The program's stack is the boot-time arena, so sixteen is a cap on concurrency | D-117; `011` close | **Not here.** Named so nobody mistakes it: it is Phase 7's, and a shell reaches it immediately |
+| The program's stack is the boot-time arena, so sixteen is a cap on concurrency | D-117; `011` close | **Not here.** Named so nobody mistakes it: it is old Phase 7's, and a shell reaches it immediately |
 | `xtask/src/elf.rs` transcribes the ELF header rather than using `libs/elf64` | D-105; `011` close | **Not here**, but the note reservation below is the second caller that makes the duplication cost something |
 | A program receives exactly one handle at spawn and must negotiate the rest | D-111 | Reserves metadata that lets a spawner decide and enqueue bootstrap grants before the first instruction; does not build delivery |
 
@@ -127,7 +127,7 @@ This is already the design: pillar 1. Native OpenAt now exists, so D-181
 records `sys_open` as PARTIAL rather than absent: ring 3 still cannot receive
 the first delegated directory, and a POSIX root and current directory may be
 constructed only from directory handles the process was delegated. The constraint is written
-here because a VFS is exactly where an ambient root grows out of convenience,
+here because a VFS is where an ambient root grows out of convenience,
 and because the alternative is settled elsewhere: Capsicum reached openat-only
 in 2010, and WASI's preopened directories and Fuchsia's per-process namespaces
 arrived at the same answer independently.
@@ -235,7 +235,7 @@ consequence.
   `READ` derivation never restores a universal right the directory lacked.
 - **W-2**: the page is mapped user-readable and nonwritable, and the
   kernel-side reader advances and agrees with the kernel clock. Compiled ring-3
-  reader evidence remains Phase 7 work under D-181.
+  reader evidence remains old Phase 7 work under D-181.
 - **W-3**: a program retires with operations outstanding; each receives its
   terminal completion before ring reclamation, and the frame count stays steady
   across the collection D-117 built.
@@ -247,7 +247,7 @@ Per D-28 every one of these is broken once and watched to fail, and per
 
 - **The ambient-authority question is settled only for time.** Randomness is
   the same question and this phase does not answer it, because nothing needs
-  randomness before Phase 8.
+  randomness before old Phase 8.
 - ~~**No general cancel.**~~ Closed by D-164 in Phase 6: a running program may
   submit `Opcode::Cancel` against an in-flight token, with a separate terminal
   completion for both the cancel and its target.
@@ -255,7 +255,7 @@ Per D-28 every one of these is broken once and watched to fail, and per
   writes it, and the placement fork is open. That is the intended state.
 - **Zircon's vDSO enforcement is not adopted.** W-2 maps a page; it does not
   make that page the only legal syscall path. The hardening is real and the
-  mechanism to enforce it is not free, so it waits for Phase 12 with the other
+  mechanism to enforce it is not free, so it waits for old Phase 12 with the other
   security work.
 
 ## Decisions this phase had to make, taken 2026-08-25

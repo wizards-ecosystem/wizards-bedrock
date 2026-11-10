@@ -30,7 +30,7 @@ session finds them collected.
 
 | Debt | Where recorded | What Phase 3 does |
 |---|---|---|
-| W^X for every mapping | D-12, D-32 ("waits for Phase 3") | Build the tables W^X-correct from the first CR3 write; NX has been on since slice 1 precisely so this is enforceable |
+| W^X for every mapping | D-12, D-32 ("waits for Phase 3") | Build the tables W^X-correct from the first CR3 write; NX has been on since slice 1 so this is enforceable |
 | Guard pages under all stacks, zero-on-allocate | D-12 | Zero-on-allocate lands here. Guarded ordinary thread stacks land in Phase 4 (D-52); the boot and double-fault stacks remain Phase-5 debt |
 | KASLR | D-12; `001-boot.md` known limitation | Blocked on a relocatable image (`linker.ld` hardcodes the base); decide in-phase whether to take the relocation work now or record the deferral |
 | The direct map, deleted with its false bound | D-33 ("Phase 3 adds it back with the code that can use it") | `BootInfo` grows the memory map and HHDM; the direct map returns as the mechanism for table-walking and frame access |
@@ -244,7 +244,7 @@ before testing its own already-active latch, so the second-switch check got a
 correct refusal for the wrong reason. Neither would have been found by reading.
 
 KASLR is deferred, on the record, with its cost named (D-46): it is the only
-baseline item deferred as far as Phase 12, and every phase that adds a mapping
+baseline item deferred as far as old Phase 12, and every phase that adds a mapping
 makes the relocation work more expensive. Ordinary thread-stack guards arrive
 in Phase 4; the boot and double-fault guards remain Phase-5 debt.
 
@@ -420,7 +420,7 @@ zero-on-allocate, the direct map, device holes, the polled keyboard, the scroll
 read-back, and the page-table crate landed here. D-44 answers untyped memory and
 moves memory objects to Phase 5. Ordinary thread-stack guards land in Phase 4;
 the boot and double-fault guards remain Phase-5 work. **KASLR remains deferred**
-to Phase 12 with its cost named by D-46.
+to old Phase 12 with its cost named by D-46.
 
 The close recorded QEMU checks but no dated VMware result. D-18 still makes a
 VMware boot part of the definition of done; the roadmap therefore labels this

@@ -320,7 +320,7 @@ in model-specific registers, reached with `rdmsr`/`wrmsr`.
 The first implementation used xAPIC, reaching the page through Limine's direct
 map of physical memory. It page-faulted on the first read, at
 `0xFFFF8000FEE00030` — and that fault, printed with an address instead of
-resetting the machine, is precisely what slice 1 was for. Under Limine base
+resetting the machine, is what slice 1 was for. Under Limine base
 revision 3 the direct map covers the regions the memory map lists; a device
 hole is not one of them. Mapping the page is therefore work the kernel cannot
 do until it owns page tables, which is Phase 3.
@@ -377,7 +377,7 @@ In order, because the order is the design:
    architecture's state machine has no edge from disabled straight to extended
    mode; a single write setting both bits raises a general protection fault.
    Each is read back rather than assumed, because a disabled APIC stays
-   disabled until reset on some processors and the write is simply ignored.
+   disabled until reset on some processors and the write is ignored.
 3. Read the version register. A version below `0x10` means no integrated APIC
    is answering before configuration begins.
 4. Task priority to zero — accept every priority class. Firmware may not have
@@ -561,7 +561,7 @@ rate.
 A measurement can still lie, and the phase's adversarial audit showed the
 obvious defence does not catch the dangerous case: a stall that crosses the
 counter's 54.9 ms span mid-window folds the elapsed ticks modulo 65536 and
-inflates the rate by a factor of two to four — squarely inside believability
+inflates the rate by a factor of two to four, inside believability
 bounds that must span QEMU's gigahertz and VMware's tens of megahertz. So
 the window is guarded in depth. No gap between two counter observations may
 exceed ten milliseconds — a fold shows up as a giant or backwards step. The
@@ -608,7 +608,7 @@ will read after the increment.
 Two races, two defences. A tick can land between reading the counter and
 reading the countdown, so the countdown read is sandwiched between two reads
 of the tick count and retried when they disagree. The `compiler_fence`s
-around that read are load-bearing: `rdmsr` is `options(nomem)` assembly, and
+around that read are required: `rdmsr` is `options(nomem)` assembly, and
 without the fences the compiler may float the atomic loads across it and
 unmake the sandwich. The second race the sandwich cannot see: code holding
 the interrupt flag clear — any lock — can watch the countdown reload while
@@ -707,7 +707,7 @@ each failure a typed decline — a kernel without a keyboard is worth more
 than one that hung bringing it up. Disable both ports, flush, then write the
 configuration: interrupts off, **translation off** — the controller boots
 translating the keyboard's set 2 into set 1 for the sake of a 1980s BIOS,
-and QEMU really does boot with that shim on, so clearing bit 6 is what makes
+and QEMU does boot with that shim on, so clearing bit 6 is what makes
 the decoder's input raw. The controller self-test follows, and then the
 configuration is **written again**: real controllers may reset it to
 power-on defaults during the test, a quirk worth two lines now rather than
@@ -746,7 +746,7 @@ default level; the self-test asserts arrival programmatically for exactly
 that reason), and the echo through the console lock, which is mainline
 context, where taking it is the sanctioned nesting. Enter echoes a newline.
 Backspace deliberately echoes nothing: the console has no cursor-retreat
-primitive, and building one for a single caller is Phase 7's shell work,
+primitive, and building one for a single caller is old Phase 7's shell work,
 not this slice's.
 
 ### The harness can press a key
@@ -780,7 +780,7 @@ injectivity sweep; every sequence shape byte-at-a-time; recovery from
 corruption in every prefix state; the 256-byte totality sweep; shift's
 "released one, still holding the other" case; the US layout's rows; and the
 QMP client's command strings and reply classification, including a real
-`SHUTDOWN` event line — which will genuinely arrive on that socket when the
+`SHUTDOWN` event line, which will arrive on that socket when the
 exit device fires, and must be skipped, not misread as a verdict.
 
 On the machine, five new checks, reaching 34:
