@@ -1,15 +1,38 @@
-//! The kernel's own page tables (D-45).
+//! The kernel's own page tables: raw walks and `mov cr3`, over the encoding in `x86_paging`.
 //!
-//! [`AddressSpace`] owns four-level tables; the host-tested encoding lives in
-//! `x86_paging`, while raw walks and `mov cr3` stay here (D-30, D-45).
-//! [`activate`] validates its own code and stack before switching.
-//!
-//! Present entries accept only identical rewrites. A clear invalidates when
-//! the current `CR3` reaches its exact slot; distinct lower-half slots rely on
-//! the no-PCID, non-global flush contract when their root is loaded (D-86).
-//!
-//! Mapping authority is typed: owned frames, boot-described memory, and device
-//! holes enter through separate doors (D-87, D-199).
+//! Present entries accept only identical rewrites. A clear invalidates when the current `CR3`
+//! reaches its exact slot; other lower-half slots rely on the no-PCID, non-global root-load flush.
+
+mod activation;
+mod device;
+mod map;
+mod reclaim;
+mod roots;
+#[cfg(feature = "selftest")]
+mod selftest;
+mod stack;
+mod walk;
+
+pub use activation::{activate, active_root, is_active};
+pub use device::{
+    AdmittedDeviceRange, BarMapFailure, BarUnmapFailure, BarUnmapOutcome, DeviceMapping,
+    DeviceUnmapFailure, ReleasableDevice, admit_device_range,
+};
+pub use map::BootRegion;
+#[cfg(feature = "selftest")]
+pub use selftest::{
+    ActivationPublicationProbe, PaintedStack, activation_publication_for_test, cleared_on_drop,
+    observe_activation_publication_for_test, observe_owned_byte_for_test,
+    paint_current_permanent_stack_for_test,
+    permanent_stack_rejects_lower_leaf_substitution_for_test, reclaimed_refusals,
+    refuse_device_unmap_for_test, refuse_mapping_after_for_test,
+    refuse_mapping_undo_after_for_test, refuse_stack_mapping_after_for_test,
+    refuse_stack_rollback_after_for_test, restore_mapping_refusals_for_test,
+    restore_stack_refusals_for_test,
+};
+pub(crate) use stack::{KernelStackTop, TaskStackPin};
+pub use stack::{MappedStack, PinnedStack, StackArena};
+pub use walk::translate;
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -33,59 +56,26 @@ use x86_paging::{
     MappingRangeError, PAGE_SIZE, TablePrivilege, page_identity_matches, user_mapping_fits,
 };
 
+#[cfg(feature = "selftest")]
+use super::apic;
+use super::kpti;
+#[cfg(doc)]
+use super::task;
 use super::task::Released;
 use super::{cpu, interrupt, pci};
 use crate::mm::{self, Paddr, Segment, SharedBytes, SharedKeepalive, SharedRing, USegment};
 use crate::mmio::MmioRegion;
 use crate::sync::SpinLock;
-
-mod activation;
-mod device;
-mod map;
-mod reclaim;
-mod roots;
-#[cfg(feature = "selftest")]
-mod selftest;
-mod stack;
-mod walk;
-
-use super::kpti;
-#[cfg(doc)]
-use super::task;
-
-#[cfg(feature = "selftest")]
-use super::apic;
-
-pub use activation::{activate, active_root, is_active};
-pub use device::{
-    AdmittedDeviceRange, BarMapFailure, BarUnmapFailure, BarUnmapOutcome, DeviceMapping,
-    DeviceUnmapFailure, ReleasableDevice, admit_device_range,
-};
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
-pub use map::BootRegion;
 use map::Grain;
 use roots::{enclave_access_policy, paired_flush_premise};
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    ActivationPublicationProbe, PaintedStack, activation_publication_for_test, cleared_on_drop,
-    observe_activation_publication_for_test, observe_owned_byte_for_test,
-    paint_current_permanent_stack_for_test,
-    permanent_stack_rejects_lower_leaf_substitution_for_test, reclaimed_refusals,
-    refuse_device_unmap_for_test, refuse_mapping_after_for_test,
-    refuse_mapping_undo_after_for_test, refuse_stack_mapping_after_for_test,
-    refuse_stack_rollback_after_for_test, restore_mapping_refusals_for_test,
-    restore_stack_refusals_for_test,
-};
 #[cfg(feature = "selftest")]
 use selftest::{
     CLEARED_ON_DROP, DEVICE_UNMAPS_BEFORE_REFUSAL, MAPPING_UNDOS_BEFORE_REFUSAL,
     MAPPING_WRITES_BEFORE_REFUSAL, RECLAIMED_REFUSALS, STACK_MAPPINGS_BEFORE_REFUSAL,
     STACK_ROLLBACKS_BEFORE_REFUSAL, mapping_refusal, one_shot_mapping_refusal, stack_refusal,
 };
-pub(crate) use stack::{KernelStackTop, TaskStackPin};
-pub use stack::{MappedStack, PinnedStack, StackArena};
 use stack::{StackIdentity, protected_stack_overlap};
-pub use walk::translate;
 use walk::{
     EntrySlot, clear_mapping_slot, current_mapping_root, direct_map_gap, entry_slot,
     kernel_image_gap, leaf_in, slot_in, translate_in, visit_present_leaves, walk,
@@ -97,8 +87,7 @@ use walk::{
 pub enum MapError {
     /// No frame was free for a table this mapping needed.
     OutOfMemory,
-    /// A table this mapping needs is outside the direct map, so it cannot be
-    /// reached to be written.
+    /// A table this mapping needs is outside the direct map, so it cannot be written.
     Unreachable(Paddr),
     /// The address range is already mapped by a larger page.
     Conflict(u64),
@@ -106,8 +95,7 @@ pub enum MapError {
     NonCanonical(u64),
     /// The range's start or length is not page-aligned.
     Misaligned(u64),
-    /// A device's registers are not four-byte aligned, so an [`MmioRegion`]
-    /// over them would make misaligned accesses.
+    /// Device registers are not four-byte aligned, so [`MmioRegion`] accesses would be misaligned.
     UnalignedDevice(Paddr),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
@@ -124,51 +112,132 @@ pub enum MapError {
         /// First requested register byte.
         physical: Paddr,
     },
-    /// The range overlaps RAM or firmware storage rather than a device hole.
+    /// The range overlaps RAM or firmware storage, so it is no device hole.
     NotDeviceMemory(Paddr),
     /// Another mapping in this address space already owns physical bytes.
     DeviceOverlap(Paddr),
     /// The bounded device-ownership table is full.
     TooManyDevices,
-    /// The boot handoff never described this physical range, so there is no
-    /// evidence it is memory rather than a guess (D-87).
+    /// The boot handoff never described this physical range, so nothing shows it is memory.
     Undescribed(Paddr),
-    /// Nothing is mapped at this address, so there is nothing to take away.
+    /// Nothing is mapped at this address.
     NotMapped(u64),
-    /// The mapping here is not one this space owns the frame under, so
-    /// unmapping it would hand the allocator memory that was never its (D-88).
+    /// The space does not own this frame, so unmapping would free memory the allocator never had.
     NotOwned(u64),
-    /// A large page covers this address. Splitting one is not offered: the
-    /// direct map is deliberately unsplittable (D-45).
+    /// A large page covers this address, and large pages are never split, so the direct map holds.
     Unsplittable(u64),
-    /// The range's frames are not one ascending run, so they were not mapped
-    /// by a single `map_owned` and cannot be returned as one segment.
+    /// The frames are not the one ascending run a single `map_owned` makes.
     Discontiguous(u64),
-    /// The range is outside the half this space owns. A space that shares the
-    /// kernel's tables is not a handle onto them (D-105).
+    /// The range is outside the half this space owns; shared kernel tables are never its to edit.
     NotYours(u64),
     /// The range touches a retained stack or its guard.
     Pinned(u64),
-    /// A shared mapping requests a cache policy that would alias the direct
-    /// map's write-back view of the same frames.
+    /// A shared mapping's cache policy would alias the direct map's write-back view of its frames.
     CacheAlias(u64),
     /// A present mapping would be both writable and executable.
     WriteExecute(u64),
-    /// A hardware-retained stack was requested in a space this CPU is not
-    /// currently walking.
+    /// A hardware-retained stack was requested in a space this CPU is not walking.
     Inactive(Paddr),
-    /// Activation froze the kernel's top-level entries, so a later mapping
-    /// cannot create a root that older user spaces would not share.
+    /// Activation froze kernel top-level entries: a new one would be missing from older user roots.
     KernelTopologyFrozen(u64),
     /// The full and stripped page-table roots do not form one valid pair.
     InvalidRootPair(RootPairError),
-    /// PCID is enabled, so ordinary root loads do not provide D-407's flush.
+    /// PCID is enabled, so ordinary root loads do not provide the paired roots' flush.
     InvalidPairedFlush(FlushPremiseError),
     /// The entry enclave is missing, overbroad, or has the wrong identity.
     InvalidEntryEnclave(u64),
     /// The linker did not publish the exact entry-enclave geometry.
     EntryEnclaveUnavailable,
 }
+
+impl From<MappingRangeError> for MapError {
+    fn from(reason: MappingRangeError) -> Self {
+        Self::InvalidRange(reason)
+    }
+}
+
+impl fmt::Display for MapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::OutOfMemory => f.write_str("no free frame for a page table"),
+            Self::Unreachable(address) => {
+                write!(f, "page table at {address:#x} is outside the direct map")
+            }
+            Self::Conflict(address) => write!(f, "{address:#x} is already mapped by a larger page"),
+            Self::NonCanonical(address) => write!(f, "{address:#x} is not a canonical address"),
+            Self::Misaligned(address) => write!(f, "{address:#x} is not page-aligned"),
+            Self::UnalignedDevice(address) => {
+                write!(
+                    f,
+                    "device registers at {address:#x} are not four-byte aligned"
+                )
+            }
+            Self::Encoding(reason) => write!(f, "{reason}"),
+            Self::InvalidRange(reason) => write!(f, "{reason}"),
+            Self::InvalidDeviceRange(address) => {
+                write!(f, "device range at {address:#x} is empty or overflows")
+            }
+            Self::PhysicalWidthUnavailable => {
+                f.write_str("the processor did not report a usable MAXPHYADDR")
+            }
+            Self::OutsidePhysicalWidth { bits, physical } => write!(
+                f,
+                "device range at {physical:#x} needs bits outside MAXPHYADDR {bits}"
+            ),
+            Self::NotDeviceMemory(address) => {
+                write!(f, "device range at {address:#x} overlaps ordinary memory")
+            }
+            Self::DeviceOverlap(address) => {
+                write!(f, "device range at {address:#x} is already owned")
+            }
+            Self::TooManyDevices => f.write_str("device ownership table is full"),
+            Self::Undescribed(address) => {
+                write!(f, "{address:#x} is not described by the memory map")
+            }
+            Self::NotMapped(address) => write!(f, "nothing is mapped at {address:#x}"),
+            Self::NotOwned(address) => {
+                write!(f, "the mapping at {address:#x} does not own its frame")
+            }
+            Self::Unsplittable(address) => {
+                write!(f, "{address:#x} is inside a large page, which is not split")
+            }
+            Self::Discontiguous(address) => {
+                write!(f, "the frames behind {address:#x} are not one run")
+            }
+            Self::NotYours(address) => {
+                write!(f, "{address:#x} is not in the half this space owns")
+            }
+            Self::Pinned(address) => {
+                write!(
+                    f,
+                    "the hardware-pinned stack at {address:#x} cannot be unmapped"
+                )
+            }
+            Self::CacheAlias(address) => write!(
+                f,
+                "shared mapping at {address:#x} conflicts with the direct-map cache policy"
+            ),
+            Self::WriteExecute(address) => {
+                write!(f, "mapping at {address:#x} is writable and executable")
+            }
+            Self::Inactive(root) => {
+                write!(f, "the address space at {root:#x} is not active")
+            }
+            Self::KernelTopologyFrozen(address) => write!(
+                f,
+                "the active kernel cannot add a top-level mapping at {address:#x}"
+            ),
+            Self::InvalidRootPair(reason) => write!(f, "invalid paired roots: {reason}"),
+            Self::InvalidPairedFlush(reason) => write!(f, "invalid paired-root flush: {reason}"),
+            Self::InvalidEntryEnclave(address) => {
+                write!(f, "the entry enclave is invalid at {address:#x}")
+            }
+            Self::EntryEnclaveUnavailable => f.write_str("the entry enclave is unavailable"),
+        }
+    }
+}
+
+impl core::error::Error for MapError {}
 
 /// A refused user mapping which retains its external-byte allocation.
 #[derive(PartialEq, Eq, Debug)]
@@ -194,7 +263,7 @@ impl UserMapError {
 
 impl fmt::Display for UserMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        core::fmt::Display::fmt(&self.reason(), f)
+        fmt::Display::fmt(&self.reason(), f)
     }
 }
 
@@ -209,24 +278,6 @@ pub struct StackRollback {
     pub returned_pages: usize,
     roots: AddressSpaceRoots,
     pending: StackCleanup,
-}
-
-#[derive(PartialEq, Eq, Debug)]
-enum StackCleanup {
-    One(Slot),
-    Prefix {
-        layout: StackLayout,
-        remaining: usize,
-    },
-}
-
-impl StackCleanup {
-    const fn remaining_stacks(&self) -> usize {
-        match self {
-            Self::One(_) => 1,
-            Self::Prefix { remaining, .. } => *remaining,
-        }
-    }
 }
 
 impl StackRollback {
@@ -265,6 +316,24 @@ impl fmt::Display for StackRollback {
 
 impl core::error::Error for StackRollback {}
 
+#[derive(PartialEq, Eq, Debug)]
+enum StackCleanup {
+    One(Slot),
+    Prefix {
+        layout: StackLayout,
+        remaining: usize,
+    },
+}
+
+impl StackCleanup {
+    const fn remaining_stacks(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Prefix { remaining, .. } => *remaining,
+        }
+    }
+}
+
 /// Why guarded-stack construction could not finish atomically.
 #[derive(PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -299,108 +368,13 @@ impl From<MapError> for StackMapError {
     }
 }
 
-impl From<MappingRangeError> for MapError {
-    fn from(error: MappingRangeError) -> Self {
-        Self::InvalidRange(error)
-    }
-}
-
-impl fmt::Display for MapError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::OutOfMemory => core::fmt::Write::write_str(f, "no free frame for a page table"),
-            Self::Unreachable(address) => {
-                write!(f, "page table at {address:#x} is outside the direct map")
-            }
-            Self::Conflict(address) => write!(f, "{address:#x} is already mapped by a larger page"),
-            Self::NonCanonical(address) => write!(f, "{address:#x} is not a canonical address"),
-            Self::Misaligned(address) => write!(f, "{address:#x} is not page-aligned"),
-            Self::UnalignedDevice(address) => {
-                write!(
-                    f,
-                    "device registers at {address:#x} are not four-byte aligned"
-                )
-            }
-            Self::Encoding(error) => write!(f, "{error}"),
-            Self::InvalidRange(error) => write!(f, "{error}"),
-            Self::InvalidDeviceRange(address) => {
-                write!(f, "device range at {address:#x} is empty or overflows")
-            }
-            Self::PhysicalWidthUnavailable => {
-                core::fmt::Write::write_str(f, "the processor did not report a usable MAXPHYADDR")
-            }
-            Self::OutsidePhysicalWidth { bits, physical } => write!(
-                f,
-                "device range at {physical:#x} needs bits outside MAXPHYADDR {bits}"
-            ),
-            Self::Undescribed(address) => {
-                write!(f, "{address:#x} is not described by the memory map")
-            }
-            Self::NotMapped(address) => write!(f, "nothing is mapped at {address:#x}"),
-            Self::NotOwned(address) => {
-                write!(f, "the mapping at {address:#x} does not own its frame")
-            }
-            Self::Unsplittable(address) => {
-                write!(f, "{address:#x} is inside a large page, which is not split")
-            }
-            Self::NotYours(address) => {
-                write!(f, "{address:#x} is not in the half this space owns")
-            }
-            Self::Pinned(address) => {
-                write!(
-                    f,
-                    "the hardware-pinned stack at {address:#x} cannot be unmapped"
-                )
-            }
-            Self::CacheAlias(address) => write!(
-                f,
-                "shared mapping at {address:#x} conflicts with the direct-map cache policy"
-            ),
-            Self::WriteExecute(address) => {
-                write!(f, "mapping at {address:#x} is writable and executable")
-            }
-            Self::Inactive(root) => {
-                write!(f, "the address space at {root:#x} is not active")
-            }
-            Self::KernelTopologyFrozen(address) => write!(
-                f,
-                "the active kernel cannot add a top-level mapping at {address:#x}"
-            ),
-            Self::InvalidRootPair(error) => write!(f, "invalid paired roots: {error}"),
-            Self::InvalidPairedFlush(error) => write!(f, "invalid paired-root flush: {error}"),
-            Self::InvalidEntryEnclave(address) => {
-                write!(f, "the entry enclave is invalid at {address:#x}")
-            }
-            Self::EntryEnclaveUnavailable => {
-                core::fmt::Write::write_str(f, "the entry enclave is unavailable")
-            }
-            Self::Discontiguous(address) => {
-                write!(f, "the frames behind {address:#x} are not one run")
-            }
-            Self::NotDeviceMemory(address) => {
-                write!(f, "device range at {address:#x} overlaps ordinary memory")
-            }
-            Self::DeviceOverlap(address) => {
-                write!(f, "device range at {address:#x} is already owned")
-            }
-            Self::TooManyDevices => {
-                core::fmt::Write::write_str(f, "device ownership table is full")
-            }
-        }
-    }
-}
-
-impl core::error::Error for MapError {}
-
 /// Why a table was refused at the moment of the switch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ActivateError {
-    /// A second caller tried to switch. The kernel's address space is
-    /// installed once.
+    /// A second caller tried to switch; the kernel's address space is installed once.
     AlreadyActive,
-    /// The space's tables have gone back to the allocator, so it has no root
-    /// to install (D-139).
+    /// The space's tables went back to the allocator, so it has no root to install.
     Reclaimed,
     /// The new tables do not map the code that would execute the switch.
     CodeUnmapped(u64),
@@ -416,11 +390,9 @@ pub enum ActivateError {
     MappingChanged(u64),
     /// A kernel-image page is missing or has the wrong protection class.
     ImageChanged(u64),
-    /// The new tables do not give this address of the direct map the writable,
-    /// never-executable mapping every frame access assumes.
+    /// The new tables lack the writable, never-executable direct-map page frame accesses assume.
     DirectMapGap(u64),
-    /// A space offered for binding disagrees with the kernel's about the
-    /// higher half, at this top-level slot.
+    /// A space offered for binding disagrees with the kernel's higher half at this top-level slot.
     KernelHalfDiffers(usize),
     /// A paired space's lower-half top-level links do not name one subtree.
     UserHalfDiffers(usize),
@@ -430,18 +402,15 @@ pub enum ActivateError {
     EntryEnclaveIncomplete,
     /// PCID is enabled, invalidating paired roots' ordinary-load flush proof.
     PairedFlushUnavailable,
-    /// The device window's shared top-level table could not be reserved before
-    /// activation froze kernel topology.
+    /// The device window's shared top-level table could not be reserved before topology froze.
     SharedTopology(MapError),
 }
 
 impl fmt::Display for ActivateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::AlreadyActive => {
-                core::fmt::Write::write_str(f, "an address space is already installed")
-            }
-            Self::Reclaimed => core::fmt::Write::write_str(f, "the space has been reclaimed"),
+            Self::AlreadyActive => f.write_str("an address space is already installed"),
+            Self::Reclaimed => f.write_str("the space has been reclaimed"),
             Self::CodeUnmapped(address) => {
                 write!(f, "the switch's own code at {address:#x} is unmapped")
             }
@@ -470,14 +439,13 @@ impl fmt::Display for ActivateError {
                 write!(f, "top-level slot {index} does not share one user subtree")
             }
             Self::NotAUserSpace => {
-                core::fmt::Write::write_str(f, "this space does not share the kernel's higher half")
+                f.write_str("this space does not share the kernel's higher half")
             }
-            Self::EntryEnclaveIncomplete => core::fmt::Write::write_str(
-                f,
-                "the paired address space has no validated entry enclave",
-            ),
+            Self::EntryEnclaveIncomplete => {
+                f.write_str("the paired address space has no validated entry enclave")
+            }
             Self::PairedFlushUnavailable => {
-                core::fmt::Write::write_str(f, "PCID is enabled for a paired address space")
+                f.write_str("PCID is enabled for a paired address space")
             }
             Self::SharedTopology(reason) => {
                 write!(f, "shared kernel topology could not be reserved: {reason}")
@@ -516,9 +484,7 @@ pub enum ReclaimError {
 impl fmt::Display for ReclaimError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Reclaimed => {
-                core::fmt::Write::write_str(f, "the address space was already reclaimed")
-            }
+            Self::Reclaimed => f.write_str("the address space was already reclaimed"),
             Self::StillBound(root) => write!(f, "a task still names the space at {root:#x}"),
             Self::WrongRelease { expected, found } => write!(
                 f,
@@ -557,10 +523,9 @@ impl fmt::Display for ReclaimFailure {
 
 impl core::error::Error for ReclaimFailure {}
 
-/// A four-level page table under construction.
+/// A four-level page table whose tables stay owned until an explicit reclaim.
 ///
-/// Tables remain owned until explicit reclaim; `unmap` removes leaves without
-/// risking a live sibling or freeing beneath `CR3` (D-88).
+/// `unmap` removes leaves without risking a live sibling or freeing a table beneath `CR3`.
 #[derive(Debug)]
 pub struct AddressSpace {
     roots: Option<AddressSpaceRoots>,
@@ -568,18 +533,13 @@ pub struct AddressSpace {
     pair_authority: Option<PairFrameAuthority>,
     /// Physical ranges already promised to device mappings in this space.
     devices: Vec<Option<DeviceExtent>>,
-    /// The frames this space's own tables are built from, so they can go back.
-    ///
-    /// Not the shared kernel entries `for_user` copies — those are the
-    /// kernel's tables and belong to it. Only what `set` allocated walking
-    /// down, plus the root (D-117).
+    /// Tables `set` allocated walking down, returned with the roots; never the shared kernel ones.
     tables: Vec<OwnedTable>,
     /// Which half of the address space this one may be told to change.
     reach: Reach,
     /// Whether a thread already runs on these tables.
     bound: bool,
-    /// Paired roots cannot become bindable until the exact entry enclave has
-    /// been installed and validated by the KPTI owner (D-407).
+    /// A paired space binds only after the KPTI owner installs and validates its exact enclave.
     entry_enclave_ready: bool,
     /// Allocations reached by non-owning user mappings in this space.
     shared: Vec<SharedKeepalive>,
@@ -602,19 +562,13 @@ enum TableRoot {
     Stripped,
 }
 
-/// The inseparable roots which identify one address space.
+/// The inseparable roots of one address space; callers cannot make or split them into bindings.
 ///
-/// A shared-root space has no stripped member, so [`user_root`](Self::user_root)
-/// names the full root. A paired space keeps both identities in this one value;
-/// callers cannot manufacture or separate them into independently bindable
-/// authorities (D-407).
+/// A shared-root space has no stripped member, so [`user_root`](Self::user_root) is the full root.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressSpaceRoots {
     full: Paddr,
-    /// The user root, with its otherwise-unused low bit marking a pair.
-    ///
-    /// Root addresses are page aligned, so this keeps the inseparable token
-    /// to two words without reserving physical frame zero as a sentinel.
+    /// The user root, its page-aligned low bit marking a pair, so frame zero needs no sentinel.
     user_tagged: Paddr,
 }
 
@@ -641,10 +595,7 @@ impl AddressSpaceRoots {
         self.full
     }
 
-    /// The root to install for ring-three execution.
-    ///
-    /// This equals [`full_root`](Self::full_root) only for D-250's positively
-    /// admitted shared-root mode.
+    /// The ring-three root; it equals [`full_root`](Self::full_root) only in admitted shared mode.
     pub const fn user_root(self) -> Paddr {
         if self.is_paired() {
             self.user_tagged & !Self::PAIRED_TAG
@@ -676,16 +627,13 @@ impl AddressSpaceRoots {
     }
 }
 
-/// How much of an address space its owner may map.
-///
-/// A user space shares live kernel tables by reference, so it may change only
-/// its lower half. Otherwise a safe handle could edit mappings the kernel is
-/// running on (D-104, D-105).
+/// How much of a space its owner may map: a user space shares live kernel tables by reference,
+/// so it may change only its lower half, or a safe handle could edit what the kernel runs on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Reach {
-    /// The whole space. The kernel's own, which owns every table in it.
+    /// The whole space: the kernel's own, which owns every table in it.
     Everywhere,
-    /// The lower half only. Everything above is somebody else's tables.
+    /// The lower half only; everything above is the kernel's tables.
     UserHalfOnly,
 }
 
@@ -695,36 +643,26 @@ enum UserRootKind {
     Paired,
 }
 
-/// The first address that is not user memory.
+/// The first non-user address, re-exported by user-copy so copy and mapping bounds cannot drift.
 ///
-/// The canonical hole and kernel half begin here. User-copy code re-exports
-/// this value so copy and mapping bounds cannot drift (D-124). No user mapping
-/// reaches the last page below it (D-348). Spelled as a literal because it is
-/// an ABI constant the C header reads; the assertion binds it to the library's.
+/// No user mapping reaches the page below it; a literal because the C header reads this ABI value.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
 const _: () = assert!(USER_END == x86_paging::USER_END);
 
-/// Whether `address` is one ring 3 could name.
-///
-/// This range check also rejects the canonical hole without assuming a fixed
-/// page-walk width (D-83, D-118).
+/// Whether ring 3 could name `address`; this also refuses the canonical hole at any walk width.
 pub const fn is_user_address(address: u64) -> bool {
     address < USER_END
 }
 
-/// Flags a caller may not choose, whatever it asks for.
-///
-/// `OWNED` records allocator provenance, `HUGE` comes from the level, and
-/// `GLOBAL` would evade the flush an inactive mutable root relies on. Only the
-/// mapping implementation may choose them (D-88, D-105).
+/// Flags only the mapping code chooses: `OWNED` is provenance and `HUGE` comes from the level.
+/// `GLOBAL` would evade the root-load flush an inactive mutable root relies on.
 const NOT_THE_CALLERS: Flags = Flags::OWNED.union(Flags::HUGE).union(Flags::GLOBAL);
 
 /// The cache-type bits a caller may name on a mapping of RAM.
 const CACHE_TYPE: Flags = Flags::NO_CACHE.union(Flags::WRITE_THROUGH);
 
-/// RAM keeps its write-back direct-map type in every other mapping; a second
-/// alias of another type corrupts it (D-349).
+/// RAM keeps its write-back direct-map type in every mapping; an alias of another type corrupts it.
 fn ram_cache_policy(virtual_base: u64, flags: Flags) -> Result<(), MapError> {
     if flags.intersection(CACHE_TYPE) != Flags::NONE {
         return Err(MapError::CacheAlias(virtual_base));
@@ -733,11 +671,7 @@ fn ram_cache_policy(virtual_base: u64, flags: Flags) -> Result<(), MapError> {
 }
 
 impl AddressSpace {
-    /// An address space mapping nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::OutOfMemory`] if no frame is free for the top-level table.
+    /// An address space mapping nothing, or [`MapError::OutOfMemory`] without a root frame.
     pub fn new() -> Result<Self, MapError> {
         let root = take_table()?;
         Ok(Self {
@@ -753,7 +687,7 @@ impl AddressSpace {
         })
     }
 
-    /// The physical address of the top-level table — what `CR3` would hold.
+    /// The physical address of the top-level table, which `CR3` would hold.
     pub const fn root(&self) -> Paddr {
         match self.roots {
             Some(roots) => roots.full_root(),
@@ -768,14 +702,9 @@ impl AddressSpace {
         }
     }
 
-    /// Translate through this space's tables, active or not.
-    ///
-    /// The same walk [`translate`] makes, aimed at a space that may not be the
-    /// one the CPU is using — which is the only way to ask anything about a
-    /// space before it is installed.
+    /// Translate through this space's tables, active or not, as [`translate`] does for `CR3`.
     pub fn lookup(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
-        // Reclaim removes the root owner; no later read may walk its recycled
-        // frame (D-123, D-139).
+        // Reclaim removes the root owner; no later read may walk its recycled frame.
         if self.is_reclaimed() {
             #[cfg(feature = "selftest")]
             RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
@@ -784,39 +713,26 @@ impl AddressSpace {
         translate_in(self.root(), virtual_address)
     }
 
-    /// A space for a program: empty below, and the kernel's above.
+    /// A program's space: an empty lower half and the kernel's top-level entries by reference.
     ///
-    /// The higher half shares the kernel's existing top-level entries by
-    /// reference so traps retain code, stacks, and the direct map. The empty
-    /// lower half is per-program isolation (D-104).
-    ///
-    /// Activation reserves the device window's top-level table and freezes new
-    /// higher-half top-level entries. Later mappings may therefore change only
-    /// tables every user root already shares.
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::OutOfMemory`] for the root, and [`MapError::Unreachable`]
-    /// if the direct map cannot reach a table. Also `OutOfMemory` before the
-    /// kernel's own tables are installed, because there is nothing to share.
+    /// Activation freezes new higher-half top-level entries, so later mappings change only tables
+    /// every user root shares. `OutOfMemory` before activation or without a root frame.
     pub fn for_user() -> Result<Self, MapError> {
         Self::for_user_roots(UserRootKind::Shared)
     }
 
-    /// Build a user address space with a validated full/stripped root pair.
+    /// A user space with a validated root pair; the KPTI owner must mint the exact linker witness.
     ///
-    /// The KPTI owner must mint the exact linker witness; mapping or validation
-    /// refusal returns both roots and every intermediate table before this
-    /// returns.
+    /// A mapping or validation refusal returns both roots and every intermediate table first.
     pub fn for_user_isolated() -> Result<Self, MapError> {
-        if !super::kpti::entry_path_is_implemented() {
+        if !kpti::entry_path_is_implemented() {
             return Err(MapError::EntryEnclaveUnavailable);
         }
-        let enclave = super::kpti::entry_enclave().ok_or(MapError::EntryEnclaveUnavailable)?;
+        let enclave = kpti::entry_enclave().ok_or(MapError::EntryEnclaveUnavailable)?;
         Self::for_user_paired(enclave)
     }
 
-    fn for_user_paired(enclave: super::kpti::EntryEnclave) -> Result<Self, MapError> {
+    fn for_user_paired(enclave: kpti::EntryEnclave) -> Result<Self, MapError> {
         let mut space = Self::for_user_roots(UserRootKind::Paired)?;
         if let Err(reason) = space.install_entry_enclave(enclave) {
             let returned = space.reclaim(None).unwrap_or_else(|failure| {
@@ -893,28 +809,17 @@ impl AddressSpace {
         })
     }
 
-    /// Give this space up to be installed on a context switch.
+    /// Give this space up for context switches; the linear [`Binding`] keeps reclaim single.
     ///
-    /// A linear [`Binding`] prevents two task slots from sharing reclaim
-    /// authority. Retirement produces the evidence [`reclaim`](Self::reclaim)
-    /// accepts (D-117).
-    ///
-    /// Every higher-half top-level entry must match the kernel's address and
-    /// software-controlled flags. Hardware may independently set `ACCESSED`;
-    /// sampling addresses cannot prove the whole switch safe (D-106).
-    ///
-    /// # Errors
-    ///
-    /// [`ActivateError::NotAUserSpace`] for a space that does not share the
-    /// kernel's half, [`ActivateError::KernelHalfDiffers`] naming the first
-    /// slot that disagrees, and `AlreadyActive` inverted — before the kernel
-    /// installs its own tables there is nothing to agree with.
+    /// Every higher-half top-level entry must match the kernel's address and software flags,
+    /// ignoring hardware `ACCESSED`, since sampling addresses cannot prove the whole switch safe.
+    /// Refuses `AlreadyActive` before activation and on a second bind. [`reclaim`](Self::reclaim)
+    /// accepts the evidence retirement produces.
     pub fn bind(&mut self) -> Result<Binding, ActivateError> {
         if !is_active() || self.bound {
             return Err(ActivateError::AlreadyActive);
         }
-        // As `lookup`: binding a reclaimed space would read frame zero as its
-        // top-level table, and then install it (D-139).
+        // A reclaimed space's root would read as frame zero and then be installed.
         if self.is_reclaimed() {
             #[cfg(feature = "selftest")]
             RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
@@ -955,32 +860,17 @@ impl AddressSpace {
         Ok(Binding { roots })
     }
 
-    /// Take a mapping away, and hand back what it owned.
+    /// Take away exactly what one [`map_owned`](Self::map_owned) put there, and return its frames.
     ///
-    /// The range must be exactly what one [`map_owned`](Self::map_owned) put
-    /// there: every page present, four-kilobyte, owned, and backed by one
-    /// ascending run of frames.
-    ///
-    /// Translation debt is discharged before this returns. A cleared leaf is
-    /// invalidated immediately when the current `CR3` reaches that exact slot,
-    /// including through a shared higher-half table. Distinct lower-half slots
-    /// have neither PCID tags nor global mutable leaves, so loading their root
-    /// flushes prior translations. [`Unmapped`] retains only frame ownership
-    /// and user provenance.
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::Misaligned`] unless base and length are page-aligned,
-    /// [`MapError::NotMapped`] for a hole, [`MapError::Unsplittable`] for a
-    /// large page, [`MapError::NotOwned`] for a mapping whose frame is not the
-    /// allocator's, [`MapError::Discontiguous`] if the frames are not one run,
-    /// and [`MapError::Pinned`] if hardware retains any byte of the range.
+    /// Every page must be present, four-kilobyte, owned and in one ascending run, with no byte
+    /// pinned. A cleared leaf is invalidated at once when the current `CR3` reaches its slot,
+    /// shared tables included; other lower-half slots have no PCID tag or global leaf, so loading
+    /// their root flushes. [`Unmapped`] therefore carries no translation debt.
     pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
         if !virtual_base.is_multiple_of(PAGE_SIZE) || len == 0 || !len.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::Misaligned(virtual_base));
         }
-        // Both ends, because a walk masks bits 48 and above: a noncanonical
-        // alias could clear a real leaf but could not be invalidated (D-94).
+        // Both ends: a walk masks bits 48 and up, so a noncanonical alias could not be invalidated.
         let end = virtual_base
             .checked_add(len)
             .ok_or(MapError::NonCanonical(virtual_base))?;
@@ -997,8 +887,7 @@ impl AddressSpace {
             .checked_sub(pages as usize)
             .ok_or(MapError::NotOwned(virtual_base))?;
 
-        // Preflight the whole range before clearing anything, so a refusal
-        // leaves the space exactly as it was — the rule D-77 gave `map`.
+        // Preflight the whole range before clearing anything, so a refusal changes nothing.
         let mut first = None;
         let mut was_user = false;
         for page in 0..pages {
@@ -1010,8 +899,7 @@ impl AddressSpace {
             if !entry.flags().contains(Flags::OWNED) {
                 return Err(MapError::NotOwned(address));
             }
-            // One user-reachable page makes the whole run untyped: it is
-            // handed back as one thing, and one page is a disclosure (D-123).
+            // One user-reachable page makes the whole run user bytes, since one page discloses.
             was_user |= entry.flags().contains(Flags::USER);
             match first {
                 None => first = Some(entry.address()),
@@ -1030,28 +918,21 @@ impl AddressSpace {
 
         Ok(Unmapped {
             pages,
-            // SAFETY: the preflight proved these `pages` frames from `base`
-            // are one ascending run that a `map_owned` moved into this space
-            // and that nothing else holds, and the entries naming them have
-            // just been cleared.
+            // SAFETY: preflight proved the `pages` frames at `base` one ascending run a `map_owned`
+            // moved here that nothing else holds, and the entries naming them were just cleared.
             frames: Some(unsafe { Segment::from_raw(base, pages as usize) }),
             was_user,
         })
     }
 
-    /// The four-kilobyte leaf entry for `address`, or why there is not one.
     fn leaf(&self, address: u64) -> Result<EntrySlot, MapError> {
         leaf_in(self.root(), address)
     }
 }
 
-/// A zeroed frame to serve as a page table, forgotten by the allocator.
+/// A zeroed table frame whose handle is forgotten, so only the direct map reaches it.
 ///
-/// The forgetting is what makes a table frame reachable through the direct map
-/// with no handle naming it, which is what a page table has to be. Whether it
-/// ever comes back is the *space's* business: the kernel's own never does, and
-/// a user space records each one so [`AddressSpace::reclaim`] can give them
-/// back (D-117).
+/// The kernel's own tables never return; a user space records each so its reclaim can.
 fn take_table() -> Result<Paddr, MapError> {
     let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
     let address = frame.address();
@@ -1085,12 +966,9 @@ pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
     TASK_STACK_PIN.force_unlock(panic);
 }
 
-/// Frames detached from an address space, with their access provenance.
+/// Frames detached from an address space, with their provenance and no translation debt left.
 ///
-/// [`AddressSpace::unmap`] pays all translation debt before constructing this
-/// value. The token keeps one owner for the frames and prevents user bytes from
-/// becoming a kernel allocation without clearing. Forgetting it leaks frames
-/// but cannot preserve a stale mapping.
+/// User bytes never become a kernel allocation uncleared; forgetting this only leaks the frames.
 #[derive(Debug)]
 #[must_use = "the detached frames remain held until this token is consumed or dropped"]
 pub struct Unmapped {
@@ -1108,8 +986,7 @@ impl Unmapped {
 }
 
 impl Drop for Unmapped {
-    /// User bytes are cleared before allocator reuse; a failed clear leaks the
-    /// frames instead of disclosing them (D-107, D-123).
+    /// User bytes are cleared before reuse; a failed clear leaks the frames so none are disclosed.
     fn drop(&mut self) {
         if self.was_user
             && let Some(frames) = self.frames.as_mut()
@@ -1118,20 +995,15 @@ impl Drop for Unmapped {
                 #[cfg(feature = "selftest")]
                 CLEARED_ON_DROP.fetch_add(frames.frames(), Ordering::Relaxed);
             } else {
-                // A failed clear leaks the frames rather than returning a
-                // program's bytes to the allocator.
                 core::mem::forget(self.frames.take());
             }
         }
     }
 }
 
-/// A space that may be installed on a context switch.
+/// Evidence [`AddressSpace::bind`] compared the higher half, so only a compared space installs.
 ///
-/// The evidence that [`AddressSpace::bind`] checked the higher half, carried
-/// as a value so a caller cannot install a space that was never compared.
-/// Neither `Copy` nor `Clone`: two slots naming one space would let a thread
-/// exit and take another's tables with it.
+/// Not `Copy` or `Clone`: two slots naming one space would let one thread's exit take its tables.
 #[derive(Debug)]
 pub struct Binding {
     roots: AddressSpaceRoots,

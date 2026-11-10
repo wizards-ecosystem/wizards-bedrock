@@ -1,21 +1,7 @@
 use super::*;
 
 impl AddressSpace {
-    /// Map `len` bytes at `virtual_base` onto physical memory at
-    /// `physical_base`, with `flags`.
-    ///
-    /// Large pages wherever the addresses and remaining length permit, and
-    /// `PRESENT` is added; no other flag is.
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::Misaligned`] unless both bases are page-aligned,
-    /// [`MapError::NonCanonical`] if the virtual range leaves canonical space,
-    /// [`MapError::Conflict`] if a larger page already covers part of the
-    /// range, [`MapError::WriteExecute`] if the resulting present mapping
-    /// would be writable and executable, [`MapError::Pinned`] if it overlaps a
-    /// retained stack or guard, and [`MapError::OutOfMemory`] if a table cannot
-    /// be allocated.
+    /// Map `len` bytes at `virtual_base` onto `physical_base`, adding `PRESENT` and no other flag.
     pub(super) fn map_range(
         &mut self,
         virtual_base: u64,
@@ -27,12 +13,8 @@ impl AddressSpace {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
-        // The stripped root shares every lower-half table by reference with
-        // its full partner. Consequently every present lower leaf in a pair
-        // must be a user mapping: a supervisor-only leaf would still expose
-        // kernel or firmware bytes to transient ring-three reads (D-407).
-        // `map_user` and the typed shared-user doors add `USER`; the general
-        // kernel mapping doors must remain closed in this one root shape.
+        // A pair's lower tables are shared with its stripped root, so every present lower leaf must
+        // be `USER`: a supervisor leaf leaks kernel bytes to transient ring-three reads.
         if self.roots().is_paired() && is_user_address(virtual_base) && !flags.contains(Flags::USER)
         {
             return Err(MapError::NotYours(virtual_base));
@@ -62,12 +44,11 @@ impl AddressSpace {
             };
             #[cfg(not(feature = "selftest"))]
             let result = self.set(virtual_address, physical, flags, level);
-            if let Err(error) = result {
-                // Rollback prevents a refused owned mapping from leaving live
-                // entries over frames returned to the allocator (D-94).
+            if let Err(reason) = result {
+                // Rollback leaves no live entry over the frames a refused owned mapping returns.
                 self.undo(&range, offset, grain);
                 self.rollback_tables(table_mark);
-                return Err(error);
+                return Err(reason);
             }
             offset += level.span();
         }
@@ -132,18 +113,9 @@ impl AddressSpace {
         Err(MapError::Conflict(virtual_address))
     }
 
-    /// Whether this space may be told to change `len` bytes at `at`.
-    ///
-    /// The check that makes [`for_user`](Self::for_user) safe to expose. A
-    /// space sharing the kernel's higher half by reference must not be a
-    /// handle onto the kernel's tables (D-105).
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::NotYours`] for a range this space does not own outright.
+    /// Whether this space may change `len` bytes at `at`; a user space never edits kernel tables.
     pub(super) fn may_reach(&self, at: u64, len: u64) -> Result<(), MapError> {
-        // A reclaimed space has no tables. Mapping into one would walk frames
-        // the allocator has given to something else (D-123).
+        // A reclaimed space's tables went back, so mapping would walk frames now owned elsewhere.
         if self.is_reclaimed() {
             return Err(MapError::NotYours(at));
         }
@@ -157,11 +129,8 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Where the mapping of `range` at `offset` goes, and at what size.
-    ///
-    /// Split out so [`undo`](Self::undo) retraces exactly the same steps: a
-    /// rollback that disagreed with the walk about where a large page began
-    /// would clear the wrong entry.
+    /// Where `range` at `offset` maps and how large; [`undo`](Self::undo) retraces it exactly,
+    /// since a rollback that disagreed about where a large page began would clear the wrong entry.
     fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, Paddr, Level) {
         let virtual_address = range.virtual_base() + offset;
         let physical = range.physical_base() + offset;
@@ -176,11 +145,8 @@ impl AddressSpace {
         )
     }
 
-    /// Clear the first `written` bytes of `range`, undoing a partial mapping.
-    ///
-    /// [`preflight`](Self::preflight) established that every entry in a
-    /// transaction which can reach this path was absent before it began, so
-    /// each entry below belongs to this call rather than an older mapping.
+    /// Clear the first `written` bytes of `range`, whose entries [`preflight`](Self::preflight)
+    /// proved absent before, so every one belongs to this transaction.
     pub(super) fn undo(&mut self, range: &MappingRange, written: u64, grain: Grain) {
         let mut offset = 0;
         while offset < written {
@@ -266,11 +232,7 @@ impl AddressSpace {
         );
     }
 
-    /// The existing entry slot for `virtual_address` at `target`, allocating
-    /// nothing.
-    ///
-    /// [`MapError::NotMapped`] where the walk runs out of tables, which during
-    /// a rollback means the forward walk never got that far.
+    /// The existing slot for `virtual_address` at `target`, or `NotMapped` where the tables end.
     fn slot_at(&self, virtual_address: u64, target: Level) -> Result<EntrySlot, MapError> {
         let mut table = self.root();
         for level in Level::WALK {
@@ -308,14 +270,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Map memory the boot handoff described, at `virtual_base`.
-    ///
-    /// [`BootRegion`] proves the boot memory map covers the physical range, so
-    /// no safe mapping door accepts an unchecked physical address (D-64, D-87).
-    ///
-    /// # Errors
-    ///
-    /// As [`map_owned`](Self::map_owned).
+    /// Map boot-described memory at `virtual_base`; no safe door takes an unchecked physical range.
     pub fn map_boot(
         &mut self,
         virtual_base: u64,
@@ -338,41 +293,21 @@ impl AddressSpace {
         )
     }
 
-    /// Map a run of frames this caller owns, at `virtual_base`.
-    ///
-    /// Ownership moves into the address space. A refusal rolls back every leaf
-    /// before `run` returns to the allocator (D-44, D-94).
-    ///
-    /// # Errors
-    ///
-    /// [`MapError::Misaligned`] unless `virtual_base` is page-aligned,
-    /// [`MapError::NonCanonical`] if the range leaves canonical space,
-    /// [`MapError::Conflict`] if any page of it is already mapped to something
-    /// else, [`MapError::WriteExecute`] if the mapping would be writable and
-    /// executable, [`MapError::Pinned`] if it overlaps a retained stack or
-    /// guard, and [`MapError::OutOfMemory`] if a table cannot be allocated.
+    /// Map a caller-owned run here; a refusal rolls back every leaf before `run` is freed.
     pub fn map_owned(
         &mut self,
         virtual_base: u64,
         run: Segment,
         flags: Flags,
     ) -> Result<(), MapError> {
-        // A kernel run holds kernel bytes, so ring 3 may not write it here;
-        // `map_user` takes a run whose type says its bytes are outside (D-107).
+        // A kernel run holds kernel bytes, so ring 3 never maps it; `map_user` takes outside bytes.
         if flags.contains(Flags::USER) {
             return Err(MapError::NotYours(virtual_base));
         }
         self.map_run(virtual_base, run, flags)
     }
 
-    /// Map a run of frames ring 3 may reach, at `virtual_base`.
-    ///
-    /// [`USegment`] makes external-byte provenance explicit; this method adds
-    /// `USER` and records ownership regardless of caller flags (D-44, D-107).
-    ///
-    /// # Errors
-    ///
-    /// As [`map_owned`](Self::map_owned).
+    /// Map an outside-byte run ring 3 may reach, adding `USER` and ownership whatever the flags.
     pub fn map_user(
         &mut self,
         virtual_base: u64,
@@ -389,17 +324,10 @@ impl AddressSpace {
         }
     }
 
-    /// Map a run ring 3 may reach, **without** taking it.
+    /// Map a run ring 3 may reach without taking it, refusing a cache alias of its direct map.
     ///
-    /// The mapping omits `OWNED`, retains a non-accessing owner, and therefore
-    /// cannot recycle frames while either side can reach them. The one-way
-    /// [`USegment::share`] conversion prevents owned/shared aliasing
-    /// (D-113, D-115).
-    ///
-    /// # Errors
-    ///
-    /// As [`map_user`](Self::map_user), and [`MapError::CacheAlias`] if caller
-    /// flags would conflict with the allocation's write-back direct-map view.
+    /// It omits `OWNED` and keeps a non-accessing owner, so no frame recycles while either side
+    /// reaches it; the one-way [`USegment::share`] prevents owned and shared aliases.
     pub fn map_shared(
         &mut self,
         virtual_base: u64,
@@ -416,15 +344,7 @@ impl AddressSpace {
         )
     }
 
-    /// Map a checked shared-ring allocation into a user address space.
-    ///
-    /// Ownership and mapping rules are identical to
-    /// [`map_shared`](Self::map_shared); the distinct type retains the ring's
-    /// payload/publication-word partition.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_shared`](Self::map_shared).
+    /// Map a shared ring as [`map_shared`](Self::map_shared) does, keeping its publication words.
     pub fn map_shared_ring<const WORDS: usize>(
         &mut self,
         virtual_base: u64,
@@ -496,8 +416,8 @@ impl AddressSpace {
             .owned_pages
             .checked_add(frames)
             .ok_or(MapError::OutOfMemory)?;
-        // Ownership lives in the leaf every unmap observes, never in caller
-        // flags; an owned large page could not be split back (D-45, D-88, D-105).
+        // Ownership lives in the leaf unmap reads, never in caller flags; an owned large page
+        // could not be split back.
         self.map_range(
             virtual_base,
             physical_base,
@@ -541,8 +461,7 @@ impl AddressSpace {
             if level == target {
                 let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
                 let current = EntrySlot::read(&slot);
-                // Only an identical rewrite is allowed: anything else would
-                // re-point a mapping some handle is evidence of.
+                // Only an identical rewrite: anything else re-points a mapping a handle proves.
                 if current.is_present() && current != entry {
                     return Err(MapError::Conflict(virtual_address));
                 }
@@ -565,8 +484,7 @@ impl AddressSpace {
                 if current.is_huge() {
                     return Err(MapError::Conflict(virtual_address));
                 }
-                // An interior entry covers everything below it, so upgrading
-                // it to `USER` would hand ring 3 every mapping under it (D-105).
+                // Upgrading an interior entry to `USER` would hand ring 3 every mapping under it.
                 if flags.contains(Flags::USER) && !current.flags().contains(Flags::USER) {
                     return Err(MapError::Conflict(virtual_address));
                 }
@@ -587,16 +505,12 @@ impl AddressSpace {
             };
         }
 
-        // Unreachable: `target` is always `Pt` or `Pd`, both of which are in
-        // `Level::WALK`, so the loop returns before it can end.
+        // Unreachable: `target` is `Pt` or `Pd`, both in `Level::WALK`, so the loop returns first.
         Err(MapError::Conflict(virtual_address))
     }
 }
 
-/// How large the pages of a mapping may be.
-///
-/// Four-kilobyte granularity keeps owned mappings splittable by `unmap`; the
-/// direct map instead takes the largest aligned pages available.
+/// How large a mapping's pages may be; owned mappings stay four-kilobyte so `unmap` can split them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Grain {
     /// The largest page each aligned stretch allows.
@@ -614,12 +528,9 @@ enum MappingState {
     Identical,
 }
 
-/// Evidence that a physical range is one the boot handoff described.
+/// Evidence the boot memory map covers one range, the only way into [`AddressSpace::map_boot`].
 ///
-/// The only way to reach [`AddressSpace::map_boot`], and constructible only
-/// from a range the bootloader's memory map covers. Not `Copy`: it is a
-/// statement about one range, made once, and a copy would let a caller reuse
-/// the evidence for a range nobody checked.
+/// Not `Copy`: a copy would let a caller reuse the evidence for a range nobody checked.
 #[derive(Debug)]
 pub struct BootRegion {
     base: Paddr,
@@ -628,13 +539,8 @@ pub struct BootRegion {
 }
 
 impl BootRegion {
-    /// Describe `len` bytes at `base`, or `None` unless the memory map covers
-    /// all of it *with memory* of one direct-map cache type.
-    ///
-    /// Device holes are excluded because write-back direct-map aliases of MMIO
-    /// are unsafe, and a range mixing framebuffer and ordinary memory has no
-    /// single type a mapping could share. Returns `None` before the map exists
-    /// (D-45, D-105, D-349).
+    /// Describe `len` bytes at `base`, or `None` before the map or unless memory of one direct-map
+    /// cache type covers it; device holes are refused because write-back MMIO aliases are unsafe.
     pub fn describe(base: Paddr, len: u64) -> Option<Self> {
         let end = base.checked_add(len)?;
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {

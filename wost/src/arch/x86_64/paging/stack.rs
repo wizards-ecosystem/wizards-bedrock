@@ -14,16 +14,10 @@ use super::{STACK_MAPPINGS_BEFORE_REFUSAL, STACK_ROLLBACKS_BEFORE_REFUSAL, stack
 use crate::mm::{self, Paddr};
 
 impl AddressSpace {
-    /// Map one guarded stack, and hand back the evidence that it is one.
+    /// Map one guarded stack, or refuse with `Conflict` at the first guard page found mapped.
     ///
-    /// The returned [`MappedStack`] proves zeroed writable pages, no execute
-    /// permission, and an absent guard before
-    /// [`task::continue_on_stack`](super::task::continue_on_stack) uses it.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_owned`](Self::map_owned), plus [`MapError::Conflict`] naming
-    /// the first guard page that turned out to be mapped.
+    /// The [`MappedStack`] proves zeroed writable, never-executable pages and an absent guard
+    /// before [`task::continue_on_stack`](super::task::continue_on_stack) uses it.
     pub fn map_stack(&mut self, slot: &Slot) -> Result<MappedStack, StackMapError> {
         #[cfg(feature = "selftest")]
         if stack_refusal(&STACK_MAPPINGS_BEFORE_REFUSAL) {
@@ -41,8 +35,7 @@ impl AddressSpace {
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )?;
 
-        // Guard verification follows mapping, so refusal must return the
-        // just-owned frames.
+        // Guard verification follows mapping, so a refusal must return the just-owned frames.
         if let Err(cause) = self.verify_guard(slot) {
             return match self.rollback_stack(slot, 0) {
                 Ok(_) => Err(StackMapError::Mapping(cause)),
@@ -133,16 +126,8 @@ impl AddressSpace {
         Ok(returned_pages)
     }
 
-    /// Map one guarded stack and prevent its extent from changing.
-    ///
-    /// The returned evidence prevents every overlapping map or unmap while
-    /// hardware may retain the stack address.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_stack`](Self::map_stack), plus [`MapError::Pinned`] if this
-    /// address space already has a hardware-pinned stack and
-    /// [`MapError::Inactive`] if the CPU is not walking this space.
+    /// Map one guarded stack whose evidence refuses every overlapping map or unmap while hardware
+    /// may retain its address; `Pinned` if a pinned stack exists, `Inactive` off the CPU's space.
     pub fn map_pinned_stack(&mut self, slot: &Slot) -> Result<PinnedStack, StackMapError> {
         let roots = self.roots();
         if current_mapping_root(roots).is_none() {
@@ -164,18 +149,11 @@ impl AddressSpace {
         Ok(PinnedStack { stack })
     }
 
-    /// Map every stack of `layout`, leaving every guard gap unmapped.
+    /// Map every stack of `layout` as one contiguous run each, zeroed before mapping, writable and
+    /// never executable.
     ///
-    /// Writable and never executable, one physically contiguous run per slot,
-    /// zeroed before it is mapped. The guards are guards precisely because
-    /// this function never touches them: an overrun lands on an absent
-    /// mapping, which faults, rather than on a neighbour's stack, which
-    /// would not.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_stack`](Self::map_stack). A refusal rolls every earlier stack
-    /// back; [`StackMapError::Rollback`] reports any cleanup refusal exactly.
+    /// Guard gaps stay unmapped so an overrun faults instead of reaching a neighbour's stack. A
+    /// refusal rolls every earlier stack back; [`StackMapError::Rollback`] reports cleanup exactly.
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, StackMapError> {
         let mut stacks = Vec::new();
         stacks
@@ -191,8 +169,8 @@ impl AddressSpace {
             };
             match self.map_stack(&slot) {
                 Ok(stack) => stacks.push(stack.identity),
-                Err(error) => {
-                    let (cause, committed, returned_pages) = match error {
+                Err(reason) => {
+                    let (cause, committed, returned_pages) = match reason {
                         StackMapError::Mapping(cause) => (cause, mapped_stacks, 0),
                         StackMapError::Rollback { cause, cleanup } => {
                             assert!(
@@ -298,10 +276,8 @@ pub(super) fn protected_stack_overlap(
     permanent_stack_overlap(roots, base, len).or_else(|| task_stack_overlap(roots, base, len))
 }
 
-/// The stacks [`AddressSpace::map_stacks`] committed, ready to run threads on.
-///
-/// Linear evidence lets [`task::init`](super::task::init) fabricate contexts
-/// only for the ranges one mapping operation established.
+/// The stacks [`AddressSpace::map_stacks`] committed, as linear evidence that lets
+/// [`task::init`](super::task::init) fabricate contexts only for the ranges one mapping made.
 #[derive(Debug)]
 pub struct StackArena {
     layout: StackLayout,
@@ -437,11 +413,9 @@ impl StackIdentity {
     }
 }
 
-/// A stack this address space mapped, with its guard verified absent.
+/// A stack this space mapped with its guard absent, linear for the reason [`DeviceMapping`] is.
 ///
-/// Not `Copy` or `Clone`, for the reason [`DeviceMapping`] is not: it is the
-/// evidence that exactly one caller owns this region. The root ties it to the
-/// space that made it, because a stack address means nothing without one.
+/// The root ties it to the space that made it, because a stack address means nothing without one.
 #[derive(Debug)]
 pub struct MappedStack {
     pub(super) identity: StackIdentity,
@@ -453,15 +427,10 @@ impl MappedStack {
         self.identity.slot.stack_top()
     }
 
-    /// Whether the CPU is walking the space with this exact guarded stack.
+    /// Whether the CPU walks this stack's own space, which only the root tells apart.
     ///
-    /// A stack mapped into a space that was never installed is not a stack this
-    /// CPU can stand on, and the addresses collide across spaces, so the root
-    /// is the only thing that can tell them apart.
-    ///
-    /// Every guard page must remain absent and every stack page must still be
-    /// the original owned, supervisor, write-back, writable and non-executable
-    /// mapping. The complete re-walk rejects partial and substituted stacks.
+    /// A complete re-walk needs every guard absent and every page the original owned, supervisor,
+    /// write-back, writable, non-executable mapping, so partial and substituted stacks fail.
     pub fn is_installed(&self) -> bool {
         current_mapping_root(self.identity.roots)
             .is_some_and(|current| self.identity.invalid_page_in(current).is_none())
@@ -476,11 +445,9 @@ impl MappedStack {
     }
 }
 
-/// A guarded stack whose address space will not allow its extent to change.
+/// A guarded stack its space records as pinned, since hardware keeps addresses, not Rust values.
 ///
-/// Hardware retains stack addresses without retaining Rust values. This token
-/// proves the address space records the stack and guard as pinned, so a safe
-/// caller cannot remove, replace or fill either after hardware retains it.
+/// No safe caller can remove, replace or fill the stack or its guard once hardware retains it.
 #[derive(Debug)]
 pub struct PinnedStack {
     stack: MappedStack,
