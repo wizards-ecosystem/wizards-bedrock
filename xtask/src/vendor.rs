@@ -41,7 +41,11 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
         let (digest, name) = line
             .split_once(char::is_whitespace)
             .with_context(|| format!("checksum line has no file name: {line}"))?;
-        if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+        if digest.len() != 64
+            || !digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
             bail!("not a sha256 digest: {digest}");
         }
         let name = name.trim_start().trim_start_matches('*');
@@ -50,10 +54,8 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
         }
         let mut components = Path::new(name).components();
         ensure!(
-            matches!(
-                core::iter::Iterator::next(&mut components),
-                Some(Component::Normal(_))
-            ) && core::iter::Iterator::next(&mut components).is_none()
+            matches!(components.next(), Some(Component::Normal(_)))
+                && components.next().is_none()
                 && !name.contains(['/', '\\'])
                 && !name.chars().any(char::is_control),
             "checksum file name is not one direct regular-file name: {name}"

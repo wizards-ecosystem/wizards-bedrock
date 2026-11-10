@@ -257,7 +257,8 @@ impl Inventory {
         for (id, node) in nodes.iter_mut().enumerate() {
             node.id = id;
             if node.instrument {
-                node.code = core::iter::Iterator::next(&mut codes)
+                node.code = codes
+                    .next()
                     .with_context(|| format!("assigning an antichain code to {}", node.label))?;
             }
         }

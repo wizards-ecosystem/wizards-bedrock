@@ -152,11 +152,7 @@ fn the_boot_configuration_names_the_files_the_image_builder_writes() {
         config
             .lines()
             .find_map(|line| line.trim().strip_prefix(key))
-            .map(|value| {
-                core::iter::Iterator::next(&mut value.trim().rsplit('/'))
-                    .unwrap_or("")
-                    .to_string()
-            })
+            .map(|value| value.trim().rsplit('/').next().unwrap_or("").to_string())
             .unwrap_or_else(|| panic!("no {key} line in boot/limine.conf"))
     };
 

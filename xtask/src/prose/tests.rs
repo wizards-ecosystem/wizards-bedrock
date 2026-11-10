@@ -37,7 +37,9 @@ fn markdown_destinations(document: &str) -> Vec<(usize, String)> {
             let Some(close) = after.find(')') else {
                 break;
             };
-            let raw = core::iter::Iterator::next(&mut after[..close].split_ascii_whitespace())
+            let raw = after[..close]
+                .split_ascii_whitespace()
+                .next()
                 .unwrap_or("")
                 .trim_matches(['<', '>']);
             if !raw.is_empty() {
@@ -56,7 +58,9 @@ fn heading_anchors(document: &str) -> BTreeSet<String> {
         let line = line.trim_start();
         let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
         if !(1..=6).contains(&hashes)
-            || !core::iter::Iterator::next(&mut line[hashes..].chars())
+            || !line[hashes..]
+                .chars()
+                .next()
                 .is_some_and(char::is_whitespace)
         {
             continue;
@@ -571,7 +575,9 @@ fn current_facing_foundation_prose_names_the_later_resolutions() {
 
 /// The first number in the table row whose left cell is `label`.
 fn table_number(document: &str, label: &str) -> usize {
-    core::iter::Iterator::next(&mut table_numbers(document, label).into_iter())
+    table_numbers(document, label)
+        .into_iter()
+        .next()
         .unwrap_or_else(|| panic!("the `{label}` row states no number"))
 }
 
@@ -1108,8 +1114,8 @@ fn every_historical_handoff_has_one_current_disposition() {
         .lines()
         .filter_map(|line| {
             let mut cells = line.trim_start().strip_prefix("| ")?.split('|');
-            let id = core::iter::Iterator::next(&mut cells)?.trim();
-            let state = core::iter::Iterator::next(&mut cells)?.trim();
+            let id = cells.next()?.trim();
+            let state = cells.next()?.trim();
             (id.starts_with("PW-") || id.starts_with("WZ-")).then_some((id, state))
         })
         .collect::<BTreeMap<_, _>>();

@@ -285,7 +285,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 907,
         file: "xtask/src/vendor.rs",
-        find: "            matches!(\n                core::iter::Iterator::next(&mut components),\n                Some(Component::Normal(_))\n            ) && core::iter::Iterator::next(&mut components).is_none()\n                && !name.contains(['/', '\\\\'])\n                && !name.chars().any(char::is_control),",
+        find: "            matches!(components.next(), Some(Component::Normal(_)))\n                && components.next().is_none()\n                && !name.contains(['/', '\\\\'])\n                && !name.chars().any(char::is_control),",
         replace: "            true,",
         breaks: "a vendor checksum entry can name an indirect or control-bearing path",
         reddens: Caught::HostTest {

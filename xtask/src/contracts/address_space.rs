@@ -480,10 +480,10 @@ fn probe(pin: &TaskStackPin) { write_kernel_stack(pin.stack_top()); }
         panic!("KernelStackTop does not directly borrow its stack identity");
     };
     let mut fields = fields.unnamed.iter();
-    let Some(field) = core::iter::Iterator::next(&mut fields) else {
+    let Some(field) = fields.next() else {
         panic!("KernelStackTop does not carry exactly one stack-identity borrow");
     };
-    assert!(core::iter::Iterator::next(&mut fields).is_none());
+    assert!(fields.next().is_none());
     assert!(matches!(
         &field.ty,
         Type::Reference(reference)
@@ -647,12 +647,10 @@ const _: () = assert!(size_of::<AddressSpace>() <= 256);
         panic!("AddressSpace device ledger Vec has no element type");
     };
     let mut arguments = arguments.args.iter();
-    let Some(GenericArgument::Type(Type::Path(option))) =
-        core::iter::Iterator::next(&mut arguments)
-    else {
+    let Some(GenericArgument::Type(Type::Path(option))) = arguments.next() else {
         panic!("AddressSpace device ledger does not preserve stable slots");
     };
-    assert!(core::iter::Iterator::next(&mut arguments).is_none());
+    assert!(arguments.next().is_none());
     let Some(option) = option.path.segments.last() else {
         panic!("AddressSpace device slot has no type path");
     };
@@ -662,11 +660,11 @@ const _: () = assert!(size_of::<AddressSpace>() <= 256);
     };
     let mut arguments = arguments.args.iter();
     assert!(matches!(
-        core::iter::Iterator::next(&mut arguments),
+        arguments.next(),
         Some(GenericArgument::Type(Type::Path(extent)))
             if extent.path.segments.last().is_some_and(|segment| segment.ident == "DeviceExtent")
     ));
-    assert!(core::iter::Iterator::next(&mut arguments).is_none());
+    assert!(arguments.next().is_none());
 
     let map_device = syntax
         .items

@@ -673,9 +673,8 @@ fn a_current_pass_blocks_a_newer_sweep_until_consumed() {
         .expect("completed report");
     let pass = current_pass(&paths, &registry, 0).expect("current pass");
 
-    let error = match Session::open(&paths, &registry, 0) {
-        Ok(_) => panic!("a newer sweep acquired the current pass's lock"),
-        Err(error) => error,
+    let Err(error) = Session::open(&paths, &registry, 0) else {
+        panic!("a newer sweep acquired the current pass's lock");
     };
     assert!(
         format!("{error:#}").contains("another mutation sweep holds"),
@@ -707,9 +706,8 @@ fn a_redirected_mutation_state_ancestor_is_refused_before_cleanup() {
     std::fs::write(&sentinel, b"outside authority").expect("outside sentinel");
     create_directory_symlink(&outside, &state_root.join(key));
 
-    let error = match Session::open(&paths, &registry, 0) {
-        Ok(_) => panic!("redirected mutation state was accepted"),
-        Err(error) => error,
+    let Err(error) = Session::open(&paths, &registry, 0) else {
+        panic!("redirected mutation state was accepted");
     };
     assert!(
         format!("{error:#}").contains("mutation state is not a real directory"),

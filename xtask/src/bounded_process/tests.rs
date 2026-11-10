@@ -372,13 +372,12 @@ fn a_second_stream_failure_rolls_back_the_first_capture_and_directory() {
     let parent = crate::test_support::reserve_temp_directory("wizard-capture-rollback");
     let mut stream = 0;
 
-    let error = match Capture::create_in(&parent, |_, _| {
+    let Err(error) = Capture::create_in(&parent, |_, _| {
         stream += 1;
         ensure!(stream != 2, "injected second-stream failure");
         Ok(())
-    }) {
-        Ok(_) => panic!("injected second-stream failure was accepted"),
-        Err(error) => error,
+    }) else {
+        panic!("injected second-stream failure was accepted");
     };
 
     assert!(format!("{error:#}").contains("injected second-stream failure"));

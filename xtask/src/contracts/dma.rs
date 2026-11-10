@@ -127,7 +127,7 @@ fn find_method<'ast>(
         found: Vec::new(),
     };
     methods.visit_file(syntax);
-    core::iter::Iterator::next(&mut methods.found.into_iter())
+    methods.found.into_iter().next()
 }
 
 fn method<'ast>(syntax: &'ast syn::File, owner: &str, name: &str) -> Option<&'ast syn::ImplItemFn> {

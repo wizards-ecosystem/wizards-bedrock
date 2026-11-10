@@ -573,19 +573,16 @@ fn verify_selftest_transcript(
     );
     let expected = expected_checks()?;
     let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split(' ');
+    ensure!(fields.next() == Some("v1"), "unsupported self-test verdict");
     ensure!(
-        core::iter::Iterator::next(&mut fields) == Some("v1"),
-        "unsupported self-test verdict"
-    );
-    ensure!(
-        core::iter::Iterator::next(&mut fields) == Some("PASS"),
+        fields.next() == Some("PASS"),
         "self-test verdict did not pass"
     );
-    let passed = verdict_count(core::iter::Iterator::next(&mut fields), "passed=")?;
-    let failed = verdict_count(core::iter::Iterator::next(&mut fields), "failed=")?;
-    let reported = verdict_count(core::iter::Iterator::next(&mut fields), "expected=")?;
+    let passed = verdict_count(fields.next(), "passed=")?;
+    let failed = verdict_count(fields.next(), "failed=")?;
+    let reported = verdict_count(fields.next(), "expected=")?;
     ensure!(
-        core::iter::Iterator::next(&mut fields).is_none(),
+        fields.next().is_none(),
         "self-test verdict has trailing fields"
     );
     ensure!(

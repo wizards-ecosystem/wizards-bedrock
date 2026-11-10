@@ -640,13 +640,17 @@ fn every_fault_says_something_specific() {
 
     let messages: Vec<String> = image.verify().iter().map(ToString::to_string).collect();
     assert_eq!(messages.len(), 3, "{messages:#?}");
-    assert!(messages.iter().any(|m| m.contains("higher half")));
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("writable and executable"))
+            .any(|message| message.contains("higher half"))
     );
-    assert!(messages.iter().any(|m| m.contains(".requests")));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("writable and executable"))
+    );
+    assert!(messages.iter().any(|message| message.contains(".requests")));
 }
 
 // --- the reader ---

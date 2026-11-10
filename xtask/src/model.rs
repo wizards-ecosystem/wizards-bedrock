@@ -8,8 +8,6 @@
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -405,10 +403,7 @@ fn prepare_scratch(paths: &Paths, run: &Run) -> Result<PathBuf> {
     ensure!(RUNS.contains(run), "refusing an unregistered model run");
     let mut components = Path::new(run.config).components();
     ensure!(
-        matches!(
-            core::iter::Iterator::next(&mut components),
-            Some(Component::Normal(_))
-        ) && core::iter::Iterator::next(&mut components).is_none(),
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
         "model configuration is not one safe scratch selector"
     );
     let target = crate::mutate::workspace::prepare_real_directory_tree(

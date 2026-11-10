@@ -17,10 +17,11 @@ fn top_level_function<'ast>(syntax: &'ast syn::File, name: &str, relative: &str)
         Item::Fn(function) if function.sig.ident == name => Some(function),
         _ => None,
     });
-    let function = core::iter::Iterator::next(&mut matches)
+    let function = matches
+        .next()
         .unwrap_or_else(|| panic!("{relative} has no {name} function"));
     assert!(
-        core::iter::Iterator::next(&mut matches).is_none(),
+        matches.next().is_none(),
         "{relative} has more than one {name} function"
     );
     function
@@ -60,10 +61,11 @@ fn inherent_method<'ast>(
             ImplItem::Fn(method) if method.sig.ident == method_name => Some(method),
             _ => None,
         });
-    let method = core::iter::Iterator::next(&mut matches)
+    let method = matches
+        .next()
         .unwrap_or_else(|| panic!("{relative} has no {type_name}::{method_name} method"));
     assert!(
-        core::iter::Iterator::next(&mut matches).is_none(),
+        matches.next().is_none(),
         "{relative} has more than one {type_name}::{method_name} method"
     );
     method
@@ -703,9 +705,9 @@ fn is_call_decode(expression: &Expr) -> bool {
     let mut segments = function.path.segments.iter();
     matches!(
         (
-            core::iter::Iterator::next(&mut segments),
-            core::iter::Iterator::next(&mut segments),
-            core::iter::Iterator::next(&mut segments),
+            segments.next(),
+            segments.next(),
+            segments.next(),
         ),
         (Some(first), Some(second), None) if first.ident == "Call" && second.ident == "decode"
     )
@@ -718,11 +720,8 @@ fn call_pattern(pattern: &Pat) -> Option<String> {
         _ => return None,
     };
     let mut segments = path.segments.iter();
-    let (Some(first), Some(second), None) = (
-        core::iter::Iterator::next(&mut segments),
-        core::iter::Iterator::next(&mut segments),
-        core::iter::Iterator::next(&mut segments),
-    ) else {
+    let (Some(first), Some(second), None) = (segments.next(), segments.next(), segments.next())
+    else {
         return None;
     };
     (first.ident == "Call").then(|| second.ident.to_string())
@@ -865,9 +864,8 @@ fn force_unlocked_statics(text: &str) -> Option<BTreeSet<String>> {
     })?;
     let mut statics = BTreeSet::new();
     for statement in &function.block.stmts {
-        let expression = match statement {
-            syn::Stmt::Expr(expression, _) => expression,
-            _ => continue,
+        let syn::Stmt::Expr(expression, _) = statement else {
+            continue;
         };
         let Expr::MethodCall(call) = expression else {
             continue;

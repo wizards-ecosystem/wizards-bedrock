@@ -5,8 +5,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
@@ -150,8 +148,7 @@ impl Debugger {
 }
 
 fn require_identity(stdout: &str) -> Result<&str> {
-    let identity =
-        core::iter::Iterator::next(&mut stdout.lines()).context("GDB printed no identity")?;
+    let identity = stdout.lines().next().context("GDB printed no identity")?;
     if identity != GDB_IDENTITY {
         bail!("unsupported GDB identity `{identity}`; expected `{GDB_IDENTITY}`");
     }

@@ -62,6 +62,7 @@ pub(super) enum Availability {
 }
 
 impl Availability {
+    #[must_use]
     pub(super) fn for_item(self, attributes: &[Attribute]) -> Self {
         if self == Self::Verification || verification_only(attributes) {
             Self::Verification

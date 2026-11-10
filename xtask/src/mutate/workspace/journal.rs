@@ -123,10 +123,7 @@ impl Journal {
         ensure!(actual == expected, "journal checksum does not match");
 
         let mut lines = lines.into_iter();
-        ensure!(
-            core::iter::Iterator::next(&mut lines) == Some(JOURNAL_MAGIC),
-            "wrong journal version"
-        );
+        ensure!(lines.next() == Some(JOURNAL_MAGIC), "wrong journal version");
         let generation = <u64 as core::str::FromStr>::from_str(field(&mut lines, "generation")?)
             .context("parsing journal generation")?;
         let commit = field(&mut lines, "commit")?.to_string();
@@ -152,8 +149,7 @@ impl Journal {
 
         let mut completed = Vec::with_capacity(count);
         for _ in 0..count {
-            let line =
-                core::iter::Iterator::next(&mut lines).context("journal outcome is missing")?;
+            let line = lines.next().context("journal outcome is missing")?;
             let outcome = match line {
                 "result caught" => Outcome::Caught,
                 "result survived" => Outcome::Survived,
@@ -169,10 +165,7 @@ impl Journal {
             };
             completed.push(outcome);
         }
-        ensure!(
-            core::iter::Iterator::next(&mut lines).is_none(),
-            "journal has trailing records"
-        );
+        ensure!(lines.next().is_none(), "journal has trailing records");
         Ok(Self {
             generation,
             commit,
@@ -285,7 +278,7 @@ impl Report {
 
         let mut lines = lines.into_iter();
         ensure!(
-            core::iter::Iterator::next(&mut lines) == Some(REPORT_MAGIC),
+            lines.next() == Some(REPORT_MAGIC),
             "wrong mutation report version"
         );
         let sequence = <u64 as core::str::FromStr>::from_str(field(&mut lines, "sequence")?)
@@ -321,8 +314,7 @@ impl Report {
         let mut ids = Vec::with_capacity(mutation_count);
         let mut outcomes = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
-            let line = core::iter::Iterator::next(&mut lines)
-                .context("mutation report outcome is missing")?;
+            let line = lines.next().context("mutation report outcome is missing")?;
             let (id, line) = line
                 .strip_prefix("id ")
                 .and_then(|line| line.split_once(' '))
@@ -346,7 +338,7 @@ impl Report {
             });
         }
         ensure!(
-            core::iter::Iterator::next(&mut lines).is_none(),
+            lines.next().is_none(),
             "mutation report has trailing records"
         );
         let actual = outcome_totals(&outcomes);
@@ -423,7 +415,8 @@ fn outcome_totals(outcomes: &[Outcome]) -> (usize, usize, usize) {
 }
 
 fn field<'text>(lines: &mut impl Iterator<Item = &'text str>, name: &str) -> Result<&'text str> {
-    let line = core::iter::Iterator::next(lines)
+    let line = lines
+        .next()
         .with_context(|| format!("journal field {name} is missing"))?;
     line.strip_prefix(&format!("{name} "))
         .with_context(|| format!("journal field {name} is malformed"))

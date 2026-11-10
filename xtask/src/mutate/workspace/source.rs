@@ -528,7 +528,7 @@ fn prepare_confined_destination(
     let canonical_root = canonical_existing_real_directory(root, label)?;
     let mut parent = canonical_root;
     let mut components = Path::new(relative).components().peekable();
-    while let Some(component) = core::iter::Iterator::next(&mut components) {
+    while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
             unreachable!("validate_relative accepted a non-normal component");
         };
@@ -748,7 +748,7 @@ pub(super) fn require_confined_file(root: &Path, relative: &str, label: &str) ->
     let path = Path::new(relative);
     let mut parent = root.to_path_buf();
     let mut components = path.components().peekable();
-    while let Some(component) = core::iter::Iterator::next(&mut components) {
+    while let Some(component) = components.next() {
         let Component::Normal(name) = component else {
             unreachable!("validate_relative accepted a non-normal component");
         };

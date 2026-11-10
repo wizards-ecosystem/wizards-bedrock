@@ -2069,8 +2069,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1910,
         file: "xtask/src/evidence.rs",
-        find: "        core::iter::Iterator::next(&mut lines) == Some(FORMAT),",
-        replace: "        core::iter::Iterator::next(&mut lines)\n            .is_some_and(|line| line.starts_with(\"wizard-evidence-v\")),",
+        find: "        lines.next() == Some(FORMAT),",
+        replace: "        lines.next().is_some_and(|line| line.starts_with(\"wizard-evidence-v\")),",
         breaks: "a superseded release-evidence schema is accepted by its version prefix",
         reddens: Caught::HostTest {
             package: "xtask",

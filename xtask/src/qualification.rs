@@ -13,8 +13,6 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(test)]
-use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};

@@ -1928,8 +1928,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     let image = crate::image::program::build().expect("building the emitted program");
     let elf = elf64::Elf::parse(&image).expect("the emitted program is ELF64");
     let mut segments = elf.segments();
-    let segment =
-        core::iter::Iterator::next(&mut segments).expect("the emitted program has a segment");
+    let segment = segments.next().expect("the emitted program has a segment");
     let start = segment.offset() as usize;
     let end = start + segment.file_size() as usize;
     let code = &image[start..end];

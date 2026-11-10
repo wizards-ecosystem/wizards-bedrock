@@ -259,7 +259,7 @@ const TASK_NAMES: &[&str] = &[
 /// Empty input is refused so a mistyped task cannot default to booting a VM.
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut args = args.into_iter();
-    let Some(first) = core::iter::Iterator::next(&mut args) else {
+    let Some(first) = args.next() else {
         bail!("no task given");
     };
 
@@ -281,7 +281,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut passthrough_option = false;
 
     let mut rest = args;
-    while let Some(arg) = core::iter::Iterator::next(&mut rest) {
+    while let Some(arg) = rest.next() {
         let flag = arg.to_string_lossy().into_owned();
         match flag.as_str() {
             "--release" => {

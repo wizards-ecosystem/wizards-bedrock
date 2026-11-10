@@ -145,7 +145,7 @@ pub fn check(paths: &Paths) -> Result<()> {
 
 pub(crate) fn report_names_exact_dead_item(report: &str, wanted: &str) -> bool {
     let mut lines = report.lines();
-    let Some(header) = core::iter::Iterator::next(&mut lines) else {
+    let Some(header) = lines.next() else {
         return false;
     };
     let Some((count, summary)) = header.split_once(' ') else {
@@ -157,11 +157,10 @@ pub(crate) fn report_names_exact_dead_item(report: &str, wanted: &str) -> bool {
     if count != 1 || summary != "public API item(s) have no caller:" {
         return false;
     }
-    let Some(row) = core::iter::Iterator::next(&mut lines).and_then(|line| line.strip_prefix("  "))
-    else {
+    let Some(row) = lines.next().and_then(|line| line.strip_prefix("  ")) else {
         return false;
     };
-    if core::iter::Iterator::next(&mut lines).is_some() {
+    if lines.next().is_some() {
         return false;
     }
     let Some((identity, location)) = row.rsplit_once(" at ") else {

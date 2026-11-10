@@ -496,8 +496,7 @@ pub(super) fn irq_count(report: &str, irq: u8) -> Option<u64> {
             continue;
         }
         let mut fields = count.split_whitespace();
-        let count =
-            <u64 as core::str::FromStr>::from_str(core::iter::Iterator::next(&mut fields)?).ok()?;
+        let count = <u64 as core::str::FromStr>::from_str(fields.next()?).ok()?;
         total = total.checked_add(count)?;
     }
     recognized.then_some(total)

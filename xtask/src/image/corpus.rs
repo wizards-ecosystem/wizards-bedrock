@@ -4,8 +4,6 @@
 //! `fatfs` and `libs/fat32`; the pinned foreign corpus separately checks the
 //! format assumptions (D-170, D-207).
 
-#[cfg(test)]
-use std::io::Cursor;
 use std::io::{Read, Seek, Write};
 
 use anyhow::{Context, Result};
@@ -75,7 +73,7 @@ pub const fn large_byte(index: usize) -> u8 {
 #[cfg(test)]
 fn build() -> Result<Vec<u8>> {
     let mut bytes = vec![0u8; VOLUME_BYTES];
-    populate(Cursor::new(&mut bytes[..]))?;
+    populate(std::io::Cursor::new(&mut bytes[..]))?;
 
     Ok(bytes)
 }

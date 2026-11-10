@@ -20,7 +20,9 @@ fn the_decisions_are_numbered_without_a_gap() {
     assert!(!numbers.is_empty(), "the log defines no decisions");
 
     let last = *numbers.last().expect("non-empty");
-    let missing: Vec<u32> = (1..=last).filter(|n| !numbers.contains(n)).collect();
+    let missing: Vec<u32> = (1..=last)
+        .filter(|number| !numbers.contains(number))
+        .collect();
     assert!(
         missing.is_empty(),
         "the log jumps over {missing:?}; a cited number with no entry is a rationale that leads nowhere"

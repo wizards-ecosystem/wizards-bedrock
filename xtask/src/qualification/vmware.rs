@@ -330,10 +330,7 @@ pub(crate) fn generated_transcript_path(receipt: &Path, kernel: Kernel) -> Resul
     let name = record.get("reset.transcript.path")?;
     let mut components = Path::new(name).components();
     ensure!(
-        matches!(
-            core::iter::Iterator::next(&mut components),
-            Some(Component::Normal(_))
-        ) && core::iter::Iterator::next(&mut components).is_none(),
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
         "VMware generation transcript path is not one file name"
     );
     let directory = receipt
@@ -989,7 +986,8 @@ pub(super) fn parse_vmrun_list(report: &str) -> Result<PathBuf> {
         "vmrun list contains a forbidden control byte"
     );
     let mut lines = report.lines();
-    let count = core::iter::Iterator::next(&mut lines)
+    let count = lines
+        .next()
         .and_then(|line| line.strip_prefix(VMRUN_LIST_HEADER))
         .context("vmrun list has no supported count header")?;
     let parsed = <usize as core::str::FromStr>::from_str(count)

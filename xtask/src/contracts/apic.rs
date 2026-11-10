@@ -208,9 +208,11 @@ impl<'ast> Visit<'ast> for ProductionAssignments {
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
         if let Expr::Path(function) = call.func.as_ref() {
             let mut segments = function.path.segments.iter().rev();
-            if core::iter::Iterator::next(&mut segments)
+            if segments
+                .next()
                 .is_some_and(|segment| segment.ident == "new")
-                && core::iter::Iterator::next(&mut segments)
+                && segments
+                    .next()
                     .is_some_and(|segment| segment.ident == "Assignment")
             {
                 self.0 += 1;
@@ -628,11 +630,9 @@ impl<'ast> Visit<'ast> for GuardedVector {
             && let Expr::Path(source) = call.receiver.as_ref()
         {
             let mut segments = source.path.segments.iter();
-            if let (Some(module), Some(vector), None) = (
-                core::iter::Iterator::next(&mut segments),
-                core::iter::Iterator::next(&mut segments),
-                core::iter::Iterator::next(&mut segments),
-            ) && module.ident == "vector"
+            if let (Some(module), Some(vector), None) =
+                (segments.next(), segments.next(), segments.next())
+                && module.ident == "vector"
             {
                 self.0.push(vector.ident.to_string());
             }
