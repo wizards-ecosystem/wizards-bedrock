@@ -93,6 +93,31 @@ pub(super) fn call_complete(
         json_field(result, "structuredContent", "Codex Security completion")?,
         "Codex Security completion context",
     )?;
+    require_completion_context(structured)?;
+    let scan = json_object(
+        json_field(structured, "scan", "Codex Security completion context")?,
+        "Codex Security completed scan",
+    )?;
+    require_completed_scan_fields(scan)?;
+    require_fresh_workspace(structured, scan, repository)?;
+    let scan_directory =
+        require_completed_scan_identity(scan, repository, source, scan_root, start)?;
+    require_clean_scan_state(scan)?;
+    let thread_ids = require_thread_id_list(scan, "threadIds")?;
+    let execution_threads = require_thread_id_list(scan, "executionThreadIds")?;
+    require_worker_thread_sets(&thread_ids, &execution_threads)?;
+    require_scan_progress(scan)?;
+    require_clean_scan_results(scan)?;
+    require_completion_artifacts(scan, &scan_directory)?;
+    Ok(McpOutcome {
+        scan_id: start.scan_id.clone(),
+        scan_directory,
+        thread_ids,
+        execution_threads,
+    })
+}
+
+fn require_completion_context(structured: &BTreeMap<String, JsonValue>) -> Result<()> {
     let other_running = json_array(
         json_field(
             structured,
@@ -133,10 +158,10 @@ pub(super) fn call_complete(
         target_warnings.is_empty(),
         "Codex Security completion has target warnings"
     );
-    let scan = json_object(
-        json_field(structured, "scan", "Codex Security completion context")?,
-        "Codex Security completed scan",
-    )?;
+    Ok(())
+}
+
+fn require_completed_scan_fields(scan: &BTreeMap<String, JsonValue>) -> Result<()> {
     require_allowed_fields(
         scan,
         &[
@@ -180,7 +205,16 @@ pub(super) fn call_complete(
         ],
         "Codex Security completed scan",
     )?;
-    require_fresh_workspace(structured, scan, repository)?;
+    Ok(())
+}
+
+fn require_completed_scan_identity(
+    scan: &BTreeMap<String, JsonValue>,
+    repository: &Path,
+    source: &SourceIdentity,
+    scan_root: &Path,
+    start: &StartReceipt,
+) -> Result<PathBuf> {
     ensure!(
         string(scan, "scanId", "Codex Security completed scan")? == start.scan_id,
         "Codex Security completion returned another scan"
@@ -218,6 +252,10 @@ pub(super) fn call_complete(
         "Codex Security completion differs from the requested deep profile"
     );
     require_completion_contract(scan, repository)?;
+    Ok(scan_directory)
+}
+
+fn require_clean_scan_state(scan: &BTreeMap<String, JsonValue>) -> Result<()> {
     require_null_fields(
         scan,
         &[
@@ -251,9 +289,10 @@ pub(super) fn call_complete(
         .is_empty(),
         "Codex Security completion has nonzero or unexpected severity counts"
     );
-    let thread_ids = require_thread_id_list(scan, "threadIds")?;
-    let execution_threads = require_thread_id_list(scan, "executionThreadIds")?;
-    require_worker_thread_sets(&thread_ids, &execution_threads)?;
+    Ok(())
+}
+
+fn require_scan_progress(scan: &BTreeMap<String, JsonValue>) -> Result<()> {
     let scan_updated = crate::mutants_grade::parse_utc_timestamp(
         nonempty_string(scan, "updatedAt", "Codex Security completed scan")?,
         "Codex Security completion update time",
@@ -279,6 +318,10 @@ pub(super) fn call_complete(
         "Codex Security completion progress",
     )?;
     require_completion_progress(progress, scan_updated)?;
+    Ok(())
+}
+
+fn require_clean_scan_results(scan: &BTreeMap<String, JsonValue>) -> Result<()> {
     ensure!(
         boolean(scan, "reportAvailable", "Codex Security completed scan")?
             && !boolean(
@@ -308,13 +351,7 @@ pub(super) fn call_complete(
             .is_empty(),
         "Codex Security completion reports findings"
     );
-    require_completion_artifacts(scan, &scan_directory)?;
-    Ok(McpOutcome {
-        scan_id: start.scan_id.clone(),
-        scan_directory,
-        thread_ids,
-        execution_threads,
-    })
+    Ok(())
 }
 
 fn require_null_fields(

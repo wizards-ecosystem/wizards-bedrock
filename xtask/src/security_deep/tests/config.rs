@@ -1,13 +1,16 @@
 use super::*;
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use super::fake_app_server::{expect_value, send_value, wait_until_ready};
 
 const MODE_FILE: &str = ".fake-codex-config-mode";
 const FAULT_FILE_PREFIX: &str = ".fault-issued-";
 const CHILD_ERROR_FILE: &str = ".fake-child-error";
 const READY: &[u8] = b"WIZARD-SECURITY-DEEP-FAKE-CONFIG-READY\n";
+const CLIENT: &str = "fake Codex config client";
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -170,7 +173,7 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
         },
         || Ok(()),
         move |dialogue| {
-            wait_until_ready(dialogue)?;
+            wait_until_ready(dialogue, READY, "fake Codex app-server")?;
             exchange_codex_config(dialogue, &repository, &codex_home)
         },
     )
@@ -203,26 +206,6 @@ fn run_fake(mode: &str) -> Result<(EffectiveConfig, Fixture)> {
     result.map(|config| (config, fixture))
 }
 
-fn wait_until_ready(dialogue: &mut LineDialogue) -> Result<()> {
-    let mut observed = 0usize;
-    for _ in 0..8 {
-        let line = dialogue
-            .receive_line()?
-            .context("fake Codex app-server closed before its ready marker")?;
-        observed = observed
-            .checked_add(line.len())
-            .context("fake Codex app-server ready prelude length overflowed")?;
-        ensure!(
-            observed <= 4096,
-            "fake Codex app-server ready prelude is excessive"
-        );
-        if line.ends_with(READY) {
-            return Ok(());
-        }
-    }
-    bail!("fake Codex app-server omitted its ready marker")
-}
-
 fn assert_rejected(cases: &[(&str, &str)]) {
     for (mode, expected) in cases {
         let error = run_fake(mode).unwrap_err();
@@ -250,42 +233,6 @@ fn issue_fault(repository: &Path, mode: &str) -> Result<()> {
         mode.as_bytes(),
     )
     .with_context(|| format!("issuing fake Codex config fault marker for {mode}"))
-}
-
-fn read_value(reader: &mut impl BufRead, label: &str) -> Result<JsonValue> {
-    let mut line = Vec::new();
-    ensure!(
-        reader.read_until(b'\n', &mut line)? != 0,
-        "fake Codex config client closed before {label}"
-    );
-    ensure!(
-        line.last() == Some(&b'\n')
-            && line.iter().filter(|byte| **byte == b'\n').count() == 1
-            && !line.contains(&b'\r'),
-        "fake Codex config client used noncanonical framing for {label}"
-    );
-    line.pop();
-    let value = parse_json(&line, label)?;
-    ensure!(
-        render_json(&value)?.as_bytes() == line,
-        "fake Codex config client did not use canonical JSON for {label}"
-    );
-    Ok(value)
-}
-
-fn expect_value(reader: &mut impl BufRead, expected: JsonValue, label: &str) -> Result<()> {
-    ensure!(
-        read_value(reader, label)? == expected,
-        "fake Codex config client {label} differs"
-    );
-    Ok(())
-}
-
-fn send_value(writer: &mut impl Write, value: &JsonValue) -> Result<()> {
-    writer.write_all(render_json(value)?.as_bytes())?;
-    writer.write_all(b"\n")?;
-    writer.flush()?;
-    Ok(())
 }
 
 fn expected_initialize_request() -> JsonValue {
@@ -639,6 +586,7 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
     expect_value(
         &mut reader,
         expected_initialize_request(),
+        CLIENT,
         "initialize request",
     )?;
     if mode == "unsuccessful-child" {
@@ -663,11 +611,13 @@ fn fake_app_server(repository: &Path, mode: &str) -> Result<()> {
     expect_value(
         &mut reader,
         expected_initialized_notification(),
+        CLIENT,
         "initialized notification",
     )?;
     expect_value(
         &mut reader,
         expected_config_request(repository),
+        CLIENT,
         "config/read request",
     )?;
 

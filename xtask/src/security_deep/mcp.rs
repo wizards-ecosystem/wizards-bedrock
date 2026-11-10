@@ -642,13 +642,13 @@ pub(super) fn write_daybreak_presentation(
     }
 }
 
+// The advisory is operator information, not scan authority: a detached or broken console must
+// not stop the owned Deep dialogue.
 pub(super) fn present_daybreak_with_writers(
     presentation: Option<&DaybreakPresentation>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) {
-    // The advisory is operator information, not scan authority. A detached or
-    // broken console must not stop the owned Deep dialogue.
     let _ignored_operator_stream_failure =
         write_daybreak_presentation(presentation, stdout, stderr);
 }

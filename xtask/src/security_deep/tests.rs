@@ -1,5 +1,6 @@
 #[cfg(windows)]
 mod config;
+mod fake_app_server;
 mod owned;
 mod protocol;
 mod sandbox;
