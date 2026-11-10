@@ -85,7 +85,7 @@ for evidence and citations behind the choices marked [cited].
    performance summary. The authors' design lesson still stands: safe MMIO/DMA
    abstractions must be designed in from day one, not retrofitted.
 
-   *Implemented 2026-08-12 (D-21). One amendment learned in the doing: the
+   *Implemented 2026-08-12 (D-21). One amendment: the
    kernel **binary** carries `#![deny(unsafe_code)]`, not `forbid`, because
    `wost::entry!` expands its boot glue there and `forbid` cannot be lifted by
    an `allow` even inside a macro expansion. Library crates, which have no entry
@@ -143,7 +143,7 @@ Deferred, each with its cost named where it was deferred:
 - Intel CET shadow stacks, signed boot chain, measured boot. CET is the one
   that constrained earlier work: a shadow stack is a second region per thread,
   and the Phase 5 stack allocator must not foreclose it (`010` section 10).
-  **Answered in `011` slice 3, and answered by *not* building it:**
+  **Answered in `011` slice 3 by *not* building it:**
   `libs/stack-layout` computes every address from `(base, stack_len,
   guard_len, slots)`, so a second region is a field on `Slot` and a term in the
   stride, in a host-tested crate with no hardware in it. An unused slot built
