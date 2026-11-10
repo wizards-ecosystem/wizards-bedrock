@@ -33,6 +33,7 @@ pub(super) fn audited_cargo_command(
     Ok(command)
 }
 
+// gcc would take `ld` from GCC_EXEC_PREFIX before COMPILER_PATH, and libraries from LIBRARY_PATH.
 pub(super) fn base_cargo_command(
     execution_root: &Path,
     cargo_home: &Path,
@@ -44,6 +45,8 @@ pub(super) fn base_cargo_command(
         .current_dir(execution_root)
         .env("CARGO_HOME", cargo_home)
         .env("PATH", &compiler.tool_path)
+        .env_remove("GCC_EXEC_PREFIX")
+        .env_remove("LIBRARY_PATH")
         .env("RUSTC", &compiler.path)
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")
