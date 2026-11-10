@@ -18,6 +18,13 @@ use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+pub(super) use selftest::enclave_ist_stack_is_zeroed_for_test;
+#[cfg(feature = "selftest")]
+pub use selftest::{code_selector, double_fault_stack, stack_selector, task_register};
+
 /// Ring 0 code.
 pub const KERNEL_CODE: Selector = Selector::new(1, 0);
 
@@ -193,34 +200,6 @@ pub(super) fn current_code_selector() -> Selector {
     selectors().0
 }
 
-/// The selector this CPU is executing under.
-#[cfg(feature = "selftest")]
-pub fn code_selector() -> Selector {
-    current_code_selector()
-}
-
-/// The selector this CPU's stack accesses use.
-#[cfg(feature = "selftest")]
-pub fn stack_selector() -> Selector {
-    selectors().1
-}
-
-/// The selector in the task register, or a null selector if none is loaded.
-#[cfg(feature = "selftest")]
-pub fn task_register() -> Selector {
-    let bits: u16;
-    // SAFETY: `str` reads the task register. It is unprivileged, has no effects,
-    // and stores zero when no task-state segment has been loaded.
-    unsafe {
-        asm!(
-            "str {selector:x}",
-            selector = out(reg) bits,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    Selector::from_bits(bits)
-}
-
 /// Load the segment registers from the table [`init`] just installed.
 fn reload_selectors() {
     // SAFETY: a far return pops an instruction pointer and a code selector,
@@ -359,12 +338,6 @@ pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     true
 }
 
-/// Where the double-fault handler's stack currently starts.
-#[cfg(feature = "selftest")]
-pub fn double_fault_stack() -> u64 {
-    double_fault_stack_address()
-}
-
 pub(super) fn double_fault_stack_address() -> u64 {
     read_stack(TaskState::interrupt_stack_offset(
         DOUBLE_FAULT_STACK as usize,
@@ -413,16 +386,4 @@ impl IstStackTop {
 
 pub(super) fn enclave_ist_stack_top() -> IstStackTop {
     IstStackTop(fault_stack_top())
-}
-
-#[cfg(feature = "selftest")]
-pub(super) fn enclave_ist_stack_is_zeroed_for_test() -> bool {
-    let bytes = FAULT_STACK.as_mut_ptr().cast::<u8>();
-    (0..FAULT_STACK_BYTES).all(|offset| {
-        // SAFETY: paired route evidence is checked by the caller before this
-        // read, and the linker-owned allocation spans FAULT_STACK_BYTES.
-        let byte = unsafe { bytes.add(offset) };
-        // SAFETY: `byte` is inside that same inactive allocation.
-        unsafe { byte.read_volatile() == 0 }
-    })
 }

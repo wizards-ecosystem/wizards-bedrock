@@ -24,6 +24,19 @@ use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 use x86_paging::{CanonicalAddress, Flags};
 
+#[cfg(feature = "selftest")]
+mod selftest;
+#[cfg(feature = "selftest")]
+use selftest::{FORCED_USER_BOUNDARY_REFUSAL, REFUSE_NEXT_RETIREMENT, REFUSE_RELEASES};
+#[cfg(feature = "selftest")]
+pub use selftest::{
+    final_extended_state_refusal_for_test, final_interrupt_admission_refusal_for_test,
+    final_no_execute_refusal_for_test, final_shared_mapping_refusal_for_test,
+    pinned_stack_rejects_lower_leaf_substitution_for_test, refuse_next_retirement_for_test,
+    refuse_releases_for_test, restore_release_for_test, restore_retirement_for_test,
+    slot_is_live_for_test, validate_arena_for_test,
+};
+
 /// Slots the table holds, the boot thread's among them.
 ///
 /// A cap on the arena rather than a promise: [`init`] accepts any arena of
@@ -183,12 +196,6 @@ static EXTENDED: HardwareCell<SaveAreas> =
     HardwareCell::new(SaveAreas([[0; xstate::CEILING]; MAX_TASKS]));
 
 static CURRENT: AtomicUsize = AtomicUsize::new(BOOT);
-
-#[cfg(feature = "selftest")]
-static REFUSE_NEXT_RETIREMENT: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static REFUSE_RELEASES: AtomicUsize = AtomicUsize::new(0);
-
 static INIT: Once = Once::new();
 
 /// A task-table initialization refusal and the still-owned stack arena.
@@ -270,26 +277,6 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
         }
     }
     Ok(layout)
-}
-
-/// Run the production arena validation against the active root.
-#[cfg(feature = "selftest")]
-pub fn validate_arena_for_test(arena: &StackArena) -> Result<(), TaskError> {
-    validate_arena(arena).map(|_| ())
-}
-
-/// Substitute one noncurrent pinned stack leaf during its hardware-use check.
-#[cfg(feature = "selftest")]
-pub fn pinned_stack_rejects_lower_leaf_substitution_for_test(slot: usize) -> Option<bool> {
-    if slot == current() {
-        return None;
-    }
-    let table = TABLE.lock_leaf();
-    let index = table.slots.get(slot)?.stack_index?;
-    table
-        .stacks
-        .as_ref()?
-        .rejects_lower_leaf_substitution_for_test(index)
 }
 
 /// The slot whose stack this CPU is running on.
@@ -694,31 +681,6 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
     result
 }
 
-/// Make the next prepared-slot retirement refuse without changing the slot.
-#[cfg(feature = "selftest")]
-pub fn refuse_next_retirement_for_test() {
-    REFUSE_NEXT_RETIREMENT.store(1, Ordering::Release);
-}
-
-/// Clear an unused retirement refusal after a test setup failed early.
-#[cfg(feature = "selftest")]
-pub fn restore_retirement_for_test() {
-    REFUSE_NEXT_RETIREMENT.store(0, Ordering::Release);
-}
-
-/// Whether a task-table slot is still live.
-#[cfg(feature = "selftest")]
-pub fn slot_is_live_for_test(slot: usize) -> bool {
-    let saved = interrupt::disable();
-    let live = TABLE
-        .lock_leaf()
-        .slots
-        .get(slot)
-        .is_some_and(|slot| slot.state == State::Alive);
-    saved.restore();
-    live
-}
-
 /// Evidence that one task-table slot names an address space.
 ///
 /// Minted only when [`bind_address_space`] installs a [`Binding`]. The token
@@ -796,18 +758,6 @@ pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
     } else {
         Ok(Released { roots })
     }
-}
-
-/// Keep address-space release from consuming its `Bound` token.
-#[cfg(feature = "selftest")]
-pub fn refuse_releases_for_test() {
-    REFUSE_RELEASES.store(1, Ordering::Release);
-}
-
-/// Clear an unused address-space release refusal.
-#[cfg(feature = "selftest")]
-pub fn restore_release_for_test() {
-    REFUSE_RELEASES.store(0, Ordering::Release);
 }
 
 /// `IA32_FS_BASE`, where a thread's local storage begins.
@@ -967,19 +917,6 @@ pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
     unsafe { interrupt::leave_for_user(entry, stack_top) }
 }
 
-/// Exercise the final door while its interrupt admission is absent.
-#[cfg(feature = "selftest")]
-pub fn final_interrupt_admission_refusal_for_test() -> bool {
-    if !interrupt::are_enabled() {
-        return false;
-    }
-    let outer = interrupt::disable();
-    let refused = enter_user(0, 0) == UserError::InterruptsNotAdmitted;
-    let stayed_disabled = !interrupt::are_enabled();
-    outer.restore();
-    refused && stayed_disabled && interrupt::are_enabled()
-}
-
 fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !paging::is_active() {
         return Err(UserError::Inactive);
@@ -1053,22 +990,11 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     Ok(())
 }
 
-#[cfg(feature = "selftest")]
-static FORCED_USER_BOUNDARY_REFUSAL: AtomicUsize = AtomicUsize::new(0);
-
 fn final_no_execute_is_active() -> bool {
     let enabled = cpu::Protections::enabled().nx;
     #[cfg(feature = "selftest")]
     let enabled = enabled && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 1;
     enabled
-}
-
-#[cfg(feature = "selftest")]
-fn forced_boundary_refuses(value: usize, expected: UserError) -> bool {
-    let previous = FORCED_USER_BOUNDARY_REFUSAL.swap(value, Ordering::AcqRel);
-    let found = user_entry_preflight(0, 0) == Err(expected);
-    FORCED_USER_BOUNDARY_REFUSAL.store(previous, Ordering::Release);
-    found
 }
 
 fn final_extended_state_is_isolated() -> bool {
@@ -1087,26 +1013,6 @@ fn final_paired_mappings_are_safe(roots: AddressSpaceRoots, stack: KernelStackTo
     #[cfg(feature = "selftest")]
     let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
     safe
-}
-
-/// Exercise the exact final-door NX refusal.
-#[cfg(feature = "selftest")]
-pub fn final_no_execute_refusal_for_test() -> bool {
-    forced_boundary_refuses(1, UserError::NoExecuteProtection)
-}
-
-/// Exercise the exact final-door extended-state refusal.
-#[cfg(feature = "selftest")]
-pub fn final_extended_state_refusal_for_test() -> bool {
-    xstate::without_user_state_isolation_for_test(|| {
-        user_entry_preflight(0, 0) == Err(UserError::NoExtendedState)
-    })
-}
-
-/// Exercise the exact final-door shared-mapping refusal.
-#[cfg(feature = "selftest")]
-pub fn final_shared_mapping_refusal_for_test() -> bool {
-    forced_boundary_refuses(2, UserError::NoSharedKernelIsolation)
 }
 
 /// Abandon the current stack and continue on `stack`, never returning.

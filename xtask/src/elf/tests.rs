@@ -234,9 +234,21 @@ fn an_entry_segment_cannot_absorb_an_unlisted_page_or_section() {
 
 #[test]
 fn kpti_entry_transition_switches_roots_in_the_exact_enclave_order() {
-    let entry = include_str!("../../../wost/src/arch/x86_64/interrupt.rs");
-    let kpti = include_str!("../../../wost/src/arch/x86_64/kpti.rs");
-    let cpu = include_str!("../../../wost/src/arch/x86_64/cpu.rs");
+    let entry = &[
+        include_str!("../../../wost/src/arch/x86_64/interrupt.rs"),
+        include_str!("../../../wost/src/arch/x86_64/interrupt/selftest.rs"),
+    ]
+    .concat();
+    let kpti = &[
+        include_str!("../../../wost/src/arch/x86_64/kpti.rs"),
+        include_str!("../../../wost/src/arch/x86_64/kpti/selftest.rs"),
+    ]
+    .concat();
+    let cpu = &[
+        include_str!("../../../wost/src/arch/x86_64/cpu.rs"),
+        include_str!("../../../wost/src/arch/x86_64/cpu/selftest.rs"),
+    ]
+    .concat();
     let task = include_str!("../../../wost/src/arch/x86_64/task.rs");
     let linker = include_str!("../../../kernel/linker.ld");
 

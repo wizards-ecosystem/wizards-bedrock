@@ -26,8 +26,7 @@ fn invlpg_requires_canonical_address_authority() {
     require_error(&paths, "invlpg-raw-address", raw_call, "E0308")
         .unwrap_or_else(|diagnostics| panic!("raw u64 reached invlpg:\n{diagnostics}"));
 
-    let source = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/cpu.rs"))
-        .expect("read CPU source");
+    let source = module_source(paths.root(), "wost/src/arch/x86_64/cpu.rs");
     let syntax = syn::parse_file(&source).expect("parse CPU source");
     let function = |name: &str| {
         syntax.items.iter().find_map(|item| match item {
