@@ -743,6 +743,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("KERNEL_STACK_SELECTOR_ON_ENTRY", 3),
                 ("REJECTED_DUPLICATE_EOI_CLAIMS", 4),
                 ("RECLAIMED_ABANDONED_EOI", 3),
+                ("observe_syscall_entry", 3),
             ],
         ),
         ("kernel/src/object.rs", &[("LIVE_CHANNELS", 4)]),
@@ -888,7 +889,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             .iter()
             .map(|(_, observers)| observers.len())
             .sum::<usize>(),
-        107,
+        108,
         "D-290's evidence-identifier inventory"
     );
     for &(relative, expected) in OBSERVERS {

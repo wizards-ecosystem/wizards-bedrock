@@ -197,7 +197,8 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && destination_refused_before_unmask
 }
 
-/// A window that does not report an I/O APIC version is never taken over or written.
+/// A window that does not report an I/O APIC version is never taken over, and no redirection is
+/// written to it.
 /// The refused versions are a zeroed window, a text-console MMIO byte, and a count no part holds.
 /// The plausible version the other checks rely on is still accepted.
 #[cfg(feature = "selftest")]

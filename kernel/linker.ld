@@ -19,7 +19,8 @@ SECTIONS
     . = 0xffffffff80000000;
 
     /* Each symbol pair bounds one protection class, so `wost` maps its tables W^X without guessing.
-       Sections align to MAXPAGESIZE, so each _start is on a page; mapping code rounds _end up. */
+       Sections align to MAXPAGESIZE, so each _start is on a page; the mapping code rounds each
+       _end up, not this script. */
     /* The entry instructions occupy their own complete 4 KiB pages. Each input name is enumerated:
        a new enclave resident must first extend the reviewed linker and ELF contracts. */
     .kpti.text : ALIGN(4096) {
