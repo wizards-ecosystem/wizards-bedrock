@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use handle_space::Rights;
 
 use crate::handle::{HandleError, HandleTable};
-use crate::object::{self, ObjectType};
+use crate::object::{self, ObjectRef, ObjectType};
 use crate::queue;
 
 pub(super) fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
@@ -139,7 +139,10 @@ pub(super) fn a_refused_handle_operation_returns_its_promise() -> bool {
     ];
 
     let (_, attenuation_handle, attenuation_bits, _) = asked[2];
-    if !only_the_attenuation_is_refused(&table, attenuation_handle, attenuation_bits) {
+    let Ok((held, held_rights)) = table.resolve(attenuation_handle) else {
+        return false;
+    };
+    if !only_the_attenuation_is_refused(&table, &held, held_rights, attenuation_bits) {
         return false;
     }
 
@@ -179,10 +182,12 @@ fn each_duplicate_is_refused(
 }
 
 // The attenuation case passes the duplicate-right gate, so only asking for WAIT refuses it.
-fn only_the_attenuation_is_refused(table: &HandleTable, handle: u32, bits: u64) -> bool {
-    let Ok((held, held_rights)) = table.resolve(handle) else {
-        return false;
-    };
+fn only_the_attenuation_is_refused(
+    table: &HandleTable,
+    held: &ObjectRef,
+    held_rights: Rights,
+    bits: u64,
+) -> bool {
     let Some(requested) = u32::try_from(bits).ok().and_then(Rights::from_bits) else {
         return false;
     };

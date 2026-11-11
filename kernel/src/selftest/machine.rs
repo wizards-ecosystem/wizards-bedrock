@@ -174,7 +174,7 @@ pub(super) fn a_scroll_does_not_block_interrupts() -> bool {
             console.write_line("");
             let elapsed = time::now_ns() - before;
             // Framebuffer MMIO can finish before an already-due virtual APIC timer is injected.
-            // The observation stays inside the console guard: mutation 189's outer exclusion must
+            // Keep the observation inside the console guard: mutation 189's outer exclusion must
             // prevent this real delivery until after the result has been fixed as false.
             let delivered = spins_until(DELIVERY_ATTEMPTS, || {
                 time::expiries() - taken >= EXPECTED_EXPIRIES
