@@ -6,7 +6,8 @@ Status: Accepted, 2026-08-24.
 caller needs to do work with the contents, the contents are copied out.
 `lock_leaf()` buys its use from a trap and from `Drop` by moving the
 obligation onto the caller: **nothing is called while the guard is live**, and
-a closure *is* a call.
+a closure *is* a call. A leaf lock is the last one in the order because nothing
+under it can reach another.
 
 `with_memory_map` became `map_covers_memory`, `first_region`,
 `past_every_region` and `direct_mapped_extents`; `with_io_apic` became

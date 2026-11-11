@@ -28,7 +28,7 @@ make each class of failure visible:
 **Rationale.** A check written from the *implementation* rather than from the
 *claim* passes by construction: `GENERATION_BITS == 32 - INDEX_BITS -
 RESERVED_BITS` is what the code says, and the claim is that a handle is
-thirty-two bits wide. D-28's break-once rule catches this when the check is
+thirty-two bits wide because that is what fits a register. D-28's break-once rule catches this when the check is
 written and never again, while these checks *became* unfailable as the code
 moved; `cargo xtask mutate` cannot reach them when the mutation is a `const`
 and the verdict is a compile. A citation is how a future reader finds out

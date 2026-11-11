@@ -2,8 +2,9 @@
 
 Status: Accepted, 2026-08-24.
 
-**Decision.** `MappedStack::is_installed` keeps the root comparison and adds a
-walk of the stack's last byte, requiring the flags `map_stack` established:
+**Decision.** `MappedStack::is_installed` keeps the root comparison, because
+addresses collide across spaces and the root is the only thing that tells two
+stacks apart, and adds a walk of the stack's last byte, requiring the flags `map_stack` established:
 present, writable, never executable. `top` itself is *not* walked: it is one
 past the region, and belongs to whatever is above it or to nothing. A stack
 remapped read-only, or executable, is not a stack either.
