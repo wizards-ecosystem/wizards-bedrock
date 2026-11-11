@@ -147,9 +147,19 @@ pub(super) fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> 
     })
 }
 
+// An inherited loader variable would act on the pinned rustc itself.
+pub(super) fn compiler_query(compiler: &Path, source_root: &Path) -> Command {
+    let mut command = Command::new(compiler);
+    command
+        .current_dir(source_root)
+        .env_remove("LD_PRELOAD")
+        .env_remove("LD_LIBRARY_PATH");
+    command
+}
+
 fn compiler_host_target(compiler: &Path, source_root: &Path) -> Result<String> {
-    let mut version_command = Command::new(compiler);
-    version_command.current_dir(source_root).arg("-vV");
+    let mut version_command = compiler_query(compiler, source_root);
+    version_command.arg("-vV");
     let captured = crate::bounded_process::output_with_limit(
         version_command,
         TOOL_IDENTITY_TIMEOUT,
@@ -183,10 +193,8 @@ fn compiler_host_target(compiler: &Path, source_root: &Path) -> Result<String> {
 }
 
 fn compiler_sysroot(compiler: &Path, source_root: &Path) -> Result<PathBuf> {
-    let mut sysroot_command = Command::new(compiler);
-    sysroot_command
-        .current_dir(source_root)
-        .args(["--print", "sysroot"]);
+    let mut sysroot_command = compiler_query(compiler, source_root);
+    sysroot_command.args(["--print", "sysroot"]);
     let captured = crate::bounded_process::output_with_limit(
         sysroot_command,
         TOOL_IDENTITY_TIMEOUT,

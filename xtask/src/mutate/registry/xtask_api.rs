@@ -2375,4 +2375,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "api::tests::workspace::cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_own",
         },
     },
+    Mutation {
+        id: 2478,
+        file: "xtask/src/api/compiler.rs",
+        find: "        .current_dir(source_root)\n        .env_remove(\"LD_PRELOAD\")\n        .env_remove(\"LD_LIBRARY_PATH\");\n",
+        replace: "        .current_dir(source_root);\n",
+        breaks: "an inherited preload or loader path acts on the pinned rustc during its identity queries",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::compile::compiler_queries_remove_inherited_loader_variables",
+        },
+    },
 ];
