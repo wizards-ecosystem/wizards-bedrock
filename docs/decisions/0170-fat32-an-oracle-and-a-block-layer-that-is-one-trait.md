@@ -25,8 +25,10 @@ whoever has the numbers. The volume is mounted per call for the same reason.
 and the reader must get each right: a cluster number is biased by two, so its
 sector is `first_data + (cluster - 2) * per_cluster`; a FAT32 entry is
 twenty-eight bits, so comparing all thirty-two follows an ended chain into the
-reserved bits; and a directory ends at a name beginning zero while `0xE5` is one
-deleted entry.
+reserved bits; a directory ends at a name beginning zero while `0xE5` is one
+deleted entry, and confusing them either loses every file below or resurrects
+deleted ones; and a read bounded by the cluster rather than the file size hands
+back the cluster's previous occupant's data.
 
 **Consequences.**
 
@@ -44,7 +46,8 @@ deleted entry.
   misread. That lets every buffer be a fixed array, and no volume this project
   builds or boots uses another size.
 - The volume sits at **sector 2048** of the namespace, where a partition table
-  would put it, and the reader takes a base rather than assuming zero.
+  would put it, and the reader takes a base rather than assuming zero: a reader
+  that could not be given an offset is one nothing can be put in front of.
 - The corpus's names and contents, the kernel's copy of them, and the base
   sector stated in two files are compared by a host test (D-158).
 - **The corpus still has one writer.** Until a foreign-produced FAT32 image is

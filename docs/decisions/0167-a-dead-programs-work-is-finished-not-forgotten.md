@@ -45,5 +45,5 @@ the operation happens to finish.
   free is the other failure. Giving the reservation a table of its own reddens
   four checks at once, the redundancy D-165 argued for doing its job.
 - A polled NVMe read cannot be ended by writing a completion, because the
-  device has the command, so `abandon` must wait for the controller there. What
-  it must not do is return before `is_quiet`.
+  device has the command, so `abandon` will have to wait for the controller
+  there. What it must not do is return before `is_quiet`.
