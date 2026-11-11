@@ -34,6 +34,6 @@ observable without a human.
 **Consequences.**
 
 - `Controller::identity`, `input::identity`, and the check *the keyboard
-  identifies as one the decoder reads raw*.
+  identifies as one the decoder reads raw*, broken by mutation 67.
 - The self-test names both the set and the identity when either is not what it
   expects, so a machine that disagrees says how in one boot.

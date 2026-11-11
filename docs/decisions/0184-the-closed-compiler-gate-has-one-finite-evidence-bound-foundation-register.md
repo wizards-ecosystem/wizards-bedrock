@@ -16,6 +16,11 @@ trigger. "State of the art", convenience and eventual usefulness are not
 evidence. A decision-changing item gets its own ADR. Unknown future defects
 may therefore be added without making the list an open-ended feature backlog.
 
+Under D-183's third admitted item, this repository specifies and validates the
+versioned artifact handoff only: consumer scaffolding waits for PW-601's pinned
+draft artifact and runtime seam, and gate work in `wizards-ink` is externally
+owned.
+
 The compiler gate still opens only when all four D-183 conditions hold together
 at one reachable pinned `wizards-ink` revision. Ordinary OS CI remains
 self-contained; a sibling checkout never becomes an implicit dependency.

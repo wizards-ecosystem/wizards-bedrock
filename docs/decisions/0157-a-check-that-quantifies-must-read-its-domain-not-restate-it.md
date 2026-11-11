@@ -20,7 +20,7 @@ list copied from their subject now derive the domain from the source of truth:
 
 A third check requires `models/` to hold the model and nothing that is not
 ignored. It is filesystem-based rather than `git ls-files`, because the gate
-does not shell out to git anywhere.
+does not shell out to git anywhere and should not start here.
 
 **Rationale.** A list restated beside its source is not evidence about the
 source: it is a second copy with a test-shaped wrapper, and it passes on the day

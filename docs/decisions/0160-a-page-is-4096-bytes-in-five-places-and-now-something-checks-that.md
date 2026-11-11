@@ -2,7 +2,8 @@
 
 Status: Accepted, 2026-08-25.
 
-**Decision.** The page size is stated five times with no dependency between the
+**Decision.** After the ELF readers merged (D-158), the page size is the one
+duplicated table that matters. It is stated five times with no dependency between the
 sites: `FRAME_SIZE` in `frame-space`, `slab-layout` and `kernel/src/mem.rs`, and
 `PAGE_SIZE` in `stack-layout` and `x86-paging`. `xtask/src/machine.rs` scans
 `libs/`, `wost/src` and `kernel/src` for every definition of a page-size
