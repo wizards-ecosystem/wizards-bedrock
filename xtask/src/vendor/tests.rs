@@ -209,8 +209,7 @@ fn listed(names: &[&str]) -> Vec<Entry> {
         .collect()
 }
 
-/// The gap a digest cannot close: a file that was *added* matches no
-/// recorded hash because it has none.
+/// The gap a digest cannot close: an added file has no recorded hash to mismatch.
 #[test]
 fn a_file_no_entry_lists_is_unaccounted_for() {
     let entries = listed(&["BOOTX64.EFI"]);
@@ -232,8 +231,7 @@ fn a_directory_holding_exactly_what_is_listed_is_accounted_for() {
     );
 }
 
-/// The directory's own paperwork carries no payload, so it needs no digest
-/// — including `CHECKSUMS` itself, which could not hash itself anyway.
+/// `CHECKSUMS` included, since it could not hash itself anyway.
 #[test]
 fn paperwork_needs_no_digest() {
     let entries = listed(&["BOOTX64.EFI"]);
@@ -242,8 +240,7 @@ fn paperwork_needs_no_digest() {
     assert!(unaccounted(present, &entries).is_empty());
 }
 
-/// Several strays are all reported at once, in a stable order, so fixing
-/// them is one pass rather than one commit per file.
+/// All at once, so fixing them is one pass rather than one commit per file.
 #[test]
 fn every_stray_is_reported_in_a_stable_order() {
     let entries = listed(&["BOOTX64.EFI"]);
@@ -254,15 +251,7 @@ fn every_stray_is_reported_in_a_stable_order() {
     );
 }
 
-/// Every vendored directory is one `verify` checks.
-///
-/// `verify` walks a hand-written array, and its own doc says why that is
-/// the wrong shape: *"a directory added and not added here is a directory
-/// nothing checks."* The `unaccounted` machinery closes "a file was added"
-/// *within* a listed directory and leaves the outer case open (D-124).
-///
-/// A vendored directory is one holding a `CHECKSUMS`, which is the same
-/// definition `verify` uses — so this finds what it should have listed.
+/// `verify` walks a hand-written array; any directory holding a `CHECKSUMS` must be in it.
 #[test]
 fn every_vendored_directory_is_verified() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

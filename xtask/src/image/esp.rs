@@ -1,5 +1,3 @@
-//! Formatting and populating the EFI system partition.
-
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -9,7 +7,6 @@ use crate::paths::{self, Paths};
 
 const MAX_LIMINE_CONFIG_BYTES: u64 = 64 * 1024;
 
-/// Format `volume` with the wizard label.
 pub fn format<D: ReadWriteSeek>(volume: &mut D, fat_type: FatType) -> Result<()> {
     let options = FormatVolumeOptions::new()
         .fat_type(fat_type)
@@ -17,7 +14,6 @@ pub fn format<D: ReadWriteSeek>(volume: &mut D, fat_type: FatType) -> Result<()>
     fatfs::format_volume(volume, options).context("formatting the EFI system partition")
 }
 
-/// Write `data` into `dir` as `name`.
 pub fn write_file<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, data: &[u8]) -> Result<()> {
     use std::io::Write;
 
@@ -30,13 +26,11 @@ pub fn write_file<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, data: &[u8]) -
         .with_context(|| format!("writing {name}"))
 }
 
-/// Read one bounded, direct host source into an owned snapshot.
 fn read_source(source: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
     crate::qualification::read_bounded_file(source, maximum, label)
         .with_context(|| format!("reading {label} {}", source.display()))
 }
 
-/// Copy one bounded, direct host file at `source` into `dir` as `name`.
 fn copy_into<D: ReadWriteSeek>(
     dir: &Dir<'_, D>,
     name: &str,
@@ -59,7 +53,7 @@ fn copy_limine_efi<D: ReadWriteSeek>(dir: &Dir<'_, D>, paths: &Paths) -> Result<
     write_file(dir, "BOOTX64.EFI", &data)
 }
 
-/// Lay out the boot tree the firmware and Limine expect.
+/// The program sits in /boot beside the kernel: Limine's `module_path` is volume-relative.
 pub fn populate<D: ReadWriteSeek>(
     filesystem: &FileSystem<D>,
     paths: &Paths,
@@ -76,8 +70,6 @@ pub fn populate<D: ReadWriteSeek>(
     let boot = root.create_dir("boot").context("creating /boot")?;
     write_file(&boot, paths::KERNEL_ON_ESP, kernel)?;
 
-    // The initrd: one built program (D-100), beside the kernel because
-    // Limine's `module_path` is relative to the boot volume.
     let program = super::program::build().context("building the fixed ring-3 witness")?;
     write_file(&boot, paths::PROGRAM_ON_ESP, &program)?;
 

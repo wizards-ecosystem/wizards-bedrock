@@ -1,8 +1,4 @@
-//! Building the bootable disk image.
-//!
-//! Everything happens in-process in pure Rust — no xorriso, no mtools. The
-//! artifact is a raw disk with an MBR partition table holding one FAT32 EFI
-//! system partition.
+//! The boot disk, built in-process: an MBR holding one FAT32 EFI system partition.
 
 pub mod corpus;
 pub mod esp;
@@ -24,10 +20,8 @@ use fscommon::{BufStream, StreamSlice};
 use crate::cargo::{self, Profile};
 use crate::paths::{self, Paths};
 
-/// Which kernel a normal boot image carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kernel {
-    /// The kernel that boots for a user.
     Shipped,
     /// The kernel with its boot-time checks and verdict device compiled in.
     SelfTest,
@@ -61,12 +55,11 @@ impl Kernel {
     }
 }
 
-/// Compile `kernel` and assemble a bootable image around it.
 pub fn build(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<PathBuf> {
     build_with_features(paths, profile, kernel, kernel.features())
 }
 
-/// A boot image owned by one QEMU run.
+#[derive(Debug)]
 pub(crate) struct RunImage {
     path: PathBuf,
 }
@@ -78,11 +71,7 @@ impl RunImage {
         for _ in 0..1024 {
             let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!("bedrock-{}-{sequence}.img", std::process::id()));
-            let mut options = OpenOptions::new();
-            OpenOptions::read(&mut options, true);
-            OpenOptions::write(&mut options, true);
-            OpenOptions::create_new(&mut options, true);
-            match OpenOptions::open(&options, &path) {
+            match create_new_image(&path) {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
@@ -107,6 +96,14 @@ impl Drop for RunImage {
 static NEXT_RUN_IMAGE: AtomicU64 = AtomicU64::new(0);
 static NEXT_IMAGE_STAGE: AtomicU64 = AtomicU64::new(0);
 
+fn create_new_image(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    OpenOptions::read(&mut options, true);
+    OpenOptions::write(&mut options, true);
+    OpenOptions::create_new(&mut options, true);
+    OpenOptions::open(&options, path)
+}
+
 pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
     crate::mutate::workspace::prepare_real_directory_tree(
         &target.join(paths::QEMU_RUN_DIRECTORY),
@@ -114,12 +111,10 @@ pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
     )
 }
 
-/// Compile `kernel` into an image that one QEMU process owns and removes.
 pub(crate) fn build_for_run(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<RunImage> {
     build_for_run_with_features(paths, profile, kernel, kernel.features())
 }
 
-/// Build the fixed degraded kernel into a private QEMU image.
 pub(crate) fn build_degraded_for_run(paths: &Paths, profile: Profile) -> Result<RunImage> {
     build_for_run_with_features(
         paths,
@@ -171,18 +166,7 @@ fn publish_image(
         paths::IMAGE_NAME,
         std::process::id()
     ));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        OpenOptions::read(&mut options, true);
-        OpenOptions::write(&mut options, true);
-        OpenOptions::create_new(&mut options, true);
-        let mut disk = OpenOptions::open(&options, &staging)
-            .with_context(|| format!("creating boot-image stage {}", staging.display()))?;
-        build(&staging, &mut disk)?;
-        disk.sync_all()
-            .with_context(|| format!("syncing boot-image stage {}", staging.display()))?;
-        drop(disk);
-
+    let publication = write_image_stage(&staging, build).and_then(|()| {
         crate::mutate::workspace::require_direct_file(
             &canonical_parent,
             &staging,
@@ -219,13 +203,24 @@ fn publish_image(
             },
         )?;
         Ok(())
-    })();
+    });
     crate::mutate::workspace::finish_staged_operation(
         &canonical_parent,
         &staging,
         "boot-image stage",
-        result,
+        publication,
     )
+}
+
+fn write_image_stage(
+    staging: &Path,
+    build: impl FnOnce(&Path, &mut File) -> Result<()>,
+) -> Result<()> {
+    let mut disk = create_new_image(staging)
+        .with_context(|| format!("creating boot-image stage {}", staging.display()))?;
+    build(staging, &mut disk)?;
+    disk.sync_all()
+        .with_context(|| format!("syncing boot-image stage {}", staging.display()))
 }
 
 fn build_for_run_with_features(
@@ -240,9 +235,9 @@ fn build_for_run_with_features(
         "[xtask] creating private disk image {}",
         image.path.display()
     );
-    let result = assemble(paths, wanted, &kernel, image.path(), &mut disk);
+    let assembled = assemble(paths, wanted, &kernel, image.path(), &mut disk);
     drop(disk);
-    result?;
+    assembled?;
     Ok(image)
 }
 

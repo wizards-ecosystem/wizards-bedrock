@@ -1,52 +1,36 @@
-//! The 512-byte master boot record.
-//!
-//! UEFI firmware boots an MBR-partitioned disk carrying a single 0xEF partition
-//! directly. GPT can come later, when the OS grows its own partitioning story.
+//! The master boot record: UEFI firmware boots a single 0xEF MBR partition directly.
 
 use std::io::{Seek, SeekFrom, Write};
 
 use anyhow::{Context, Result, bail};
 
-/// Bytes in a master boot record.
 pub const RECORD_SIZE: usize = 512;
 
-/// Offset of the partition table within the record.
 const PARTITION_TABLE: usize = 446;
 
-/// Bytes per partition entry.
 const ENTRY_SIZE: usize = 16;
 
-/// Entries the table holds.
 const ENTRY_COUNT: usize = 4;
 
-/// Offset of the boot signature.
 const SIGNATURE_AT: usize = 510;
 
-/// The boot signature itself.
 const SIGNATURE: [u8; 2] = [0x55, 0xAA];
 
-/// Partition type code for an EFI System Partition.
 const TYPE_EFI_SYSTEM: u8 = 0xEF;
 
-/// The "active" flag. UEFI ignores it; BIOS-era tools still look for it.
+/// UEFI ignores the active flag; BIOS-era tools still look for it.
 const FLAG_BOOTABLE: u8 = 0x80;
 
-/// One entry in the partition table.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct PartitionEntry {
-    /// Whether the active flag is set.
     pub bootable: bool,
-    /// Partition type code.
     pub kind: u8,
-    /// First sector of the partition.
     pub start_lba: u32,
-    /// Length of the partition in sectors.
     pub sectors: u32,
 }
 
 impl PartitionEntry {
-    /// An EFI system partition running from `start_lba` to the end of a disk of
-    /// `total_sectors`.
+    /// An EFI system partition from `start_lba` to the end of a `total_sectors` disk.
     pub fn efi_system(start_lba: u64, total_sectors: u64) -> Result<Self> {
         if start_lba >= total_sectors {
             bail!("partition starts at LBA {start_lba} on a disk of only {total_sectors} sectors");
@@ -62,11 +46,10 @@ impl PartitionEntry {
         })
     }
 
+    /// The CHS bytes 1..4 and 5..8 stay zero: every reader of this record uses the LBA fields.
     fn to_bytes(self) -> [u8; ENTRY_SIZE] {
         let mut bytes = [0u8; ENTRY_SIZE];
         bytes[0] = if self.bootable { FLAG_BOOTABLE } else { 0 };
-        // Bytes 1..4 and 5..8 are CHS addresses, left zero: everything that
-        // reads this record uses the LBA fields below.
         bytes[4] = self.kind;
         bytes[8..12].copy_from_slice(&self.start_lba.to_le_bytes());
         bytes[12..16].copy_from_slice(&self.sectors.to_le_bytes());
@@ -74,11 +57,7 @@ impl PartitionEntry {
     }
 }
 
-/// Lay out a master boot record holding `partitions`.
-///
-/// # Panics
-///
-/// Panics if more than four partitions are given — the table has no room.
+/// A record holding `partitions`; panics past the four the table has room for.
 pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     assert!(
         partitions.len() <= ENTRY_COUNT,
@@ -94,7 +73,7 @@ pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     record
 }
 
-/// Write `record` over sector zero of `disk`, leaving everything after it alone.
+/// Sector zero only; everything after it is left alone.
 pub fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Result<()> {
     Seek::seek(disk, SeekFrom::Start(0)).context("seeking to the master boot record")?;
     Write::write_all(disk, record).context("writing the master boot record")

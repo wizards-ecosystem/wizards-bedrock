@@ -1,5 +1,3 @@
-//! Driving cargo.
-
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -13,18 +11,15 @@ const VIRTUAL_TOOLCHAIN_ROOT: &str = "/wizard/toolchain";
 const VIRTUAL_CARGO_ROOT: &str = "/wizard/cargo";
 const ENCODED_FLAG_SEPARATOR: char = '\u{1f}';
 
-/// Which cargo profile to build.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Profile {
-    /// Unoptimised, for quick iteration.
     Dev,
-    /// Optimised, and what a real image ships.
+    /// The profile a real image ships.
     #[default]
     Release,
 }
 
 impl Profile {
-    /// Directory cargo writes this profile's artifacts to.
     pub fn directory(self) -> &'static str {
         match self {
             Self::Dev => "debug",
@@ -32,7 +27,6 @@ impl Profile {
         }
     }
 
-    /// Flags selecting this profile on a cargo command line.
     pub fn flags(self) -> &'static [&'static str] {
         match self {
             Self::Dev => &[],
@@ -41,7 +35,6 @@ impl Profile {
     }
 }
 
-/// Run a cargo command, failing if it does not exit cleanly.
 pub fn run<I, S>(paths: &Paths, description: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -210,7 +203,7 @@ fn platform_home() -> Result<PathBuf> {
         .context("HOME is unavailable")
 }
 
-/// Return an equivalent path that command-line toolchains can consume.
+/// An equivalent path that command-line toolchains can consume.
 pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -245,7 +238,6 @@ pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     }
 }
 
-/// Expand `packages` into the `--package NAME` pairs cargo expects.
 pub fn package_args(packages: &[&str]) -> Vec<String> {
     packages
         .iter()
@@ -253,7 +245,6 @@ pub fn package_args(packages: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Compile the kernel with `features` enabled, returning the ELF it produced.
 pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
     println!("[xtask] building kernel ({})", profile.directory());
 
@@ -273,8 +264,7 @@ pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Resul
             elf.display()
         );
     }
-    // A linker script fails quietly (an unnamed section is placed, not
-    // refused), so what it produced is checked against what it promised.
+    // A linker script places an unnamed section rather than refusing it, so its output is checked.
     crate::elf::verify_file(&elf)?;
     Ok(elf)
 }

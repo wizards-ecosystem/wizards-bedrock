@@ -178,6 +178,7 @@ fn oracle_view(image: &mut [u8]) -> Result<View> {
     })
 }
 
+#[derive(Debug)]
 struct Bytes<'bytes>(&'bytes [u8]);
 
 impl fat32::Sectors for Bytes<'_> {
