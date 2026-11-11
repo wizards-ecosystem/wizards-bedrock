@@ -336,6 +336,7 @@ const SHIPPED_CHALLENGE_QCODE: &str = "a";
 const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
+/// Watched for rather than inferred from an exit code: a panicking kernel halts, not exits.
 pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
 pub const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 

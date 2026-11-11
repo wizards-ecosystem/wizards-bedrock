@@ -36,8 +36,9 @@ pub(crate) fn measure_performance(
     baseline.context("a clean self-test boot emitted no foundation baseline")
 }
 
-/// Every result path cancels, then stops QEMU, then joins its workers under one bounded
-/// deadline, so a stalled control write cannot hold cleanup.
+/// Every result path cancels, stops QEMU and joins the live workers under one bounded deadline,
+/// so a stalled control write cannot hold cleanup; only a timed-out run's finished injector
+/// is joined, and its hang report given a bounded wait, before the stop.
 fn observe_selftest_run(
     paths: &Paths,
     image: &Path,
@@ -389,8 +390,8 @@ fn finish_selftest_serial(
     join_qemu_worker(forwarder, deadline, "self-test serial reader")?
 }
 
-/// A QMP stall cannot delay the run deadline: the owner must stop QEMU before joining this
-/// thread, so a blocked control write cannot hold cleanup.
+/// A QMP stall cannot delay the run deadline: the owner must stop QEMU before joining a
+/// running thread; a finished one can supply hang diagnostics first.
 fn inject_on_marker(
     child: &mut Child,
     markers_seen: Arc<AtomicUsize>,
