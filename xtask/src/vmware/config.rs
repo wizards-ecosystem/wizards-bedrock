@@ -6,7 +6,6 @@ use anyhow::{Context, Result, ensure};
 
 use crate::qemu::canonical_decimal;
 
-/// Validate execution settings while allowing reviewed runtime identity and console fields.
 pub(super) fn verify(generated: &[u8], runtime: &[u8]) -> Result<()> {
     let generated = assignments(generated)?;
     let runtime = assignments(runtime)?;

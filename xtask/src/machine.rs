@@ -1,56 +1,29 @@
-//! Facts about the machine that more than one crate states, checked to agree.
-//!
-//! A page is 4096 bytes, and five places in this tree say so: `frame-space`
-//! and `slab-layout` call it `FRAME_SIZE`, `stack-layout` and `x86-paging`
-//! call it `PAGE_SIZE`, and `kernel/src/mem.rs` has its own. They are four
-//! crates and a kernel module with no dependency between them, which is why
-//! each declares its own — and nothing compared them (D-160).
-//!
-//! Every layout in the kernel is computed from one of these. A frame allocator
-//! handing out 4096-byte frames to a slab allocator that believes they are
-//! 2048 does not fail a test; it fails at the second slab. The literal is the
-//! same in all five today, which is exactly the state a duplication is in right
-//! up until it is not.
-//!
-//! **The sites are discovered, not listed** (D-157). What this module names is
-//! the *fact* — which constant names mean "the size of a page" — and it then
-//! goes and finds every definition of one. A sixth transcription is covered by
-//! the check the day it is written.
+//! Page-size constants that crates with no dependency between them each declare, checked to
+//! agree: every kernel layout is computed from one, and a mismatch fails no test, only a slab.
+//! The sites are discovered rather than listed, so a new transcription is covered the day it is
+//! written.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// Constant names that all mean "the size of a page".
-///
-/// The list is the check's subject rather than its data: adding a name here
-/// widens what is compared, and adding a *definition* anywhere in the tree is
-/// found without touching this file.
+/// The names are the check's subject: adding one widens what is compared, and a new definition
+/// anywhere in the tree is found without touching this file.
 const PAGE_SIZE_NAMES: [&str; 2] = ["PAGE_SIZE", "FRAME_SIZE"];
 
-/// The trees a machine constant can live in.
 const ROOTS: [&str; 3] = ["libs", "wost/src", "kernel/src"];
 
-/// One definition of a machine constant.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Definition {
-    /// Where it is, relative to the workspace root.
+    /// Relative to the workspace root.
     pub file: String,
-    /// The line it is on, 1-based.
+    /// 1-based.
     pub line: usize,
-    /// The name it is given.
     pub name: String,
-    /// What it is set to.
     pub value: u64,
 }
 
-/// Every definition of a page-size constant under `root`.
-///
-/// # Errors
-///
-/// If a source tree cannot be read, or a definition's value is not a literal
-/// this can evaluate — which is itself worth failing on, because a page size
-/// computed rather than stated is a page size this cannot compare.
+/// A value that is not a literal fails, because a computed page size cannot be compared.
 pub fn page_size_definitions(root: &Path) -> Result<Vec<Definition>> {
     let mut found = Vec::new();
     for tree in ROOTS {
@@ -82,7 +55,6 @@ pub fn page_size_definitions(root: &Path) -> Result<Vec<Definition>> {
     Ok(found)
 }
 
-/// Pull every page-size definition out of one file's text.
 fn scan(file: &str, text: &str, into: &mut Vec<Definition>) -> Result<()> {
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
@@ -113,7 +85,6 @@ fn scan(file: &str, text: &str, into: &mut Vec<Definition>) -> Result<()> {
     Ok(())
 }
 
-/// Evaluate a Rust integer literal, decimal or hexadecimal.
 fn literal(text: &str) -> Option<u64> {
     let text = text.replace('_', "");
     match text.strip_prefix("0x") {
