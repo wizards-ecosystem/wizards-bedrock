@@ -96,9 +96,8 @@ pub(super) fn the_unit_walks_the_kernels_root_table() -> bool {
     nvme::isolation_is_active_for_test().is_some_and(|(_, walks_kernel_root)| walks_kernel_root)
 }
 
-/// Read back from the second-level tables the unit walks, not from the
-/// driver's index of them: the reachable set is exactly the live queue frames
-/// while no transfer is published (D-357).
+/// Read back from the second-level tables the unit walks, not from the driver's index of them:
+/// the reachable set is exactly the live queue frames while no transfer is published.
 pub(super) fn the_dma_domain_reaches_exactly_the_live_queue_frames() -> bool {
     nvme::reachable_frames_for_test()
         .is_some_and(|(reachable, expected)| !expected.is_empty() && reachable == expected)
@@ -108,9 +107,9 @@ pub(super) fn a_domain_proof_is_refused_while_translation_is_off() -> bool {
     nvme::domain_proof_follows_translation_for_test()
 }
 
-/// The hook reads into the buffer once first, so a stale cached translation
-/// would let the unmapped write through; the fault proves the unmap
-/// invalidated the unit's cache and the device cannot reach the frame.
+/// The hook reads into the buffer once first, so a stale cached translation would let the
+/// unmapped write through; the fault proves the unmap invalidated the unit's cache and the device
+/// cannot reach the frame.
 pub(super) fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
     nvme::unmapped_write_is_fenced_for_test().is_some_and(|witness| {
         witness.completed && witness.drained && witness.unchanged && witness.faulted
@@ -222,9 +221,9 @@ pub(super) fn an_uncertain_vtd_unmap_never_recycles_its_frames() -> bool {
         if isolation.map_segment(&mut dma).is_err() {
             return false;
         }
-        // The leaf is removed, but a failed invalidation means the device may
-        // still hold its old translation. Ownership must therefore disappear
-        // into the DMA segment's boot-lifetime retention state.
+        // The leaf is removed, but a failed invalidation means the device may still hold its old
+        // translation. Ownership must therefore disappear into the DMA segment's boot-lifetime
+        // retention state.
         isolation.force_invalidation_failures_for_test(1);
         matches!(
             isolation.unmap_segment(&mut dma),
@@ -289,10 +288,8 @@ pub(super) fn firmware_reserved_dma_regions_never_become_mapping_authority() -> 
         && !iommu::reserved_regions_are_supported_for_test(&[(usable, usable + PAGE_SIZE - 1)])
 }
 
-/// The first eight bytes of block `lba` on the check machine's namespace.
-///
-/// Written by `xtask` when it makes the backing file, and transcribed here —
-/// which is two copies of one table, so a host test compares them (D-158).
+/// The first eight bytes of block `lba` on the check machine's namespace, written by `xtask` when
+/// it makes the backing file and transcribed here; a host test compares the two copies.
 const fn disk_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }

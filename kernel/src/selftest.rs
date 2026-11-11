@@ -1,9 +1,8 @@
 //! Boot-time self-checks.
 //!
-//! Hardware-dependent checks run on a fully booted `selftest` kernel and report
-//! through [`crate::arch::current::debug_exit`]. Pure logic belongs in a host
-//! `libs/` test instead. Boot assertions are not repeated because a panic is a
-//! missing verdict, not a red check.
+//! Hardware-dependent checks run on a fully booted `selftest` kernel and report through
+//! [`crate::arch::current::debug_exit`]. Pure logic belongs in a host `libs/` test instead. Boot
+//! assertions are not repeated because a panic is a missing verdict, not a red check.
 
 use core::hint::spin_loop;
 use core::sync::atomic::Ordering;
@@ -245,7 +244,7 @@ struct Report {
 const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
-/// Changing it requires a retained mutation (D-119).
+/// Changing it requires a retained mutation.
 const EXPECTED_CHECKS: usize = 296;
 
 #[cfg(feature = "selftest")]
@@ -1287,8 +1286,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "an echo to the keyboard comes back",
         input::echo_roundtrips(),
     );
-    // The identity first, because it decides what the set query is worth;
-    // recorded as answered, since `None` and a wrong number differ (D-176).
+    // The identity first, because it decides what the set query is worth; recorded as answered,
+    // since `None` and a wrong number differ.
     let identity = input::identity();
     let translated = identity == Some(TRANSLATED_MF2);
     if !translated && identity != Some(UNTRANSLATED_MF2) {
@@ -1299,8 +1298,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         translated || identity == Some(UNTRANSLATED_MF2),
     );
 
-    // Translation rewrites set-query replies, so this stays diagnostic and
-    // the decoder is proved from received bytes (D-178, D-179, D-239).
+    // Translation rewrites set-query replies, so this stays diagnostic and the decoder is proved
+    // from received bytes.
     let set = input::scancode_set();
     if !translated && set != Some(2) {
         warn!("keyboard: reports scancode set {set:?}, not 2");
@@ -1358,8 +1357,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_editing_keys_move_the_cursor(),
     );
 
-    // The set 1 path: QEMU honours the translation bit, producing the stream
-    // VMware delivers unasked, with a key the harness chose (D-179).
+    // The set 1 path: QEMU honours the translation bit, producing the stream VMware delivers
+    // unasked, with a key the harness chose.
     report.check(
         "the controller accepts translation being turned on",
         input::set_translation(crate::arch::current::i8042::Translation::Enabled),
@@ -1368,8 +1367,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "translation updates the decoder from the controller identity",
         input::decoder_matches_identity(),
     );
-    // Seeded against the stream on purpose: the round can succeed only by
-    // reading the bytes, as VMware forces (D-239).
+    // Seeded against the stream on purpose: the round can succeed only by reading the bytes, as
+    // VMware forces.
     input::assume_wrong_numbering();
     // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, under the
     // same rule: nothing talks to the keyboard between marker and wait.
@@ -1378,20 +1377,19 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "selftest: awaiting translated keystroke",
         "  PRESS  b   for the last round",
     );
-    // `B`, not `A`, so the first round's stale event cannot satisfy this wait
-    // (D-155, D-165).
+    // `B`, not `A`, so the first round's stale event cannot satisfy this wait.
     report.check(
         "a translated keystroke decodes to the same key",
         translated_key.is_some_and(input::await_armed_key),
     );
-    // Ask only after a byte has arrived so this observes the active decoder
-    // instead of re-deriving it from the identity that configured it (D-239).
+    // Ask only after a byte has arrived so this observes the active decoder instead of re-deriving
+    // it from the identity that configured it.
     report.check(
         "the keyboard's numbering and the decoder's are the same",
         input::decoder_reads_what_arrives(),
     );
-    // Turned back off, and the question re-opened rather than answered from
-    // the written bit; the next decisive byte settles it (D-178, D-239).
+    // Turned back off, and the question re-opened rather than answered from the written bit; the
+    // next decisive byte settles it.
     let restored = input::set_translation(crate::arch::current::i8042::Translation::Disabled);
     report.check(
         "the decoder reads the set that arrives, not the bit that was written",
@@ -1419,7 +1417,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         apic::error_status() == 0,
     );
 
-    // Read this detector last so every preceding check can trip it (D-143).
+    // Read this detector last so every preceding check can trip it.
     report.check(
         "no lock is taken while a leaf guard is held",
         a_leaf_guard_is_the_last_lock(),

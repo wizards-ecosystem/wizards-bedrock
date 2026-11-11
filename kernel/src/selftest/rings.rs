@@ -23,7 +23,6 @@ pub(super) fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     };
     let (_, submissions, completions) = queue.shape();
 
-    // Fill the completion queue by serving as many rounds as it holds.
     let mut posted = 0u32;
     while posted < completions {
         let room = submissions as usize;
@@ -41,8 +40,7 @@ pub(super) fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         posted += served as u32;
     }
 
-    // Nothing has been reaped, so nothing more can be admitted: every slot is
-    // either spoken for or already holds a completion.
+    // Nothing is reaped, so every slot is spoken for or holds a completion and nothing is admitted.
     let refuses = queue.reserve_for_test(1) == 0 && queue.is_consistent();
 
     // A strict-prefix claim must not imply that unread completions were consumed.
@@ -92,8 +90,8 @@ pub(super) fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     // Compare the exported shape, not `Queue::new`'s constructor invariants.
     let (version, submissions, completions) = queue.shape();
 
-    // Not yet decided: that the header page was published to match, which is
-    // the whole ABI a program reads.
+    // Left to prove: the header page was published to match, which is the whole ABI a program
+    // reads.
     let announced = queue.published_shape() == (version, submissions, completions)
         && version == ring_proto::VERSION;
 
@@ -106,7 +104,7 @@ pub(super) fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
             flags.contains(Flags::USER) && flags.contains(Flags::WRITABLE)
         });
 
-        // And cannot give them away. `unmap` reads the owned bit before minting a
+        // The space cannot give the pages away: `unmap` reads the owned bit before minting a
         // `Segment`, and these frames were never the space's to own.
         let unowned = matches!(space.unmap(AT, PAGE_SIZE), Err(MapError::NotOwned(AT)));
 
@@ -127,9 +125,44 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
     let Ok(source) = table.insert(held, full) else {
         return false;
     };
+    let Some((widened, cancelled)) =
+        serve_an_unfit_rights_word_and_token(&queue, &table, source, full)
+    else {
+        return false;
+    };
+    // A file offset past every file this kernel can hold.
+    let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
+        return false;
+    };
+    let Some((at_max, past)) = read_past_every_file(&queue, &table, file) else {
+        return false;
+    };
 
-    // A rights word whose low half is perfectly valid and whose high half is
-    // not. A cast reads it as the low half; `try_from` refuses it whole.
+    let mut untouched = [0u8; 32];
+    if !queue.read_data_for_test(512, &mut untouched) {
+        return false;
+    }
+
+    widened.status == queue::STATUS_DENIED
+        // The timer is still in flight: a token that does not fit names no operation.
+        && cancelled.status == queue::STATUS_NOT_FOUND
+        && queue.in_flight() == 1
+        // The reads answer nothing rather than the file's first bytes.
+        && at_max.status == queue::STATUS_OK
+        && at_max.value == 0
+        && past.status == queue::STATUS_OK
+        && past.value == 0
+        && untouched == [0u8; 32]
+}
+
+fn serve_an_unfit_rights_word_and_token(
+    queue: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    source: u32,
+    full: Rights,
+) -> Option<(queue::Completion, queue::Completion)> {
+    // The low half of this rights word is valid and the high half is not. A cast reads it as the
+    // low half; `try_from` refuses it whole.
     queue.post_submission_for_test(
         0,
         queue::Submission::about(
@@ -140,15 +173,14 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
         ),
     );
 
-    // An operation to cancel, and a token that is not its token because it
-    // does not fit in one.
+    // An operation to cancel, and a token too wide to be its token.
     queue.post_submission_for_test(
         1,
         queue::Submission::simple(queue::Opcode::Timer, 0xDEAD, 3_600_000_000_000),
     );
     queue.publish_tail_for_test(2);
-    if queue.serve(&table) != 1 {
-        return false;
+    if queue.serve(table) != 1 {
+        return None;
     }
     let widened = queue.read_completion(0);
 
@@ -157,15 +189,17 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
         queue::Submission::simple(queue::Opcode::Cancel, 0xC002, (1u64 << 32) | 0xDEAD),
     );
     queue.publish_tail_for_test(3);
-    if queue.serve(&table) != 1 {
-        return false;
+    if queue.serve(table) != 1 {
+        return None;
     }
-    let cancelled = queue.read_completion(1);
+    Some((widened, queue.read_completion(1)))
+}
 
-    // A file offset past every file this kernel can hold.
-    let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
-        return false;
-    };
+fn read_past_every_file(
+    queue: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    file: u32,
+) -> Option<(queue::Completion, queue::Completion)> {
     queue.post_submission_for_test(
         4,
         queue::Submission::about(queue::Opcode::Read, 0xC003, file, 512)
@@ -180,28 +214,10 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
     );
     queue.publish_tail_for_test(6);
     let before_read = queue.served_count();
-    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before_read + 2) {
-        return false;
+    if queue.serve(table) != 0 || !runs_until(5_000, || queue.served_count() == before_read + 2) {
+        return None;
     }
-    let at_max = queue.read_completion(3);
-    let past = queue.read_completion(4);
-
-    let mut untouched = [0u8; 32];
-    if !queue.read_data_for_test(512, &mut untouched) {
-        return false;
-    }
-
-    widened.status == queue::STATUS_DENIED
-        // The timer is still in flight: the cancellation named no operation,
-        // which is what a token that does not fit names.
-        && cancelled.status == queue::STATUS_NOT_FOUND
-        && queue.in_flight() == 1
-        // And the read answered "nothing", rather than the file's first bytes.
-        && at_max.status == queue::STATUS_OK
-        && at_max.value == 0
-        && past.status == queue::STATUS_OK
-        && past.value == 0
-        && untouched == [0u8; 32]
+    Some((queue.read_completion(3), queue.read_completion(4)))
 }
 
 fn open_the_small_file_in(
@@ -276,8 +292,8 @@ pub(super) fn a_completion_carries_a_file_handle() -> bool {
         return false;
     }
 
-    // **Read, and never write.** There is no write path, and a right that
-    // grants nothing is a syscall name in disguise (D-78).
+    // Read and never write: there is no write path, and a right that grants nothing is a syscall
+    // name in disguise.
     granted == Rights::UNIVERSAL.union(Rights::READ)
         && !granted.contains(Rights::WRITE)
         && !granted.contains(Rights::TRAVERSE)
@@ -349,7 +365,6 @@ pub(super) fn a_read_is_a_submission_with_its_own_offset() -> bool {
     };
     let (table, handle) = file;
 
-    // Two reads, at different offsets, into different parts of the data area.
     for (slot, token, offset, at, length) in [
         (1usize, 0x00A1u32, 0u64, 64u64, 16u32),
         (2, 0x00A2, 8, 128, 16),
@@ -382,8 +397,8 @@ pub(super) fn a_read_is_a_submission_with_its_own_offset() -> bool {
         return false;
     }
 
-    // The bytes are the file's, at the offsets asked for — and the two differ,
-    // which is what a read that ignored the offset could not manage.
+    // The bytes are the file's at the offsets asked for, and the two differ, which a read that
+    // ignored the offset could not manage.
     head == SMALL_CONTENT[..16] && later == SMALL_CONTENT[8..24] && head != later
 }
 
@@ -429,65 +444,8 @@ pub(super) fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bo
         return false;
     }
     let queued = queue::queued_work_for_test();
-    let cancelled = {
-        ring.post_submission_for_test(
-            0,
-            queue::Submission::about(queue::Opcode::OpenAt, 0x0A71, directory, 0)
-                .length(SMALL_NAME.len() as u32),
-        );
-        ring.publish_tail_for_test(1);
-        let admitted = ring.serve(&table) == 0
-            && ring.in_flight() == 1
-            && table.live() == 1
-            && table.promised() == 1
-            && queue::queued_work_for_test() == queued + 1;
-
-        ring.post_submission_for_test(
-            1,
-            queue::Submission::simple(queue::Opcode::Cancel, 0x0A72, 0x0A71),
-        );
-        ring.publish_tail_for_test(2);
-        let cancelled = ring.serve(&table) == 1;
-        let target = ring.read_completion(0);
-        let canceller = ring.read_completion(1);
-
-        admitted
-            && cancelled
-            && target.token == 0x0A71
-            && target.status == queue::STATUS_CANCELLED
-            && canceller.token == 0x0A72
-            && canceller.status == queue::STATUS_OK
-            && ring.is_quiet()
-            && ring.in_flight() == 0
-            && table.live() == 1
-            && table.promised() == 0
-            && queue::queued_work_for_test() == queued
-    };
-
-    retry.post_submission_for_test(
-        0,
-        queue::Submission::about(queue::Opcode::OpenAt, 0x0A81, directory, 0)
-            .length(SMALL_NAME.len() as u32),
-    );
-    retry.publish_tail_for_test(1);
-    let admitted_for_retry = retry.serve(&table) == 0
-        && retry.in_flight() == 1
-        && table.live() == 1
-        && table.promised() == 1
-        && queue::queued_work_for_test() == queued + 1;
-    retry.refuse_next_post_for_test();
-    retry.post_submission_for_test(
-        1,
-        queue::Submission::simple(queue::Opcode::Cancel, 0x0A82, 0x0A81),
-    );
-    retry.publish_tail_for_test(2);
-    let cancellation_refused = retry.serve(&table) == 1
-        && retry.read_completion(0).token == 0x0A82
-        && retry.read_completion(0).status == queue::STATUS_NO_ROOM
-        && retry.in_flight() == 1
-        && table.live() == 1
-        && table.promised() == 1
-        && queue::queued_work_for_test() == queued + 1;
+    let cancelled = a_queued_open_cancels_without_its_handle(&ring, &table, directory, queued);
+    let refused = a_refused_cancellation_keeps_the_open_queued(&retry, &table, directory, queued);
 
     let served = retry.served_count();
     queue::pause_worker_for_test(false);
@@ -502,8 +460,7 @@ pub(super) fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bo
             });
 
     cancelled
-        && admitted_for_retry
-        && cancellation_refused
+        && refused
         && worker_finished
         && installed
         && retry.is_quiet()
@@ -511,6 +468,81 @@ pub(super) fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bo
         && table.live() == 2
         && table.promised() == 0
         && queue::queued_work_for_test() == queued
+}
+
+fn a_queued_open_cancels_without_its_handle(
+    ring: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    directory: u32,
+    queued: usize,
+) -> bool {
+    ring.post_submission_for_test(
+        0,
+        queue::Submission::about(queue::Opcode::OpenAt, 0x0A71, directory, 0)
+            .length(SMALL_NAME.len() as u32),
+    );
+    ring.publish_tail_for_test(1);
+    let admitted = ring.serve(table) == 0
+        && ring.in_flight() == 1
+        && table.live() == 1
+        && table.promised() == 1
+        && queue::queued_work_for_test() == queued + 1;
+
+    ring.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Cancel, 0x0A72, 0x0A71),
+    );
+    ring.publish_tail_for_test(2);
+    let cancelled = ring.serve(table) == 1;
+    let target = ring.read_completion(0);
+    let canceller = ring.read_completion(1);
+
+    admitted
+        && cancelled
+        && target.token == 0x0A71
+        && target.status == queue::STATUS_CANCELLED
+        && canceller.token == 0x0A72
+        && canceller.status == queue::STATUS_OK
+        && ring.is_quiet()
+        && ring.in_flight() == 0
+        && table.live() == 1
+        && table.promised() == 0
+        && queue::queued_work_for_test() == queued
+}
+
+// A refused cancellation leaves the open admitted, so the worker still installs its handle.
+fn a_refused_cancellation_keeps_the_open_queued(
+    retry: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    directory: u32,
+    queued: usize,
+) -> bool {
+    retry.post_submission_for_test(
+        0,
+        queue::Submission::about(queue::Opcode::OpenAt, 0x0A81, directory, 0)
+            .length(SMALL_NAME.len() as u32),
+    );
+    retry.publish_tail_for_test(1);
+    let admitted_for_retry = retry.serve(table) == 0
+        && retry.in_flight() == 1
+        && table.live() == 1
+        && table.promised() == 1
+        && queue::queued_work_for_test() == queued + 1;
+    retry.refuse_next_post_for_test();
+    retry.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Cancel, 0x0A82, 0x0A81),
+    );
+    retry.publish_tail_for_test(2);
+    let cancellation_refused = retry.serve(table) == 1
+        && retry.read_completion(0).token == 0x0A82
+        && retry.read_completion(0).status == queue::STATUS_NO_ROOM
+        && retry.in_flight() == 1
+        && table.live() == 1
+        && table.promised() == 1
+        && queue::queued_work_for_test() == queued + 1;
+
+    admitted_for_retry && cancellation_refused
 }
 
 pub(super) fn file_work_pressure_is_bounded_at_admission() -> bool {
@@ -598,10 +630,9 @@ pub(super) fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() 
         "selftest: awaiting storage-delay keystroke",
         "  PRESS  c   to continue the storage round",
     );
-    // This self-test runs before the permanent fallback starts so the scheduler
-    // checks below retain their tickless baseline. Drain explicitly while the
-    // storage worker is held, proving polling and unrelated IRQ admission can
-    // progress together.
+    // This runs before the permanent fallback starts so later scheduler checks keep their tickless
+    // baseline. Draining here while the storage worker is held proves polling and unrelated IRQ
+    // admission can progress together.
     let arrived = finish_delayed_read_input(
         || {
             runs_until(input::HUMAN_WAIT_MS, || {
@@ -712,41 +743,84 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
         return false;
     };
     let table = shared_handle_table_or_false!(8);
-
-    // A directory held without TRAVERSE: it can be listed and not walked.
-    let object = crate::object::directory(root);
-    let Ok(unwalkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::ENUMERATE)) else {
-        return false;
-    };
-    // And one that can be walked, for the paths that are about the path.
-    let object = crate::object::directory(root);
-    let Ok(walkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE)) else {
-        return false;
-    };
-
-    if !queue.write_data_for_test(0, SMALL_NAME) || !queue.write_data_for_test(256, b"..") {
-        return false;
-    }
-
-    // A file held without READ, so a read of it is a refusal about the right
-    // rather than about the file.
-    let Some(root_node) = vfs::resolve(root, SMALL_NAME).ok() else {
-        return false;
-    };
-    let vfs::Node::File(file) = root_node else {
-        return false;
-    };
-    let object = crate::object::file(file);
-    let Ok(unreadable) = table.insert(object, Rights::UNIVERSAL) else {
-        return false;
-    };
-    // Grant `READ` so this case reaches the buffer bound (D-173).
-    let object = crate::object::file(file);
-    let Ok(readable) = table.insert(object, Rights::UNIVERSAL.union(Rights::READ)) else {
+    let Some((unwalkable, walkable, unreadable, readable)) = reach_fixture(&queue, &table, root)
+    else {
         return false;
     };
 
     let before = nvme::command_count_for_test();
+    let Some(refused) = opens_are_refused(&queue, &table, unwalkable, walkable) else {
+        return false;
+    };
+
+    // Device-access counts distinguish preflight refusal from a late error after I/O.
+    queue.post_submission_for_test(
+        4,
+        queue::Submission::about(queue::Opcode::Read, 0xD5, unreadable, 0).length(16),
+    );
+    queue.post_submission_for_test(
+        5,
+        queue::Submission::about(queue::Opcode::Read, 0xD6, unreadable, 4090).length(16),
+    );
+    // This one reaches the bound: the device must still not be asked, or the bound is checked with
+    // the work already done.
+    queue.post_submission_for_test(
+        6,
+        queue::Submission::about(queue::Opcode::Read, 0xD7, readable, 4090).length(16),
+    );
+    queue.publish_tail_for_test(7);
+    let served = queue.serve(&table) == 3;
+    let after = nvme::command_count_for_test();
+
+    let denied = queue.read_completion(4).status == queue::STATUS_DENIED
+        && queue.read_completion(5).status == queue::STATUS_DENIED
+        && queue.read_completion(6).status == queue::STATUS_BAD_BUFFER;
+    let untouched = before == after;
+
+    // Nothing was promised and kept: every refusal above gave its slot back.
+    refused && served && denied && untouched && table.live() == 4 && table.promised() == 0
+}
+
+fn reach_fixture(
+    queue: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    root: vfs::Directory,
+) -> Option<(u32, u32, u32, u32)> {
+    // A directory held without TRAVERSE: it can be listed and not walked.
+    let object = crate::object::directory(root);
+    let unwalkable = table
+        .insert(object, Rights::UNIVERSAL.union(Rights::ENUMERATE))
+        .ok()?;
+    // A walkable one, for the paths that are about the path.
+    let object = crate::object::directory(root);
+    let walkable = table
+        .insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE))
+        .ok()?;
+
+    if !queue.write_data_for_test(0, SMALL_NAME) || !queue.write_data_for_test(256, b"..") {
+        return None;
+    }
+
+    // A file held without READ, so its read is refused for the right rather than the file.
+    let vfs::Node::File(file) = vfs::resolve(root, SMALL_NAME).ok()? else {
+        return None;
+    };
+    let object = crate::object::file(file);
+    let unreadable = table.insert(object, Rights::UNIVERSAL).ok()?;
+    // Grant `READ` so this case reaches the buffer bound.
+    let object = crate::object::file(file);
+    let readable = table
+        .insert(object, Rights::UNIVERSAL.union(Rights::READ))
+        .ok()?;
+    Some((unwalkable, walkable, unreadable, readable))
+}
+
+fn opens_are_refused(
+    queue: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    unwalkable: u32,
+    walkable: u32,
+) -> Option<bool> {
     let asked = [
         // No TRAVERSE.
         (
@@ -772,48 +846,20 @@ pub(super) fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bo
     }
     queue.publish_tail_for_test(asked.len() as u32);
     let served_before = queue.served_count();
-    if queue.serve(&table) != asked.len() - 1
+    if queue.serve(table) != asked.len() - 1
         || !runs_until(5_000, || {
             queue.served_count() == served_before + asked.len()
         })
     {
-        return false;
+        return None;
     }
 
-    let refused = asked.iter().all(|(_, token, _, _, _, status)| {
+    Some(asked.iter().all(|(_, token, _, _, _, status)| {
         (0..asked.len()).any(|slot| {
             let completion = queue.read_completion(slot);
             completion.token == *token && completion.status == *status
         })
-    });
-
-    // Device-access counts distinguish preflight refusal from a late error
-    // after I/O (D-173).
-    queue.post_submission_for_test(
-        4,
-        queue::Submission::about(queue::Opcode::Read, 0xD5, unreadable, 0).length(16),
-    );
-    queue.post_submission_for_test(
-        5,
-        queue::Submission::about(queue::Opcode::Read, 0xD6, unreadable, 4090).length(16),
-    );
-    // The one that reaches the bound: the device must still not be asked, or
-    // the bound is checked with the work already done.
-    queue.post_submission_for_test(
-        6,
-        queue::Submission::about(queue::Opcode::Read, 0xD7, readable, 4090).length(16),
-    );
-    queue.publish_tail_for_test(7);
-    let served = queue.serve(&table) == 3;
-    let after = nvme::command_count_for_test();
-
-    let denied = queue.read_completion(4).status == queue::STATUS_DENIED
-        && queue.read_completion(5).status == queue::STATUS_DENIED
-        && queue.read_completion(6).status == queue::STATUS_BAD_BUFFER;
-    let untouched = before == after;
-
-    // Nothing was promised and kept: every refusal above gave its slot back.
-    refused && served && denied && untouched && table.live() == 4 && table.promised() == 0
+    }))
 }
 
 fn open_the_small_file(
@@ -860,14 +906,12 @@ pub(super) fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     }
     queue.publish_tail_for_test(2);
 
-    // Admitted and deferred: no completions, and the ring's own accounting
-    // says two operations are outstanding.
     let in_flight = queue.serve(&table) == 0 && queue.in_flight() == 2 && queue.outstanding() == 2;
 
     let ended = queue.abandon();
 
-    // Each got the completion it was owed, and it says what happened rather
-    // than pretending to be a result.
+    // Each got the completion it was owed, and it says what happened rather than pretending to be
+    // a result.
     let first = queue.read_completion(0);
     let second = queue.read_completion(1);
     let completed = first.token == 0xA1
@@ -878,14 +922,14 @@ pub(super) fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     in_flight
         && ended == 2
         && completed
-        // Nothing left that could touch the pages, and `outstanding` would
-        // otherwise say work is in flight for ever.
+        // Nothing left could touch the pages, and `outstanding` would otherwise say work is in
+        // flight for ever.
         && queue.is_quiet()
         && queue.in_flight() == 0
         && queue.outstanding() == 0
         && queue.is_consistent()
-        // A second sweep finds nothing: teardown is idempotent, because
-        // `reclaim` is not the only path to a zombie.
+        // A second sweep finds nothing: teardown is idempotent, because `reclaim` is not the only
+        // path to a zombie.
         && queue.abandon() == 0
 }
 
@@ -893,60 +937,21 @@ pub(super) fn a_refused_settlement_retains_every_owner() -> bool {
     if !crate::time::is_calibrated() {
         return false;
     }
-
     let Some(cancelled) = queue::Queue::new() else {
         return false;
     };
     let cancel_table = shared_handle_table_or_false!(8);
-    cancelled.post_submission_for_test(
-        0,
-        queue::Submission::simple(queue::Opcode::Timer, 0xCA11, u64::MAX),
-    );
-    cancelled.publish_tail_for_test(1);
-    if cancelled.serve(&cancel_table) != 0 || cancelled.in_flight() != 1 {
+    let Some(cancellation) = a_refused_cancellation_settles_on_abandon(&cancelled, &cancel_table)
+    else {
         return false;
-    }
-    cancelled.post_submission_for_test(
-        1,
-        queue::Submission::simple(queue::Opcode::Cancel, 0xCA12, 0xCA11),
-    );
-    cancelled.publish_tail_for_test(2);
-    cancelled.refuse_next_post_for_test();
-    let cancel_refused = cancelled.serve(&cancel_table) == 1
-        && cancelled.read_completion(0).token == 0xCA12
-        && cancelled.read_completion(0).status == queue::STATUS_NO_ROOM
-        && cancelled.in_flight() == 1
-        && cancelled.outstanding() == 1
-        && cancelled.settlement_refusals_for_test() == 1;
-    let cancel_retried = cancelled.abandon() == 1
-        && cancelled.read_completion(1).token == 0xCA11
-        && cancelled.read_completion(1).status == queue::STATUS_CANCELLED
-        && cancelled.is_quiet()
-        && cancelled.outstanding() == 0;
-
+    };
     let Some(expired) = queue::Queue::new() else {
         return false;
     };
     let expire_table = shared_handle_table_or_false!(8);
-    expired.post_submission_for_test(
-        0,
-        queue::Submission::simple(queue::Opcode::Timer, 0xE771, u64::MAX),
-    );
-    expired.publish_tail_for_test(1);
-    if expired.serve(&expire_table) != 0 || expired.in_flight() != 1 {
+    let Some(expiry) = a_refused_expiry_settles_on_the_next_sweep(&expired, &expire_table) else {
         return false;
-    }
-    expired.refuse_next_post_for_test();
-    let expiry_refused = expired.expire(u64::MAX) == 0
-        && expired.in_flight() == 1
-        && expired.outstanding() == 1
-        && expired.settlement_refusals_for_test() == 1;
-    let expiry_retried = expired.expire(u64::MAX) == 1
-        && expired.expire(u64::MAX) == 0
-        && expired.read_completion(0).token == 0xE771
-        && expired.read_completion(0).status == queue::STATUS_OK
-        && expired.is_quiet()
-        && expired.outstanding() == 0;
+    };
 
     while user::collect().is_some() {}
     let refusals_before = user::refused_ring_reclaims();
@@ -984,12 +989,65 @@ pub(super) fn a_refused_settlement_retains_every_owner() -> bool {
         && ring.outstanding() == 0;
     queue::pause_worker_for_test(false);
 
-    cancel_refused
-        && cancel_retried
-        && expiry_refused
-        && expiry_retried
-        && first_refused
-        && collected
+    cancellation && expiry && first_refused && collected
+}
+
+fn a_refused_cancellation_settles_on_abandon(
+    cancelled: &Arc<queue::Queue>,
+    cancel_table: &Arc<HandleTable>,
+) -> Option<bool> {
+    cancelled.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xCA11, u64::MAX),
+    );
+    cancelled.publish_tail_for_test(1);
+    if cancelled.serve(cancel_table) != 0 || cancelled.in_flight() != 1 {
+        return None;
+    }
+    cancelled.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Cancel, 0xCA12, 0xCA11),
+    );
+    cancelled.publish_tail_for_test(2);
+    cancelled.refuse_next_post_for_test();
+    let cancel_refused = cancelled.serve(cancel_table) == 1
+        && cancelled.read_completion(0).token == 0xCA12
+        && cancelled.read_completion(0).status == queue::STATUS_NO_ROOM
+        && cancelled.in_flight() == 1
+        && cancelled.outstanding() == 1
+        && cancelled.settlement_refusals_for_test() == 1;
+    let cancel_retried = cancelled.abandon() == 1
+        && cancelled.read_completion(1).token == 0xCA11
+        && cancelled.read_completion(1).status == queue::STATUS_CANCELLED
+        && cancelled.is_quiet()
+        && cancelled.outstanding() == 0;
+    Some(cancel_refused && cancel_retried)
+}
+
+fn a_refused_expiry_settles_on_the_next_sweep(
+    expired: &Arc<queue::Queue>,
+    expire_table: &Arc<HandleTable>,
+) -> Option<bool> {
+    expired.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xE771, u64::MAX),
+    );
+    expired.publish_tail_for_test(1);
+    if expired.serve(expire_table) != 0 || expired.in_flight() != 1 {
+        return None;
+    }
+    expired.refuse_next_post_for_test();
+    let expiry_refused = expired.expire(u64::MAX) == 0
+        && expired.in_flight() == 1
+        && expired.outstanding() == 1
+        && expired.settlement_refusals_for_test() == 1;
+    let expiry_retried = expired.expire(u64::MAX) == 1
+        && expired.expire(u64::MAX) == 0
+        && expired.read_completion(0).token == 0xE771
+        && expired.read_completion(0).status == queue::STATUS_OK
+        && expired.is_quiet()
+        && expired.outstanding() == 0;
+    Some(expiry_refused && expiry_retried)
 }
 
 pub(super) fn a_promise_outlives_the_program_that_made_it() -> bool {
@@ -1009,18 +1067,17 @@ pub(super) fn a_promise_outlives_the_program_that_made_it() -> bool {
     };
     let promised = table.live() == 1 && table.promised() == 1;
 
-    // The program dies. Everything the kernel held of it is dropped, and the
-    // only reference left in the world is the one inside the promise.
+    // The program dies, and the only reference left to its table is the one inside the promise.
     drop(table);
 
     let Some(orphan) = watching.upgrade() else {
-        // A table freed under an outstanding promise is a use-after-free
-        // waiting for the completion to arrive, not merely a failed check.
+        // A table freed under a live promise is a use-after-free awaiting its completion, not
+        // merely a failed check.
         return false;
     };
 
-    // Surviving is not working: the promise is spent against the orphaned
-    // table, as a completion after the program's death would.
+    // Surviving is not working: the promise is spent against the orphaned table, as a completion
+    // after the program's death would.
     let usage_before = HandleTable::arena_usage_for_test();
     let Ok(handle) = reservation.install(second, full, full) else {
         return false;
@@ -1039,8 +1096,8 @@ pub(super) fn a_promise_outlives_the_program_that_made_it() -> bool {
         && usage_after.0 == usage_before.0
         && usage_after.1 == usage_before.1 + 1;
 
-    // And with the promise gone, the table goes when the last reference does.
-    // A `Weak` that still upgrades here is a table nothing will ever free.
+    // With the promise spent, the table goes with its last reference; a `Weak` that still upgrades
+    // here is a table nothing will ever free.
     drop(orphan);
     drop(foreign);
     let released = watching.upgrade().is_none();
@@ -1065,14 +1122,13 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
     );
     queue.publish_tail_for_test(1);
 
-    // Admitted, and *not* completed.
     let deferred = queue.serve(&table) == 0 && queue.in_flight() == 1;
     let Some(deadline) = queue.earliest_deadline() else {
         return false;
     };
 
-    // A million reads: the deadline is two milliseconds out and the clock is
-    // running, so a deadline this does not reach is not slow, it is wrong.
+    // A million reads: the deadline is two milliseconds out on a running clock, so a deadline
+    // this does not reach is wrong rather than slow.
     if !spins_until(1_000_000, || crate::time::now_ns() >= deadline) {
         return false;
     }
@@ -1085,8 +1141,8 @@ pub(super) fn an_operation_completes_after_its_deadline_and_only_once() -> bool 
     deferred
         && early
         && due == 1
-        // And only once: the second sweep finds nothing, which is D-79's rule
-        // seen from the side a deferral could break it from.
+        // Only once: a second sweep finds nothing, the one-completion rule seen where a deferral
+        // could break it.
         && queue.expire(crate::time::now_ns()) == 0
         && queue.in_flight() == 0
         && completion.token == 0x7117
@@ -1123,8 +1179,7 @@ pub(super) fn a_cancelled_operation_and_its_cancellation_complete_separately() -
         return false;
     }
 
-    // The target's, posted from inside the cancellation, then the
-    // cancellation's own.
+    // The target's completion, posted from inside the cancellation, then the cancellation's own.
     let target = queue.read_completion(0);
     let canceller = queue.read_completion(1);
 
@@ -1134,8 +1189,8 @@ pub(super) fn a_cancelled_operation_and_its_cancellation_complete_separately() -
         && canceller.status == queue::STATUS_OK
         && canceller.value == u64::from(0xDEADu32);
 
-    // A second cancellation finds nothing: advisory, as io_uring's
-    // `-EALREADY`, for a race the program cannot avoid.
+    // A second cancellation finds nothing: advisory, as io_uring's `-EALREADY`, for a race the
+    // program cannot avoid.
     queue.post_submission_for_test(
         2,
         queue::Submission::simple(queue::Opcode::Cancel, 0xC0DF, 0xDEAD),
@@ -1156,7 +1211,6 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
         return false;
     };
 
-    // Three operations: one served, one served differently, one refused.
     let asked = [
         queue::Submission::simple(queue::Opcode::Echo, 0x1111, 0xDEAD_BEEF),
         queue::Submission::simple(queue::Opcode::Uptime, 0x2222, 0),
@@ -1182,13 +1236,12 @@ pub(super) fn every_submission_gets_exactly_one_completion() -> bool {
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
         && uptime.status == queue::STATUS_OK
-        // The value, not only the token: a zeroed `now_ns()` once left this
-        // green (D-115).
+        // The value, not only the token: a zeroed `now_ns()` once left this green.
         && uptime.value > 0
         && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
-        // Refused *with* a completion, which is the rule: an operation the
-        // kernel will not serve still reports, or a caller waits for ever.
+        // Refused with a completion: an operation the kernel will not serve still reports, or a
+        // caller waits for ever.
         && refused.status == queue::STATUS_UNKNOWN_OPCODE;
 
     once && accounted && matched
@@ -1200,17 +1253,15 @@ pub(super) fn admission_refuses_before_the_completion_queue_can_overflow() -> bo
     };
     let (_, submissions, completions) = queue.shape();
 
-    // Ask for far more than either queue holds.
     let wanted = (completions as usize) * 4;
     let admitted = queue.reserve_for_test(wanted);
 
-    // Bounded by the submission queue, which is the tighter of the two here,
-    // and never by nothing.
+    // Bounded by the submission queue, the tighter of the two here, and never at zero.
     let bounded = admitted > 0 && admitted <= submissions as usize;
     let refused = admitted < wanted;
     let consistent = queue.is_consistent();
 
-    // And a full ring admits nothing more until something reports.
+    // A full ring admits nothing more until something reports.
     let full_refuses = queue.reserve_for_test(1) == 0;
 
     bounded && refused && consistent && full_refuses
@@ -1231,32 +1282,30 @@ pub(super) fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     }
     let posted = queue.read_completion(0);
 
-    // Ring 3 rewrites the entry it already submitted, as a hostile program
-    // would the instant it saw the head move.
+    // Ring 3 rewrites its submitted entry, as a hostile program would the instant the head moved.
     queue.post_submission_for_test(
         0,
         queue::Submission::simple(queue::Opcode::Unknown(0xDEAD), 0xBAAD, 0xFFFF_FFFF),
     );
 
-    // The visible rewrite plus original completion proves service used the
-    // copied submission (D-115).
+    // The visible rewrite plus original completion proves service used the copied submission.
     let rewritten = queue.read_submission(0);
     let took_effect = rewritten.token == 0xBAAD && rewritten.opcode != queue::Opcode::Echo;
     let unchanged = took_effect
         && posted.token == 0xABCD
         && posted.status == queue::STATUS_OK
         && posted.value == 0x0F0F_0F0F
-        // And serving again does not re-serve the rewritten entry: the slot
-        // was consumed, and the new bytes are a submission nobody made.
+        // Serving again does not re-serve the rewritten entry: the slot was consumed, and the new
+        // bytes are a submission nobody made.
         && queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
-    // Reservations make this runaway tail reach the explicit posted bound
-    // instead of an empty-queue early return (D-115).
+    // Reservations make this runaway tail reach the explicit posted bound instead of an
+    // empty-queue early return.
     let Some(runaway) = queue::Queue::new() else {
         return false;
     };
-    // Three written, and a tail claiming four billion. Without the bound the
-    // kernel admits and serves all three from slots it was never told about.
+    // Three written under a tail claiming four billion: without the bound the kernel admits and
+    // serves all three from slots it was never told about.
     for slot in 0..3 {
         runaway.post_submission_for_test(
             slot,
@@ -1282,8 +1331,8 @@ pub(super) fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     partial.publish_tail_for_test(1);
     let only_published = partial.serve(&shared_handle_table_or_false!(8)) == 1;
     let one_reported = partial.read_completion(0).token == 0x5150;
-    // And nothing is held open: the one served reported, and the two unpublished
-    // entries were never admitted, so no reservation outlives the round.
+    // Nothing is held open: the one served reported and the two unpublished entries were never
+    // admitted, so no reservation outlives the round.
     let still_reserved = partial.outstanding() == 0 && partial.is_consistent();
 
     unchanged

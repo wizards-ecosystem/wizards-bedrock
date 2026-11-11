@@ -20,8 +20,8 @@ pub(super) fn the_bus_walk_descends_through_a_bridge() -> bool {
     survey.buses >= 2
         && survey.bridges >= 1
         && survey.highest_bus >= 1
-        // And the counts agree with what the callback saw, so the survey is
-        // reporting the walk rather than a number of its own.
+        // The counts agree with what the callback saw, so the survey is reporting the walk rather
+        // than a number of its own.
         && survey.functions == on_bus_zero + beyond
         && on_bus_zero >= 6
 }
@@ -47,8 +47,8 @@ pub(super) fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
 }
 
 fn check_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
-    // The bridge behind bus zero: it has no windows to disturb, and it is
-    // there on both boot targets.
+    // The bridge behind bus zero: it has no windows to disturb, and it is there on both boot
+    // targets.
     let mut bridge = None;
     if pci::enumerate(|function| {
         if bridge.is_none() && function.class.is_bridge() && function.header.is_bridge() {
@@ -83,15 +83,15 @@ fn check_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         Err(pci::ClaimError::Taken)
     );
 
-    // And the holder still holds it: a refusal that released what it found
-    // would be indistinguishable from here without asking.
+    // The holder still holds it: a refusal that released what it found would be indistinguishable
+    // from here without asking.
     let intact = pci::is_claimed(at)
         && pci::claims() == before + 1
         && held.at() == at.function_base()
         && held.identity().0 != 0xFFFF;
 
-    // Bridge headers have two BARs; probing a third would overwrite bus numbers
-    // before restoring them (D-168).
+    // Bridge headers have two BARs; probing a third would overwrite bus numbers before restoring
+    // them.
     let two_registers = held.window(2).is_none()
         && held.window(3).is_none()
         && held.window(4).is_none()
@@ -110,19 +110,11 @@ pub(super) fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
 
 fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let claims_before = pci::claims();
-    let mut candidate = None;
-    if pci::enumerate(|function| {
-        if candidate.is_none() && !function.header.is_bridge() && !pci::is_claimed(function.at) {
-            candidate = Some(*function);
-        }
-    })
-    .is_none()
-    {
+    if !the_bus_walks_to_an_unclaimed_function() {
         return false;
     }
 
-    // Walk the candidates until one with an I/O window is claimed; none
-    // having one is a failure here, not a pass.
+    // Walk the candidates until one with an I/O window is claimed; none having one is a failure.
     let mut context = context();
     let mut found = None;
     let mut seen = 0;
@@ -157,8 +149,8 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         return false;
     };
 
-    // Every port in the window is the device's. The first and the last, so a
-    // claim that recorded only the base would be caught.
+    // Every port in the window is the device's: the first and the last, so a claim that recorded
+    // only the base would be caught.
     let last = port + (size as u16 - 1);
     let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
     let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
@@ -195,4 +187,14 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     });
 
     surveyed && seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
+}
+
+fn the_bus_walks_to_an_unclaimed_function() -> bool {
+    let mut candidate = None;
+    pci::enumerate(|function| {
+        if candidate.is_none() && !function.header.is_bridge() && !pci::is_claimed(function.at) {
+            candidate = Some(*function);
+        }
+    })
+    .is_some()
 }
