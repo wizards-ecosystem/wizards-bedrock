@@ -12,7 +12,8 @@ its tokio/std-coupled host is unusable in-kernel.
 **Rationale.** The authority a WASI descriptor carries is a capability
 grant, which aligns with the handle model; D-181 records why the descriptor
 is not literally a native handle (numbering, preopens and cursor state
-belong to an adapter).
+belong to an adapter). Sandboxed, portable apps also avoid porting a whole
+toolchain.
 
 **Consequences.** The syscall/handle layer must let the WASI host be a pure
 userspace/kernel-service consumer of it (no special kernel hooks).

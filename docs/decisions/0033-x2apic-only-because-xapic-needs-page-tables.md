@@ -25,3 +25,5 @@ project does not target older hardware.
   `Register::msr` derives `0x800 + offset / 16`. Both table columns are
   transcribed into the host tests.
 - In this mode the APIC identifier is the whole register, not its top byte.
+- `BootInfo::direct_map` was written and then deleted: with no caller it is
+  speculative API. Phase 3 adds it back with the code that uses it.

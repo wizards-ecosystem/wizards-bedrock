@@ -15,5 +15,6 @@ place faults arrive.
 **Consequences.** The handler logs nothing: a console lock taken in trap
 context deadlocks against interrupted code holding it (`001-boot.md`). The
 terminal panic path tries reporters without blocking instead of invalidating
-a live guard. Breakpoints are recorded into atomics, always, with the
-accessor behind the `selftest` feature.
+a live guard. Breakpoints are recorded into atomics, always, since a trap
+handler is no place for conditional compilation; the accessor is behind the
+`selftest` feature.

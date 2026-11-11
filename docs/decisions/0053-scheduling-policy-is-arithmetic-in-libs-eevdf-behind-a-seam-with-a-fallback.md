@@ -28,7 +28,8 @@ function type and observability is one counter.
   so one millisecond at twice the base weight does not truncate to nothing.
 - Real time is charged in milliseconds from `uptime_ms`, and the start stamp
   always advances to `now`. Time is conserved across stints even when one
-  stint is shorter than a millisecond: attributed coarsely, never lost.
+  stint is shorter than a millisecond: attributed coarsely, never lost. D-57
+  replaces this with nanosecond charging.
 - The yield path excludes the running thread from the candidates but not
   from the average, so "nobody else is eligible" is a valid answer there and
   the thread keeps the CPU. The fallback counter is for the preemption path,

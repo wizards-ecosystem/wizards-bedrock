@@ -9,7 +9,7 @@ context, which cannot mint a token (D-62), gets a separate
 `lock_from_trap()`, which can assert `in_trap()`, making the two entry
 points mutually exclusive. The runtime assert stays as backstop for paths
 the borrow checker cannot see. The change lands in Phase 5 with that phase's
-lock work, not as a separate pass.
+lock work, not as a separate pass over 13 statics and 73 call sites.
 
 **Rationale.** D-66's assert is a runtime check for a property the compiler
 could prove. Rust-for-Linux's answer, klint, needs a pinned nightly (D-01)

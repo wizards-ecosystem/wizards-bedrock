@@ -20,8 +20,9 @@ only mechanism that can test interrupt entry, paging and context switching.
 `debug_exit::report` is a no-op when the device is absent, so a self-test
 kernel on real hardware still reaches its idle loop instead of hanging. The
 harness's own timeout makes a hang a failure; that is how a boot panic looks
-from outside. Breaking one check turned the harness red. The latest phase
-close records the current check total.
+from outside. Every new check is broken once and watched go red before it is
+believed; breaking one check turned the harness red. The latest phase close
+records the current check total.
 
 **Not covered.** Anything whose failure is visual, not logical. The VMware
 boot of D-18 remains the definition of done for a phase.

@@ -17,7 +17,8 @@ requires the make, then the break, to decode in order.
 **Rationale.** An input device's defining behaviour starts outside the
 machine. `sendkey` releases the key on QEMU's own schedule, and a QMP crate
 is a dependency for three fixed exchanges (D-25's precedent). Keys wait for
-the line because the self-test's own controller commands must never
+the line because early keystrokes land in firmware setup prompts or the
+bootloader menu, and the self-test's own controller commands must never
 interleave with injected bytes. The verdict stays the kernel's: a QMP
 failure retires the injector, and the kernel's doubly bounded wait (a tick
 budget, plus an iteration cap so a dead timer cannot turn red into a hang)

@@ -35,7 +35,8 @@ thousands of times a second.
   evidence is two independent windows that agreed to one part in sixty-four.
 - **Time is nanoseconds, and the slice is three milliseconds**: a short
   slice now costs a timer armed for it, not a tick that cannot resolve it.
-  Stints are charged in nanoseconds.
+  Stints are charged in nanoseconds, replacing D-53's millisecond
+  attribution.
 - Two clamps bound what the alarm may be asked. Below, fifty microseconds: a
   deadline already passed would otherwise arm one tick of a gigahertz clock
   and take the interrupt again at once. Above, the counter's thirty-two bits
