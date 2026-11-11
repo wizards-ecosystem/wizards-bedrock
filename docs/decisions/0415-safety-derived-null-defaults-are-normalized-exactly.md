@@ -12,9 +12,10 @@ independently checked. Mutation 2,069 treats every dependent value as null and
 fails `effective_config_schemas_and_safety_fields_fail_closed`.
 
 **Rationale.** Setting the three memories-disable overrides makes Codex project
-those thirteen fields as explicit nulls; they were the only changes outside the
-fields D-412 parses, so the raw remainder kept its pinned digest while the
-effective remainder differed. A second whole-config digest would not
+those thirteen fields as explicit nulls. A credential-free reproduction showed
+that these were the only changes outside the fields D-412 parses: the raw
+remainder kept its pinned digest, while the unnormalized effective remainder
+differed. A second whole-config digest would not
 distinguish the raw and safety-derived phases or say why the projection
 differs, and removing the fields without checking their values would let a
 future active default escape both the exact-null contract and the digest.

@@ -24,7 +24,8 @@ missed classification, unviable classification and owned-call boundary. Each
 must be observed red before it is credited; on 2026-10-23 each was, on Windows,
 where the separate Unix signal witness was not executed.
 
-**Consequences.** The tracked adjudication policy is still empty because no
+**Consequences.** Ordinary CI and a complete current-source cargo-mutants
+campaign remain required. The tracked adjudication policy is still empty because no
 observed independent campaign is available to adjudicate. D-425 continues to
 permit an explicitly deferred grade in a release bundle; this implementation
 does not claim a passing grade.

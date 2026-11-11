@@ -17,8 +17,8 @@ dynamic doors, requires the dedicated refusal at each address, observes every
 target absent, proves caller-owned frames return, proves only the fresh root
 table existed and conserves complete allocator ownership. Its adjacent control
 maps writable `NO_EXECUTE` pages through the owned, user, shared and boot paths.
-Mutation 1,766 removes `WRITABLE` before the policy test and fails only
-`writable executable mappings leave no trace`.
+Mutation 1,766 removes `WRITABLE` before the policy test; on 2026-10-10 it
+failed only `writable executable mappings leave no trace`.
 
 **Rationale.** Codex Security scan `32245094-b8b7-47d1-b6e7-a52554800772` found
 that the safe dynamic mapping doors accepted caller-selected `WRITABLE` without

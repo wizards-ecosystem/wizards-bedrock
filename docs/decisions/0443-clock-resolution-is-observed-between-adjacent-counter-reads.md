@@ -19,10 +19,12 @@ restoration. This repairs a witness; it makes no new claim about calibration,
 hardware qualification or the cause of older failed runs.
 
 **Rationale.** The debug witness had failed its sub-microsecond check while
-monotonicity passed, because its minimum step came from public calls separated
-by loop bookkeeping and deadline conversion, so a large step did not establish
-a coarse clock. The existing capture does not identify a cause for each past
-failure, and no historical timing estimate is adopted as evidence. Raising the
-threshold would change the clock promise, more samples from the same loop
+monotonicity passed. Its minimum step came from public calls separated by loop
+bookkeeping and deadline conversion; that interval includes the witness's own
+execution cost, so a large step does not establish a coarse clock. The existing
+capture does not identify a cause for each past failure, and no historical
+timing estimate is adopted as evidence. Raising the threshold would change the
+clock promise, retrying a failed witness can hide a regression, more samples
+from the same loop
 still include its cost, and testing only the arithmetic would observe no
 running counter or public progress.

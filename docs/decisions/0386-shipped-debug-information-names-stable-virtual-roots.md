@@ -38,7 +38,7 @@ that kernel commands install them while host commands do not, bind the evidence
 builder to two different source roots and require all three original roots
 absent from ELF and image bytes. Persistent mutations independently omit the
 source remap, let evidence reuse one checkout and omit the GDB substitution.
-Qualification builds byte-identical shipped ELFs and images from both copied
+The final proof builds byte-identical shipped ELFs and images from both copied
 roots with different toolchain and Cargo-home paths, passes the compiler API
 audit and passes the pinned `cargo xtask debug --check` workflow.
 

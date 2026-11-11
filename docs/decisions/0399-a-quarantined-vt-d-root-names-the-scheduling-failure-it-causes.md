@@ -19,5 +19,6 @@ task cannot retire. The same panic repeated twice and follows
 deterministically, so it is not flakiness. Weakening `boundary_active`,
 admitting interrupts for a quarantined unit, yielding inside the witness or
 reordering checks to recover the historical witness would make a security
-refusal less direct or hide its runtime consequence. The dated D-358 evidence
-stays true of the earlier source.
+refusal less direct or hide its runtime consequence. Rewriting the dated D-358
+evidence was rejected; it remains true of the earlier source, while this
+decision records the later causal ordering.

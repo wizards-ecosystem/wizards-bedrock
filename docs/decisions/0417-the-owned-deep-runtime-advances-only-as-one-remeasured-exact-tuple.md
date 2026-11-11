@@ -15,10 +15,11 @@ every file before use, remeasures the complete tuple after its last use and
 refuses missing, added, redirected, ambiguous or changed bytes.
 
 Two fresh empty private homes independently returned the same strict
-initialize/config schemas, which are now the trusted data: a canonical
+initialize/config schemas, which then became the trusted data: a canonical
 3,056-byte originless default projection with SHA-256
-`ca92daadf6d70a31d9f9e9463dfb19916376b40d3da96950e43dafac1bdaa3bf`,
-and a generated system-skills tree of 71 entries and 314,963 file bytes. The
+`ca92daadf6d70a31d9f9e9463dfb19916376b40d3da96950e43dafac1bdaa3bf`
+(later replaced by D-423's remeasured projection), and a generated
+system-skills tree of 71 entries and 314,963 file bytes. The
 separate compatibility probe reported folded SHA-256
 `1715d9d4d5d41e12e37d33e46d44d970ca64f298846430a20c6af04c8f1caf7c`.
 No schema or tree-shape predicate was widened. D-419 corrects the probe's

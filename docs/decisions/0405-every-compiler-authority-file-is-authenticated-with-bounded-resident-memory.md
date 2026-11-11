@@ -19,9 +19,8 @@ same explicit 8 MiB ceiling. A production source contract forbids unbounded
 authority path.
 
 Runtime tests prove identical hashing, refusal of a reserved sequence split
-across chunks, binary
-admission, the semantic allocation ceiling and fail-closed oversized UTF-8
-handling. Permanent mutations 1,870 through 1,881 cover the combined stream, the
+across chunks, split-chunk UTF-8 classification, binary admission, the semantic
+allocation ceiling and fail-closed oversized UTF-8 handling. Permanent mutations 1,870 through 1,881 cover the combined stream, the
 shared plain stream, every authority call boundary, the allocation ceiling,
 chunk overlap, oversized text, split UTF-8, digest identity and binary
 admission.
