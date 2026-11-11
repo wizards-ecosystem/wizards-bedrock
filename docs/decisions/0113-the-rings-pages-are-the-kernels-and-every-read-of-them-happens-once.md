@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** D-79 settled the queue's shape, D-112 checked the protocol against
-every reachable state before this code existed, and `libs/ring-proto` holds the
-index arithmetic under proptest. None of those covers the part that touches
-pages ring 3 can rewrite between two instructions.
-
 **Decision: the pages.** Kernel-allocated, kernel-**kept**. `map_shared` maps a
 `USegment` without writing the `OWNED` bit, so the space can never hand those
 frames to the allocator, and the ring holds the run for its own life. A program
@@ -45,34 +40,26 @@ Three things follow, and each has a check:
 **Decision: the completions.** `perform` has no path to its end without a
 completion. An opcode this kernel does not serve is refused *with* a completion.
 This is D-79's terminal-completion rule as control flow. The opcode surface is
-two, none privileged: io_uring's exploit record warns about surface growth, and
-Google's kernelCTF disables it outright.
+two, none privileged, because io_uring's exploit record warns about surface
+growth.
 
 Every spawned program gets a ring at a fixed address in its own space, which
 costs nothing when no two programs share a table.
 
-**Consequences.** Five checks, at 124, each broken and red: the shared pages
-made ownable, the tail trusted instead of bounded, an unserved opcode reporting
-nothing, admission not reserving, and the reap unbounded. Two needed a second
-attempt before they could fail. The tail bound was redundant with the kernel's
-own ring until the check asked about *publishing* instead of a runaway value.
-The reap bound looked like "reap everything" until the check reaped only half.
+**Rationale.** These pages are the one part D-79's shape, D-112's model and
+`libs/ring-proto`'s arithmetic do not cover: memory ring 3 can rewrite between
+two instructions. Keeping the frames and copying once makes both hazards
+structural instead of disciplined.
 
-`translate_in_root` is new and public: since D-106 no program is in the running
-space, so nothing could ask what a program's own tables say. It has no feature
-gate, because `wost` has none and one would add a pass to the gate's matrix
-(D-22) for a function that reads.
+**Consequences.** `translate_in_root` is public: since D-106 no program is in
+the running space, so nothing else can ask what a program's own tables say. It
+has no feature gate, because `wost` has none and one would add a pass to the
+gate's matrix (D-22) for a function that reads.
 
-**The stacks grew.** Building a process moves an `AddressSpace`, eight hundred
-bytes of device table, through several frames, and a debug build elides none of
-the copies. Sixteen kilobytes stopped being enough. The overflow arrived as a
-double fault on a **guard page** in the debug boot D-65 added for this class. An
-unguarded stack would have corrupted its neighbour and been found much later
-(D-52, D-89). Stacks are now thirty-two kilobytes.
+Kernel stacks are thirty-two kilobytes, because building a process moves an
+`AddressSpace` through several frames and a debug build elides none of the
+copies. The overflow arrived as a double fault on a **guard page** in the debug
+boot D-65 added for this class (D-52, D-89).
 
-Left owed: the program cannot yet *drive* its ring. The 22-byte hand-written
-initrd would need to write an entry and bump a tail, a bigger program than the
-loader's checks want. The shared page exercises the kernel side at the boundary
-that matters, and slice 10's libc makes crossing it ordinary. Nothing blocks on
-a ring yet, so the wait queue is built and unused. No completion carries a
-handle.
+Left owed: the program cannot yet *drive* its ring. Nothing blocks on a ring
+yet, so the wait queue is built and unused. No completion carries a handle.
