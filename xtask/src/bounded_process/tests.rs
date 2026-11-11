@@ -345,7 +345,7 @@ fn a_noisy_child_is_stopped_before_collection() {
 
 #[test]
 fn captured_output_cannot_grow_collection_memory_past_its_limit() {
-    let (capture, stdout, stderr) = Capture::create().unwrap();
+    let (capture, stdout, stderr) = Capture::reserve().unwrap();
     drop((stdout, stderr));
     std::fs::write(&capture.stdout.path, b"four").unwrap();
     std::fs::write(&capture.stderr.path, b"two").unwrap();
@@ -359,7 +359,7 @@ fn a_second_stream_failure_rolls_back_the_first_capture_and_directory() {
     let parent = crate::test_support::reserve_temp_directory("wizard-capture-rollback");
     let mut stream = 0;
 
-    let Err(error) = Capture::create_in(&parent, |_, _| {
+    let Err(error) = Capture::reserve_in(&parent, |_, _| {
         stream += 1;
         ensure!(stream != 2, "injected second-stream failure");
         Ok(())
@@ -374,7 +374,7 @@ fn a_second_stream_failure_rolls_back_the_first_capture_and_directory() {
 
 #[test]
 fn capture_growth_is_refused_while_the_child_is_still_polled() {
-    let (capture, stdout, stderr) = Capture::create().unwrap();
+    let (capture, stdout, stderr) = Capture::reserve().unwrap();
     drop((stdout, stderr));
     std::fs::write(&capture.stdout.path, b"four").unwrap();
     std::fs::write(&capture.stderr.path, b"two").unwrap();
@@ -385,7 +385,7 @@ fn capture_growth_is_refused_while_the_child_is_still_polled() {
 
 #[test]
 fn collection_reads_the_original_capture_handle_not_a_substituted_path() {
-    let (capture, mut stdout, stderr) = Capture::create().unwrap();
+    let (capture, mut stdout, stderr) = Capture::reserve().unwrap();
     stdout.write_all(b"authentic child output").unwrap();
     stdout.sync_all().unwrap();
     drop((stdout, stderr));
@@ -670,8 +670,7 @@ fn parked_grandchild_fixture() {
     std::thread::sleep(Duration::from_secs(60));
 }
 
-/// Starts the parked grandchild without waiting for it, sees its lock
-/// taken, then exits or lingers as the test asks.
+/// Starts the parked grandchild unawaited, sees its lock taken, then exits or lingers as asked.
 #[test]
 #[ignore]
 fn grandparent_fixture_child() {

@@ -210,7 +210,7 @@ pub(super) const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
     ReviewedDropProducer {
         relative: "xtask/src/bounded_process.rs",
         owner: "bounded_process::Capture",
-        member: "create_in",
+        member: "reserve_in",
         implemented_trait: None,
         produced: "bounded_process::Capture",
     },

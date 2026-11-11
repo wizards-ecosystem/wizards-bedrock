@@ -34,16 +34,16 @@ pub(crate) fn run(paths: &Paths, mode: DebugMode) -> Result<()> {
         machine.endpoint()
     );
 
-    let result = match mode {
+    let session = match mode {
         DebugMode::Interactive => gdb.interactive(&elf, machine.endpoint(), paths.root()),
         DebugMode::Check => gdb.check(&elf, machine.endpoint(), paths.root()),
     };
     let cleanup = machine.stop();
-    combine_with_cleanup(result, cleanup)
+    combine_with_cleanup(session, cleanup)
 }
 
-fn combine_with_cleanup(result: Result<()>, cleanup: Result<()>) -> Result<()> {
-    match (result, cleanup) {
+fn combine_with_cleanup(session: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (session, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(cleanup)) => Err(cleanup.context("stopping the debugger's QEMU machine")),
@@ -53,6 +53,7 @@ fn combine_with_cleanup(result: Result<()>, cleanup: Result<()>) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
 struct Debugger {
     executable: PathBuf,
     identity: String,

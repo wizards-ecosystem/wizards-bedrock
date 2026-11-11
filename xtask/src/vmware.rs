@@ -1,7 +1,5 @@
-//! Generating a VMware VM directory: a flat VMDK plus a VMX.
-//!
-//! The raw image is copied in alongside the descriptors so the folder is
-//! self-contained and can be moved or archived on its own.
+//! A VMware VM directory: a flat VMDK plus a VMX.
+//! The raw image is copied in beside the descriptors, so the folder can be moved or archived alone.
 
 mod config;
 
@@ -22,10 +20,7 @@ const VMX_TEMPLATE: &str = include_str!("../templates/bedrock.vmx.in");
 
 const FLAT_NAME: &str = "bedrock-flat.img";
 const VMDK_NAME: &str = "bedrock.vmdk";
-
-/// The NVMe namespace's descriptor, and the flat file behind it.
 const NVME_VMDK_NAME: &str = "wizard-nvm.vmdk";
-/// See [`NVME_VMDK_NAME`].
 const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
 const VMX_NAME: &str = "bedrock.vmx";
 const DISPLAY_NAME: &str = "The Wizard's Bedrock";
@@ -50,27 +45,18 @@ const VMWARE_ISA_DMA_MARKER: &str = "iommu: entry DMA fence quiesced VMware PIIX
 const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Heads per cylinder in the geometry VMware expects.
+/// The heads per cylinder and sectors per track that VMware expects.
 const HEADS: u64 = 255;
-
-/// Sectors per track in the same.
 const SECTORS_PER_TRACK: u64 = 63;
 
-/// A disk geometry for a VMDK descriptor.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Geometry {
-    /// Cylinder count.
     pub cylinders: u64,
-    /// Head count.
     pub heads: u64,
-    /// Sectors per track.
     pub sectors_per_track: u64,
 }
 
-/// Geometry covering `sectors`.
-///
-/// The cylinder count rounds up: truncating would declare a geometry smaller
-/// than the extent it describes.
+/// Cylinders round up, since truncating would declare less than the extent it describes.
 pub fn geometry(sectors: u64) -> Geometry {
     Geometry {
         cylinders: sectors.div_ceil(HEADS * SECTORS_PER_TRACK),
@@ -79,19 +65,16 @@ pub fn geometry(sectors: u64) -> Geometry {
     }
 }
 
-/// Substitute `{{KEY}}` placeholders in `template`.
-///
-/// Substituted text is never rescanned, so a value that itself contains a
-/// placeholder is emitted literally. An unrecognised key is an error rather
-/// than a silently empty field.
+/// Substituted text is never rescanned, so a value holding a placeholder is emitted literally.
+/// An unrecognised key is an error rather than a silently empty field.
 pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
     const OPEN: &str = "{{";
     const CLOSE: &str = "}}";
 
-    let mut out = String::with_capacity(template.len());
+    let mut rendered = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
+        rendered.push_str(&rest[..start]);
         let after = &rest[start + OPEN.len()..];
         let Some(end) = after.find(CLOSE) else {
             bail!("unterminated placeholder in template");
@@ -102,14 +85,13 @@ pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
             .find(|(name, _)| *name == key)
             .map(|(_, value)| value)
             .with_context(|| format!("template names an unknown placeholder: {key}"))?;
-        out.push_str(value);
+        rendered.push_str(value);
         rest = &after[end + CLOSE.len()..];
     }
-    out.push_str(rest);
-    Ok(out)
+    rendered.push_str(rest);
+    Ok(rendered)
 }
 
-/// Write an isolated VMware VM directory beside the repository, wrapping `image`.
 pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     let vm_dir = vm_directory(paths, kernel);
     let receipt = vm_dir.join(qualification::VMWARE_GENERATION_RECEIPT);
@@ -130,41 +112,13 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
         flat.display()
     );
     let digest = sha256::hex(&digest);
-    let sectors = bytes / paths::SECTOR_SIZE;
-    let geometry = geometry(sectors);
+    write_descriptor(&vm_dir.join(VMDK_NAME), FLAT_NAME, bytes)?;
 
-    let vmdk = render(
-        VMDK_TEMPLATE,
-        &[
-            ("SECTORS", sectors.to_string()),
-            ("FLAT_NAME", FLAT_NAME.to_string()),
-            ("CYLINDERS", geometry.cylinders.to_string()),
-            ("HEADS", geometry.heads.to_string()),
-            ("SECTORS_PER_TRACK", geometry.sectors_per_track.to_string()),
-        ],
-    )?;
-    write_new(&vm_dir.join(VMDK_NAME), vmdk.as_bytes())?;
-
-    // Share the builder so both machine gates boot identical bytes (D-176).
+    // Both machine gates share the namespace builder, so they boot identical bytes.
     let namespace = crate::qemu::nvme_image(paths.root())?;
     let nvme_flat = vm_dir.join(NVME_FLAT_NAME);
     let nvme_bytes = copy_new(&namespace, &nvme_flat)?;
-    let nvme_sectors = nvme_bytes / paths::SECTOR_SIZE;
-    let nvme_geometry = crate::vmware::geometry(nvme_sectors);
-    let nvme_vmdk = render(
-        VMDK_TEMPLATE,
-        &[
-            ("SECTORS", nvme_sectors.to_string()),
-            ("FLAT_NAME", NVME_FLAT_NAME.to_string()),
-            ("CYLINDERS", nvme_geometry.cylinders.to_string()),
-            ("HEADS", nvme_geometry.heads.to_string()),
-            (
-                "SECTORS_PER_TRACK",
-                nvme_geometry.sectors_per_track.to_string(),
-            ),
-        ],
-    )?;
-    write_new(&vm_dir.join(NVME_VMDK_NAME), nvme_vmdk.as_bytes())?;
+    write_descriptor(&vm_dir.join(NVME_VMDK_NAME), NVME_FLAT_NAME, nvme_bytes)?;
 
     let handoff = vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE);
     write_new(&handoff, &crate::platform_acpi::dma_handoff_table())?;
@@ -213,6 +167,27 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
         "[xtask] serial output will appear in {}",
         serial_log.display()
     );
+    print_checklist(kernel);
+    Ok(())
+}
+
+fn write_descriptor(path: &Path, flat_name: &str, bytes: u64) -> Result<()> {
+    let sectors = bytes / paths::SECTOR_SIZE;
+    let geometry = geometry(sectors);
+    let vmdk = render(
+        VMDK_TEMPLATE,
+        &[
+            ("SECTORS", sectors.to_string()),
+            ("FLAT_NAME", flat_name.to_string()),
+            ("CYLINDERS", geometry.cylinders.to_string()),
+            ("HEADS", geometry.heads.to_string()),
+            ("SECTORS_PER_TRACK", geometry.sectors_per_track.to_string()),
+        ],
+    )?;
+    write_new(path, vmdk.as_bytes())
+}
+
+fn print_checklist(kernel: Kernel) {
     match kernel {
         Kernel::SelfTest => {
             println!("[xtask] this is the self-test kernel, four things to do:");
@@ -231,7 +206,6 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
             println!("        4. no `KERNEL PANIC` appears");
         }
     }
-    Ok(())
 }
 
 pub(crate) fn invalidate_generation(paths: &Paths, kernel: Kernel) -> Result<()> {
@@ -242,7 +216,6 @@ pub(crate) fn invalidate_generation(paths: &Paths, kernel: Kernel) -> Result<()>
     )
 }
 
-/// Render the source-bound machine configuration for one serial generation.
 pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
     render(
         VMX_TEMPLATE,
@@ -259,12 +232,10 @@ pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
     )
 }
 
-/// Verify source-generated settings and constrained runtime additions.
 pub(crate) fn verify_runtime_vmx(generated: &[u8], runtime: &[u8]) -> Result<()> {
     config::verify(generated, runtime)
 }
 
-/// Validate a fresh VMware transcript and preserve the exact machine it came from.
 pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
     let attempt = qualification::begin_vmware(paths, kernel)?;
     let vm_dir = vm_directory(paths, kernel);
@@ -609,8 +580,8 @@ fn verify_shipped_transcript(text: &str) -> Result<()> {
     Ok(())
 }
 
-// Each storage candidate logs its own translation record and a retired one's
-// comes first, so the last record is the kept controller's (D-358).
+// Each storage candidate logs its own translation record and a retired one's comes first,
+// so the last record is the kept controller's.
 fn require_translation_before_storage(text: &str) -> Result<()> {
     let translation = info_records(text)
         .filter(|(_, message)| translation_record(message))
@@ -868,7 +839,7 @@ fn display_name(kernel: Kernel) -> String {
 fn copy_new(source: &Path, destination: &Path) -> Result<u64> {
     let mut input = File::open(source)
         .with_context(|| format!("opening generated input {}", source.display()))?;
-    let mut output = create_new_output(destination)?;
+    let mut output = open_new_output(destination)?;
     let copied = std::io::copy(&mut input, &mut output).with_context(|| {
         format!(
             "copying {} to new VMware output {}",
@@ -883,14 +854,14 @@ fn copy_new(source: &Path, destination: &Path) -> Result<u64> {
 }
 
 fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = create_new_output(path)?;
+    let mut file = open_new_output(path)?;
     file.write_all(contents)
         .with_context(|| format!("writing new VMware output {}", path.display()))?;
     file.sync_all()
         .with_context(|| format!("syncing VMware output {}", path.display()))
 }
 
-fn create_new_output(path: &Path) -> Result<File> {
+fn open_new_output(path: &Path) -> Result<File> {
     let parent = path.parent().context("VMware output has no parent")?;
     crate::mutate::workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
     let mut options = OpenOptions::new();

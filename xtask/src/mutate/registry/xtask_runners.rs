@@ -1192,7 +1192,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2398,
         file: "xtask/src/qmp.rs",
-        find: "        if result.is_ok() {\n            self.failed = false;",
+        find: "        if reply.is_ok() {\n            self.failed = false;",
         replace: "        if true {\n            self.failed = false;",
         breaks: "an incomplete QMP exchange permits another command after a late successful write acknowledgement",
         reddens: Caught::HostTest {
@@ -1203,8 +1203,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2399,
         file: "xtask/src/qmp.rs",
-        find: "        if result.is_ok() {\n            self.failed = false;",
-        replace: "        if result.is_ok() {\n            self.failed = true;",
+        find: "        if reply.is_ok() {\n            self.failed = false;",
+        replace: "        if reply.is_ok() {\n            self.failed = true;",
         breaks: "a successful matched QMP exchange wrongly refuses the next command",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1214,8 +1214,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2400,
         file: "xtask/src/qmp.rs",
-        find: "                let result = if request.abandoned.load(Ordering::Acquire)\n                    || Instant::now() >= request.deadline",
-        replace: "                let result = if false",
+        find: "                let written = if request.abandoned.load(Ordering::Acquire)\n                    || Instant::now() >= request.deadline",
+        replace: "                let written = if false",
         breaks: "an abandoned or expired queued QMP request reaches the OS writer",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1247,8 +1247,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2403,
         file: "xtask/src/qmp.rs",
-        find: "                if completed.try_send(result).is_err() || !succeeded {",
-        replace: "                if completed.send(result).is_err() || !succeeded {",
+        find: "                if completed.try_send(written).is_err() || !succeeded {",
+        replace: "                if completed.send(written).is_err() || !succeeded {",
         breaks: "a full QMP acknowledgement queue blocks its writer worker",
         reddens: Caught::HostTest {
             package: "xtask",

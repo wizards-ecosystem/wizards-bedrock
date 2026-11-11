@@ -47,8 +47,7 @@ fn vmware_generation_never_writes_through_preexisting_output_links() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-// One translation record per storage candidate: the retired first one's,
-// then the kept controller's.
+// One translation record per storage candidate: the retired one's first, then the kept one's.
 const RETIRED_TRANSLATION: &str = "[info ] iommu: translation on for 00:04.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
 const KEPT_TRANSLATION: &str = "[info ] iommu: translation on for 00:05.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
 const FIXTURE_PAIRED_ISOLATION: &str =
@@ -68,8 +67,7 @@ fn storage_records() -> String {
 fn selftest_transcript_with_isolation(isolation: &str) -> String {
     let expected = expected_selftest_checks(repository_root()).expect("current check count");
     let mut transcript = String::new();
-    // The order the 2026-10-20 VMware self-test boot emitted: storage is
-    // selected before user isolation, and isolation before the APIC.
+    // The 2026-10-20 VMware self-test boot's order: storage, then user isolation, then the APIC.
     for marker in [
         "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester",
         VMWARE_ISA_DMA_MARKER,
@@ -139,8 +137,7 @@ fn the_delayed_read_marker_matches_the_unique_kernel_format_literal() {
 }
 
 fn shipped_transcript_with_isolation(isolation: &str) -> String {
-    // The order the 2026-10-20 VMware shipped boot emitted: the namespace
-    // survey precedes user isolation.
+    // The 2026-10-20 VMware shipped boot's order: the namespace survey precedes user isolation.
     let mut transcript = format!(
         "[info ] iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester\n[info ] {VMWARE_ISA_DMA_MARKER}\n"
     );
@@ -685,8 +682,7 @@ fn a_vmware_transcript_without_translation_is_refused() {
 fn a_vmware_translation_after_storage_is_refused() {
     let root = repository_root();
     let storage = format!("[info ] {}\n", TranscriptMarker::Nvme.example());
-    // The retired candidate's record still precedes storage, so only the
-    // last record can decide.
+    // The retired candidate's record still precedes storage, so only the last record can decide.
     let late = format!("{RETIRED_TRANSLATION}{storage}{KEPT_TRANSLATION}");
     for (kernel, valid) in [
         (Kernel::SelfTest, selftest_transcript()),
@@ -882,8 +878,7 @@ fn generation_invalidates_success_and_receipt_before_any_fallible_preflight() {
 
 #[test]
 fn geometry_rounds_cylinders_up() {
-    // Ceiling division keeps the geometry large enough for the final
-    // partial cylinder.
+    // Ceiling division keeps the geometry large enough for the final partial cylinder.
     assert_eq!(geometry(IMAGE_SECTORS).cylinders, 9);
     assert_eq!(geometry(1).cylinders, 1);
     assert_eq!(geometry(HEADS * SECTORS_PER_TRACK).cylinders, 1);
@@ -928,12 +923,12 @@ fn render_rejects_a_placeholder_it_was_not_given() {
 
 #[test]
 fn render_does_not_rescan_substituted_text() {
-    let out = render(
+    let rendered = render(
         "{{A}}{{B}}",
         &[("A", "{{B}}".to_string()), ("B", "value".to_string())],
     )
     .unwrap();
-    assert_eq!(out, "{{B}}value");
+    assert_eq!(rendered, "{{B}}value");
 }
 
 #[test]
@@ -955,13 +950,12 @@ fn the_vmx_boots_efi_and_logs_serial_to_a_file() {
     .unwrap();
 
     assert!(vmx.contains(r#"firmware = "efi""#));
-    // Storage fails closed on a machine with no remapping unit (D-357).
+    // Storage fails closed on a machine with no remapping unit.
     assert!(vmx.contains(r#"vvtd.enable = "TRUE""#));
     assert!(vmx.contains(r#"acpi.addtable.filename = "dma-handoff.bin""#));
     assert!(vmx.contains(&format!(r#"serial0.fileName = "{serial}""#)));
     assert!(vmx.contains(r#"sata0:0.fileName = "bedrock.vmdk""#));
-    // A namespace-less candidate before the usable controller makes the
-    // retirement path observable on VMware (D-176, D-240).
+    // A namespace-less candidate before the usable controller makes VMware retirement observable.
     assert!(vmx.contains(r#"nvme0.present = "TRUE""#));
     assert!(
         !vmx.contains(r#"nvme0:0.present"#),
@@ -969,6 +963,6 @@ fn the_vmx_boots_efi_and_logs_serial_to_a_file() {
     );
     assert!(vmx.contains(r#"nvme1.present = "TRUE""#));
     assert!(vmx.contains(r#"nvme1:0.fileName = "wizard-nvm.vmdk""#));
-    // before the guest gets a chance to look for it (D-176).
+    // A PCIe-only controller in a machine with no root ports is refused before the guest looks.
     assert!(vmx.contains(r#"pciBridge4.virtualDev = "pcieRootPort""#));
 }

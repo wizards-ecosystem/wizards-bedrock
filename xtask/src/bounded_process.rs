@@ -1,12 +1,10 @@
 //! Bounded child execution without pipe-EOF waits.
-//!
-//! Regular-file capture prevents inherited pipe handles from extending a wait.
-//! Termination gets its own bounded poll. On Windows every command runs in a
-//! job object that holds each process it starts, and the whole job is
-//! terminated when the command ends, times out or fails (D-347). The byte cap
-//! bounds memory rather than disk retained through an unlinked capture file.
-//! Line-framed dialogues also poll caller-owned live state under the same
-//! deadline, so an external scratch-budget failure ends the job (D-406).
+//! Regular-file capture keeps inherited pipe handles from extending a wait.
+//! On Windows one job object holds every process a command starts, and the whole job is
+//! terminated when the command ends, times out or fails.
+//! The byte cap bounds memory, not disk retained through an unlinked capture file.
+//! Dialogues poll caller-owned live state under the same deadline, so an external
+//! scratch-budget failure ends the job.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, SeekFrom, Write};
@@ -51,21 +49,19 @@ pub(crate) fn isolate_git_environment(command: &mut Command) {
         .envs(FIXED_GIT_ENVIRONMENT.iter().copied());
 }
 
-/// Run one non-interactive child through its deadline and capture both streams.
-///
-/// Failure cleanup may consume the additional bounded post-kill interval.
+/// Failure cleanup may take the bounded post-kill interval beyond the deadline.
 pub(crate) fn output(command: Command, timeout: Duration, label: &str) -> Result<Output> {
     output_with_limit(command, timeout, label, MAX_CAPTURE_BYTES)
 }
 
-/// Run one child with a caller-specific combined stdout/stderr limit.
+/// The capture limit covers stdout and stderr combined.
 pub(crate) fn output_with_limit(
     mut command: Command,
     timeout: Duration,
     label: &str,
     capture_limit: usize,
 ) -> Result<Output> {
-    let (capture, stdout, stderr) = Capture::create()?;
+    let (capture, stdout, stderr) = Capture::reserve()?;
     command
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -95,6 +91,7 @@ pub(crate) struct DialogueLimits {
     pub(crate) stderr_bytes: usize,
 }
 
+#[derive(Debug)]
 pub(crate) struct LineDialogue {
     input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
@@ -133,12 +130,10 @@ fn dialogue_deadline(start: Instant, timeout: Duration) -> Result<Instant> {
         .context("bounded child deadline overflowed")
 }
 
-/// Run one line-framed dialogue through one deadline and capture diagnostics.
-///
-/// The dialogue runs off the polling thread so a blocked pipe cannot prevent
-/// the complete child tree from being stopped at the original deadline.
-/// The owner observer runs on that polling thread under the same deadline.
-/// Failure cleanup may consume the additional bounded post-kill interval.
+/// The dialogue runs off the polling thread, so a blocked pipe cannot keep the whole child tree
+/// from being stopped at the original deadline.
+/// The owner observer runs on the polling thread under the same deadline.
+/// Failure cleanup may take the bounded post-kill interval beyond the deadline.
 pub(crate) fn output_dialogue<T, O, F>(
     mut command: Command,
     timeout: Duration,
@@ -180,11 +175,11 @@ where
         );
     };
 
-    let (dialogue_sender, dialogue_receiver) = mpsc::sync_channel(1);
     let dialogue_label = label.to_string();
-    let dialogue_thread = match std::thread::Builder::new()
-        .name("wizard-bounded-dialogue".to_string())
-        .spawn(move || {
+    let mut dialogue = match Reader::spawn(
+        "wizard-bounded-dialogue",
+        format!("{label} dialogue"),
+        move || {
             let mut dialogue = LineDialogue {
                 input: Some(input),
                 output: BufReader::new(output),
@@ -192,39 +187,19 @@ where
                 stdout_bytes: 0,
                 label: dialogue_label,
             };
-            let result = interact(&mut dialogue);
+            let value = interact(&mut dialogue);
             drop(dialogue);
-            let _ = dialogue_sender.send(result);
-        }) {
-        Ok(thread) => thread,
-        Err(error) => {
-            return stop_tree_after_setup_failure(
-                tree,
-                anyhow::Error::new(error).context(format!("starting {label} dialogue")),
-                label,
-            );
-        }
+            value
+        },
+    ) {
+        Ok(reader) => reader,
+        Err(error) => return stop_tree_after_setup_failure(tree, error, label),
     };
-    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
-    let stderr_label = label.to_string();
-    let stderr_thread = match std::thread::Builder::new()
-        .name("wizard-bounded-stderr".to_string())
-        .spawn(move || {
-            let result = read_pipe_with_limit(stderr, limits.stderr_bytes, &stderr_label);
-            let _ = stderr_sender.send(result);
-        }) {
-        Ok(thread) => thread,
-        Err(error) => {
-            return stop_tree_after_setup_failure(
-                tree,
-                anyhow::Error::new(error).context(format!("starting {label} stderr reader")),
-                label,
-            );
-        }
+    let mut stderr = match stderr_reader(stderr, limits.stderr_bytes, label) {
+        Ok(reader) => reader,
+        Err(error) => return stop_tree_after_setup_failure(tree, error, label),
     };
 
-    let mut dialogue_value = None;
-    let mut stderr_value = None;
     let status = poll_child_until(
         tree,
         Tree::try_wait,
@@ -234,36 +209,11 @@ where
         label,
         || {
             observe_owner().with_context(|| format!("observing {label} owner state"))?;
-            receive_ready(
-                &dialogue_receiver,
-                &mut dialogue_value,
-                &format!("{label} dialogue"),
-            )?;
-            receive_ready(
-                &stderr_receiver,
-                &mut stderr_value,
-                &format!("{label} stderr reader"),
-            )
+            dialogue.poll()?;
+            stderr.poll()
         },
     )?;
-
-    let value = receive_after_exit(
-        &dialogue_receiver,
-        dialogue_value,
-        &format!("{label} dialogue"),
-    )?;
-    let stderr = receive_after_exit(
-        &stderr_receiver,
-        stderr_value,
-        &format!("{label} stderr reader"),
-    )?;
-    join_reader(dialogue_thread, &format!("{label} dialogue"))?;
-    join_reader(stderr_thread, &format!("{label} stderr reader"))?;
-    Ok(StreamedOutput {
-        status,
-        value,
-        stderr,
-    })
+    collect_readers(status, dialogue, stderr)
 }
 
 fn write_bounded_line(
@@ -325,11 +275,8 @@ fn read_bounded_line<R: BufRead>(
     Ok(Some(line))
 }
 
-/// Run one child while reducing stdout on a dedicated reader thread.
-///
-/// The consumer must bound each record before allocating it. Stderr remains a
-/// separately bounded diagnostic stream. Reader errors are observed while the
-/// child is live so the complete process tree is stopped before returning.
+/// The consumer must bound each record before allocating it.
+/// Reader errors are observed while the child is live, so the whole tree is stopped first.
 pub(crate) fn output_streamed<T, F>(
     mut command: Command,
     timeout: Duration,
@@ -350,25 +297,13 @@ where
         .take_stderr()
         .with_context(|| format!("{label} has no piped stderr"))?;
 
-    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
-    let stdout_thread = std::thread::Builder::new()
-        .name("wizard-bounded-stdout".to_string())
-        .spawn(move || {
-            let _ = stdout_sender.send(consume_stdout(stdout));
-        })
-        .with_context(|| format!("starting {label} stdout reducer"))?;
-    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
-    let stderr_label = label.to_string();
-    let stderr_thread = std::thread::Builder::new()
-        .name("wizard-bounded-stderr".to_string())
-        .spawn(move || {
-            let result = read_pipe_with_limit(stderr, stderr_limit, &stderr_label);
-            let _ = stderr_sender.send(result);
-        })
-        .with_context(|| format!("starting {label} stderr reader"))?;
+    let mut reducer = Reader::spawn(
+        "wizard-bounded-stdout",
+        format!("{label} stdout reducer"),
+        move || consume_stdout(stdout),
+    )?;
+    let mut stderr = stderr_reader(stderr, stderr_limit, label)?;
 
-    let mut stdout_value = None;
-    let mut stderr_value = None;
     let status = poll_child_with(
         tree,
         Tree::try_wait,
@@ -376,35 +311,69 @@ where
         timeout,
         label,
         || {
-            receive_ready(
-                &stdout_receiver,
-                &mut stdout_value,
-                &format!("{label} stdout reducer"),
-            )?;
-            receive_ready(
-                &stderr_receiver,
-                &mut stderr_value,
-                &format!("{label} stderr reader"),
-            )
+            reducer.poll()?;
+            stderr.poll()
         },
     )?;
+    collect_readers(status, reducer, stderr)
+}
 
-    let value = receive_after_exit(
-        &stdout_receiver,
-        stdout_value,
-        &format!("{label} stdout reducer"),
-    )?;
-    let stderr = receive_after_exit(
-        &stderr_receiver,
-        stderr_value,
-        &format!("{label} stderr reader"),
-    )?;
-    join_reader(stdout_thread, &format!("{label} stdout reducer"))?;
-    join_reader(stderr_thread, &format!("{label} stderr reader"))?;
+#[derive(Debug)]
+struct Reader<T> {
+    label: String,
+    thread: JoinHandle<()>,
+    receiver: Receiver<Result<T>>,
+    value: Option<T>,
+}
+
+impl<T: Send + 'static> Reader<T> {
+    fn spawn(
+        thread_name: &str,
+        label: String,
+        work: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name(thread_name.to_string())
+            .spawn(move || {
+                let _ = sender.send(work());
+            })
+            .with_context(|| format!("starting {label}"))?;
+        Ok(Self {
+            label,
+            thread,
+            receiver,
+            value: None,
+        })
+    }
+
+    fn poll(&mut self) -> Result<()> {
+        receive_ready(&self.receiver, &mut self.value, &self.label)
+    }
+}
+
+fn stderr_reader(stderr: ChildStderr, limit: usize, label: &str) -> Result<Reader<Vec<u8>>> {
+    let pipe_label = label.to_string();
+    Reader::spawn(
+        "wizard-bounded-stderr",
+        format!("{label} stderr reader"),
+        move || read_pipe_with_limit(stderr, limit, &pipe_label),
+    )
+}
+
+fn collect_readers<T>(
+    status: ExitStatus,
+    reader: Reader<T>,
+    stderr: Reader<Vec<u8>>,
+) -> Result<StreamedOutput<T>> {
+    let value = receive_after_exit(&reader.receiver, reader.value, &reader.label)?;
+    let diagnostics = receive_after_exit(&stderr.receiver, stderr.value, &stderr.label)?;
+    join_reader(reader.thread, &reader.label)?;
+    join_reader(stderr.thread, &stderr.label)?;
     Ok(StreamedOutput {
         status,
         value,
-        stderr,
+        stderr: diagnostics,
     })
 }
 
@@ -464,9 +433,9 @@ fn join_reader(thread: JoinHandle<()>, label: &str) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("{label} panicked"))
 }
 
-/// One bounded command and every process it starts. On Windows they share a
-/// job object that is terminated as a whole; dropping the tree does that, so
-/// no descendant outlives the command however it ends.
+/// On Windows one job holds every process the command starts, and dropping the tree terminates
+/// the whole job, so no descendant outlives the command however it ends.
+#[derive(Debug)]
 struct Tree {
     #[cfg(windows)]
     child: command_group::GroupChild,
@@ -475,8 +444,8 @@ struct Tree {
 }
 
 impl Tree {
-    /// On Windows the child is created suspended, assigned to its job and
-    /// only then resumed, so nothing it starts can escape the job.
+    /// On Windows the child is created suspended, assigned to its job and only then resumed,
+    /// so nothing it starts can escape the job.
     fn spawn(command: Command) -> std::io::Result<Self> {
         #[cfg(windows)]
         let child = {
@@ -670,17 +639,20 @@ fn poll_terminated_child<C>(
     }
 }
 
+#[derive(Debug)]
 struct Capture {
     directory: PathBuf,
     stdout: CapturedFile,
     stderr: CapturedFile,
 }
 
+#[derive(Debug)]
 struct CapturedFile {
     path: PathBuf,
     file: File,
 }
 
+#[derive(Debug)]
 struct CaptureReservation {
     directory: PathBuf,
     paths: Vec<PathBuf>,
@@ -718,11 +690,11 @@ impl Drop for CaptureReservation {
 }
 
 impl Capture {
-    fn create() -> Result<(Self, File, File)> {
-        Self::create_in(&std::env::temp_dir(), |_, _| Ok(()))
+    fn reserve() -> Result<(Self, File, File)> {
+        Self::reserve_in(&std::env::temp_dir(), |_, _| Ok(()))
     }
 
-    fn create_in(
+    fn reserve_in(
         parent: &std::path::Path,
         mut before_stream: impl FnMut(&std::path::Path, &str) -> Result<()>,
     ) -> Result<(Self, File, File)> {
@@ -750,10 +722,10 @@ impl Capture {
             let mut reservation = CaptureReservation::new(directory.clone());
             before_stream(&stdout_path, "stdout")?;
             let (stdout_file, stdout) =
-                Self::create_file(&mut reservation, &stdout_path, "stdout")?;
+                Self::reserve_file(&mut reservation, &stdout_path, "stdout")?;
             before_stream(&stderr_path, "stderr")?;
             let (stderr_file, stderr) =
-                Self::create_file(&mut reservation, &stderr_path, "stderr")?;
+                Self::reserve_file(&mut reservation, &stderr_path, "stderr")?;
             let capture = Self {
                 stdout: CapturedFile {
                     path: stdout_path,
@@ -771,7 +743,7 @@ impl Capture {
         bail!("could not reserve a unique bounded-child capture directory")
     }
 
-    fn create_file(
+    fn reserve_file(
         reservation: &mut CaptureReservation,
         path: &std::path::Path,
         label: &str,
