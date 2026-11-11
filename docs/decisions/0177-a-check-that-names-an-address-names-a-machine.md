@@ -38,3 +38,4 @@ machine.**
 
 **Consequences.** `wost::boot::MemoryMap` gains `first_memory_run`, and
 `wost::mm` re-exports it through the map's lock, with no unsafe and no new lock.
+The precondition check is broken by mutation 66.

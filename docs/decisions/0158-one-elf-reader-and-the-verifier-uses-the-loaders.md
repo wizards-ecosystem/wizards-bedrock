@@ -11,8 +11,8 @@ it would grow the crate the kernel links for one host caller. `elf64` gains
 `SegmentKind::bits`, the inverse of `from_bits`, and `Segment::flags`, the raw
 field a verifier reports, both with their caller in the same commit (D-41).
 
-**Rationale.** Two readers of one format with nothing comparing them had
-already drifted: D-124 found `xtask`'s copy two validations short, so the build
+**Rationale.** D-105 named the duplicate reader and left it. Two readers of
+one format with nothing comparing them had already drifted: D-124 found `xtask`'s copy two validations short, so the build
 verifier would have shipped an aarch64 kernel image. The rule this settles is
 the same one D-157 stated a level up: a reader that restates the format another
 reader already knows passes on the day the two copies disagree. The merge also
