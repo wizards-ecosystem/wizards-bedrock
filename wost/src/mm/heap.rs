@@ -5,7 +5,7 @@ use core::ptr;
 
 use slab_layout::{CLASSES, Placement, SizeClass, place};
 
-use super::{Paddr, Segment, allocate_zeroed, direct_pointer};
+use super::{PhysicalAddress, Segment, allocate_zeroed, direct_pointer};
 use crate::arch::current::interrupt;
 use crate::sync::SpinLock;
 
@@ -239,7 +239,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 }
 
 /// The physical address behind a direct-map pointer.
-fn physical_of(pointer: *mut u8) -> Option<Paddr> {
+fn physical_of(pointer: *mut u8) -> Option<PhysicalAddress> {
     let offset = super::direct_map()?.offset();
     (pointer as u64).checked_sub(offset)
 }

@@ -5,7 +5,7 @@ use mmio_range::AccessRange;
 
 use super::frame::Segment;
 use super::shared::SharedAllocation;
-use super::{Paddr, direct_pointer};
+use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::cpu;
 
 pub(super) struct DirectSpan<'authority> {
@@ -31,7 +31,7 @@ impl<'authority> DirectSpan<'authority> {
     ///
     /// The `len` bytes at `physical` must stay allocated and direct-mapped for `'authority`.
     /// They must back no live Rust reference meanwhile, since the span writes them through `&self`.
-    pub(super) unsafe fn from_proven_run(physical: Paddr, len: u64) -> Option<Self> {
+    pub(super) unsafe fn from_proven_run(physical: PhysicalAddress, len: u64) -> Option<Self> {
         let len = usize::try_from(len).ok()?;
         let base = direct_pointer(physical, len as u64)?;
         Some(Self {

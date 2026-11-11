@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 
 use frame_space::frame_identity;
 
-use super::Paddr;
+use super::PhysicalAddress;
 use super::direct::DirectSpan;
 use super::frame::{Segment, allocate_contiguous};
 
@@ -28,7 +28,7 @@ impl DmaMappingOwner {
     /// # Panics
     ///
     /// Panics if the root is not frame aligned.
-    pub(crate) const fn new(root: Paddr) -> Self {
+    pub(crate) const fn new(root: PhysicalAddress) -> Self {
         let Some(identity) = frame_identity(root) else {
             panic!("a DMA mapping owner root is not frame aligned");
         };
@@ -61,7 +61,7 @@ impl DmaSegment {
     }
 
     /// Where the run begins, unless an uncertain device still owns it.
-    pub const fn address(&self) -> Option<Paddr> {
+    pub const fn address(&self) -> Option<PhysicalAddress> {
         match &self.segment {
             Some(segment) => Some(segment.address()),
             None => None,
@@ -202,7 +202,7 @@ impl IommuTable {
     }
 
     /// The physical address programmed into the unit or a parent entry.
-    pub(crate) const fn address(&self) -> Paddr {
+    pub(crate) const fn address(&self) -> PhysicalAddress {
         self.frames.address()
     }
 
@@ -251,7 +251,7 @@ impl PublishedIommuTable {
     }
 
     /// The stable physical address programmed into hardware.
-    pub(crate) const fn address(&self) -> Paddr {
+    pub(crate) const fn address(&self) -> PhysicalAddress {
         match &self.table {
             Some(table) => table.address(),
             None => panic!("published table has no frame owner"),

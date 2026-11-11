@@ -9,7 +9,7 @@ use super::shared::USegment;
 #[cfg(doc)]
 use super::shared::{SharedBytes, SharedRing};
 use super::{
-    CEILING, FRAMES, MAP, Paddr, direct_map_pointer, direct_pointer, memory_map_snapshot,
+    CEILING, FRAMES, MAP, PhysicalAddress, direct_map_pointer, direct_pointer, memory_map_snapshot,
     seed_frames,
 };
 use crate::boot::{MemoryKind, MemoryMap, MemoryRegion};
@@ -53,7 +53,7 @@ pub fn free_frames() -> usize {
 ///
 /// Callers ask the map rather than name an address, which would be one machine's firmware layout.
 #[cfg(feature = "selftest")]
-pub fn first_memory_run(len: u64) -> Option<Paddr> {
+pub fn first_memory_run(len: u64) -> Option<PhysicalAddress> {
     MAP.lock_leaf()
         .as_ref()
         .and_then(|map| map.first_memory_run(len))
@@ -104,7 +104,7 @@ impl Segment {
 /// Exercise the actual DMA owner and destructor without publishing a leaf.
 #[cfg(feature = "selftest")]
 pub fn dma_mapping_owner_drop_retains_for_test() -> bool {
-    let compact = size_of::<Option<DmaMappingOwner>>() == size_of::<Paddr>();
+    let compact = size_of::<Option<DmaMappingOwner>>() == size_of::<PhysicalAddress>();
     let before = free_frames();
     let (Some(mapped), Some(revoked)) = (allocate_contiguous(1, 1), allocate_contiguous(2, 1))
     else {
@@ -184,7 +184,7 @@ const EXTERNAL_ZERO_PHASE_MASK: u64 = FRAME_SIZE - 1;
 static EXTERNAL_ZERO_REFUSAL: AtomicU64 = AtomicU64::new(EXTERNAL_ZERO_INACTIVE);
 
 #[cfg(feature = "selftest")]
-fn external_zero_state(address: Paddr, phase: u64) -> Option<u64> {
+fn external_zero_state(address: PhysicalAddress, phase: u64) -> Option<u64> {
     if address >= CEILING
         || !address.is_multiple_of(FRAME_SIZE)
         || phase == 0
@@ -196,7 +196,7 @@ fn external_zero_state(address: Paddr, phase: u64) -> Option<u64> {
 }
 
 #[cfg(feature = "selftest")]
-pub(super) fn refuse_external_zero_for_test(address: Paddr) -> bool {
+pub(super) fn refuse_external_zero_for_test(address: PhysicalAddress) -> bool {
     let (Some(armed), Some(refused)) = (
         external_zero_state(address, EXTERNAL_ZERO_ARMED),
         external_zero_state(address, EXTERNAL_ZERO_REFUSED),
@@ -209,7 +209,7 @@ pub(super) fn refuse_external_zero_for_test(address: Paddr) -> bool {
 }
 
 #[cfg(feature = "selftest")]
-pub(super) fn observe_external_run_withheld_for_test(address: Paddr) {
+pub(super) fn observe_external_run_withheld_for_test(address: PhysicalAddress) {
     let (Some(refused), Some(withheld)) = (
         external_zero_state(address, EXTERNAL_ZERO_REFUSED),
         external_zero_state(address, EXTERNAL_ZERO_WITHHELD),
@@ -225,7 +225,7 @@ pub(super) fn observe_external_run_withheld_for_test(address: Paddr) {
 }
 
 #[cfg(feature = "selftest")]
-pub(super) fn observe_external_run_release_for_test(address: Paddr) {
+pub(super) fn observe_external_run_release_for_test(address: PhysicalAddress) {
     let Some(released) = external_zero_state(address, EXTERNAL_ZERO_RELEASED) else {
         return;
     };
@@ -249,7 +249,7 @@ pub(super) fn observe_external_run_release_for_test(address: Paddr) {
 #[cfg(feature = "selftest")]
 #[derive(Debug)]
 struct ExternalZeroRefusal {
-    address: Paddr,
+    address: PhysicalAddress,
     count: usize,
     active: bool,
 }
@@ -401,7 +401,7 @@ pub fn refused_external_clear_withholds_for_test(segment: Segment, expected_pref
 
 /// Whether an exact released run is free and contains only zero bytes.
 #[cfg(feature = "selftest")]
-pub fn freed_external_run_is_zero_for_test(address: Paddr, count: usize) -> bool {
+pub fn freed_external_run_is_zero_for_test(address: PhysicalAddress, count: usize) -> bool {
     if count == 0 || !address.is_multiple_of(FRAME_SIZE) {
         return false;
     }

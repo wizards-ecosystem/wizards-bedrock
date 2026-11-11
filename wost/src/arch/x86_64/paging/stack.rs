@@ -11,7 +11,7 @@ use super::{
 };
 #[cfg(feature = "selftest")]
 use super::{STACK_MAPPINGS_BEFORE_REFUSAL, STACK_ROLLBACKS_BEFORE_REFUSAL, stack_refusal};
-use crate::mm::{self, Paddr};
+use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
     /// Map one guarded stack, or refuse with `Conflict` at the first guard page found mapped.
@@ -309,7 +309,7 @@ impl StackArena {
         self.mapping_mismatch_in(current)
     }
 
-    fn mapping_mismatch_in(&self, root: Paddr) -> Option<u64> {
+    fn mapping_mismatch_in(&self, root: PhysicalAddress) -> Option<u64> {
         if self.stacks.len() != self.layout.slots() {
             return Some(self.layout.base());
         }
@@ -364,7 +364,7 @@ impl TaskStackPin {
 pub(super) struct StackIdentity {
     pub(super) roots: AddressSpaceRoots,
     pub(super) slot: Slot,
-    pub(super) physical_base: Paddr,
+    pub(super) physical_base: PhysicalAddress,
 }
 
 impl StackIdentity {
@@ -375,7 +375,7 @@ impl StackIdentity {
         ranges_overlap(self.slot.guard_base(), protected_len, base, len)
     }
 
-    pub(super) fn invalid_page_in(&self, root: Paddr) -> Option<u64> {
+    pub(super) fn invalid_page_in(&self, root: PhysicalAddress) -> Option<u64> {
         let mut guard = self.slot.guard_base();
         while guard < self.slot.stack_base() {
             if translate_in(root, guard).is_some() {

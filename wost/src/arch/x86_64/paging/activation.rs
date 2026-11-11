@@ -62,11 +62,11 @@ impl Activation {
         }
     }
 
-    pub(super) fn commit(self, root: Paddr) {
+    pub(super) fn commit(self, root: PhysicalAddress) {
         self.commit_with(root, || {});
     }
 
-    pub(super) fn commit_with(self, root: Paddr, after_root: impl FnOnce()) {
+    pub(super) fn commit_with(self, root: PhysicalAddress, after_root: impl FnOnce()) {
         let mut this = self;
         this.root.store(root, Ordering::Release);
         after_root();
@@ -183,6 +183,6 @@ pub fn is_active() -> bool {
 /// The root this kernel installed, to compare with [`cpu::page_table_base`] after the switch.
 ///
 /// Only [`is_active`] tells pre-activation apart, because physical zero is a valid root.
-pub fn active_root() -> Paddr {
+pub fn active_root() -> PhysicalAddress {
     ACTIVE_ROOT.load(Ordering::Acquire)
 }

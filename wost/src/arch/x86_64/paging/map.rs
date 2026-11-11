@@ -5,7 +5,7 @@ impl AddressSpace {
     pub(super) fn map_range(
         &mut self,
         virtual_base: u64,
-        physical_base: Paddr,
+        physical_base: PhysicalAddress,
         len: u64,
         flags: Flags,
         grain: Grain,
@@ -82,7 +82,7 @@ impl AddressSpace {
     fn mapping_state(
         &self,
         virtual_address: u64,
-        physical: Paddr,
+        physical: PhysicalAddress,
         flags: Flags,
         target: Level,
     ) -> Result<MappingState, MapError> {
@@ -131,7 +131,7 @@ impl AddressSpace {
 
     /// Where `range` at `offset` maps and how large; [`undo`](Self::undo) retraces it exactly,
     /// since a rollback that disagreed about where a large page began would clear the wrong entry.
-    fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, Paddr, Level) {
+    fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, PhysicalAddress, Level) {
         let virtual_address = range.virtual_base() + offset;
         let physical = range.physical_base() + offset;
         let large = grain == Grain::Largest
@@ -364,7 +364,7 @@ impl AddressSpace {
     fn map_shared_allocation(
         &mut self,
         virtual_base: u64,
-        physical_base: Paddr,
+        physical_base: PhysicalAddress,
         len: u64,
         keepalive: SharedKeepalive,
         flags: Flags,
@@ -405,7 +405,7 @@ impl AddressSpace {
     fn map_owned_geometry(
         &mut self,
         virtual_base: u64,
-        physical_base: Paddr,
+        physical_base: PhysicalAddress,
         len: u64,
         frames: usize,
         flags: Flags,
@@ -432,7 +432,7 @@ impl AddressSpace {
     fn set(
         &mut self,
         virtual_address: u64,
-        physical: Paddr,
+        physical: PhysicalAddress,
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
@@ -443,7 +443,7 @@ impl AddressSpace {
         &mut self,
         root: TableRoot,
         virtual_address: u64,
-        physical: Paddr,
+        physical: PhysicalAddress,
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
@@ -533,7 +533,7 @@ enum MappingState {
 /// Not `Copy`: a copy would let a caller reuse the evidence for a range nobody checked.
 #[derive(Debug)]
 pub struct BootRegion {
-    base: Paddr,
+    base: PhysicalAddress,
     len: u64,
     cache: crate::boot::DirectMapCache,
 }
@@ -541,7 +541,7 @@ pub struct BootRegion {
 impl BootRegion {
     /// Describe `len` bytes at `base`, or `None` before the map or unless memory of one direct-map
     /// cache type covers it; device holes are refused because write-back MMIO aliases are unsafe.
-    pub fn describe(base: Paddr, len: u64) -> Option<Self> {
+    pub fn describe(base: PhysicalAddress, len: u64) -> Option<Self> {
         let end = base.checked_add(len)?;
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;

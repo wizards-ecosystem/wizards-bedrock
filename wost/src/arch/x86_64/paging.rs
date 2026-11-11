@@ -63,7 +63,9 @@ use super::kpti;
 use super::task;
 use super::task::Released;
 use super::{cpu, interrupt, pci};
-use crate::mm::{self, Paddr, Segment, SharedBytes, SharedKeepalive, SharedRing, USegment};
+use crate::mm::{
+    self, PhysicalAddress, Segment, SharedBytes, SharedKeepalive, SharedRing, USegment,
+};
 use crate::mmio::MmioRegion;
 use crate::sync::SpinLock;
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
@@ -88,7 +90,7 @@ pub enum MapError {
     /// No frame was free for a table this mapping needed.
     OutOfMemory,
     /// A table this mapping needs is outside the direct map, so it cannot be written.
-    Unreachable(Paddr),
+    Unreachable(PhysicalAddress),
     /// The address range is already mapped by a larger page.
     Conflict(u64),
     /// The virtual address is not canonical, so no walk can reach it.
@@ -96,13 +98,13 @@ pub enum MapError {
     /// The range's start or length is not page-aligned.
     Misaligned(u64),
     /// Device registers are not four-byte aligned, so [`MmioRegion`] accesses would be misaligned.
-    UnalignedDevice(Paddr),
+    UnalignedDevice(PhysicalAddress),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
     /// The complete mapping range failed arithmetic or architecture checks.
     InvalidRange(MappingRangeError),
     /// A device range was empty or its page-rounded extent overflowed.
-    InvalidDeviceRange(Paddr),
+    InvalidDeviceRange(PhysicalAddress),
     /// The running processor did not publish a usable `MAXPHYADDR`.
     PhysicalWidthUnavailable,
     /// A device mapping needs a physical-address bit this processor reserves.
@@ -110,16 +112,16 @@ pub enum MapError {
         /// Reported `MAXPHYADDR`.
         bits: u8,
         /// First requested register byte.
-        physical: Paddr,
+        physical: PhysicalAddress,
     },
     /// The range overlaps RAM or firmware storage, so it is no device hole.
-    NotDeviceMemory(Paddr),
+    NotDeviceMemory(PhysicalAddress),
     /// Another mapping in this address space already owns physical bytes.
-    DeviceOverlap(Paddr),
+    DeviceOverlap(PhysicalAddress),
     /// The bounded device-ownership table is full.
     TooManyDevices,
     /// The boot handoff never described this physical range, so nothing shows it is memory.
-    Undescribed(Paddr),
+    Undescribed(PhysicalAddress),
     /// Nothing is mapped at this address.
     NotMapped(u64),
     /// The space does not own this frame, so unmapping would free memory the allocator never had.
@@ -137,7 +139,7 @@ pub enum MapError {
     /// A present mapping would be both writable and executable.
     WriteExecute(u64),
     /// A hardware-retained stack was requested in a space this CPU is not walking.
-    Inactive(Paddr),
+    Inactive(PhysicalAddress),
     /// Activation froze kernel top-level entries: a new one would be missing from older user roots.
     KernelTopologyFrozen(u64),
     /// The full and stripped page-table roots do not form one valid pair.
@@ -463,18 +465,18 @@ pub enum ReclaimError {
     /// This space was already reclaimed.
     Reclaimed,
     /// A task still names this bound space and no release evidence was given.
-    StillBound(Paddr),
+    StillBound(PhysicalAddress),
     /// The release evidence names a different space.
     WrongRelease {
         /// Root this space owns.
-        expected: Paddr,
+        expected: PhysicalAddress,
         /// Root the evidence releases.
-        found: Paddr,
+        found: PhysicalAddress,
     },
     /// Release evidence was supplied to a space that was never bound.
-    UnexpectedRelease(Paddr),
+    UnexpectedRelease(PhysicalAddress),
     /// The CPU is currently walking this space.
-    Active(Paddr),
+    Active(PhysicalAddress),
     /// Owned leaf mappings still depend on these tables.
     Mapped(usize),
     /// Device mappings still depend on these tables.
@@ -549,7 +551,7 @@ pub struct AddressSpace {
 
 #[derive(Clone, Copy, Debug)]
 struct OwnedTable {
-    frame: Paddr,
+    frame: PhysicalAddress,
     virtual_address: u64,
     level: Level,
     link: Entry,
@@ -567,22 +569,22 @@ enum TableRoot {
 /// A shared-root space has no stripped member, so [`user_root`](Self::user_root) is the full root.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressSpaceRoots {
-    full: Paddr,
+    full: PhysicalAddress,
     /// The user root, its page-aligned low bit marking a pair, so frame zero needs no sentinel.
-    user_tagged: Paddr,
+    user_tagged: PhysicalAddress,
 }
 
 impl AddressSpaceRoots {
-    const PAIRED_TAG: Paddr = 1;
+    const PAIRED_TAG: PhysicalAddress = 1;
 
-    const fn shared(full: Paddr) -> Self {
+    const fn shared(full: PhysicalAddress) -> Self {
         Self {
             full,
             user_tagged: full,
         }
     }
 
-    fn paired(full: Paddr, stripped: Paddr) -> Result<Self, MapError> {
+    fn paired(full: PhysicalAddress, stripped: PhysicalAddress) -> Result<Self, MapError> {
         let pair = CheckedRootPair::new(full, stripped).map_err(MapError::InvalidRootPair)?;
         Ok(Self {
             full: pair.full(),
@@ -591,12 +593,12 @@ impl AddressSpaceRoots {
     }
 
     /// The root under which ordinary kernel code may execute.
-    pub const fn full_root(self) -> Paddr {
+    pub const fn full_root(self) -> PhysicalAddress {
         self.full
     }
 
     /// The ring-three root; it equals [`full_root`](Self::full_root) only in admitted shared mode.
-    pub const fn user_root(self) -> Paddr {
+    pub const fn user_root(self) -> PhysicalAddress {
         if self.is_paired() {
             self.user_tagged & !Self::PAIRED_TAG
         } else {
@@ -605,7 +607,7 @@ impl AddressSpaceRoots {
     }
 
     /// The distinct stripped root, when this is a KPTI pair.
-    pub const fn stripped_root(self) -> Option<Paddr> {
+    pub const fn stripped_root(self) -> Option<PhysicalAddress> {
         if self.is_paired() {
             Some(self.user_root())
         } else {
@@ -618,7 +620,7 @@ impl AddressSpaceRoots {
         self.user_tagged & Self::PAIRED_TAG != 0
     }
 
-    const fn contains(self, root: Paddr) -> bool {
+    const fn contains(self, root: PhysicalAddress) -> bool {
         self.full == root || self.is_paired() && self.user_root() == root
     }
 
@@ -688,7 +690,7 @@ impl AddressSpace {
     }
 
     /// The physical address of the top-level table, which `CR3` would hold.
-    pub const fn root(&self) -> Paddr {
+    pub const fn root(&self) -> PhysicalAddress {
         match self.roots {
             Some(roots) => roots.full_root(),
             None => panic!("a reclaimed address space has no root"),
@@ -703,7 +705,7 @@ impl AddressSpace {
     }
 
     /// Translate through this space's tables, active or not, as [`translate`] does for `CR3`.
-    pub fn lookup(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    pub fn lookup(&self, virtual_address: u64) -> Option<(PhysicalAddress, Flags)> {
         // Reclaim removes the root owner; no later read may walk its recycled frame.
         if self.is_reclaimed() {
             #[cfg(feature = "selftest")]
@@ -933,7 +935,7 @@ impl AddressSpace {
 /// A zeroed table frame whose handle is forgotten, so only the direct map reaches it.
 ///
 /// The kernel's own tables never return; a user space records each so its reclaim can.
-fn take_table() -> Result<Paddr, MapError> {
+fn take_table() -> Result<PhysicalAddress, MapError> {
     let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
     let address = frame.address();
     core::mem::forget(frame);

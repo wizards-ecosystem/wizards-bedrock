@@ -4,7 +4,7 @@ use frame_space::FRAME_SIZE;
 use super::init;
 #[cfg(feature = "selftest")]
 use super::selftest::{observe_external_run_release_for_test, refuse_external_zero_for_test};
-use super::{FRAMES, Paddr, direct_map_pointer, direct_pointer};
+use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
 /// One physical frame, owned while this value lives; only allocation makes one, so one owner.
 #[derive(PartialEq, Eq, Debug)]
@@ -20,14 +20,14 @@ impl Frame {
     /// `address` must be an [`allocate`] or [`allocate_zeroed`] frame whose handle was forgotten.
     /// No other `Frame` may name it: dropping the result frees it, so a second handle double frees.
     /// A handle over a frame nothing allocated corrupts the allocator's records.
-    pub(crate) const unsafe fn from_raw(address: Paddr) -> Self {
+    pub(crate) const unsafe fn from_raw(address: PhysicalAddress) -> Self {
         Self {
             index: (address / FRAME_SIZE) as usize,
         }
     }
 
     /// Where the frame begins in physical memory.
-    pub const fn address(&self) -> Paddr {
+    pub const fn address(&self) -> PhysicalAddress {
         self.index as u64 * FRAME_SIZE
     }
 
@@ -71,7 +71,7 @@ pub struct Segment {
 
 impl Segment {
     /// Where the run begins in physical memory.
-    pub const fn address(&self) -> Paddr {
+    pub const fn address(&self) -> PhysicalAddress {
         self.first as u64 * FRAME_SIZE
     }
 
@@ -140,7 +140,7 @@ impl Segment {
     ///
     /// `count` frames at `address` must be an [`allocate_contiguous`] run, its handle forgotten.
     /// No other `Segment` may name any of them; each frees them on drop, so overlaps double free.
-    pub(crate) const unsafe fn from_raw(address: Paddr, count: usize) -> Self {
+    pub(crate) const unsafe fn from_raw(address: PhysicalAddress, count: usize) -> Self {
         Self {
             first: (address / FRAME_SIZE) as usize,
             count,
