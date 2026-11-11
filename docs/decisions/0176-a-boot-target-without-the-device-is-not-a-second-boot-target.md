@@ -43,7 +43,8 @@ information and is not.
 - `cargo xtask vmware` builds a second VMDK and copies the namespace into it.
 - A machine check sweeps every refusal and requires it to decode as the one that
   was recorded, because a diagnosis that names the wrong guard is worse than one
-  that names none. Mutation 65 breaks it.
+  that names none, and a discriminant drifting from its `match` arm is how that
+  happens. Mutation 65 breaks it.
 - Phase 6's VMware boot is **not** recorded as done until it is re-run against a
   machine with the controller. `014`'s close says so rather than claiming a boot
   it did not get.

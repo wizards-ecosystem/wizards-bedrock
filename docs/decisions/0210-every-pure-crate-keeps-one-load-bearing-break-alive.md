@@ -38,7 +38,7 @@ depending on timing, breaking compilation, or relying on another test's
 failure proves nothing and remains inconclusive under D-209.
 
 **Rationale.** Host and `libs/` checks were broken once when written, but
-D-119 originally admitted only machine mutations, and D-189 later admitted exact
+D-119 originally admitted only machine mutations, and D-187 later admitted exact
 host tests for the device-transaction work, leaving the older break evidence
 historical. Sixteen of the twenty-three pure crates, including the scheduler,
 loader, allocators and CPU table encodings, had no live break, so a change

@@ -34,9 +34,9 @@ rights can `Duplicate` with fewer.
 A device is refused. What a program will hold for one is slice 4's `Device`
 capability, and putting it in a table is Phase 7's (D-172).
 
-**Rationale.** Every refusal must happen before the device is asked: a bound
-checked after the read is `-ENOBUFS` with the work already done, the shape this
-design refuses. The controller's command identifier advances once per command,
+**Rationale.** The buffer bound is checked before the read, because a bound
+checked after it is `-ENOBUFS` with the work already done, the shape this design
+refuses. The controller's command identifier advances once per command,
 so the check submits a readable handle with a buffer that runs off the end of
 the data area and requires the count unchanged; every refusal before the read is
 visible as a device that was never told. The refusal checks also hold a file

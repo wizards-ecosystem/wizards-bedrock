@@ -5,7 +5,8 @@ Status: Accepted, 2026-08-25.
 **Decision.** `xtask` reads the ELF file header and program headers through
 `libs/elf64`, the crate the kernel loads programs with, and keeps only the
 section table. `xtask::elf::parse` is `elf64::Elf::parse(bytes)` plus a section
-walk; `parse_segments` and every transcribed constant and offset are deleted.
+walk; `parse_segments` and every transcribed constant and header offset are
+deleted except the section table's.
 The section table stays in `xtask` because a loader never reads one, and moving
 it would grow the crate the kernel links for one host caller. `elf64` gains
 `SegmentKind::bits`, the inverse of `from_bits`, and `Segment::flags`, the raw
