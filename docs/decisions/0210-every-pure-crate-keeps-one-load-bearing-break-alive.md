@@ -2,17 +2,6 @@
 
 Status: Accepted, 2026-08-28. Amends D-28 and D-189; closes PW-503.
 
-**Context.** Host and `libs/` checks have always been broken once when written,
-but D-119 originally admitted only machine mutations. D-189 later admitted
-exact host tests for the device-transaction work that needed them, leaving the
-older break evidence historical. The present registry has host mutations in
-seven of the twenty-three pure crates. The other sixteen include the scheduler,
-ELF loader, frame and slab allocators, MMIO bound, rooted path splitter, ring
-admission, time arithmetic, page permissions and CPU table encodings. A future
-change can make any of their checks stop reaching production code without the
-one-off break ever running again. D-209 now supplies the missing pristine host
-baseline and exact-test attribution.
-
 **Decision.** Every current `libs/` package carries at least one persistent
 mutation of production source, caught by one exact test in that same package.
 The selected mutation is the highest-consequence stable transformation found
@@ -48,7 +37,14 @@ test and make that test's own verdict red are admitted. Mutating a test,
 depending on timing, breaking compilation, or relying on another test's
 failure proves nothing and remains inconclusive under D-209.
 
-**Rationale.** One live defect per pure crate proves the complete path from
+**Rationale.** Host and `libs/` checks were broken once when written, but
+D-119 originally admitted only machine mutations, and D-189 later admitted exact
+host tests for the device-transaction work, leaving the older break evidence
+historical. Sixteen of the twenty-three pure crates, including the scheduler,
+loader, allocators and CPU table encodings, had no live break, so a change
+could make their checks stop reaching production code unnoticed. D-209 supplies
+the pristine host baseline and exact-test attribution. One live defect per pure
+crate proves the complete path from
 production source through that crate's tests and the mutation runner. It does
 not claim every assertion is independently mutation-tested; that would turn
 PW-503 into an unbounded score. Choosing authority, bounds, ownership and
@@ -62,19 +58,11 @@ unstable textual edits, or test-fixture mutations. Selecting only the newest
 storage crates was rejected because those seven are already represented while
 the scheduler, memory and ABI foundations are the uncovered part.
 
-**Consequences.** Sixteen production mutations now give every pure crate at
-least one live break, a seventeenth removes `eevdf` from the derived coverage
-floor, and an eighteenth admits a successful command that selected no test.
-Each transformation compiled and made its exact named test red before its
-source was restored. The ring defect demonstrated why the
-name is measured: `admission_stops_before_a_completion_could_be_dropped` stayed
-green, while `the_reservation_invariant_holds_under_interleaving` caught the
-missing occupied-completion term. The timebase entry likewise initially named
-`tests::…`, selected zero tests, and was corrected to `published_tests::…`
-before admission. Host attribution now requires the exact test's own `ok` or
-`FAILED` line, so a successful zero-test run is inconclusive and earns no
-mutation credit.
-
-The restored registry passes its exact-application, named-function,
-non-duplication and all-host-library coverage checks. Eighteen persistent host
-mutations retain the evidence, bringing the registry to 186.
+**Consequences.** Sixteen production mutations give every pure crate at least
+one live break, a seventeenth removes `eevdf` from the derived coverage floor,
+and an eighteenth admits a successful command that selected no test. The
+witness name is measured, not assumed: the ring defect left
+`admission_stops_before_a_completion_could_be_dropped` green and was caught only
+by `the_reservation_invariant_holds_under_interleaving`. Host attribution
+requires the exact test's own `ok` or `FAILED` line, so a successful zero-test
+run is inconclusive and earns no mutation credit.
