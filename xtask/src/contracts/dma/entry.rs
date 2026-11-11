@@ -449,7 +449,7 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         "fn find_table_with_multiplicity(",
     )
     .expect("unique ACPI authority lookup");
-    assert!(unique.contains("if require_unique {"));
+    assert!(unique.contains("if multiplicity == Multiplicity::Unique {"));
     assert!(unique.contains("return None;"));
 
     let pci = module_source("wost/src/arch/x86_64/pci.rs");

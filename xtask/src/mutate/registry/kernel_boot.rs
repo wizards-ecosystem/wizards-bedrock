@@ -691,8 +691,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1819,
         file: "kernel/src/acpi.rs",
-        find: "                if require_unique {\n                    warn!(\"acpi: duplicate {signature:?} tables refuse unique authority\");\n                    return None;\n                }",
-        replace: "                if false && require_unique {\n                    warn!(\"acpi: duplicate {signature:?} tables refuse unique authority\");\n                    return None;\n                }",
+        find: "                if multiplicity == Multiplicity::Unique {",
+        replace: "                if false && multiplicity == Multiplicity::Unique {",
         breaks: "unique ACPI authority lookup silently returns the first duplicate table",
         reddens: Caught::HostTest {
             package: "xtask",

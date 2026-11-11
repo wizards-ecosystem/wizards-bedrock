@@ -1,27 +1,25 @@
 //! What is on the bus, and who is allowed to touch it.
 //!
-//! D-77 left half an authority debt open: a port claim proves *exclusivity* —
-//! nobody else drives these ports — and says nothing about *entitlement*, about
-//! whether the claimant is the driver for the thing behind them. The port
-//! registry cannot answer that, because a port range is not a device.
+//! A port claim proves exclusivity, that nobody else drives those ports, and says nothing about
+//! entitlement, whether the claimant is the driver for the thing behind them; the port registry
+//! cannot answer that, because a port range is not a device. So a driver claims a function, a
+//! bus, device and function triple, and the claim carries the windows that function decodes.
+//! Two drivers cannot claim one function, and a bare port claim inside a claimed device's I/O
+//! window is refused because the device already has it.
 //!
-//! This is the other half. A driver claims a **function** — a bus, device and
-//! function triple — and the claim carries the windows that function decodes
-//! with it. Two drivers cannot claim one function, and a bare port claim
-//! inside a claimed device's I/O window is refused because the device already
-//! has it (D-168).
+//! Fixed driver claims are permanent, exactly as port claims are and for the same reason.
+//! Storage selection additionally has a transient lease: it can advance only after restoring
+//! the command word and returning every dynamic I/O span and registry slot as one retirement.
 //!
-//! Fixed driver claims are permanent, exactly as port claims are and for the
-//! same reason (D-138). Storage selection additionally has a transient lease:
-//! it can advance only after restoring the command word and returning every
-//! dynamic I/O span and registry slot as one retirement (D-199).
-//!
-//! **Enumeration recurses.** A scan of bus zero is not enough — VMware places
-//! functions behind `pciBridge0`–`pciBridge7`, and QEMU's q35 puts a
-//! DMI-to-PCI bridge at `00:1e.0` — so a controller can sit on a bus that
-//! nothing on bus zero mentions except a bridge (`012` §2). The walk is
-//! iterative over a worklist rather than recursive, because kernel stacks are
-//! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
+//! Enumeration recurses: VMware places functions behind `pciBridge0` to `pciBridge7` and q35 puts
+//! a DMI-to-PCI bridge at `00:1e.0`, so a controller can sit on a bus that nothing on bus zero
+//! mentions except a bridge (`012` §2). The walk is iterative over a worklist and never
+//! recursive, because kernel stacks are thirty-two kilobytes and a malicious or broken bridge
+//! topology is a cycle.
+
+use core::fmt;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, FunctionObservation,
@@ -31,9 +29,6 @@ use pci_config::{
 use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
-
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::thread::ThreadContext;
 
@@ -184,10 +179,9 @@ impl Worklist {
 
 /// What one walk of the bus covered.
 ///
-/// Buses rather than only functions, and that is the point: a kernel that
-/// scans bus zero and stops finds every function q35 has and reports a
-/// perfectly plausible number. Only the *bus* count says whether it went
-/// through the bridge (D-168).
+/// Buses as well as functions, because a kernel that scans bus zero and stops finds every
+/// function q35 has and reports a plausible number. Only the bus count says whether it went
+/// through the bridge.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct Survey {
     /// Functions reported.
@@ -229,12 +223,9 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 /// Probe every function number and seal one rooted, immutable PCI topology.
 ///
 /// Unlike ordinary enumeration, this proof never trusts multifunction hints
-/// and probes buses which a malformed bridge may have made unreachable.
-///
-/// # Errors
-///
-/// Returns [`TopologyError`] when bridge identity or routing cannot form one
-/// unambiguous tree rooted at bus zero.
+/// and probes buses which a malformed bridge may have made unreachable. It
+/// refuses with [`TopologyError`] when bridge identity or routing cannot form
+/// one unambiguous tree rooted at bus zero.
 pub(crate) fn snapshot_topology(
     mut non_requester: Option<QualifiedNonRequester>,
     mut quiesced: Option<QuiescedIsaRequester>,
@@ -399,7 +390,7 @@ pub(crate) enum ClaimError {
     /// The registry is full, which bounds devices ever claimed.
     NoRoom,
     /// An I/O window the function decodes is already claimed by something that
-    /// is not a device — the bare-port path D-77 said proves the wrong thing.
+    /// is not a device, through a bare port claim that proves no entitlement.
     WindowTaken,
     /// A BAR consumes another header field or reports an impossible window.
     InvalidWindow,
@@ -426,18 +417,15 @@ pub(crate) enum DmaFenceError {
     Function,
 }
 
-impl core::fmt::Display for DmaFenceError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for DmaFenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Claim(reason) => write!(formatter, "function claim: {reason}"),
-            Self::Command(reason) => write!(formatter, "command fence: {reason}"),
-            Self::Quiesce => core::fmt::Write::write_str(
-                formatter,
+            Self::Claim(reason) => write!(f, "function claim: {reason}"),
+            Self::Command(reason) => write!(f, "command fence: {reason}"),
+            Self::Quiesce => f.write_str(
                 "the entry-quiesced ISA requester changed or its 8237 controllers are not quiet",
             ),
-            Self::Function => {
-                core::fmt::Write::write_str(formatter, "function authority could not be returned")
-            }
+            Self::Function => f.write_str("function authority could not be returned"),
         }
     }
 }
@@ -496,7 +484,7 @@ impl DmaFence {
 ///
 /// The one entry-quiesced ISA requester cannot clear BME; it is held instead
 /// by its exclusive claim, its unchanged identity and command, and a fresh
-/// remask of its 8237 controllers with no request pending (D-426).
+/// remask of its 8237 controllers with no request pending.
 pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
     let function = match pci::claim_function(at) {
         Ok(function) => function,
@@ -659,24 +647,18 @@ impl ProbeRecovery {
     }
 }
 
-impl core::fmt::Display for ClaimError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ClaimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoBus => core::fmt::Write::write_str(f, "configuration space is not reachable"),
-            Self::Absent => core::fmt::Write::write_str(f, "nothing is at that address"),
-            Self::Taken => core::fmt::Write::write_str(f, "another driver holds it"),
-            Self::NoRoom => core::fmt::Write::write_str(f, "no room in the device registry"),
-            Self::WindowTaken => {
-                core::fmt::Write::write_str(f, "an i/o window it decodes is already claimed")
-            }
-            Self::InvalidWindow => {
-                core::fmt::Write::write_str(f, "a base address window is malformed")
-            }
-            Self::ProbeRestore(_) => {
-                core::fmt::Write::write_str(f, "a base address probe could not be restored")
-            }
+            Self::NoBus => f.write_str("configuration space is not reachable"),
+            Self::Absent => f.write_str("nothing is at that address"),
+            Self::Taken => f.write_str("another driver holds it"),
+            Self::NoRoom => f.write_str("no room in the device registry"),
+            Self::WindowTaken => f.write_str("an i/o window it decodes is already claimed"),
+            Self::InvalidWindow => f.write_str("a base address window is malformed"),
+            Self::ProbeRestore(_) => f.write_str("a base address probe could not be restored"),
             Self::FunctionRetained => {
-                core::fmt::Write::write_str(f, "the restored function claim could not be returned")
+                f.write_str("the restored function claim could not be returned")
             }
         }
     }
@@ -697,11 +679,11 @@ pub(crate) enum BarAdmissionError {
     Bind(pci::BarBindError),
 }
 
-impl core::fmt::Display for BarAdmissionError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BarAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing => core::fmt::Write::write_str(f, "the BAR slot is empty"),
-            Self::NotMemory => core::fmt::Write::write_str(f, "the BAR is not memory"),
+            Self::Missing => f.write_str("the BAR slot is empty"),
+            Self::NotMemory => f.write_str("the BAR is not memory"),
             Self::Range(reason) => write!(f, "physical range: {reason}"),
             Self::Bind(reason) => write!(f, "function binding: {reason}"),
         }
@@ -752,21 +734,13 @@ pub(crate) enum ReleaseError {
     Permanent,
 }
 
-impl core::fmt::Display for ReleaseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ReleaseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Command => {
-                core::fmt::Write::write_str(f, "the pci command word could not be restored")
-            }
-            Self::Ports => {
-                core::fmt::Write::write_str(f, "the device's i/o spans could not be returned")
-            }
-            Self::Function => {
-                core::fmt::Write::write_str(f, "the function claim could not be returned")
-            }
-            Self::Permanent => {
-                core::fmt::Write::write_str(f, "a permanent device claim cannot be released")
-            }
+            Self::Command => f.write_str("the pci command word could not be restored"),
+            Self::Ports => f.write_str("the device's i/o spans could not be returned"),
+            Self::Function => f.write_str("the function claim could not be returned"),
+            Self::Permanent => f.write_str("a permanent device claim cannot be released"),
         }
     }
 }
@@ -801,7 +775,7 @@ impl ReleaseOutcome {
 ///
 /// Not `Clone` and not `Copy`: it *is* the claim, and a copy would be a second
 /// driver for one device with nothing to say so. A fixed claim outlives the
-/// boot; a selection lease has an explicit all-or-stop release (D-199).
+/// boot; a selection lease has an explicit all-or-stop release.
 #[derive(Debug)]
 pub(crate) struct Device {
     address: Address,
@@ -809,7 +783,7 @@ pub(crate) struct Device {
     vendor: u16,
     device: u16,
     bars: ProbedBars,
-    // Keep port and function authority inseparable (D-77).
+    // Keep port and function authority inseparable.
     ports: [Option<wost::arch::current::port::PortSpan>; BARS],
     /// Whether selection may still retire this function.
     lifetime: ClaimLifetime,
@@ -859,12 +833,10 @@ impl Device {
     }
 
     /// Admit bus mastering with fresh proof from this function's mapped BAR,
-    /// behind a DMA domain established for this exact function (D-357).
+    /// behind a DMA domain established for this exact function.
     ///
-    /// # Errors
-    ///
-    /// [`EnableError`] after an exact rollback, or when rollback could not be
-    /// verified. The command restoration authority remains in this device.
+    /// Refuses with [`EnableError`] after an exact rollback, or when rollback could not be
+    /// verified; either way the command restoration authority remains in this device.
     pub(crate) fn admit_bus_master(
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
@@ -997,7 +969,7 @@ impl Device {
     ///
     /// Any uncertainty leaves the function recorded and forbids selection from
     /// advancing. Successful return is the proof that the next candidate may
-    /// be touched (D-199).
+    /// be touched.
     pub(crate) fn release(mut self, _context: &mut ThreadContext) -> ReleaseOutcome {
         if self.lifetime == ClaimLifetime::Permanent {
             return ReleaseOutcome::refused(ReleaseError::Permanent, self);
@@ -1067,22 +1039,17 @@ fn retain_failed_function(function: pci::FunctionClaim) {
     *slot = Some(function);
 }
 
-/// Claim the function at `at`, with every window it decodes.
-///
-/// The claim is what makes touching the device legitimate, and it carries the
-/// I/O runs with it — so a later bare port claim inside one of them is refused
-/// by the port registry, which is D-77's entitlement half answered by making
-/// the device the claimant (D-168).
-///
-/// # Errors
-///
-/// See [`ClaimError`]. Clean refusals record nothing. An uncertain BAR restore
-/// returns its exclusive retry owner rather than releasing the function.
 /// Lease one function while storage selection determines whether to keep it.
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     claim_as(at, ClaimLifetime::Selection)
 }
 
+/// Claim the function at `at`, with every window it decodes.
+///
+/// The claim is what makes touching the device legitimate, and it carries the I/O runs with it,
+/// so the port registry refuses a later bare port claim inside one of them: entitlement comes
+/// from making the device the claimant. Clean refusals record nothing; an uncertain BAR restore
+/// returns its exclusive retry owner instead of releasing the function.
 fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> {
     let function = pci::claim_function(at).map_err(|reason| match reason {
         pci::ClaimError::Unavailable => ClaimError::NoBus,

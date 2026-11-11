@@ -1,17 +1,18 @@
 //! Physical memory: what the bootloader reported, and what the kernel took.
 //!
-//! The frame allocator itself lives in `wost::mm` — owning a frame needs a raw
-//! pointer, so it is `wost`'s (D-43). What is here is the part that needs no
-//! privilege: deciding whether the handoff is usable at all, and saying so.
+//! The frame allocator lives in `wost::mm`, because owning a frame needs a raw pointer. What is
+//! here needs no privilege: deciding whether the handoff is usable at all, and saying so.
 
 use alloc::vec::Vec;
+use core::fmt;
+
 use stack_layout::StackLayout;
 use wost::arch::current::cpu;
 #[cfg(feature = "selftest")]
 use wost::arch::current::paging::UserMapError;
 use wost::arch::current::paging::{
     self, AddressSpace, BarMapFailure, BarUnmapOutcome, BootRegion, DeviceUnmapFailure, MapError,
-    MappedStack, ReclaimFailure, ReleasableDevice, StackMapError,
+    MappedStack, ReclaimFailure, ReleasableDevice, StackArena, StackMapError,
 };
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::segment;
@@ -79,7 +80,7 @@ pub(crate) fn init(
 
 /// The kernel's own address space, kept live after the switch.
 ///
-/// Retained so mappings can be changed after activation (D-45, D-86).
+/// Retained so mappings can be changed after activation.
 static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
 /// BAR owners whose exact retirement failed after register access ended.
@@ -104,7 +105,7 @@ static RETAINED_ROUTING_REGISTERS: SpinLock<
 ///
 /// Private because `AddressSpace` also carries reclaim and arbitrary unmap
 /// authority over the tables the CPU is using. Callers get only the operations
-/// below, while this token-bearing acquisition preserves D-85's lock order.
+/// below, while this token-bearing acquisition keeps the two-level lock order.
 fn with_active_space<T>(
     context: &mut ThreadContext,
     f: impl FnOnce(&mut AddressSpace) -> T,
@@ -337,14 +338,12 @@ pub(crate) fn unmap_device_exact(
 /// Move the double-fault handler onto a guarded stack.
 ///
 /// Mapping this stack after kernel page-table activation makes its guard page
-/// genuinely absent (D-89). Pinning keeps a live hardware pointer from being
-/// unmapped (D-86).
+/// genuinely absent. Pinning keeps a live hardware pointer from being unmapped.
 fn guard_the_fault_stack() -> Result<u64, StackMapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
 
-    // `map_stack` verifies the guard is absent even outside self-test builds
-    // (D-94).
+    // `map_stack` verifies the guard is absent even outside self-test builds.
     let mut context = ThreadContext::require();
     let stack = with_active_space(&mut context, |space| space.map_pinned_stack(&slot))
         .ok_or(MapError::OutOfMemory)??;
@@ -360,7 +359,7 @@ fn guard_the_fault_stack() -> Result<u64, StackMapError> {
 ///
 /// `None` rather than an error when it cannot be had: kernel services can
 /// still report and degrade on the bootloader's stack, but the user boundary
-/// remains closed (D-193).
+/// remains closed.
 pub(crate) fn map_boot_stack() -> Option<MappedStack> {
     let mut context = ThreadContext::require();
     map_guarded_stack(&mut context, thread::boot_stack_layout()?)
@@ -370,8 +369,8 @@ pub(crate) fn map_boot_stack() -> Option<MappedStack> {
 ///
 /// The shared half of every stack this kernel maps after the switch: allocate,
 /// zero, map writable and never executable, and verify the guard below is
-/// absent — the last of which is `map_stack`'s and is why it is used rather
-/// than open-coded (D-94).
+/// absent. That last step is `map_stack`'s, which is why it is used rather
+/// than open-coded.
 pub(crate) fn map_guarded_stack(
     context: &mut ThreadContext,
     layout: StackLayout,
@@ -394,8 +393,8 @@ pub(crate) fn map_guarded_stack(
 ///
 /// At debug level because it runs to a few dozen lines, and worth having at
 /// all because it is the only place an unrecognised region type becomes
-/// visible — the pinned `limine` crate has no constant for the one base
-/// revision 4 added, so it arrives here as `unknown type N` (D-42).
+/// visible: the pinned `limine` crate has no constant for the one base
+/// revision 4 added, so it arrives here as `unknown type N`.
 fn describe(map: &MemoryMap) {
     for region in map.regions() {
         debug!(
@@ -417,13 +416,11 @@ fn unrecognised(kind: &MemoryKind) -> bool {
 
 /// Build the kernel's own page tables and switch to them.
 ///
-/// Every decision here is policy — which ranges exist and what each may do —
-/// and policy is safe Rust. `wost` owns the table writes and the one `mov cr3`
-/// underneath; this function cannot express an unsafe operation and does not
-/// need to (D-13, D-45).
-///
-/// Handoff and allocation failures keep the bootloader's tables. A cleanup
-/// contradiction is fatal because continuing would discard live ownership.
+/// Every decision here is policy, which ranges exist and what each may do, and policy is safe
+/// Rust: `wost` owns the table writes and the one `mov cr3` underneath, so this function cannot
+/// express an unsafe operation and does not need to. Handoff and allocation failures keep the
+/// bootloader's tables. A cleanup contradiction is fatal because continuing would discard live
+/// ownership.
 pub(crate) fn init_paging(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
@@ -436,7 +433,7 @@ pub(crate) fn init_paging(
     };
 
     // Read ACPI before building tables while the bootloader's direct map
-    // already covers it (D-45, D-49, D-86).
+    // already covers it.
     let interrupts = match rsdp {
         Ok(rsdp) => crate::acpi::interrupts(rsdp),
         Err(reason) => {
@@ -455,32 +452,7 @@ pub(crate) fn init_paging(
             panic!("paging: {reason}");
         }
     };
-
-    let Some(layout) = thread::layout() else {
-        let cleanup = space.reclaim(None);
-        assert!(
-            cleanup.is_ok(),
-            "an uninstalled address space must remain reclaimable"
-        );
-        warn!("threads: stack layout is invalid; staying on the bootloader's tables");
-        return None;
-    };
-    let arena = match space.map_stacks(&layout) {
-        Ok(arena) => arena,
-        Err(StackMapError::Mapping(reason)) => {
-            let cleanup = space.reclaim(None);
-            assert!(
-                cleanup.is_ok(),
-                "a failed stack transaction must leave no owned mapping"
-            );
-            warn!("threads: stacks not mapped: {reason}; no threads");
-            return None;
-        }
-        Err(reason @ StackMapError::Rollback { .. }) => {
-            panic!("threads: {reason}");
-        }
-        Err(reason) => panic!("threads: {reason}"),
-    };
+    let arena = map_thread_stacks(&mut space)?;
 
     // Before the switch: the CR3 load is the flush the PAT rewrite needs.
     let write_combining = cpu::enable_write_combining();
@@ -503,7 +475,48 @@ pub(crate) fn init_paging(
         }
     }
 
-    let thread_slots = match thread::init(arena) {
+    let thread_slots = start_threads(&mut space, arena);
+
+    // Kept, so a mapping can arrive with the thread that needs it instead of
+    // being guessed while the tables are built.
+    *SPACE.lock_leaf() = Some(space);
+
+    report_guarded_paging(thread_slots, write_combining);
+    interrupts
+}
+
+/// Map every thread stack into the inactive space, or reclaim it whole.
+fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
+    let Some(layout) = thread::layout() else {
+        let cleanup = space.reclaim(None);
+        assert!(
+            cleanup.is_ok(),
+            "an uninstalled address space must remain reclaimable"
+        );
+        warn!("threads: stack layout is invalid; staying on the bootloader's tables");
+        return None;
+    };
+    match space.map_stacks(&layout) {
+        Ok(arena) => Some(arena),
+        Err(StackMapError::Mapping(reason)) => {
+            let cleanup = space.reclaim(None);
+            assert!(
+                cleanup.is_ok(),
+                "a failed stack transaction must leave no owned mapping"
+            );
+            warn!("threads: stacks not mapped: {reason}; no threads");
+            None
+        }
+        Err(reason @ StackMapError::Rollback { .. }) => {
+            panic!("threads: {reason}");
+        }
+        Err(reason) => panic!("threads: {reason}"),
+    }
+}
+
+/// Hand the mapped arena to the task table, unmapping it again if the table refuses.
+fn start_threads(space: &mut AddressSpace, arena: StackArena) -> Option<usize> {
+    match thread::init(arena) {
         Ok(slots) => Some(slots),
         Err(failure) => {
             let reason = failure.reason;
@@ -515,12 +528,14 @@ pub(crate) fn init_paging(
             warn!("threads: {reason}; no threads");
             None
         }
-    };
+    }
+}
 
-    // Kept, which is the whole of D-86: a mapping can arrive with the thread
-    // that needs it instead of being guessed while the tables are built.
-    *SPACE.lock_leaf() = Some(space);
-
+/// Guard the double-fault stack in the kept space, then report what paging produced.
+fn report_guarded_paging(
+    thread_slots: Option<usize>,
+    write_combining: Option<cpu::WriteCombining>,
+) {
     match guard_the_fault_stack() {
         Ok(top) => info!("faults: double-fault stack guarded, top {top:#x}"),
         Err(StackMapError::Mapping(reason)) => {
@@ -539,8 +554,6 @@ pub(crate) fn init_paging(
     if write_combining.is_some_and(|transition| transition.commit()) {
         info!("framebuffer: write-combining");
     }
-
-    interrupts
 }
 
 /// Result of proving every described external interrupt controller inert.
@@ -628,18 +641,9 @@ pub(crate) fn prepare_routing(
         next_description = core::iter::Iterator::next(&mut descriptions);
         let controller = match probe_io_apic(context, description) {
             IoApicProbe::Ready(controller) => controller,
-            IoApicProbe::Refused => {
-                if release_io_apics(context, &mut controllers).is_none() {
-                    warn!("ioapic: candidate cleanup was incomplete; interrupts stay off");
-                }
-                return RoutingPreparation::unproven();
-            }
-            IoApicProbe::MappingRetained(mapping) => {
-                retain_routing_mapping(mapping, controllers);
-                return RoutingPreparation::unproven();
-            }
-            IoApicProbe::RegistersRetained(registers) => {
-                retain_routing_registers(registers, controllers);
+            IoApicProbe::Refused => return abandon_candidates(context, &mut controllers),
+            IoApicProbe::Retained(owner) => {
+                retain_probe_owner(owner, controllers);
                 return RoutingPreparation::unproven();
             }
         };
@@ -651,25 +655,16 @@ pub(crate) fn prepare_routing(
         Ok(Some(owner)) => owner,
         Ok(None) => {
             warn!("keyboard: no io apic owns gsi {gsi}; staying polled");
-            return match release_io_apics(context, &mut controllers) {
-                Some(released) => RoutingPreparation::polled_safe(released),
-                None => RoutingPreparation::unproven(),
-            };
+            return poll_after_release(context, &mut controllers);
         }
         Err(reason) => {
             warn!("ioapic: {reason}; staying polled");
-            return match release_io_apics(context, &mut controllers) {
-                Some(released) => RoutingPreparation::polled_safe(released),
-                None => RoutingPreparation::unproven(),
-            };
+            return poll_after_release(context, &mut controllers);
         }
     };
     let Some(selected) = interrupts.io_apics().nth(owner) else {
         warn!("ioapic: selected controller has no firmware description; interrupts stay off");
-        if release_io_apics(context, &mut controllers).is_none() {
-            warn!("ioapic: candidate cleanup was incomplete; interrupts stay off");
-        }
-        return RoutingPreparation::unproven();
+        return abandon_candidates(context, &mut controllers);
     };
 
     // The selected controller is rebuilt only after every probe mapping is
@@ -681,12 +676,8 @@ pub(crate) fn prepare_routing(
     let io_apic = match probe_io_apic(context, selected) {
         IoApicProbe::Ready(controller) => controller,
         IoApicProbe::Refused => return RoutingPreparation::unproven(),
-        IoApicProbe::MappingRetained(mapping) => {
-            retain_routing_mapping(mapping, controllers);
-            return RoutingPreparation::unproven();
-        }
-        IoApicProbe::RegistersRetained(registers) => {
-            retain_routing_registers(registers, controllers);
+        IoApicProbe::Retained(owner) => {
+            retain_probe_owner(owner, controllers);
             return RoutingPreparation::unproven();
         }
     };
@@ -696,12 +687,47 @@ pub(crate) fn prepare_routing(
     })
 }
 
+/// Return every candidate after a refused probe; the inventory stays unproven either way.
+fn abandon_candidates(
+    context: &mut ThreadContext,
+    controllers: &mut Vec<IoApic<ReleasableDevice>>,
+) -> RoutingPreparation {
+    if release_io_apics(context, controllers).is_none() {
+        warn!("ioapic: candidate cleanup was incomplete; interrupts stay off");
+    }
+    RoutingPreparation::unproven()
+}
+
+/// Return every candidate for a polled keyboard, safe only once all of them were released.
+fn poll_after_release(
+    context: &mut ThreadContext,
+    controllers: &mut Vec<IoApic<ReleasableDevice>>,
+) -> RoutingPreparation {
+    match release_io_apics(context, controllers) {
+        Some(released) => RoutingPreparation::polled_safe(released),
+        None => RoutingPreparation::unproven(),
+    }
+}
+
 #[derive(Debug)]
 enum IoApicProbe {
     Ready(IoApic<ReleasableDevice>),
     Refused,
-    MappingRetained(paging::DeviceMapping),
-    RegistersRetained(ReleasableDevice),
+    Retained(ProbeOwner),
+}
+
+/// The exact owner a refused probe could not return.
+#[derive(Debug)]
+enum ProbeOwner {
+    Mapping(paging::DeviceMapping),
+    Registers(ReleasableDevice),
+}
+
+fn retain_probe_owner(owner: ProbeOwner, controllers: Vec<IoApic<ReleasableDevice>>) {
+    match owner {
+        ProbeOwner::Mapping(mapping) => retain_routing_mapping(mapping, controllers),
+        ProbeOwner::Registers(registers) => retain_routing_registers(registers, controllers),
+    }
 }
 
 fn probe_io_apic(context: &mut ThreadContext, description: acpi_tables::IoApic) -> IoApicProbe {
@@ -728,7 +754,7 @@ fn probe_io_apic(context: &mut ThreadContext, description: acpi_tables::IoApic) 
                 "ioapic {}: mapped registers are not live; interrupts stay off",
                 id
             );
-            return IoApicProbe::MappingRetained(mapping);
+            return IoApicProbe::Retained(ProbeOwner::Mapping(mapping));
         }
     };
     match IoApic::take(registers, description.gsi_base()) {
@@ -748,7 +774,7 @@ fn probe_io_apic(context: &mut ThreadContext, description: acpi_tables::IoApic) 
                         "ioapic {}: registers unusable: {reason}; mapping retained; interrupts stay off",
                         id
                     );
-                    IoApicProbe::RegistersRetained(registers)
+                    IoApicProbe::Retained(ProbeOwner::Registers(registers))
                 }
             }
         }
@@ -771,8 +797,8 @@ fn release_io_apics(
     Some(ControllersReleased { _private: () })
 }
 
-/// Bytes of register window an I/O APIC occupies. The index/data pair sits in
-/// the first 32; a page is the smallest thing worth mapping.
+/// Bytes of register window an I/O APIC occupies: the index/data pair sits in the first 32, and
+/// a page is the smallest thing worth mapping.
 const IO_APIC_WINDOW: u64 = 4096;
 
 /// The interrupt controller ACPI described, ready to route lines.
@@ -838,10 +864,10 @@ enum BuildError {
     },
 }
 
-impl core::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Mapping(reason) => core::fmt::Display::fmt(reason, f),
+            Self::Mapping(reason) => fmt::Display::fmt(reason, f),
             Self::Rollback { cause, cleanup } => {
                 write!(f, "{cause}; address-space rollback refused: {cleanup}")
             }
@@ -864,111 +890,127 @@ fn build(
     image: ImageAddress,
 ) -> Result<AddressSpace, BuildError> {
     let mut space = AddressSpace::new().map_err(BuildError::Mapping)?;
-    let result = (|| -> Result<(), MapError> {
-        let sections = boot::sections();
-
-        // Read-only and executable; read-only and not; writable and not. No
-        // fourth combination exists, which is the whole of W^X.
-        let enclave = sections.entry_enclave;
-        let classes = [
-            (sections.text, Flags::NONE, "text"),
-            (sections.rodata, Flags::NO_EXECUTE, "rodata"),
-            (
-                sections.data,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "data",
-            ),
-            (enclave.text, Flags::NONE, "entry text"),
-            (enclave.rodata, Flags::NO_EXECUTE, "entry rodata"),
-            (
-                enclave.tables,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry tables",
-            ),
-            (
-                enclave.route,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry route",
-            ),
-            (
-                enclave.transition_stack,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry transition stack",
-            ),
-            (
-                enclave.ist_stack,
-                Flags::WRITABLE.union(Flags::NO_EXECUTE),
-                "entry IST stack",
-            ),
-        ];
-        let mut image_ranges = [(0, 0, Flags::NONE); 9];
-        for ((section, flags, name), range) in classes.into_iter().zip(image_ranges.iter_mut()) {
-            let physical = image
-                .to_physical(section.start)
-                .ok_or(MapError::Misaligned(section.start))?;
-            let region = BootRegion::describe(physical, section.mapped_len())
-                .ok_or(MapError::Undescribed(physical))?;
-            space.map_boot(section.start, region, flags)?;
-            debug!(
-                "paging: {name} {:#x}..{:#x} -> {physical:#x} {flags:?}",
-                section.start,
-                section.start + section.mapped_len()
-            );
-            *range = (physical, section.mapped_len(), flags);
-        }
-
-        let mut mapped = 0;
-        for run in map.page_runs() {
-            let base = run.base();
-            let end = base.checked_add(run.bytes()).ok_or(MapError::InvalidRange(
-                MappingRangeError::PhysicalEndOverflow,
-            ))?;
-            let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
-                if run.cache() == DirectMapCache::Framebuffer {
-                    Flags::WRITE_THROUGH
-                } else {
-                    Flags::NONE
-                },
-            );
-            let mut cursor = base;
-            while cursor < end {
-                let image_range = image_ranges.iter().find_map(|(start, len, flags)| {
-                    let image_end = start.checked_add(*len)?;
-                    (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
-                });
-                let (next, flags) = match image_range {
-                    Some((image_end, flags)) => (end.min(image_end), flags),
-                    None => {
-                        let next_image = image_ranges
-                            .iter()
-                            .map(|(start, _, _)| *start)
-                            .filter(|start| *start > cursor)
-                            .min()
-                            .unwrap_or(end);
-                        (end.min(next_image), default_flags)
-                    }
-                };
-                let virtual_base = direct
-                    .virtual_address(cursor)
-                    .ok_or(MapError::NonCanonical(cursor))?;
-                let region = BootRegion::describe(cursor, next - cursor)
-                    .ok_or(MapError::Undescribed(cursor))?;
-                space.map_boot(virtual_base, region, flags)?;
-                mapped += next - cursor;
-                cursor = next;
-            }
-        }
-        info!(
-            "paging: direct map covers {} MiB at {:#x}",
-            mapped / (1 << 20),
-            direct.offset()
-        );
-
-        Ok(())
-    })();
+    let mut image_ranges = [(0, 0, Flags::NONE); 9];
+    let result = map_image(&mut space, image, &mut image_ranges)
+        .and_then(|()| map_direct(&mut space, map, direct, &image_ranges));
 
     match result {
         Ok(()) => Ok(space),
         Err(cause) => Err(rollback_build(space, cause)),
     }
+}
+
+/// Map each image section by its class, recording its physical extent in `ranges`.
+fn map_image(
+    space: &mut AddressSpace,
+    image: ImageAddress,
+    ranges: &mut [(u64, u64, Flags); 9],
+) -> Result<(), MapError> {
+    let sections = boot::sections();
+
+    // Read-only and executable; read-only and not; writable and not. No
+    // fourth combination exists, which is the whole of W^X.
+    let enclave = sections.entry_enclave;
+    let classes = [
+        (sections.text, Flags::NONE, "text"),
+        (sections.rodata, Flags::NO_EXECUTE, "rodata"),
+        (
+            sections.data,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "data",
+        ),
+        (enclave.text, Flags::NONE, "entry text"),
+        (enclave.rodata, Flags::NO_EXECUTE, "entry rodata"),
+        (
+            enclave.tables,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry tables",
+        ),
+        (
+            enclave.route,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry route",
+        ),
+        (
+            enclave.transition_stack,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry transition stack",
+        ),
+        (
+            enclave.ist_stack,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            "entry IST stack",
+        ),
+    ];
+    for ((section, flags, name), range) in classes.into_iter().zip(ranges.iter_mut()) {
+        let physical = image
+            .to_physical(section.start)
+            .ok_or(MapError::Misaligned(section.start))?;
+        let region = BootRegion::describe(physical, section.mapped_len())
+            .ok_or(MapError::Undescribed(physical))?;
+        space.map_boot(section.start, region, flags)?;
+        debug!(
+            "paging: {name} {:#x}..{:#x} -> {physical:#x} {flags:?}",
+            section.start,
+            section.start + section.mapped_len()
+        );
+        *range = (physical, section.mapped_len(), flags);
+    }
+    Ok(())
+}
+
+/// Map every usable run through the direct map, keeping each image range's own flags.
+fn map_direct(
+    space: &mut AddressSpace,
+    map: &MemoryMap,
+    direct: DirectMap,
+    image_ranges: &[(u64, u64, Flags); 9],
+) -> Result<(), MapError> {
+    let mut mapped = 0;
+    for run in map.page_runs() {
+        let base = run.base();
+        let end = base.checked_add(run.bytes()).ok_or(MapError::InvalidRange(
+            MappingRangeError::PhysicalEndOverflow,
+        ))?;
+        let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
+            if run.cache() == DirectMapCache::Framebuffer {
+                Flags::WRITE_THROUGH
+            } else {
+                Flags::NONE
+            },
+        );
+        let mut cursor = base;
+        while cursor < end {
+            let image_range = image_ranges.iter().find_map(|(start, len, flags)| {
+                let image_end = start.checked_add(*len)?;
+                (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
+            });
+            let (next, flags) = match image_range {
+                Some((image_end, flags)) => (end.min(image_end), flags),
+                None => {
+                    let next_image = image_ranges
+                        .iter()
+                        .map(|(start, _, _)| *start)
+                        .filter(|start| *start > cursor)
+                        .min()
+                        .unwrap_or(end);
+                    (end.min(next_image), default_flags)
+                }
+            };
+            let virtual_base = direct
+                .virtual_address(cursor)
+                .ok_or(MapError::NonCanonical(cursor))?;
+            let region =
+                BootRegion::describe(cursor, next - cursor).ok_or(MapError::Undescribed(cursor))?;
+            space.map_boot(virtual_base, region, flags)?;
+            mapped += next - cursor;
+            cursor = next;
+        }
+    }
+    info!(
+        "paging: direct map covers {} MiB at {:#x}",
+        mapped / (1 << 20),
+        direct.offset()
+    );
+    Ok(())
 }

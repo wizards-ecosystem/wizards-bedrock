@@ -1,34 +1,33 @@
-//! The storage controller's DMA-remapping domain (D-357).
+//! The storage controller's DMA-remapping domain.
 //!
-//! Firmware's DMAR names the VT-d unit that governs a PCI function; this
-//! module reads that table once at boot, installs an empty unit root before
-//! topology discovery, then for each storage candidate proves a complete
-//! bounded inventory of the live PCI requesters governed by that exact unit.
-//! The candidate is already BME-off; every observed sibling requester is
-//! exclusively claimed and fenced BME-off as defence in depth. The installed
-//! owner keeps translation default-deny across discovery and fallback, keeps
-//! those fences together with every table and register mapping until observed
-//! release, and retains the whole boundary after an uncertain transition or
-//! owner return. Firmware-reserved
-//! DMA regions are unsupported until a trusted physical ledger can distinguish
-//! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master
-//! admission all go through the installed domain, while candidate retirement
-//! still restores every ordinary frame and mapping it took (D-199, D-370).
-//! When no complete unit can be established, the candidate is refused and the
-//! boot says `storage: no DMA isolation`, because an unisolated requester is
-//! exactly the case the domain exists to prevent.
+//! Firmware's DMAR, read once at boot, names the VT-d unit that governs a PCI function. An empty
+//! unit root is installed before topology discovery; each storage candidate, already BME-off,
+//! then proves a complete bounded inventory of the live PCI requesters that exact unit governs,
+//! and every observed sibling requester is exclusively claimed and fenced BME-off as defence in
+//! depth. The installed owner keeps translation default-deny across discovery and fallback, keeps
+//! those fences with every table and register mapping until observed release, and retains the
+//! whole boundary after an uncertain transition or owner return.
 //!
-//! Nothing here allocates on the heap inside a candidate: a slab the heap grows
-//! into never returns its frame, and the candidate baseline counts frames.
+//! Firmware-reserved DMA regions are unsupported until a trusted physical ledger can distinguish
+//! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master admission all
+//! go through the installed domain, while candidate retirement still restores every ordinary
+//! frame and mapping it took. When no complete unit can be established the candidate is refused
+//! with `storage: no DMA isolation`, because an unisolated requester is exactly the case the
+//! domain exists to prevent.
+//!
+//! Nothing here allocates on the heap inside a candidate: a slab the heap grows into never
+//! returns its frame, and the candidate baseline counts frames.
+
+use core::fmt;
+use core::ops::{Deref, DerefMut};
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use acpi_tables::{
     Bdf, BusRange, DmaCoverage, DmaHandoff, DmaHandoffError, Dmar, RequesterInventory,
     RequesterInventoryError, Sdt,
 };
-use core::ops::{Deref, DerefMut};
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{Ordering, compiler_fence};
 use pci_config::{Address, HandoffFencePolicy, QualifiedNonRequester, QuiescedIsaRequester};
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
@@ -105,26 +104,20 @@ pub(crate) enum EarlyDmaError {
     Configuration(DmaHandoffFenceError),
 }
 
-impl core::fmt::Display for EarlyDmaError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for EarlyDmaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnauthenticatedPlatform => core::fmt::Write::write_str(
-                formatter,
-                "CPU state does not authenticate a qualified DMA-handoff platform",
-            ),
-            Self::BaseRevision => {
-                core::fmt::Write::write_str(formatter, "bootloader rejected Limine base revision 4")
+            Self::UnauthenticatedPlatform => {
+                f.write_str("CPU state does not authenticate a qualified DMA-handoff platform")
             }
-            Self::MissingEvidence(name) => write!(formatter, "boot handoff has no {name}"),
-            Self::Table(reason) => write!(formatter, "DMA handoff authority: {reason}"),
-            Self::Contract(reason) => write!(formatter, "DMA handoff contract: {reason}"),
+            Self::BaseRevision => f.write_str("bootloader rejected Limine base revision 4"),
+            Self::MissingEvidence(name) => write!(f, "boot handoff has no {name}"),
+            Self::Table(reason) => write!(f, "DMA handoff authority: {reason}"),
+            Self::Contract(reason) => write!(f, "DMA handoff contract: {reason}"),
             Self::Segment(segment) => {
-                write!(
-                    formatter,
-                    "DMA handoff names unsupported PCI segment {segment}"
-                )
+                write!(f, "DMA handoff names unsupported PCI segment {segment}")
             }
-            Self::Configuration(reason) => write!(formatter, "DMA handoff fence: {reason}"),
+            Self::Configuration(reason) => write!(f, "DMA handoff fence: {reason}"),
         }
     }
 }
@@ -183,19 +176,18 @@ static DMAR: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 /// unit nevertheless intercepts the complete segment.
 static DMA_COVERAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
-/// The established unit: the candidate's while it runs and the kept
-/// controller's once one is selected. A thread lock rather than a leaf
-/// lock because the seams that take it run commands under the guard, which a
-/// leaf guard forbids (D-121); it is the discipline the kept controller's own
-/// lock already follows. A quarantined transition leaves its complete unit
-/// owner here for as long as the boot lasts without guessing whether TES is
-/// on or off.
+/// The established unit: the candidate's while it runs and the kept controller's once selected.
+///
+/// A thread lock, because the seams that take it run commands under the guard, which a leaf guard
+/// forbids; the kept controller's own lock already follows that discipline. A quarantined
+/// transition leaves its complete unit owner here for as long as the boot lasts, without
+/// guessing whether TES is on or off.
 static INSTALLED: ThreadLock<Option<InstalledUnit>> = ThreadLock::new(None);
 
-/// A register window whose exact unmap refused, kept owned (D-199).
+/// A register window whose exact unmap refused, kept owned.
 static RETAINED_REGISTERS: SpinLock<Option<ReleasableDevice>> = SpinLock::new(None);
 
-/// A register mapping the active root no longer showed, kept owned (D-199).
+/// A register mapping the active root no longer showed, kept owned.
 static RETAINED_MAPPING: SpinLock<Option<DeviceMapping>> = SpinLock::new(None);
 
 /// Requester fences whose exact return refused after the unit was settled.
@@ -349,6 +341,7 @@ fn early_register_base(dmar: &Dmar<'_>) -> Option<u64> {
 }
 
 /// The remapping unit firmware says governs one function.
+#[derive(Debug)]
 struct Unit {
     register_base: u64,
     requesters: RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
@@ -450,7 +443,8 @@ impl DerefMut for InstalledUnit {
     }
 }
 
-/// What the DMAR says about one function.
+/// Why the DMAR names no unit that may govern one function.
+#[derive(Debug)]
 enum LookupError {
     NoTable,
     UnsafeTopology,
@@ -464,7 +458,7 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     if !pci::topology_is_sealed() {
         return Err(LookupError::UnsafeTopology);
     }
-    // Copied out so topology queries below run with no DMAR guard held (D-121).
+    // Copied out so topology queries below run with no DMAR guard held.
     let table = *DMAR.lock_leaf();
     let Some(table) = table else {
         return Err(LookupError::NoTable);
@@ -513,7 +507,7 @@ fn reserved_regions_are_supported(mut reserved: impl Iterator<Item = (u64, u64)>
 ///
 /// The initial interrupt-remapping implementation deliberately supports one
 /// live DRHD. A second or ungoverned requester refuses PCI interrupt admission
-/// instead of leaving a vector-injection path through another unit (D-372).
+/// instead of leaving a vector-injection path through another unit.
 fn covers_every_present_requester(
     requesters: &RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
 ) -> bool {
@@ -633,6 +627,7 @@ pub(crate) enum EstablishOutcome {
     Quarantined,
 }
 
+#[derive(Debug)]
 enum FenceAcquisition {
     Ready(UnitFences),
     Refused,
@@ -847,7 +842,7 @@ fn release_fences(fences: UnitFences) -> bool {
 /// The unit's register mapping, empty interrupt table, masked fault-event MSI
 /// and TE/IRE state remain installed forever. Only sibling requester fences
 /// are returned so selection can lease the next candidate; its DMA tables are
-/// retargeted through the same live default-deny owner (D-372, D-389).
+/// retargeted through the same live default-deny owner.
 pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
     let fences = {
         let mut installed = INSTALLED.lock();

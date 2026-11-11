@@ -1,16 +1,13 @@
-//! Finding the interrupt controllers ACPI describes.
+//! Finding the interrupt controllers ACPI describes, read before the page tables exist.
 //!
-//! Enough of the table tree to find every bounded I/O APIC and learn which
-//! global system interrupt a legacy IRQ arrives on. Parsing and inventory are
-//! `acpi_tables`, host-tested; the bytes come through `wost`'s ACPI-only
-//! physical reader.
-//!
-//! Read before the page tables are built because the bootloader's direct map
-//! already covers them without adding a mapping dependency (D-45, D-49,
-//! D-86).
+//! The bootloader's direct map already covers the tables then, so reading them adds no mapping
+//! dependency. Parsing and inventory are `acpi_tables`, host-tested; the bytes come through
+//! `wost`'s ACPI-only physical reader.
+
+use alloc::vec::Vec;
+use core::fmt;
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
-use alloc::vec::Vec;
 use wost::boot::{DirectMap, MemoryMap};
 use wost::mm::EarlyFirmwareMemory;
 use wost::mm::{self, FirmwareMemory};
@@ -38,27 +35,15 @@ pub(crate) enum EarlyTableError {
     Duplicate,
 }
 
-impl core::fmt::Display for EarlyTableError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for EarlyTableError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RootPointer => {
-                core::fmt::Write::write_str(formatter, "the ACPI root pointer is unreadable")
-            }
-            Self::RootTable => {
-                core::fmt::Write::write_str(formatter, "the ACPI root table is unreadable")
-            }
-            Self::RootEntry => {
-                core::fmt::Write::write_str(formatter, "an ACPI root-table target is unreadable")
-            }
-            Self::Candidate => {
-                core::fmt::Write::write_str(formatter, "the requested ACPI table is malformed")
-            }
-            Self::Missing => {
-                core::fmt::Write::write_str(formatter, "the requested ACPI table is missing")
-            }
-            Self::Duplicate => {
-                core::fmt::Write::write_str(formatter, "the requested ACPI table is duplicated")
-            }
+            Self::RootPointer => f.write_str("the ACPI root pointer is unreadable"),
+            Self::RootTable => f.write_str("the ACPI root table is unreadable"),
+            Self::RootEntry => f.write_str("an ACPI root-table target is unreadable"),
+            Self::Candidate => f.write_str("the requested ACPI table is malformed"),
+            Self::Missing => f.write_str("the requested ACPI table is missing"),
+            Self::Duplicate => f.write_str("the requested ACPI table is duplicated"),
         }
     }
 }
@@ -186,8 +171,7 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     (interrupts.io_apic_count() != 0).then_some(interrupts)
 }
 
-/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a
-/// stated reason. Shared by every table walk (D-45).
+/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a stated reason.
 pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
     let Some(firmware) = mm::firmware_memory() else {
         warn!("acpi: no reader for firmware memory");
@@ -213,7 +197,7 @@ pub(crate) fn find_table(
     root: Rsdp,
     signature: [u8; 4],
 ) -> Option<Vec<u8>> {
-    find_table_with_multiplicity(firmware, root, signature, false)
+    find_table_with_multiplicity(firmware, root, signature, Multiplicity::First)
 }
 
 /// The only table with `signature`, refusing duplicate authority.
@@ -222,14 +206,21 @@ pub(crate) fn find_unique_table(
     root: Rsdp,
     signature: [u8; 4],
 ) -> Option<Vec<u8>> {
-    find_table_with_multiplicity(firmware, root, signature, true)
+    find_table_with_multiplicity(firmware, root, signature, Multiplicity::Unique)
+}
+
+/// Whether a lookup takes the first matching table or refuses a second one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Multiplicity {
+    First,
+    Unique,
 }
 
 fn find_table_with_multiplicity(
     firmware: FirmwareMemory,
     root: Rsdp,
     signature: [u8; 4],
-    require_unique: bool,
+    multiplicity: Multiplicity,
 ) -> Option<Vec<u8>> {
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         // The XSDT wherever it exists: the RSDT's entries are 32-bit and
@@ -271,13 +262,13 @@ fn find_table_with_multiplicity(
             && header.signature() == signature
         {
             if found.is_some() {
-                if require_unique {
+                if multiplicity == Multiplicity::Unique {
                     warn!("acpi: duplicate {signature:?} tables refuse unique authority");
                     return None;
                 }
                 return found;
             }
-            if !require_unique {
+            if multiplicity == Multiplicity::First {
                 return Some(table);
             }
             found = Some(table);
@@ -288,9 +279,8 @@ fn find_table_with_multiplicity(
 
 /// A whole table at a physical address, read in two steps.
 ///
-/// The header must be read before the length is known, and the length is what
-/// says how much to read — so a header is fetched first and then the whole
-/// table, which is also what lets `Sdt::parse` checksum every byte.
+/// The header must be read first because only its length says how much to read, and reading
+/// the whole table after it is what lets `Sdt::parse` checksum every byte.
 fn read_table(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
     let mut header = [0; Sdt::LEN];
     if !FirmwareMemory::read(&firmware, address, &mut header) {

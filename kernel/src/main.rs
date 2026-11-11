@@ -1,21 +1,15 @@
-//! The Wizard's Bedrock kernel — entry point.
-//!
-//! Booted by Limine (base revision 4, D-42) on x86_64, higher-half. Every privileged
-//! operation goes through `wost`; this crate contains no hand-written `unsafe`.
-//! `deny` rather than `forbid` because [`wost::entry!`] expands its own
-//! `#[allow(unsafe_code)]` glue here — see D-21.
+//! The Wizard's Bedrock kernel entry point; every privileged operation goes through `wost`.
 
 #![no_std]
 #![no_main]
+// Denied, since `forbid` would refuse the `#[allow(unsafe_code)]` glue `wost::entry!` expands here.
 #![deny(unsafe_code)]
 #![cfg_attr(
     not(feature = "selftest"),
     deny(clippy::expect_used, clippy::unwrap_used)
 )]
 
-/// The heap `wost::mm::heap` provides. Nothing in the kernel may allocate
-/// before `mem::init` has run, which is why the boot order in `kernel_main`
-/// puts it before everything that might.
+/// Nothing may allocate before `mem::init` has run, so `kernel_main` runs it before all that might.
 extern crate alloc;
 
 mod acpi;
@@ -46,16 +40,16 @@ mod user;
 mod vfs;
 mod wait;
 
-use core::fmt::Write;
+use core::fmt::{self, Write};
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use crate::arch::current::uart::UartError;
 use wost::arch::current::{apic, cpu, interrupt, pci as platform_pci, pic, segment, task, xstate};
 use wost::boot::BootInfo;
 use wost::sync::SpinLock;
 
+use crate::arch::current::uart::UartError;
 use crate::arch::current::{ioapic, vector};
 
 ::wost::entry!(kernel_main);
@@ -110,7 +104,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     info!("cpu: protections {protections}");
 
     // Before any thread but this one exists, because every switch saves and
-    // restores from here on (D-108).
+    // restores from here on.
     match xstate::init() {
         Some(extended) => info!(
             "cpu: extended state {} bytes, xcr0 {:#x}{}",
@@ -126,7 +120,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     }
 
     // Before ring 3 exists: `AC` survives interrupt delivery and is writable
-    // at CPL 3, so a trap could otherwise arrive with SMAP off (D-101).
+    // at CPL 3, so a trap could otherwise arrive with SMAP off.
     if protections.smap {
         interrupt::arm_access_clear();
     }
@@ -143,7 +137,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     }
 
     // The bootloader's stack has nothing below it and sits inside the
-    // unsplittable direct map, so the only guard is to leave it (D-92).
+    // unsplittable direct map, so the only guard is to leave it.
     *HANDOFF.lock_leaf() = Some(Handoff {
         serial,
         interrupts,
@@ -164,13 +158,11 @@ fn kernel_main(boot: BootInfo) -> ! {
 
 /// What the boot thread carries across the change of stack.
 ///
-/// A static rather than an argument because the old stack is abandoned: a
-/// pointer into it would be a pointer into memory nothing owns any more.
+/// A static, since a pointer into the abandoned old stack would point at memory nothing owns.
 struct Handoff {
     serial: Result<(), UartError>,
     interrupts: Option<acpi::Interrupts>,
-    /// The initrd, which the boot thread reads before it changes stacks and
-    /// the loader reads long after.
+    /// The initrd, read by the boot thread before the stack change and by the loader long after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -260,11 +252,7 @@ pub(crate) fn without_maskable_interrupt_admission_for_test<T>(check: impl FnOnc
     result
 }
 
-/// The rest of the boot, on a guarded stack.
-///
-/// # Panics
-///
-/// If the handoff is missing, which would mean this ran twice.
+/// The rest of the boot, on a guarded stack; panics if the handoff is gone, as then it ran twice.
 extern "C" fn boot_continue(guarded: usize) -> ! {
     BOOT_STACK_GUARDED.store(guarded == 1, Ordering::Release);
     let Some(Handoff {
@@ -279,7 +267,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     };
 
     // The heap exists from here; the console's shadow is its first consumer,
-    // so scrolling stops reading uncached device memory (D-48).
+    // so scrolling stops reading uncached device memory.
     dev::attach_back_buffer();
     let routing = prepare_keyboard_routing(interrupts).into_masked();
 
@@ -312,8 +300,8 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     // idempotent, because the self-checks start it earlier.
     thread::start_idle();
 
-    // The shipped path must exercise user entry too (D-116). A refusal is
-    // diagnostic rather than fatal, so the kernel remains interactive.
+    // The shipped path must exercise user entry too; a refusal is diagnostic,
+    // never fatal, so the kernel remains interactive.
     match user::run() {
         Ok(program) => info!("user: program running in slot {}", program.slot),
         Err(reason) => warn!("user: no program: {reason}"),
@@ -327,12 +315,9 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
 
 /// The boot thread's last job: block on the keyboard, and draw what arrives.
 ///
-/// Nothing polls and nothing spins: this thread is not runnable until a
-/// keystroke wakes it (D-61), the idle thread halts meanwhile, and no timer
-/// is armed — so a kernel at a prompt takes one interrupt per keystroke.
-///
-/// Drawing is here rather than in the handler because a glyph can cost a
-/// scroll (D-63).
+/// Nothing polls and nothing spins: this thread is not runnable until a keystroke wakes it, the
+/// idle thread halts meanwhile and no timer is armed, so a prompt takes one interrupt per key.
+/// Drawing happens here, outside the handler, because a glyph can cost a scroll.
 fn echo_keystrokes() -> ! {
     let mut context = thread::ThreadContext::require();
     loop {
@@ -348,16 +333,14 @@ fn echo_keystrokes() -> ! {
 
 /// Bring up the interrupt controller, start the clock, and accept interrupts.
 ///
-/// Each step is a precondition for the next, and every one of them can decline:
-/// a kernel that cannot take interrupts is worth far more than one that takes
-/// them into a controller it never configured. In order — stop the legacy
-/// controllers delivering anything, give the local APIC its vectors and turn
-/// it on, measure the clocks, and only then set the flag. Calibration sits
-/// where it does for both of its neighbours: it needs the APIC's registers
-/// answering, and running before the `sti` is what makes the measurement
-/// unpreemptible. It arms nothing — the timer is the scheduler's to arm, and
-/// nothing has asked it for anything yet. Alone among the steps, its failure
-/// vetoes nothing: a kernel without a clock still wants its keyboard.
+/// Each stage is a precondition for the next and every one can decline, because a kernel that
+/// cannot take interrupts is worth far more than one taking them into a controller it never
+/// configured. In order: stop the legacy controllers delivering anything, give the local APIC its
+/// vectors and turn it on, measure the clocks, and only then set the flag. Calibration sits between
+/// for both neighbours: it needs the APIC's registers answering, and running before the `sti` is
+/// what makes the measurement unpreemptible. It arms nothing, since the timer is the scheduler's
+/// to arm and nothing has asked it for anything yet. Alone among the stages, its failure vetoes
+/// nothing: a kernel without a clock still wants its keyboard.
 fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -365,8 +348,46 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     }
     info!("pic: legacy controllers remapped and masked");
 
-    // One MSR write at boot (D-81); the report matters as much, because this
-    // is the only place a machine's speculation claims are visible.
+    apply_speculation_controls();
+
+    match apic::init(vector::LOCAL_APIC) {
+        Ok(local) => info!("apic: {local}"),
+        Err(reason) => {
+            warn!("local apic: {reason}; interrupts stay off");
+            return;
+        }
+    }
+
+    start_clock();
+    publish_time_page();
+
+    #[cfg(feature = "selftest")]
+    EXTERNAL_MASK_REFUSAL_PROVED.store(
+        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
+        Ordering::Release,
+    );
+    if !external_interrupts_are_admitted(external_controllers) {
+        warn!("ioapic: complete mask proof missing; interrupts stay off");
+        return;
+    }
+    if !iommu::interrupt_boundary_active() {
+        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
+        return;
+    }
+
+    if let Err(reason) = apic::enable_after_pending_audit() {
+        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
+        return;
+    }
+    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
+    info!("cpu: accepting interrupts");
+}
+
+/// Enable the speculation controls, then choose user isolation and the ring 3 buffer clear.
+///
+/// One MSR write at boot; the report matters as much, because this is the
+/// only place a machine's speculation claims are visible.
+fn apply_speculation_controls() {
     let speculation = cpu::enable_speculation_controls();
     info!("cpu: {speculation}");
     match cpu::shared_kernel_mapping_reason(&speculation) {
@@ -405,7 +426,7 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     }
 
     // Arm `verw` unless `MDS_NO` makes it pointless; an unreadable `MD_CLEAR`
-    // errs toward executing it (D-98).
+    // errs toward executing it.
     if speculation.mds_no() {
         info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
     } else {
@@ -420,15 +441,10 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
             }
         );
     }
+}
 
-    match apic::init(vector::LOCAL_APIC) {
-        Ok(local) => info!("apic: {local}"),
-        Err(reason) => {
-            warn!("local apic: {reason}; interrupts stay off");
-            return;
-        }
-    }
-
+/// Calibrate the clock against the local APIC and say how far it can be trusted.
+fn start_clock() {
     match time::init() {
         Ok(report) => {
             let apic_source_hz = report.apic_source_hz();
@@ -443,9 +459,12 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         }
         Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
     }
+}
 
-    // The page exists whether or not the clock does: a program reading `TIME`
-    // must find `MODE_NONE`, not a page fault (D-166).
+/// Publish the time page whether or not the clock exists.
+///
+/// A program reading `TIME` must find `MODE_NONE`, not a page fault.
+fn publish_time_page() {
     if timepage::init(time::counter_hz()) {
         let mode = if time::is_calibrated() {
             timepage::MODE_COUNTER
@@ -469,27 +488,6 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     } else {
         warn!("time: no page to publish the clock in; every query is ring Uptime");
     }
-
-    #[cfg(feature = "selftest")]
-    EXTERNAL_MASK_REFUSAL_PROVED.store(
-        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
-        Ordering::Release,
-    );
-    if !external_interrupts_are_admitted(external_controllers) {
-        warn!("ioapic: complete mask proof missing; interrupts stay off");
-        return;
-    }
-    if !iommu::interrupt_boundary_active() {
-        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
-        return;
-    }
-
-    if let Err(reason) = apic::enable_after_pending_audit() {
-        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
-        return;
-    }
-    MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
-    info!("cpu: accepting interrupts");
 }
 
 const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllersMasked>) -> bool {
@@ -514,13 +512,10 @@ fn refuse_pci_for_degraded_boot() {
 
 /// Claim configuration space and say what is on the bus.
 ///
-/// Declines rather than fails: a machine whose configuration ports are already
-/// spoken for has no PCI as far as this kernel is concerned, and everything
-/// built so far works without it.
-///
-/// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
-/// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
-/// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
+/// Declines without failing: a machine whose configuration ports are already spoken for has no
+/// PCI as far as this kernel is concerned, and everything built so far works without it. The walk
+/// recurses through bridges: q35 and VMware place functions behind them, so a scan of bus zero
+/// can miss a controller entirely (`012` §2).
 fn survey_the_bus(
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -639,8 +634,8 @@ impl CandidateStage {
 ///
 /// Selection advances only after the failed candidate has stopped DMA,
 /// unmapped its registers, returned its queues, restored its command word and
-/// released its function and I/O claims (D-199). Every stage returns its
-/// owners here, so one stage frame at a time sits on the boot stack (D-359).
+/// released its function and I/O claims. Every stage returns its owners here,
+/// so only one stage frame at a time sits on the boot stack.
 fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     #[cfg(feature = "selftest")]
     let stack = nvme::CandidateStackMeasurement::begin();
@@ -1143,7 +1138,7 @@ fn refused_bus_master_retires_before_nvme_start() -> bool {
 }
 
 /// Mount through the VFS so the shipped path exercises its abstraction.
-/// An absent volume is a valid empty machine, not a boot failure (D-171).
+/// An absent volume is a valid empty machine, not a boot failure.
 fn mount_the_volume() {
     let shape = fs::mount().map(|result| result.map(|volume| volume.shape()));
     match shape {
@@ -1165,7 +1160,7 @@ fn mount_the_volume() {
     };
 
     // The controller's ThreadLock is non-reentrant across this callback, so
-    // names are resolved only after enumeration releases it (D-200).
+    // names are resolved only after enumeration releases it.
     let mut files = 0usize;
     let mut directories = 0usize;
     let mut first = [0u8; 16];
@@ -1204,7 +1199,7 @@ fn mount_the_volume() {
         }
         Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
         // A FAT volume has no devices, and the compiler says so: a new node
-        // kind is an error in every match (D-171).
+        // kind is an error in every match.
         Ok(vfs::Node::Device(_)) => warn!("fat32: a listed file resolved to a device"),
         Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
     }
@@ -1215,7 +1210,7 @@ fn mount_the_volume() {
 /// `014` asks for more than one backend before the VFS's abstraction is worth
 /// believing, and this is the shipped kernel exercising all three through the
 /// same three operations. It is an unconditional sibling of bus discovery,
-/// because neither backend needs a device (D-172, D-198).
+/// because neither backend needs a device.
 fn survey_the_filesystems() {
     tmpfs::init();
 
@@ -1297,12 +1292,12 @@ enum KeyboardRouteError {
     Keyboard(crate::arch::current::i8042::InterruptEnableError),
 }
 
-impl core::fmt::Display for KeyboardRouteError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for KeyboardRouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotOwned(gsi) => write!(f, "gsi {gsi} is not this controller's"),
-            Self::Controller(reason) => core::fmt::Display::fmt(reason, f),
-            Self::Keyboard(reason) => core::fmt::Display::fmt(reason, f),
+            Self::Controller(reason) => fmt::Display::fmt(reason, f),
+            Self::Keyboard(reason) => fmt::Display::fmt(reason, f),
         }
     }
 }
