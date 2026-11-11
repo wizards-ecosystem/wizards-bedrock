@@ -112,7 +112,8 @@ system in Preview 2. The rule that keeps the number where it is:
 > A right must correspond to a distinction the kernel actually makes about that
 > object — never to a syscall name.
 
-**Type encodings get headroom for 64 object types, not 8.** Policy is
+**Type encodings get headroom for 64 object types, not 8**, because Zircon is
+at 26 and still growing. Policy is
 **monotonic and frozen**: tighten-only, immutable once a process has children,
 Zircon's `zx_job_set_policy` shape, with bits encoded so that adding an object
 type never renumbers an existing one.
@@ -396,9 +397,9 @@ purpose (D-45), and `010` §8 measured that as right.
 nothing below it, where an overrun corrupts its neighbour *while the fault
 handler is running*. It now stands on a guarded region whose geometry is the
 thread arena's own, placed at its end, so there is no new hardcoded window and
-no entry to D-46's ledger. Its first shipped caller was `with_active_space`: an
-unsafe-boundary change whose only user is its own test is one to be suspicious
-of.
+no entry to D-46's ledger. It is the first shipped caller of
+`with_active_space`: an unsafe-boundary change whose only user is its own test
+is one to be suspicious of.
 
 **CET's second region is not foreclosed, and needed no code to keep open.**
 `010` §10's requirement is that the stack allocator not make a shadow stack
@@ -524,7 +525,8 @@ other vector faults when user code says `int`, because a device's line is not a
 service.
 
 The descriptor order is fixed for `sysret` already: `USER_DATA` sits *before*
-`USER_CODE`, which is what `STAR + 8` and `STAR + 16` require, so the order is
+`USER_CODE`, which is what `STAR + 8` and `STAR + 16` require. Moving a
+descriptor later means moving every selector that names it, so the order is
 settled now and the mechanism is not.
 
 **Shared kernel mappings have their own admission proof** (D-250). D-81's
@@ -587,8 +589,9 @@ is the hardware's account of where the caller was.
 **The user copy is the boundary** (D-97). `stac` and `clac` must not be given
 `nomem` or `preserves_flags`: `stac` changes whether a *later* access faults,
 so `nomem` let the optimiser move the copy out of the window, and the flag it
-sets is `EFLAGS.AC`. Only the release build showed it, which is why the gate
-boots both profiles (D-65).
+sets is `EFLAGS.AC`. Debug passed and release faulted. D-65 made the gate boot
+both profiles for overflow checks; this is the same lesson through a different
+door.
 
 **`VERW` is armed unless the processor claims `MDS_NO`** (D-98), rather than
 gated on `MD_CLEAR`, which QEMU does not report, so gated that way the
@@ -621,7 +624,7 @@ was proposed. Where the answer is "not paid", it says so and says where it went.
 | `swapgs` and the GS base, left for ring 3 (D-29) | **Not paid, and the reason changed.** D-154 moved the held-lock count behind the real `arch::percpu` seam. There is still one CPU and no `syscall` entry, so nothing needs a `gs:` accessor or `swapgs`; those move with SMP to Phase 12 |
 | No ring-3 descriptors | **Paid.** D-96 |
 | The lock discipline in the borrow checker | **Paid.** D-85, first, so nothing here was written twice |
-| No preempt-disable mechanism | **Not paid.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
+| No preempt-disable mechanism | **Not paid.** Every lock a handler can reach must keep disabling interrupts, and today that is all of them. Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
 | The per-CPU word widens (D-56, D-70) | **Structural seam paid by D-154; GS-backed CPU selection not paid.** One CPU and D-96's interrupt gate need neither a `gs:` accessor nor `swapgs`; both remain with SMP in Phase 12 |
 | Per-process quota | **Paid at the handle layer** (D-111: 64 handles per process). **Not paid** for frames or for per-message allocation, which is D-44's other half and needs an accounting owner |
 | A wait with a timeout, and a wait on two queues | **Half paid.** D-164 made `RingWait` sleep until the earliest operation deadline. A wait on multiple queues remains absent because nothing calls for one |

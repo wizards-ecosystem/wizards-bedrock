@@ -195,8 +195,9 @@ A promise holds an `Arc` to its table, so a program that dies holding one
 leaves the table alive exactly as long as the promise; the check then requires
 the table's `Weak` to stop upgrading, because a table nothing will ever free is
 the other failure. A polled NVMe read cannot be ended by
-writing a completion, because the device has the command: `abandon` waits for
-the controller there, and must not return before `is_quiet`.
+writing a completion, because the device has the command. `abandon` ends only
+cancellable entries and returns; the caller keeps the owner and retries, and teardown
+releases nothing until `is_quiet`.
 
 ---
 
@@ -303,6 +304,8 @@ preparation's register accesses, which the leaf alone never saw, fails only the 
 check, as do the calibrated live-frame defects. An individual function-frame
 ceiling could not have detected the original nested overflow.
 
+### Slice 5: NVMe, polled (D-169)
+
 The read checks write a distinct pattern into every block and read four,
 because a disk of zeros proves nothing, and require the bytes **after** one
 block to stay zero, because the extent of a read is only observable past its
@@ -364,7 +367,7 @@ handle remains old Phase 7 work.
 
 `with_controller` holds the controller's non-reentrant `ThreadLock` across an
 enumeration callback (D-200), so a caller collects listed names and resolves
-them afterwards: the type prevents a thread lock from surviving a scheduler
+them afterwards, which is also the shape a caller must use: the type prevents a thread lock from surviving a scheduler
 handoff; it cannot make callback re-entry succeed.
 
 ### Rights, and the one split worth stealing (`012` section 4)
@@ -394,7 +397,9 @@ same-type authority monotone non-increasing, and no requested mask. A
 directory preserves its parent's rights unchanged; a file preserves only
 universal rights already held and derives `READ` from `TRAVERSE`. That
 cross-type derivation is not a bitset subset, but it cannot recreate a
-universal right or grant an unauthorised file operation. `WRITE` is never
+universal right or grant an unauthorised file operation. WASI Preview 1's
+base/inheriting pair forced its libc to compute two masks per open and was
+deleted. `WRITE` is never
 granted, because there is no write path and a right that grants nothing is a
 syscall name in disguise.
 
