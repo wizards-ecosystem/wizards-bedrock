@@ -6,50 +6,44 @@
 > Numeric measurements and words such as "current" are dated to this pass;
 > normative choices and present repository state live in `004-decision-log.md`.
 
-Produced 2026-08-22, opening Phase 3. Where `003-research-notes.md` surveyed
-architecture before the code existed, this pass is aimed: it closes the gaps
-`003` flagged, and it arms the decisions `007-memory.md` holds open.
+Produced 2026-08-22, opening Phase 3. It closes the gaps `003` flagged and arms
+the decisions `007-memory.md` holds open.
 
-**Method and its honest limit.** Two independent research passes — one by
-Claude, one by Codex — merged into one document. ~25 searches, 8 primary
-documents fetched, every claim carrying its source. This is **not** the
-adversarial multi-vote protocol that produced `003`'s Tier 1, but the two
-passes were run without sight of each other, so where they agree the
-agreement is worth something. Marks used below:
+**Method and its limit.** Two independent research passes, run without sight
+of each other, merged into one document: about 25 searches, 8 primary documents
+fetched, every claim carrying its source. This is **not** the adversarial
+multi-vote protocol that produced `003`'s Tier 1, but because the passes ran
+blind to each other, where they agree the agreement is worth something. Marks:
 
-- **◆** — a primary source (paper, kernel doc, protocol spec, official book)
+- **◆**: a primary source (paper, kernel doc, protocol spec, official book)
   was fetched directly rather than summarised from search results.
-- **✓** — verified locally by compiling against this repo's pinned toolchain,
+- **✓**: verified locally by compiling against this repo's pinned toolchain,
   or by reading the pinned dependency's own source.
-- **⊕** — both passes reached this independently. Not proof, but the closest
+- **⊕**: both passes reached this independently. Not proof, but the closest
   thing to confirmation this document has.
 
 Everything unmarked is `003`'s Tier 2: sourced, plausible, cite-checked, and
 to be re-read at the source before an ADR leans on it.
 
-**Where the two passes agreed** ⊕ — recorded once here rather than repeated:
-keep the framekernel as the core architecture (Asterinas/OSTD, ~14% TCB);
-keep the API Guidelines + Rust for Linux convention base; keep capability
-handles with rights-attenuating duplicate/replace and channels as the sole
-delegation path; keep async submission/completion queues as the native data
-path but keep them austere; keep EEVDF-inspired tickless scheduling with
-policy kept separable; keep WizFS's bcachefs-style key-versioned snapshots
-and checksums-beside-pointers. Phase 3's shape drew the same answer twice
-as well: a host-tested page-table encoding crate first, typed frame
-ownership, an explicit direct-map contract, W^X from the first owned CR3,
-guard pages, zero-on-allocate, and structural selftests that walk the tables
-after the switch. **None of the existing architecture needs to change.** The
-findings below are additions, sharpenings, and one live risk.
+**Where the two passes agreed** ⊕: keep the framekernel (Asterinas/OSTD, ~14%
+TCB); keep the API Guidelines and Rust for Linux convention base; keep
+capability handles with rights-attenuating duplicate/replace and channels as
+the sole delegation path; keep async submission/completion queues as the
+native data path but austere; keep EEVDF-inspired tickless scheduling with
+policy separable; keep WizFS's bcachefs-style key-versioned snapshots and
+checksums beside pointers. For Phase 3 both gave: a host-tested page-table
+encoding crate first, typed frame ownership, an explicit direct-map contract,
+W^X from the first owned CR3, guard pages, zero-on-allocate, and structural
+selftests that walk the tables after the switch. **None of the existing
+architecture needs to change.** The findings below are additions, sharpenings,
+and one live risk.
 
 ---
 
 ## 1. The Rust you are actually allowed to use
 
-Pinned at 1.97.1, edition 2024, stable-only (D-01). Several things have
-landed since the conventions were written that change what is possible here.
-
-Rows marked ✓ were compiled against this repo's pinned toolchain for
-`x86_64-unknown-none` under edition 2024, not merely read about.
+Pinned at 1.97.1, edition 2024, stable-only (D-01). Rows marked ✓ were compiled
+against the pinned toolchain for `x86_64-unknown-none` under edition 2024.
 
 | Feature | Since | What it unlocks in this repo |
 |---|---|---|
@@ -62,29 +56,27 @@ Rows marked ✓ were compiled against this repo's pinned toolchain for
 | `core::error::Error` | 1.81 | Already adopted (`005`) |
 
 **Naked functions are the notable one.** `wost/src/arch/x86_64/interrupt.rs:320`
-builds the interrupt trampoline with `global_asm!`. A `#[unsafe(naked)]` fn
-carries a Rust signature, a symbol the type system knows about, `///` docs the
-lints can enforce, and a `# Safety` section — all of which a `global_asm!`
-string cannot have. The blob is currently outside every mechanism `005`
-mandates. Phase 4's context switch is the natural place to adopt the pattern;
-whether to convert the existing trampoline is a judgement call about churn.
+builds the interrupt trampoline with `global_asm!`. A `#[unsafe(naked)]` fn has
+a declared Rust type, a symbol the type system knows, `///` docs the lints can
+enforce, and a `# Safety` section, none of which a `global_asm!` string can
+have, so the blob is outside every mechanism `005` mandates. Phase 4's context
+switch is the natural place to adopt the pattern; converting the existing
+trampoline is a judgement call about churn.
 
 **The allocator API is still not stable, and Phase 3 must design around that.**
-A draft PR proposes stabilising the `Allocator` trait together with `Global`,
-`System`, and the `*_in` constructors (`Box::new_in`, `Vec::new_in`), plus a
-`GlobalAllocator` marker trait so `Allocator` implementors can be installed
-globally — but it still needs FCP and has not landed. So Phase 3's heap goes
-in through `#[global_allocator]` and the `alloc` crate, which is stable, and
-the design should keep the *policy* separable so that adopting `Allocator`
-later is a type change rather than a rewrite (§3.5).
+A draft PR proposes stabilising the `Allocator` trait with `Global`, `System`,
+the `*_in` constructors and a `GlobalAllocator` trait for installing
+implementors globally, but it still needs FCP and has not landed. So Phase 3's
+heap goes in through `#[global_allocator]` and the stable `alloc` crate, with
+the *policy* kept separable so that adopting `Allocator` later is a type change
+rather than a rewrite (§3.5).
 
-**Edition-2024 items worth re-checking against the code.** `unsafe_op_in_unsafe_fn`
-is already `deny` in the workspace lint table — ahead of the curve, since it
-is only `warn`-by-default in the edition. Two others land in Phase 3's path:
-unsafe attributes (`unsafe(no_mangle)`, `unsafe(export_name)`,
-`unsafe(link_section)`) matter wherever the boot glue or linker script names a
-symbol; and `static_mut_refs` means the per-frame metadata array (§3.1) cannot
-be a `static mut` — it needs `wost::cell` or equivalent from the first line.
+**Edition-2024 items.** `unsafe_op_in_unsafe_fn` is already `deny` in the
+workspace lint table, ahead of the edition's `warn`. Unsafe attributes
+(`unsafe(no_mangle)`, `unsafe(export_name)`, `unsafe(link_section)`) matter
+wherever the boot glue or linker script names a symbol, and `static_mut_refs`
+means the per-frame metadata array (§3.1) cannot be a `static mut`: it needs
+`wost::cell` or equivalent from the first line.
 
 ---
 
@@ -92,83 +84,73 @@ be a `static mut` — it needs `wost::cell` or equivalent from the first line.
 
 ### 2.1 A third standard worth adopting: Microsoft's Pragmatic Rust Guidelines
 
-`005` names two authorities (Rust API Guidelines, Rust for Linux). A third has
-appeared that is more specific than either about `unsafe` admission, and it
-maps onto the `wost` boundary almost exactly.
-
-Its distinctive contribution is a **closed taxonomy of valid reasons to write
-`unsafe`**: novel abstractions (a new smart pointer or allocator), performance
-(`get_unchecked`), and FFI/platform calls. Anything else is a defect. `005`
-currently says "an operation that cannot be expressed safely", which is a
+It is more specific about `unsafe` admission than `005`'s two authorities (Rust
+API Guidelines, Rust for Linux) and maps onto the `wost` boundary almost
+exactly. Its distinctive contribution is a **closed taxonomy of valid reasons to
+write `unsafe`**: novel abstractions (a new smart pointer or allocator),
+performance (`get_unchecked`), and FFI/platform calls. Anything else is a
+defect. `005` says "an operation that cannot be expressed safely", which is a
 judgement; the taxonomy is a checklist a reviewer can apply. It also requires
-plain-text reasoning for *calling* unsafe as well as for *providing* it — the
-`// SAFETY:` / `# Safety` split `005` already took from Rust for Linux — and
-explicitly recommends `unsafe_op_in_unsafe_fn`, already `deny` here.
+plain-text reasoning for *calling* unsafe as well as *providing* it (the `//
+SAFETY:` / `# Safety` split `005` took from Rust for Linux) and recommends
+`unsafe_op_in_unsafe_fn`.
 
 *Proposal:* add the taxonomy to `005`'s "What may go in `wost`" section as the
-admission test, alongside the existing no-speculative-API rule.
+admission test, alongside the no-speculative-API rule.
 
 ### 2.2 Rustdoc specifics `005` does not yet state
 
-- **The first sentence is load-bearing** — it is the module listing and the
-  search result. Convention: one sentence, ends in a period, rule of thumb
-  ≤ 15 words. `005` says "a single sentence saying what the item does"; the
-  length discipline is the part that is actually hard.
-- **Section order** is conventional and expected: summary → body →
-  `# Examples` → `# Errors` → `# Panics` → `# Safety`. `005` mandates the
-  content of three of these but not the order.
-- **`#[doc(hidden)]`** for items that are `pub` for technical reasons only.
-  The support items `wost::entry!` needs in scope are the case here.
-- **`#[doc(auto_cfg)]` is enabled at crate level by default** in current
-  rustdoc: feature-gated items get their `cfg` badge without
-  `#[doc(cfg(...))]`. This is free documentation for the `selftest` feature.
-  `#[doc(auto_cfg = false)]` opts out.
-- **The `no_std` intra-doc-link trap.** A crate that is `no_std` cannot
-  resolve an intra-doc link to a `std` item; the workaround is
-  `#[cfg(doc)] extern crate std;`. With `broken_intra_doc_links = "deny"` in
-  the workspace and `cargo xtask doc` as a gate step, this will present as a
-  CI failure whose cause is not obvious. Worth writing down before it bites.
+- **The first sentence is the module listing and the search result.** One
+  sentence, ending in a period, about 15 words at most. `005` asks for one
+  sentence but not the length discipline.
+- **Section order**: summary, body, `# Examples`, `# Errors`, `# Panics`,
+  `# Safety`. `005` mandates three of these but not the order.
+- **`#[doc(hidden)]`** for items `pub` for technical reasons only, such as the
+  support items `wost::entry!` needs in scope.
+- **`#[doc(auto_cfg)]` is on at crate level by default**, so feature-gated
+  items get their `cfg` badge without `#[doc(cfg(...))]`: free documentation
+  for the `selftest` feature. `#[doc(auto_cfg = false)]` opts out.
+- **The `no_std` intra-doc-link trap.** A `no_std` crate cannot resolve an
+  intra-doc link to a `std` item; the workaround is
+  `#[cfg(doc)] extern crate std;`. With `broken_intra_doc_links = "deny"` and
+  `cargo xtask doc` as a gate step, it presents as a CI failure whose cause is
+  not obvious.
 
 ### 2.3 One place `005` is more restrictive than it needs to be
 
 `005` rejects C-EXAMPLE outright: "these crates are `no_std` and
 cross-compiled, so doctests cannot run and unrunnable examples rot." That is
-true of `wost` and `kernel`. It is **not** true of `libs/`, which carry
-`#![cfg_attr(not(test), no_std)]` precisely so `cargo test` builds them for
-the host — where doctests *do* compile and run, and are covered by the bare
-`cargo test` that `default-members` already scopes.
+true of `wost` and `kernel`, **not** of `libs/`, which carry
+`#![cfg_attr(not(test), no_std)]` so `cargo test` builds them for the host,
+where doctests compile and run under the bare `cargo test` that
+`default-members` scopes.
 
-*Proposal:* split the rule. Examples stay optional in `wost` and `kernel`;
-in `libs/` they are encouraged, because there they are executable checks
-rather than rot. This matters most for the crate Phase 3 is about to add:
-page-table bit packing is exactly the kind of API where a three-line example
-is the clearest possible statement of the encoding.
+*Proposal:* split the rule. Examples stay optional in `wost` and `kernel`; in
+`libs/` they are encouraged, because there they are executable checks rather
+than rot. Page-table bit packing is the kind of API where a three-line example
+is the clearest statement of the encoding.
 
 ### 2.4 Which unsafe document is actually the authority
 
-Worth settling before the page-table crate and the frame types are written,
-because `wost` is about to grow its largest batch of new `unsafe` since the
-split.
-
-The **Unsafe Code Guidelines Reference** is the document people reach for and
-is the wrong one to treat as binding: it describes itself as largely
-historical and advisory, and it documents open questions as much as settled
-rules. The practical anchor is the **Nomicon's sound-wrapper principle** —
-safe code must not be able to trigger UB through your abstraction, no matter
-how it is called. That is a single testable question to ask of every new
-`wost` export, and it is exactly the standard `005` already applies in
-practice when it says an abstraction must make the unsafe operation
+Worth settling before the page-table crate and frame types bring `wost` its
+largest batch of new `unsafe` since the split. The **Unsafe Code Guidelines
+Reference** describes itself as largely historical and advisory and documents
+open questions as much as rules, so it is the wrong one to treat as binding. The
+practical anchor is the **Nomicon's sound-wrapper principle**: safe code must
+not be able to trigger UB through your abstraction, however it is called. That
+is one testable question for every new `wost` export, and it is the standard
+`005` already applies when it says an abstraction must make the unsafe operation
 *checkable*, not merely *wrapped*.
 
-Two other aliasing-model notes, relevant because `MmioRegion` and the frame
-types both hand out pointers into memory something else can change:
-**Tree Borrows** has replaced Stacked Borrows as the working aliasing model
-(it fixes overeager uniqueness for `&mut` and the confinement of pointers to
-the size of the type they were created with — Stacked Borrows rejected ~54%
-more test code). Neither model is normative Rust yet, and neither can be run
-against this kernel (Miri cannot execute a cross-compiled `no_std` binary) —
-so the discipline has to come from the API shape, which is the argument for
-the untyped-memory typing in §3.2 rather than a reason to reach for `Miri`.
+Because `MmioRegion` and the frame types hand out pointers into memory something
+else can change, the aliasing model matters: **Tree Borrows** has replaced
+Stacked Borrows as the working aliasing model (it fixes overeager `&mut`
+uniqueness and the confinement of pointers to the size of the type they were
+created with; Stacked Borrows rejected ~54% more test code). Neither model is
+normative yet, and neither can be run against this kernel (Miri cannot execute a
+cross-compiled `no_std` binary), so the discipline has to come from the API
+shape: the argument for the untyped-memory typing in §3.2 rather than for
+`Miri`.
 
 *Proposal:* name the Nomicon's sound-wrapper principle in `005` as the
 standard `wost` exports are held to, and note the UCG's advisory status so
@@ -180,12 +162,9 @@ nobody cites it as a rule later.
 
 ### 3.0 The Limine base revision — the live risk, and it is cheaper to fix than it looks
 
-This is the one finding that changes a *premise* rather than sharpening a
-choice, and it lands on slice 1.
-
-**The protocol has moved to base revision 6, and revisions 0–5 are marked
-deprecated** ◆. The revision history matters far more than the deprecation
-notice does:
+The one finding that changes a *premise* rather than a choice, and it lands on
+slice 1. **The protocol is at base revision 6, and revisions 0 to 5 are marked
+deprecated** ◆. The revision history matters more than the deprecation:
 
 | Revision | What it changes, relative to 3 |
 |---|---|
@@ -197,25 +176,20 @@ notice does:
 **Base revision 4 is the answer to D-33.** `wost/src/boot/mod.rs:146` currently
 carries this comment on `BootInfo`'s deleted direct map: *"under base revision
 3 it covers only the regions the memory map lists — not the device holes — so
-nothing in this phase could use it."* That sentence is a statement of a base
-revision 3 limitation, and base revision 4 is the revision that
-lifts it. It also hands slice 5 something it would otherwise have to build:
-the I/O APIC is discovered through the MADT, which means reading ACPI tables,
-which base revision 4 guarantees are mapped.
+nothing in this phase could use it."* Base revision 4 lifts exactly that
+limitation, and it guarantees the ACPI tables slice 5 reads to find the I/O
+APIC through the MADT are mapped.
 
-**And the crate pin does not block it** ✓. The obvious reading — that this is
-gated behind the `limine` 0.6.x upgrade `001-boot.md` lists as an open item —
-is wrong, and worth stating plainly because it would be easy to defer on. Two
-checks against the pinned dependency:
+**And the crate pin does not block it** ✓, contrary to the obvious reading that
+it waits on the `limine` 0.6.x upgrade `001-boot.md` lists as open:
 
 - `limine` 0.6.5 still carries `#![feature(ptr_metadata)]` and **fails to
   compile on stable 1.97.1** ✓ (confirmed by building it; `ptr_metadata` is
   still unstable, rust#81513 ✓). The pin to `=0.5.0` remains correct, and
   `001-boot.md`'s open item stands as written.
-- But the base revision is a *protocol* parameter, not a crate version. The
-  pinned 0.5.0 crate exposes `BaseRevision::with_revision(u64)` as a public
-  `const fn` ✓ — `BaseRevision::new()` is merely `with_revision(3)`. The tag
-  is three `u64`s in a static.
+- The base revision is a *protocol* parameter, not a crate version. The pinned
+  0.5.0 crate exposes `BaseRevision::with_revision(u64)` as a public
+  `const fn` ✓; `BaseRevision::new()` is merely `with_revision(3)`.
 
 So requesting base revision 4 is a one-argument change at
 `wost/src/boot/mod.rs:195`, inside the single file `005` designates as the
@@ -224,177 +198,155 @@ protocol-revision choice are independent, and only the first is blocked.
 
 *Caveats to carry into the slice, not reasons to defer:*
 
-- The **vendored Limine v10 binary** must actually support the revision asked
-  for. `is_supported()` is already checked and logged (`base_revision_supported`
-  in `BootInfo`), so this fails loudly rather than silently — but it is a boot
-  test, not a literature question, and should be the first thing slice 1 does.
-- The 0.5.0 crate does not know the `RESERVED_MAPPED` memory-map type
-  constant. Memory-map entry-type handling must therefore treat unknown types
-  defensively — which is the `#[non_exhaustive]` discipline `005` already
-  mandates for error enums, applied to a foreign enum.
-- Even with device holes HHDM-covered, Phase 3 should still map device MMIO
-  itself through `MmioRegion` with an explicit memory type rather than reach
-  through the bootloader's mapping. Base revision 4 removes the wall; it does
-  not remove the reason for the door. This is consistent with §3.3's proposed
+- The **vendored Limine v10 binary** must support the revision asked for.
+  `is_supported()` is already checked and logged (`base_revision_supported` in
+  `BootInfo`), so this fails loudly, but it is a boot test and should be the
+  first thing slice 1 does.
+- The 0.5.0 crate does not know the `RESERVED_MAPPED` constant, so memory-map
+  handling must treat unknown types defensively: the `#[non_exhaustive]`
+  discipline `005` mandates for error enums, applied to a foreign enum.
+- Even with device holes HHDM-covered, Phase 3 should map device MMIO itself
+  through `MmioRegion` with an explicit memory type. Base revision 4 removes
+  the wall; it does not remove the reason for the door. This matches §3.3's
   direct-map contract, which excludes device holes deliberately.
 
-*Proposal:* make the base-revision posture an explicit ADR rather than an
-inherited default — including the decision **not** to go past 4 or 5 if that
-is the call, and why. Right now the repo requests revision 3 because
-`BaseRevision::new()` happens to default to it, which is not a decision.
+*Proposal:* make the base-revision posture an explicit ADR, including the
+decision **not** to go past 4 or 5 if that is the call, and why. The repo
+requests revision 3 only because `BaseRevision::new()` happens to default to
+it, which is not a decision.
 
 ### 3.1 Frame allocator shape — and the `wost`/`kernel` boundary
 
 `007` asks how much allocator logic lives kernel-side as safe code. Asterinas
-answers it directly, and the answer has a name: **Safe Policy Injection** ◆.
-
-The framework defines the *mechanism* and the invariant; the *policy* is
-injected as safe Rust outside the TCB. Asterinas has exactly three injection
-points — task scheduler (`Scheduler` trait), frame allocator (`FrameAlloc`
-trait), and slab allocator (`Slab`/`HeapSlot`). The framework retains only the
-invariant-enforcing conversion, `Frame::from_unused()`, which is what makes
-their Inv. 1 hold: *any newly-allocated `Frame` or `Segment` originates from
-currently unused memory*. Everything above it — buddy trees, per-CPU free
-lists, sizing heuristics — is ordinary safe Rust that cannot violate the
-invariant because it can only speak in `Frame`s.
+answers it, and the answer has a name: **Safe Policy Injection** ◆. The
+framework defines the *mechanism* and the invariant; the *policy* is safe Rust
+outside the TCB. Asterinas has three injection points: task scheduler
+(`Scheduler`), frame allocator (`FrameAlloc`) and slab allocator
+(`Slab`/`HeapSlot`). The framework retains only the invariant-enforcing
+conversion, `Frame::from_unused()`, which makes their Inv. 1 hold: *any
+newly-allocated `Frame` or `Segment` originates from currently unused memory*.
+Buddy trees, per-CPU free lists and sizing heuristics above it cannot violate
+the invariant because they can only speak in `Frame`s.
 
 Their frame system is worth copying in shape: `Frame<M>` (one page) and
-`Segment<M>` (contiguous run), both generic over per-frame metadata, with all
-metadata living in **one large static array sized at bootstrap**, holding
-refcounts; drop to zero returns the frame to the allocator ◆.
+`Segment<M>` (contiguous run), generic over per-frame metadata held in **one
+static array sized at bootstrap**, holding refcounts; a drop to zero returns
+the frame to the allocator ◆.
 
 *Proposal for the ADR:* `wost` owns `Paddr`, `Frame`, `Segment`, the metadata
-array, and the `from_unused` conversion; `kernel` owns the allocator policy as
-safe Rust behind a `wost`-defined trait. This is the same boundary `wost`
-already draws with `port::claim` — the framework verifies exclusivity, the
-caller chooses what to claim.
+array and `from_unused`; `kernel` owns the allocator policy as safe Rust behind
+a `wost`-defined trait. The same boundary `port::claim` draws: the framework
+verifies exclusivity, the caller chooses what to claim.
 
-**Bitmap versus buddy — and why the phase forces the answer.** A bitmap is one
-bit per frame (32 KiB per GiB of RAM) and linear to search. A buddy handles
-contiguous multi-frame allocation. The decision looks deferrable until it
-isn't: the direct map wants 2 MiB pages (§3.3), and DMA buffers in Phase 8
-want physically contiguous runs. A single-frame bitmap will be outgrown
-*inside Phase 3*, not later. Staged (bump-until-heap, then real) remains the
-right shape, but the "real" stage should be order-aware from the start.
+**Bitmap versus buddy, and why the phase forces the answer.** A bitmap is one
+bit per frame (32 KiB per GiB) and linear to search; a buddy handles contiguous
+multi-frame allocation. The direct map wants 2 MiB pages (§3.3) and Phase 8's
+DMA wants contiguous runs, so a single-frame bitmap will be outgrown *inside
+Phase 3*. Staged (bump-until-heap, then real) remains right, but the real stage
+should be order-aware from the start.
 
-**And there is now a verified one to read first.** *Formal Verification of a
-Rust-Based Buddy Physical Memory Allocator* (TASE 2026) verifies UtManager, a
-bitmap-based buddy allocator, in Verus: state invariants and function
-specifications proving allocation and free preserve the invariants and satisfy
-their postconditions, with bounds safety, overflow freedom, and termination —
-and the verification **found a previously unknown control-flow defect** in the
-original. Zero runtime overhead. This is the closest published thing to what
-Phase 3 is about to write.
+**A verified one exists to read first.** *Formal Verification of a Rust-Based
+Buddy Physical Memory Allocator* (TASE 2026) verifies UtManager, a bitmap-based
+buddy, in Verus: invariants preserved by allocation and free, postconditions,
+bounds safety, overflow freedom and termination, at zero runtime overhead, and
+the verification **found a previously unknown control-flow defect** in the
+original.
 
 ### 3.2 Untyped-retype — the evidence says reject the mechanism, adopt the discipline
 
-Two different ideas share the word "untyped", and `002`'s open question
-conflates them. Separating them resolves it.
+`002`'s open question conflates two ideas that share the word "untyped".
 
-**seL4's untyped/retype (the accounting mechanism) has structural costs.**
-Each untyped capability carries a *single watermark*; retype moves it first to
-the new object's alignment and then past its size. Create a 4 KiB object then
-a 16 KiB one and the 12 KiB of alignment padding between them is
-unreclaimable until *both* children are revoked. The community critique goes
-further: fixing the allocation policy inside the kernel contradicts seL4's own
-principle of keeping policy out of the kernel — the kernel will refuse a gap
-that would satisfy the alignment, because it cannot express using it. Add
-`003`'s already-recorded finding that revocation is long-running and needs
-abortable sub-operations for "incremental consistency", and the mechanism is
-expensive in three separate ways.
+**seL4's untyped/retype (the accounting mechanism) has structural costs.** Each
+untyped capability carries one allocation cursor; retype moves it to the new
+object's alignment and then past its size. A 4 KiB object then a 16 KiB one
+leaves 12 KiB of padding unreclaimable until *both* children are revoked. The
+community critique goes further: fixing the allocation policy inside the kernel
+contradicts seL4's own principle of keeping policy out of the kernel, because
+the kernel will refuse a gap that would satisfy the alignment. With `003`'s
+finding that revocation is long-running and needs abortable sub-operations for
+"incremental consistency", the mechanism is expensive in three separate ways.
 
 **Asterinas's untyped memory (the type discipline) is a different thing and it
-carries.** ◆ Its premise: safe Rust references cannot uphold their guarantees
-for *externally modifiable* memory — user-mapped, DMA-capable, or MMIO. So
-such memory gets `UFrame`/`USegment`, a read/write interface permitting only
-copies of plain-old-data types. The consequences are the interesting part:
+carries.** ◆ Safe Rust references cannot uphold their guarantees for
+*externally modifiable* memory (user-mapped, DMA-capable, MMIO), so such memory
+gets `UFrame`/`USegment`, whose read/write interface permits only copies of
+plain-old-data types. Consequences:
 
-- `VmSpace` (the user address space) accepts **only** `UFrame`/`USegment` —
-  which is what structurally prevents mapping kernel memory into userspace.
-  Not a check; a signature.
+- `VmSpace` (the user address space) accepts **only** `UFrame`/`USegment`,
+  which structurally prevents mapping kernel memory into userspace. Not a
+  check; a type.
 - `DmaCoherent` and `DmaStream` likewise accept only untyped memory. Initially
-  *no* memory is DMA-accessible; drivers request mappings only over untyped.
+  *no* memory is DMA-accessible.
 
 *Proposed position for the ADR:* **reject seL4-style untyped-retype as the
 kernel-memory accounting mechanism; adopt Asterinas-style untyped memory as a
 type discipline in `wost` from the first frame type.** Kernel-memory DoS is
-then answered at the handle layer in Phase 5 by per-process quota accounting —
-a policy decision, revisable — rather than by making every caller donate
-memory, which is an ABI decision and permanent. Record the naming collision so
-this is not re-litigated in three phases.
-
-The cost of getting the discipline right early is near zero; the cost of
-retrofitting it is the whole point of `002`'s pillar 5 and Asterinas's own
-stated lesson.
+then answered at the handle layer in Phase 5 by per-process quotas, a revisable
+policy, rather than by making every caller donate memory, which is a permanent
+ABI decision. Record the naming collision so it is not re-litigated. Getting
+the discipline right early costs near zero; retrofitting it is the cost `002`'s
+pillar 5 and Asterinas's own lesson warn of.
 
 ### 3.3 Table access — direct map, with an explicit contract
 
-The direct map with 2 MiB pages is the modern standard: Linux maps 32 GiB of
-physical memory in **132 KiB of page tables** using 2 MiB pages, with each TLB
-entry covering 2 MiB instead of 4 KiB.
+The direct map with 2 MiB pages is the modern standard: Linux maps 32 GiB in
+**132 KiB of page tables** with 2 MiB pages, each TLB entry covering 2 MiB.
 Recursive mapping costs an address-space slot and awkward invariants for a
 benefit the HHDM already hands over.
 
 *Proposal for the ADR's contract:* the direct map covers **usable RAM only**,
 NX and writable, 2 MiB pages wherever alignment permits, 4 KiB at the edges.
-Device holes are deliberately *not* in it — they are mapped separately through
+Device holes are deliberately *not* in it: they are mapped through
 `MmioRegion` with their own memory type (§3.4), which is also what makes the
 sensitivity discipline in §4.1 expressible.
 
-*Debt to record now:* a direct map means that unmapping anything from it
-requires a TLB shootdown once SMP arrives — an IPI to every CPU. Single-core
-makes this free today. Writing it down now is cheaper than discovering it in
-Phase 12.
+*Debt to record now:* once SMP arrives, unmapping anything from the direct map
+requires a TLB shootdown, an IPI to every CPU. Single-core makes it free today;
+writing it down now is cheaper than discovering it in Phase 12.
 
 ### 3.4 Framebuffer memory type — and why it is the same decision as the back-buffer
 
-Write-combining is not a marginal optimisation. Linux's own MTRR documentation
-puts it at "2.5 times or more" for image writes; field reports on framebuffer
-redraw run far higher. PAT supersedes MTRR on modern x86 and Linux's guidance
-is to use both only because non-PAT systems still exist — for a UEFI-only
-target running under QEMU and VMware, PAT is universally present and the MTRR
-half is dead weight.
+Write-combining is not a marginal optimisation. Linux's MTRR documentation
+puts it at "2.5 times or more" for
+image writes; field reports on framebuffer redraw run far higher. PAT
+supersedes MTRR on modern x86; Linux uses both only because non-PAT systems
+exist, and for a UEFI-only target under QEMU and VMware PAT is always present,
+so the MTRR half is dead weight.
 
-**The finding that links two slices:** write-combining makes writes fast and
-reads catastrophic. `007` currently schedules the WC decision (slice 2/3) and
-the console back-buffer (slice 4) separately, with the back-buffer motivated
-by `001`'s "console reads back uncached memory to scroll". They are one
-decision. The back-buffer is not a nicety that WC happens to complement — it
-is the precondition that makes WC safe to adopt at all, because after WC the
-framebuffer must never be read again. Adopt them together, and make "the
-console never reads the framebuffer" an asserted property rather than a habit.
+**WC makes writes fast and reads catastrophic.** `007` schedules the WC
+decision (slice 2/3) and the console back-buffer (slice 4) separately, the
+back-buffer motivated by `001`'s "console reads back uncached memory to
+scroll". They are one decision: the back-buffer is the precondition that makes
+WC safe to adopt, not a complement to it, because after WC the framebuffer must
+never be read again. Adopt them together, and make "the console never reads the
+framebuffer" an asserted property rather than a habit.
 
 ### 3.5 Heap allocator — the interface is the decision, the crate is not
 
-Surveyed candidates: `talc` (fast, flexible, no_std, actively
-performance-tuned, aimed at kernels and WASM), `good_memory_allocator`
-(dlmalloc-lineage linked list, one `usize` overhead per allocation,
-prioritising runtime efficiency while claiming good utilisation),
-`slab_allocator_rs` (slabs by size class with a buddy above 4096),
-`linked_list_allocator` (the phil-opp default). The consensus in the sources
-is unhelpfully honest: there is no best design, because each kernel's workload
-is unique.
+Surveyed: `talc` (fast, no_std, aimed at kernels and WASM),
+`good_memory_allocator` (a dlmalloc-style linked list, one `usize` overhead
+per allocation, prioritising runtime efficiency while claiming good
+utilisation), `slab_allocator_rs` (slabs by size class with a buddy above
+4096), `linked_list_allocator` (the phil-opp default). The sources agree there
+is no best design, because each kernel's workload is unique.
 
-Asterinas again answers with a boundary rather than a crate ◆: `Slab` and
-`HeapSlot`, where the **type conversions are the safety-critical part** —
-unused page → slab → free slot → heap object — and a `Slab` tracks its live
-slot count so it cannot be dropped out from under active objects. Policy
-(per-CPU free lists, size classes) is injected safe code.
+Asterinas answers with a boundary rather than a crate ◆: `Slab` and `HeapSlot`,
+where the **type conversions are the safety-critical part** (unused page → slab
+→ free slot → heap object), and a `Slab` tracks its live slot count so it
+cannot be dropped under active objects. Policy (per-CPU free lists, size
+classes) is injected safe code.
 
-*Proposal:* make `wost` own the page→slab→slot conversions and their
-invariants, and let the kernel-side policy be swappable. Then the dependency
-question `007` poses — hand-rolled versus vetted crate — stops being
-architectural and becomes a revisable policy choice, which is the only form in
-which it is worth an ADR. It also leaves the door open for the `Allocator`
-trait when it stabilises (§1).
+*Proposal:* `wost` owns the page→slab→slot conversions and their invariants;
+the kernel-side policy is swappable. `007`'s hand-rolled versus vetted crate
+question then becomes a revisable policy choice, the only form in which it is
+worth an ADR, and the door stays open for `Allocator` when it stabilises (§1).
 
 ### 3.6 KASLR
 
-Nothing in this pass changes the cost of the relocation work. Two things
-sharpen the timing argument: both CET shadow stacks and LASS (§6) assume an
-address layout the kernel controls, and the linker script only accumulates
-hardcoded assumptions as the phase adds mappings. If it is deferred again, the
-deferral should name what it will cost later, not just that it was deferred.
+The relocation work costs the same. Two things sharpen the timing: CET shadow
+stacks and LASS (§6) both assume an address layout the kernel controls, and the
+linker script accumulates hardcoded assumptions as the phase adds mappings. If
+it is deferred again, the deferral should name what it will cost later.
 
 ---
 
@@ -402,230 +354,193 @@ deferral should name what it will cost later, not just that it was deferred.
 
 ### 4.1 The framekernel, extracted properly
 
-`003` adopted the framekernel from the abstract. The paper's API design has
-detail worth having ◆:
+The paper's API design, beyond the abstract `003` adopted ◆:
 
-**OSTD's API in three categories** — safe user-kernel interaction (`UserMode`,
+**OSTD's API in three categories**: safe user-kernel interaction (`UserMode`,
 `UserContext`, `VmSpace`); safe kernel logic (`SpinLock`, `Rcu`, `Mutex`,
-`WaitQueue`, `CpuLocal`, plus `LinkedList` and `RbTree`); safe kernel-peripheral
-interaction (`IrqLine`, `IoMem`, `IoPort`, `DmaCoherent`, `DmaStream`). That
-is a concrete target list for `wost`'s eventual surface.
+`WaitQueue`, `CpuLocal`, `LinkedList`, `RbTree`); safe kernel-peripheral
+interaction (`IrqLine`, `IoMem`, `IoPort`, `DmaCoherent`, `DmaStream`). A
+concrete target list for `wost`'s eventual surface.
 
 **Sensitivity labelling is the pattern `wost` is missing.** OSTD labels I/O
-memory and port ranges *sensitive* or *insensitive*, deriving the labels from
-architecture knowledge, firmware (ACPI tables), and core driver information —
-and `IoMem`/`IoPort` will only instantiate over insensitive regions. Compare
-`wost::port::claim`, which records ownership so exclusivity is *verified*: the
-claim registry answers "may two drivers have this?", sensitivity answers "may
-*anyone* have this?" They are complementary and `wost` has only the first.
+memory and port ranges *sensitive* or *insensitive* from architecture
+knowledge, firmware (ACPI tables) and core driver information, and
+`IoMem`/`IoPort` instantiate only over insensitive regions. `wost::port::claim`
+verifies exclusivity: the claim registry answers "may two drivers have this?",
+sensitivity answers "may *anyone* have this?" They are complementary and `wost`
+has only the first.
 
 *Proposal:* when device mappings arrive in Phase 3 slice 5, `MmioRegion`
-acquisition should consult a sensitivity list alongside the claim registry —
+acquisition should consult a sensitivity list alongside the claim registry,
 designed in then, per the Asterinas lesson `002` already adopted, rather than
-retrofitted when the first driver maps something it should not have.
+retrofitted after the first driver maps something
+it should not.
 
 **A guard-page hazard the planned check will miss.** Asterinas pairs stack
 guard pages with **compile-time stack usage analysis, specifically to prevent
-bypass** ◆. A stack frame larger than the guard page can step clean over it
-and corrupt whatever lies beyond — the guard page is never touched, so nothing
+bypass** ◆. A stack frame larger than the guard page can step over it and
+corrupt what lies beyond without touching the guard, so nothing
 faults. `007`'s planned check ("a guard page faults — checked structurally by
 read-back") verifies the mapping exists; it cannot catch a frame that jumps
-the gap. Worth either sizing guard regions against the largest frame the
-kernel actually builds, or noting the limitation explicitly in the slice.
+the gap. Either size guard regions against the
+largest frame the kernel builds, or note the limitation in the slice.
 
-**Their seven invariants** are stated as: kernel-mode CPU state protected from
-clients and from peripherals; sensitive memory isolated from clients, user
-programs, and devices; sensitive I/O memory and ports restricted to authorised
-access. The framing is worth stealing — `wost` currently documents obligations
-per-abstraction, and a short invariant list at the crate root would say what
-the abstractions collectively guarantee.
+**Their seven invariants**: kernel-mode CPU state protected from clients and
+peripherals; sensitive memory isolated from clients, user programs and
+devices; sensitive I/O memory and ports restricted to authorised access. `wost`
+documents obligations per abstraction; a short invariant list at the crate
+root would say what they collectively guarantee.
 
 ### 4.2 Klint — the bug class no lint here can currently catch
 
 Klint performs compile-time **preemption-count analysis** ◆. Functions and
-types carry `#[klint::preempt_count]` annotations declaring two things: the
-*adjustment* a call makes to the preemption count, and the *expected range* at
-entry. `spin_lock` can be called from any context but adjusts on return;
-sleepable functions adjust by zero and require exactly zero. Static analysis
-across call sites — monomorphising generics, warning on indirect calls through
-fn pointers and trait objects — then finds sleep-in-atomic-context.
+types carry `#[klint::preempt_count]` annotations declaring the *adjustment* a
+call makes and the *expected range* at entry: `spin_lock` can be called from
+any context but adjusts on return; sleepable functions adjust by zero and
+require exactly zero. Analysis across call sites (monomorphising generics,
+warning on indirect calls) then finds sleep-in-atomic-context.
 
-Why it matters beyond deadlock: the soundness of `synchronize_rcu()` depends
-on no sleeping inside an RCU read side. If one happens, `synchronize_rcu()` can
-return early and free memory before `rcu_read_unlock()`. That lifts
-sleep-in-atomic-context from a liveness bug to **actual memory unsafety —
-which Rust's type system alone does not prevent**.
+It matters beyond deadlock: `synchronize_rcu()` is sound only if nothing sleeps
+inside an RCU read side, or it can return early and free memory before
+`rcu_read_unlock()`. That makes sleep-in-atomic-context **actual memory
+unsafety, which Rust's type system alone does not prevent**.
 
-**This is live here, sooner than it looks.** `003` already adopted the rule "no
-allocation in IRQ handlers" for the Phase 5 executor. That rule *is* a
-preemption-count property, and it is currently enforced by nobody. Phase 3
-brings it forward: the heap arrives, and allocating under a spinlock or from
-an interrupt handler becomes possible for the first time. Phase 2's IRQ-safe
-locking already established the shape of the problem.
+**This is live here.** `003` adopted "no allocation in IRQ handlers" for the
+Phase 5 executor. That rule *is* a preemption-count property, and it is
+currently enforced by nobody. Phase 3 brings it forward: with the heap,
+allocating under a spinlock or from an interrupt handler becomes possible.
 
-Klint itself is a custom driver and sits outside the stable-only posture of
-D-01. But the *idea* is expressible in safe stable Rust: a context token —
-a marker value threaded through APIs that only a sleepable context can
-produce, so `alloc`-taking functions require one and IRQ handlers cannot
-obtain one. That is the `SpinLock::force_unlock(PanicToken)` pattern
-`005` already holds up as the house style: an obligation discharged by the
-type system rather than by a comment. Worth an ADR when the heap lands.
+Klint is a custom driver outside D-01's stable-only posture, but the *idea* is
+expressible in safe stable Rust as a context token: a value only a sleepable
+context can produce, threaded through APIs so `alloc`-taking functions require
+one and IRQ handlers cannot obtain one. That is the
+`SpinLock::force_unlock(PanicToken)` pattern `005` holds up as house style: an
+obligation discharged by the type system rather than a comment. Worth an ADR
+when the heap lands.
 
 ### 4.3 Pinned initialization — the problem Phase 4 will hit
 
-Rust for Linux's `pin-init` exists because of a problem that has no safe
-expression otherwise: many kernel data structures cannot change address, since
-external pointers to them already exist and would be invalidated. Intrusive
-lists, wait queues, run queues. Pinning is Rust's answer, and in-place
-constructors are what make pinned structures *initialisable* without first
-building them on a stack that cannot hold them.
-
-Phase 4 builds run queues and wait queues. Knowing that `pin-init` exists,
-is `no_std`, and is the upstream kernel's answer is much cheaper than
-rediscovering the safe-pinned-initialization problem halfway through a
-scheduler. `002` already notes `Pin` discipline for the executor; this is the
-same constraint arriving one phase earlier and in a form that is easy to
-mistake for a design mistake rather than a language limitation.
+Many kernel structures cannot change address because external pointers to them
+exist: intrusive lists, wait queues, run queues. Pinning is Rust's answer, and
+in-place constructors make pinned structures *initialisable* without first
+building them on a stack that cannot hold them. Rust for Linux's `pin-init` is
+`no_std` and the upstream kernel's answer. Phase 4 builds run queues and wait
+queues; `002`'s `Pin` discipline for the executor is the same constraint
+arriving one phase earlier, in a form easy to mistake for a design mistake
+rather than a language limitation.
 
 ### 4.4 Scheduler datapoints for Phase 4
 
 - **Redox replaced its scheduler with EEVDF in 2026** and reports average
-  context switch falling from ~1.150 µs to ~250 ns. A Rust-microkernel
-  datapoint on the same design `000` already commits to.
+  context switch falling from ~1.150 µs to ~250 ns.
 - **Linux EEVDF mechanics:** each task accrues virtual runtime producing a
   *lag*; eligible tasks get a virtual deadline; earliest deadline runs.
-  `sched_latency_ns` and `sched_min_granularity_ns` were deprecated in favour
-  of a single `sched_base_slice_ns` when EEVDF merged in 6.6. Lag *decays* for
-  sleeping tasks — otherwise a task games the scheduler by sleeping briefly to
+  `sched_latency_ns` and `sched_min_granularity_ns` gave way to one
+  `sched_base_slice_ns` when EEVDF merged in 6.6. Lag *decays* for sleeping
+  tasks, because otherwise a task games the scheduler by sleeping briefly to
   clear negative lag, and long sleepers eventually have lag reset entirely.
-  That anti-gaming rule is the non-obvious part and is easy to omit.
-- **sched_ext** continues to demonstrate pluggable policy at EEVDF parity with
-  crash-fallback. The lesson to take is not to clone it: it is that policy
-  should stay **separable and observable, with a fallback path**. That is a
-  constraint on the Phase 4 interface, and it is free if designed in.
+  That anti-gaming rule is the non-obvious part and easy to omit.
+- **sched_ext** demonstrates pluggable policy at EEVDF parity with
+  crash-fallback. The lesson is not to clone it but that policy should stay
+  **separable and observable, with a fallback path**: a constraint on the
+  Phase 4 interface, free if designed in.
 
 ### 4.5 Forward-looks that update `002`
 
-Not Phase 3's business, but `002` states things that have since moved. Cheap
-to correct now, expensive to discover mid-phase.
-
-**The queue ABI's austerity rules can be made concrete.** `003` established
-*why* (FlexSC's batching/locality argument; io_uring's kernelCTF record as the
-warning). The operational rules both passes converged on ⊕, worth carrying
-into the Phase 5 queue-layout doc as a checklist rather than a principle:
-versioned ring layouts; a minimal opcode set with no privileged opcodes;
-**a rights check against the handle on every submission**, not at ring setup;
-defensive re-read/copy of every user-ring entry before use (never trust a
-value read twice from shared memory); per-queue quotas; and strong diagnostics
-on rejection. The last two are the ones that get skipped and are the ones that
-turn a bug into a DoS.
+**The queue ABI's austerity rules, made concrete.** `003` established why
+(FlexSC's batching/locality argument; io_uring's kernelCTF record). The rules
+both passes converged on ⊕, for the Phase 5 queue-layout doc as a checklist:
+versioned ring layouts; a minimal opcode set with no privileged opcodes; **a
+rights check against the handle on every submission**, not at ring setup;
+defensive re-read/copy of every user-ring entry before use (never trust a value
+read twice from shared memory); per-queue quotas; and strong diagnostics on
+rejection. The last two are the ones that get skipped and that turn a bug into
+a DoS.
 
 **WASI 0.3 is official as of 2026-06-11**, with completion-based async in the
-Component Model — `002` already targets it, and the ratification is now a
-fact rather than a projection. But `002` pins **wasmi 1.0**, and wasmi is at
-1.1.0. The pin should be re-evaluated when Phase 7 arrives rather than baked
-in now; naming a specific minor version in an architecture doc three phases
-ahead is the kind of detail that rots. *Proposal:* soften `002`'s wasmi
-reference to "wasmi 1.x, pinned when Phase 7 starts".
+Component Model, which `002` already targets; the ratification is now a fact
+rather than a projection. But `002` pins **wasmi 1.0**, and wasmi is at 1.1.0,
+and a specific minor version named three phases ahead is the kind of detail that
+rots. *Proposal:* soften `002`'s wasmi reference to "wasmi 1.x, pinned when
+Phase 7 starts".
 
-**WizFS needs no change** ⊕. Both passes independently reached the same
-reading of the same evidence: bcachefs-style key-versioned snapshots rather
-than whole-tree cloning, checksums beside the pointers, journaled tree
-updates, host fuzzing of the format crate, and BetrFS's write-optimized clone
-ideas as inspiration — explicitly *not* its full-path keying, which makes
-rename and delete expensive. `002` already says all of this.
+**WizFS needs no change** ⊕: bcachefs-style key-versioned snapshots rather
+than whole-tree cloning, checksums beside the pointers, journaled tree updates,
+host fuzzing of the format crate, and BetrFS's write-optimized clones as
+inspiration, explicitly *not* its full-path keying, which makes rename and
+delete expensive.
 
 ---
 
 ## 5. Verification — newly cheap enough to be a real option
 
-`003` listed "seL4 verification tooling (Kani/Verus)" as a gap. It has moved a
-lot, and two of the results are about *exactly* the subsystem Phase 3 builds.
+`003` listed "seL4 verification tooling (Kani/Verus)" as a gap.
 
-- **Atmosphere** (SOSP '25, Mars Research) — a full verified microkernel in
-  Rust with Verus: functional correctness by refinement from a high-level
-  specification, verified memory allocation, verified intrusive data
-  structures, and proofs about page tables. **Proof-to-code ratio 3.32:1**, with
-  6K lines of executable code verified in **under 2.5 person-years**. The
-  ratio is the headline — far cheaper than the seL4-era numbers that made
-  verification a research-programme-sized commitment. (`010` §9 corrects the
-  7.5:1 figure inherited from the earlier KISV'23 workshop paper.)
-- **Asterinas × CertiK** are verifying OSTD's **page tables** with Verus, and
-  the work found real bugs — including a race that could free a page-table
-  node prematurely. The most directly relevant precedent available: the same
-  structure, the same language, the same framework discipline.
-- **The buddy allocator result** (§3.1) — Verus, bitmap buddy, invariants plus
-  bounds safety, overflow freedom, and termination; found a control-flow
-  defect; zero runtime overhead.
-- **Kani** — bounded model checking, adoptable incrementally: zero annotations
-  already buys panic-freedom checking. Running at 16,000+ harnesses per change
-  in the Rust standard library verification campaign. The trade against Verus
-  is explicit in the sources: Kani is limited to properties expressible in BMC
-  or inductive contracts; Verus expresses richer invariants with ghost state,
-  at higher annotation cost.
+- **Atmosphere** (SOSP '25, Mars Research): a verified microkernel in Rust with
+  Verus, with functional correctness by refinement, verified memory
+  allocation, verified intrusive data structures and page-table proofs.
+  **Proof-to-code ratio 3.32:1**, with 6K lines of executable code verified in
+  **under 2.5 person-years**, far cheaper than the seL4-era numbers. (`010` §9
+  corrects the 7.5:1 figure inherited from the earlier KISV'23 workshop paper.)
+- **Asterinas × CertiK** are verifying OSTD's **page tables** with Verus and
+  found real bugs, including a race that could free a page-table node
+  prematurely: the same structure, language and framework discipline.
+- **The buddy allocator result** (§3.1).
+- **Kani**: bounded model checking, adoptable incrementally; zero annotations
+  already buys panic-freedom checking, and it runs 16,000+ harnesses per change
+  in the Rust standard library verification campaign. Kani is limited to
+  properties expressible in BMC or inductive contracts; Verus expresses richer
+  invariants with ghost state at higher annotation cost.
 
-*Proposal.* Kani is the tool that fits this repo's existing culture with
-almost no new ceremony. `libs/` crates are already pure, `no_std`,
-host-testable arithmetic — page-table bit packing, frame-index math, and later
-ring-index arithmetic and the WizFS format. Those are exactly BMC's strong
-suit, and a Kani harness proves the *absence* of overflow and panics where the
-existing host tests demonstrate the presence of a few correct examples. It
-extends D-30 (encodings host-tested against transcribed SDM tables) rather
-than competing with it.
-
-Verus is the heavier commitment and should stay a named option, not a plan —
-but Atmosphere and the TASE result together mean that if the frame allocator
-ever wants a real invariant proof, the precedent, the tooling, and a published
-cost figure all now exist.
+*Proposal.* Kani fits this repo's culture with almost no new ceremony. `libs/`
+crates are pure, `no_std`, host-testable arithmetic (page-table bit packing,
+frame-index math, later ring indices and the WizFS format), BMC's strong suit:
+a harness proves the *absence* of overflow and panics where host tests show a
+few correct examples. It extends D-30 (encodings host-tested against
+transcribed SDM tables) rather than competing with it. Verus should stay a
+named option, not a plan, but if the frame allocator ever wants an invariant
+proof, the precedent, the tooling and a published cost figure now exist.
 
 ---
 
 ## 6. Hardware security — the roadmap after W^X
 
-`003` flagged CHERI/CET/PKS as an unresearched gap. Closing it, with the
-posture each deserves.
+`003` flagged CHERI/CET/PKS as an unresearched gap.
 
-**CET shadow stacks.** Kernel-mode hardware-enforced stack protection ships in
-Windows; Linux landed user-mode shadow stacks in 6.6; CET is present from 11th
-Gen Intel Core onward. The design consequence is specific: a kernel shadow
-stack is *per kernel stack*, which makes it an allocation decision. Phase 3
-slices 2 and 3 are where stacks get allocated and guard-paged. Deciding the
-shape then costs nothing; retrofitting shadow stacks into an existing stack
-allocator is materially worse. `000` already has CET in Phase 12 — worth
-carrying a note into Phase 3 that the stack allocator should not foreclose it.
+**CET shadow stacks.** Kernel-mode hardware stack protection ships in Windows;
+Linux landed user-mode shadow stacks in 6.6; CET is present from 11th Gen Intel
+Core onward. A kernel shadow stack is *per kernel stack*, so it is an
+allocation decision, and Phase 3 slices 2 and 3 allocate and guard stacks.
+Deciding the shape then costs nothing; retrofitting shadow stacks into an
+existing stack allocator is materially worse. `000` has CET in Phase 12; the
+stack allocator should not foreclose it.
 
 **PKS (Protection Keys for Supervisor).** Domains of supervisor pages with
-thread-specific permission restrictions, checked *in addition to* normal
-paging protections, and — the interesting part — **changed by an MSR write
-with no TLB flush**. The natural application here is directly on §3.3's
-decision: keep the direct map non-writable by default and open a PKS window
-only for the moments the kernel actually writes through it. That is temporal
-protection over the single largest writable mapping in the kernel, at a cost
-of one MSR write. Availability is the catch — Sapphire Rapids / Xeon 6 class,
-absent from typical consumer hardware, and QEMU support needs checking. The
-posture is: design the abstraction so the direct map *can* be closed, gate the
-enable on CPUID, and treat it as free protection where the hardware offers it.
+thread-specific restrictions, checked *in addition to* paging, and **changed
+by an MSR write with no TLB flush**. Applied to §3.3: keep the direct map
+non-writable by default and open a PKS window only while the kernel writes
+through it, temporal protection over the largest writable mapping for one MSR
+write. Availability is the catch: Sapphire Rapids / Xeon 6 class, absent from
+typical consumer hardware, QEMU support unchecked. Posture: design the
+abstraction so the direct map *can* be closed, gate on CPUID, and treat it as
+free protection where present.
 
-**LASS (Linear Address Space Separation).** Hardware enforcement of user/kernel
-address separation applied **before paging**, so software cannot derive
-paging-based timing information from TLBs or page walkers — i.e. it closes the
-class of side channels KPTI addresses, without KPTI's TLB cost. Slated for
-Linux 6.19; hardware from Sierra Forest and Xeon 6, plus Core Ultra 200
-series. The discipline it imposes on the kernel — never touch user addresses
-except through explicit sanctioned sequences — is the same one SMAP already
-imposes here, so most of the cost has been paid since Phase 2. Same posture as
-PKS: CPUID-gated, cheap now, expensive if the address layout is chosen without
-it in mind.
+**LASS (Linear Address Space Separation).** Hardware user/kernel address
+separation applied **before paging**, so software cannot derive paging-based
+timing from TLBs or page walkers: it closes the side-channel class KPTI
+addresses without KPTI's TLB cost. Slated for Linux 6.19; hardware from Sierra
+Forest and Xeon 6, plus Core Ultra 200. Its discipline (never touch user
+addresses except through sanctioned sequences) is the one SMAP already imposes
+here, so most of the cost has been paid since Phase 2. Same posture as PKS:
+CPUID-gated, cheap now, expensive if the address layout ignores it.
 
-**CHERI.** Two industrial implementations exist — Arm's Morello and
-Microsoft's CHERIoT — with UKRI's Digital Security by Design programme pushing
-CHERI-RISC-V toward market across several processor scales. Hardware tags
-every pointer with bounds, permissions, and a validity bit; violations fault.
-The relevance assessment: CHERI is a memory-safety story *for C and
-C++*. A Rust framekernel already has the property CHERI is bought to provide,
-and `002` pillar 5 is the software analogue of the same idea. The right
-treatment is as a **future architecture port target** — `arch/` exists for
-exactly this — and not as a phase item. (2026 work on CheriBSD/Morello Linux
+**CHERI.** Two industrial implementations (Arm's Morello, Microsoft's CHERIoT),
+with UKRI's Digital Security by Design programme pushing CHERI-RISC-V toward
+market. Hardware tags every pointer with bounds, permissions and a validity bit;
+violations fault. CHERI is a memory-safety story *for C and C++*; a Rust
+framekernel already has the property it is bought for, and `002` pillar 5 is the
+software analogue. Treat it as a **future architecture port target** (`arch/`
+exists for this), not a phase item. (2026 work on CheriBSD/Morello Linux
 security analysis and on VM-porting pitfalls exists if that ever changes.)
 
 ---
@@ -649,62 +564,44 @@ security analysis and on VM-porting pitfalls exists if that ever changes.)
 
 Proposals, not decisions. Each becomes an ADR only if taken.
 
-**Five ADRs are owed before slice 2 writes a page-table entry.** Both passes
-landed on the same list ⊕, and the ordering argument is that each one changes
-an API that later slices are built on:
+**Five ADRs are owed before slice 2 writes a page-table entry** ⊕, because each
+changes an API later slices build on:
 
-1. **Limine base-revision posture** (§3.0) — the only item with a live risk
-   attached, and the only one whose answer might change slice 1's shape.
-   Currently revision 3 by inherited default, not by decision.
-2. **Frame allocator shape and the `wost`/`kernel` boundary** (§3.1) —
-   Safe Policy Injection: `wost` owns `Frame`/`Segment`, the metadata array,
-   and `from_unused`; `kernel` owns policy behind a `wost` trait. Order-aware,
-   not single-frame bitmap, because the direct map's 2 MiB pages force
-   contiguous allocation inside this phase.
-3. **The untyped position** (§3.2) — reject seL4 untyped-retype as the
-   accounting mechanism; adopt Asterinas untyped memory as a type discipline
-   from the first frame type; defer kernel-memory quotas to Phase 5's handle
-   layer. This is the decision `007` says the phase must make, and both passes
-   reached the same adaptation independently ⊕.
-4. **Direct-map contract** (§3.3) — usable RAM only, NX, 2 MiB where aligned;
-   device holes deliberately excluded and mapped through `MmioRegion` with
-   explicit memory types. Record the SMP TLB-shootdown debt.
-5. **Heap policy** (§3.5) — decided as an *interface* (`wost` owns the
-   page→slab→slot conversions; policy is swappable kernel-side), which turns
-   hand-rolled-vs-crate into a revisable choice rather than an architectural
-   one, and leaves the door open for `Allocator` when it stabilises.
+1. **Limine base-revision posture** (§3.0), the only item with a live risk;
+   revision 3 is an inherited default.
+2. **Frame allocator shape and the `wost`/`kernel` boundary** (§3.1):
+   Safe Policy Injection, order-aware.
+3. **The untyped position** (§3.2): reject seL4 retype, adopt Asterinas
+   untyped memory as a type discipline, quotas at Phase 5's handle layer. The
+   decision `007` says the phase must make ⊕.
+4. **Direct-map contract** (§3.3), recording the SMP TLB-shootdown debt.
+5. **Heap policy** (§3.5), decided as an *interface*.
 
 **Then build `libs/x86-page-tables` first** — it was built, under the name
 `libs/x86-paging` — with a host test for every bitfield, before `wost` is
-allowed to switch CR3 ⊕. That is the cleanest
-research-into-code bridge available, it is what D-30 already prescribes, and
-§5's verification options attach to it directly.
+allowed to switch CR3 ⊕. It is what D-30 prescribes, and §5's verification
+options attach to it directly.
 
 **Slice-level, as the slices arrive:**
 
-6. **Merge the WC and back-buffer decisions** into one slice, and assert that
-   the console never reads the framebuffer (§3.4).
-7. **Sensitivity labelling for `MmioRegion`**, alongside the claim registry
-   D-39 just sharpened, when device mappings land in slice 5 (§4.1).
-8. **Guard-page sizing against the largest kernel stack frame**, or an explicit
-   note that the structural check cannot catch frame-jump bypass (§4.1).
-9. **A context token for allocation-safety**, in the `PanicToken` idiom, when
-   the heap lands — the safe-stable expression of klint's preemption-count
-   property (§4.2).
+6. **Merge the WC and back-buffer decisions**, asserting the console never
+   reads the framebuffer (§3.4).
+7. **Sensitivity labelling for `MmioRegion`** beside the claim registry D-39
+   just sharpened, in slice 5 (§4.1).
+8. **Guard-page sizing against the largest kernel stack frame**, or a note that
+   the check cannot catch frame-jump bypass (§4.1).
+9. **A context token for allocation-safety** in the `PanicToken` idiom when the
+   heap lands (§4.2).
 10. **Kani harnesses in the new page-table crate**, extending D-30 (§5).
     Verus stays a named option with a published cost figure, not a plan.
-11. **Carry a CET/PKS/LASS note into the stack and direct-map slices** so the
-    layout does not foreclose them (§6).
+11. **A CET/PKS/LASS note in the stack and direct-map slices** (§6).
 
-**Convention edits to `005`, cheap and independent of the phase:**
+**Convention edits to `005`, independent of the phase:**
 
-12. **The Pragmatic Rust Guidelines' unsafe taxonomy** as `wost`'s admission
-    test (§2.1), and **the Nomicon's sound-wrapper principle** named as the
-    standard `wost` exports are held to, with the UCG's advisory status noted
-    so nobody cites it as a rule later (§2.4).
-13. **Split the C-EXAMPLE rejection**: keep it for `wost`/`kernel`, encourage
-    doctests in `libs/` where they actually execute (§2.3). Cheapest item
-    here, and it applies to the crate Phase 3 is about to create.
+12. **The unsafe taxonomy** as `wost`'s admission test (§2.1) and **the
+    sound-wrapper principle** as the standard for its exports, the UCG noted
+    as advisory (§2.4).
+13. **Split the C-EXAMPLE rejection** by crate kind (§2.3).
 
 **Deferred, recorded so they are not rediscovered:**
 
@@ -712,9 +609,8 @@ research-into-code bridge available, it is what D-30 already prescribes, and
     separately whether to convert the existing `global_asm!` trampoline (§1).
 15. **Soften `002`'s wasmi 1.0 pin** to "wasmi 1.x, pinned when Phase 7
     starts"; note WASI 0.3's ratification as fact (§4.5).
-16. **Carry the queue-austerity checklist** — per-submission rights checks,
-    defensive re-reads, per-queue quotas, rejection diagnostics — into the
-    Phase 5 queue-layout doc (§4.5).
+16. **Carry the queue-austerity checklist** into the Phase 5 queue-layout doc
+    (§4.5).
 
 ---
 
