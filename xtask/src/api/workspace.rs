@@ -964,6 +964,9 @@ pub(super) fn remove_ambient_cargo_semantics(
         if normalized.starts_with("CARGO_")
             || normalized.starts_with("RUST")
             || normalized == "TARGET"
+            || AMBIENT_COMPILER_PREFIXES
+                .iter()
+                .any(|prefix| normalized.starts_with(prefix))
         {
             command.env_remove(name);
         }

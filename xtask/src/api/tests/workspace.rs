@@ -49,6 +49,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER",
         "TARGET",
+        "CC_x86_64_unknown_linux_gnu",
+        "CFLAGS_x86_64-unknown-linux-gnu",
+        "CXXFLAGS_x86_64_unknown_linux_gnu",
+        "AR_x86_64_unknown_linux_gnu",
     ] {
         command.env(name, "hostile");
     }
@@ -60,6 +64,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
             "CARGO_ENCODED_RUSTFLAGS",
             "CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER",
             "TARGET",
+            "CC_x86_64_unknown_linux_gnu",
+            "CFLAGS_x86_64-unknown-linux-gnu",
+            "CXXFLAGS_x86_64_unknown_linux_gnu",
+            "AR_x86_64_unknown_linux_gnu",
         ]
         .into_iter()
         .map(std::ffi::OsString::from),
@@ -71,6 +79,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER",
         "TARGET",
+        "CC_x86_64_unknown_linux_gnu",
+        "CFLAGS_x86_64-unknown-linux-gnu",
+        "CXXFLAGS_x86_64_unknown_linux_gnu",
+        "AR_x86_64_unknown_linux_gnu",
     ] {
         assert_eq!(environment.get(std::ffi::OsStr::new(name)), Some(&None));
     }
@@ -135,8 +147,30 @@ fn every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers() {
         environment.get(std::ffi::OsStr::new("PATH")),
         Some(&Some(compiler.tool_path.clone()))
     );
-    for ambient in ["GCC_EXEC_PREFIX", "LIBRARY_PATH"] {
-        assert_eq!(environment.get(std::ffi::OsStr::new(ambient)), Some(&None));
+    for ambient in [
+        "GCC_EXEC_PREFIX",
+        "LIBRARY_PATH",
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "LD_RUN_PATH",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "CCC_OVERRIDE_OPTIONS",
+        "CC",
+        "CFLAGS",
+        "AR",
+        "TARGET_CC",
+        "HOST_CC",
+        "CRATE_CC_NO_DEFAULTS",
+        "CXX",
+        "CXXFLAGS",
+    ] {
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new(ambient)),
+            Some(&None),
+            "{ambient} reached the audit's cargo subprocess"
+        );
     }
     assert_eq!(
         environment.get(std::ffi::OsStr::new("COMPILER_PATH")),

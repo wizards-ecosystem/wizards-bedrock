@@ -1428,8 +1428,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1144,
         file: "xtask/src/api/workspace.rs",
-        find: "        if normalized.starts_with(\"CARGO_\")\n            || normalized.starts_with(\"RUST\")\n            || normalized == \"TARGET\"\n        {",
-        replace: "        if false\n            && (normalized.starts_with(\"CARGO_\")\n                || normalized.starts_with(\"RUST\")\n                || normalized == \"TARGET\")\n        {",
+        find: "        if normalized.starts_with(\"CARGO_\")\n            || normalized.starts_with(\"RUST\")\n            || normalized == \"TARGET\"\n",
+        replace: "        if false\n            && (normalized.starts_with(\"CARGO_\")\n                || normalized.starts_with(\"RUST\")\n                || normalized == \"TARGET\")\n",
         breaks: "ambient Cargo and Rust variables survive into a supposedly isolated subprocess",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2345,6 +2345,34 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::workspace::every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers",
+        },
+    },
+    Mutation {
+        id: 2476,
+        file: "xtask/src/api/compile.rs",
+        find: "    for name in AMBIENT_COMPILER_VARIABLES {
+        command.env_remove(name);
+    }
+",
+        replace: "",
+        breaks: "an inherited compiler, include, loader or preload variable reaches the pinned host C driver",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::workspace::every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers",
+        },
+    },
+    Mutation {
+        id: 2477,
+        file: "xtask/src/api/workspace.rs",
+        find: "            || AMBIENT_COMPILER_PREFIXES
+                .iter()
+                .any(|prefix| normalized.starts_with(prefix))
+",
+        replace: "",
+        breaks: "an inherited per-target compiler, flags or archiver variable reaches the pinned host C driver",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::workspace::cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_own",
         },
     },
 ];

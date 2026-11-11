@@ -33,6 +33,26 @@ pub(super) fn audited_cargo_command(
     Ok(command)
 }
 
+// An inherited value could change the pinned driver's tools or flags.
+const AMBIENT_COMPILER_VARIABLES: [&str; 15] = [
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "LD_RUN_PATH",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "CCC_OVERRIDE_OPTIONS",
+    "CC",
+    "CFLAGS",
+    "AR",
+    "TARGET_CC",
+    "HOST_CC",
+    "CRATE_CC_NO_DEFAULTS",
+    "CXX",
+    "CXXFLAGS",
+];
+pub(super) const AMBIENT_COMPILER_PREFIXES: [&str; 4] = ["CC_", "CFLAGS_", "CXXFLAGS_", "AR_"];
+
 // gcc would take `ld` from GCC_EXEC_PREFIX before COMPILER_PATH, and libraries from LIBRARY_PATH.
 pub(super) fn base_cargo_command(
     execution_root: &Path,
@@ -41,6 +61,9 @@ pub(super) fn base_cargo_command(
 ) -> Command {
     let mut command = Command::new(env!("CARGO"));
     remove_ambient_cargo_semantics(&mut command, std::env::vars_os().map(|(name, _)| name));
+    for name in AMBIENT_COMPILER_VARIABLES {
+        command.env_remove(name);
+    }
     command
         .current_dir(execution_root)
         .env("CARGO_HOME", cargo_home)
