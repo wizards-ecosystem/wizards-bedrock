@@ -47,8 +47,8 @@ pub(super) fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
         && !granted.contains(Rights::DUPLICATE)
         && arrived != source
         && table.live() == 2
-        // The promise became a handle: a table charged twice for one runs
-        // out at half its quota and nothing else would say so.
+        // The promise became a handle: a table charged twice for one runs out at half its quota
+        // and nothing else would say so.
         && table.promised() == 0
 }
 
@@ -97,15 +97,14 @@ pub(super) fn a_refused_handle_operation_returns_its_promise() -> bool {
     let sealed = crate::object::bootstrap_identity();
     let attenuated = crate::object::bootstrap_identity();
 
-    // Room to spare: a refusal must be reached *after* a promise is taken, and
-    // a full table refuses before there is one.
+    // Room to spare: a refusal must be reached after a promise is taken, and a full table refuses
+    // before there is one.
     let table = shared_handle_table_or_false!(8);
     let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(duplicable, full) else {
         return false;
     };
-    // Held without DUPLICATE, which is what makes copying it a refusal rather
-    // than a mistake.
+    // Held without DUPLICATE, which is what makes copying it a refusal rather than a mistake.
     let Ok(undupable) = table.insert(sealed, Rights::INSPECT) else {
         return false;
     };
@@ -140,26 +139,24 @@ pub(super) fn a_refused_handle_operation_returns_its_promise() -> bool {
     ];
 
     let (_, attenuation_handle, attenuation_bits, _) = asked[2];
-    let Ok((held, held_rights)) = table.resolve(attenuation_handle) else {
-        return false;
-    };
-    let Some(requested) = u32::try_from(attenuation_bits)
-        .ok()
-        .and_then(Rights::from_bits)
-    else {
-        return false;
-    };
-    if !held_rights.contains(Rights::DUPLICATE)
-        || held_rights.contains(Rights::WAIT)
-        || !requested.contains(Rights::WAIT)
-        || !requested.are_meaningful_for(held.kind().per_type_rights())
-        || held_rights.attenuate(requested).is_some()
-        || table.live() != 3
-        || table.promised() != 0
-    {
+    if !only_the_attenuation_is_refused(&table, attenuation_handle, attenuation_bits) {
         return false;
     }
 
+    let Some(refused) = each_duplicate_is_refused(&queue, &table, &asked) else {
+        return false;
+    };
+
+    // Three promises taken, three given back: a leak is invisible in the completions and shows
+    // later as a table full of nothing.
+    refused && table.live() == 3 && table.promised() == 0
+}
+
+fn each_duplicate_is_refused(
+    queue: &Arc<queue::Queue>,
+    table: &Arc<HandleTable>,
+    asked: &[(u32, u32, u64, u32)],
+) -> Option<bool> {
     for (slot, (token, handle, rights, _)) in asked.iter().enumerate() {
         queue.post_submission_for_test(
             slot,
@@ -168,8 +165,8 @@ pub(super) fn a_refused_handle_operation_returns_its_promise() -> bool {
     }
     queue.publish_tail_for_test(asked.len() as u32);
 
-    if queue.serve(&table) != asked.len() {
-        return false;
+    if queue.serve(table) != asked.len() {
+        return None;
     }
 
     let mut refused = true;
@@ -178,10 +175,24 @@ pub(super) fn a_refused_handle_operation_returns_its_promise() -> bool {
         refused &=
             completion.token == *token && completion.status == *status && completion.value == 0;
     }
+    Some(refused)
+}
 
-    // Three promises taken, three given back: a leak is invisible in the
-    // completions and shows later as a table full of nothing.
-    refused && table.live() == 3 && table.promised() == 0
+// The attenuation case passes the duplicate-right gate, so only asking for WAIT refuses it.
+fn only_the_attenuation_is_refused(table: &HandleTable, handle: u32, bits: u64) -> bool {
+    let Ok((held, held_rights)) = table.resolve(handle) else {
+        return false;
+    };
+    let Some(requested) = u32::try_from(bits).ok().and_then(Rights::from_bits) else {
+        return false;
+    };
+    held_rights.contains(Rights::DUPLICATE)
+        && !held_rights.contains(Rights::WAIT)
+        && requested.contains(Rights::WAIT)
+        && requested.are_meaningful_for(held.kind().per_type_rights())
+        && held_rights.attenuate(requested).is_none()
+        && table.live() == 3
+        && table.promised() == 0
 }
 
 pub(super) fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
@@ -206,8 +217,8 @@ pub(super) fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
             u64::from(full.bits()),
         ),
     );
-    // Neither malformed rights nor a malformed path may be inspected first,
-    // or the result-producing operations have two admission orders (D-151).
+    // Neither malformed rights nor a malformed path may be inspected first, or the
+    // result-producing operations have two admission orders.
     queue.post_submission_for_test(
         1,
         queue::Submission::about(
@@ -413,8 +424,8 @@ pub(super) fn filling_the_arena_never_repeats_a_slot() -> bool {
         *slot = handle;
     }
 
-    // Distinct values. Two claims of one slot would give the same index and
-    // the same generation, so the handles themselves would collide.
+    // Two claims of one slot would give the same index and the same generation, so the handles
+    // themselves would collide.
     let mut distinct = true;
     for (index, handle) in handles.iter().enumerate() {
         for earlier in &handles[..index] {
@@ -422,8 +433,8 @@ pub(super) fn filling_the_arena_never_repeats_a_slot() -> bool {
         }
     }
 
-    // And every one still resolves — an overwrite leaves the loser naming a
-    // slot that is stale in its table rather than the object it was given.
+    // Every one still resolves: an overwrite leaves the loser naming a slot that is stale in its
+    // table rather than the object it was given.
     let all_live = handles
         .iter()
         .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Channel));

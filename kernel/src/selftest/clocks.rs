@@ -25,8 +25,8 @@ pub(super) fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
 
     version == timepage::VERSION
         && page_bytes == PAGE_SIZE as u32
-        // The measured rate, not merely a non-zero one: a page publishing
-        // somebody else's clock would still pass a "is it plausible" test.
+        // The measured rate, not merely a non-zero one: a page publishing somebody else's clock
+        // would still pass an "is it plausible" test.
         && counter_hz == crate::time::counter_hz()
         && counter_hz > 0
 }
@@ -45,8 +45,8 @@ pub(super) fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
 
     let agrees = before <= published && published <= after;
 
-    // And it *advances*: a page whose conversion is zero answers the same
-    // number every time, which sits inside any sandwich taken quickly enough.
+    // It advances: a page whose conversion is zero answers the same number every time, which
+    // falls inside any sandwich taken quickly enough.
     let first = reading.at(cpu::timestamp());
     let moved = spins_until(1_000_000, || reading.at(cpu::timestamp()) > first);
 
@@ -72,8 +72,8 @@ pub(super) fn revoking_the_clock_sends_readers_to_uptime() -> bool {
     let Some(revoked) = timepage::read() else {
         return false;
     };
-    // Exactly two, begin and end: one would leave the page permanently odd
-    // and every reader spinning.
+    // Exactly two, begin and end: one would leave the page permanently odd and every reader
+    // spinning.
     let stepped = revoked.seq == before.seq.wrapping_add(2);
     let closed = revoked.mode == timepage::MODE_NONE;
 
@@ -107,16 +107,14 @@ pub(super) fn revoking_the_clock_sends_readers_to_uptime() -> bool {
 }
 
 pub(super) fn the_clocks_update_window_is_never_preemptible() -> bool {
-    // The revocation check has published twice by now, so this is not a count
-    // that has never been exercised.
+    // The revocation check has published twice by now, so this count has been exercised.
     let Some(seq) = timepage::sequence() else {
         return false;
     };
 
     timepage::is_published()
         && timepage::windows_left_preemptible() == 0
-        // Read the odd marker to prove every update opened its seqlock window
-        // (D-166).
+        // Read the odd sequence to prove every update opened its seqlock window.
         && timepage::windows_never_opened() == 0
         && timebase::Seq::is_stable(seq)
         // Publishing moves it, so "even" is not merely "never written".
@@ -136,8 +134,8 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
         flags.contains(Flags::USER)
             && !flags.contains(Flags::WRITABLE)
             && flags.contains(Flags::NO_EXECUTE)
-            // And not the space's to give away: the frame is the kernel's, so an
-            // unmap must not hand it to the allocator.
+            // Not the space's to give away: the frame is the kernel's, so an unmap must not hand it
+            // to the allocator.
             && matches!(
                 space.unmap(timepage::TIME, PAGE_SIZE),
                 Err(MapError::NotOwned(_))
@@ -182,8 +180,8 @@ pub(super) fn sweep_clock() -> ClockSweep {
     const PAIRS: u32 = 1_000;
 
     let deadline = time::uptime_ms() + SPAN_MS;
-    // Seed with a real reading so the first comparison, sampled under a lock,
-    // is not vacuously monotonic against zero (D-124).
+    // Seed with a real reading so the first comparison, sampled under a lock, is not vacuously
+    // monotonic against zero.
     let mut previous = time::now_ns();
     let mut sweep = ClockSweep {
         monotonic: true,
@@ -265,9 +263,8 @@ pub(super) fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     // Five bounded validation windows plus wake slack; a 10 ms periodic source
     // would exceed this budget fourfold.
     const EXPIRY_BUDGET: u64 = 7;
-    /// How late the wake may be. Nothing else is runnable, so the thread
-    /// resumes the moment its own timer fires — this is slack for the
-    /// hypervisor, not for the policy.
+    /// How late the wake may be. Nothing else is runnable, so the thread resumes the moment its
+    /// own timer fires; this is slack for the hypervisor, not for the policy.
     const LATE_MS: u64 = 50;
 
     let expiries = time::expiries();

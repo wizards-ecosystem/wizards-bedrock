@@ -53,8 +53,8 @@ pub(super) fn the_editing_keys_move_the_cursor() -> bool {
     let Some(((home_x, home_y), _)) = dev::console_cursor() else {
         return false;
     };
-    // The margin, not `home_x <= start_x`, which holds for every reset; the
-    // margin is where `erase_previous` refuses to go below (D-105).
+    // The margin, not `home_x <= start_x`, which holds for every reset; the margin is where
+    // `erase_previous` refuses to go below.
     let started_a_line =
         home_x == crate::console::MARGIN && home_x <= typed_x && home_y == start_y + line_height;
 
@@ -173,10 +173,9 @@ pub(super) fn a_scroll_does_not_block_interrupts() -> bool {
             let before = time::now_ns();
             console.write_line("");
             let elapsed = time::now_ns() - before;
-            // Framebuffer MMIO can finish before an already-due virtual APIC
-            // timer is injected. Keep the observation inside the console
-            // guard: mutation 189's outer exclusion must prevent this real
-            // delivery until after the result has been fixed as false.
+            // Framebuffer MMIO can finish before an already-due virtual APIC timer is injected.
+            // The observation stays inside the console guard: mutation 189's outer exclusion must
+            // prevent this real delivery until after the result has been fixed as false.
             let delivered = spins_until(DELIVERY_ATTEMPTS, || {
                 time::expiries() - taken >= EXPECTED_EXPIRIES
             });
@@ -222,8 +221,8 @@ pub(super) fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
         && green & blue == 0
         && red & blue == 0;
 
-    // And the three compose as the format says, which disjoint masks alone
-    // do not show: a `pack` dropping a channel passes them (D-124).
+    // The three compose as the format says, which disjoint masks alone do not show: a `pack`
+    // dropping a channel passes them.
     let white = pack(u8::MAX, u8::MAX, u8::MAX) == red | green | blue;
     let black = pack(0, 0, 0) == 0;
 
@@ -255,12 +254,11 @@ pub(super) fn a_refused_pair_of_claims_strands_neither() -> bool {
     // COM1 is the serial driver's, so any pair naming it must be refused.
     let refused = port::claim_pair::<u8, u8>(FREE, uart::COM1).is_none();
 
-    // And the free half is still free: chaining would have taken it on the
-    // way to failing.
+    // The free half is still free: chaining would have taken it on the way to failing.
     let untouched = port::claim::<u8>(FREE).is_some();
 
-    // Which also proves the first line was a real refusal and not a refusal
-    // of `FREE` itself — it was claimable a moment later.
+    // This also proves the first line was a real refusal and not a refusal of `FREE` itself, since
+    // it was claimable a moment later.
     let taken_now = port::claim::<u8>(FREE).is_none();
 
     refused && untouched && taken_now
@@ -324,8 +322,8 @@ pub(super) fn a_lock_excludes_interrupts() -> bool {
     let mut context = context();
 
     let before = interrupt::are_enabled();
-    // The sanctioned order is one token-bearing outer lock and one inner leaf.
-    // Two leaves would trip D-143's detector and mask a later real violation.
+    // The sanctioned order is one token-bearing outer lock and one inner leaf. Two leaves would
+    // trip the leaf-guard detector and mask a later real violation.
     let outer_guard = outer.lock(&mut context);
     let excluded = !interrupt::are_enabled();
 
@@ -337,8 +335,8 @@ pub(super) fn a_lock_excludes_interrupts() -> bool {
     before && excluded && still_excluded && interrupt::are_enabled()
 }
 
-// Interpret identity in the observed translation mode because a translator
-// rewrites replies and scancodes alike (D-178).
+// Interpret identity in the observed translation mode because a translator rewrites replies and
+// scancodes alike.
 pub(super) const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
 
 /// The same keyboard, behind a controller that translates.
@@ -353,10 +351,10 @@ pub(super) fn keyboard_config_matches_its_routing() -> bool {
         return false;
     };
 
-    // Translation stays off: a controller quietly converting to set 1 is the
-    // classic keyboard that types the wrong characters.
+    // Translation stays off: a controller quietly converting to set 1 is the classic keyboard that
+    // types the wrong characters.
     let raw = byte & TRANSLATE == 0;
-    // The second port is never enabled — nothing is on it.
+    // The second port is never enabled, since nothing is on it.
     let second_silent = byte & SECOND_IRQ == 0;
     let first_matches_routing = (byte & FIRST_IRQ != 0) == input::is_interrupt_driven();
 

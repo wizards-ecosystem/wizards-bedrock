@@ -1,7 +1,7 @@
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use stack_layout::StackLayout;
+use stack_layout::{Slot, StackLayout};
 use wost::arch::current::paging::{self, AddressSpace};
 use wost::arch::current::{interrupt, task, xstate};
 use wost::mm;
@@ -40,11 +40,10 @@ pub(super) fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     }
 
     let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
-    // `>=`: a program retiring elsewhere frees a slot too, and that does not
-    // falsify this thread's slot coming back (D-117).
+    // `>=`: a program retiring elsewhere frees a slot too, and that does not falsify this
+    // thread's slot coming back.
     let settled = runs_until(200, || thread::free_slots() >= free_before);
-    // And nothing is left registered, so a later wake cannot name a thread
-    // that is no longer waiting here.
+    // Nothing is left registered, so a later wake cannot name a thread no longer waiting here.
     came_back && settled && REREAD_QUEUE.is_idle()
 }
 
@@ -60,8 +59,8 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
         return xstate::bytes() == 0 && xstate::extended_control() == 0;
     }
 
-    // The write and read agree before anything else runs. Reading pops x87,
-    // so install the complete probe again for the actual switch.
+    // The write and read agree before anything else runs. Reading pops x87, so the complete probe
+    // is installed again for the actual switch.
     if !xstate::write_probe(MINE)
         || xstate::read_probe() != Some(MINE)
         || !xstate::write_probe(MINE)
@@ -81,7 +80,7 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
     let kept = xstate::read_probe() == Some(MINE);
     let intruded = EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1;
 
-    // Read live `XCR0` instead of restating `init`'s precondition (D-115).
+    // Read live `XCR0` instead of restating `init`'s precondition.
     let mask = xstate::extended_control();
     let masked = mask & 0b111 == 0b111 && xstate::bytes() <= 1024;
 
@@ -163,8 +162,8 @@ pub(super) fn context() -> ThreadContext {
     ThreadContext::require()
 }
 
-/// Yields a thread may spend waiting for something before the check gives up
-/// — so a switch that never hands control over is a red verdict, not a hang.
+/// Yields a thread may spend waiting before the check gives up, so a switch that never hands
+/// control over is a red verdict, not a hang.
 const YIELD_BUDGET: usize = 100_000;
 
 /// Turns the alternation check asks for.
@@ -436,23 +435,9 @@ fn task_init_rejects_a_changed_stack_arena() -> bool {
     let admitted = task::validate_arena_for_test(&arena) == Ok(());
     let upper_address = slot.stack_base() + PAGE_SIZE;
     let upper_before = paging::translate(upper_address);
-
-    let Some(guard) = mm::allocate_contiguous(1, 1) else {
+    let Some(guarded) = a_mapped_guard_is_refused_until_removed(&mut context, &arena, slot) else {
         return false;
     };
-    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let Some(Ok(guard_mapping)) =
-        mem::map_owned_for_test(&mut context, slot.guard_base(), guard, wanted)
-    else {
-        return false;
-    };
-    let guard_refused = matches!(
-        task::validate_arena_for_test(&arena),
-        Err(task::TaskError::Unmapped(address)) if address == slot.guard_base()
-    );
-    let guard_removed = mem::unmap_for_test(&mut context, guard_mapping)
-        .is_some_and(|result| result.map(drop).is_ok());
-    let restored = task::validate_arena_for_test(&arena) == Ok(());
 
     let Some(Ok(unmapped)) = mem::unmap_for_test(&mut context, lower_mapping) else {
         return false;
@@ -483,15 +468,35 @@ fn task_init_rejects_a_changed_stack_arena() -> bool {
     drop(original);
 
     admitted
-        && guard_refused
-        && guard_removed
-        && restored
+        && guarded
         && physically_different
         && leaf_refused
         && upper_unchanged
         && replacement_removed
         && upper_removed
         && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
+fn a_mapped_guard_is_refused_until_removed(
+    context: &mut ThreadContext,
+    arena: &paging::StackArena,
+    slot: Slot,
+) -> Option<bool> {
+    let guard = mm::allocate_contiguous(1, 1)?;
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let Some(Ok(guard_mapping)) =
+        mem::map_owned_for_test(context, slot.guard_base(), guard, wanted)
+    else {
+        return None;
+    };
+    let guard_refused = matches!(
+        task::validate_arena_for_test(arena),
+        Err(task::TaskError::Unmapped(address)) if address == slot.guard_base()
+    );
+    let guard_removed =
+        mem::unmap_for_test(context, guard_mapping).is_some_and(|result| result.map(drop).is_ok());
+    let restored = task::validate_arena_for_test(arena) == Ok(());
+    Some(guard_refused && guard_removed && restored)
 }
 
 pub(super) fn thread_stacks_are_guarded() -> bool {
@@ -795,8 +800,8 @@ pub(super) fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     let passes = input::poller_passes() - before;
     let exited = yields_until(|| thread::free_slots() == free);
 
-    // And it slept between rounds, which the count cannot show: each sleep
-    // arms a timer, one of which is this thread's own (D-124).
+    // It slept between rounds, which the count cannot show: each sleep arms a timer, one of which
+    // is this thread's own.
     let slept = time::expiries() - expiries_before >= ROUNDS as u64;
 
     if passes != ROUNDS || !exited || !slept {
@@ -925,10 +930,9 @@ pub(super) fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
         return false;
     };
 
-    // This exact incarnation retired: its rites are recorded and, with no other
-    // program spawned to reuse the slot, stay recorded past the reap. The busy
-    // worker then reaped it without a spawn: its slot holds no zombie and the
-    // reap and reclaim counters advanced (D-355).
+    // This exact incarnation retired: its rites are recorded and, with no other program spawned to
+    // reuse the slot, stay recorded past the reap. The busy worker then reaped it without a spawn:
+    // its slot holds no zombie and the reap and reclaim counters advanced.
     let reaped_this_child = last_rites_for(&spawned, 2_000).is_some()
         && runs_until(2000, || {
             let now = user::reclaimed();
