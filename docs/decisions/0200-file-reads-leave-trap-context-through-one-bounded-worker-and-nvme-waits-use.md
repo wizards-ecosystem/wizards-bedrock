@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-08-27. Amends D-153, D-164, D-169 and D-181; closes PW-205 and PW-209.
 
-**Context.** `Read` had the asynchronous ring entry but performed the complete
-VFS and polled NVMe path inside `RingEnter`. The syscall gate has interrupts
-masked, and `nvme::with_controller` held a `SpinLock`, so one delayed command
-could suppress the timer and keyboard for its whole five-million-read bound.
-The same driver converted `CAP.TO` and command waits to iteration counts even
-after the monotonic counter had been calibrated; debug, release and different
-processors therefore assigned different real durations to the same policy.
-Wizzy's filesystem client is the concrete future caller of this boundary.
-
 **Decision.** `RingEnter` copies, validates and authorizes a Read once, reserves
 its terminal completion as before, records an immutable read request, and
 offers it to one kernel file worker. The global work queue has eight fixed
@@ -43,14 +34,19 @@ old fallback: five million command polls, and 20,000 ready polls per millisecond
 capped at twenty million. A poll chooses its mode once; a missing boot clock
 cannot become an accidental unbounded wait.
 
-**Rationale.** A single worker is the smallest design which moves filesystem
-and device service off the trap stack while preserving the read-only driver's
-one-command discipline. The fixed queue makes pressure an admission result,
-not late allocation. Keeping the existing polled hardware queue avoids
-inventing interrupt routing for one controller, while the preemptible worker
-removes polling from interrupt latency. Consumed completion reservations and
-the queued/running distinction preserve exactly-once settlement through
-cancel, completion and death.
+**Rationale.** `Read` had run the whole VFS and polled NVMe path inside
+`RingEnter`, with interrupts masked by the syscall gate and the controller under
+a `SpinLock`, so one delayed command suppressed the timer and keyboard for its
+whole bound; and iteration-count waits gave debug, release and different
+processors different real durations for one policy. Wizzy's filesystem client
+is the concrete future caller of this boundary. A single worker is the smallest
+design which moves filesystem and device service off the trap stack while
+preserving the read-only driver's one-command discipline. The fixed queue makes
+pressure an admission result, not late allocation. Keeping the existing polled
+hardware queue avoids inventing interrupt routing for one controller, while the
+preemptible worker removes polling from interrupt latency. Consumed completion
+reservations and the queued/running distinction preserve exactly-once
+settlement through cancel, completion and death.
 
 **Alternatives.** Polling for a measured short interval inside `RingEnter` was
 rejected because the syscall gate still masks interrupts and any acceptable
@@ -72,6 +68,5 @@ through its trap frame rather than polling.
 
 Host tests give a controlled clock arbitrarily many polls without extending
 its deadline, exhaust the clockless limit at the exact attempt count, and
-cover saturating deadline arithmetic. The six new witnesses were each broken
-once; their persistent mutations bring the register to 136. The complete gate
-passes 206 release and debug machine checks plus shipped and degraded boots.
+cover saturating deadline arithmetic. Each new witness has a persistent
+mutation.

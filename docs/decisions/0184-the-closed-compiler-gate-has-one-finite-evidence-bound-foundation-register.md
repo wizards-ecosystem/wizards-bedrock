@@ -2,27 +2,8 @@
 
 Status: Accepted, 2026-08-27. Refines D-18, D-77, D-135, D-175 and D-183.
 
-**Context.** D-183 permits kernel correctness, concrete language-neutral
-prerequisites and artifact-handoff specification while its compiler gate is
-closed; gate work in `wizards-ink` is externally owned. Consumer scaffolding
-waits for PW-601's pinned-draft-artifact and runtime-seam trigger. D-183
-deliberately does not enumerate every legitimate kernel debt. Calling the
-resulting space "polish" would make it unlimited; freezing the OS repository
-completely would leave safe-abstraction, DMA, privilege and verification
-defects in the foundation Wizzy must trust.
-
-The Phase 6 slices had landed and QEMU reported 189 checks, but the current
-189-check VMware round and current 77-mutation full sweep were not recorded.
-A fresh source audit also found five P0 boundaries which a product-language
-decision cannot waive: shared-mapping lifetime, mapping rollback ownership,
-DMA lifetime after timeout, transactional PCI BAR/claim handling, and CR0.WP.
-
-**Options.** Leave D-183 categorical; admit anything described as kernel
-polish; freeze all OS work; or keep one checked register whose entries require
-a concrete defect, invariant, proof gap, handoff consumer or explicit trigger.
-
-**Decision.** The last option. `016-pre-wizzy-foundation.md` is the sole live
-closed-gate OS backlog. It records state, priority, why each item is admissible,
+**Decision.** `016-pre-wizzy-foundation.md` is the sole live closed-gate OS
+backlog. It records state, priority, why each item is admissible,
 the finite deliverable and the evidence that closes it. `REQUIRED`, `READY`,
 `VERIFY` and `DECIDE` rows must become `DONE` or `SUPERSEDED` before the kernel
 is called the polished Wizzy foundation. `TRIGGER` means stopped, not overdue.
@@ -45,12 +26,24 @@ an imagined runtime cannot freeze APIs for the real compiler. Separating
 confirmed, verify-first, decision and trigger states also prevents a static
 audit observation from being reported as an established exploit.
 
-**Consequences.** Phase 6 is better described as planned-slices-complete and
-not closed, rather than code-complete. Its close now includes the register's
-P0/P1 work and the exact exceptional evidence on one commit. The old
-`014-storage.md` mutation sentence is historical source-count evidence, not a
-claim that the current 77-entry sweep ran. The missing Phase 3 VMware result and
-old non-self-test VMware boots remain historical limits and are not recreated.
+D-183 permits kernel correctness, concrete language-neutral prerequisites and
+artifact-handoff specification while its gate is closed, and deliberately does
+not enumerate every legitimate kernel debt. Calling that space "polish" would
+make it unlimited; freezing the OS repository completely would leave
+safe-abstraction, DMA, privilege and verification defects in the foundation
+Wizzy must trust. The audit behind this register found five P0 boundaries a
+product-language decision cannot waive: shared-mapping lifetime, mapping
+rollback ownership, DMA lifetime after timeout, transactional PCI BAR/claim
+handling, and CR0.WP.
+
+**Consequences.** QEMU reported 189 checks, but the 189-check VMware round and
+the 77-mutation full sweep were not recorded, so Phase 6 is better described as
+planned-slices-complete and not closed, rather than code-complete. Its close
+now includes the register's P0/P1 work and the exact exceptional evidence on
+one commit. The old `014-storage.md` mutation sentence is historical
+source-count evidence, not a claim that the current 77-entry sweep ran. The
+missing Phase 3 VMware result and old non-self-test VMware boots remain
+historical limits and are not recreated.
 
 An `xtask` prose test checks that the register is finite in shape: unique IDs,
 known states/priorities, substantive close evidence, the boundary markers and

@@ -2,19 +2,6 @@
 
 Status: Accepted, 2026-08-27. Amends D-169; closes PW-203.
 
-**Context.** `Controller::read_blocks` multiplied an unchecked block count by
-the namespace's block size, built `CDW12` as `blocks - 1`, and submitted it.
-Zero underflowed in debug and encoded the maximum transfer in release. Counts
-above 65,536 were truncated by the command's sixteen-bit zero-based NLB field.
-Neither `lba + blocks` nor the reported namespace extent participated, and the
-driver proved only that the DMA run had an address, not that it held every byte
-the controller was told it could write.
-
-These are arithmetic obligations, so the controller was the wrong place to
-own them. They also fail before publication: treating any as a command error
-would ring a doorbell with a malformed extent and make the refusal itself a DMA
-memory-safety hazard.
-
 **Decision.** `libs/nvme::ReadTransfer` is the only value the read submission
 path accepts. Its constructor requires a non-empty count no greater than 65,536,
 a non-zero block size, an end which adds without overflow and does not exceed
@@ -35,12 +22,18 @@ real-machine proof that zero, oversized-NLB, namespace-end/overflow and short
 DMA requests stop before the doorbell without asking hardware to execute a
 known-invalid command.
 
-**Rationale.** A checked length alone is insufficient: a representable byte
-count can still describe blocks outside the namespace or a count the command
-field truncates. Checking after PRP construction is too late to make the command
-shape authoritative, and PRP construction cannot know the allocation's end.
-A validated value makes each downstream field a projection of one proof rather
-than a second transcription of raw arguments.
+**Rationale.** `Controller::read_blocks` took an unchecked count: zero
+underflowed `blocks - 1` in debug and encoded the maximum transfer in release,
+counts above 65,536 truncated in the sixteen-bit NLB field, and neither the
+namespace extent nor the DMA run's size was checked. These are arithmetic
+obligations that fail before publication, so treating them as command errors
+would ring a doorbell with a malformed extent. A checked length alone is
+insufficient: a representable byte count can still describe blocks outside the
+namespace or a count the command field truncates. Checking after PRP
+construction is too late to make the command shape authoritative, and PRP
+construction cannot know the allocation's end. A validated value makes each
+downstream field a projection of one proof rather than a second transcription
+of raw arguments.
 
 **Alternatives.** Inline conditionals in `kernel::nvme` were rejected because
 pure bounds would lose host tests and the submission path would still accept raw
@@ -52,11 +45,10 @@ DMA write can corrupt the test kernel before it reports a verdict.
 
 **Consequences.** Host tests exhaust the entire encodable NLB count boundary
 and cover empty, namespace-last, wrapping, zero-block-size, length-overflow and
-one-byte-short DMA cases. The machine check uses the actual controller and DMA
-owner while intercepting the final submission seam, requires every malformed
-request to be refused, and requires command and interception counts to remain
-unchanged. Empty, NLB-width, namespace-wrap, short-buffer and driver-integration
-mutations each reddened their exact check; the last produced only `invalid nvme
-reads stop before submission` with `passed=199 failed=1 expected=200` and could
-not ring real hardware while broken. The release image passed all 200 checks;
-the mutation register now contains 107 entries. No unsafe operation was added.
+one-byte-short DMA cases. The machine check `invalid nvme reads stop before
+submission` uses the actual controller and DMA owner while intercepting the
+final submission seam, requires every malformed request to be refused, and
+requires command and interception counts to remain unchanged. Empty, NLB-width,
+namespace-wrap, short-buffer and driver-integration mutations each redden their
+exact check, and the last cannot ring real hardware while broken. No unsafe
+operation was added.
