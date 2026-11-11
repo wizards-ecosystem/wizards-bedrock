@@ -2,21 +2,6 @@
 
 Status: Accepted, 2026-08-30. Amends D-81 and D-91; verification tracked by PW-534.
 
-**Context.** D-81 declined KPTI because this kernel's target hardware reports
-`RDCL_NO`, but process admission never checked the processor actually running
-the image. D-91 correctly kept an absent `IA32_ARCH_CAPABILITIES` distinct from
-an all-clear word, yet that distinction only affected reporting and eIBRS.
-Ring 3 still received page tables containing the kernel on a silent processor,
-which is exactly the boundary KPTI exists to protect.
-
-TCG makes a blanket fail-closed policy insufficient for the development gate:
-the pinned QEMU does not expose `IA32_ARCH_CAPABILITIES`, so it cannot report
-`RDCL_NO`. A generic hypervisor or vendor signature is not a substitute. QEMU
-can use another accelerator, user configuration and later command-line options
-can replace its CPU or machine, and a hostile virtual-machine monitor can spoof
-CPUID. The gate needs a narrow statement about the controlled emulator it
-started, not a claim that CPUID attests the host.
-
 **Decision.** A process may be constructed with shared kernel mappings only
 for one of two opaque reasons: an affirmative `RDCL_NO` in a described
 architectural-capability word, or the exact QEMU TCG base tuple. The latter
@@ -44,6 +29,17 @@ exist. Automated QEMU success additionally requires exactly one exact
 `qemu_tcg` log record, proving that the guest consumed the policy chosen by the
 runner. It does not prove that an untrusted hypervisor told the truth.
 
+**Rationale.** D-81 declined KPTI because the target hardware reports
+`RDCL_NO`, but admission never checked the processor actually running the
+image, and D-91's distinction between an absent `IA32_ARCH_CAPABILITIES` and an
+all-clear word affected only reporting and eIBRS, so ring 3 received the kernel
+in its page tables on a silent processor. The pinned QEMU does not expose
+`IA32_ARCH_CAPABILITIES`, so a blanket refusal would remove the development
+gate, while a generic hypervisor or vendor name is no substitute: QEMU can
+use another accelerator, configuration can replace its CPU or machine, and a
+hostile monitor can spoof CPUID. The gate needs a narrow statement about the
+controlled emulator it started, not a claim that CPUID attests the host.
+
 **Alternatives.** Treating silence as `RDCL_NO` was rejected by D-91 and would
 fail open on the processors that most need isolation. Refusing every silent
 machine was rejected for the controlled TCG loop because it would remove all
@@ -57,12 +53,11 @@ native hardware without `RDCL_NO` may launch user programs.
 
 **Evidence and consequences.** Pure host tests refuse an undescribed word, a
 described zero word, the historical VMware tuple and every one-bit mutation of
-all four QEMU tuple registers; they also prove that the hypervisor leaf is not
-read without the hypervisor bit. Host runner tests pin every launch site,
-reject all profile-changing aliases and config avenues, allow unrelated debug
-arguments, and require the exact guest marker only for a passing verdict.
-Each guard was broken once and its named host witness went red before
-restoration. The machine check injects the production refusal, requires the
-typed error, no syscall crossing and an unchanged resource ledger, then proves
-the accepted state was restored. Its retained mutation and the current QEMU
-and VMware observations remain PW-534; no boot result is invented here.
+all four QEMU tuple registers, and prove the hypervisor leaf is not read
+without the hypervisor bit. Host runner tests pin every launch site, reject all
+profile-changing aliases and config avenues, allow unrelated debug arguments,
+and require the exact guest record only for a passing verdict. The machine
+check injects the production refusal, requires the typed error, no syscall
+crossing and an unchanged resource ledger, then proves the accepted state was
+restored. Its retained mutation and the current QEMU and VMware observations
+remain PW-534; no boot result is invented here.

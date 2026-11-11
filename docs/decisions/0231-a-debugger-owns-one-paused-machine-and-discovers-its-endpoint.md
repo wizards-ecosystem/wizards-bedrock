@@ -2,14 +2,6 @@
 
 Status: Accepted, 2026-08-29. Closes PW-513.
 
-**Context.** The kernel has retained DWARF and QEMU has a GDB stub, but the
-documented Windows workflow still stops at a raw `-s -S` suggestion. That
-leaves debugger selection, symbol loading, the remote endpoint and cleanup to
-every investigation. A fixed TCP port conflicts with concurrent runners, and
-probing a free port before QEMU binds it repeats the race D-227 removed from
-the other machine controls. Rust's `rust-lldb` launcher is installed here but
-no LLDB executable is; the native WinLibs package does provide GDB 17.2.
-
 **Decision.** The supported route is the exact native GDB identity shipped by
 WinLibs POSIX/UCRT `16.1.0-14.0.0-r4`: `GNU gdb (GDB for MinGW-W64 x86_64,
 built by Brecht Sanders, r4) 17.2`. `GDB` may name its executable explicitly;
@@ -35,6 +27,14 @@ The debugger remains an exceptional developer dependency and does not enter
 CI; the host gate checks its command construction, endpoint parsing, pinned
 identity and proof-output parser without requiring GDB.
 
+**Rationale.** The documented Windows workflow stopped at a raw `-s -S`
+suggestion, leaving debugger selection, symbol loading, the endpoint and
+cleanup to every investigation. A fixed TCP port conflicts with concurrent
+runners, and probing a free port before QEMU binds it repeats the race D-227
+removed from the other machine controls. Rust's `rust-lldb` launcher is
+installed here but no LLDB executable is; the native WinLibs package does
+provide GDB 17.2.
+
 **Alternatives.** LLDB was rejected for the present setup because a Cargo
 wrapper without the debugger it launches is not a tool. WSL or
 `gdb-multiarch` was rejected because D-16's build is native Windows and a
@@ -44,16 +44,8 @@ both make otherwise independent runners contend. Leaving QEMU alive after a
 debugger failure was rejected because an overnight or automated proof must not
 strand a paused machine.
 
-**Consequences.** The bounded command resolved the exact WinGet GDB, opened a
-dynamic loopback endpoint, hit `wizard_kernel::kmain` at
-`wost/src/boot/mod.rs:526`, emitted its marker and symbolized frame zero, then
-detached and reaped QEMU in 3.3 seconds. The interactive command reached the
-same source line and `quit` also removed its private image and variable store;
-neither path left a GDB or QEMU process.
-
-Accepting port zero, an unreviewed GDB identity, a software breakpoint before
-the higher-half entry was mapped and a backtrace missing either its symbol or
-source each reddened only its exact host check before restoration. Renaming the
-documented task reddened only the existing prose/CLI check. Mutations 272
-through 276 retain all five defects. No target code, unsafe operation, wire ABI
-or machine check changed.
+**Consequences.** Mutations 272 through 276 keep the host checks red for
+accepting port zero, an unreviewed GDB identity, a software breakpoint before
+the higher-half entry was mapped, a backtrace missing its symbol or source, and
+a renamed documented task. No target code, unsafe operation, wire ABI or
+machine check changed.

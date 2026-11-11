@@ -2,27 +2,6 @@
 
 Status: Accepted, 2026-08-30. Amends D-216, D-218 and D-235; closes PW-007 and PW-008; advances PW-009.
 
-**Context.** The rejected phase handoff treated exceptional tools as though
-recording their identity recorded their work. Mutation's `last-run` journal
-had no overall verdict, did not retain failed completed evidence and let an
-older pass authorize closure after a newer sweep failed. The model observer
-accepted any nonzero exit which contained the expected invariant text, even
-beside unrelated failure, and could wait forever. An initial qualification
-layer bound mutation and model inputs, but its VMware path retained the same
-execution defect: `begin_vmware` probed `vmrun`, then discarded the resolved
-tool, and `qualify` accepted a transcript already present on disk without
-executing VMware's observer. A synthetic marker fixture passed the check.
-
-The surrounding provenance was weaker than its prose too. D-235 truncated one
-shared serial name but left every other file in each machine directory, and
-the live tree contained older NVRAM, suspend metadata and scoreboards beside
-new descriptors. A copied mutation snapshot was verified only when opened; if
-it changed later, completion restored from the changed copy and still wrote a
-report for the original digest. Evidence parsing accepted reordered fields and
-one missing terminal LF, and a broken staging symlink could survive
-invalidation. These are stale-success, substitution and path-authority defects,
-not missing explanatory comments.
-
 **Decision — exceptional records.** Mutation, TLC and each VMware selector own
 one sorted, checksummed qualification record under ignored target output. An
 attempt removes the older success before its first fallible preflight and can
@@ -112,6 +91,17 @@ checksums are integrity checks rather than signatures. PW-531 stops stronger
 process-to-transcript binding until a concrete guest-readable challenge channel
 or platform attestation mechanism exists.
 
+**Rationale.** The rejected phase handoff treated recording a tool's identity
+as recording its work. `last-run` had no overall verdict and let an older pass
+authorize closure after a newer sweep failed; the model observer accepted any
+nonzero exit containing the invariant text and could wait forever;
+`begin_vmware` discarded the resolved `vmrun` and `qualify` accepted any
+transcript already on disk. D-235 left every other file in each machine
+directory, a copied mutation snapshot was verified only when opened, evidence
+parsing accepted reordered fields and a missing terminal LF, and a broken
+staging symlink could survive invalidation. These are stale-success,
+substitution and path-authority defects, not missing explanatory comments.
+
 **Alternatives.** Keeping a fixed serial filename plus truncation was rejected
 because it gives accidental replay one stable destination. Treating every
 post-boot VMware file as evidence was rejected because their formats and
@@ -122,24 +112,13 @@ cryptographic claim from host-generated metadata was rejected because the
 guest never consumes or returns that metadata. Deleting the whole `vm/` root
 was rejected because one selector must never destroy its sibling.
 
-**Evidence and consequences.** Host fixtures complete and consume a clean
-isolated mutation sweep, retain an older pass beside a newer failure, reject
-failed and stale reports and block a concurrent replacement until the current
-pass is consumed. TLC fixtures distinguish clean success and the exact named
-invariant from wrong status, wrong invariant, mixed verdict, truncation,
-unrelated error, diagnostic output, Java throwable, fatal output and a
-missing or contradictory behavior trace; a parked child proves the deadline.
-PW-007 and PW-008 are therefore closed as observer implementations, while the
-real current-registry mutation and TLC executions remain PW-001 and PW-002.
-
-Other host fixtures reject zero, noncanonical and multiple `vmrun` counts,
-missing and extra paths, relative and foreign VMXs, linked selector and
-qualification parents, stale NVRAM, authoritative-name substitution, shared
-serial names, linked evidence roots, broken staging links, reordered manifests
-and a changed mutation snapshot. The command seam executes exact pre-probe,
-`-T ws list` and post-probe order, and production requires the real observer
-before result and commit. Each guard was removed or weakened once and its exact
-fixture went red; the restored defects persist in the mutation registry. No
-real exceptional close is claimed here: PW-009 is `REQUIRED` until one clean
-final commit completes mutation, TLC, both human VMware rounds, both execution
-qualifications, evidence creation and independent offline replay.
+**Evidence and consequences.** Host fixtures cover the mutation report and
+lock rules, every TLC refusal above with a parked child proving the deadline,
+and every VMware count, path, link, inventory, manifest and snapshot refusal;
+each guard was removed or weakened once and its restored defect persists in
+the mutation registry. PW-007 and PW-008 are closed as observer
+implementations, while the real current-registry mutation and TLC executions
+remain PW-001 and PW-002. No real exceptional close is claimed here: PW-009 is
+`REQUIRED` until one clean final commit completes mutation, TLC, both human
+VMware rounds, both execution qualifications, evidence creation and
+independent offline replay.

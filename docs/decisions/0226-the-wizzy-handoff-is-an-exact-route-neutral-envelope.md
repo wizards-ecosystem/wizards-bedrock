@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-08-29. Closes PW-600.
 
-**Context.** D-183 requires a versioned standalone artifact and separable
-runtime before product integration. `015` already said the artifact format,
-target, platform ABI, runtime and effect encoding must agree, and that the OS
-must consume pinned bytes rather than a neighbouring checkout. Those facts
-had no single machine-readable record. Adding loader or runner code now would
-freeze the delivery-route guesses PW-601 explicitly stops; leaving only prose
-would make the first real integration invent its version and provenance rules
-under schedule pressure.
-
 **Decision.** `libs/wizzy-handoff` owns an allocation-free parser for the
 `wizard-wizzy-handoff-v1` envelope. A record carries, in one canonical ordered
 key/value form:
@@ -44,21 +35,21 @@ the adjacent payload and passes the result plus explicit expected versions to
 the pure parser. Neither parsing nor the fixture consults the network,
 environment or a sibling checkout.
 
-**Proof.** Host tests accept the committed fixture only with the SHA-256 of
-the adjacent bytes and require platform v1 to remain entry, ring and time-page
-v1. They refuse an unknown envelope, an unknown, duplicate or reordered
-field, non-canonical values, every target and ABI mismatch, and an identity
-where only length or digest agrees. Changing the supported envelope constant,
-bypassing the header or extra-field guards, accepting malformed values,
-accepting every version, weakening identity to either length or digest,
-changing the fixture bytes, or changing the time-page version each reddened
-its exact host witness. All eight defects persist as mutations 243 through
-250.
+**Proof.** Host tests accept the fixture only with the SHA-256 of the adjacent
+bytes, require platform v1 to remain entry, ring and time-page v1, and refuse
+an unknown envelope, an unknown, duplicate or reordered field, non-canonical
+values, every target and ABI mismatch, and an identity where only length or
+digest agrees. Mutations 243 through 250 keep those witnesses red.
 
-**Rationale.** Exact caller-supplied tokens let the future image build pin the
-compiler-owned sides of the seam without this repository claiming to know
-them early. One aggregate platform version lets a producer reject the native
-entry/ring/time contract as a whole; their existing internal version fields
+**Rationale.** D-183 requires a versioned standalone artifact and separable
+runtime before product integration, and `015`'s agreement on artifact format,
+target, platform ABI, runtime and effect encoding had no machine-readable
+record. Loader or runner code now would freeze the delivery-route guesses
+PW-601 stops; prose alone would leave the first integration to invent version
+and provenance rules. Exact caller-supplied tokens let the future image build
+pin the compiler-owned sides of the seam without this repository claiming to
+know them early. One aggregate platform version lets a producer reject the
+native entry/ring/time contract as a whole; their internal version fields
 remain the finer wire checks. Canonical ordering, spellings and encodings make
 the record byte-stable and reviewable. Recording both length and digest avoids
 treating a hash string as the identity of bytes no consumer actually read.
@@ -72,11 +63,8 @@ TOML/JSON document was rejected for this small contract because ignored or
 duplicated fields and multiple equivalent serializations are exactly what a
 version envelope must exclude.
 
-**Consequences.** The OS side can now validate a complete identity envelope
-and pinned bytes before any consumer exists. Gate opening must supply real,
-reachable provenance and explicit supported version tokens in this format;
-the conformance fixture cannot satisfy WZ-001 through WZ-004. A future need
-for multiple repositories, another digest, or new metadata is an envelope-v2
-decision, not an optional v1 field. PW-601 remains stopped until the real
-artifact and runtime seam exist. The mutation registry is 250; no machine
-check was added.
+**Consequences.** Gate opening must supply real, reachable provenance and
+explicit supported version tokens in this format; the conformance fixture
+cannot satisfy WZ-001 through WZ-004. A future need for multiple repositories,
+another digest, or new metadata is an envelope-v2 decision, not an optional v1
+field. PW-601 remains stopped until the real artifact and runtime seam exist.
