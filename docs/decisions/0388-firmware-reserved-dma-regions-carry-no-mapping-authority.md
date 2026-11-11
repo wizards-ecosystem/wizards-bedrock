@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-10-11. Amends D-360.
 
-**Context.** D-360 screened a device's ACPI DMAR Reserved Memory Region
-Reporting (RMRR) entries against the boot memory map, then identity-mapped the
-entries that fell wholly in a device hole. That map distinguishes allocator
-memory from non-RAM; it does not distinguish a device-owned buffer from VT-d,
-APIC, PCI configuration or another security-critical MMIO window. Hostile or
-mistaken firmware could therefore name a critical register page as an RMRR and
-give the selected bus master read/write access to it before translation was
-enabled. Checking only the selected DRHD's register page would leave the same
-failure for every other critical physical window.
-
 **Decision.** No firmware RMRR is supported by the release kernel. After the
 sealed topology proves complete requester coverage, `iommu::look_up` asks the
 validated DMAR whether any RMRR applies to the candidate and refuses the whole
@@ -28,19 +18,20 @@ region is a device buffer and disjoint from every kernel, firmware and control
 window. QEMU's qualified DMAR names no RMRR, so this compatibility boundary
 does not remove the release path.
 
-**Proof required.** A source contract must bind all three properties: `Unit`
-has no reserved-region authority, `look_up` rejects the first applicable RMRR,
-and every VT-d establishment or retarget call receives an empty list. The
-machine check must accept an empty list and refuse both a live device-hole page
-and a usable-RAM page through the exact production predicate. Permanent
-mutation 1,589 now consumes the first entry but reports the iterator empty; it
-must redden the source contract and the machine witness before byte-for-byte
-restoration. Release and debug boots, the no-DMAR degraded boot and the complete
-CI gate must pass afterward.
+A source contract binds all three properties: `Unit` has no reserved-region
+authority, `look_up` rejects the first applicable RMRR, and every VT-d
+establishment or retarget call receives an empty list. The machine check
+accepts an empty list and refuses both a live device-hole page and a usable-RAM
+page through the exact production predicate. Mutation 1,589 consumes the first
+entry but reports the iterator empty and reddens the source contract and the
+machine witness.
 
-**Alternatives.** Screening only allocator-owned memory repeats D-360's gap.
-Rejecting overlap with every DRHD register page closes the demonstrated VT-d
-variant but not other critical MMIO. Trusting firmware to declare only benign
-device buffers contradicts the hostile-firmware boundary. Supporting RMRRs
-later requires one complete, typed physical-ownership ledger rather than a
-growing denylist of known register ranges.
+**Rationale.** D-360 identity-mapped RMRRs that fell wholly in a boot-map
+device hole, but that map does not distinguish a device-owned buffer from VT-d,
+APIC, PCI configuration or another critical MMIO window, so hostile or mistaken
+firmware could give the selected bus master access to a register page before
+translation was enabled. Rejecting overlap with every DRHD register page would
+close only the demonstrated variant, and trusting firmware to declare benign
+buffers contradicts the hostile-firmware boundary. Supporting RMRRs later
+requires one complete, typed physical-ownership ledger rather than a growing
+denylist of known register ranges.
