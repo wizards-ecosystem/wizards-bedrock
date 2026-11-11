@@ -34,38 +34,45 @@ pub(super) fn audited_cargo_command(
 }
 
 // An inherited value could change the pinned driver's tools or flags.
-const AMBIENT_COMPILER_VARIABLES: [&str; 18] = [
+// gcc would take `ld` from GCC_EXEC_PREFIX before COMPILER_PATH, and libraries from LIBRARY_PATH.
+const AMBIENT_COMPILER_VARIABLES: &[&str] = &[
+    "GCC_EXEC_PREFIX",
+    "LIBRARY_PATH",
     "CPATH",
     "C_INCLUDE_PATH",
     "CPLUS_INCLUDE_PATH",
     "LD_RUN_PATH",
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
+    "LD_AUDIT",
+    "LINK",
+    "_LINK_",
+    "LIB",
     "CCC_OVERRIDE_OPTIONS",
     "CC",
     "CFLAGS",
     "AR",
-    "TARGET_CC",
-    "HOST_CC",
     "CRATE_CC_NO_DEFAULTS",
     "CXX",
     "CXXFLAGS",
     "ARFLAGS",
     "RANLIB",
-    "CC_ENABLE_DEBUG_OUTPUT",
+    "RANLIBFLAGS",
+    "CXXSTDLIB",
 ];
-pub(super) const AMBIENT_COMPILER_PREFIXES: [&str; 8] = [
+pub(super) const AMBIENT_COMPILER_PREFIXES: &[&str] = &[
     "CC_",
     "CFLAGS_",
     "CXX_",
     "CXXFLAGS_",
     "AR_",
     "ARFLAGS_",
+    "RANLIB_",
+    "CXXSTDLIB_",
     "TARGET_",
     "HOST_",
 ];
 
-// gcc would take `ld` from GCC_EXEC_PREFIX before COMPILER_PATH, and libraries from LIBRARY_PATH.
 pub(super) fn base_cargo_command(
     execution_root: &Path,
     cargo_home: &Path,
@@ -80,8 +87,6 @@ pub(super) fn base_cargo_command(
         .current_dir(execution_root)
         .env("CARGO_HOME", cargo_home)
         .env("PATH", &compiler.tool_path)
-        .env_remove("GCC_EXEC_PREFIX")
-        .env_remove("LIBRARY_PATH")
         .env("RUSTC", &compiler.path)
         .env("RUSTC_WRAPPER", "")
         .env("RUSTC_WORKSPACE_WRAPPER", "")

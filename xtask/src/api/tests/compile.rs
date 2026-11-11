@@ -4,7 +4,7 @@ use super::*;
 fn compiler_queries_remove_inherited_loader_variables() {
     let query = compiler_query(Path::new("rustc"), Path::new("."));
     let environment = query.get_envs().collect::<BTreeMap<_, _>>();
-    for loader in ["LD_PRELOAD", "LD_LIBRARY_PATH"] {
+    for loader in ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"] {
         assert_eq!(
             environment.get(std::ffi::OsStr::new(loader)),
             Some(&None),
