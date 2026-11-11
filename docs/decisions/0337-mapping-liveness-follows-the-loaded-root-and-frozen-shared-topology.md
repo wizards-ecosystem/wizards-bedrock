@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-09-28. Amends D-125, D-142, D-253, D-259, D-281 and D-284; closes PW-120 and advances PW-540.
 
-**Context.** The current implementation had repaired two related paging trust
-boundaries without a current end-to-end causal record. Stack and device tokens
-must describe what the loaded page tables will reach, not merely rewalk an old
-root which still shares kernel entries. Separately, every user root must inherit
-one reserved device-window topology before activation, and later binding may
-ignore only the `ACCESSED` bit which hardware can set. Local evidence was still
-needed before closing the former; the latter also needs a fresh VMware
-observation of the real shared-root path.
-
 **Decision.** A retained stack or device mapping is live only when its recorded
 root resolves through the current mapping root and every page in its complete
 extent still has the original physical address, four-kilobyte span and exact
@@ -27,33 +18,20 @@ PW-120 leaves D-142 and the hostile-surface audit. PW-540 remains `READY` until
 the same restored implementation passes VMware; local causal closure does not
 substitute for that hardware observation.
 
-**Evidence.** On 2026-09-28 retained mutations 817, 818 and 821 through 825
-were applied individually and restored byte-exact. Replacing the current-root
-lookup with recorded-root checks failed only `a stale shared root cannot
-authenticate a device mapping` and `a stale shared root cannot authenticate a
-stack`, respectively, each at 261/262. Skipping the stack's middle or final
-leaf failed only its corresponding named check; skipping the device mapping's
-first, middle or final leaf likewise failed only its corresponding named check,
-each at 261/262. D-259's 2026-08-31 mutation 819 record independently skipped
-the first stack leaf and failed all three then-new retained-stack substitution
-checks before restoration passed 251/251.
+**Rationale.** Stack and device tokens must describe what the loaded page
+tables will reach, not rewalk an old root that still shares kernel entries,
+and every user root must inherit one reserved device-window topology before
+activation, with later binding ignoring only the `ACCESSED` bit hardware can
+set.
 
-For PW-540, mutations 326, 327 and 1,311 through 1,313 were then applied one at
-a time and restored byte-exact. Omitting pre-activation reservation prevented
-the I/O APIC and both NVMe controllers from mapping, failed 43 dependent
-self-checks including `late device mappings reach earlier user roots`, then
-reached the complete terminal panic `the bound-space witness did not retire`.
-Allowing a new active top-level table failed only `active kernel topology
-refuses a new shared root` at 261/262. Accepting a huge present root, accepting
-a user present root and constructing a user table each failed only `shared
-topology rejects hostile root entries` at 261/262.
-
-Mutation 1,314 compared the complete raw table word and failed the exact host
-identity test because accessed-only drift was rejected. Mutation 1,315 ignored
-`NO_CACHE` as well and the same test failed with `bit 4 was omitted from table
-identity`. Exact restoration passed that one test with 54 filtered out,
-release and debug QEMU each passed 262/262, and the applicability and named-check
-tests passed for all 1,412 registered mutations.
+**Evidence.** Retained mutations 817, 818 and 821 through 825 substitute the
+recorded root or skip one stack or device leaf, and each fails only its
+stale-root or leaf check; D-259's mutation 819 skips the first stack leaf. For
+PW-540, mutations 326, 327 and 1,311 through 1,313 omit the pre-activation
+reservation, allow a new active top-level table or accept or construct a huge
+or user root, and each fails its named topology check or terminal panic.
+Mutations 1,314 and 1,315 compare the raw table word or also ignore
+`NO_CACHE`, and each fails the exact host identity test.
 
 **Alternatives.** Trusting a token's saved root was rejected because the next
 hardware access follows the loaded root. Sampling only an endpoint was rejected

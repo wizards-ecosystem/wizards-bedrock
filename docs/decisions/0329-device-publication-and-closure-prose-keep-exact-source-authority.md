@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-09-28. Amends D-249, D-265 and D-325; advances PW-010, PW-011 and PW-129.
 
-**Context.** D-249 required framebuffer rows to pass through checked volatile
-MMIO before their RAM shadow changed, but its retained row-plan and cursor
-witnesses did not bind that complete call chain. D-265 called PCI function
-authority opaque while its compiler contract rejected raw-address and
-duplication routes without separately proving that the pure registry lease and
-hardware claim identity stayed private. Separately, D-325's hostile-surface
-mutations named rows which the phase close must soon move from `READY` to
-`DONE`, and the storage summary copied mutable sweep totals which only a
-source-bound qualification record can make authoritative.
-
 **Decision.** The framebuffer contract resolves the exact inherent methods and
 requires one checked row plan to feed an exact per-span body: destination,
 bounded shadow source, checked MMIO-slice publication and only then shadow
@@ -28,14 +18,15 @@ an audit disposition. The storage summary states only the mutation registry's
 source-derived count and delegates all sweep outcomes to qualification records;
 it cannot preserve caught, survivor or inconclusive totals as current prose.
 
-**Evidence.** Exposing either PCI field made its compiler probe compile and
-made the exact authority contract red. Replacing the MMIO delegation with an
-unchecked nonvolatile copy and committing the shadow before device publication
-each reddened the exact framebuffer contract; mutations 1,392 through 1,395
-retain those four defects. The closure mutations independently reported
-`PW-542 (DONE)`, missing live `PW-542`, a 1,394-versus-1,395 registry mismatch
-and prose claiming authority over sweep verdicts. Byte-for-byte restoration
-made both focused prose tests and the device contracts green.
+**Rationale.** D-249's retained row-plan and cursor witnesses did not bind
+the complete call chain from checked volatile MMIO to the RAM shadow, and
+D-265's compiler contract did not separately prove that the pure registry lease
+and hardware claim identity stayed private. D-325's census mutations named
+rows the phase close would soon move to `DONE`, and the storage summary copied
+mutable sweep totals that only a source-bound qualification record can make
+authoritative. Mutations 1,392 through 1,395 retain four defects: exposing
+either PCI field, an unchecked nonvolatile MMIO copy and a shadow commit
+before device publication.
 
 **Alternatives.** A denylist of raw pointer calls was rejected because it can
 miss a new bypass while rejecting an unrelated method with the same name.
