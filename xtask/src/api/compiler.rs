@@ -153,7 +153,8 @@ pub(super) fn compiler_query(compiler: &Path, source_root: &Path) -> Command {
     command
         .current_dir(source_root)
         .env_remove("LD_PRELOAD")
-        .env_remove("LD_LIBRARY_PATH");
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("LD_AUDIT");
     command
 }
 

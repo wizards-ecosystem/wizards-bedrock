@@ -57,6 +57,11 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "HOST_CFLAGS",
         "CXX_x86_64_unknown_linux_gnu",
         "ARFLAGS_x86_64_unknown_linux_gnu",
+        "TARGET_CC",
+        "HOST_CC",
+        "CC_ENABLE_DEBUG_OUTPUT",
+        "RANLIB_x86_64_unknown_linux_gnu",
+        "CXXSTDLIB_x86_64_unknown_linux_gnu",
     ] {
         command.env(name, "hostile");
     }
@@ -76,6 +81,11 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
             "HOST_CFLAGS",
             "CXX_x86_64_unknown_linux_gnu",
             "ARFLAGS_x86_64_unknown_linux_gnu",
+            "TARGET_CC",
+            "HOST_CC",
+            "CC_ENABLE_DEBUG_OUTPUT",
+            "RANLIB_x86_64_unknown_linux_gnu",
+            "CXXSTDLIB_x86_64_unknown_linux_gnu",
         ]
         .into_iter()
         .map(std::ffi::OsString::from),
@@ -95,6 +105,11 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "HOST_CFLAGS",
         "CXX_x86_64_unknown_linux_gnu",
         "ARFLAGS_x86_64_unknown_linux_gnu",
+        "TARGET_CC",
+        "HOST_CC",
+        "CC_ENABLE_DEBUG_OUTPUT",
+        "RANLIB_x86_64_unknown_linux_gnu",
+        "CXXSTDLIB_x86_64_unknown_linux_gnu",
     ] {
         assert_eq!(environment.get(std::ffi::OsStr::new(name)), Some(&None));
     }
@@ -168,18 +183,21 @@ fn every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers() {
         "LD_RUN_PATH",
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
+        "LD_AUDIT",
+        "LINK",
+        "_LINK_",
+        "LIB",
         "CCC_OVERRIDE_OPTIONS",
         "CC",
         "CFLAGS",
         "AR",
-        "TARGET_CC",
-        "HOST_CC",
         "CRATE_CC_NO_DEFAULTS",
         "CXX",
         "CXXFLAGS",
         "ARFLAGS",
         "RANLIB",
-        "CC_ENABLE_DEBUG_OUTPUT",
+        "RANLIBFLAGS",
+        "CXXSTDLIB",
     ] {
         assert_eq!(
             environment.get(std::ffi::OsStr::new(ambient)),

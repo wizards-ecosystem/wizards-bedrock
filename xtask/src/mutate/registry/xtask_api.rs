@@ -2339,7 +2339,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2474,
         file: "xtask/src/api/compile.rs",
-        find: "        .env_remove(\"GCC_EXEC_PREFIX\")\n        .env_remove(\"LIBRARY_PATH\")\n",
+        find: "    \"GCC_EXEC_PREFIX\",\n    \"LIBRARY_PATH\",\n",
         replace: "",
         breaks: "an ambient gcc search prefix or library path reaches the pinned host C driver",
         reddens: Caught::HostTest {
@@ -2378,7 +2378,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2478,
         file: "xtask/src/api/compiler.rs",
-        find: "        .current_dir(source_root)\n        .env_remove(\"LD_PRELOAD\")\n        .env_remove(\"LD_LIBRARY_PATH\");\n",
+        find: "        .current_dir(source_root)\n        .env_remove(\"LD_PRELOAD\")\n        .env_remove(\"LD_LIBRARY_PATH\")\n        .env_remove(\"LD_AUDIT\");\n",
         replace: "        .current_dir(source_root);\n",
         breaks: "an inherited preload or loader path acts on the pinned rustc during its identity queries",
         reddens: Caught::HostTest {
