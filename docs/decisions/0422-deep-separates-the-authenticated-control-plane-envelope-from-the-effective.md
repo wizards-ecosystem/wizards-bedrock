@@ -2,30 +2,6 @@
 
 Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-406, D-416, D-417, D-419 and D-420; advances PW-026.
 
-**Context.** The complete 2,133-entry mutation sweep on `0dfcb76` executed to
-completion and caught 2,132 entries, with no inconclusive result. Permanent
-mutation 2,036 survived because the owned-metadata witness parsed the parent
-permission profile but did not independently assert its required `managed`
-type. Investigation of that missing assertion reproduced a separate provider
-boundary defect before another owned Deep launch: official pinned Codex
-Security 0.1.32 rejects a special root deny in the supplied parent metadata,
-requires a root-readable parent envelope, generates a root-readable named
-profile, and compares the app-server's observed profile byte-for-byte with that
-generated value. D-420's wrapper instead rewrote that profile for both
-app-server and exec. The real workflow would therefore stop at provider
-preflight before Daybreak or worker execution even though the direct MXC
-sentinels pass. This is a fail-closed integration defect rather than an
-attacker escape, but it invalidates the claimed qualification route and blocks
-release.
-
-The installed package is proprietary and supplies no redistribution or
-modification grant, while no newer compatible official package is available.
-Vendoring or byte-patching it is therefore not a Bedrock release option.
-Putting the whole authenticated controller inside the worker sandbox is also
-rejected: the controller needs the projected login, network and private state,
-and nested Windows broker behavior does not prove that a later sandbox token
-intersects with an outer token or Job.
-
 **Decision.** The authenticated app-server is a measured trusted control plane,
 not a model worker. Metadata supplies the provider's least permissive accepted
 envelope: one `managed` profile with root read, the complete ordered set of
@@ -60,15 +36,16 @@ effective MXC sandbox state in addition to their semantic tuple; the owned
 request advances to v3 for its required request fields. A digest disagreement,
 wrapper bypass or missing observed transition prevents PASS.
 
-**Proof.** Focused witnesses independently assert the metadata profile type,
+Focused witnesses independently assert the metadata profile type,
 the provider-compatible root-read envelope and its exact denies, app-server
 pass-through, initial and resumed exec-only replacement, strict root deny,
 minimal and every positive grant, every explicit deny, network denial,
 MXC-last ordering, environment removal and profile digests. Protocol fixtures
 construct their expected metadata independently of the producer. Permanent
-mutation 2,036 remains active and must be caught; obsolete both-command rewrite
-mutations are retired or retargeted, and new permanent mutations remove or
-broaden one side of the control-plane/worker boundary.
+mutation 2,036, which survived because the owned-metadata witness did not assert
+the required `managed` type, remains active and must be caught; obsolete
+both-command rewrite mutations are retired or retargeted, and new permanent
+mutations remove or broaden one side of the control-plane/worker boundary.
 
 Runtime proof is deliberately split across two non-substitutable observations.
 The real plugin route may launch multiple app-server children across parallel
@@ -107,22 +84,24 @@ CLI paths have identical argument shapes. A complete real Deep run must succeed
 without fallback, bind the ledger and remeasure source, plugin, runtimes,
 profiles and artifacts before PASS.
 
-**Qualification boundary.** The failed mutation sweep and all earlier Deep
-diagnostics remain non-authoritative. This correction changes source,
-qualification policy, evidence bindings and the mutation registry. PW-026 and
-release remain open until one new clean frozen commit passes ordinary CI, the
-entire updated mutation registry, and the real owned D-406/D-416/D-417/D-419/
-D-420/D-422/D-424 workflow with the mandatory runtime boundary probes.
+**Qualification boundary.** All earlier Deep diagnostics and the sweep on
+`0dfcb76` remain non-authoritative. PW-026 and release remain open until one new
+clean frozen commit passes ordinary CI, the entire updated mutation registry,
+and the real owned D-406/D-416/D-417/D-419/D-420/D-422/D-424 workflow with the
+mandatory runtime boundary probes.
 
-**Alternatives.** Retaining D-420's both-command rewrite was rejected because
-the provider detects the app-server mismatch before scanning. Sending the
-strict parent metadata unchanged was rejected because the pinned provider
-rejects it. Keeping root read for model workers was rejected because explicit
-secret denies cannot enumerate unrelated host data. Patching the proprietary
-plugin was rejected without an upstream licensed release. Sandboxing the whole
-controller was rejected because it either removes capabilities required for
-authentication and API use or silently relies on unproved nested-sandbox
-intersection. Configuration-only tests were rejected as release authority.
-Conversely, requiring the proprietary model to select each negative operation
-was rejected as nondeterministic: identity-bearing real-plugin transitions and
-the exact named-profile Codex/MXC enforcement preflight are both mandatory.
+**Rationale.** Official pinned Codex Security 0.1.32 rejects a special root
+deny in the supplied parent metadata, requires a root-readable parent envelope,
+generates a root-readable named profile and compares the app-server's observed
+profile byte for byte with it, so D-420's rewrite for both app-server and exec
+stopped the real workflow at provider preflight. That was a fail-closed
+integration defect, not an attacker escape, but it blocked the qualification
+route. The package is proprietary with no redistribution or modification grant
+and no newer compatible official release, so vendoring or patching it is not a
+Bedrock option. Sandboxing the whole controller would remove the projected
+login, network and private state it needs or rely on unproved nested-sandbox
+intersection. Keeping root read for model workers fails because explicit
+secret denies cannot enumerate unrelated host data, configuration-only tests
+are not release authority, and requiring the proprietary model to select each
+negative operation is nondeterministic, so identity-bearing real-plugin
+transitions and the exact named-profile preflight are both mandatory.

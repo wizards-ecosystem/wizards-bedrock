@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-10-16. Implemented with qualification OPEN; amends D-406; advances PW-026.
 
-**Context.** D-406 owns the full MCP process and scan dialogue, but its pinned
-sequence went directly from tool discovery to Deep start. Codex Security's
-Daybreak access tool reports whether the authenticated ChatGPT account can
-display protected scan results. That is useful operator information, but it is
-not Amazon Bedrock model entitlement, provider selection, scan authorization or
-release evidence. Treating it as any of those would conflate access advice with
-the authority D-406 derives only from the completed owned scan and its replayed
-artifacts.
-
 **Decision.** After MCP initialization and exact tool discovery, the same
 bounded `LineDialogue` performs exactly one
 `get_codex_security_daybreak_access` call before the one Deep start. Its
@@ -30,26 +21,26 @@ an error object needs an integer code, a non-empty control-free message and at
 most optional data. This preserves D-406's transport integrity without
 promoting the optional advisory payload into release authority.
 
-**Proof required.** Protocol fixtures must require the five-step sequence
-initialize, tools/list, Daybreak advisory, Deep start and completion; reject a
-missing, duplicate or drifted advisory descriptor; bind the empty arguments and
-owned metadata; cover granted, not-granted, unknown, stale, malformed-payload
-and valid-tool-error continuations; and reject malformed error envelopes. The
-wire-shape and operator-notice tests must prove that unsafe enrollment URLs use
-the fixed fallback and that advisory content cannot alter scan inputs or PASS.
+Protocol fixtures require the five-step sequence initialize, tools/list,
+Daybreak advisory, Deep start and completion; reject a missing, duplicate or
+drifted advisory descriptor; bind the empty arguments and owned metadata; cover
+granted, not-granted, unknown, stale, malformed-payload and valid-tool-error
+continuations; and reject malformed error envelopes. Unsafe enrollment URLs use
+the fixed fallback and advisory content cannot alter scan inputs or PASS.
 Mutations 2,070, 2,071, 2,078 through 2,082 and 2,084 retain the omitted advisory,
 malformed URL, Unicode-control, presentation-channel and JSON-RPC-error defects
 against their exact host witnesses.
 
-**Qualification boundary.** The sequence and verifier are implemented. PW-026
-remains open until a clean frozen source completes the real owned Deep run,
-produces the canonical zero-finding result, passes the complete replacement
-mutation sweep and is replayed into release evidence. A Daybreak Blue grant, by
-itself, closes none of those gates.
+**Qualification boundary.** PW-026 remains open until a clean frozen source
+completes the real owned Deep run, produces the canonical zero-finding result,
+passes the complete replacement mutation sweep and is replayed into release
+evidence. A Daybreak Blue grant, by itself, closes none of those gates.
 
-**Alternatives.** Skipping the advisory discards account-specific display
-guidance required by the owned workflow. Making `not_granted`, `unknown` or an
-advisory-tool error stop the scan would turn non-authoritative account advice
-into scan authority. Supplying account or program arguments was rejected
-because the tool already observes the authenticated account and the caller has
-no authority to manufacture its result.
+**Rationale.** The Daybreak access tool reports whether the authenticated
+ChatGPT account can display protected scan results. That is useful operator
+guidance the owned workflow requires, but it is not Amazon Bedrock model
+entitlement, provider selection, scan authorization or release evidence, which
+D-406 derives only from the completed owned scan and its replayed artifacts.
+Stopping on `not_granted`, `unknown` or a tool error would turn account advice
+into scan authority, and the caller has no authority to manufacture the result
+the tool already observes for the authenticated account.

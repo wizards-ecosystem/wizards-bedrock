@@ -2,19 +2,6 @@
 
 Status: Accepted, 2026-10-14. Amends D-330, D-344, D-347 and D-373; advances PW-009, PW-026 and PW-028.
 
-**Context.** D-373 correctly removed PASS authority from caller-selected Deep
-artifact directories because hashes inside those directories authenticate
-bytes, not the process that produced them. Codex Security 0.1.32 now exposes a
-headless Deep coordinator over stdio: one target-based call owns repeated
-independent Standard scans and canonical aggregation, then one completion call
-seals the same scan and generates its report. The installed package still
-provides no signed receipt and its completed-scan query reads local workbench
-state, so importing or re-fetching those bytes would not repair D-373. A live
-invocation can repair it because the existing release boundary already trusts
-an exclusive run under the operator account, and `xtask` can own the complete
-provider process tree, dialogue, tools and private output exactly as it owns the
-cargo-mutants campaign.
-
 **Decision.** `qualify-security-deep --run` is the sole Deep PASS authority.
 `--begin` and `--verify=DIR` remain diagnostic and their `DeepAttempt`
 capability has no PASS method. The owned path uses a distinct non-clone
@@ -142,7 +129,7 @@ hostile process already running as the same Windows account or as an
 administrator; such interference remains outside the release-evidence threat
 model.
 
-**Proof required.** Parser tests must accept only the three task-local actions
+Parser tests must accept only the three task-local actions
 and reject mixtures, duplicates and the retired seal action. JSON-RPC fixtures
 must prove canonical escaping, exact initialize/list/start/complete messages,
 notification and ping handling, and refusal of wrong or duplicate IDs, errors,
@@ -177,12 +164,19 @@ mutation. The real owned Deep run, complete mutation sweep, independent grade,
 ordinary gate and evidence replay must all pass on their bound sources before
 release publication.
 
-**Alternatives.** Restoring `--seal`, trusting an unsigned provider field or
-copying completed local workbench state was rejected because the caller can
-forge all three. A nonce was rejected because the caller that writes the result
-can copy it. Launching the plugin's shell wrapper was rejected because it adds
-ambient runtime selection and another parser. Placing scratch under `target/`
-was rejected because the provider forbids a scan root inside its target.
-Claiming process-tree ownership on non-Windows was rejected because the current
-bounded runner stops only the direct child there. Retaining v5/v9 was rejected
-because it would obscure the new executable, protocol and authority contract.
+**Rationale.** D-373 removed PASS authority from caller-selected Deep artifact
+directories because hashes inside them authenticate bytes, not the process that
+produced them. Codex Security 0.1.32 exposes a headless Deep coordinator over
+stdio but no signed receipt, and its completed-scan query reads local workbench
+state, so importing or re-fetching those bytes would not repair D-373; a live
+invocation can, because the release boundary already trusts an exclusive run
+under the operator account and `xtask` can own the provider process tree,
+dialogue, tools and private output as it owns the cargo-mutants campaign.
+Restoring `--seal`, trusting an unsigned provider field, copying workbench
+state or adding a nonce fails because the caller that writes the result can
+forge or copy each. The plugin's shell wrapper adds ambient runtime selection
+and another parser; the provider forbids a scan root inside its target, so
+scratch cannot live under `target/`; process-tree ownership is claimed only on
+Windows because the bounded runner elsewhere stops only the direct child; and
+v5/v9 are retired so the new executable, protocol and authority contract is
+not obscured.

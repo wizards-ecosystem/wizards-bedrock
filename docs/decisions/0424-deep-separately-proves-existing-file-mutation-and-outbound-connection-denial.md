@@ -2,31 +2,6 @@
 
 Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-422 and D-423; advances PW-026.
 
-**Context.** Immutable-diff Codex Security scan
-`07b1e0b0-b33c-4e0b-9f63-00fbb1619bcf` completed against snapshot
-`codex-security-snapshot/v1:sha256:6ebf6eb26fc11ac402368674e6a4b359820668f3a5137f2ef2b29cbadb97bc72`
-with two Low-severity, Medium-confidence findings. The
-`sandbox.existing-file-write-probe` finding observed that both negative write
-probes used `create_new(true)` against absent paths. Those probes establish
-fresh-file creation denial, but do not establish that a model worker cannot
-append to, truncate or overwrite a file which its profile legitimately permits
-it to read. The `sandbox.network-egress-probe` finding observed that binding
-`127.0.0.1:0` proves listener denial, not denial of an outbound connection.
-Neither finding reproduces an escape from the current exact profile. Both are
-nevertheless release-blocking proof gaps because the owned qualifier claims
-write and network denial rather than only the narrower operations it had
-exercised.
-
-The later immutable-diff scan
-`48614dd5-45eb-4833-b549-67809a44cceb` found one further Low-severity proof gap:
-anonymous transition counts did not prove that every provider-reported
-execution thread crossed the attenuating wrapper. It also exposed a fail-closed
-lifecycle mismatch in the old app-server receipt rule: the provider can stop a
-wrapper after its real child launches, and parallel or retried workers can
-legitimately produce more than one app-server crossing. A singular post-exit
-receipt was therefore neither complete identity evidence nor a satisfiable
-description of the provider lifecycle.
-
 **Decision.** The exact effective named profile remains the authority under
 test. Before its negative probes, the owner runs bounded positive controls on
 disposable private state so creation, append, truncate, overwrite, loopback
@@ -64,16 +39,16 @@ start to have same-worker initial ancestry. Extra initial starts from abandoned
 fresh retries may remain in the ledger; they cannot substitute for a reported
 execution identity.
 
-**Proof.** Focused host witnesses must exercise every positive control, every
-private probe dispatch, strict loopback endpoint validation, exact-profile
-argument construction, unchanged-canary verification, v3 ledger
-render/parse/replay, exact completion-set retention, provider-ID coverage,
-same-worker resume ancestry, start/exit pairing and all four split record
-fields. Permanent mutations must
-remove or fabricate each new operation, relax each exact count or restore the
-aggregate schema and red its named witness. A fresh immutable post-patch scan
-must then find none of the reported gaps. These are implementation and correction
-checks only; they do not mint the owned Deep PASS.
+Focused host witnesses exercise every positive control, every private probe
+dispatch, strict loopback endpoint validation, exact-profile argument
+construction, unchanged-canary verification, v3 ledger render/parse/replay,
+exact completion-set retention, provider-ID coverage, same-worker resume
+ancestry, start/exit pairing and all four split record fields. Permanent
+mutations remove or fabricate each new operation, relax each exact count or
+restore the aggregate schema and red their named witness, and a fresh
+immutable post-patch scan must find none of the reported gaps. These are
+implementation and correction checks only; they do not mint the owned Deep
+PASS.
 
 **Qualification boundary.** PW-026 and release remain open. One new clean
 frozen commit must pass ordinary CI, the complete updated mutation registry and
@@ -82,12 +57,21 @@ compile and select the exact effective named profile, execute the full split
 probe plan, bind its v3 ledger to the six canonical Deep artifacts and replay a
 complete zero-finding result into final evidence.
 
-**Alternatives.** Renaming the old listener result as egress evidence was
-rejected because listening and connecting exercise different authority.
-Replacing the two create probes was rejected because existing-file mutation
-denial does not prove fresh-name denial. One generic existing-file write was
-rejected because append, truncation at open and overwrite reach distinct host
-operations. An Internet endpoint was rejected because it adds external
-availability and disclosure to a local enforcement proof. Keeping aggregate
-counts was rejected because a fabricated result in one operation class could
-mask an omitted probe in the other.
+**Rationale.** Immutable-diff scan `07b1e0b0-b33c-4e0b-9f63-00fbb1619bcf`
+against snapshot
+`codex-security-snapshot/v1:sha256:6ebf6eb26fc11ac402368674e6a4b359820668f3a5137f2ef2b29cbadb97bc72`
+reported two Low-severity, Medium-confidence findings,
+`sandbox.existing-file-write-probe` and `sandbox.network-egress-probe`: both
+write probes used `create_new(true)` on absent paths, and binding
+`127.0.0.1:0` proves listener denial, not outbound connection denial. Neither
+reproduced an escape, but the qualifier claims write and network denial, so
+both gaps blocked release. Scan `48614dd5-45eb-4833-b549-67809a44cceb` found
+that anonymous transition counts did not prove every reported execution thread
+crossed the attenuating wrapper, and that a singular post-exit app-server
+receipt could not describe a provider that stops a wrapper after launch or runs
+parallel and retried workers. Listening and connecting exercise different
+authority, existing-file mutation denial does not prove fresh-name denial,
+append, truncation at open and overwrite reach distinct host operations, an
+Internet endpoint would add external availability and disclosure to a local
+proof, and aggregate counts could let a fabricated result in one class mask an
+omitted probe in another.
