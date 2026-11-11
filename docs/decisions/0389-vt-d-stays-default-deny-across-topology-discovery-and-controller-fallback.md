@@ -2,17 +2,6 @@
 
 Status: Accepted, 2026-10-11. Amends D-358, D-370 through D-372 and D-388.
 
-**Context.** The unit-wide requester inventory expanded a DMAR sub-hierarchy
-only through functions reported present by one sealed PCI snapshot. A function
-could answer absent when its BDF was visited and become bus-master capable
-afterward. The same incomplete inventory then appeared to prove both that every
-requester was BME-fenced and that the unit could safely clear translation while
-changing owners. `TopologyPresence::Empty` also admitted interrupts without any
-installed unit. Thus a mutable endpoint could turn a discovery observation into
-an unrestricted-DMA interval during initial storage takeover, candidate parking
-or fallback. Re-reading presence cannot prove absence, and a bridge's BME bit is
-not an architected fence for every requester below it.
-
 **Decision.** The sole segment-zero DRHD becomes one boot-lifetime kernel owner
 immediately after PCI configuration access is reserved and before the first
 topology read, but only when segment zero contains no RMRR and static platform
@@ -68,14 +57,14 @@ with translation disabled had protected DMA before the earliest kernel
 takeover; that distinct pre-takeover trust boundary remains subject to its own
 release finding.
 
-**Proof required.** Host tests must bind the early-owner call before topology
+Host tests bind the early-owner call before topology
 snapshotting, derive and corroborate the sole RMRR-free unit's register base
 without a presence callback, require unique DMAR and `WZDM` tables when the
 standard catch-all flag is absent, require a real installed owner for both empty and non-empty
 sealed topologies, order the final DMA drain after TE enable, and prove parking
-and retargeting contain no translation-disable call. Pure VT-d tests must refuse
-each inherited TE/QIE/IRE/CFI facility independently. A live machine check must
-observe the same kernel root, enabled translation and deny-all interrupt table
+and retargeting contain no translation-disable call. Pure VT-d tests refuse
+each inherited TE/QIE/IRE/CFI facility independently. A live machine check
+observes the same kernel root, enabled translation and deny-all interrupt table
 after the qualified controller fallback. Persistent mutations 1,552, 1,553,
 1,675, 1,742 and 1,803 through 1,821 independently admit inherited state, omit
 the final drain, disable translation while parking, move takeover after the
@@ -86,13 +75,18 @@ Windows table path, revive an uncertain post-enable owner, ignore the attested
 register base, accept duplicate DMAR or `WZDM` tables, or detach temporary
 attestation cleanup from its reviewed construction boundary, or restore the
 retired catch-all refusal as dead public surface; each
-must make its named proof red. Release, debug
-and degraded boots and the complete CI gate must pass after restoration.
+must make its named proof red.
 
-**Alternatives.** Rejecting every sub-hierarchy would unnecessarily narrow
-firmware compatibility and would not repair the empty-snapshot bypass. Treating a fresh
-enumeration as authority would repeat the same time-of-check assumption.
-Clearing bridge BME lacks a proof that downstream forwarding stops. Leaving
-translation off between candidates makes fallback depend on mutable endpoint
-presence. A durable empty root gives every unselected or newly appearing source
-an absent context independently of when configuration space reports it.
+**Rationale.** The unit-wide requester inventory had expanded a DMAR
+sub-hierarchy only through functions one sealed PCI snapshot reported present,
+yet a function could answer absent and become bus-master capable afterward, and
+`TopologyPresence::Empty` admitted interrupts without any installed unit. A
+mutable endpoint could therefore turn a discovery observation into an
+unrestricted-DMA interval during takeover, parking or fallback. Re-reading
+presence cannot prove absence, a bridge's BME bit is not an architected fence
+for every requester below it, and leaving translation off between candidates
+makes fallback depend on mutable endpoint presence. Rejecting every
+sub-hierarchy would narrow firmware compatibility without repairing the
+empty-snapshot bypass. A durable empty root gives every unselected or newly
+appearing source an absent context independently of when configuration space
+reports it.

@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-10-12. Amends D-390; advances PW-594 and PW-596.
 
-**Context.** The first source-bound VMware run of D-390 failed closed before
-memory initialization at `00:00.0`: command `0x0006` remained `0x0006` after
-the kernel wrote `0x0002`. VMware's emulated Intel 440BX host bridge reports a
-read-only bus-master-looking bit even though that host bridge is not an
-endpoint requester. Treating every refused clear as fatal made the generic
-rule safe but made the qualified VMware machine unbootable. Ignoring the
-readback, exempting all bridges or changing only the early fence would instead
-create an unproved DMA and later VT-d inventory bypass.
-
 **Decision.** Strict clearing remains the default and the complete QEMU TCG
 policy. VMware may classify exactly one function as a non-requester only when
 all of the following agree: the accepted unique `WZDH`, the exact CPU-resident
@@ -30,22 +21,25 @@ QEMU self-test, shipped and degraded selectors instead require the exact
 strict-policy record. No other platform, BDF, identity, class, command state or
 changed readback inherits this exception.
 
-**Proof required.** The pure PCI suite accepts all 440BX revision bytes but
-rejects every near miss in platform, BDF component, vendor/device identity,
-class/subclass/programming interface, command-before and command-after state.
-It must also reject identity or class replacement after the write and prove
-that the accepted token leaves the bridge present but not a requester. Source
-contracts must bind the same policy through entry, memory initialization and
-the later topology snapshot, and must require requester—not presence—queries
-in both VT-d inventory and whole-unit coverage. Exact QEMU and VMware
-transcript tests, mutations 1,840 through 1,865, the complete gate and fresh
-self-test and shipped VMware qualifications must all pass before PW-594 or
-PW-596 closes.
+The pure PCI suite accepts all 440BX revision bytes but rejects every near miss
+in platform, BDF component, vendor/device identity, class/subclass/programming
+interface, command-before and command-after state, rejects identity or class
+replacement after the write, and proves that the accepted token leaves the
+bridge present but not a requester. Source contracts bind the same policy
+through entry, memory initialization and the later topology snapshot, and
+require requester queries, not presence queries, in both VT-d inventory and
+whole-unit coverage. Exact QEMU and VMware transcript tests, mutations 1,840
+through 1,865, the complete gate and fresh self-test and shipped VMware
+qualifications must all pass before PW-594 or PW-596 closes.
 
-**Alternatives.** A class-wide host-bridge exemption lets an unrelated or
-spoofed function bypass the fence. Trusting only the fixed BDF ignores mutable
-identity and command state. Recording the exception only in the early report
-would reintroduce the same function as a requester during VT-d coverage.
-Calling the refused write a successful disable would overstate the measured
-boundary. Rejecting VMware entirely remains fail-closed but discards an already
-qualified release platform without improving QEMU or bare-metal safety.
+**Rationale.** The first source-bound VMware run of D-390 failed closed at
+`00:00.0`: VMware's emulated 440BX host bridge kept command `0x0006` after the
+kernel wrote `0x0002`, a read-only bus-master-looking bit on a function that is
+not an endpoint requester. A class-wide host-bridge exemption would let an
+unrelated or spoofed function bypass the fence, trusting only the fixed BDF
+ignores mutable identity and command state, recording the exception only in the
+early report would reintroduce the function as a requester during VT-d
+coverage, and calling the refused write a successful disable would overstate
+the measured boundary. Rejecting VMware entirely remains fail-closed but
+discards a qualified release platform without improving QEMU or bare-metal
+safety.

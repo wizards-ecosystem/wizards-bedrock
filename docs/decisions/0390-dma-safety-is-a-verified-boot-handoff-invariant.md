@@ -2,18 +2,6 @@
 
 Status: Accepted, 2026-10-11. Amends D-42, D-45, D-357 through D-358 and D-389.
 
-**Context.** D-389 closes every unrestricted-DMA interval after the kernel
-owns its VT-d unit, but that owner was still constructed after the allocator,
-kernel page tables, guarded stacks and heap. A requester left bus-mastering by
-firmware could therefore corrupt privileged memory before the first kernel
-translation boundary. Moving the existing takeover earlier is not sufficient:
-its tables allocate from the very memory that needs protection, VT-d registers
-cannot be accessed through Limine's write-back HHDM as ordinary RAM, and no
-software action at `kmain` can retroactively establish that the already-loaded
-kernel image and handoff were not modified. An exhaustive BDF scan alone also
-cannot prove that a requester which answered absent will stay absent, or that a
-request already posted before BME clear has drained.
-
 **Decision.** DMA safety becomes a required firmware-to-kernel contract. One
 unique checksummed revision-1 `WZDH` ACPI table attests three inseparable
 properties for PCI segment zero: legacy CF8/CFC reaches every DMA-capable
@@ -66,28 +54,32 @@ may replace or omit the table through interactive or runtime configuration.
 This release does not accept a production bare-metal firmware assertion:
 supporting one requires a new hardware-rooted handoff decision.
 
-**Proof required.** Pure ACPI tests must reject each missing or unknown flag,
+Pure ACPI tests reject each missing or unknown flag,
 revision, length, checksum, reserved byte and signature. Pure PCI tests must
 enumerate the entire requester-ID space, clear inherited BME exactly, preserve
 unrelated command bits, detect refused writes and identity replacement, and
-fail on any unavailable cycle. Source contracts must bind the allocation-free
+fail on any unavailable cycle. Source contracts bind the allocation-free
 unique-table lookup and exhaustive fence before `mem::init`, require the private
 token at that door, and retain D-389's later default-deny takeover. Machine
-checks must observe the entry fence before the first memory record and continue
+checks observe the entry fence before the first memory record and continue
 through the ordinary self-test, shipped and no-IOMMU paths. Every generated
-QEMU and VMware machine and every corresponding qualification record must bind
-the exact table bytes. Each new check is broken once and retained in the
-mutation register before the complete gate passes.
+QEMU and VMware machine and every corresponding qualification record binds the
+exact table bytes, and each new check is broken once and retained in the
+mutation register.
 
-**Alternatives.** Treating a checksummed ACPI table as self-authenticating was
-rejected after isolated post-patch review: the requester the table discusses
-could otherwise rewrite the table and the code consuming it. Clearing BME after memory initialization leaves the reported
-window intact. Clearing it at entry without a trusted quiescence and static-
-topology contract cannot exclude an already posted request or a requester that
-appears after its BDF was read. Requiring firmware to leave an active IOMMU
-domain would also be sound, but neither qualified firmware currently exports a
-verifiable root-ownership and live-replacement protocol; accepting an opaque
-active root would make firmware page tables an unaudited lifetime dependency.
-A pre-kernel EFI DMA guard would have to authorize every bootloader I/O buffer
-and transfer ownership continuously, which is a separate boot-chain product,
-not a smaller form of this repair.
+**Rationale.** D-389's owner was still constructed after the allocator,
+kernel page tables, guarded stacks and heap, so a requester left bus-mastering
+by firmware could corrupt privileged memory before the first translation
+boundary. Moving the takeover earlier is not sufficient: its tables allocate
+from the memory that needs protection, VT-d registers cannot be accessed
+through Limine's write-back HHDM as ordinary RAM, and no action at `kmain` can
+retroactively prove the loaded image and handoff unmodified. An exhaustive BDF
+scan alone cannot prove that an absent requester stays absent or that a request
+posted before BME clear has drained. A checksummed ACPI table is not
+self-authenticating, because the requester it discusses could rewrite the table
+and the code consuming it. Requiring firmware to leave an active IOMMU domain
+would also be sound, but neither qualified firmware exports a verifiable
+root-ownership and live-replacement protocol, and an opaque active root would
+make firmware page tables an unaudited lifetime dependency. A pre-kernel EFI
+DMA guard would have to authorize every bootloader I/O buffer and transfer
+ownership continuously, which is a separate boot-chain product.
