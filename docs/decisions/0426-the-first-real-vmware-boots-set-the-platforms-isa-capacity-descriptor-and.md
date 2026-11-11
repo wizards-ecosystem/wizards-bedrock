@@ -2,39 +2,6 @@
 
 Status: Accepted, 2026-10-20. Implemented with qualification OPEN; amends D-392 and D-421; advances PW-003, PW-004, PW-596, PW-597, PW-598 and PW-599.
 
-**Context.** The first source-bound VMware self-test boot of candidate
-`65f0f89` failed closed before memory initialization:
-`00:07.0 identity 0x71108086 class 0x06010008 command read back as 0x0007,
-expected 0x0003`. VMware's emulated Intel PIIX4 ISA bridge, like D-392's 440BX
-host bridge, hard-wires command bit 2. Because the entry fence stops at the
-first refusal, an uncommitted diagnostic kernel then recorded every function
-on that machine without refusing. Of 43 present functions, only `00:00.0` and
-`00:07.0` kept bit 2; the other 40 cleared it. Further diagnostic boots on
-2026-10-20 then found three more VMware-only defects hidden behind the first:
-
-- `FUNCTION_AUTHORITY_LIMIT` and `wost`'s `FUNCTION_CLAIMS` were both 12, but
-  VMware's single remapping unit governs 42 live requesters, 32 of them
-  virtual PCIe root ports. Storage therefore reported `the remapping unit has
-  more than 12 live requesters`, no device was isolated, interrupts stayed off
-  and about forty self-tests failed.
-- With capacity raised, the first `iretq` into ring 3 stopped silently. A
-  `vmss2core` dump of the suspended guest placed vCPU 0 at `wost_kpti_stop`
-  with interrupts off; the saved frame was vector 14, error code 3 (a
-  supervisor write to a present page) at `wost_kpti_exit_iret` on the
-  stripped root. The live GDT held user data `0x00f2` and user code `0x00fa`
-  with the accessed bit clear. Loading CS and SS sets that bit, which is a
-  write to a table the stripped root maps read-only. QEMU's TCG does not
-  enforce that write, so no earlier boot could observe it.
-- The VMware transcript verifier rejected genuine boots: its shipped list
-  required user isolation before `nvme: up`, and its self-test list required
-  the local APIC before user isolation. The kernel emits both in the opposite
-  order. Like D-421's drifted field, the order had been taken from duplicated
-  fixtures rather than from any kernel transcript.
-
-Unlike the 440BX, PIIX4 function 0 is a DMA requester: its two 8237
-controllers master ISA DMA. Treating it as D-392's "present but not a
-requester" would remove a real requester from VT-d inventory and coverage.
-
 **Decision.** The VMware policy adds exactly one quiesced requester. When the
 VMware CPU identity, BDF `00:07.0`, identity `0x7110_8086`, ISA-bridge class
 `06:01:00` with revision ignored, command before exactly `0x0007` and readback
@@ -64,23 +31,22 @@ the real fence and requires its 42 requesters to fit.
 Every code and data descriptor is written with the accessed bit already set,
 as Linux does, so the processor never needs to write the descriptor table.
 
-Both VMware marker lists follow the kernel's emitted order. The shipped list is
+Both VMware record lists follow the kernel's emitted order. The shipped list is
 DMA, ISA quiesce, storage, FAT32, tmpfs, both devfs records, isolation, the
 user slot and keyboard liveness. The self-test list places isolation before the
-APIC. Their fixtures now reproduce the order the 2026-10-20 boots emitted. With
-all four repairs, the uncommitted diagnostic kernel passed 290 of 290 self-test
-checks on VMware, and both real transcripts passed the corrected verifier.
+APIC. Their fixtures reproduce the order the 2026-10-20 boots emitted, and both
+real transcripts passed the corrected verifier.
 
-**Consequences.** The shipped image's liveness markers prove only that the
-kernel reached its user boundary. Before the descriptor repair, the shipped
-diagnostic printed the same markers and then halted inside the exit
+**Consequences.** The shipped image's liveness records prove only that the
+kernel reached its user boundary: before the descriptor repair, the shipped
+diagnostic printed the same records and then halted inside the exit
 trampoline. Ring-3 execution on VMware is proved by the self-test image's ring
-three checks; a post-entry shipped marker remains open under PW-004.
+three checks; a post-entry shipped record remains open under PW-004.
 
 Permanent mutations 2,272 through 2,297 cover the new checks. Mutations 324,
 631, 632, 1,007, 1,701, 1,804 and 1,848 keep their identities while targeting
 the edited source. On 2026-10-20 each new named witness passed on the pristine
-source and failed under its mutation. Mutations 2,272 through 2,282, which
+source and failed under its mutation: mutations 2,272 through 2,282, which
 widen the PIIX4 BDF, identity, class or either command word, skip the 8237
 quiesce, ignore a pending request, accept a changed later function, drop the
 function from requester inventory, or answer for another function or an
@@ -93,7 +59,7 @@ identity, command or 8237 recheck, or report a quiet pair without masking it,
 red `memory_initialization_requires_the_exhaustive_entry_dma_boundary`.
 Mutations 2,289 through 2,292, which leave one descriptor's accessed bit for
 the processor to write, red `every_code_and_data_descriptor_is_already_accessed`.
-Mutations 2,293 through 2,295, which drop the ISA marker from a selector or let
+Mutations 2,293 through 2,295, which drop the ISA record from a selector or let
 the kernel record drift, red
 `the_vmware_isa_dma_marker_is_required_by_both_selectors`, and mutations 2,296
 and 2,297, which restore either fixture-only order, red
@@ -101,14 +67,22 @@ and 2,297, which restore either fixture-only order, red
 implementation checks. Only fresh source-bound VMware self-test and shipped
 qualifications and the complete current-registry sweep qualify them.
 
-**Alternatives.** Extending D-392's non-requester exception to `00:07.0` was
-rejected because it would remove a real DMA requester from VT-d inventory and
-coverage. Refusing VMware entirely was rejected for the same reason as in
-D-392. A mask readback was rejected as unobservable on the target. Relying on
-the WZDH contract's quiescence claim alone was rejected because the platform
-control exists and costs a few port writes. Raising capacity only for VMware
-was rejected because the bound is a property of the qualified platform, not
-the selector. Making the GDT writable in the stripped root was rejected because
-it widens the user-visible enclave to protect a bit the kernel can set itself.
-Loosening the verifier to accept either order was rejected; the kernel has one
-order, and the verifier states it.
+**Rationale.** The first source-bound VMware self-test boot of `65f0f89`
+failed closed with `00:07.0 identity 0x71108086 class 0x06010008 command read
+back as 0x0007, expected 0x0003`: VMware's PIIX4 ISA bridge, like D-392's
+440BX, hard-wires command bit 2, and of 43 present functions only `00:00.0` and
+`00:07.0` kept it. Unlike the 440BX, PIIX4 function 0 is a DMA requester whose
+two 8237 controllers master ISA DMA, so extending D-392's non-requester
+exception would remove a real requester from VT-d inventory and coverage, and
+refusing VMware fails for the same reason as in D-392. The WZDH quiescence
+claim alone is not relied on because the platform control exists and costs a
+few port writes. VMware's single remapping unit governs 42 live requesters, 32
+of them virtual PCIe root ports, against a limit of 12, and the bound is a
+property of the qualified platform, not the selector. The first `iretq` into
+ring 3 then faulted (vector 14, error code 3, at `wost_kpti_exit_iret` on the
+stripped root) because loading CS and SS sets the accessed bit in a GDT the
+stripped root maps read-only, which QEMU's TCG does not enforce; making the GDT
+writable there would widen the user-visible enclave to protect a bit the
+kernel can set itself. The verifier's orders had been taken from duplicated
+fixtures, like D-421's drifted field, and the kernel has one order, which the
+verifier states.

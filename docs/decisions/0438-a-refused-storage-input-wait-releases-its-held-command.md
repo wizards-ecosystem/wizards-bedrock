@@ -2,20 +2,14 @@
 
 Status: Accepted, 2026-10-23. Qualification OPEN; advances PW-719.
 
-The source-pinned release boot in `pristine-41w5yl95` refused clock
-calibration. The delayed-read self-test then entered blocking keyboard reads
-after `runs_until` had returned false without polling. Its NVMe command remained
-held until the blocked test could resume, so no complete verdict followed.
-An ordinary expired key wait could reach the same path. The unchanged retry
-completed all 294 release checks; that does not discharge the refusal defect.
-
-The delayed round now uses one finish helper: it evaluates the bounded wait,
-consumes at most the first two queued events through a nonblocking self-test
-reader only after success, and releases the command hold on every result.
-Missing or wrong events remain a failure. The interrupt-admission conjunction
-is evaluated without bypassing cleanup. Completion and exact teardown still
-run after release. A key-arrival observation is not a reservation of queue
-entries, so successful observation alone cannot justify a blocking read.
+**Decision.** The delayed round uses one finish helper: it evaluates the
+bounded wait, consumes at most the first two queued events through a
+nonblocking self-test reader only after success, and releases the command hold
+on every result. Missing or wrong events remain a failure. The
+interrupt-admission conjunction is evaluated without bypassing cleanup.
+Completion and exact teardown still run after release. A key-arrival
+observation is not a reservation of queue entries, so successful observation
+alone cannot justify a blocking read.
 
 The existing machine witness also exercises the exact helper with an
 uncalibrated ready predicate, an expired calibrated predicate, and ready but
@@ -36,7 +30,11 @@ an agreeing believable pair; the previous text incorrectly implied every
 window had been believable and mutually inconsistent. Existing logs preserve
 only the last rates, so they do not establish the original refusal's cause.
 
-Alternatives rejected: widening a deadline does not release a held command;
-skipping the check hides failed prerequisites; a new Drop owner is unnecessary
-for the helper's single exit; and scanning past wrong events would weaken the
-existing exact FIFO key witness.
+**Rationale.** The source-pinned release boot in `pristine-41w5yl95` refused
+clock calibration, and the delayed-read self-test then entered blocking
+keyboard reads after `runs_until` had returned false without polling, holding
+its NVMe command until a test that could not resume; an ordinary expired key
+wait could reach the same path, and a passing retry does not discharge it.
+Widening a deadline does not release a held command, skipping the check hides
+failed prerequisites, a new Drop owner is unnecessary for the helper's single
+exit, and scanning past wrong events would weaken the exact FIFO key witness.
