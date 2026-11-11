@@ -1,12 +1,10 @@
-// mlibc sysdeps for The Wizard's Bedrock: the sixteen functions inspected by D-114.
+// mlibc sysdeps for The Wizard's Bedrock: the sixteen inspected functions.
 //
-// D-74 asked for this immediately after the ABI stabilised, while changing it
-// was still cheap. This file is not a compiled port, and D-114 recorded no
-// mlibc revision, so it is a pressure-test transcription rather than current
-// upstream source.
+// Written while changing the ABI was still cheap. This file is not a compiled
+// port and no mlibc source revision was recorded, so it is a pressure-test
+// transcription rather than current upstream source.
 //
-// D-181 records two independent states for every function; D-182 narrows the
-// trap-sensitive teardown rows:
+// Every function has two independent states:
 //
 //   BODY       WIRED, COMPOSED, PARTIAL, or STUB.
 //   REMAINDER  WORKS, COMPAT, DOOR, PARTIAL, or MISSING.
@@ -25,7 +23,7 @@ namespace mlibc {
 
 namespace {
 
-// The one gate ring 3 has (D-96).
+// The one gate ring 3 has.
 inline long call1(long number, long a) {
 	long result;
 	asm volatile("int $0x80" : "=a"(result) : "a"(number), "D"(a) : "memory");
@@ -56,8 +54,6 @@ inline int monotonic_fallback(time_t *secs, long *nanos) {
 }
 
 } // namespace
-
-// --- Process and clock -------------------------------------------------
 
 // sys_libc_log. BODY=STUB; REMAINDER=PARTIAL.
 void sys_libc_log(const char *message) {
@@ -143,8 +139,6 @@ int sys_clock_get(int clock, time_t *secs, long *nanos) {
 	return monotonic_fallback(secs, nanos);
 }
 
-// --- File descriptors -------------------------------------------------
-
 // A native handle is not by itself a POSIX descriptor. The compatibility
 // layer must provide chosen descriptor numbers, shared cursors and inheritance.
 
@@ -197,14 +191,12 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
 	return WIZ_ENOSYS;
 }
 
-// --- Memory -----------------------------------------------------------
-
 // sys_vm_map. BODY=STUB; REMAINDER=PARTIAL.
 int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
                off_t offset, void **window) {
 	// Loader mapping primitives exist, but a user mapping operation cannot be
 	// exposed until allocation and trap-context rules are settled. W^X remains
-	// non-negotiable (D-12, D-100).
+	// non-negotiable.
 	(void)hint;
 	(void)size;
 	(void)prot;
@@ -218,7 +210,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
 // sys_vm_unmap. BODY=STUB; REMAINDER=PARTIAL.
 int sys_vm_unmap(void *window, size_t size) {
 	// AddressSpace::unmap exists, but its flush and reclamation obligations need
-	// a trap-safe user execution route (D-88, D-182).
+	// a trap-safe user execution route.
 	(void)window;
 	(void)size;
 	return WIZ_ENOSYS;
@@ -238,8 +230,6 @@ int sys_anon_free(void *window, size_t size) {
 	(void)size;
 	return WIZ_ENOSYS;
 }
-
-// --- Threads and futexes ---------------------------------------------
 
 // sys_futex_wait. BODY=STUB; REMAINDER=MISSING.
 int sys_futex_wait(int *pointer, int expected, const struct timespec *time) {
@@ -261,7 +251,7 @@ int sys_futex_wake(int *pointer) {
 // sys_tcb_set. BODY=WIRED; REMAINDER=WORKS.
 int sys_tcb_set(void *pointer) {
 	// The kernel range-checks the base against WIZ_USER_END and saves it with
-	// the other state that follows a thread (D-118).
+	// the other state that follows a thread.
 	return as_errno(call1(WIZ_CALL_TCB_SET, reinterpret_cast<long>(pointer)));
 }
 
