@@ -123,7 +123,8 @@ pub enum ImageError {
     EntryOutsideHigherHalf {
         entry: u64,
     },
-    /// An allocated section in no loadable segment: an orphan the heuristic placed badly.
+    /// An allocated section no loadable segment wholly covers, as an orphan placed badly by the
+    /// heuristic is.
     SectionNotLoaded {
         name: String,
         addr: u64,
@@ -131,7 +132,7 @@ pub enum ImageError {
     WritableAndExecutable {
         vaddr: u64,
     },
-    /// A no-file-space section written into the image because something loadable follows it.
+    /// A no-file-space section with file bytes in it, as one followed by something loadable is.
     NobitsInFile {
         name: String,
         wasted: u64,
@@ -212,7 +213,8 @@ impl fmt::Display for ImageError {
 
 impl std::error::Error for ImageError {}
 
-/// `.requests` holds `wost::entry!`'s Limine request block; without it no response is filled in.
+/// Sections the image cannot boot without; `.requests` holds `wost::entry!`'s Limine request
+/// block, and without it no response is filled in.
 const REQUIRED: &[&str] = &[
     ".text",
     ".requests",
@@ -411,7 +413,8 @@ impl Image {
 }
 
 /// The bytes are hostile: a malformed file is an error, never a panic or out-of-bounds read.
-/// File and program headers come from `libs/elf64`, the kernel's loader, so both agree.
+/// File and program headers come from `libs/elf64`, the crate the kernel loads programs with,
+/// so the verifier and the loader agree.
 /// The section-table walk stays here because a loader never needs it.
 pub fn parse(bytes: &[u8]) -> Result<Image> {
     ensure!(
