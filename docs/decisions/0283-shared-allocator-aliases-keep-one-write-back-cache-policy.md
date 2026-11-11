@@ -2,17 +2,17 @@
 
 Status: Accepted, 2026-09-05. Amends D-185 and D-269; advances PW-128.
 
-**Context.** A shared allocation remains reachable through the kernel's
-write-back direct map while ring 3 reaches a second mapping. The safe shared
-mapping doors nevertheless accepted `NO_CACHE` and `WRITE_THROUGH`, allowing
-one physical run to have incompatible memory types at the same time. Bounds,
-ownership and publication ordering do not make that alias safe.
-
 **Decision.** `map_shared` and `map_shared_ring` accept only the allocation's
 write-back policy. Either cache-policy flag is refused before page-table
 preflight, keepalive reservation or mapping state can change. Device memory
 continues through its separate admitted, uncached mapping path; the shared
 allocator is not a generic physical-alias constructor.
+
+**Rationale.** A shared allocation remains reachable through the kernel's
+write-back direct map while ring 3 reaches a second mapping. The safe shared
+mapping doors nevertheless accepted `NO_CACHE` and `WRITE_THROUGH`, allowing
+one physical run to have incompatible memory types at the same time. Bounds,
+ownership and publication ordering do not make that alias safe.
 
 **Alternatives and proof obligation.** Changing the direct map per allocation
 was rejected because it would mutate a global kernel alias and require a

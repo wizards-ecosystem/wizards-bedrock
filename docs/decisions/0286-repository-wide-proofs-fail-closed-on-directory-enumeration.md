@@ -2,12 +2,6 @@
 
 Status: Accepted, 2026-09-05. Amends D-124 and D-215; advances PW-525.
 
-**Context.** The unsafe, citation, page-size, target-source, Markdown/link,
-host-crate, model, vendored-directory and inline-command inventories opened
-their directories but then skipped some enumeration, classification or
-metadata errors. An unreadable entry could therefore disappear from an “all
-files” claim without making the check fail.
-
 **Decision.** One `xtask::paths` helper collects every `DirEntry` result and
 resolves every file type before a repository proof interprets any path.
 Opening, enumerating or classifying the directory returns an error with its
@@ -15,6 +9,12 @@ path identity; redirected and special entries are refused. All affected
 inventories use that helper. Filtering begins only after the complete,
 classified listing exists, and a crate manifest distinguishes absence from
 every other metadata failure.
+
+**Rationale.** The unsafe, citation, page-size, target-source, Markdown/link,
+host-crate, model, vendored-directory and inline-command inventories opened
+their directories but then skipped some enumeration, classification or
+metadata errors. An unreadable entry could therefore disappear from an “all
+files” claim without making the check fail.
 
 **Alternatives and evidence.** Treating an unreadable entry as out of scope was
 rejected because unreadability is not evidence that it contains no source,

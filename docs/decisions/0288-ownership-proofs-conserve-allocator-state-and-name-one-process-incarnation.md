@@ -2,12 +2,6 @@
 
 Status: Accepted, 2026-09-05. Amends D-26, D-217, D-245 and D-261; advances PW-542.
 
-**Context.** Several cleanup checks compared raw free-frame counts. A correct
-slab refill may retain free frames without changing ownership, so those checks
-could fail or need warm-up even when cleanup was exact. The zombie witness also
-used wall time, global retirement counts and a reusable slot, allowing an
-unrelated process incarnation or scheduling delay to decide the result.
-
 **Decision.** The pure ownership relation conserves checked
 `free + slab + large` physical frames, requires the exact live-allocation
 count, and permits only later retained slab frames to be greater than or equal
@@ -23,6 +17,12 @@ a distinct-slot probe and requires exactly two successful reclaim steps. The
 sum returned by those two successes must equal the exact page and table tally
 deltas. Mapping cleanup separately counts per-attempt partial returns without
 double-counting them.
+
+**Rationale.** Several cleanup checks compared raw free-frame counts. A correct
+slab refill may retain free frames without changing ownership, so those checks
+could fail or need warm-up even when cleanup was exact. The zombie witness also
+used wall time, global retirement counts and a reusable slot, allowing an
+unrelated process incarnation or scheduling delay to decide the result.
 
 **Alternatives and evidence.** Warm-up allocations, fixed sleeps, order
 assumptions and global counts were rejected because they tune the witness to

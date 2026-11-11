@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-09-05. Amends D-124, D-214 and D-248; advances PW-525 and PW-532.
 
-**Context.** Later machine witnesses left observer functions, constants and
-evidence tallies compiled into shipped `wost` and kernel paths. Their only
-consumers were self-test code, so they widened the production API and added
-writes to hardware and lock hot paths without changing production behavior.
-
 **Decision.** A machine-only observer and every write that exists solely to
 feed it compile only with `selftest`. Normal EOI, recovery, reclaim and both
 `VERW` operations and the lock count that guards context changes remain in
@@ -22,6 +17,11 @@ operations. Release-ELF inspection
 independently found none of that evidence state. The unsafe inventory remains
 377 lines in 149 blocks and 39 declarations, with every affected fingerprint
 re-reviewed.
+
+**Rationale.** Later machine witnesses left observer functions, constants and
+evidence tallies compiled into shipped `wost` and kernel paths. Their only
+consumers were self-test code, so they widened the production API and added
+writes to hardware and lock hot paths without changing production behavior.
 
 **Alternatives and evidence.** Keeping private release counters was rejected:
 an uncallable observer still changes the executable path it claims merely to
