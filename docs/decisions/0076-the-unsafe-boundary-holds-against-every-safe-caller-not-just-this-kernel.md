@@ -34,7 +34,8 @@ entered with `rsp ≡ 0 (mod 16)` where the ABI promises 8. That seven-word
 frame misaligned every new thread; `fabricate`'s frame gained its eighth word,
 and the machine checks a spawned thread's actual stack alignment.
 
-`boot::enter` is once-only. The PAT is rewritten *before* `activate`, so the
+`boot::enter` is once-only, because a second call could mint another
+`Framebuffer` over the device. The PAT is rewritten *before* `activate`, so the
 `CR3` load is the flush the manual asks for. `MmioRegion: Send` rests on
 `!Sync`.
 
