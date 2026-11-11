@@ -2,12 +2,6 @@
 
 Status: Accepted, 2026-08-31. Amends D-244 and D-245; advances PW-015, PW-016, PW-017, PW-020, PW-021, PW-023 and PW-024.
 
-**Context.** Host tools repeatedly validated one pathname and then truncated,
-replaced or recursively removed another object reached through the same text.
-Symlinks, hardlinks and redirected ancestors turned an ordinary refusal into an
-outside write; unlink-before-rename also destroyed the last complete authority
-before the replacement was known good.
-
 **Decision.** A recursive deletion or authoritative publication target must be
 the exact allowlisted real child of its canonical repository root, with real
 non-link ancestors checked immediately before the operation. New authoritative
@@ -21,6 +15,12 @@ Portable pathname preflight does not defeat a concurrent replacement by a
 local actor with the same filesystem authority. Directory-handle and no-follow
 operations would be needed for that stronger claim; this repository records the
 race instead of pretending canonicalization removes it.
+
+**Rationale.** Host tools validated one pathname and then truncated, replaced
+or removed another object reached through the same text: symlinks, hardlinks
+and redirected ancestors turned a refusal into an outside write, and
+unlink-before-rename destroyed the last complete authority before the
+replacement was known good.
 
 **Current evidence.** Host fixtures substitute links at SPDX, QEMU storage,
 boot-image, VMware-generation, API-workspace and mutation-workspace boundaries,

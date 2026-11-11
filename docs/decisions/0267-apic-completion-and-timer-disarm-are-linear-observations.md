@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-08-31. Amends D-251 and D-256; advances PW-122 and PW-123.
 
-**Context.** A non-`Copy` token can still be `Clone`, and a type alone does not
-make its constructor unique. One APIC delivery could therefore mint competing
-EOI owners, while timer reprogramming could consume a stale claim that the
-countdown had stopped.
-
 **Decision.** `EoiToken` and `DisarmedTimer` are neither `Copy` nor `Clone`.
 EOI claim first proves the exact live trap and ISR dismissal, atomically latches
 that opportunity, and releases the latch only when the token completes or is
@@ -14,6 +9,11 @@ dropped. Timer disarm returns its proof only after observing zero current count;
 one-shot programming consumes it and rechecks the count immediately before the
 LVT write. A changed observation performs no write and mints no replacement
 authority.
+
+**Rationale.** A non-`Copy` token can still be `Clone`, and a type alone does not
+make its constructor unique. One APIC delivery could therefore mint competing
+EOI owners, while timer reprogramming could consume a stale claim that the
+countdown had stopped.
 
 **Alternatives and current evidence.** Treating non-`Copy` as linear was
 rejected because a manual `Clone` remains possible. Rechecking only at the

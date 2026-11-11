@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-08-31. Amends D-134 and D-244; advances PW-019 and PW-022.
 
-**Context.** A caller deadline did not bound a later blocking `wait`, and pipe
-capture could wait forever on an inherited writer. Mutation grading could then
-call a timeout caught even when termination failed, or leak the first capture
-file when reserving the second stream failed.
-
 **Decision.** Qualified host processes own one direct child. They poll through
 the caller deadline, attempt termination on failure, and poll reap through one
 named additive deadline; no control interface exposes a blocking wait. Stdout
@@ -15,6 +10,11 @@ one caller-selected byte cap. Collection reads the retained handles only after
 an exit was observed. Kill refusal, a still-live child, capture overflow or
 partial reservation is an error or inconclusive mutation outcome, never a red
 proof.
+
+**Rationale.** A caller deadline did not bound a later blocking `wait`, pipe
+capture could wait forever on an inherited writer, and mutation grading could
+call a timeout caught when termination failed or leak the first capture file
+when reserving the second failed.
 
 **Alternatives and current evidence.** Extending the original timeout was
 rejected because it leaves an unbounded operation after the extension. Pipes

@@ -2,17 +2,17 @@
 
 Status: Accepted, 2026-08-31. Amends D-105 and D-136; advances PW-522.
 
-**Context.** `AccessRange` claimed zero width was impossible while its own
-constructor admitted a zero count, then suppressed the lint which exposed that
-contradiction. The first exhaustive oracle could also accept arbitrary false
-refusals, so it did not decide what an empty request meant.
-
 **Decision.** A repeated access still requires a valid power-of-two element
 width. With count zero it is an empty no-op at any offset at or before the
 region end; alignment is irrelevant because no address is touched. An offset
 past the region remains out of bounds. `AccessRange` exposes the exact checked
 offset iterator rather than a misleading byte-length API, and the empty
 iterator yields no pointer candidate.
+
+**Rationale.** `AccessRange` claimed zero width was impossible while its own
+constructor admitted a zero count, then suppressed the lint which exposed that
+contradiction. The first exhaustive oracle could also accept arbitrary false
+refusals, so it did not decide what an empty request meant.
 
 **Alternatives and current evidence.** Refusing every empty span was rejected
 because callers can naturally produce zero work and no device precondition is

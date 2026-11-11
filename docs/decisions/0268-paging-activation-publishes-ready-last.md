@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-08-31. Amends D-86 and D-261; advances PW-127.
 
-**Context.** Activation stored a ready flag before CR3 and the active-root
-identity became authoritative. A safe observer could authenticate a mapping
-through half-published state, and reclaimed-space refusal read the root before
-proving the space still owned one.
-
 **Decision.** Activation is one `Cold -> Initializing -> Ready` transaction.
 It refuses a reclaimed space before reading its root, acquires and retains
 interrupt exclusion, writes CR3, publishes the active root, and publishes
@@ -14,6 +9,11 @@ interrupt exclusion, writes CR3, publishes the active root, and publishes
 the root. An uncommitted software preflight aborts back to `Cold` while it still
 owns interrupt exclusion; after CR3 is written, no fallible step remains before
 publication.
+
+**Rationale.** Activation stored a ready flag before CR3 and the active-root
+identity became authoritative. A safe observer could authenticate a mapping
+through half-published state, and reclaimed-space refusal read the root before
+proving the space still owned one.
 
 **Alternatives and current evidence.** Publishing the flag early and relying on
 one CPU was rejected because interrupt handlers are observers on that CPU.
