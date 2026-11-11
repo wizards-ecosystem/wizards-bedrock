@@ -39,15 +39,15 @@ pub enum BarUnmapOutcome {
 }
 
 impl AdmittedDeviceRange {
-    pub(crate) const fn physical(&self) -> Paddr {
+    pub(crate) const fn physical(&self) -> PhysicalAddress {
         self.checked.physical()
     }
 
-    pub(crate) const fn page_start(&self) -> Paddr {
+    pub(crate) const fn page_start(&self) -> PhysicalAddress {
         self.checked.page_start()
     }
 
-    pub(crate) const fn page_end(&self) -> Paddr {
+    pub(crate) const fn page_end(&self) -> PhysicalAddress {
         self.checked.page_end()
     }
 
@@ -63,7 +63,10 @@ impl AdmittedDeviceRange {
 /// Admit every physical byte a device mapping would reach, refusing any page of RAM or firmware.
 ///
 /// The boot memory map is initialized once, so this proof stays valid until a mapping consumes it.
-pub fn admit_device_range(physical: Paddr, len: u64) -> Result<AdmittedDeviceRange, MapError> {
+pub fn admit_device_range(
+    physical: PhysicalAddress,
+    len: u64,
+) -> Result<AdmittedDeviceRange, MapError> {
     let width = cpu::physical_address_width().ok_or(MapError::PhysicalWidthUnavailable)?;
     let physical_bits = width.bits();
     let checked = CheckedDeviceRange::new(physical, len, width).map_err(|reason| match reason {
@@ -286,7 +289,7 @@ pub(super) struct DeviceExtent {
 #[derive(Debug)]
 pub struct DeviceMapping {
     address: u64,
-    pub(super) physical: Paddr,
+    pub(super) physical: PhysicalAddress,
     len: usize,
     pub(super) roots: AddressSpaceRoots,
     pub(super) virtual_base: u64,

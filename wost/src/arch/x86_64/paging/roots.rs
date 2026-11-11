@@ -160,7 +160,10 @@ fn enclave_pages(enclave: super::kpti::EntryEnclave) -> Result<usize, MapError> 
         })
 }
 
-fn mapped_guard(root: Paddr, enclave: super::kpti::EntryEnclave) -> Result<Option<u64>, MapError> {
+fn mapped_guard(
+    root: PhysicalAddress,
+    enclave: super::kpti::EntryEnclave,
+) -> Result<Option<u64>, MapError> {
     for guard in enclave.guards() {
         let mut address = guard.start;
         while address < guard.end {
@@ -202,7 +205,7 @@ const fn enclave_flags(permission: EnclavePermission) -> Flags {
 }
 
 pub(super) fn observe_stripped_higher_half(
-    root: Paddr,
+    root: PhysicalAddress,
     expected_pages: usize,
 ) -> Result<Vec<ObservedPage>, MapError> {
     let mut observed = Vec::new();

@@ -3,7 +3,7 @@
 
 use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::task;
-use wost::mm::Paddr;
+use wost::mm::PhysicalAddress;
 use wost::sync::SpinLock;
 use x86_paging::PAGE_SIZE;
 
@@ -84,7 +84,7 @@ struct Launch {
     argument: u64,
     bootstrap_handle: u32,
     which: u64,
-    root: Paddr,
+    root: PhysicalAddress,
 }
 
 /// One per thread slot. A leaf: nothing is called while it is held.

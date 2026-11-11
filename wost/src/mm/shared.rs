@@ -6,7 +6,7 @@ use super::direct::DirectSpan;
 use super::frame::Segment;
 #[cfg(feature = "selftest")]
 use super::selftest::observe_external_run_withheld_for_test;
-use super::{Paddr, direct_pointer};
+use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::shared_memory;
 
 /// A run of frames whose bytes are ring 3's, outside kernel control and never trusted data.
@@ -26,7 +26,7 @@ impl USegment {
     }
 
     /// Where the run begins in physical memory.
-    pub fn address(&self) -> Paddr {
+    pub fn address(&self) -> PhysicalAddress {
         self.segment().address()
     }
 
@@ -125,7 +125,7 @@ pub struct SharedBytes(Arc<SharedAllocation>);
 
 impl SharedBytes {
     /// Where the run begins in physical memory.
-    pub fn address(&self) -> Paddr {
+    pub fn address(&self) -> PhysicalAddress {
         self.0.0.address()
     }
 
@@ -167,7 +167,7 @@ pub struct SharedRing<const WORDS: usize> {
 
 impl<const WORDS: usize> SharedRing<WORDS> {
     /// Where the run begins in physical memory.
-    pub fn address(&self) -> Paddr {
+    pub fn address(&self) -> PhysicalAddress {
         self.allocation.0.address()
     }
 

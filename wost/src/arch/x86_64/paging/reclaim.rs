@@ -7,7 +7,7 @@ impl AddressSpace {
         virtual_address: u64,
         level: Level,
         privilege: TablePrivilege,
-    ) -> Result<(Paddr, Entry), MapError> {
+    ) -> Result<(PhysicalAddress, Entry), MapError> {
         self.take_owned_table_in(TableRoot::Full, virtual_address, level, privilege)
     }
 
@@ -17,7 +17,7 @@ impl AddressSpace {
         virtual_address: u64,
         level: Level,
         privilege: TablePrivilege,
-    ) -> Result<(Paddr, Entry), MapError> {
+    ) -> Result<(PhysicalAddress, Entry), MapError> {
         if level == Level::Pml4
             && !is_user_address(virtual_address)
             && is_active()
@@ -170,7 +170,10 @@ impl AddressSpace {
         self.roots.is_none()
     }
 
-    pub(super) fn roots_are_active(roots: AddressSpaceRoots, current_root: Paddr) -> bool {
+    pub(super) fn roots_are_active(
+        roots: AddressSpaceRoots,
+        current_root: PhysicalAddress,
+    ) -> bool {
         roots.contains(current_root) || (is_active() && roots.contains(active_root()))
     }
 

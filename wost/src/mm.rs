@@ -31,7 +31,7 @@ use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
 /// A physical address.
-pub type Paddr = u64;
+pub type PhysicalAddress = u64;
 
 /// Highest physical address the frame allocator tracks; boot reports memory above it ignored.
 ///
@@ -127,13 +127,13 @@ impl<'map> EarlyFirmwareMemory<'map> {
     }
 
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: Paddr, len: usize) -> bool {
+    pub fn contains(&self, address: PhysicalAddress, len: usize) -> bool {
         firmware_contains(self.map, address, len)
     }
 
     /// Copy `into.len()` table bytes at `address` with volatile reads.
     #[must_use = "a refused early firmware read copied no bytes"]
-    pub fn read(&self, address: Paddr, into: &mut [u8]) -> bool {
+    pub fn read(&self, address: PhysicalAddress, into: &mut [u8]) -> bool {
         if !self.contains(address, into.len()) {
             return false;
         }
@@ -160,7 +160,7 @@ pub struct FirmwareMemory(());
 
 impl FirmwareMemory {
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: Paddr, len: usize) -> bool {
+    pub fn contains(&self, address: PhysicalAddress, len: usize) -> bool {
         let guard = MAP.lock_leaf();
         let Some(map) = guard.as_ref() else {
             return false;
@@ -170,7 +170,7 @@ impl FirmwareMemory {
 
     /// Copy `into.len()` table bytes at `address` with volatile reads.
     #[must_use = "a refused firmware read copied no bytes"]
-    pub fn read(&self, address: Paddr, into: &mut [u8]) -> bool {
+    pub fn read(&self, address: PhysicalAddress, into: &mut [u8]) -> bool {
         if !self.contains(address, into.len()) {
             return false;
         }
@@ -182,7 +182,7 @@ impl FirmwareMemory {
     }
 }
 
-fn firmware_contains(map: &MemoryMap, address: Paddr, len: usize) -> bool {
+fn firmware_contains(map: &MemoryMap, address: PhysicalAddress, len: usize) -> bool {
     let Ok(len) = u64::try_from(len) else {
         return false;
     };
@@ -216,7 +216,7 @@ pub fn firmware_memory() -> Option<FirmwareMemory> {
 }
 
 /// Whether `start..end` is disjoint from every RAM or firmware allocation.
-pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
+pub(crate) fn device_range_is_eligible(start: PhysicalAddress, end: PhysicalAddress) -> bool {
     let guard = MAP.lock_leaf();
     let Some(map) = guard.as_ref() else {
         return false;
@@ -228,7 +228,10 @@ pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
 /// The one cache type the direct map gives `start..end`, if it has one.
-pub(crate) fn map_direct_cache(start: Paddr, end: Paddr) -> Option<crate::boot::DirectMapCache> {
+pub(crate) fn map_direct_cache(
+    start: PhysicalAddress,
+    end: PhysicalAddress,
+) -> Option<crate::boot::DirectMapCache> {
     MAP.lock_leaf()
         .as_ref()
         .and_then(|map| map.direct_map_cache(start, end))
@@ -253,14 +256,14 @@ pub(crate) fn memory_map_snapshot() -> Option<MemoryMap> {
     *MAP.lock_leaf()
 }
 
-fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
+fn direct_map_pointer(physical: PhysicalAddress) -> Option<*mut u8> {
     direct_pointer(physical, FRAME_SIZE)
 }
 
 /// Where the direct map puts `len` bytes at `physical`, by arithmetic alone.
 ///
 /// The caller must establish that the map reaches those bytes, as a [`Frame`] or [`Segment`] does.
-pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
+pub(crate) fn direct_pointer(physical: PhysicalAddress, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);
     if offset == 0 {
         return None;

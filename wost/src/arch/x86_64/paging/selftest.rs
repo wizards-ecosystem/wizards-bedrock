@@ -387,7 +387,7 @@ pub fn reclaimed_refusals() -> usize {
 }
 
 #[cfg(feature = "selftest")]
-const PROBE_INITIAL_ROOT: Paddr = 0x1234_5000;
+const PROBE_INITIAL_ROOT: PhysicalAddress = 0x1234_5000;
 
 #[cfg(feature = "selftest")]
 static PROBE_STATE: AtomicU8 = AtomicU8::new(ActivationState::Cold.bits());
@@ -438,8 +438,8 @@ enum ProbeBoundary {
 /// Pause both activation boundaries with one pending self-interrupt each.
 #[cfg(feature = "selftest")]
 pub fn activation_publication_for_test() -> ActivationPublicationProbe {
-    const FIRST_ROOT: Paddr = 0x2345_6000;
-    const SECOND_ROOT: Paddr = 0x3456_7000;
+    const FIRST_ROOT: PhysicalAddress = 0x2345_6000;
+    const SECOND_ROOT: PhysicalAddress = 0x3456_7000;
 
     let initializing_is_excluded = probe_activation(ProbeBoundary::BeforeRoot, FIRST_ROOT);
     let root_precedes_ready = probe_activation(ProbeBoundary::AfterRoot, SECOND_ROOT);
@@ -450,7 +450,7 @@ pub fn activation_publication_for_test() -> ActivationPublicationProbe {
 }
 
 #[cfg(feature = "selftest")]
-fn probe_activation(boundary: ProbeBoundary, expected_root: Paddr) -> bool {
+fn probe_activation(boundary: ProbeBoundary, expected_root: PhysicalAddress) -> bool {
     const ATTEMPTS: usize = 1_000_000;
 
     if !interrupt::are_enabled()
