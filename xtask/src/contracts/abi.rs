@@ -1177,18 +1177,7 @@ fn clock_arithmetic_widens_before_multiplication() {
     );
 }
 
-#[test]
-fn every_sysdep_definition_agrees_with_its_register_row() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask sits below the workspace root");
-    let sysdeps =
-        std::fs::read_to_string(root.join("fixtures/abi-pressure/sysdeps/wizard/generic.cpp"))
-            .expect("generic.cpp");
-    let readme =
-        std::fs::read_to_string(root.join("fixtures/abi-pressure/README.md")).expect("README.md");
-    let (active, comments) = cpp_without_comments(&sysdeps);
-    let structure = cpp_structure(&active);
+fn assert_only_pressure_test_includes(active: &str, structure: &str) {
     let mut includes = Vec::new();
     for (line, structural_line) in active.lines().zip(structure.lines()) {
         let structural_line = structural_line.trim_start();
@@ -1223,24 +1212,9 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
         ],
         "the pressure-test transcription's include set changed"
     );
-    let annotations = sysdep_annotations(&comments);
-    let bodies = cpp_bodies(&active);
-    let definition_names: std::collections::BTreeSet<_> = bodies
-        .keys()
-        .filter(|name| name.starts_with("sys_"))
-        .cloned()
-        .collect();
-    assert_eq!(
-        definition_names.len(),
-        16,
-        "D-114 inspected sixteen active sysdep definitions"
-    );
-    assert_eq!(
-        definition_names,
-        annotations.keys().cloned().collect(),
-        "a definition is unregistered or a marker has no active definition"
-    );
+}
 
+fn readme_register(readme: &str) -> std::collections::BTreeMap<String, (String, String)> {
     let mut register = std::collections::BTreeMap::new();
     for line in readme.lines() {
         let cells: Vec<_> = line.split('|').map(str::trim).collect();
@@ -1261,11 +1235,13 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
             "{name} has two README rows"
         );
     }
-    assert_eq!(
-        register, annotations,
-        "the README and C++ register disagree"
-    );
+    register
+}
 
+fn assert_native_gate(
+    root: &std::path::Path,
+    bodies: &std::collections::BTreeMap<String, (&str, &str)>,
+) {
     let vectors = rust_without_comments(
         &std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs")).expect("vector.rs"),
     );
@@ -1293,65 +1269,64 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
         "returnresult<0?static_cast<int>(-result):0;",
         "as_errno does not decode exactly the native negative-result convention"
     );
+}
 
-    for (name, (body_state, _)) in &annotations {
-        let implementation = bodies
-            .get(name)
-            .unwrap_or_else(|| panic!("no active definition for {name}"))
-            .1;
-        match body_state.as_str() {
-            "WIRED" if name == "sys_exit" => assert_eq!(
+fn assert_sysdep_body(name: &str, body_state: &str, implementation: &str) {
+    match body_state {
+        "WIRED" if name == "sys_exit" => assert_eq!(
+            compact_cpp(implementation),
+            "call1(WIZ_CALL_EXIT,status);__builtin_unreachable();"
+        ),
+        "WIRED" if name == "sys_tcb_set" => assert_eq!(
+            compact_cpp(implementation),
+            "returnas_errno(call1(WIZ_CALL_TCB_SET,reinterpret_cast<long>(pointer)));"
+        ),
+        "COMPOSED" => {
+            assert_eq!(name, "sys_libc_panic");
+            assert_eq!(
                 compact_cpp(implementation),
-                "call1(WIZ_CALL_EXIT,status);__builtin_unreachable();"
-            ),
-            "WIRED" if name == "sys_tcb_set" => assert_eq!(
-                compact_cpp(implementation),
-                "returnas_errno(call1(WIZ_CALL_TCB_SET,reinterpret_cast<long>(pointer)));"
-            ),
-            "COMPOSED" => {
-                assert_eq!(name, "sys_libc_panic");
-                assert_eq!(
-                    compact_cpp(implementation),
-                    "sys_libc_log(\"mlibc:panic\\n\");sys_exit(127);__builtin_unreachable();"
-                );
-            }
-            "PARTIAL" => assert_eq!(name, "sys_clock_get"),
-            "STUB" if name == "sys_libc_log" => {
-                assert_eq!(compact_cpp(implementation), "(void)message;");
-            }
-            "STUB" => {
-                let compact = compact_cpp(implementation);
-                assert!(
-                    compact.ends_with(';'),
-                    "{name}'s stub has a partial statement"
-                );
-                let statements: Vec<_> = compact
-                    .split(';')
-                    .filter(|statement| !statement.is_empty())
-                    .collect();
-                assert_eq!(
-                    statements.last(),
-                    Some(&"returnWIZ_ENOSYS"),
-                    "{name} is not an explicit one-path stub"
-                );
-                for statement in &statements[..statements.len() - 1] {
-                    let argument = statement.strip_prefix("(void)").unwrap_or_else(|| {
-                        panic!("{name}'s stub executes `{statement}` before refusing")
-                    });
-                    assert!(
-                        !argument.is_empty()
-                            && argument
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
-                        "{name}'s discard `{statement}` is not one parameter"
-                    );
-                }
-            }
-            state => panic!("{name} has unproved BODY={state}"),
+                "sys_libc_log(\"mlibc:panic\\n\");sys_exit(127);__builtin_unreachable();"
+            );
         }
+        "PARTIAL" => assert_eq!(name, "sys_clock_get"),
+        "STUB" if name == "sys_libc_log" => {
+            assert_eq!(compact_cpp(implementation), "(void)message;");
+        }
+        "STUB" => assert_one_path_stub(name, implementation),
+        state => panic!("{name} has unproved BODY={state}"),
     }
+}
 
-    let clock = &cpp_structure(bodies["sys_clock_get"].1);
+fn assert_one_path_stub(name: &str, implementation: &str) {
+    let compact = compact_cpp(implementation);
+    assert!(
+        compact.ends_with(';'),
+        "{name}'s stub has a partial statement"
+    );
+    let statements: Vec<_> = compact
+        .split(';')
+        .filter(|statement| !statement.is_empty())
+        .collect();
+    assert_eq!(
+        statements.last(),
+        Some(&"returnWIZ_ENOSYS"),
+        "{name} is not an explicit one-path stub"
+    );
+    for statement in &statements[..statements.len() - 1] {
+        let argument = statement
+            .strip_prefix("(void)")
+            .unwrap_or_else(|| panic!("{name}'s stub executes `{statement}` before refusing"));
+        assert!(
+            !argument.is_empty()
+                && argument
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+            "{name}'s discard `{statement}` is not one parameter"
+        );
+    }
+}
+
+fn assert_clock_reader_shape(clock: &str) {
     for required in [
         "clock != CLOCK_MONOTONIC",
         "return WIZ_EINVAL;",
@@ -1397,39 +1372,45 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
         2,
         "the sequence snapshot needs a compiler fence on both sides"
     );
-    let counter = bodies["read_counter"].1;
+}
+
+fn returned_statements(compact: &str, expectation: &str) -> Vec<String> {
+    compact
+        .match_indices("return")
+        .map(|(at, _)| {
+            compact[at..]
+                .split_once(';')
+                .map(|(statement, _)| format!("{statement};"))
+                .expect(expectation)
+        })
+        .collect()
+}
+
+fn assert_counter_reader(counter: &str) {
     assert!(
         counter.contains("lfence\\n\\trdtsc\\n\\tlfence"),
         "the userspace counter read is not fenced on both sides"
     );
-    let counter = compact_cpp(counter);
     assert_eq!(
-        counter,
+        compact_cpp(counter),
         "uint32_tlow;uint32_thigh;asmvolatile(\"lfence\\n\\trdtsc\\n\\tlfence\":\"=a\"(low),\"=d\"(high)::\"memory\");return(static_cast<uint64_t>(high)<<32)|low;",
         "the counter reader is not the exact fenced TSC transcription"
     );
-    let counter_structure = compact_cpp(&cpp_structure(bodies["read_counter"].1));
+    let counter_structure = compact_cpp(&cpp_structure(counter));
     for dead in ["if(false)", "if(0)", "while(false)", "while(0)"] {
         assert!(
             !counter_structure.contains(dead),
             "the counter reader contains a literal dead wrapper `{dead}`"
         );
     }
-    let counter_returns: Vec<_> = counter_structure
-        .match_indices("return")
-        .map(|(at, _)| {
-            counter_structure[at..]
-                .split_once(';')
-                .map(|(statement, _)| format!("{statement};"))
-                .expect("terminated counter return")
-        })
-        .collect();
     assert_eq!(
-        counter_returns,
+        returned_statements(&counter_structure, "terminated counter return"),
         ["return(static_cast<uint64_t>(high)<<32)|low;"],
         "the counter reader has an early return"
     );
+}
 
+fn assert_clock_paths(clock: &str, fallback: &str) {
     let clock_structure = compact_cpp(clock);
     assert_eq!(
         clock_structure.matches("ticks=").count(),
@@ -1450,17 +1431,8 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
         !clock_structure.contains("goto") && !clock_structure.contains("__builtin_unreachable"),
         "the clock reader bypasses its structured success path"
     );
-    let clock_returns: Vec<_> = clock_structure
-        .match_indices("return")
-        .map(|(at, _)| {
-            clock_structure[at..]
-                .split_once(';')
-                .map(|(statement, _)| format!("{statement};"))
-                .expect("terminated clock return")
-        })
-        .collect();
     assert_eq!(
-        clock_returns,
+        returned_statements(&clock_structure, "terminated clock return"),
         [
             "returnWIZ_EINVAL;",
             "returnmonotonic_fallback(secs,nanos);",
@@ -1471,10 +1443,58 @@ fn every_sysdep_definition_agrees_with_its_register_row() {
         "the clock reader gained an unaccounted return path"
     );
     assert_eq!(
-        compact_cpp(bodies["monotonic_fallback"].1),
+        compact_cpp(fallback),
         "(void)secs;(void)nanos;returnWIZ_ENOSYS;",
         "the unfinished Uptime route does not refuse on one path"
     );
+}
+
+#[test]
+fn every_sysdep_definition_agrees_with_its_register_row() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask sits below the workspace root");
+    let sysdeps =
+        std::fs::read_to_string(root.join("fixtures/abi-pressure/sysdeps/wizard/generic.cpp"))
+            .expect("generic.cpp");
+    let readme =
+        std::fs::read_to_string(root.join("fixtures/abi-pressure/README.md")).expect("README.md");
+    let (active, comments) = cpp_without_comments(&sysdeps);
+    assert_only_pressure_test_includes(&active, &cpp_structure(&active));
+    let annotations = sysdep_annotations(&comments);
+    let bodies = cpp_bodies(&active);
+    let definition_names: std::collections::BTreeSet<_> = bodies
+        .keys()
+        .filter(|name| name.starts_with("sys_"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        definition_names.len(),
+        16,
+        "D-114 inspected sixteen active sysdep definitions"
+    );
+    assert_eq!(
+        definition_names,
+        annotations.keys().cloned().collect(),
+        "a definition is unregistered or a marker has no active definition"
+    );
+    assert_eq!(
+        readme_register(&readme),
+        annotations,
+        "the README and C++ register disagree"
+    );
+    assert_native_gate(root, &bodies);
+    for (name, (body_state, _)) in &annotations {
+        let implementation = bodies
+            .get(name)
+            .unwrap_or_else(|| panic!("no active definition for {name}"))
+            .1;
+        assert_sysdep_body(name, body_state, implementation);
+    }
+    let clock = cpp_structure(bodies["sys_clock_get"].1);
+    assert_clock_reader_shape(&clock);
+    assert_counter_reader(bodies["read_counter"].1);
+    assert_clock_paths(&clock, bodies["monotonic_fallback"].1);
 }
 
 #[test]
@@ -1557,58 +1577,36 @@ fn disputed_sysdep_remainders_have_platform_witnesses() {
     assert!(!exit.contains("frame.rdi"));
 }
 
-#[test]
-fn the_c_header_and_the_kernel_agree_about_the_abi() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask sits below the workspace root");
-    let header = std::fs::read_to_string(root.join("fixtures/abi-pressure/abi/wizard_abi.h"))
-        .expect("fixtures/abi-pressure/abi/wizard_abi.h");
-    let queue = rust_without_comments(&super::module_source(root, "kernel/src/queue.rs"));
-    let user = rust_without_comments(&super::module_source(root, "kernel/src/user.rs"));
-    let proto = rust_without_comments(
-        &std::fs::read_to_string(root.join("libs/ring-proto/src/lib.rs")).expect("ring-proto"),
-    );
-    let handle_space = rust_without_comments(
-        &std::fs::read_to_string(root.join("libs/handle-space/src/lib.rs")).expect("handle-space"),
-    );
-    let x86_paging = rust_without_comments(
-        &std::fs::read_to_string(root.join("libs/x86-paging/src/lib.rs")).expect("x86-paging"),
-    );
-    let timepage_source =
-        rust_without_comments(&super::module_source(root, "kernel/src/timepage.rs"));
-    let vectors_source = rust_without_comments(
-        &std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs")).expect("vector.rs"),
-    );
-    let paging_source = rust_without_comments(
-        &std::fs::read_to_string(root.join("wost/src/arch/x86_64/paging.rs")).expect("paging.rs"),
-    );
-    let (active_header, macro_expressions) = checked_header(&header);
-    assert_eq!(c_typedef_kind(&active_header, "wiz_handle_t"), "uint32_t");
-    assert_eq!(c_typedef_kind(&active_header, "wiz_rights_t"), "uint32_t");
-    assert_eq!(c_typedef_kind(&active_header, "wiz_errno_t"), "int");
+#[derive(Debug)]
+struct UserAbi {
+    ring: u64,
+    entry_version: u64,
+    entry_bytes: u64,
+    entry_layout: std::collections::BTreeMap<String, usize>,
+}
 
-    let declared_macros: std::collections::BTreeMap<String, u64> = macro_expressions
-        .iter()
-        .map(|(name, expression)| {
-            let value =
-                parse_c_uint(expression).unwrap_or_else(|error| panic!("unparsed {name}: {error}"));
-            (name.clone(), value)
-        })
-        .collect();
-    let mut expected_macros = std::collections::BTreeMap::new();
-    macro_rules! expect_macro {
-        ($name:expr, $value:expr) => {
-            assert!(
-                expected_macros.insert($name.to_string(), $value).is_none(),
-                "two kernel witnesses register {}",
-                $name
-            )
-        };
-    }
+#[derive(Debug)]
+struct RingLayout {
+    header: std::collections::BTreeMap<String, usize>,
+    submission: std::collections::BTreeMap<String, usize>,
+    completion: std::collections::BTreeMap<String, usize>,
+    entries_at: u32,
+    completion_at: u32,
+}
 
-    let reserved = rust_uint(&handle_space, "pub const RESERVED: u32");
-    let reserved_bits = rust_uint(&handle_space, "pub const RESERVED_BITS: u32");
+fn expect_macro(expected: &mut std::collections::BTreeMap<String, u64>, name: &str, value: u64) {
+    assert!(
+        expected.insert(name.to_string(), value).is_none(),
+        "two kernel witnesses register {name}"
+    );
+}
+
+fn expect_invalid_handle(
+    expected: &mut std::collections::BTreeMap<String, u64>,
+    handle_space: &str,
+) {
+    let reserved = rust_uint(handle_space, "pub const RESERVED: u32");
+    let reserved_bits = rust_uint(handle_space, "pub const RESERVED_BITS: u32");
     assert!(reserved_bits < u64::from(u64::BITS));
     assert_eq!(reserved, (1u64 << reserved_bits) - 1);
     let invalid = reserved & !reserved;
@@ -1617,8 +1615,14 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         reserved,
         "invalid handle passes decode's low-bit gate"
     );
-    expect_macro!("WIZ_HANDLE_INVALID", invalid);
+    expect_macro(expected, "WIZ_HANDLE_INVALID", invalid);
+}
 
+fn expect_rights(
+    expected: &mut std::collections::BTreeMap<String, u64>,
+    root: &std::path::Path,
+    handle_space: &str,
+) {
     let rights_marker = "impl Rights {";
     let rights_markers: Vec<_> = handle_space.match_indices(rights_marker).collect();
     let handle_space_tree =
@@ -1629,7 +1633,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         "expected one impl Rights"
     );
     let rights_at = rights_markers[0].0;
-    assert_unconditional_rust_line(&handle_space, rights_at, 0, "impl Rights");
+    assert_unconditional_rust_line(handle_space, rights_at, 0, "impl Rights");
     let rights_open = rights_at + rights_marker.len() - 1;
     let rights_close = matching(handle_space.as_bytes(), rights_open, b'{', b'}');
     let rights_impl = &handle_space[rights_open + 1..rights_close];
@@ -1677,111 +1681,129 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
             parse_rust_uint(bit).unwrap_or_else(|error| panic!("unparsed right {name}: {error}"));
         assert!(bit < 32, "right {name} is outside wiz_rights_t");
         assert!(right_bits.insert(bit), "two rights use bit {bit}");
-        expect_macro!(&format!("WIZ_RIGHT_{name}"), 1u64 << bit);
+        expect_macro(expected, &format!("WIZ_RIGHT_{name}"), 1u64 << bit);
     }
     assert!(
         !right_bits.is_empty(),
         "the kernel defines no individual rights"
     );
+}
 
-    let ring = rust_uint(&user, "pub(crate) const RING: u64");
-    let entry_version = rust_uint(&user, "pub(crate) const ENTRY_VERSION: u64");
-    let entry_bytes = rust_uint(&user, "pub(crate) const ENTRY_BYTES: usize");
-    let entry_layout = rust_module_offsets(&user, "entry");
-    expect_macro!("WIZ_ENTRY_VERSION", entry_version);
-    expect_macro!("WIZ_ENTRY_VERSION_AT", entry_layout["VERSION"] as u64);
-    expect_macro!("WIZ_ENTRY_ARGUMENT_AT", entry_layout["ARGUMENT"] as u64);
-    expect_macro!(
+fn expect_entry_and_ring_macros(
+    expected: &mut std::collections::BTreeMap<String, u64>,
+    user: &str,
+    proto: &str,
+) -> UserAbi {
+    let ring = rust_uint(user, "pub(crate) const RING: u64");
+    let entry_version = rust_uint(user, "pub(crate) const ENTRY_VERSION: u64");
+    let entry_bytes = rust_uint(user, "pub(crate) const ENTRY_BYTES: usize");
+    let entry_layout = rust_module_offsets(user, "entry");
+    expect_macro(expected, "WIZ_ENTRY_VERSION", entry_version);
+    expect_macro(
+        expected,
+        "WIZ_ENTRY_VERSION_AT",
+        entry_layout["VERSION"] as u64,
+    );
+    expect_macro(
+        expected,
+        "WIZ_ENTRY_ARGUMENT_AT",
+        entry_layout["ARGUMENT"] as u64,
+    );
+    expect_macro(
+        expected,
         "WIZ_ENTRY_BOOTSTRAP_HANDLE_AT",
-        entry_layout["BOOTSTRAP_HANDLE"] as u64
+        entry_layout["BOOTSTRAP_HANDLE"] as u64,
     );
-    expect_macro!("WIZ_ENTRY_BYTES", entry_bytes);
-    expect_macro!("WIZ_RING_ADDRESS", ring);
-    expect_macro!(
+    expect_macro(expected, "WIZ_ENTRY_BYTES", entry_bytes);
+    expect_macro(expected, "WIZ_RING_ADDRESS", ring);
+    expect_macro(
+        expected,
         "WIZ_RING_VERSION",
-        rust_uint(&proto, "pub const VERSION: u32")
+        rust_uint(proto, "pub const VERSION: u32"),
     );
-    let page_size = rust_uint(&x86_paging, "pub const PAGE_SIZE: u64");
+    UserAbi {
+        ring,
+        entry_version,
+        entry_bytes,
+        entry_layout,
+    }
+}
+
+fn expect_ring_area_macros(
+    expected: &mut std::collections::BTreeMap<String, u64>,
+    queue: &str,
+    x86_paging: &str,
+) -> u64 {
+    let page_size = rust_uint(x86_paging, "pub const PAGE_SIZE: u64");
     assert_eq!(
-        rust_expression(&queue, "const ENTRIES_AT: usize"),
+        rust_expression(queue, "const ENTRIES_AT: usize"),
         "PAGE_SIZE as usize"
     );
     assert_eq!(
-        rust_expression(&queue, "const DATA_AT: usize"),
+        rust_expression(queue, "const DATA_AT: usize"),
         "2 * PAGE_SIZE as usize"
     );
     assert_eq!(
-        rust_expression(&queue, "const DATA_BYTES: usize"),
+        rust_expression(queue, "const DATA_BYTES: usize"),
         "PAGE_SIZE as usize"
     );
-    expect_macro!("WIZ_RING_ENTRIES_AT", page_size);
-    expect_macro!(
+    expect_macro(expected, "WIZ_RING_ENTRIES_AT", page_size);
+    expect_macro(
+        expected,
         "WIZ_RING_DATA_AT",
-        page_size.checked_mul(2).expect("two pages fit in u64")
+        page_size.checked_mul(2).expect("two pages fit in u64"),
     );
-    expect_macro!("WIZ_RING_DATA_BYTES", page_size);
+    expect_macro(expected, "WIZ_RING_DATA_BYTES", page_size);
+    page_size
+}
 
-    let decoded_opcode_arms = simple_decoder_arms(
-        &queue,
-        "Opcode",
-        "const fn decode(value: u32) -> Self {",
-        "other=>Self::Unknown(other)",
-    );
-    for (number, variant) in &decoded_opcode_arms {
-        expect_macro!(&format!("WIZ_OP_{}", variant.to_ascii_uppercase()), *number);
-    }
-    let decoded_call_arms = simple_decoder_arms(
-        &user,
-        "Call",
-        "const fn decode(value: u64) -> Self {",
-        "other=>Self::Unknown(other)",
-    );
-
-    for (name, number) in rust_status_constants(&queue) {
-        expect_macro!(&format!("WIZ_STATUS_{name}"), number);
-    }
-
-    expect_macro!(
+fn expect_wire_and_time_macros(
+    expected: &mut std::collections::BTreeMap<String, u64>,
+    queue: &str,
+    timepage: &str,
+) {
+    expect_macro(
+        expected,
         "WIZ_SUBMISSION_BYTES",
-        rust_uint(&queue, "const SUBMISSION_BYTES: usize")
+        rust_uint(queue, "const SUBMISSION_BYTES: usize"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_COMPLETION_BYTES",
-        rust_uint(&queue, "const COMPLETION_BYTES: usize")
+        rust_uint(queue, "const COMPLETION_BYTES: usize"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_TIME_ADDRESS",
-        rust_uint(&timepage_source, "pub(crate) const TIME: u64")
+        rust_uint(timepage, "pub(crate) const TIME: u64"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_TIME_VERSION",
-        rust_uint(&timepage_source, "pub(crate) const VERSION: u32")
+        rust_uint(timepage, "pub(crate) const VERSION: u32"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_TIME_CLOCK_AT",
-        rust_uint(&timepage_source, "const CLOCK_AT: usize")
+        rust_uint(timepage, "const CLOCK_AT: usize"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_TIME_MODE_NONE",
-        rust_uint(&timepage_source, "pub(crate) const MODE_NONE: u32")
+        rust_uint(timepage, "pub(crate) const MODE_NONE: u32"),
     );
-    expect_macro!(
+    expect_macro(
+        expected,
         "WIZ_TIME_MODE_COUNTER",
-        rust_uint(&timepage_source, "pub(crate) const MODE_COUNTER: u32")
+        rust_uint(timepage, "pub(crate) const MODE_COUNTER: u32"),
     );
-    let syscall_number = rust_interrupt_vector(&vectors_source, "SYSCALL");
-    expect_macro!("WIZ_SYSCALL_VECTOR", syscall_number);
-    let user_end = rust_uint(&paging_source, "pub const USER_END: u64");
-    expect_macro!("WIZ_USER_END", user_end);
-    expect_macro!("WIZ_ENOSYS", rust_negated_errno(&user, "ENOSYS"));
-    expect_macro!("WIZ_EINVAL", rust_negated_errno(&user, "EINVAL"));
-    assert_eq!(
-        declared_macros, expected_macros,
-        "the complete C macro inventory differs from the kernel ABI"
-    );
+}
 
-    // Complete domains keep new members from hiding outside a
-    // hand-maintained list.
+// A complete domain keeps new members from hiding outside a hand-maintained list.
+fn assert_opcode_domain(
+    declared_macros: &std::collections::BTreeMap<String, u64>,
+    decoded_opcode_arms: &std::collections::BTreeMap<u64, String>,
+) {
     let declared_opcodes: std::collections::BTreeMap<_, _> = declared_macros
         .iter()
         .filter(|(name, _)| name.starts_with("WIZ_OP_"))
@@ -1795,13 +1817,14 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         declared_opcodes, decoded_opcodes,
         "the C opcode domain differs from Opcode::decode"
     );
+}
 
-    // The complete entry layouts; the C declarations and emitted
-    // instructions are independent transcriptions of them.
-    let process_entry_fields = c_struct_fields(&header, "wiz_entry_block");
+// The C declarations and the emitted instructions transcribe these layouts independently.
+fn assert_entry_block(header: &str, user_source: &str, user: &UserAbi) {
+    let process_entry_fields = c_struct_fields(header, "wiz_entry_block");
     assert_eq!(
         c_layout(&process_entry_fields),
-        entry_layout,
+        user.entry_layout,
         "the C process-entry block differs from the kernel's field offsets"
     );
     assert!(
@@ -1812,15 +1835,15 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         c_size(&process_entry_fields) as u64,
-        entry_bytes,
+        user.entry_bytes,
         "the C process-entry block differs from the kernel's byte extent"
     );
     assert_eq!(
-        rust_expression(&user, "const ENTRY_STACK_BYTES: u64"),
+        rust_expression(user_source, "const ENTRY_STACK_BYTES: u64"),
         "(ENTRY_BYTES as u64 + 15) & !15",
         "the initial stack pointer is not aligned beyond the entry block"
     );
-    let compact_cross = compact_cpp(&rust_function_body(&user, "pub(super) fn cross() {"));
+    let compact_cross = compact_cpp(&rust_function_body(user_source, "pub(super) fn cross() {"));
     assert!(
         compact_cross.contains("lettop=launch.stack+USER_STACK_BYTES-ENTRY_STACK_BYTES;"),
         "the kernel does not place the entry block at the initial stack pointer"
@@ -1849,11 +1872,13 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         compact_cross.contains("task::enter_user(launch.entry,top)"),
         "the kernel enters ring 3 at a pointer other than the checked entry block"
     );
+}
 
-    let ring_header_fields = c_struct_fields(&header, "wiz_ring_header");
-    let submission_fields = c_struct_fields(&header, "wiz_submission");
-    let completion_fields = c_struct_fields(&header, "wiz_completion");
-    let ring_header_layout = rust_module_offsets(&queue, "header");
+fn assert_ring_layouts(header: &str, queue: &str, page_size: u64) -> RingLayout {
+    let ring_header_fields = c_struct_fields(header, "wiz_ring_header");
+    let submission_fields = c_struct_fields(header, "wiz_submission");
+    let completion_fields = c_struct_fields(header, "wiz_completion");
+    let ring_header_layout = rust_module_offsets(queue, "header");
     let mut c_ring_header_layout = c_layout(&ring_header_fields);
     assert_eq!(
         c_ring_header_layout.remove("RESERVED0"),
@@ -1872,12 +1897,12 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         c_ring_header_widths,
-        rust_field_widths(&queue, "header"),
+        rust_field_widths(queue, "header"),
         "the C ring header differs from the kernel's field widths"
     );
     assert_eq!(c_size(&ring_header_fields), 32, "C ring header size");
-    let submission_layout = rust_module_offsets(&queue, "submission");
-    let completion_layout = rust_module_offsets(&queue, "completion");
+    let submission_layout = rust_module_offsets(queue, "submission");
+    let completion_layout = rust_module_offsets(queue, "completion");
     assert_eq!(
         c_layout(&submission_fields),
         submission_layout,
@@ -1885,7 +1910,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         c_widths(&submission_fields),
-        rust_field_widths(&queue, "submission"),
+        rust_field_widths(queue, "submission"),
         "the C submission differs from the kernel's field widths"
     );
     assert_eq!(
@@ -1895,12 +1920,12 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         c_widths(&completion_fields),
-        rust_field_widths(&queue, "completion"),
+        rust_field_widths(queue, "completion"),
         "the C completion differs from the kernel's field widths"
     );
-    let submission_bytes = u32::try_from(rust_uint(&queue, "const SUBMISSION_BYTES: usize"))
+    let submission_bytes = u32::try_from(rust_uint(queue, "const SUBMISSION_BYTES: usize"))
         .expect("SUBMISSION_BYTES fits in u32");
-    let completion_bytes = u32::try_from(rust_uint(&queue, "const COMPLETION_BYTES: usize"))
+    let completion_bytes = u32::try_from(rust_uint(queue, "const COMPLETION_BYTES: usize"))
         .expect("COMPLETION_BYTES fits in u32");
     assert_eq!(c_size(&submission_fields) as u32, submission_bytes);
     assert_eq!(c_size(&completion_fields) as u32, completion_bytes);
@@ -1918,27 +1943,49 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         queue.contains("const ENTRIES_AT: usize = PAGE_SIZE as usize;"),
         "the kernel's entry base is not one page"
     );
-    let submissions = u32::try_from(rust_uint(&queue, "const SUBMISSIONS: u32"))
-        .expect("SUBMISSIONS fits in u32");
+    let submissions =
+        u32::try_from(rust_uint(queue, "const SUBMISSIONS: u32")).expect("SUBMISSIONS fits in u32");
     assert_eq!(
         submissions, 8,
         "the emitted program assumes eight submissions"
     );
+    RingLayout {
+        header: ring_header_layout,
+        submission: submission_layout,
+        completion: completion_layout,
+        entries_at,
+        completion_at: entries_at + submissions * submission_bytes,
+    }
+}
 
+fn emitted_program_code() -> Vec<u8> {
     let image = crate::image::program::build().expect("building the emitted program");
     let elf = elf64::Elf::parse(&image).expect("the emitted program is ELF64");
     let mut segments = elf.segments();
     let segment = segments.next().expect("the emitted program has a segment");
     let start = segment.offset() as usize;
     let end = start + segment.file_size() as usize;
-    let code = &image[start..end];
-    let operands = decode_program_operands(code);
+    image[start..end].to_vec()
+}
+
+fn decoded_imm32(
+    arms: &std::collections::BTreeMap<u64, String>,
+    wanted: &str,
+    expectation: &str,
+) -> u32 {
+    arms.iter()
+        .find_map(|(number, variant)| (variant == wanted).then_some(*number))
+        .and_then(|number| u32::try_from(number).ok())
+        .expect(expectation)
+}
+
+fn assert_program_entry(operands: &ProgramOperands, code: &[u8], user: &UserAbi, user_end: u64) {
     assert_eq!(
         operands.pops,
         ["rcx", "rax", "rsi"],
         "the emitted program does not consume version, argument and bootstrap handle in order"
     );
-    let entry_version_immediate = sign_extended_imm8(entry_version)
+    let entry_version_immediate = sign_extended_imm8(user.entry_version)
         .expect("the entry version fits the sign-extended cmp rcx, imm8");
     let [(compared_version, rejected_at)] = operands.rcx_imm8_rejections.as_slice() else {
         panic!("the emitted program does not compare and reject one entry-block version");
@@ -1954,7 +2001,7 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         operands.ring_bases,
-        [ring],
+        [user.ring],
         "the emitted mov rbx, imm64 does not load the kernel ring base"
     );
     assert_eq!(
@@ -1962,16 +2009,23 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         [user_end],
         "the hostile emitted mov rsp, imm64 does not load the kernel user boundary"
     );
-    let ring_enter = decoded_call_arms
-        .iter()
-        .find_map(|(number, variant)| (variant == "RingEnter").then_some(*number))
-        .and_then(|number| u32::try_from(number).ok())
-        .expect("Call::RingEnter fits in an emitted imm32");
-    let ring_wait = decoded_call_arms
-        .iter()
-        .find_map(|(number, variant)| (variant == "RingWait").then_some(*number))
-        .and_then(|number| u32::try_from(number).ok())
-        .expect("Call::RingWait fits in an emitted imm32");
+}
+
+fn assert_program_gate(
+    operands: &ProgramOperands,
+    decoded_call_arms: &std::collections::BTreeMap<u64, String>,
+    syscall_number: u64,
+) {
+    let ring_enter = decoded_imm32(
+        decoded_call_arms,
+        "RingEnter",
+        "Call::RingEnter fits in an emitted imm32",
+    );
+    let ring_wait = decoded_imm32(
+        decoded_call_arms,
+        "RingWait",
+        "Call::RingWait fits in an emitted imm32",
+    );
     assert_eq!(
         operands.eax_immediates,
         [0x0BAD_0BAD, 0x0BAD_0BAD, 0x0BAD_0BAD, ring_enter, ring_wait,],
@@ -1983,22 +2037,31 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         vec![syscall_immediate; 7],
         "an emitted int imm8 uses a vector other than the kernel syscall gate"
     );
-    let completion_at = entries_at + submissions * submission_bytes;
-    let echo = decoded_opcode_arms
-        .iter()
-        .find_map(|(number, variant)| (variant == "Echo").then_some(*number))
-        .and_then(|number| u32::try_from(number).ok())
-        .expect("Opcode::Echo fits in an emitted imm32");
-    let duplicate = decoded_opcode_arms
-        .iter()
-        .find_map(|(number, variant)| (variant == "Duplicate").then_some(*number))
-        .and_then(|number| u32::try_from(number).ok())
-        .expect("Opcode::Duplicate fits in an emitted imm32");
-    let timer = decoded_opcode_arms
-        .iter()
-        .find_map(|(number, variant)| (variant == "Timer").then_some(*number))
-        .and_then(|number| u32::try_from(number).ok())
-        .expect("Opcode::Timer fits in an emitted imm32");
+}
+
+fn assert_program_submissions(
+    operands: &ProgramOperands,
+    ring: &RingLayout,
+    decoded_opcode_arms: &std::collections::BTreeMap<u64, String>,
+    declared_macros: &std::collections::BTreeMap<String, u64>,
+) {
+    let entries_at = ring.entries_at;
+    let submission_layout = &ring.submission;
+    let echo = decoded_imm32(
+        decoded_opcode_arms,
+        "Echo",
+        "Opcode::Echo fits in an emitted imm32",
+    );
+    let duplicate = decoded_imm32(
+        decoded_opcode_arms,
+        "Duplicate",
+        "Opcode::Duplicate fits in an emitted imm32",
+    );
+    let timer = decoded_imm32(
+        decoded_opcode_arms,
+        "Timer",
+        "Opcode::Timer fits in an emitted imm32",
+    );
     assert_eq!(
         operands.writes32,
         [
@@ -2014,6 +2077,29 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         [entries_at + submission_layout["HANDLE"] as u32],
         "the emitted program does not submit the bootstrap handle from its entry block"
     );
+    let duplicate_rights = u32::try_from(declared_macros["WIZ_RIGHT_INSPECT"])
+        .expect("INSPECT fits in the emitted imm32");
+    assert_eq!(
+        operands.writes64_from_imm32,
+        [
+            (
+                entries_at + submission_layout["ARGUMENT"] as u32,
+                0x00C0_FFEE,
+            ),
+            (
+                entries_at + submission_layout["ARGUMENT"] as u32,
+                duplicate_rights,
+            ),
+            (
+                entries_at + submission_layout["ARGUMENT"] as u32,
+                250_000_000,
+            ),
+        ],
+        "the emitted program's submission imm64 write differs from the kernel layout"
+    );
+}
+
+fn assert_program_measurement(operands: &ProgramOperands, ring: &RingLayout) {
     assert_eq!(
         operands.r8d_zeroes, 1,
         "the emitted program does not default to ordinary ring service"
@@ -2041,40 +2127,23 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         operands.writes32_from_eax,
-        [entries_at + submission_layout["OFFSET"] as u32],
+        [ring.entries_at + ring.submission["OFFSET"] as u32],
         "the measured delta does not use the consumed submission's offset field"
     );
-    let duplicate_rights = u32::try_from(declared_macros["WIZ_RIGHT_INSPECT"])
-        .expect("INSPECT fits in the emitted imm32");
-    assert_eq!(
-        operands.writes64_from_imm32,
-        [
-            (
-                entries_at + submission_layout["ARGUMENT"] as u32,
-                0x00C0_FFEE,
-            ),
-            (
-                entries_at + submission_layout["ARGUMENT"] as u32,
-                duplicate_rights,
-            ),
-            (
-                entries_at + submission_layout["ARGUMENT"] as u32,
-                250_000_000,
-            ),
-        ],
-        "the emitted program's submission imm64 write differs from the kernel layout"
-    );
+}
+
+fn assert_program_header_and_completions(operands: &ProgramOperands, ring: &RingLayout) {
     assert_eq!(
         operands.short_writes32,
         [
-            (ring_header_layout["SUBMISSION_TAIL"] as u8, 1),
-            (ring_header_layout["COMPLETION_HEAD"] as u8, 1),
+            (ring.header["SUBMISSION_TAIL"] as u8, 1),
+            (ring.header["COMPLETION_HEAD"] as u8, 1),
         ],
         "the emitted program publishes through different header fields"
     );
     assert_eq!(
         operands.short_reads32,
-        [ring_header_layout["COMPLETION_TAIL"] as u8],
+        [ring.header["COMPLETION_TAIL"] as u8],
         "the emitted program acquires a different header field"
     );
     assert_eq!(
@@ -2084,12 +2153,12 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
     );
     assert_eq!(
         operands.reads32,
-        [completion_at + completion_layout["STATUS"] as u32],
+        [ring.completion_at + ring.completion["STATUS"] as u32],
         "the emitted program reads completion.status at a different offset"
     );
     assert_eq!(
         operands.reads64,
-        [completion_at + completion_layout["VALUE"] as u32],
+        [ring.completion_at + ring.completion["VALUE"] as u32],
         "the emitted program reads completion.value at a different offset"
     );
     assert_eq!(
@@ -2104,13 +2173,12 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         operands.ecx_esi_comparisons, 1,
         "the emitted program does not distinguish the duplicate from its source handle"
     );
+}
 
-    let timepage = &timepage_source;
-
-    // Compare complete layouts: address drift can unmap the page, and field
-    // drift changes the wire ABI (D-166).
-    let constants_fields = c_struct_fields(&header, "wiz_time_constants");
-    let clock_fields = c_struct_fields(&header, "wiz_time_clock");
+// Address drift can unmap the time page, and field drift changes the wire ABI.
+fn assert_time_layouts(header: &str, timepage: &str) {
+    let constants_fields = c_struct_fields(header, "wiz_time_constants");
+    let clock_fields = c_struct_fields(header, "wiz_time_clock");
     assert_eq!(
         c_layout(&constants_fields),
         rust_module_offsets(timepage, "constants"),
@@ -2133,8 +2201,13 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         "the C clock struct differs from the kernel's field widths"
     );
     assert_eq!(c_size(&clock_fields), 48, "C clock struct size");
+}
 
-    let checked_declared_calls = c_enum_values(&active_header, "wiz_call");
+fn assert_call_domain(
+    active_header: &str,
+    decoded_call_arms: &std::collections::BTreeMap<u64, String>,
+) {
+    let checked_declared_calls = c_enum_values(active_header, "wiz_call");
     let checked_expected_calls: std::collections::BTreeMap<_, _> = decoded_call_arms
         .iter()
         .map(|(number, variant)| {
@@ -2152,8 +2225,107 @@ fn the_c_header_and_the_kernel_agree_about_the_abi() {
         checked_declared_calls, checked_expected_calls,
         "the exact C call-number domain differs from Call::decode"
     );
+}
 
-    // The boundary has one definition; usercopy only re-exports it.
+#[test]
+fn the_c_header_and_the_kernel_agree_about_the_abi() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask sits below the workspace root");
+    let header = std::fs::read_to_string(root.join("fixtures/abi-pressure/abi/wizard_abi.h"))
+        .expect("fixtures/abi-pressure/abi/wizard_abi.h");
+    let queue = rust_without_comments(&super::module_source(root, "kernel/src/queue.rs"));
+    let user = rust_without_comments(&super::module_source(root, "kernel/src/user.rs"));
+    let proto = rust_without_comments(
+        &std::fs::read_to_string(root.join("libs/ring-proto/src/lib.rs")).expect("ring-proto"),
+    );
+    let handle_space = rust_without_comments(
+        &std::fs::read_to_string(root.join("libs/handle-space/src/lib.rs")).expect("handle-space"),
+    );
+    let x86_paging = rust_without_comments(
+        &std::fs::read_to_string(root.join("libs/x86-paging/src/lib.rs")).expect("x86-paging"),
+    );
+    let timepage_source =
+        rust_without_comments(&super::module_source(root, "kernel/src/timepage.rs"));
+    let vectors_source = rust_without_comments(
+        &std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs")).expect("vector.rs"),
+    );
+    let paging_source = rust_without_comments(
+        &std::fs::read_to_string(root.join("wost/src/arch/x86_64/paging.rs")).expect("paging.rs"),
+    );
+    let (active_header, macro_expressions) = checked_header(&header);
+    assert_eq!(c_typedef_kind(&active_header, "wiz_handle_t"), "uint32_t");
+    assert_eq!(c_typedef_kind(&active_header, "wiz_rights_t"), "uint32_t");
+    assert_eq!(c_typedef_kind(&active_header, "wiz_errno_t"), "int");
+
+    let declared_macros: std::collections::BTreeMap<String, u64> = macro_expressions
+        .iter()
+        .map(|(name, expression)| {
+            let value =
+                parse_c_uint(expression).unwrap_or_else(|error| panic!("unparsed {name}: {error}"));
+            (name.clone(), value)
+        })
+        .collect();
+    let mut expected_macros = std::collections::BTreeMap::new();
+    expect_invalid_handle(&mut expected_macros, &handle_space);
+    expect_rights(&mut expected_macros, root, &handle_space);
+    let user_abi = expect_entry_and_ring_macros(&mut expected_macros, &user, &proto);
+    let page_size = expect_ring_area_macros(&mut expected_macros, &queue, &x86_paging);
+    let decoded_opcode_arms = simple_decoder_arms(
+        &queue,
+        "Opcode",
+        "const fn decode(value: u32) -> Self {",
+        "other=>Self::Unknown(other)",
+    );
+    for (number, variant) in &decoded_opcode_arms {
+        expect_macro(
+            &mut expected_macros,
+            &format!("WIZ_OP_{}", variant.to_ascii_uppercase()),
+            *number,
+        );
+    }
+    let decoded_call_arms = simple_decoder_arms(
+        &user,
+        "Call",
+        "const fn decode(value: u64) -> Self {",
+        "other=>Self::Unknown(other)",
+    );
+    for (name, number) in rust_status_constants(&queue) {
+        expect_macro(&mut expected_macros, &format!("WIZ_STATUS_{name}"), number);
+    }
+    expect_wire_and_time_macros(&mut expected_macros, &queue, &timepage_source);
+    let syscall_number = rust_interrupt_vector(&vectors_source, "SYSCALL");
+    expect_macro(&mut expected_macros, "WIZ_SYSCALL_VECTOR", syscall_number);
+    let user_end = rust_uint(&paging_source, "pub const USER_END: u64");
+    expect_macro(&mut expected_macros, "WIZ_USER_END", user_end);
+    expect_macro(
+        &mut expected_macros,
+        "WIZ_ENOSYS",
+        rust_negated_errno(&user, "ENOSYS"),
+    );
+    expect_macro(
+        &mut expected_macros,
+        "WIZ_EINVAL",
+        rust_negated_errno(&user, "EINVAL"),
+    );
+    assert_eq!(
+        declared_macros, expected_macros,
+        "the complete C macro inventory differs from the kernel ABI"
+    );
+
+    assert_opcode_domain(&declared_macros, &decoded_opcode_arms);
+    assert_entry_block(&header, &user, &user_abi);
+    let ring = assert_ring_layouts(&header, &queue, page_size);
+    let code = emitted_program_code();
+    let operands = decode_program_operands(&code);
+    assert_program_entry(&operands, &code, &user_abi, user_end);
+    assert_program_gate(&operands, &decoded_call_arms, syscall_number);
+    assert_program_submissions(&operands, &ring, &decoded_opcode_arms, &declared_macros);
+    assert_program_measurement(&operands, &ring);
+    assert_program_header_and_completions(&operands, &ring);
+    assert_time_layouts(&header, &timepage_source);
+    assert_call_domain(&active_header, &decoded_call_arms);
+
     let usercopy = rust_without_comments(
         &std::fs::read_to_string(root.join("wost/src/arch/x86_64/usercopy.rs"))
             .expect("usercopy.rs"),

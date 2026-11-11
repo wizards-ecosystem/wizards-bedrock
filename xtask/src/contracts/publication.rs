@@ -83,11 +83,7 @@ mod tests {
             .expect("the permutation contains every event")
     }
 
-    /// Enumerate every visibility/execution order that can yield a published
-    /// index beside an old payload. Release constrains the two producer events;
-    /// acquire constrains the two consumer events. The published observation
-    /// itself requires index visibility before its read, and the stale payload
-    /// requires its read before payload visibility.
+    /// Whether some event order lets a reader see the published index beside an old payload.
     fn published_stale_is_allowed(store: Order, load: Order) -> bool {
         let events = [
             Event::PayloadVisible,
