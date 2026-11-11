@@ -34,7 +34,7 @@ pub(super) fn audited_cargo_command(
 }
 
 // An inherited value could change the pinned driver's tools or flags.
-const AMBIENT_COMPILER_VARIABLES: [&str; 15] = [
+const AMBIENT_COMPILER_VARIABLES: [&str; 18] = [
     "CPATH",
     "C_INCLUDE_PATH",
     "CPLUS_INCLUDE_PATH",
@@ -50,8 +50,20 @@ const AMBIENT_COMPILER_VARIABLES: [&str; 15] = [
     "CRATE_CC_NO_DEFAULTS",
     "CXX",
     "CXXFLAGS",
+    "ARFLAGS",
+    "RANLIB",
+    "CC_ENABLE_DEBUG_OUTPUT",
 ];
-pub(super) const AMBIENT_COMPILER_PREFIXES: [&str; 4] = ["CC_", "CFLAGS_", "CXXFLAGS_", "AR_"];
+pub(super) const AMBIENT_COMPILER_PREFIXES: [&str; 8] = [
+    "CC_",
+    "CFLAGS_",
+    "CXX_",
+    "CXXFLAGS_",
+    "AR_",
+    "ARFLAGS_",
+    "TARGET_",
+    "HOST_",
+];
 
 // gcc would take `ld` from GCC_EXEC_PREFIX before COMPILER_PATH, and libraries from LIBRARY_PATH.
 pub(super) fn base_cargo_command(

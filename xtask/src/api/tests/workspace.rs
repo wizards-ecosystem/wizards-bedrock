@@ -53,6 +53,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "CFLAGS_x86_64-unknown-linux-gnu",
         "CXXFLAGS_x86_64_unknown_linux_gnu",
         "AR_x86_64_unknown_linux_gnu",
+        "TARGET_CFLAGS",
+        "HOST_CFLAGS",
+        "CXX_x86_64_unknown_linux_gnu",
+        "ARFLAGS_x86_64_unknown_linux_gnu",
     ] {
         command.env(name, "hostile");
     }
@@ -68,6 +72,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
             "CFLAGS_x86_64-unknown-linux-gnu",
             "CXXFLAGS_x86_64_unknown_linux_gnu",
             "AR_x86_64_unknown_linux_gnu",
+            "TARGET_CFLAGS",
+            "HOST_CFLAGS",
+            "CXX_x86_64_unknown_linux_gnu",
+            "ARFLAGS_x86_64_unknown_linux_gnu",
         ]
         .into_iter()
         .map(std::ffi::OsString::from),
@@ -83,6 +91,10 @@ fn cargo_commands_remove_ambient_rust_and_cargo_semantics_before_pinning_their_o
         "CFLAGS_x86_64-unknown-linux-gnu",
         "CXXFLAGS_x86_64_unknown_linux_gnu",
         "AR_x86_64_unknown_linux_gnu",
+        "TARGET_CFLAGS",
+        "HOST_CFLAGS",
+        "CXX_x86_64_unknown_linux_gnu",
+        "ARFLAGS_x86_64_unknown_linux_gnu",
     ] {
         assert_eq!(environment.get(std::ffi::OsStr::new(name)), Some(&None));
     }
@@ -165,6 +177,9 @@ fn every_cargo_subprocess_pins_the_adjacent_compiler_and_disables_wrappers() {
         "CRATE_CC_NO_DEFAULTS",
         "CXX",
         "CXXFLAGS",
+        "ARFLAGS",
+        "RANLIB",
+        "CC_ENABLE_DEBUG_OUTPUT",
     ] {
         assert_eq!(
             environment.get(std::ffi::OsStr::new(ambient)),

@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn compiler_queries_remove_inherited_loader_variables() {
+    let query = compiler_query(Path::new("rustc"), Path::new("."));
+    let environment = query.get_envs().collect::<BTreeMap<_, _>>();
+    for loader in ["LD_PRELOAD", "LD_LIBRARY_PATH"] {
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new(loader)),
+            Some(&None),
+            "{loader} reached the compiler query"
+        );
+    }
+}
+
+#[test]
 fn compiler_graphs_have_distinct_stable_build_directories() {
     let root = crate::test_support::reserve_temp_directory("wizard-api-graph-build");
     let build = root.join("build");
