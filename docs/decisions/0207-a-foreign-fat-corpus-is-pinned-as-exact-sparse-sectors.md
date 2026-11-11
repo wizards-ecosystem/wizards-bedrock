@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-08-28. Amends D-16 and D-170; closes PW-210.
 
-**Context.** D-170's oracle has two readers but one writer: `fatfs` creates the
-volume which both it and `libs/fat32` read. Agreement catches a reader defect,
-but a misconception shared with that one formatter can make both readers agree
-about bytes no independent formatter would emit. PW-210 makes that proof gap
-finite. Pulling `mkfs.fat` or `mtools` into the ordinary build would instead
-reopen D-16's host-tool dependency and make CI depend on the host distribution.
-A raw valid FAT32 volume is at least tens of MiB even when almost every sector
-is zero, so committing it literally would also make the working tree pay for
-empty space.
-
 **Decision.** One 64 MiB FAT32 volume is produced outside the build by the
 Ubuntu `dosfstools` 4.2-1.2build1 `mkfs.fat` and `mtools` 4.0.49-1 packages.
 Their package versions, archive paths, package digests, upstream homes and
@@ -34,13 +24,19 @@ existing locally generated corpus stays: it is the byte-identical image the
 kernel boots, while the foreign corpus is an independent host-side format
 witness.
 
-**Rationale.** The output bytes, not availability of the generating tools, are
-the evidence the reader needs. Pinning both the envelope and expanded image
-distinguishes corruption in the compact representation from a change to the
-filesystem itself. Whole non-zero sectors keep reconstruction auditable and
-need no compression dependency or decoder with its own format surface. A
-multi-cluster directory and fragmented file force both kinds of FAT chain walk;
-deleted and long-name entries force the two skip cases between live entries.
+**Rationale.** D-170's oracle has two readers but one writer: `fatfs` creates
+the volume which both it and `libs/fat32` read, so a misconception shared with
+that one formatter can make both readers agree about bytes no independent
+formatter would emit. Pulling `mkfs.fat` or `mtools` into the ordinary build
+would reopen D-16's host-tool dependency, and a raw valid FAT32 volume is tens
+of MiB of mostly zero sectors. The output bytes, not availability of the
+generating tools, are the evidence the reader needs. Pinning both the envelope
+and expanded image distinguishes corruption in the compact representation from a
+change to the filesystem itself. Whole non-zero sectors keep reconstruction
+auditable and need no compression dependency or decoder with its own format
+surface. A multi-cluster directory and fragmented file force both kinds of FAT
+chain walk; deleted and long-name entries force the two skip cases between live
+entries.
 
 **Alternatives.** Installing the tools in WSL or requiring them in CI was
 rejected because the repository gate must remain self-contained. Generating a
@@ -61,9 +57,7 @@ by the generator.
 
 `fatfs` and `libs/fat32` agree on all 44 root entries, the long file through its
 respective long and short names, a nested file and every position-dependent
-byte of the fragmented file. Permitting a duplicate envelope sector made the
-exact envelope test fail; ending a directory at its first cluster made the
-reader lose `FRAG.BIN` and the exact disagreement test fail. Two persistent
-host mutations retain those witnesses, bringing the registry to 157. The
-ordinary corpus and shipped image are unchanged; release and debug QEMU still
-mount and read those exact NVMe bytes and pass all 211 machine checks.
+byte of the fragmented file. Two persistent
+host mutations retain the envelope and disagreement witnesses: a duplicate
+envelope sector, and a directory ended at its first cluster, which loses
+`FRAG.BIN`. The ordinary corpus and shipped image are unchanged.

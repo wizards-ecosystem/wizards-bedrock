@@ -2,20 +2,6 @@
 
 Status: Accepted, 2026-08-29. Amends D-79, D-84, D-112, D-113 and D-115; closes PW-401.
 
-**Context.** D-79 required `READ_ONCE()`-shaped access, D-113 copied each
-shared entry once, and the Phase 5 implementation put a spin lock around the
-kernel's `Shared` handle. None of those facts ordered ring 3. `Shared::read_at`
-and `write_at` forwarded to ordinary `copy_nonoverlapping`; the compiler could
-merge, move or elide accesses to memory an external agent changes. The lock
-serialized kernel callers only. The current one-CPU trap route and x86 store
-ordering hid the gap, while an SMP kernel or compiled runtime would have had
-no stated happens-before edge between an entry and the index publishing it.
-
-D-84 had proposed a Shuttle test which weakened `Release`/`Acquire`. D-112
-records the measured result: it passed because Shuttle explores schedules
-under sequential consistency, not weak-memory visibility. Keeping that test as
-the proof would repeat the exact false oracle already found in Phase 5.
-
 **Decision.** Each queue direction is SPSC and has one fixed four-step
 contract. The producer volatile-writes a complete entry and any associated
 data, then release-stores its naturally aligned 32-bit tail. The consumer
@@ -58,6 +44,15 @@ A separate source check forbids the ordinary-copy bypass and pins both volatile
 operations. The generated-client check pins payload, SQ release, CQ acquire,
 completion reads and CQ release in execution order.
 
+**Rationale.** D-79's `READ_ONCE()`-shaped access, D-113's copy-once entries and
+the kernel's lock around `Shared` did not order ring 3: `Shared::read_at` and
+`write_at` used ordinary `copy_nonoverlapping`, which the compiler may merge,
+move or elide over memory ring 3 changes, and the one-CPU trap route and x86
+store ordering hid the missing happens-before edge between an entry and the
+index publishing it. D-84's Shuttle test cannot be the proof: D-112 measured
+that it passes with weakened orderings because Shuttle explores schedules
+under sequential consistency, not weak-memory visibility.
+
 **Alternatives.** Treating the trap or spin lock as the barrier was rejected
 because userspace does not take it and another CPU need not enter the same
 critical section. Volatile indices were rejected because volatile is an
@@ -70,10 +65,8 @@ stress test or x86 disassembly alone cannot prove the weak-memory property, and
 Shuttle has already demonstrated that it cannot model it.
 
 **Consequences.** The shared-memory wrapper grows two reviewed unsafe lines
-and remains inside its 380-line budget at 370. Five checks were each broken
-against their exact defect: release and acquire were independently weakened to
-`Relaxed`, the volatile store became ordinary, and the real client acquired
-its own head instead of the completion tail; splitting completion state from
-page publication recreated the two-producer hole. Each failed only its named
-host witness; the restored transformations persist as mutations 227 through 231.
-The full gate and ring-3 boot result are recorded in PW-401's closing row.
+and stays inside its 380-line budget. Mutations 227 through 231 keep release
+and acquire each weakened to `Relaxed`, an ordinary volatile store, the client
+acquiring its own head instead of the completion tail, and completion state
+split from page publication (the two-producer hole) red. The full gate and
+ring-3 boot result are recorded in PW-401's closing row.

@@ -2,13 +2,6 @@
 
 Status: Accepted, 2026-08-28. Amends D-119, D-134 and D-175; closes PW-502.
 
-**Context.** D-119 restores a mutated file before any ordinary error may leave
-the runner, but a process killed between the write and restoration has no Rust
-error path to execute. The live checkout and its index are therefore exposed
-for the entire build and boot behind every mutation. A 157-entry phase-close
-sweep turns that small interval into hours of repeated risk, and an interrupted
-run starts again at mutation one because it records no durable progress.
-
 **Decision.** A mutation sweep requires a clean `HEAD`, inventories Git's
 tracked files with optional index refresh disabled, and records the commit plus
 exact source and index digests. It copies only those tracked files beneath
@@ -36,7 +29,11 @@ At a completed sweep, a durable result summary replaces the resumable slots;
 the copied workspace and private build cache may remain under ignored `target/`
 for the next invocation. No recursive cleanup is required for correctness.
 
-**Rationale.** A signal-safe restoration handler cannot cover termination,
+**Rationale.** D-119 restores a mutated file before any ordinary error leaves
+the runner, but a process killed between the write and restoration has no Rust
+error path, so the live checkout and index were exposed for every mutation's
+build and boot, and an interrupted sweep restarted at mutation one. A
+signal-safe restoration handler cannot cover termination,
 power loss or a killed process, and promising that every exit runs a destructor
 would restate the defect. Moving the only writes out of the checkout makes
 interruption harmless by construction. A tracked-file copy is smaller and
@@ -62,13 +59,11 @@ active file before rerunning it, records an outcome only after exact restore,
 and verifies the source plus index before retiring the journal. Host witnesses
 also receive the private Cargo target explicitly.
 
-Real helper processes were killed after announcing both build and boot work.
-A live second lock was refused; after each kill the OS-released lock was
-reacquired, the active journal reloaded and the sandbox restored while fixture
-source and index bytes remained exact. A real temporary Git repository proved
-that only tracked files reach a distinct workspace and that ignored files and
-`.git` do not. A two-slot test selected the newest complete generation and fell
-back after its newest slot was torn. Redirecting the workspace to the checkout,
-bypassing the private Cargo target, bypassing the lock, omitting restore and
-selecting the oldest journal each made only its named test red. Five persistent
-host mutations retain those witnesses, bringing the registry to 162.
+Host tests kill real helper processes during build and boot work and require
+the lock to be refused while live and reacquired after death, the active
+journal reloaded and the sandbox restored with source and index bytes exact. A
+real temporary Git repository proves only tracked files reach the workspace,
+not ignored files or `.git`, and a two-slot test selects the newest complete
+generation and falls back past a torn one. Five persistent host mutations keep
+the workspace redirection, private target, lock, restore and journal selection
+red.

@@ -2,21 +2,6 @@
 
 Status: Accepted, 2026-08-28. Amends D-146; closes PW-507.
 
-**Context.** D-146 corrected thirteen numeric claims but explicitly stopped
-before `008` through `012`. Later prose checks tied two current Phase 6 totals
-to source, while every local Markdown path, heading fragment and written
-`cargo xtask` invocation remained unchecked. A moved document could leave a
-plausible blue link to nowhere, and a renamed task could remain the command a
-reader was told to run.
-
-The deferred numeric pass found one actual contradiction. D-76's unsafe
-boundary checkpoint had 75 machine checks. D-77 then added four during the
-completed-phase audit and states that Phase 4 closed at 79, which is also the
-baseline `011` uses. The closing paragraph in `009` nevertheless called the
-75-check intermediate point the phase close. The same pass found a prospective
-`gdb` xtask formatted as a concrete executable command even though no such task
-exists.
-
 **Decision.** The host prose suite now reads every project-authored Markdown
 document under `docs/` plus the root, userland and repository-tool guides. A
 local link must remain inside the workspace and name an existing path. A
@@ -53,7 +38,11 @@ distinguishes D-76's 75-check checkpoint from D-77's 79-check phase close.
 This is the distinction D-146 required: correcting a false historical claim
 without replacing valid history with today's unrelated total.
 
-**Rationale.** Local target existence, heading identity and CLI grammar are
+**Rationale.** Every local Markdown path, heading fragment and written `cargo
+xtask` invocation had been unchecked, so a moved document could leave a link to
+nowhere and a renamed task could remain the command a reader was told to run;
+and `009` had called D-76's 75-check checkpoint the Phase 4 close, which D-77
+put at 79. Local target existence, heading identity and CLI grammar are
 cheap, deterministic properties with repository-owned sources of truth. They
 belong in the ordinary host suite. External URL availability does not: a
 network-dependent gate would turn a remote outage into a source failure and
@@ -71,13 +60,10 @@ totals with 212 was rejected because it would falsify phase evidence rather
 than repair it. Maintaining another hand-written list of xtask names was
 rejected because the real parser is already the authority.
 
-**Consequences.** Pointing README's architecture link at a missing file and
-pointing AGENTS' Development link at a missing heading each failed only
-`every_local_markdown_link_and_anchor_resolves`. Renaming the documented
-`test-boot` task failed only `every_documented_xtask_invocation_parses`.
-Changing `014`'s current machine total failed only
-`the_phase_close_says_what_the_source_says`. All four transformations were
-restored and persist, bringing the mutation registry to 204. External-source
-truth and prose semantics remain reading work; this decision closes the
-structural and numeric gap, not the wider reproducibility work in PW-508 and
-PW-509.
+**Consequences.** Persistent mutations keep
+`every_local_markdown_link_and_anchor_resolves`,
+`every_documented_xtask_invocation_parses` and
+`the_phase_close_says_what_the_source_says` red when a link, anchor, task name
+or current total is broken. External-source truth and prose semantics remain
+reading work; this decision closes the structural and numeric gap, not the wider
+reproducibility work in PW-508 and PW-509.

@@ -2,22 +2,6 @@
 
 Status: Accepted, 2026-08-29. Amends D-36, D-57, D-152, D-166, D-181 and D-201; closes PW-303.
 
-**Context.** Boot measured the timestamp counter and local-APIC timer against
-two agreeing PIT windows, then parked the PIT for the rest of the boot. The
-invariant-TSC bit was diagnostic only. VMware had already produced one
-unexplained calibration refusal, while a rate change or stalled TSC after a
-successful boot had no observer and the time page's `MODE_NONE` was only a
-manually exercised protocol. A post-launch failure could therefore publish
-wrong time, strand an admitted Timer, or leave a program without D-201's
-preemption guarantee.
-
-The available CPUID frequency leaves are not interchangeable. Leaf 0x15 gives
-a TSC-to-crystal ratio only when denominator, numerator and crystal frequency
-are all nonzero. Leaf 0x16 reports a nominal core MHz value, not necessarily
-the TSC rate. Hypervisors may omit either leaf or describe a virtual frequency
-which is less persuasive than a successful measurement against an independent
-device.
-
 **Decision.** PIT measurement remains the preferred boot source. When its TSC
 windows refuse, a complete leaf 0x15 ratio may supply the TSC rate only if the
 processor also advertises an invariant TSC; two bounded APIC windows must then
@@ -70,12 +54,19 @@ the test then restores the live state for the remaining machine suite. The
 existing page-revocation check removes the page owner while publishing
 `MODE_NONE` and observes the deferred mode after restoration.
 
-Exchanging the CPUID numerator and denominator, comparing the observed TSC
-rate with itself, letting an older interrupt judge the new timer, requiring a
-third disagreement, dropping the deferred page mode and suppressing private
-scheduler progress each reddened only its named host or machine witness. All
-six defects persist as mutations 237 through 242. The release and debug
-machine suites pass 213 checks.
+Mutations 237 through 242 keep an exchanged CPUID numerator and denominator,
+the observed TSC rate compared with itself, an older interrupt judging the new
+timer, a third required disagreement, a dropped deferred page mode and
+suppressed private scheduler progress red, each in only its named witness.
+
+**Rationale.** After boot the PIT had been parked, so a rate change or stalled
+TSC had no observer and a post-launch failure could publish wrong time, strand
+an admitted Timer, or leave a program without D-201's preemption guarantee. The
+CPUID frequency leaves are not interchangeable: leaf 0x15 gives a TSC-to-crystal
+ratio only when denominator, numerator and crystal frequency are all nonzero,
+leaf 0x16 reports a nominal core MHz value, not necessarily the TSC rate, and a
+hypervisor may omit either or describe a virtual frequency less persuasive than
+a measurement against an independent device.
 
 **Alternatives.** Promoting leaf 0x16 to a clock rate was rejected because it
 names a different quantity. Preferring CPUID over a successful PIT measurement
@@ -88,10 +79,9 @@ HPET or ACPI PM-timer support remains justified only by a machine which needs
 it. Panicking on the first disagreement was rejected after the real QEMU false
 positive demonstrated the cost.
 
-**Consequences.** Long appointments use forty-millisecond validation steps;
-the two-hundred-millisecond sleep witness therefore expects five useful
-expiries rather than one. The page's conversion remains immutable, while its
-permission is now a live production state. The machine-check count is 213 and
-the mutation registry is 242. PW-301 and PW-003 still own the current VMware
+**Consequences.** Long appointments use forty-millisecond validation steps; the
+two-hundred-millisecond sleep witness therefore expects five useful expiries
+rather than one. The page's conversion remains immutable, while its permission
+is now a live production state. PW-301 and PW-003 still own the current VMware
 observation; this decision does not upgrade QEMU's CPUID or APIC evidence into
 one.

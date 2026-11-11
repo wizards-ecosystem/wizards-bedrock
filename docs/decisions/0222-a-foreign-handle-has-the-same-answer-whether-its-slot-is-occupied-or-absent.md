@@ -2,21 +2,6 @@
 
 Status: Accepted, 2026-08-29. Amends D-78 and D-95; closes PW-403.
 
-**Context.** D-78 made one global arena safe through a final table-owner
-comparison, but gave that comparison its own `NotYours` result while empty and
-reused slots returned `Stale`. D-95 made the distinction load-bearing in a
-check so deleting the ownership comparison could no longer pass unnoticed.
-That proved authority did not cross, but it also preserved the oracle later
-named by D-115: given the correct table mixer and an exact slot-generation
-candidate, the two errors revealed whether another table still occupied it.
-
-The maximum architectural result leak was one bit per exact candidate:
-`NotYours` meant a matching live foreign entry, while `Stale` meant no matching
-entry. Repeating probes could inventory candidates but reveal no object or
-authority. The shipped ring already collapsed every resolution error to
-`STATUS_BAD_HANDLE`; leaving the distinction in the kernel API would let a
-future direct Wizzy handle operation accidentally freeze it into a new ABI.
-
 **Decision.** `HandleError::NotYours` is removed. Resolve and close still
 compare the full non-repeating table identity, but an owner mismatch returns
 `Stale`, exactly as an empty or reused slot does. `Malformed` remains distinct:
@@ -38,6 +23,15 @@ Deleting the resolve ownership comparison makes the live probe succeed;
 deleting the close comparison removes the other table's entry. Each defect
 reddens only `a handle reveals no foreign occupancy`.
 
+**Rationale.** D-78's owner comparison had its own `NotYours` result while
+empty and reused slots returned `Stale`, and D-95 made that distinction
+load-bearing in a check. That preserved the oracle D-115 named: given the right
+mixer and an exact slot-generation candidate, the two errors revealed one bit,
+whether another table still occupied it. The shipped ring already collapsed
+every resolution error to `STATUS_BAD_HANDLE`; leaving the distinction in the
+kernel API would let a future direct Wizzy handle operation freeze it into a
+new ABI.
+
 **Alternatives.** Keeping the distinction because today's ring flattens it was
 rejected because the pre-Wizzy foundation exists to settle precisely these
 future seams before a caller freezes them. Replacing the global arena with one
@@ -46,7 +40,6 @@ commitment and scaling shape for an error distinction no caller needs. A
 secret mixer would require an entropy policy Phase 8 owns and would still not
 replace the owner comparison.
 
-**Consequences.** The machine-check count stays 212 because D-95's cross-table
-check is strengthened rather than duplicated. Both ownership paths were
-broken independently and restored; mutations 232 and 233 retain them. The
+**Consequences.** D-95's cross-table check is strengthened rather than
+duplicated. Mutations 232 and 233 retain both ownership paths' defects. The
 full release/debug result is recorded in PW-403's closing row.

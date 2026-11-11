@@ -2,17 +2,6 @@
 
 Status: Accepted, 2026-08-29. Amends D-16, D-25 and D-26; closes PW-510.
 
-**Context.** The locked Rust graph had grown to 67 registry packages, three of
-which reach the shipped kernel, while the repository also carried three
-checksum-pinned third-party or generated artifacts. `Cargo.lock` names exact
-crate bytes but no license. Cargo metadata names the crate license but misses
-the SIL Open Font License on the Noto glyph data embedded by the MIT-licensed
-font crate. No machine-readable SBOM said which inputs ship, and no policy said
-whether a clean checkout, an already hydrated checkout or an advisory database
-was meant by “self-contained.” The local machine does not have `cargo-audit`;
-making that absence fail every build would contradict D-26 rather than improve
-the dependency record.
-
 **Decision.** `supply-chain/inventory.txt` is the reviewed source of dependency
 and license conclusions. Every registry tuple is bound to the name, version
 and checksum in `Cargo.lock`; every vendored artifact is bound to its checked
@@ -37,13 +26,17 @@ green advisory result. A distributable image is accompanied by the generated
 SBOM, the project license and third-party notices; a bare disk image is a build
 artifact, not a complete distribution bundle.
 
-**Rationale.** Checksums, license conclusions and shipped scope are review
-facts, so they belong beside the source and must remain verifiable when the
-network and Cargo cache are absent. Advisory status is a time-varying external
-fact, so committing a once-fresh database or silently accepting a stale one
-would confuse reproducibility with currency. The split preserves both: local
-CI proves exactly what was reviewed, while qualification records when the
-external claim was actually refreshed.
+**Rationale.** `Cargo.lock` names exact crate bytes but no license, Cargo
+metadata misses the SIL Open Font License on the Noto glyph data the
+MIT-licensed font crate embeds, no SBOM said which inputs ship, and no policy
+said which state "self-contained" meant. Making a missing `cargo-audit` fail
+every build would contradict D-26. Checksums, license conclusions and shipped
+scope are review facts, so they belong beside the source and must remain
+verifiable when the network and Cargo cache are absent. Advisory status is a
+time-varying external fact, so committing a once-fresh database or silently
+accepting a stale one would confuse reproducibility with currency. The split
+preserves both: local CI proves exactly what was reviewed, while qualification
+records when the external claim was actually refreshed.
 
 **Alternatives.** Adding `cargo-deny`, an SPDX crate or an online service to
 the ordinary gate was rejected because the checker would add the dependency
@@ -58,17 +51,11 @@ for one developer and would turn timely external data into a large stale tree.
 three vendored artifacts; its manifest-derived kernel closure identifies the
 three linked crates plus `BOOTX64.EFI` as the four runtime inputs. The
 deterministic SPDX 2.3 document, runtime copyright notices and complete
-OFL-1.1 text are committed distribution paperwork. The complete 11-stage gate
-passed after dependency hydration with Cargo forced offline: xtask's 200 tests
-passed, one interruption child remained intentionally ignored, and every
-library test and doctest passed. Release and debug QEMU each passed 212/212
-machine checks before the shipped and degraded images settled.
-
-Changing a locked dependency checksum, runtime scope, selected license,
-vendored digest, notice identifier or committed SPDX bytes each failed only
-its named host witness. Allowing an ambiguous dependency name to select one of
-two locked versions failed its resolver witness. All seven restored
-transformations persist as mutations 220 through 226. The phase-close
+OFL-1.1 text are committed distribution paperwork. The complete gate passes
+after dependency hydration with Cargo forced offline. Mutations 220 through 226
+keep a changed locked checksum, runtime scope, selected license, vendored
+digest, notice identifier, SPDX bytes and an ambiguous dependency name red.
+The phase-close
 checklist gains one exceptional advisory result; it does not gain a
 permanently installed tool or an ordinary CI stage which can fail only because
 the network is unavailable.

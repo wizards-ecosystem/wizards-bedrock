@@ -2,20 +2,6 @@
 
 Status: Accepted, 2026-08-28. Closes PW-508.
 
-**Context.** The local gate proved ten ordered properties, image construction
-read the kernel back from its filesystem, and D-25 pinned vendored binaries.
-Those were separate facts. No one record said which clean source tree, Cargo
-lock, compiler, emulator, firmware, storage namespace, kernel and disk image
-participated in one passing qualification. Rebuilding in the ordinary target
-directory also reused enough state that two successes were not evidence of
-reproducibility.
-
-An evidence file committed beside the source cannot name its own commit and
-hash without a self-reference loop. A timestamped report would change when
-nothing relevant did. A successful gate transcript would still not establish
-that the image whose hash it prints is the image the shipped-kernel runner
-booted.
-
 **Decision.** `cargo xtask evidence` starts and ends with the same clean Git
 commit and tree and refuses modified or untracked source. Kernel builds now
 always pass `--locked`. The task snapshots `Cargo.lock`, `rust-toolchain.toml`,
@@ -41,18 +27,24 @@ unknown fields, requires every result to be `pass`, re-resolves and rehashes
 the current clean source and installed inputs, re-verifies vendor completeness,
 and independently hashes all four bundled artifacts.
 
-**Rationale.** The manifest is useful only if the authorities it joins are the
+**Rationale.** The local gate, image read-back and D-25's vendored pins were
+separate facts: no one record said which clean source tree, lock, compiler,
+emulator, firmware, namespace, kernel and disk image took part in one passing
+qualification, and rebuilding in the ordinary target directory reused enough
+state that two successes were not evidence of reproducibility. The manifest is
+useful only if the authorities it joins are the
 ones execution used. One QEMU resolver prevents the recorder and runners from
 quietly naming different firmware. Two erased target directories distinguish
 reproduction from an incremental rebuild. Booting the bundled copy, then
 rehashing it, closes the last gap between “an image was produced,” “these bytes
 were recorded,” and “a shipped kernel was exercised.”
 
-Keeping the bundle outside Git avoids the commit/hash loop and keeps two
-64 MiB disk images out of source history. Omitting time and absolute paths
-makes identical inputs render identical evidence. The commit and tree retain
-the historical identity; a later checkout can verify the bundle only when it
-matches that identity.
+Keeping the bundle outside Git avoids the commit/hash loop, since an evidence
+file committed beside the source cannot name its own commit and hash, and keeps
+two 64 MiB disk images out of source history. Omitting time and absolute paths
+makes identical inputs render identical evidence. The commit and tree retain the
+historical identity; a later checkout can verify the bundle only when it matches
+that identity.
 
 **Alternatives.** Building twice in one Cargo target was rejected because it
 mostly proves cache reuse. Recording only logs was rejected because prose does
@@ -64,10 +56,8 @@ the remaining pin-versus-record decisions. Signing was rejected because the
 project has no release key or external verifier whose trust decision would
 make a signature meaningful.
 
-**Consequences.** On clean commit `b88e752`, the complete gate passed with
-1,472 compiler-resolved API items, 188 host unit tests (one ignored helper),
-and 212/212 machine checks in both release and debug. Independent target paths
-produced identical 3,462,408-byte kernel ELFs at
+**Consequences.** On clean commit `b88e752` independent target paths produced
+identical 3,462,408-byte kernel ELFs at
 `082e09c7b00a43318896abe01bc66921de2ebcc8c3575d9adbd9a3062628945f`
 and identical 67,108,864-byte disk images at
 `4daa81dd59618330843dbdafe4b7154d3ab0d807e19af8181fc6eb136b2221dc`.
@@ -75,12 +65,10 @@ The exact bundled path-A image booted, took the injected keyboard interrupt,
 settled and retained that digest. A separate offline verifier invocation
 accepted the manifest and bytes.
 
-Removing lock enforcement, accepting a same-sized foreign namespace,
-accepting duplicate or inexact schema fields, equating artifacts by size,
-accepting a failed result, accepting dirty source, changing field order, or
-trusting a recorded artifact digest each failed only its exact host check. All
-nine transformations were restored and persist, bringing the mutation
-registry to 213. This record covers the self-contained local gate and shipped
+Persistent host mutations keep lock enforcement, a same-sized foreign
+namespace, duplicate or inexact schema fields, size-only artifact equality, a
+failed result, dirty source, field order and a trusted recorded digest red.
+This record covers the self-contained local gate and shipped
 QEMU artifact; it does not turn the deliberately separate VMware, TLC or full
 mutation qualifications into CI, and it does not close PW-509's remaining
 environment recreation policy.
