@@ -2,14 +2,6 @@
 
 Status: Accepted, 2026-09-28. Amends D-264; closes PW-013.
 
-**Context.** D-264 bounded each external child's capture and exit but stopped
-only the direct child, and left delegated process trees to PW-013's trigger.
-That trigger has fired. The mutation sweep runs each host witness as `cargo
-test`, and D-342's seal runs `cargo test -p xtask --doc`; both start compiler
-and test processes. The canceled Daybreak scan retained the consequence: a
-witness that timed out lost only its `cargo` process, and a descendant could
-keep running into the next mutation.
-
 **Decision.** On Windows every bounded command runs in its own job object.
 `command-group` 5.0.1 creates the child suspended, assigns it to the job and
 only then resumes it, so nothing the child starts can escape the job. The
@@ -29,18 +21,15 @@ library carry the two reviewed build scripts. Its std interface cannot request
 kill-on-close, so a hard external kill of `xtask` itself still leaves the tree;
 every exit `xtask` controls, a panic included, terminates it.
 
-**Evidence.** On 2026-09-29 rustc 1.97.1 linked `winapi`'s import library with
-no `dlltool` on `PATH`, and the API audit accepted the graph with no
-procedural-macro package and the two new build scripts reviewed. Two fixtures
-start a grandchild that holds a file exclusively for a minute. After a normal
-completion and after an 8 s timeout, the grandchild released the file within
-the tests' 15 s bound. The existing bounded-process tests passed unchanged.
-Mutation 1,522 skips termination at drop and fails the completed-command
-fixture; mutation 1,523 makes termination a no-op and fails the timed-out
-fixture; each restored byte for byte. Mutation 889 moved to the reformatted
-capture check and failed its witness again. Mutation 1,521, which removed a
-`process-wrap` job wrapper this decision no longer uses, is retired. The
-supply-chain check verified the updated inventory and regenerated SBOM.
+**Rationale.** D-264 stopped only the direct child and left delegated process
+trees to PW-013's trigger, which fired: the mutation sweep runs each host
+witness as `cargo test`, and D-342's seal runs `cargo test -p xtask --doc`;
+both start compiler and test processes, so a witness that timed out lost only
+its `cargo` process and a descendant could keep running into the next
+mutation. Mutations 1,522 and 1,523 retain the drop and timeout breaks,
+mutation 889 moved to the reformatted capture check, and mutation 1,521,
+which broke a `process-wrap` job wrapper this decision no longer uses, is
+retired.
 
 **Alternatives.** `process-wrap` 10 and `win32job` 2 were rejected because both
 build on the modern `windows` crate, whose COM bindings pull in the

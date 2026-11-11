@@ -2,18 +2,6 @@
 
 Status: Accepted, 2026-09-28. Amends D-218, D-244, D-246, D-262 and D-324; advances PW-009, PW-010, PW-025, PW-026 and PW-028.
 
-**Context.** The final independent `xtask` mutation grade and managed Codex
-Security Deep campaign take external tools, human authority and potentially
-days, but the qualification bundle had no typed record for either. A request
-file alone could not make a partial cargo-mutants run complete, version text
-could not bind executable bytes, and a prose scan report could not substitute
-for the provider's sealed JSON. Requiring every long qualification to run
-again after the phase-close prose recorded its exact results would make the
-closing documentation invalidate the evidence it described. Copying a parent
-pass into a child, accepting any descendant or selecting an older passing
-mutation report after a newer failure would instead destroy D-244's source and
-latest-result authority.
-
 **Decision.** Qualification format v3 adds two closed artifact classes and
 deliberately invalidates earlier qualification records; evidence format v7
 separately invalidates v6 bundles. `qualify-mutants-grade --begin`
@@ -59,18 +47,21 @@ source edits, dirty staged or untracked state and a newer failed report refuse
 the relation. The child reruns its ordinary gate and documentation contracts,
 not the parent's externally operated qualifications.
 
-**Evidence.** Bounded parser fixtures reject interrupted or subset grades,
-inventory/diff disagreement, contradictory outcome phases, wrong nextest arguments,
-unadjudicated outcomes and doctest output carrying a later error. Deep fixtures
-reject a foreign revision, partial coverage, bad artifact digest and every
-remaining finding. Relation fixtures reject a merge or wrong parent, additions
-and nonallowlisted paths, bind changed blob IDs, and prove that a newer failed
-parent report supersedes an older pass while the selected pass holds the sweep
-lock. Sixteen retained mutations independently weakened inventory, request,
-phase/status/argv, doctest, Deep source/finding, closure-parent/path and newest
-report selection checks; each made its named host witness red before exact
-restoration. No real cargo-mutants grade, Deep scan, VMware boot, complete
-mutation sweep or phase close is claimed by this decision.
+**Rationale.** The final `xtask` mutation grade and the managed Codex
+Security Deep campaign take external tools, human authority and potentially
+days. A request file cannot make a partial run complete, version text cannot
+bind executable bytes, and a prose scan report cannot substitute for the
+provider's sealed JSON. Rerunning every long qualification after the closing
+prose recorded its results would make the documentation invalidate the
+evidence it describes, while copying a parent pass into any child, or
+selecting an older passing report after a newer failure, would destroy D-244's
+source and latest-result authority.
+
+**Evidence.** Sixteen retained mutations independently weakened inventory,
+request, phase/status/argv, doctest, Deep source/finding, closure-parent/path
+and newest report selection checks; each made its named host witness red. No
+real cargo-mutants grade, Deep scan, VMware boot, complete mutation sweep or
+phase close is claimed by this decision.
 
 **Alternatives.** Letting `xtask` launch cargo-mutants was rejected because its
 portable direct-child helper does not own nextest/cargo/rustc descendants and

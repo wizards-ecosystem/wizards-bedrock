@@ -2,32 +2,6 @@
 
 Status: Accepted, 2026-09-28. Amends D-324, D-329 and D-330; advances PW-025; closes PW-551 and PW-552.
 
-**Context.** An adversarial audit of D-330's grade workflow found that it
-could not seal a real run. Its published command passed
-`--output <dir>/mutants.out`, but cargo-mutants 27.1.0 creates `mutants.out`
-inside the directory it is given, so a run that followed the command wrote
-`<dir>/mutants.out/mutants.out` while the seal read `<dir>/mutants.out`.
-Mutation 1 guarded the defect's direction: its witness asserted the doubled
-path. The seal also took completeness from the operator. It accepted the
-independent inventory and the doctest transcript as files placed beside the
-run, so a subset run paired with a matching subset inventory would seal as
-complete. The grader was identified by its version text while nextest was
-hash-pinned, the doctest transcript was not bound to the `xtask` package, a
-grade directory inside the qualification records could be removed when the
-seal replaced its kind directory, and PowerShell 5.1's `>` writes UTF-16,
-which reached the JSON parser as an unexplained syntax error.
-
-The audit also found checks that had never failed once, which D-28 requires.
-D-330's grade timing, success count, recomputed caught counter, single
-baseline and candidate bijection, its four adjudication rules, five
-Deep-coverage rules, the manifest-digest and request-byte comparisons, the
-parent-diff status, mode, order and framing rules and three CLI rules had no
-retained defect, and neither had D-329's rule for the checked MMIO slice body.
-Two checks could not fail: the Deep `openQuestions` test followed an exact
-key-set check that already required the key, and the parent-diff parser's
-non-empty test followed framing that already refuses a diff without one
-complete row.
-
 **Decision.** The published command passes `--output <dir>`, and the seal
 reads `<dir>/mutants.out` through one constant that the command's test also
 reads. The seal runs the independent `--list --json --diff --no-times`
@@ -47,20 +21,29 @@ profile: 15,363,104 bytes with SHA-256
 `4ef442752564625eef9786739a1d57cc692263fca071dd16751f45ba2e322d9c`. Another
 build of the same version needs its own decision.
 
-Every check listed above now has one retained defect, and both unreachable
-checks are removed. Cargo delegates to compiler and test processes, so the two
-seal-run commands join the delegated commands whose process trees PW-013 owns.
+D-330's grade timing, success count, recomputed caught counter, single
+baseline and candidate bijection, its four adjudication rules, five
+Deep-coverage rules, the manifest-digest and request-byte comparisons, the
+parent-diff status, mode, order and framing rules and three CLI rules, and
+D-329's rule for the checked MMIO slice body, each now have one retained
+defect, as D-28 requires. Two checks that could not fail are removed: the Deep
+`openQuestions` test, which followed an exact key-set check, and the
+parent-diff parser's non-empty test, which followed framing that already
+refuses a diff without one complete row. Cargo delegates to compiler and test
+processes, so the two seal-run commands join the delegated commands whose
+process trees PW-013 owns.
 
-**Evidence.** On 2026-09-28 a one-candidate cargo-mutants 27.1.0 run with
-`--output <dir>` wrote `mutants.json` and `outcomes.json` under
-`<dir>/mutants.out`. Mutation 1 now makes the published command write one
-level deeper than the seal reads and fails the output-directory witness.
-Mutations 1,422 through 1,426 accept any grader digest, accept another
-package's doctest transcript, seal a directory inside the records, pass
-UTF-16 JSON to the parser and read the grade directory itself. Mutations 1,427
-through 1,450 each weaken one D-330 rule named above, and mutations 1,451 and
-1,452 make the checked MMIO slice publish one word or use ordinary writes.
-Each of the 32 failed its exact host witness and was restored byte for byte.
+**Rationale.** D-330's command passed `--output <dir>/mutants.out`, but
+cargo-mutants 27.1.0 creates `mutants.out` inside the directory it is given,
+so no real run could seal; mutation 1 guarded the defect's direction and now
+makes the command write one level deeper than the seal reads. The seal also
+took completeness from operator files, so a subset run paired with a matching
+subset inventory sealed as complete; it identified the grader by version text,
+did not bind the doctest transcript to `xtask`, could remove a grade directory
+inside the records, and met PowerShell 5.1's UTF-16 `>` output as an
+unexplained syntax error. Mutations 1,422 through 1,426 retain those breaks,
+mutations 1,427 through 1,450 the D-330 rules and mutations 1,451 and 1,452
+the MMIO slice rule.
 
 **Alternatives.** Keeping operator-supplied inventory and doctest files with
 stricter parsing was rejected because a consistent subset still agrees with
