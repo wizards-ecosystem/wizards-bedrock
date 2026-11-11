@@ -2,15 +2,9 @@
 
 Status: Accepted, 2026-08-25. Amended by D-166 and D-181.
 
-**Context.** `013`'s first constraint: every operation that can wait gets a ring
-form. The question left open was whether that binds Phase 6 or the project.
-
-**Options.** A phase rule is weaker and gets re-argued. A project rule is
-stronger and forecloses a synchronous door somebody may later want for an
-operation that only *looks* blocking.
-
-**Decision.** The project. **Every operation that can wait has a ring form, and
-no operation is reachable only by a call that blocks.**
+**Decision.** `013`'s first constraint binds the project, not Phase 6. **Every
+operation that can wait has a ring form, and no operation is reachable only by a
+call that blocks.**
 
 The carve-out that makes it liveable already exists and is not an exception:
 **a door that cannot wait may stay direct.** At D-150's adoption, `exit`,
@@ -18,18 +12,14 @@ The carve-out that makes it liveable already exists and is not an exception:
 D-166 later removed the clock door in favour of a page load. The rule is about
 waiting, not about syscalls.
 
-**Rationale.** The reason to make it a project rule is the reason it would be
-re-argued: the first person to want a synchronous `stat` will have a good
-local argument, and granting it costs the property that makes the ring worth
-having. D-117 caps this machine at sixteen concurrent programs, so
-thread-per-outstanding-operation is already wrong here; and any userspace that
-multiplexes work onto fewer threads than it has work dies against a
-blocking-only door, which is what every language runtime with a scheduler
-does.
-
-Stated as a rule rather than a preference because the alternative is not "we
-will think about it" but "the second caller decides", and the second caller
-will be whoever is in a hurry.
+**Rationale.** A phase rule gets re-argued: the first person to want a
+synchronous `stat` will have a good local argument, and granting it costs the
+property that makes the ring worth having. D-117 caps this machine at sixteen
+concurrent programs, so thread-per-outstanding-operation is already wrong here;
+and any userspace that multiplexes work onto fewer threads than it has work
+dies against a blocking-only door, which is what every language runtime with a
+scheduler does. The alternative is not "we will think about it" but "the
+second caller decides", and the second caller will be whoever is in a hurry.
 
 **Consequences.**
 
