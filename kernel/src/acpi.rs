@@ -1,8 +1,9 @@
 //! Finding the interrupt controllers ACPI describes, read before the page tables exist.
 //!
-//! The bootloader's direct map already covers the tables then, so reading them adds no mapping
-//! dependency. Parsing and inventory are `acpi_tables`, host-tested; the bytes come through
-//! `wost`'s ACPI-only physical reader.
+//! Enough of the table tree to find every bounded I/O APIC and learn which global system
+//! interrupt a legacy IRQ arrives on. The bootloader's direct map already covers the tables
+//! then, so reading them adds no mapping dependency. Parsing and inventory are `acpi_tables`,
+//! host-tested; the bytes come through `wost`'s ACPI-only physical reader.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -172,6 +173,8 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
 }
 
 /// The ACPI-only firmware reader and the parsed root pointer, or `None` with a stated reason.
+///
+/// Shared by every table walk.
 pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
     let Some(firmware) = mm::firmware_memory() else {
         warn!("acpi: no reader for firmware memory");

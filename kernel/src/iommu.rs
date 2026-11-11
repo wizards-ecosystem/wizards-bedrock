@@ -1,12 +1,13 @@
 //! The storage controller's DMA-remapping domain.
 //!
 //! Firmware's DMAR, read once at boot, names the VT-d unit that governs a PCI function. An empty
-//! unit root is installed before topology discovery; each storage candidate, already BME-off,
-//! then proves a complete bounded inventory of the live PCI requesters that exact unit governs,
-//! and every observed sibling requester is exclusively claimed and fenced BME-off as defence in
-//! depth. The installed owner keeps translation default-deny across discovery and fallback, keeps
-//! those fences with every table and register mapping until observed release, and retains the
-//! whole boundary after an uncertain transition or owner return.
+//! unit root is installed before topology discovery; then for each storage candidate, already
+//! BME-off, this module proves a complete bounded inventory of the live PCI requesters that
+//! exact unit governs, and every observed sibling requester is exclusively claimed and fenced
+//! BME-off as defence in depth. The installed owner keeps translation default-deny across
+//! discovery and fallback, keeps those fences with every table and register mapping until
+//! observed release, and retains the whole boundary after an uncertain transition or owner
+//! return.
 //!
 //! Firmware-reserved DMA regions are unsupported until a trusted physical ledger can distinguish
 //! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master admission all
@@ -443,7 +444,7 @@ impl DerefMut for InstalledUnit {
     }
 }
 
-/// Why the DMAR names no unit that may govern one function.
+/// Why no unit may be trusted to govern one function.
 #[derive(Debug)]
 enum LookupError {
     NoTable,

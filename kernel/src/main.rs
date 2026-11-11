@@ -1,4 +1,6 @@
 //! The Wizard's Bedrock kernel entry point; every privileged operation goes through `wost`.
+//!
+//! This crate contains no hand-written `unsafe`.
 
 #![no_std]
 #![no_main]
