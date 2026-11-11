@@ -40,6 +40,8 @@ unrelated or spoofed function bypass the fence, trusting only the fixed BDF
 ignores mutable identity and command state, recording the exception only in the
 early report would reintroduce the function as a requester during VT-d
 coverage, and calling the refused write a successful disable would overstate
-the measured boundary. Rejecting VMware entirely remains fail-closed but
+the measured boundary. Ignoring the readback, exempting all bridges or changing
+only the early fence would create an unproved DMA and later VT-d inventory
+bypass. Rejecting VMware entirely remains fail-closed but
 discards a qualified release platform without improving QEMU or bare-metal
 safety.

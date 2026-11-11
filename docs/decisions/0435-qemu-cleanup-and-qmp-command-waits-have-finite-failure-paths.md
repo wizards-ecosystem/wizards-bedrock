@@ -30,7 +30,8 @@ acknowledgements cannot answer another command.
 
 A blocked OS write may outlive the caller's bounded error until the owned
 child's pipe closes. No unsafe write cancellation or pump-join guarantee is
-claimed. Termination refusal cannot produce PASS. The transports are QMP on
+claimed. Termination refusal cannot produce PASS. The hostile-surface census
+names the actual transports: QMP on
 owned standard streams, controlled-boot serial on a private Windows named pipe
 or Unix socket with OS backpressure, degraded serial on stdout, and the
 `nvme-stack v2` leaf record.

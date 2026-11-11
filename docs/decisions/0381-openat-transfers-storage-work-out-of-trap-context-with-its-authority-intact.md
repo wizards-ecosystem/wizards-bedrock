@@ -28,8 +28,8 @@ work queue and promise to be empty before quiet; a second round injects
 terminal-post refusal, keeps the request and promise owned, resumes the worker
 and requires one successful handle completion with no duplicate or leak.
 Mutation 1,771 restores an inline resolution and fails that contract, and
-mutation 1,772 leaves the cancelled payload queued and fails only `a cancelled
-open releases its reserved handle before quiet`.
+mutation 1,772 leaves the cancelled payload queued; on 2026-10-10 it failed only
+`a cancelled open releases its reserved handle before quiet`.
 
 **Rationale.** Codex Security occurrence `occ_58f0b32a48b6c444cfe0d501` found
 that `Call::RingEnter` synchronously reached `vfs::resolve`, where a FAT

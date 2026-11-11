@@ -35,5 +35,6 @@ small, and the growing cost is accumulating every unrelated Cargo message and
 unused field before parsing. Raising the limit repeats D-391's rejected
 amplification, splitting antichain rounds multiplies already-expensive
 whole-workspace compiler passes, and filtering raw lines before parsing could
-discard malformed output or accept lookalikes. Typed reduction after parsing
+discard malformed output or accept lookalikes, and stripping only `rendered`
+still stores many unused spans and children. Typed reduction after parsing
 keeps exactly the evidence the verdict uses.

@@ -20,4 +20,6 @@ mark; the 4 KiB pressure had been calibrated for the larger debug chain, so this
 was a stale calibration rather than an unmeasured production frame. Lowering
 the production requirement would answer no product regression, a stack guard
 fault would not prove the measured margin, and moving the pressure into
-`iommu::establish` would stop guarding the candidate-stage separation.
+`iommu::establish` would stop guarding the candidate-stage separation. One
+pressure size for both profiles was rejected because their optimized call
+chains have materially different high-water marks.

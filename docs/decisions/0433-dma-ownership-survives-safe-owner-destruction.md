@@ -49,7 +49,8 @@ The API audit reviews the exact `DmaSegment` and `PublishedIommuTable` Drop
 types and their `From::from` and `new` producers. Existing forgery mutations
 1,554 and 1,728 expose both private fields so their original unit-free
 construction defect remains reachable, and mutation 1,570 acquires the same
-safe thread context as the sequencer so its nested-stage defect compiles. Host
+safe thread context as the sequencer so its nested-stage defect compiles; its
+named host red and actual mutated-kernel compilation were then required. Host
 boundary checks and retained mutations cover misalignment, frame zero,
 high-address identity truncation and a coherently expanded target owner
 representation; the layout mutation remains a compiling defect so the machine

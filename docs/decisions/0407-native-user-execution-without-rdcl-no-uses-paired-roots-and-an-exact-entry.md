@@ -130,8 +130,9 @@ shared-root return's `verw word ptr [rsp]`, which the forced-paired self-test
 cannot observe. The host assembly contract now enumerates both required buffer
 clears and binds each tally to its exact preceding operand: `verw word ptr
 [rbx - 8]` for the paired exit and `verw word ptr [rsp]` for the shared exit.
-Mutation 196 names that host contract directly, and only a replacement complete
-sweep observing it red substitutes for the earlier boots.
+Mutation 196 names that host contract directly. The stronger verifier's green
+focused test and the earlier 290/290 boots are not a substitute for observing
+the mutation red in the replacement complete sweep.
 
 PW-580 and PW-706 remain open only for the complete current release sweep and
 fresh self-test plus shipped VMware qualifications. Those records must show

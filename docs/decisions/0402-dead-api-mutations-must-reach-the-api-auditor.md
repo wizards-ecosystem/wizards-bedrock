@@ -12,7 +12,9 @@ mutation must compile every audited graph and fail with exactly one dead item,
 
 **Rationale.** Restoring the retired `SelectedUsesCatchAll` variant made the
 exhaustive `Display` match fail to compile, so the audit never built its
-inventory and the mutation was inconclusive. Treating any compile error as an
+inventory and the mutation was inconclusive. Production contains neither the
+retired variant nor another public way to select the obsolete catch-all
+refusal. Treating any compile error as an
 API-audit catch would let an unrelated failure satisfy a caller proof, a
 wildcard `Display` arm would weaken exhaustive handling of security refusal
 reasons, and a formatting arm for the variant would itself be a caller and hide
