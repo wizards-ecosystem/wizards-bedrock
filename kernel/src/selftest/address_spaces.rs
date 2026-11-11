@@ -624,7 +624,8 @@ fn the_observer_reads_the_replaced_shared_leaf(observer: &AddressSpace, probe: u
 }
 
 // The ownership snapshots describe only this fixture, so no timer may hand the CPU to the cleanup
-// worker, whose retirement of older zombies would make correct local reclamation look imbalanced.
+// worker, whose retirement of older zombies between those snapshots would make correct local
+// reclamation look imbalanced.
 pub(super) fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool {
     const AT: u64 = 0x0000_0500_0000_0000;
 
@@ -749,8 +750,8 @@ fn the_victim_unmap_spares_the_observer(
 }
 
 // An unmapped user page comes back untyped, and only a clearing conversion makes it the kernel's
-// again, followed through the handle without asking the allocator; the kernel conversion cannot
-// hand a user range over as a `Segment`.
+// again; the check follows the handle and never asks the allocator. The kernel conversion
+// cannot hand a user range over as a `Segment`.
 // Reallocation need not return these frames, so a tally observes the drop clear without relying
 // on same-frame readback.
 pub(super) fn a_user_page_comes_back_cleared() -> bool {
@@ -1538,6 +1539,8 @@ pub(super) fn ram_mappings_keep_the_direct_map_cache_type() -> bool {
         });
     }
 
+    // Each boot range maps with exactly its own direct-map type: the framebuffer is refused
+    // without write-through and accepted with it.
     let framebuffer = mm::memory_map_for_test().and_then(|map| {
         map.page_runs()
             .find(|run| run.cache() == wost::boot::DirectMapCache::Framebuffer)
@@ -2009,7 +2012,7 @@ pub(super) fn paired_space_refusal_and_retirement_conserve_every_frame() -> bool
 
 // The direct map ensures the hostile walk reaches real entries to blank.
 // The canonical-hole check precedes half ownership, so the straddle must report that distinct
-// refusal, and the last mappable user page reaches the mapping lookup past the half refusal.
+// refusal. The last mappable user page reaches the mapping lookup rather than the half refusal.
 pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     const KERNEL: u64 = 0xffff_8000_0010_0000;
     const HOLE_EDGE: u64 = x86_paging::USER_MAPPING_END;

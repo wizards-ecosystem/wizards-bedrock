@@ -258,7 +258,6 @@ fn load_and_clean(bytes: &[u8], shift: u64) -> Loaded<impl Fn() -> Vec<(u64, u64
     }
 }
 
-// Moving only `p_offset` isolates the contents bound from the file-size-versus-memory-size refusal.
 // Code on the topmost user page could trap with a non-canonical return address.
 fn doctored_segments_are_refused(original: &[u8]) -> bool {
     let mut write_execute = original.to_vec();
@@ -268,12 +267,16 @@ fn doctored_segments_are_refused(original: &[u8]) -> bool {
         Err(user::LoadError::WriteExecute(_))
     );
 
+    // Moving only `p_offset` isolates the contents bound from the file-size-versus-memory-size
+    // refusal.
     let overrun = doctored(original, SEGMENT_OFFSET, original.len() as u64);
     let overrun_refused = matches!(
         load_and_clean(&overrun, 0).result,
         Err(user::LoadError::Truncated(_))
     );
 
+    // More file than memory to put it in is this image's only defect, so the refusal is that
+    // check's alone.
     let mut oversized = doctored(original, SEGMENT_FILE_SIZE, 8);
     oversized[SEGMENT_MEMORY_SIZE..SEGMENT_MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
     let oversized_refused = matches!(
@@ -298,11 +301,11 @@ fn doctored_segments_are_refused(original: &[u8]) -> bool {
     wx_refused && overrun_refused && oversized_refused && intruding_refused && topmost_refused
 }
 
-// ELF congruence alone is valid, but this loader places only whole-page segments and refuses
-// that narrower contract before mapping.
 // The entry is validated before the first placement: zero is a valid user address outside the
 // executable segment, so a late refusal would be observable.
 fn misplaced_images_are_refused_before_mapping(original: &[u8]) -> bool {
+    // This image still satisfies ELF congruence, but this loader deliberately places only
+    // whole-page segments and refuses that narrower contract before mapping.
     let mut unaligned = doctored(original, SEGMENT_VADDR, field(original, SEGMENT_VADDR) + 1);
     unaligned[SEGMENT_ALIGNMENT..SEGMENT_ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let unaligned_load = load_and_clean(&unaligned, 0);
@@ -402,8 +405,8 @@ pub(super) fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     from_user && through_the_gate && elsewhere && landed_on_its_own && kernel_stacks
 }
 
-// Buffers clear once per crossing: every syscall returns through the branch, so its tally cannot
-// lag the crossings.
+// Buffers clear once per crossing, not once at boot: every syscall returns through the branch,
+// so its tally cannot lag the crossings.
 pub(super) fn the_return_to_ring_three_clears_buffers() -> bool {
     let armed = interrupt::buffer_clear_is_armed();
     let executed = interrupt::buffer_clears();
@@ -456,7 +459,7 @@ pub(super) fn boundary_probe() -> Option<(u64, u64)> {
     Some((CODE, STACK))
 }
 
-// Ring 3 may execute the program's own page, and neither ring may write it.
+// Ring 3 may execute the program's code page, and neither ring may write it.
 pub(super) fn bytes_cross_the_boundary_only_where_they_may() -> bool {
     let Some((code, stack)) = boundary_probe() else {
         return false;
@@ -479,6 +482,7 @@ pub(super) fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         usercopy::copy_from_user(boot::sections().text.start, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))
     );
+    // A range that starts inside user space and ends outside it.
     let straddling_refused = matches!(
         usercopy::copy_from_user(usercopy::USER_END - 4, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))

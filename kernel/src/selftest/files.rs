@@ -55,7 +55,7 @@ fn tmp_files_read_back(root: vfs::Directory, window: &mut [u8; 8]) -> bool {
     &read[..shadow] == b"a different motd\n"
 }
 
-// Walking through a file is refused here too, because that rule belongs to the VFS.
+// Walking through a file is refused here too, which shows the rule is the VFS's, not FAT's.
 fn tmp_listing_agrees_and_walks_stop(root: vfs::Directory, window: &mut [u8; 8]) -> bool {
     let mut names = 0usize;
     let mut directories = 0usize;
@@ -118,7 +118,7 @@ pub(super) fn enumeration_callbacks_run_without_backend_ownership() -> bool {
     tmp_walked.is_ok() && tmp_reentered && fat_walked.is_ok() && fat_reentered
 }
 
-// A device is a third kind of node, which makes the distinction structural.
+// A device is a third kind of node, which makes the distinction structural rather than a flag.
 // A path through a device is refused as one through a file is, since it has nothing inside.
 pub(super) fn a_device_is_not_a_file() -> bool {
     let root = vfs::dev_root();
@@ -200,7 +200,7 @@ pub(super) fn no_backend_lets_a_path_escape_or_cross() -> bool {
         && vfs::resolve(vfs::dev_root(), b"storage").is_ok()
 }
 
-// A FAT root must resolve to a FAT file, through the exhaustive enum dispatch.
+// The variant matters: a FAT root must resolve to a FAT file, and this match pins the dispatch.
 pub(super) fn a_path_resolves_from_a_directory_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -305,8 +305,8 @@ pub(super) fn a_file_cannot_be_walked_through() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
-// Names resolve only after enumeration: both take the controller leaf, so the callback would
-// re-enter it.
+// Names resolve only after enumeration: both take the controller leaf, so resolving inside the
+// callback would re-enter it.
 pub(super) fn enumeration_lists_what_traversal_would_find() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -416,6 +416,8 @@ pub(super) fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
                 }
             }
 
+            // A read at the file's end returns nothing, not the cluster's slack or the next file's
+            // bytes.
             let mut past = [0u8; 16];
             Ok(volume.read_file(entry.cluster, entry.size, entry.size, &mut past)? == 0)
         })),
