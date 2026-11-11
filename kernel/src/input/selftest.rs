@@ -11,11 +11,9 @@ use super::{
 };
 use crate::arch::current::i8042::Controller;
 
-/// How long a round waits for the person D-18 requires to press a key.
-///
-/// Forty-five seconds gives a person time to read the on-screen instruction.
-/// Every human round shares the bound so its prompt and measurement cannot
-/// expire at different horizons (D-240).
+/// How long a round waits for a person to press a key: time to read the on-screen instruction.
+/// Every human round shares the bound so its prompt and measurement cannot expire at different
+/// horizons.
 #[cfg(feature = "selftest")]
 pub(crate) const HUMAN_WAIT_MS: u64 = 45_000;
 
@@ -59,12 +57,11 @@ pub(crate) fn poller_passes() -> usize {
     POLLER_PASSES.load(Ordering::Relaxed)
 }
 
-/// Start a bounded poller whatever the routing says, for the boot-time check
-/// on a machine whose line is routed.
+/// Start a bounded poller whatever the routing says, for the boot-time check on a routed machine.
+/// Refused alongside any other poller: both share the round counter, and bounding one would
+/// terminate the other.
 #[cfg(feature = "selftest")]
 pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
-    // Refuse alongside any other poller because both share the round counter;
-    // bounding one would terminate the other (D-105).
     if POLLER_RUNNING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -193,16 +190,10 @@ fn decoder_for(controller: &mut Controller) -> Decoder {
     }
 }
 
-/// Turn the controller's translation on or off, and re-open the question of
-/// what arrives.
-///
-/// The controller and decoder move together so their numbering cannot diverge
-/// (D-179).
-///
-/// The identity supplies the opening guess and no longer the answer: writing
-/// the bit does not make a controller honest, and neither does asking it
-/// afterwards. What settles it is the next byte only one set could have sent
-/// (D-239).
+/// Turn the controller's translation on or off, and reopen the question of what arrives.
+/// The controller and decoder move together so their numbering cannot diverge.
+/// The identity supplies only the opening guess: writing the bit or asking afterwards makes no
+/// controller honest, and the next byte only one set could have sent settles it.
 #[cfg(feature = "selftest")]
 pub(crate) fn set_translation(translation: crate::arch::current::i8042::Translation) -> bool {
     let mut guard = KEYBOARD.lock_leaf();
@@ -233,10 +224,7 @@ pub(crate) fn decoder_matches_identity() -> bool {
 }
 
 /// Seed the numbering the *other* way and let the stream put it right.
-///
-/// Marks an incorrect guess settled so the stream must exercise its correction
-/// path; available test machines otherwise answer their probes honestly
-/// (D-28, D-239).
+/// The wrong guess must exercise the correction path; test machines otherwise answer honestly.
 #[cfg(feature = "selftest")]
 pub(crate) fn assume_wrong_numbering() {
     let mut guard = KEYBOARD.lock_leaf();
@@ -254,8 +242,7 @@ pub(crate) fn assume_wrong_numbering() {
     keyboard.held_at = 0;
 }
 
-/// Whether the driver is waiting on the stream rather than standing on a
-/// numbering it inferred from a command.
+/// Whether the driver waits on the stream rather than a numbering it inferred from a command.
 #[cfg(feature = "selftest")]
 pub(crate) fn rereads_the_stream() -> bool {
     KEYBOARD
@@ -264,13 +251,9 @@ pub(crate) fn rereads_the_stream() -> bool {
         .is_some_and(|keyboard| !keyboard.settled && keyboard.evidence.is_none())
 }
 
-/// Whether the decoder in place reads the set the arriving bytes proved.
-///
-/// Uses a byte only one set could have sent, independently of the identity that
-/// configured the decoder (D-239).
-///
-/// `None` evidence is not a pass: a keyboard that has delivered nothing has
-/// proved nothing, and this is called where keystrokes have already arrived.
+/// Whether the decoder reads the set a byte only one set could send proved, apart from identity.
+/// `None` evidence is not a pass: a keyboard that has delivered nothing has proved nothing, and
+/// this is called where keystrokes have already arrived.
 #[cfg(feature = "selftest")]
 pub(crate) fn decoder_reads_what_arrives() -> bool {
     let guard = KEYBOARD.lock_leaf();
@@ -284,10 +267,8 @@ pub(crate) fn decoder_reads_what_arrives() -> bool {
     }
 }
 
-/// The two bytes the keyboard identifies itself with.
-///
-/// See [`crate::arch::current::i8042::Controller::identity`]: the pair tells a
-/// translating controller from an honest one (D-178).
+/// The two bytes the keyboard identifies itself with, which tell a translating controller from an
+/// honest one.
 #[cfg(feature = "selftest")]
 pub(crate) fn identity() -> Option<(u8, u8)> {
     let mut guard = KEYBOARD.lock_leaf();
@@ -319,21 +300,20 @@ pub(crate) fn armed_key_arrived(watch: ArmedKey) -> bool {
         .completed_after(watch.key, watch.generation)
 }
 
-/// A clock deadline bounds an honest wait and an iteration cap bounds a dead
-/// clock. Each pass also bounds how much hostile controller input it drains.
+/// A clock deadline bounds an honest wait and an iteration cap bounds a dead clock. Each pass
+/// also bounds how much hostile controller input it drains.
+/// Where the line is routed the handler is the only reader; polling here could claim a keystroke
+/// the interrupt path never saw.
+/// Otherwise this uses the fallback's bounded drain and delivery: the controller lock serializes
+/// reads beside that thread, and `WATCH` observes only events admitted to readers.
 #[cfg(feature = "selftest")]
 pub(crate) fn await_armed_key(watch: ArmedKey) -> bool {
-    /// The bound a dead clock falls back on, and only then.
-    ///
-    /// Attempts are spent only when the clock is unavailable; otherwise a fast
-    /// loop must not shorten the forty-five-second human deadline (D-200,
-    /// D-240).
+    /// The bound a dead clock falls back on, and only then: a fast loop must not shorten the
+    /// forty-five-second human deadline.
     const WAIT_SPINS: u32 = 2_000_000;
 
     let mut patience = PollLimit::after_ms(clock_ns(), HUMAN_WAIT_MS, WAIT_SPINS);
     while patience.permit(clock_ns()) {
-        // Where the line is routed the handler is the only reader; polling
-        // here could claim a keystroke the interrupt path never saw.
         if is_interrupt_driven() {
             if armed_key_arrived(watch) {
                 return true;
@@ -342,9 +322,6 @@ pub(crate) fn await_armed_key(watch: ArmedKey) -> bool {
             continue;
         }
 
-        // Use the same bounded drain and delivery path as the permanent
-        // fallback. A waiter may run beside that thread; the controller lock
-        // serializes reads, and WATCH observes only events admitted to readers.
         poll();
         if armed_key_arrived(watch) {
             return true;
@@ -354,8 +331,7 @@ pub(crate) fn await_armed_key(watch: ArmedKey) -> bool {
     false
 }
 
-/// Exercise the exact routed-path state transition without claiming that this
-/// polling machine has a routed keyboard.
+/// Exercise the exact routed-path transition without claiming this polling machine is routed.
 #[cfg(feature = "selftest")]
 pub(crate) fn interrupt_handoff_is_recorded() -> bool {
     let handoff = Once::new();
@@ -367,11 +343,8 @@ pub(crate) fn interrupt_handoff_is_recorded() -> bool {
 #[cfg(feature = "selftest")]
 pub(super) static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 
-/// How many keyboard interrupts have been delivered.
-///
-/// The evidence that routing worked. Nothing else distinguishes a keystroke
-/// the handler decoded from one the idle loop happened to poll — which is
-/// exactly the confusion the boot-time check has to avoid.
+/// How many keyboard interrupts have been delivered: the evidence that routing worked.
+/// Nothing else tells a keystroke the handler decoded from one the idle loop happened to poll.
 #[cfg(feature = "selftest")]
 pub(crate) fn interrupt_count() -> usize {
     INTERRUPTS.load(Ordering::Relaxed)
@@ -464,6 +437,8 @@ pub(crate) fn watch_order_is_causal() -> bool {
 }
 
 /// Exercise the production batch boundary with a finite competing producer.
+/// Its deterministic reentry models the producer a timer could select; it does not claim that a
+/// hardware interrupt was delivered.
 #[cfg(feature = "selftest")]
 pub(crate) fn producer_order_is_causal() -> bool {
     use core::cell::{Cell, RefCell};
@@ -501,8 +476,6 @@ pub(crate) fn producer_order_is_causal() -> bool {
         deliver,
         || {
             excluded.set(!interrupt::are_enabled());
-            // This deterministic reentry models the producer a timer could
-            // select; it does not claim that a hardware interrupt was delivered.
             if interrupt::are_enabled() {
                 peer_admitted.set(peer());
             }
@@ -611,7 +584,7 @@ pub(crate) fn refuse_interrupt_readback() {
     Controller::refuse_interrupt_readback();
 }
 
-/// `None` selects [`PollLimit`]'s bounded-attempt fallback (D-200, D-240).
+/// `None` selects [`PollLimit`]'s bounded-attempt fallback.
 #[cfg(feature = "selftest")]
 fn clock_ns() -> Option<u64> {
     crate::time::is_calibrated().then(crate::time::now_ns)

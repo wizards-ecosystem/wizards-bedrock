@@ -1,8 +1,6 @@
-//! Points the linker at `linker.ld`.
-//!
-//! The script cannot be named in `.cargo/config.toml`, because the rustflags
-//! there apply to every crate built for the kernel target and only the binary
-//! wants a script. A `-C link-arg` from here reaches the final link alone.
+//! Points the final link alone at `linker.ld`.
+//! `.cargo/config.toml` cannot name the script: its rustflags apply to every crate built for the
+//! kernel target, and only the binary wants a script.
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")

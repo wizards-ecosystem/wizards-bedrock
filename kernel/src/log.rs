@@ -1,7 +1,4 @@
-//! Kernel logging.
-//!
-//! Records go to the serial console only. The framebuffer carries user-facing
-//! output, so diagnostics never scroll the banner away.
+//! Kernel logging to the serial console only, so diagnostics never scroll the banner away.
 
 use core::fmt::{self, Write};
 

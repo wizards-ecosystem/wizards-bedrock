@@ -17,11 +17,8 @@ pub(crate) fn framebuffer_bytes() -> Option<usize> {
     CONSOLE.lock().as_ref().map(Console::framebuffer_bytes)
 }
 
-/// What the console holds at (`x`, `y`), and the marks a check compares to.
-///
-/// Returns the pixel, the packed foreground, and the line height — read under
-/// one guard, because three separate calls would let a log line land between
-/// them and move what the first answered about.
+/// The pixel at (`x`, `y`), the packed foreground, and the line height, read under one guard:
+/// separate calls would let a log line land between them and move what the first answered about.
 #[cfg(feature = "selftest")]
 pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
     let guard = CONSOLE.lock();
@@ -32,8 +29,6 @@ pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
 }
 
 /// Whether the console has RAM for every framebuffer word it may scroll.
-///
-/// Read only by the boot-time check, so it exists only where that does.
 #[cfg(feature = "selftest")]
 pub(crate) fn console_has_complete_back_buffer() -> bool {
     CONSOLE
@@ -53,10 +48,8 @@ pub(crate) fn keyboard_gsi() -> u32 {
 pub(super) static KEYBOARD_GSI: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
-/// How the I/O APIC routes one global system interrupt.
-///
-/// Returns a value instead of letting a closure escape under a leaf guard.
-/// `None` means either no controller or no route for `gsi` (D-105, D-121).
+/// How the I/O APIC routes `gsi`, or `None` for no controller or no route.
+/// A value is returned instead of letting a closure escape under a leaf guard.
 #[cfg(feature = "selftest")]
 pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
     let mut guard = IO_APIC.lock_leaf();

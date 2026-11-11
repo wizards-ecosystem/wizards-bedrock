@@ -73,11 +73,8 @@ impl Controller {
     }
 
     /// Turn the controller's translation on or off, and report what stuck.
-    ///
-    /// The self-test's only way to reach the set 1 path on a machine where the
-    /// expected key is known: QEMU honours this bit, so turning it on
-    /// reproduces what VMware does unasked, with an injected keystroke whose
-    /// identity the harness chose (D-179).
+    /// The self-test's only way to reach set 1 with a known key: QEMU honours this bit, so it
+    /// reproduces what VMware does unasked, with an injected keystroke the harness chose.
     #[cfg(feature = "selftest")]
     pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {
         if !Self::flush(self) {
@@ -181,9 +178,9 @@ impl Controller {
     #[cfg(feature = "selftest")]
     fn with_refused_flush<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> (T, bool) {
         REFUSE_FLUSH.store(true, Ordering::Relaxed);
-        let result = operation(self);
+        let outcome = operation(self);
         let consumed = !REFUSE_FLUSH.swap(false, Ordering::Relaxed);
-        (result, consumed)
+        (outcome, consumed)
     }
 }
 

@@ -1,14 +1,9 @@
-//! The console palette.
-//!
-//! Every colour the kernel draws is named here, so clearing the screen and
+//! The console palette: every colour the kernel draws is named here, so clearing the screen and
 //! rendering a glyph can never disagree about what the background is.
 
 use wost::boot::Rgb;
 
-/// A background and the text drawn on it.
-///
-/// The pair travels together so the two colours cannot be passed the wrong way
-/// round — they are both `Rgb`, and the compiler would not notice.
+/// A background and the text drawn on it, paired because two swapped `Rgb`s would compile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Palette {
     pub(crate) background: Rgb,

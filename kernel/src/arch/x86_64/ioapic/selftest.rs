@@ -8,11 +8,8 @@ use super::{
 
 impl<R: RegisterAccess> IoApic<R> {
     /// The lowest global system interrupt this controller routes.
-    ///
-    /// Reported so a check can say whether "below the base" is even a place —
-    /// on a machine whose base is zero it is not, and a check that required a
-    /// refusal there would be requiring one for an address that does not exist
-    /// (D-121).
+    /// A check needs it because "below the base" does not exist where the base is zero, so no
+    /// refusal can be required there.
     #[cfg(feature = "selftest")]
     pub(crate) const fn base(&self) -> u32 {
         self.range.first()
@@ -39,8 +36,8 @@ struct FakeRegisters {
 
 #[cfg(feature = "selftest")]
 impl FakeRegisters {
+    /// Version 0x11 with a maximum redirection entry of zero: one line.
     const fn stale(ignore_once: Option<(u32, u32)>) -> Self {
-        // Version 0x11 with a maximum redirection entry of zero: one line.
         Self::reporting(0x0000_0011, ignore_once)
     }
 
@@ -200,14 +197,11 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && destination_refused_before_unmask
 }
 
-/// A window that does not report an I/O APIC version is never taken over.
-///
-/// Firmware controls where the register window points; a version register that
-/// is not an I/O APIC's means it points at something else, and no redirection
-/// is written to it (D-350).
+/// A window that does not report an I/O APIC version is never taken over or written.
+/// The refused versions are a zeroed window, a text-console MMIO byte, and a count no part holds.
+/// The plausible version the other checks rely on is still accepted.
 #[cfg(feature = "selftest")]
 pub(crate) fn an_implausible_version_is_refused_for_test() -> bool {
-    // A zeroed window, a text-console MMIO byte, and a count no part can hold.
     let refused = [0x0000_0000, 0x0000_0041, 0x00FF_0011]
         .into_iter()
         .all(|version| {
@@ -219,7 +213,6 @@ pub(crate) fn an_implausible_version_is_refused_for_test() -> bool {
                 }) if reported == version
             )
         });
-    // The plausible version the other checks rely on is still accepted.
     let accepted = IoApic::take(FakeRegisters::reporting(0x0000_0011, None), 0)
         .is_ok_and(|controller| controller.range == GsiRange::new(0, 1).expect("one entry"));
     refused && accepted

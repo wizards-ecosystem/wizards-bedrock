@@ -39,17 +39,17 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 189,
         file: "kernel/src/dev.rs",
-        find: "pub(crate) fn with_console(f: impl FnOnce(&mut Console)) {
+        find: "pub(crate) fn with_console(operation: impl FnOnce(&mut Console)) {
     let mut guard = CONSOLE.lock();
     if let Some(console) = guard.as_mut() {
-        f(console);
+        operation(console);
     }
 }",
-        replace: "pub(crate) fn with_console(f: impl FnOnce(&mut Console)) {
+        replace: "pub(crate) fn with_console(operation: impl FnOnce(&mut Console)) {
     let disabled = wost::arch::current::interrupt::disable();
     let mut guard = CONSOLE.lock();
     if let Some(console) = guard.as_mut() {
-        f(console);
+        operation(console);
     }
     disabled.restore();
 }",
@@ -236,7 +236,7 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 839,
         file: "kernel/src/arch/x86_64/ioapic.rs",
-        find: "        match self.entry_words(line) {\n            Ok((low, high)) if low == entry::MASKED && high == destination => {}\n            Ok((low, high)) => {\n                return self.refuse_route(line, expected_low, destination, low, high);\n            }\n            Err(error) => {\n                self.mask_line_and_verify(line)\n                    .map_err(RoutingError::from)?;\n                return Err(RoutingError::Registers(error));\n            }\n        }",
+        find: "        match self.entry_words(line) {\n            Ok((low, high)) if low == entry::MASKED && high == destination => {}\n            Ok((low, high)) => {\n                return self.refuse_route(line, expected_low, destination, low, high);\n            }\n            Err(reason) => {\n                self.mask_line_and_verify(line)\n                    .map_err(RoutingError::from)?;\n                return Err(RoutingError::Registers(reason));\n            }\n        }",
         replace: "        let _ = self.entry_words(line);",
         breaks: "an IOAPIC destination is unmasked before its readback",
         reddens: Caught::Check(
