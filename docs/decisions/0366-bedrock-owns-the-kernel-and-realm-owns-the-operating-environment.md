@@ -35,9 +35,10 @@ needs its own ordinary CI before commit and fresh source-bound exceptional
 qualifications before foundation close. Neither the compiler gate nor a PW row
 opens or closes because a name changed.
 
-**Rationale.** The project was renamed from wizards-os to wizards-bedrock with
-the kernel and userland separated; GitHub retains the existing history under
-wizards-bedrock, and Realm remains its separate repository.
+**Rationale.** The owner requested the full rename of wizards-os to
+wizards-bedrock, the kernel/userland separation and takeover of both projects'
+handoffs; GitHub retains the existing history under wizards-bedrock, and Realm
+remains its separate repository.
 
 **Alternatives.** A forked kernel would discard the continuity of almost all
 implemented work. Sibling path dependencies would prevent independent builds.

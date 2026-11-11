@@ -24,8 +24,9 @@ restricted mode, is logged under its own identity and cannot grant to itself.
 whether requirements and grants are one document or two, and `015` fixed that
 effects are requests and never grants. The powerbox, Access Control Gadgets
 and Sculpt (`018` section 3.4) reached the same rule: derive authority from
-what the user is already doing and show the graph, never ask; manifest-only
-routing over-permissions and re-consent prompts loop. Two documents because
+what the user is already doing and show the graph, never ask. Fuchsia's
+manifest-only routing is documented to encourage over-permissioning, and
+macOS's re-consent prompts are documented to loop. Two documents because
 they are two things: a claim a program makes about itself and a decision its
 user made. Deltas because lists get rubber-stamped and deltas get read. No
 prompts because a prompt asks the user about authority instead of deriving it

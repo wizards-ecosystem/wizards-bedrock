@@ -31,7 +31,8 @@ mutation (id 21) changes the count's leading digit instead of quoting the whole
 number, so appending an entry no longer rewrites that mutation.
 
 **Rationale.** Documents cited mutations by the runner's array position, which
-moved whenever an entry was placed ahead of it, and nothing checked a citation
+moved whenever an entry was placed ahead of it (sixteen entries were prepended
+in `0a96973`), and nothing checked a citation
 against the registry, so a cited number silently came to name an unrelated
 defect; D-326's "1,389" and PW-542's closing "1,301-1,312" were already wrong
 on the day they were written. Mutations 1,414 through 1,421 retain one break of

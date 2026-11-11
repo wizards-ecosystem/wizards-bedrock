@@ -84,8 +84,9 @@ self-test-only off/on door exercised the same unit-wide transition while
 merely borrowing an idle selected controller. An endpoint match is not
 exclusivity evidence, since one DRHD may carry several endpoint scopes or
 combine one with `INCLUDE_PCI_ALL`, and
-fencing only the ordinary topology walk can leave bridge ranges, unresolved
-paths, other segments and catch-all requesters unowned.
+fencing only the ordinary topology walk is not complete enough: bridge ranges,
+unresolved paths, other segments, hot-pluggable catch-all requesters and a
+bounded claim registry can all leave an unowned requester behind.
 
 **Alternatives.** Treating `Coverage::Endpoint` as singleton evidence misses
 sibling endpoint scopes. Fencing only the ordinary topology walk leaves bridge
@@ -110,8 +111,9 @@ witnesses. Retained mutations 1,665 through 1,679 independently red requester
 completeness and deduplication, hierarchy range/root/ambiguity, catch-all and
 unsupported-scope refusal, inherited and drifting BME, both drain capabilities
 and bits, release ordering, drain placement, hostile scope work, and the
-isolation-stage stack margin; mutation 1,679 adds one 4 KiB stage frame and
-fails only the two-page stack witness.
+isolation-stage stack margin. On 2026-10-09 mutation 1,679 added one 4 KiB
+stage frame and failed only the two-page stack witness; D-400 later changed it
+to 4 KiB in debug and 16 KiB in release.
 
 **2026-10-16 validation amendment.** Mutation 1,665 still names the production
 defect in this decision: skipping the first governed requester must fail

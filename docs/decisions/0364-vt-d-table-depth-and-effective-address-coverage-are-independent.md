@@ -21,7 +21,9 @@ The failing unit's raw CAP word was not logged; its exact tuple is unproved.
 Dropping MGAW without bounding mappings overstates the domain's reach.
 A VMware exception would hide the same error on other conforming units.
 
-**Consequences.** The failed human boots close no hardware row. Retained
+**Consequences.** The failed human boots close no hardware row, and host
+evidence and QEMU boots did not close PW-578, which required fresh VMware
+storage and fault witnesses. Retained
 mutations 1,603 through 1,605 restore the old selector or bypass each coverage
 limit, and mutation 1,623 reverts the production mapping seam to geometric
 coverage alone; each fails its named witness or AST source contract.

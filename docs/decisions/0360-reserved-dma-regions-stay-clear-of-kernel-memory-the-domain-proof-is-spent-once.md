@@ -52,8 +52,8 @@ Status: Accepted, 2026-10-03. Amends D-345, D-351 and D-358; closes PW-573 and P
 **Rationale.** D-358 left two items of the VT-d domain owed, residuals R3 and
 R4 of Daybreak findings 1 and 8 in the 2026-10-03 triage: reserved regions were
 identity-mapped as declared, so a firmware table could hand the controller
-kernel frames, and a `Clone` and `Copy` proof could outlive the release that
-invalidated it. The same triage found four checks that let one input shape
+kernel frames, and `DmaDomain` derived `Clone` and `Copy`, so a proof could
+outlive the release that invalidated it, although no caller kept one. The same triage found four checks that let one input shape
 through, each a defect of the check alone because the committed sources pass
 every strengthened check:
 
