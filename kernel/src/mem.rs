@@ -486,6 +486,8 @@ pub(crate) fn init_paging(
 }
 
 /// Map every thread stack into the inactive space, or reclaim it whole.
+///
+/// A cleanup contradiction panics, because continuing would discard live ownership.
 fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
     let Some(layout) = thread::layout() else {
         let cleanup = space.reclaim(None);
@@ -687,7 +689,7 @@ pub(crate) fn prepare_routing(
     })
 }
 
-/// Return every candidate after a refused probe; the inventory stays unproven either way.
+/// Return every candidate after a refusal; the inventory stays unproven either way.
 fn abandon_candidates(
     context: &mut ThreadContext,
     controllers: &mut Vec<IoApic<ReleasableDevice>>,

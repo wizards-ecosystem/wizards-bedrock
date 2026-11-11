@@ -7,7 +7,9 @@
 //! Two drivers cannot claim one function, and a bare port claim inside a claimed device's I/O
 //! window is refused because the device already has it.
 //!
-//! Fixed driver claims are permanent, exactly as port claims are and for the same reason.
+//! Fixed driver claims are permanent, exactly as port claims are and for the same reason: a
+//! driver owns its registers for the kernel's life, and exclusivity rests on no claim ever being
+//! released.
 //! Storage selection additionally has a transient lease: it can advance only after restoring
 //! the command word and returning every dynamic I/O span and registry slot as one retirement.
 //!
@@ -1040,6 +1042,9 @@ fn retain_failed_function(function: pci::FunctionClaim) {
 }
 
 /// Lease one function while storage selection determines whether to keep it.
+///
+/// Errors as [`claim_as`]: clean refusals record nothing; an uncertain BAR restore returns its
+/// retry owner.
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     claim_as(at, ClaimLifetime::Selection)
 }
