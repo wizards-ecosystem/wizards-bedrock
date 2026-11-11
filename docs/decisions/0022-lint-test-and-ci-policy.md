@@ -24,7 +24,10 @@ distinction is asserted, not remembered.
 
 1. *The shipped configuration is linted.* The pass list is an explicit
    `PASSES` table (host, kernel, kernel with self-test); tests assert the
-   kernel appears twice and the shipped configuration comes first.
+   kernel appears twice and the shipped configuration comes first. Before
+   this, every kernel pass carried `--features wizard-kernel/selftest`, and
+   two `dead_code` constants used only by `selftest` shipped in release
+   images.
 2. *`kernel/` opts in* to the workspace lints, so `unreachable_pub` enforces
    `pub(crate)` in the binary as `005` says.
 3. *Doc links are checked.* `missing_docs` catches an absent doc. Nothing

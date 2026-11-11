@@ -12,7 +12,9 @@ Restoring instead of enabling makes nesting correct: an inner lock that
 found the flag clear puts back a clear flag, so it cannot re-enable
 interrupts while an outer section holds one. Release order is unlock, then
 restore; the other order lets an interrupt arrive at code still holding the
-lock.
+lock. Asterinas's guard-parameterised lock (`LocalIrqDisabled`,
+`PreemptDisabled`) waits for a scheduler; until then it is a type parameter
+with one useful value.
 
 **Consequences.**
 

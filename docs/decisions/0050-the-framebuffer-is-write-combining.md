@@ -17,7 +17,9 @@ conflict a second alias would admit.
 
 **Consequences.** The check has two halves: the PAT entry must be
 write-combining, *and* the mapping must select it. A hypervisor may decline
-the MSR write, so `write_combining_is_enabled` reads it back.
+the MSR write, so `write_combining_is_enabled` reads it back. Either half
+alone leaves writes crossing the bus one at a time while the log claims
+otherwise.
 
 A wrong memory type is not merely slow: conflicting cache types for aliases
 can violate the processor's rules. Safety rests on one alias, a checked

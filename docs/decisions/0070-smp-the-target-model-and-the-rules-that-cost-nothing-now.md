@@ -39,7 +39,8 @@ the bring-up. Lock ordering is observable on one CPU; the one bug class a
 single CPU cannot show is Store→Load reordering, the lost-wakeup re-check.
 Every item is free or already true; together they make Phase 12 a bring-up,
 not a redesign. D-45, D-56 and D-60 track the mechanical SMP debts; this is
-the list of semantic ones.
+the list of semantic ones (lock ordering, memory ordering, deferred
+reclamation, interface commutativity).
 
 **Consequences.**
 

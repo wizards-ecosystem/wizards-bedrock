@@ -10,7 +10,7 @@ ideas. The native widget toolkit renders GPU-first (wgpu/vello-style compute
 gets a toolkit/framebuffer backend when its phase arrives.
 
 **Rationale.** Wayland's buffer sharing maps directly onto our memory-object
-handles.
+handles; GPU-compute 2D is where rendering is headed.
 
 **Consequences.** The GUI phase needs solid memory objects and channels; a
 terminal emulator is the first GUI client.

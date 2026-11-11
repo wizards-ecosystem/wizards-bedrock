@@ -28,5 +28,6 @@ reviewable.
   flags and stack pointer the CPU pushed.
 - The dispatcher reads its handler from an `AtomicPtr` written before the
   table is loaded, so a trap that reaches it always has a handler to call.
-- At adoption entry saved no SSE state: the kernel is built `+soft-float`
-  and cannot disturb it.
+- Not handled at adoption: `swapgs` (needs ring 3), XSAVE (needs a
+  scheduler; the kernel is built `+soft-float` and cannot disturb SSE state)
+  and nested-interrupt policy (needs interrupts on).

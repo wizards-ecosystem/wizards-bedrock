@@ -11,7 +11,9 @@ not `master`, per mlibc's own warning.
 the userland twice, and the translation layer is not free: Fuchsia confined
 POSIX to userspace and ended up with Starnix, and every real mlibc port
 implements `Fork`, `Sigaction`, `Ioctl`, `Termios`, `Poll` and `Waitpid`.
-The strongest pattern in the retrospective evidence is **conform at the
+mlibc has 296 sysdep tags, 16 mandatory ("enough for a basic
+statically-linked hello world"); real ports implement 147 to 202. The
+strongest pattern in the retrospective evidence is **conform at the
 boundary, innovate inside**. The capability ABI is not weakened; the
 translation layer should arrive early enough to shape it.
 

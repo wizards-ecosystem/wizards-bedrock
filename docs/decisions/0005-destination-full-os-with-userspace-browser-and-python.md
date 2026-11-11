@@ -10,7 +10,8 @@ favor always-finishable increments.
 
 **Rationale.** CPython and NetSurf force every subsystem (FS, network,
 graphics, libc) to work, which demands the POSIX translation layer (D-10)
-however novel the native ABI is.
+however novel the native ABI is. RustPython runs pre-libc, so scripting
+comes early; links proves the network stack before graphics.
 
 **Amended by D-75.** NetSurf remains the integration target; "browser" and
 "web browsing" are historical shorthand. The current milestone is

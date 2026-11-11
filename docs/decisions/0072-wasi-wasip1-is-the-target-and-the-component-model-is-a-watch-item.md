@@ -21,6 +21,7 @@ aligns; the descriptor contract is not impedance-free.
 **Consequences.**
 
 - Phase 7's WASI work is "wasip1 host bindings over handles", not "implement
-  the Component Model".
+  the Component Model", which adds cross-language typed composition for an
+  ecosystem of ten components.
 - `002-architecture.md`'s app-formats section is restated to match.
 - Provisional, per D-71: revisit on the trigger above.

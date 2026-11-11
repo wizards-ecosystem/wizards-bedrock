@@ -2,9 +2,9 @@
 
 Status: Accepted, 2026-08-22.
 
-**Decision.** Split the frame allocator, on the `port-space` precedent:
-`wost` owns the frame handle and the physical access, a `libs/` crate owns
-the search.
+**Decision.** Split the frame allocator, on the `port-space` precedent
+(D-39): `wost` owns the frame handle and the physical access, a `libs/`
+crate owns the search.
 
 `libs/frame-space` holds two bitmaps and knows only frame indices: `managed`
 (usable RAM under our control) and `free` (which of those are not handed
@@ -37,6 +37,11 @@ second source of truth for what the bootloader already knows.
 one megabyte, which the image does not carry because both bitmaps start
 zeroed. Memory above the ceiling is reported as ignored at boot rather than
 silently lost.
+
+The first "allocation returns a zeroed frame" check short-circuited on an
+address comparison and passed with the zeroing removed. Its replacement,
+`dirty memory can be zeroed, and seen to be`, writes `0xAA`, requires the
+kernel to *see* it, zeroes, and requires the kernel to see that.
 
 Absent on purpose: the untyped-memory split (`UFrame`/`USegment`) that `008`
 §3.2 and D-44 adopt as a discipline. It arrives with the first caller that
