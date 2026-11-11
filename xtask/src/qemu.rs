@@ -40,8 +40,12 @@ pub use self::storage::{
     NVME_BLOCK_BYTES, NVME_SIGNED_BLOCKS, NVME_VOLUME_SECTOR, nvme_image, nvme_signature,
 };
 
-/// Default install location on Windows, checked before `PATH`.
-const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
+/// Default install location, checked before `PATH`; only Windows has one.
+const DEFAULT_INSTALLATION: Option<&str> = if cfg!(windows) {
+    Some(r"C:\Program Files\qemu")
+} else {
+    None
+};
 
 /// The q35 machine type shared by both runners.
 pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
@@ -162,6 +166,7 @@ pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<P
 fn locate(
     binary: Option<PathBuf>,
     directory: Option<PathBuf>,
+    default: Option<&Path>,
     search: impl IntoIterator<Item = PathBuf>,
 ) -> Result<PathBuf> {
     let emulator = exe_name("qemu-system-x86_64");
@@ -177,17 +182,24 @@ fn locate(
         return require_emulator(dir.join(&emulator), refusal);
     }
 
-    let default = PathBuf::from(WINDOWS_DEFAULT);
-    if default.join(&emulator).is_file() {
+    if let Some(default) = default
+        && default.join(&emulator).is_file()
+    {
         return Ok(default.join(&emulator));
     }
 
     match which_in(search, &emulator) {
         Some(found) => Ok(found),
-        None => bail!(
-            "QEMU not found: looked for {emulator} in {WINDOWS_DEFAULT} and on PATH; \
-             set QEMU to the executable or QEMU_DIR to its installation"
-        ),
+        None => {
+            let searched = match default {
+                Some(default) => format!("in {} and on PATH", default.display()),
+                None => "on PATH".to_owned(),
+            };
+            bail!(
+                "QEMU not found: looked for {emulator} {searched}; \
+                 set QEMU to the executable or QEMU_DIR to its installation"
+            )
+        }
     }
 }
 
@@ -240,7 +252,8 @@ fn installation_with(
     directory: Option<PathBuf>,
     search: impl IntoIterator<Item = PathBuf>,
 ) -> Result<Installation> {
-    let emulator = std::path::absolute(locate(binary, directory, search)?)
+    let default = DEFAULT_INSTALLATION.map(Path::new);
+    let emulator = std::path::absolute(locate(binary, directory, default, search)?)
         .context("resolving the QEMU executable path")?;
     let directory = emulator
         .parent()
