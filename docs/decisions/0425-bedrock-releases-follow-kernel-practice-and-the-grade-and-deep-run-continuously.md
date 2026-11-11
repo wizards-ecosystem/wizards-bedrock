@@ -65,7 +65,10 @@ release inputs, yet each is a multi-day or externally authenticated campaign
 whose prerequisites (provider runtime tuples, account access, a several-day
 host reservation) move independently of the kernel source. Every source repair
 restarted both, so their external dependencies, not kernel defects, set the
-release cadence, and no release had been cut. Omitting a campaign's keys when
+release cadence, and no release had been cut. The complete 2,228-entry sweep on
+`20cf580` caught 2,222; its survivors and inconclusive outcome are repair input
+under PW-001, not qualification, and repairing them invalidated every grade and
+Deep run that had depended on that commit. Omitting a campaign's keys when
 absent would make absence indistinguishable from a manifest that lost them, so
 `deferred` keeps the schema exact; a record from an older `main` commit would
 qualify a source the release does not ship; and a direct tag of the qualified
