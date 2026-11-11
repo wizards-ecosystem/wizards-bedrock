@@ -1,6 +1,7 @@
+use std::fmt;
+
 use super::*;
 
-/// One paused, private QEMU machine owned by a debugger invocation.
 pub(crate) struct DebugMachine {
     child: Option<Child>,
     endpoint: String,
@@ -10,7 +11,6 @@ pub(crate) struct DebugMachine {
 }
 
 impl DebugMachine {
-    /// Start the machine and return the dynamically allocated GDB endpoint.
     pub(crate) fn start(paths: &Paths, image: &Path) -> Result<Self> {
         let installation = installation()?;
         let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -66,7 +66,6 @@ impl DebugMachine {
         }
     }
 
-    /// Loopback address for GDB's `target remote` command.
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -79,6 +78,15 @@ impl DebugMachine {
         stop_qemu(child)?;
         self.child = None;
         Ok(())
+    }
+}
+
+impl fmt::Debug for DebugMachine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DebugMachine")
+            .field("child", &self.child)
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
     }
 }
 

@@ -14,8 +14,7 @@ pub(super) fn snapshot_drive_file(options: &str, path: &Path) -> [OsString; 2] {
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
 
-/// Create a fresh file in the private QEMU run directory; a name another run
-/// already holds is skipped, never reused.
+/// A name another run already holds in the private run directory is skipped, never reused.
 pub(super) fn reserve_run_file(
     target: &Path,
     stem: &str,
@@ -42,6 +41,7 @@ pub(super) fn reserve_run_file(
     bail!("could not reserve a private QEMU {stem} file")
 }
 
+#[derive(Debug)]
 pub(super) struct RunVars {
     path: PathBuf,
 }
@@ -118,13 +118,10 @@ impl Drop for RunVars {
     }
 }
 
-/// Per-run ACPI authorities for the fixed QEMU platform.
-///
-/// The coverage table states the real catch-all remapping topology without
-/// replacing QEMU's standards-defined DMAR. The handoff table states the
-/// entry-time DMA contract from D-390 after CPU state authenticates this exact
-/// virtual platform. Both files live in the private run directory and stay
-/// owned until the machine terminates.
+/// The coverage table states the real catch-all topology beside QEMU's own DMAR; the handoff
+/// table states the entry-time DMA contract once CPU state authenticates this platform.
+/// Both files must stay owned until the machine terminates.
+#[derive(Debug)]
 pub(super) struct RunDmaCoverage {
     path: Option<PathBuf>,
     handoff: PathBuf,

@@ -1,10 +1,8 @@
 use super::*;
 
-/// Boot the image the kernel ships and require it to reach its steady state.
-///
-/// The self-test build exits at the debug-exit device, so nothing it does
-/// covers what the shipped kernel does afterwards. The serial verdict requires
-/// the settled marker, a call from ring 3 and every platform marker, with no panic.
+/// The self-test build exits at the debug-exit device, so only this boot covers what the
+/// shipped kernel does afterwards: it must settle, call from ring 3, print every required
+/// platform record and never panic.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -69,26 +67,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
             BOOT_TIMEOUT,
             Some(&settled),
         )?;
-        let before = keyboard_irq_count(&mut qmp)?;
-        qmp.inject_key(
-            SHIPPED_CHALLENGE_QCODE,
-            Instant::now() + SHIPPED_CHALLENGE_TIMEOUT,
-            &NOT_CANCELLED,
-        )
-        .context("injecting the shipped-kernel liveness key")?;
-        watch(
-            &mut child,
-            &panicked,
-            &serial_failed,
-            SHIPPED_CHALLENGE_WINDOW,
-            None,
-        )?;
-        let after = keyboard_irq_count(&mut qmp)?;
-        ensure!(
-            after == before,
-            "the shipped kernel unmasked legacy keyboard IRQ1 ({before} -> {after})"
-        );
-        println!("[xtask] shipped liveness: keyboard input left IRQ1 masked at {after}");
+        require_masked_keyboard(&mut child, &mut qmp, &panicked, &serial_failed)?;
         watch(&mut child, &panicked, &serial_failed, settle, None)
     });
 
@@ -106,34 +85,65 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 
     let outcome = combine_qemu_cleanup(outcome, serial_outcome);
     combine_qemu_cleanup(outcome, stop_outcome)?;
-    for (record, seen) in required {
-        if !seen.load(Ordering::Acquire) {
-            bail!(
-                "the shipped kernel settled without reporting {:?}",
-                record.message
-            );
-        }
-    }
+    require_records_seen(&required, "shipped")?;
     println!("[xtask] shipped kernel falls back, boots, responds, and settles");
     Ok(())
 }
 
-/// How long to allow for a cold start before the marker must have appeared.
-///
-/// Three human keystroke rounds fit inside it with room to spare, so a round
-/// nobody answers ends as the kernel's own red check rather than as this
-/// killing the machine — the verdict stays the kernel's (D-240).
+fn require_masked_keyboard(
+    child: &mut Child,
+    qmp: &mut Qmp,
+    panicked: &AtomicBool,
+    serial_failed: &AtomicBool,
+) -> Result<()> {
+    let before = keyboard_irq_count(qmp)?;
+    qmp.inject_key(
+        SHIPPED_CHALLENGE_QCODE,
+        Instant::now() + SHIPPED_CHALLENGE_TIMEOUT,
+        &NOT_CANCELLED,
+    )
+    .context("injecting the shipped-kernel liveness key")?;
+    watch(
+        child,
+        panicked,
+        serial_failed,
+        SHIPPED_CHALLENGE_WINDOW,
+        None,
+    )?;
+    let after = keyboard_irq_count(qmp)?;
+    ensure!(
+        after == before,
+        "the shipped kernel unmasked legacy keyboard IRQ1 ({before} -> {after})"
+    );
+    println!("[xtask] shipped liveness: keyboard input left IRQ1 masked at {after}");
+    Ok(())
+}
+
+fn require_records_seen(
+    required: &[(RequiredLogRecord, Arc<AtomicBool>)],
+    kernel: &str,
+) -> Result<()> {
+    for (record, seen) in required {
+        if !seen.load(Ordering::Acquire) {
+            bail!(
+                "the {kernel} kernel settled without reporting {:?}",
+                record.message
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Three human keystroke rounds fit inside it, so an unanswered round ends as the kernel's own
+/// red check and the verdict stays the kernel's.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// A processor with no x2APIC or optional SMEP/SMAP/UMIP hardening.
-///
-/// The last `-cpu` wins, so this overrides [`MACHINE`]'s.
+/// No x2APIC and no optional SMEP, SMAP or UMIP; the last `-cpu` wins over `machine_args`'s.
 pub(super) const DEGRADED_CPU: [&str; 2] = [
     "-cpu",
     "qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on",
 ];
 
-/// One degraded machine: which facility is missing, and what the boot must say.
 #[derive(Clone, Copy, Debug)]
 struct DegradedProfile {
     announcement: &'static str,
@@ -163,28 +173,18 @@ const UNISOLATED_PROFILE: DegradedProfile = DegradedProfile {
     required: UNISOLATED_REQUIRED_MARKERS,
 };
 
-/// Boot with two independent platform prerequisites absent and require both.
-///
-/// The negative half of D-32 and D-33: every other boot in the gate runs on
-/// `-cpu max` with live PCI configuration, so nothing exercises what the
-/// kernel does when either is missing. A precondition that is only ever met is
-/// indistinguishable from one that is never checked (D-90, D-198).
-///
-/// The bar is deliberately not "it works": the kernel reports both refusals,
-/// exercises the namespaces which need neither facility, and still reaches
-/// its steady state rather than triple-faulting on a missing register.
-/// Boot the degraded image while preserving an exact terminal panic.
+/// Every other boot has x2APIC and PCI configuration, and a precondition only ever met is
+/// indistinguishable from one never checked; this one keeps its exact terminal panic.
 pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_PCI_PROFILE)
 }
 
-/// Boot the shipped image without x2APIC while keeping PCI fenceable.
+/// PCI configuration stays live here, so the DMA handoff can still be fenced.
 pub fn observe_no_x2apic(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_X2APIC_PROFILE)
 }
 
-/// Boot the shipped image on a machine with no remapping unit and require
-/// storage to refuse every candidate rather than run unisolated (D-357).
+/// With no remapping unit, storage must refuse every candidate instead of running unisolated.
 pub fn observe_unisolated(
     paths: &Paths,
     image: &Path,
@@ -260,14 +260,7 @@ fn observe_profile(
             no_x2apic_diagnosed,
         });
     }
-    for (record, seen) in required {
-        if !seen.load(Ordering::Acquire) {
-            bail!(
-                "the degraded kernel settled without reporting {:?}",
-                record.message
-            );
-        }
-    }
+    require_records_seen(&required, "degraded")?;
     Ok(DegradedOutcome::Settled)
 }
 
@@ -321,10 +314,8 @@ fn watch_degraded_window(
     }
 }
 
-/// Watch the serial flags for `window`, failing on a panic or an early exit.
-///
-/// With `until`, the window is a deadline that flag must beat; without one,
-/// the whole window is watched.
+/// With `until`, the window is a deadline that flag must beat; without, the whole window is
+/// watched for a panic or an early exit.
 fn watch(
     child: &mut Child,
     panicked: &AtomicBool,
@@ -354,7 +345,6 @@ fn watch(
     }
 }
 
-/// Forward every serial line, flagging the markers the boot check requires.
 fn watch_serial(
     serial: impl Read + Send + 'static,
     settled: Arc<AtomicBool>,

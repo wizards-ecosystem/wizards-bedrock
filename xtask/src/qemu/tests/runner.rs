@@ -957,9 +957,17 @@ fn selftest_owner_precedes_setup_and_stop_precedes_worker_joins() {
     assert!(cancellation < stop && stop < close && close < joins);
     assert!(body[joins..].contains("finish_injector(worker,&injection_cancelled,join_deadline)"));
     assert!(body[joins..].contains("finish_selftest_serial(worker,join_deadline)"));
-    assert!(body.contains("injector.as_ref().is_some_and(JoinHandle::is_finished)"));
-    assert!(body.contains("std::thread::spawn(move||report_hang(qmp.as_mut()))"));
-    assert!(body.contains("worker_finished_by(&worker,Instant::now()+MONITOR_TIMEOUT);"));
+    let hang_report = body
+        .find("lethang_report=start_hang_report(&observed,&mutinjector,&injection_cancelled);")
+        .unwrap();
+    assert!(cancellation < hang_report && hang_report < stop);
+    let hang = compact_cpp(&rust_function_body(
+        source,
+        "fn start_hang_report(\n    observed: &Result<SelftestTermination>,\n    injector: &mut Option<JoinHandle<Option<Qmp>>>,\n    injection_cancelled: &AtomicBool,\n) -> Result<Option<JoinHandle<()>>> {",
+    ));
+    assert!(hang.contains("injector.as_ref().is_some_and(JoinHandle::is_finished)"));
+    assert!(hang.contains("std::thread::spawn(move||report_hang(qmp.as_mut()))"));
+    assert!(hang.contains("worker_finished_by(&worker,Instant::now()+MONITOR_TIMEOUT);"));
     assert!(body.contains(
         "letoutcome=observed.and_then(|termination|selftest_exit(termination,timeout));"
     ));

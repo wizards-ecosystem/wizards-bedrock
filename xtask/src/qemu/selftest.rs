@@ -3,25 +3,17 @@ use super::*;
 /// Long enough for a reply, short enough not to extend a failing run.
 pub(super) const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// How long QEMU has to greet and accept capabilities after it starts.
 pub(super) const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A kernel that neither passes nor fails within `timeout` is a hang, which is
-/// itself a failure — so the emulator is killed rather than left running.
-///
-/// QMP uses the owned child's standard streams; serial uses a private named
-/// pipe on Windows or a private Unix socket. The injector presses keys after
-/// their serial markers. The owner cancels, stops QEMU and bounds worker joins
-/// on every result path, including when a control write stops making progress.
+/// A kernel that neither passes nor fails within `timeout` has hung, and its emulator is killed.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
     let (outcome, _) =
         observe_selftest_run(paths, image, timeout, true, InteractiveMarkerOrder::Strict)?;
     require_selftest(outcome)
 }
 
-/// Boot `image` headless and preserve a valid red or panic outcome for a
-/// mutation caller. A missing earlier interaction may be skipped so its later
-/// exact verdict remains observable; ordinary self-test boots stay strict.
+/// Keeps a valid red or panic outcome for a mutation caller, which may skip a missing earlier
+/// interaction so its later exact verdict stays observable; ordinary boots stay strict.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
     observe_selftest_run(
         paths,
@@ -33,7 +25,6 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
     .map(|(outcome, _)| outcome)
 }
 
-/// Boot a self-test image and require its one versioned baseline record.
 pub(crate) fn measure_performance(
     paths: &Paths,
     image: &Path,
@@ -45,6 +36,8 @@ pub(crate) fn measure_performance(
     baseline.context("a clean self-test boot emitted no foundation baseline")
 }
 
+/// Every result path cancels, then stops QEMU, then joins its workers under one bounded
+/// deadline, so a stalled control write cannot hold cleanup.
 fn observe_selftest_run(
     paths: &Paths,
     image: &Path,
@@ -81,76 +74,43 @@ fn observe_selftest_run(
 
     let mut machine = QemuLifetime::new(child, stop_qemu);
     let injection_cancelled = Arc::clone(&machine.cancelled);
-    let mut forwarder = None;
-    let mut injector = None;
-    let observed = (|| -> Result<SelftestTermination> {
-        let child = &mut machine.child;
-        let reader = serial.connect(child, Instant::now() + QMP_NEGOTIATION_TIMEOUT)?;
-        let markers_seen = Arc::new(AtomicUsize::new(0));
-        let panicked = Arc::new(AtomicBool::new(false));
-        let serial_failed = Arc::new(AtomicBool::new(false));
-        forwarder = Some(forward_serial(
-            reader,
-            Arc::clone(&markers_seen),
-            Arc::clone(&panicked),
-            Arc::clone(&serial_failed),
+    let mut workers = SelftestWorkers {
+        forwarder: None,
+        injector: None,
+    };
+    let observed = watch_selftest(
+        &mut machine.child,
+        &serial,
+        SelftestWatch {
+            timeout,
             echo_serial,
             marker_order,
-        ));
-        let deadline = Instant::now() + timeout;
-        injector = Some(inject_on_marker(
-            child,
-            markers_seen,
-            deadline,
-            Arc::clone(&injection_cancelled),
-        )?);
-        loop {
-            if let Some(status) = child.try_wait().context("waiting for QEMU")? {
-                return Ok(SelftestTermination::Exited(status.code()));
-            }
-            if panicked.load(Ordering::Acquire) {
-                return Ok(SelftestTermination::Panicked);
-            }
-            if serial_failed.load(Ordering::Acquire) {
-                return Ok(SelftestTermination::SerialFailed);
-            }
-            if Instant::now() >= deadline {
-                return Ok(SelftestTermination::TimedOut);
-            }
-            std::thread::sleep(POLL_INTERVAL);
-        }
-    })();
+        },
+        &injection_cancelled,
+        &mut workers,
+    );
 
     machine.cancel();
-    let mut injection_result = Ok(());
-    let mut reporter = None;
-    let finished_injector = if matches!(observed, Ok(SelftestTermination::TimedOut))
-        && injector.as_ref().is_some_and(JoinHandle::is_finished)
-    {
-        injector.take()
-    } else {
-        None
-    };
-    if let Some(finished) = finished_injector {
-        match finish_injector(finished, &injection_cancelled, Instant::now()) {
-            Ok(mut qmp) => {
-                let worker = std::thread::spawn(move || report_hang(qmp.as_mut()));
-                worker_finished_by(&worker, Instant::now() + MONITOR_TIMEOUT);
-                reporter = Some(worker);
-            }
-            Err(error) => injection_result = Err(error),
-        }
-    }
+    let SelftestWorkers {
+        forwarder,
+        mut injector,
+    } = workers;
+    let hang_report = start_hang_report(&observed, &mut injector, &injection_cancelled);
 
     let stopped = machine.stop();
     serial.close();
     let join_deadline = Instant::now() + QEMU_WORKER_STOP_TIMEOUT;
-    if let Some(worker) = injector {
-        injection_result = finish_injector(worker, &injection_cancelled, join_deadline).map(drop);
-    }
-    let report_result = reporter.map_or(Ok(()), |worker| {
-        join_qemu_worker(worker, join_deadline, "hang reporter")
-    });
+    let (injection_result, report_result) = match hang_report {
+        Err(error) => (Err(error), Ok(())),
+        Ok(reporter) => (
+            injector.map_or(Ok(()), |worker| {
+                finish_injector(worker, &injection_cancelled, join_deadline).map(drop)
+            }),
+            reporter.map_or(Ok(()), |worker| {
+                join_qemu_worker(worker, join_deadline, "hang reporter")
+            }),
+        ),
+    };
     let serial_result = forwarder
         .map(|worker| finish_selftest_serial(worker, join_deadline))
         .transpose();
@@ -166,6 +126,7 @@ fn observe_selftest_run(
     combine_qemu_cleanup(outcome, cleanup)
 }
 
+#[derive(Debug)]
 pub(super) enum SelftestTermination {
     Exited(Option<i32>),
     Panicked,
@@ -188,6 +149,87 @@ pub(super) fn selftest_exit(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SelftestWatch {
+    timeout: Duration,
+    echo_serial: bool,
+    marker_order: InteractiveMarkerOrder,
+}
+
+#[derive(Debug)]
+struct SelftestWorkers {
+    forwarder: Option<JoinHandle<Result<SerialObservation>>>,
+    injector: Option<JoinHandle<Option<Qmp>>>,
+}
+
+/// Each worker is stored the moment it starts, so the owner joins it even when a later step fails.
+fn watch_selftest(
+    child: &mut Child,
+    serial: &SerialChannel,
+    watch: SelftestWatch,
+    injection_cancelled: &Arc<AtomicBool>,
+    workers: &mut SelftestWorkers,
+) -> Result<SelftestTermination> {
+    let reader = serial.connect(child, Instant::now() + QMP_NEGOTIATION_TIMEOUT)?;
+    let markers_seen = Arc::new(AtomicUsize::new(0));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let serial_failed = Arc::new(AtomicBool::new(false));
+    workers.forwarder = Some(forward_serial(
+        reader,
+        Arc::clone(&markers_seen),
+        Arc::clone(&panicked),
+        Arc::clone(&serial_failed),
+        watch.echo_serial,
+        watch.marker_order,
+    ));
+    let deadline = Instant::now() + watch.timeout;
+    workers.injector = Some(inject_on_marker(
+        child,
+        markers_seen,
+        deadline,
+        Arc::clone(injection_cancelled),
+    )?);
+    loop {
+        if let Some(status) = child.try_wait().context("waiting for QEMU")? {
+            return Ok(SelftestTermination::Exited(status.code()));
+        }
+        if panicked.load(Ordering::Acquire) {
+            return Ok(SelftestTermination::Panicked);
+        }
+        if serial_failed.load(Ordering::Acquire) {
+            return Ok(SelftestTermination::SerialFailed);
+        }
+        if Instant::now() >= deadline {
+            return Ok(SelftestTermination::TimedOut);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// A timed-out run whose injector already finished lends its QMP session to a bounded register
+/// report; any other injector is left for the owner to join after QEMU stops.
+fn start_hang_report(
+    observed: &Result<SelftestTermination>,
+    injector: &mut Option<JoinHandle<Option<Qmp>>>,
+    injection_cancelled: &AtomicBool,
+) -> Result<Option<JoinHandle<()>>> {
+    let finished_injector = if matches!(observed, Ok(SelftestTermination::TimedOut))
+        && injector.as_ref().is_some_and(JoinHandle::is_finished)
+    {
+        injector.take()
+    } else {
+        None
+    };
+    let Some(finished) = finished_injector else {
+        return Ok(None);
+    };
+    let mut qmp = finish_injector(finished, injection_cancelled, Instant::now())?;
+    let worker = std::thread::spawn(move || report_hang(qmp.as_mut()));
+    worker_finished_by(&worker, Instant::now() + MONITOR_TIMEOUT);
+    Ok(Some(worker))
+}
+
+#[derive(Debug)]
 pub(super) struct QemuLifetime<C> {
     pub(super) child: C,
     stop: fn(&mut C) -> Result<()>,
@@ -283,10 +325,8 @@ fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
     }
 }
 
-/// Forward every serial line to the console, flagging the ready marker.
-///
-/// A kernel that dies mid-line still shows its last words: the unterminated
-/// remainder at end-of-stream is forwarded too.
+/// An unterminated last line is forwarded too, and each line goes out in one print so no
+/// other thread's message lands between a dying kernel's last words and their newline.
 fn forward_serial(
     serial: impl Read + Send + 'static,
     markers_seen: Arc<AtomicUsize>,
@@ -315,8 +355,6 @@ fn forward_serial(
             }
             let text = String::from_utf8_lossy(&line);
             if echo {
-                // One print per line, so a message from another thread cannot
-                // land between a dying kernel's last words and their newline.
                 echo_serial_line(&line);
             }
             match observe_selftest_line(&mut observation, &text) {
@@ -351,9 +389,8 @@ fn finish_selftest_serial(
     join_qemu_worker(forwarder, deadline, "self-test serial reader")?
 }
 
-/// Inject each key after its marker without letting a QMP stall delay the boot
-/// deadline. The owner stops QEMU before bounded joins so a blocked control
-/// write cannot hold cleanup; a finished thread can supply hang diagnostics.
+/// A QMP stall cannot delay the run deadline: the owner must stop QEMU before joining this
+/// thread, so a blocked control write cannot hold cleanup.
 fn inject_on_marker(
     child: &mut Child,
     markers_seen: Arc<AtomicUsize>,
@@ -406,7 +443,6 @@ fn inject_on_marker(
     }))
 }
 
-/// Cancel and join the self-test injector, recovering its QMP session.
 fn finish_injector(
     injector: JoinHandle<Option<Qmp>>,
     cancelled: &AtomicBool,
@@ -416,8 +452,7 @@ fn finish_injector(
     join_qemu_worker(injector, deadline, "QMP injector")
 }
 
-/// How often to check whether QEMU has exited. Short enough that a passing run
-/// is not padded noticeably, long enough not to spin.
+/// Short enough not to pad a passing run noticeably, long enough not to spin.
 pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const QEMU_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 

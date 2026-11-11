@@ -2,52 +2,28 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::*;
 
-/// Bytes of one logical block on the NVMe namespace.
-///
-/// QEMU's controller formats at 512 and the kernel reads what `Identify`
-/// reports rather than this; the constant is here because the *content* below
-/// is written a block at a time and has to agree with what the driver will
-/// see.
+/// The kernel reads the block size from `Identify`; the content below is written in blocks
+/// and must agree with QEMU's 512-byte format.
 pub const NVME_BLOCK_BYTES: usize = 512;
 
-/// Blocks given known content.
 pub const NVME_SIGNED_BLOCKS: u64 = 8;
 
-/// The first eight bytes of block `lba`.
-///
-/// **Different in every block, on purpose.** A disk of zeros cannot tell a read
-/// that happened from one that did not, and a disk with the same bytes
-/// everywhere cannot tell a read of block three from a read of block zero — so
-/// a driver that ignored the logical block address would pass. This is D-155's
-/// rule applied to a corpus rather than to an argument (D-169).
+/// The first eight bytes of block `lba`, distinct in every block so a driver that skipped the
+/// read or ignored the logical block address would fail.
 pub const fn nvme_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
 
-/// Where the FAT32 volume begins on the namespace, in sectors.
-///
-/// A megabyte in, which is where a partition table would put it. The reader
-/// takes a base sector rather than assuming zero for exactly this reason: a
-/// volume is rarely the first thing on a disk, and a reader that could not be
-/// given an offset is one nothing can be put in front of (D-170).
+/// The FAT32 volume starts a megabyte in, where a partition table would put it, so the reader
+/// must take a base sector.
 pub const NVME_VOLUME_SECTOR: u64 = 2048;
 
-/// Bytes of the NVMe backing file.
-///
-/// The first megabyte carries signed blocks the block-layer checks read, and
-/// the FAT32 corpus follows it. Two things on one namespace rather than two
-/// namespaces, because that is also what a real disk looks like.
+/// Distinct blocks for the block-layer checks fill the first megabyte and the FAT32 corpus
+/// follows on the same namespace, as on a real disk.
 pub(super) const NVME_BYTES: u64 =
     NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64 + crate::image::corpus::VOLUME_BYTES as u64;
 
-/// Build the streamed NVMe namespace shared by the QEMU and VMware runners.
-///
-/// The namespace is machine state rather than boot-image content; its distinct
-/// block signatures and FAT corpus expose wrong-block and missing-read paths.
-///
-/// # Errors
-///
-/// If the file cannot be written, or the corpus cannot be built.
+/// The namespace the QEMU and VMware runners share, machine state apart from the boot image.
 pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     let (parent, backing) = storage_paths(root)?;
     publish_namespace(&parent, &backing, write_nvme_namespace)?;
@@ -267,6 +243,7 @@ pub(super) fn write_nvme_namespace(file: &mut File) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 struct FileWindow<'file> {
     file: &'file mut File,
     start: u64,
@@ -356,13 +333,12 @@ pub(crate) fn nvme_path(root: &Path) -> PathBuf {
         .join("nvme.img")
 }
 
-/// A storage controller for QEMU to find, and the file behind it.
+/// The first controller has no namespace, so the kernel must retire it before using its
+/// sibling.
 pub(super) fn storage(root: &Path) -> Result<Vec<OsString>> {
     let backing = nvme_image(root)?;
     let [drive_flag, drive_spec] = snapshot_drive_file("if=none,id=wizardnvm,format=raw", &backing);
     Ok(vec![
-        // First in PCI enumeration order and deliberately namespace-less: the
-        // kernel must retire it before selecting the usable sibling (D-199).
         OsString::from("-device"),
         OsString::from("nvme,serial=wizard-empty"),
         drive_flag,
