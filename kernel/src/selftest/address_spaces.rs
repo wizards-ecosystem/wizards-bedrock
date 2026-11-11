@@ -35,6 +35,8 @@ pub(super) fn an_admitted_canonical_page_can_be_invalidated() -> bool {
     paging::translate(raw) == Some(before)
 }
 
+// Sample addresses are offsets from a section's base, never a sum of two higher-half addresses:
+// those are within a hair of `u64::MAX` and adding a pair overflows.
 pub(super) fn the_image_obeys_write_xor_execute() -> bool {
     let sections = boot::sections();
     let enclave = sections.entry_enclave;
@@ -55,8 +57,6 @@ pub(super) fn the_image_obeys_write_xor_execute() -> bool {
     ]
     .into_iter()
     .all(|(section, writable, executable)| {
-        // Offsets from the base, never a sum of two higher-half addresses:
-        // those are within a hair of `u64::MAX` and adding a pair overflows.
         let len = section.mapped_len();
         let middle = section.start + ((len / 2) & !4095);
         [section.start, middle, section.start + len - 4096]
@@ -105,12 +105,12 @@ pub(super) fn supervisor_writes_obey_read_only_pages() -> bool {
         && Protections::enabled().write_protect
 }
 
+// Any frame the allocator owns is inside a region the direct map covers, so its direct-map address
+// is a fair sample of the whole mapping.
 pub(super) fn the_direct_map_is_not_executable() -> bool {
     let Some(frame) = mm::allocate() else {
         return false;
     };
-    // Any frame the allocator owns is inside a region the direct map covers,
-    // so its direct-map address is a fair sample of the whole mapping.
     let Some(address) = mm::direct_map().and_then(|map| map.virtual_address(frame.address()))
     else {
         return false;
@@ -127,6 +127,8 @@ pub(super) fn the_direct_map_is_not_executable() -> bool {
     }
 }
 
+// The undescribed address is inside the address space, so only the map can refuse it; an address
+// at the top would be caught by an overflow guard instead.
 pub(super) fn firmware_reads_are_bounded() -> bool {
     const WORD: usize = 8;
 
@@ -142,8 +144,6 @@ pub(super) fn firmware_reads_are_bounded() -> bool {
         pick(|region| region.kind.is_allocatable()),
         pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
         pick(|region| region.kind.is_firmware_table()),
-        // Inside the address space, so only the map can refuse it — an address
-        // at the top would be caught by an overflow guard instead.
         map.regions()
             .map(|region| region.base + region.len)
             .max()
@@ -178,16 +178,19 @@ pub(super) fn in_reclaimed_space(
     checked && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
+fn pages_above_the_boot_stack(pages: u64) -> Option<u64> {
+    thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(pages * PAGE_SIZE))
+}
+
 pub(super) fn a_second_switch_is_refused() -> bool {
     in_reclaimed_space(AddressSpace::new, |space| {
         paging::activate(space) == Err(ActivateError::AlreadyActive)
     })
 }
 
+// `OWNED` is expected because `map_owned` writes it: the entry is where provenance lives.
 pub(super) fn a_mapping_added_after_the_switch_is_live() -> bool {
-    let Some(probe) =
-        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(4 * PAGE_SIZE))
-    else {
+    let Some(probe) = pages_above_the_boot_stack(4) else {
         return false;
     };
 
@@ -204,8 +207,6 @@ pub(super) fn a_mapping_added_after_the_switch_is_live() -> bool {
         return false;
     };
 
-    // `OWNED` is expected because `map_owned` writes it: the entry is where
-    // provenance lives (D-88).
     let expected = wanted.union(Flags::PRESENT).union(Flags::OWNED);
     let translated = paging::translate(probe) == Some((physical, expected));
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
@@ -293,6 +294,8 @@ pub(super) fn two_spaces_map_one_address_to_different_memory() -> bool {
         && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
+// Distinct kernel bytes keep accidental publication from looking zeroed, and a successful
+// reclaim alone does not prove that the bytes were cleared.
 pub(super) fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
     /// A user address nothing else uses.
     const PROBE: u64 = user::STACK + 0x40_0000;
@@ -305,7 +308,6 @@ pub(super) fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
             return false;
         }
 
-        // Recognizable kernel bytes keep accidental publication from looking zeroed.
         let secret = [0xDEu8; 8];
         if !run.write_at(0, &secret) {
             return false;
@@ -331,7 +333,6 @@ pub(super) fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
         let Some(back) = untyped.reclaim() else {
             return false;
         };
-        // A successful reclaim alone does not prove that the bytes were cleared.
         let mut recovered = [0xFFu8; 8];
         let cleared =
             back.address() == address && back.read_at(0, &mut recovered) && recovered == [0u8; 8];
@@ -539,97 +540,94 @@ pub(super) fn an_active_unmap_exposes_only_its_replacement() -> bool {
 }
 
 pub(super) fn a_shared_kernel_unmap_evicts_the_live_user_root() -> bool {
-    const FIRST: u8 = 0xa6;
-    const SECOND: u8 = 0x59;
-
-    let Some(probe) =
-        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(24 * PAGE_SIZE))
-    else {
+    let Some(probe) = pages_above_the_boot_stack(24) else {
         return false;
     };
 
     let Ok(mut observer) = AddressSpace::for_user() else {
         return false;
     };
-    let checked = (|| {
-        if observer.lookup(probe).is_some() {
-            return false;
-        }
-        let Some(mut first) = mm::allocate_contiguous(1, 1) else {
-            return false;
-        };
-        if !first.zero() || !first.write_at(0, &[FIRST]) {
-            return false;
-        }
-        let first_physical = first.address();
-        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-        let mut context = context();
-        let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context, probe, first, flags) else {
-            return false;
-        };
-        let mut live_mapping = Some(mapping);
-
-        let observed = observer
-            .with_root_for_test(|| {
-                let warmed = paging::observe_owned_byte_for_test(probe) == Some(FIRST);
-                let Some(mapping) = live_mapping.take() else {
-                    return false;
-                };
-                let first_taken = match mem::unmap_for_test(&mut context, mapping) {
-                    Some(Ok(taken)) => taken,
-                    _ => panic!("the shared-root fixture could not remove its first leaf"),
-                };
-
-                let Some(mut second) = mm::allocate_contiguous(1, 1) else {
-                    return false;
-                };
-                if !second.zero() || !second.write_at(0, &[SECOND]) {
-                    return false;
-                }
-                let second_physical = second.address();
-                let Some(Ok(second_mapping)) =
-                    mem::map_owned_for_test(&mut context, probe, second, flags)
-                else {
-                    return false;
-                };
-                let table_changed = first_physical != second_physical
-                    && paging::translate(probe)
-                        .is_some_and(|(physical, _)| physical == second_physical);
-                let replacement = paging::observe_owned_byte_for_test(probe) == Some(SECOND);
-                let second_taken = match mem::unmap_for_test(&mut context, second_mapping) {
-                    Some(Ok(taken)) => taken,
-                    _ => panic!("the shared-root fixture could not remove its replacement leaf"),
-                };
-                drop(second_taken);
-                drop(first_taken);
-                warmed && table_changed && replacement
-            })
-            .unwrap_or(false);
-
-        let cleaned = match live_mapping.take() {
-            Some(mapping) => match mem::unmap_for_test(&mut context, mapping) {
-                Some(Ok(taken)) => {
-                    drop(taken);
-                    true
-                }
-                _ => panic!("the shared-root fixture could not clean its unused leaf"),
-            },
-            None => true,
-        };
-        observed && cleaned && paging::translate(probe).is_none()
-    })();
+    let checked = the_observer_reads_the_replaced_shared_leaf(&observer, probe);
     let reclaimed = observer.reclaim(None).is_ok();
     checked && reclaimed
 }
 
+fn the_observer_reads_the_replaced_shared_leaf(observer: &AddressSpace, probe: u64) -> bool {
+    const FIRST: u8 = 0xa6;
+    const SECOND: u8 = 0x59;
+
+    if observer.lookup(probe).is_some() {
+        return false;
+    }
+    let Some(mut first) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !first.zero() || !first.write_at(0, &[FIRST]) {
+        return false;
+    }
+    let first_physical = first.address();
+    let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let mut context = context();
+    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context, probe, first, flags) else {
+        return false;
+    };
+    let mut live_mapping = Some(mapping);
+
+    let observed = observer
+        .with_root_for_test(|| {
+            let warmed = paging::observe_owned_byte_for_test(probe) == Some(FIRST);
+            let Some(mapping) = live_mapping.take() else {
+                return false;
+            };
+            let first_taken = match mem::unmap_for_test(&mut context, mapping) {
+                Some(Ok(taken)) => taken,
+                _ => panic!("the shared-root fixture could not remove its first leaf"),
+            };
+
+            let Some(mut second) = mm::allocate_contiguous(1, 1) else {
+                return false;
+            };
+            if !second.zero() || !second.write_at(0, &[SECOND]) {
+                return false;
+            }
+            let second_physical = second.address();
+            let Some(Ok(second_mapping)) =
+                mem::map_owned_for_test(&mut context, probe, second, flags)
+            else {
+                return false;
+            };
+            let table_changed = first_physical != second_physical
+                && paging::translate(probe)
+                    .is_some_and(|(physical, _)| physical == second_physical);
+            let replacement = paging::observe_owned_byte_for_test(probe) == Some(SECOND);
+            let second_taken = match mem::unmap_for_test(&mut context, second_mapping) {
+                Some(Ok(taken)) => taken,
+                _ => panic!("the shared-root fixture could not remove its replacement leaf"),
+            };
+            drop(second_taken);
+            drop(first_taken);
+            warmed && table_changed && replacement
+        })
+        .unwrap_or(false);
+
+    let cleaned = match live_mapping.take() {
+        Some(mapping) => match mem::unmap_for_test(&mut context, mapping) {
+            Some(Ok(taken)) => {
+                drop(taken);
+                true
+            }
+            _ => panic!("the shared-root fixture could not clean its unused leaf"),
+        },
+        None => true,
+    };
+    observed && cleaned && paging::translate(probe).is_none()
+}
+
+// The ownership snapshots describe only this fixture, so no timer may hand the CPU to the cleanup
+// worker, whose retirement of older zombies would make correct local reclamation look imbalanced.
 pub(super) fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool {
     const AT: u64 = 0x0000_0500_0000_0000;
-    const OBSERVER: u8 = 0x3c;
-    const VICTIM: u8 = 0xc3;
 
-    // The ownership snapshots describe only this fixture. Do not let a timer
-    // hand the CPU to the cleanup worker so it can retire older zombies between
-    // those snapshots and make correct local reclamation look imbalanced.
     let disabled = interrupt::disable();
     let result = (|| {
         let allocator_before = AllocatorSnapshot::capture();
@@ -643,74 +641,7 @@ pub(super) fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool
             return false;
         };
 
-        let checked = (|| {
-            if observer.root() == victim.root() {
-                return false;
-            }
-            let (Some(mut observer_page), Some(mut victim_page)) =
-                (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
-            else {
-                return false;
-            };
-            if !observer_page.zero()
-                || !observer_page.write_at(0, &[OBSERVER])
-                || !victim_page.zero()
-                || !victim_page.write_at(0, &[VICTIM])
-            {
-                return false;
-            }
-            let observer_physical = observer_page.address();
-            let victim_physical = victim_page.address();
-            let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-            if observer.map_user(AT, observer_page.into(), flags).is_err()
-                || victim.map_user(AT, victim_page.into(), flags).is_err()
-            {
-                return false;
-            }
-            let leaves_are_distinct = observer_physical != victim_physical
-                && observer
-                    .lookup(AT)
-                    .is_some_and(|(physical, _)| physical == observer_physical)
-                && victim
-                    .lookup(AT)
-                    .is_some_and(|(physical, _)| physical == victim_physical);
-            if !leaves_are_distinct {
-                return false;
-            }
-
-            observer.with_root_for_test(|| {
-                let mut byte = [0];
-                let warmed = usercopy::copy_from_user(AT, &mut byte).is_ok() && byte == [OBSERVER];
-                let warmed_translation = paging::translate(AT);
-                let warmed_leaf = observer.lookup(AT);
-                let invalidations_before = cpu::page_invalidations_for_test();
-                let removed = victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
-                let invalidations_after = cpu::page_invalidations_for_test();
-                let no_eviction = invalidations_after == invalidations_before;
-                byte = [0];
-                let observer_unchanged = paging::translate(AT) == warmed_translation
-                    && observer.lookup(AT) == warmed_leaf
-                    && usercopy::copy_from_user(AT, &mut byte).is_ok()
-                    && byte == [OBSERVER];
-                let victim_cleared = victim.lookup(AT).is_none();
-                let result = warmed
-                    && warmed_translation.is_some()
-                    && warmed_translation == warmed_leaf
-                    && removed
-                    && victim_cleared
-                    && no_eviction
-                    && observer_unchanged;
-                if !result {
-                    warn!(
-                        "selftest: inactive-unmap evidence warmed={warmed} translation={} leaf-match={} removed={removed} victim-cleared={victim_cleared} invalidations={invalidations_before}->{invalidations_after} observer-unchanged={observer_unchanged}",
-                        warmed_translation.is_some(),
-                        warmed_translation == warmed_leaf,
-                    );
-                }
-                result
-            })
-            .unwrap_or(false)
-        })();
+        let checked = the_victim_unmap_spares_the_observer(&mut observer, &mut victim, AT);
 
         let observer_cleaned =
             observer.lookup(AT).is_none() || observer.unmap(AT, PAGE_SIZE).map(drop).is_ok();
@@ -740,6 +671,88 @@ pub(super) fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool
     result
 }
 
+fn the_victim_unmap_spares_the_observer(
+    observer: &mut AddressSpace,
+    victim: &mut AddressSpace,
+    at: u64,
+) -> bool {
+    const OBSERVER: u8 = 0x3c;
+    const VICTIM: u8 = 0xc3;
+
+    if observer.root() == victim.root() {
+        return false;
+    }
+    let (Some(mut observer_page), Some(mut victim_page)) =
+        (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
+    else {
+        return false;
+    };
+    if !observer_page.zero()
+        || !observer_page.write_at(0, &[OBSERVER])
+        || !victim_page.zero()
+        || !victim_page.write_at(0, &[VICTIM])
+    {
+        return false;
+    }
+    let observer_physical = observer_page.address();
+    let victim_physical = victim_page.address();
+    let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    if observer.map_user(at, observer_page.into(), flags).is_err()
+        || victim.map_user(at, victim_page.into(), flags).is_err()
+    {
+        return false;
+    }
+    let leaves_are_distinct = observer_physical != victim_physical
+        && observer
+            .lookup(at)
+            .is_some_and(|(physical, _)| physical == observer_physical)
+        && victim
+            .lookup(at)
+            .is_some_and(|(physical, _)| physical == victim_physical);
+    if !leaves_are_distinct {
+        return false;
+    }
+
+    observer
+        .with_root_for_test(|| {
+            let mut byte = [0];
+            let warmed = usercopy::copy_from_user(at, &mut byte).is_ok() && byte == [OBSERVER];
+            let warmed_translation = paging::translate(at);
+            let warmed_leaf = observer.lookup(at);
+            let invalidations_before = cpu::page_invalidations_for_test();
+            let removed = victim.unmap(at, PAGE_SIZE).map(drop).is_ok();
+            let invalidations_after = cpu::page_invalidations_for_test();
+            let no_eviction = invalidations_after == invalidations_before;
+            byte = [0];
+            let observer_unchanged = paging::translate(at) == warmed_translation
+                && observer.lookup(at) == warmed_leaf
+                && usercopy::copy_from_user(at, &mut byte).is_ok()
+                && byte == [OBSERVER];
+            let victim_cleared = victim.lookup(at).is_none();
+            let result = warmed
+                && warmed_translation.is_some()
+                && warmed_translation == warmed_leaf
+                && removed
+                && victim_cleared
+                && no_eviction
+                && observer_unchanged;
+            if !result {
+                warn!(
+                    "selftest: inactive-unmap evidence warmed={warmed} translation={} leaf-match={} removed={removed} victim-cleared={victim_cleared} invalidations={invalidations_before}->{invalidations_after} observer-unchanged={observer_unchanged}",
+                    warmed_translation.is_some(),
+                    warmed_translation == warmed_leaf,
+                );
+            }
+            result
+        })
+        .unwrap_or(false)
+}
+
+// An unmapped user page comes back untyped, and only a clearing conversion makes it the kernel's
+// again, followed through the handle without asking the allocator; the kernel conversion cannot
+// hand a user range over as a `Segment`.
+// Reallocation need not return these frames, so a tally observes the drop clear without relying
+// on same-frame readback.
 pub(super) fn a_user_page_comes_back_cleared() -> bool {
     /// Two user addresses nothing else uses.
     const FIRST: u64 = user::STACK + 0xA0_0000;
@@ -761,8 +774,6 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
             return false;
         }
 
-        // It comes back untyped, and only a clearing conversion makes it the
-        // kernel's again; the handle is followed, not the allocator asked.
         let Ok(unmapped) = space.unmap(FIRST, PAGE_SIZE) else {
             return false;
         };
@@ -780,7 +791,6 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
             && recovered != SECRET;
         drop(back);
 
-        // The kernel conversion cannot hand a user range over as a `Segment`.
         let Some(mut other) = mm::allocate_contiguous(1, 1) else {
             return false;
         };
@@ -795,8 +805,6 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
         };
         let refused_as_kernel = second.into_kernel().is_none();
 
-        // Reallocation need not return these frames, so a tally observes the
-        // drop clear without relying on same-frame readback (D-119, D-123).
         let cleared_before = paging::cleared_on_drop();
         let Some(mut third) = mm::allocate_contiguous(2, 1) else {
             return false;
@@ -820,6 +828,8 @@ pub(super) fn a_user_page_comes_back_cleared() -> bool {
     })
 }
 
+// Refused with no evidence and left untouched, so the same value can be reclaimed once the task
+// table supplies the evidence, which shows the refusal is not a reclaim that never works.
 pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
     let allocator_before = AllocatorSnapshot::capture();
     let Ok(mut space) = AddressSpace::for_user() else {
@@ -836,7 +846,6 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
         return false;
     };
 
-    // A thread to bind it to, which is what makes it un-reclaimable.
     let mut bound = None;
     let slot =
         match thread::spawn_in_space("bound-space", leave_at_once, binding, |_, installed| {
@@ -873,8 +882,6 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
         Err(bound) => bound,
     };
 
-    // Refused with no evidence and left untouched, so the same value can be
-    // reclaimed once the task table supplies the evidence below.
     let held = mm::free_frames();
     let refused = matches!(
         space.reclaim(None),
@@ -885,15 +892,27 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
     ) && !space.is_reclaimed()
         && mm::free_frames() == held;
 
-    // And once the thread is gone, the task table says so and the space comes
-    // back — so this is not simply "reclaim never works".
     let gone = runs_until(500, || !task::slot_is_live_for_test(slot));
     assert!(gone, "the bound-space witness did not retire");
     let released = task::release_address_space(bound)
         .expect("a retired bound-space witness releases its binding");
+    let reclaimed = release_evidence_survives_other_targets(
+        &mut space,
+        released,
+        ReclaimError::UnexpectedRelease(root),
+    );
+    drop(space);
 
-    // Release evidence survives a foreign and a repeated target, and the
-    // rightful space is still reclaimable with it afterwards.
+    refused && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
+// Release evidence survives a foreign and a repeated target, and the rightful space is still
+// reclaimable with it afterwards.
+fn release_evidence_survives_other_targets(
+    space: &mut AddressSpace,
+    released: task::Released,
+    foreign_refusal: ReclaimError,
+) -> bool {
     let Ok(mut foreign) = AddressSpace::for_user() else {
         assert!(
             space.reclaim(Some(released)).is_ok(),
@@ -905,10 +924,7 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
         Err(failure) => failure,
         Ok(_) => panic!("a foreign space consumed release evidence"),
     };
-    let foreign_refused = matches!(
-        foreign_failure.reason,
-        ReclaimError::UnexpectedRelease(found) if found == root
-    ) && !foreign.is_reclaimed();
+    let foreign_refused = foreign_failure.reason == foreign_refusal && !foreign.is_reclaimed();
     let Some(released) = foreign_failure.released else {
         panic!("a foreign-space refusal lost release evidence");
     };
@@ -927,9 +943,7 @@ pub(super) fn a_bound_space_is_not_reclaimed() -> bool {
         && space.reclaim(Some(released)).is_ok_and(|tables| tables > 0)
         && space.is_reclaimed();
     drop(foreign);
-    drop(space);
-
-    refused && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+    reclaimed
 }
 
 pub(super) fn one_space_has_one_binding() -> bool {
@@ -1027,13 +1041,11 @@ pub(super) fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
         return false;
     };
 
-    // Where this check is actually running.
     let pointer = cpu::stack_pointer();
     if pointer < slot.stack_base() || pointer >= slot.stack_top() {
         return false;
     }
 
-    // Every guard page below it is absent.
     let mut guard = slot.guard_base();
     while guard < slot.stack_base() {
         if paging::translate(guard).is_some() {
@@ -1042,7 +1054,6 @@ pub(super) fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
         guard += PAGE_SIZE;
     }
 
-    // And every page it stands on is writable and never executable.
     let mut page = slot.stack_base();
     while page < slot.stack_top() {
         match paging::translate(page) {
@@ -1067,7 +1078,6 @@ pub(super) fn the_double_fault_stack_is_guarded() -> bool {
         return false;
     }
 
-    // Every guard page below it is absent.
     let mut guard = slot.guard_base();
     while guard < slot.stack_base() {
         if paging::translate(guard).is_some() {
@@ -1076,7 +1086,6 @@ pub(super) fn the_double_fault_stack_is_guarded() -> bool {
         guard += PAGE_SIZE;
     }
 
-    // Every stack page is present, writable and never executable.
     let mut page = slot.stack_base();
     while page < slot.stack_top() {
         match paging::translate(page) {
@@ -1209,6 +1218,8 @@ pub(super) fn protected_stacks_refuse_overlapping_maps() -> bool {
     all_refused && mm::free_frames() == free_before
 }
 
+// The shared half is not reachable from ring 3: a top-level entry carrying `USER` would hand
+// every program the kernel.
 pub(super) fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
     in_reclaimed_space(AddressSpace::for_user, |space| {
         let text = boot::sections().text.start;
@@ -1232,9 +1243,6 @@ pub(super) fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
             return false;
         };
         let user_is_absent = paging::translate(probe).is_some() && space.lookup(probe).is_none();
-
-        // The shared half is not reachable from ring 3: a top-level entry
-        // carrying `USER` would hand every program the kernel.
         let kernel_is_not_user = space
             .lookup(text)
             .is_some_and(|(_, flags)| !flags.contains(Flags::USER));
@@ -1243,6 +1251,9 @@ pub(super) fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
     })
 }
 
+// The user page is user-accessible all the way down; the kernel text is not, and neither are its
+// parents. The direct map's writable, never-executable pair is what W^X depends on being
+// reported truthfully.
 pub(super) fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     let Some((user_at, _)) = boundary_probe() else {
         return false;
@@ -1250,18 +1261,14 @@ pub(super) fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     let Some((_, user_flags)) = paging::translate(user_at) else {
         return false;
     };
-    // The user page really is user-accessible, all the way down.
     let user_is_user = user_flags.contains(Flags::USER);
 
-    // The kernel's own text is not, and neither are its parents.
     let text = boot::sections().text.start;
     let Some((_, text_flags)) = paging::translate(text) else {
         return false;
     };
     let kernel_is_not_user = !text_flags.contains(Flags::USER);
 
-    // And the direct map is writable and never executable, which is the pair
-    // W^X depends on being reported truthfully.
     let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
         return false;
     };
@@ -1274,18 +1281,16 @@ pub(super) fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     user_is_user && kernel_is_not_user && direct_is_data
 }
 
+// The blocker occupies the second page of the range, so the mapping gets one page in before it is
+// refused.
 pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
-    let Some(base) =
-        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(8 * PAGE_SIZE))
-    else {
+    let Some(base) = pages_above_the_boot_stack(8) else {
         return false;
     };
     let blocker = base + PAGE_SIZE;
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
     let free_before = mm::free_frames();
 
-    // Occupy the *second* page of the range, so the mapping below gets one
-    // page in before it is refused.
     let Some(taken) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
@@ -1533,7 +1538,6 @@ pub(super) fn ram_mappings_keep_the_direct_map_cache_type() -> bool {
         });
     }
 
-    // Each boot range maps with exactly its own direct-map type.
     let framebuffer = mm::memory_map_for_test().and_then(|map| {
         map.page_runs()
             .find(|run| run.cache() == wost::boot::DirectMapCache::Framebuffer)
@@ -1633,12 +1637,12 @@ pub(super) fn a_large_space_returns_every_table_frame() -> bool {
         && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
+// The entries go when `unmap` returns, but its frames are withheld from the allocator until the
+// token converts.
 pub(super) fn an_unmapped_range_returns_its_frames() -> bool {
-    /// More than one page, so the walk covers a run rather than a single slot.
+    /// More than one page, so the walk covers a run of slots.
     const PAGES: u64 = 4;
-    let Some(probe) =
-        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(16 * PAGE_SIZE))
-    else {
+    let Some(probe) = pages_above_the_boot_stack(16) else {
         return false;
     };
 
@@ -1660,9 +1664,7 @@ pub(super) fn an_unmapped_range_returns_its_frames() -> bool {
         return false;
     };
 
-    // The entries are gone the moment `unmap` returns...
     let gone = paging::translate(probe).is_none();
-    // ...but the frames are not the allocator's yet.
     let withheld = mm::free_frames() == free_while_mapped && token.pages() == PAGES;
 
     let returned = token.into_kernel().is_some_and(|segment| {
@@ -1709,6 +1711,8 @@ pub(super) fn a_differing_remap_is_refused() -> bool {
     })
 }
 
+// With the bit stripped, `unmap` sees a mapping nothing owns and refuses it, so no second owner of
+// a boot frame is minted.
 pub(super) fn a_boot_mapping_cannot_claim_ownership() -> bool {
     /// Canonical, and far from anything a fresh space maps.
     const PROBE: u64 = 0xffff_8880_0000_0000;
@@ -1727,102 +1731,106 @@ pub(super) fn a_boot_mapping_cannot_claim_ownership() -> bool {
             .lookup(PROBE)
             .is_some_and(|(_, flags)| !flags.contains(Flags::OWNED));
         let before = mm::free_frames();
-        // With the bit stripped, `unmap` sees a mapping nothing owns and
-        // refuses, rather than minting a second owner of a boot frame.
         let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
         provenance_removed && refused && mm::free_frames() == before
     })
 }
 
 pub(super) fn writable_executable_mappings_leave_no_trace() -> bool {
-    /// Canonical user memory, far from every mapping a fresh space inherits.
-    const BOOT: u64 = 0x0000_0500_0000_0000;
-    const OWNED: u64 = 0x0000_0600_0000_0000;
-    const USER: u64 = 0x0000_0700_0000_0000;
-    const SHARED: u64 = 0x0000_0800_0000_0000;
-    const RING: u64 = 0x0000_0900_0000_0000;
-
     let allocator_before = AllocatorSnapshot::capture();
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
     let free_with_root = mm::free_frames();
-    let checked = (|| {
-        let hostile = Flags::WRITABLE;
-        let Some(region) = probe_page(0) else {
-            return false;
-        };
-        if space.map_boot(BOOT, region, hostile) != Err(MapError::WriteExecute(BOOT))
-            || space.lookup(BOOT).is_some()
-            || mm::free_frames() != free_with_root
-        {
-            return false;
-        }
-
-        let Some(owned) = mm::allocate_contiguous(1, 1) else {
-            return false;
-        };
-        if space.map_owned(OWNED, owned, hostile) != Err(MapError::WriteExecute(OWNED))
-            || space.lookup(OWNED).is_some()
-            || mm::free_frames() != free_with_root
-        {
-            return false;
-        }
-
-        let Some(mut user) = mm::allocate_contiguous(1, 1) else {
-            return false;
-        };
-        if !user.zero() {
-            return false;
-        }
-        let user_result = space.map_user(USER, user.into(), hostile);
-        let user_refused = matches!(
-            &user_result,
-            Err(error) if error.reason() == MapError::WriteExecute(USER)
-        ) && space.lookup(USER).is_none();
-        drop(user_result);
-        if !user_refused || mm::free_frames() != free_with_root {
-            return false;
-        }
-
-        let Some(mut shared) = mm::allocate_contiguous(1, 1) else {
-            return false;
-        };
-        if !shared.zero() {
-            return false;
-        }
-        let shared = mm::USegment::from(shared).share().into_bytes();
-        let shared_refused = space.map_shared(SHARED, &shared, hostile)
-            == Err(MapError::WriteExecute(SHARED))
-            && space.lookup(SHARED).is_none();
-        drop(shared);
-        if !shared_refused || mm::free_frames() != free_with_root {
-            return false;
-        }
-
-        let Some(mut ring) = mm::allocate_contiguous(1, 1) else {
-            return false;
-        };
-        if !ring.zero() {
-            return false;
-        }
-        let Ok(layout) = SharedLayout::<1>::new(PAGE_SIZE as usize, [0]) else {
-            return false;
-        };
-        let Ok(ring) = mm::USegment::from(ring).share().into_ring(layout) else {
-            return false;
-        };
-        let ring_refused = space.map_shared_ring(RING, &ring, hostile)
-            == Err(MapError::WriteExecute(RING))
-            && space.lookup(RING).is_none();
-        drop(ring);
-
-        ring_refused && mm::free_frames() == free_with_root
-    })();
+    let checked = private_write_execute_maps_are_refused(&mut space, free_with_root)
+        && shared_write_execute_maps_are_refused(&mut space, free_with_root);
     let root_only = space.reclaim(None).is_ok_and(|tables| tables == 1);
     drop(space);
 
     checked && root_only && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
+fn private_write_execute_maps_are_refused(space: &mut AddressSpace, free_with_root: usize) -> bool {
+    /// Canonical user memory, far from every mapping a fresh space inherits.
+    const BOOT: u64 = 0x0000_0500_0000_0000;
+    const OWNED: u64 = 0x0000_0600_0000_0000;
+    const USER: u64 = 0x0000_0700_0000_0000;
+
+    let hostile = Flags::WRITABLE;
+    let Some(region) = probe_page(0) else {
+        return false;
+    };
+    if space.map_boot(BOOT, region, hostile) != Err(MapError::WriteExecute(BOOT))
+        || space.lookup(BOOT).is_some()
+        || mm::free_frames() != free_with_root
+    {
+        return false;
+    }
+
+    let Some(owned) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if space.map_owned(OWNED, owned, hostile) != Err(MapError::WriteExecute(OWNED))
+        || space.lookup(OWNED).is_some()
+        || mm::free_frames() != free_with_root
+    {
+        return false;
+    }
+
+    let Some(mut user) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !user.zero() {
+        return false;
+    }
+    let user_result = space.map_user(USER, user.into(), hostile);
+    let user_refused = matches!(
+        &user_result,
+        Err(error) if error.reason() == MapError::WriteExecute(USER)
+    ) && space.lookup(USER).is_none();
+    drop(user_result);
+    user_refused && mm::free_frames() == free_with_root
+}
+
+fn shared_write_execute_maps_are_refused(space: &mut AddressSpace, free_with_root: usize) -> bool {
+    /// Canonical user memory, far from every mapping a fresh space inherits.
+    const SHARED: u64 = 0x0000_0800_0000_0000;
+    const RING: u64 = 0x0000_0900_0000_0000;
+
+    let hostile = Flags::WRITABLE;
+    let Some(mut shared) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !shared.zero() {
+        return false;
+    }
+    let shared = mm::USegment::from(shared).share().into_bytes();
+    let shared_refused = space.map_shared(SHARED, &shared, hostile)
+        == Err(MapError::WriteExecute(SHARED))
+        && space.lookup(SHARED).is_none();
+    drop(shared);
+    if !shared_refused || mm::free_frames() != free_with_root {
+        return false;
+    }
+
+    let Some(mut ring) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !ring.zero() {
+        return false;
+    }
+    let Ok(layout) = SharedLayout::<1>::new(PAGE_SIZE as usize, [0]) else {
+        return false;
+    };
+    let Ok(ring) = mm::USegment::from(ring).share().into_ring(layout) else {
+        return false;
+    };
+    let ring_refused = space.map_shared_ring(RING, &ring, hostile)
+        == Err(MapError::WriteExecute(RING))
+        && space.lookup(RING).is_none();
+    drop(ring);
+
+    ring_refused && mm::free_frames() == free_with_root
 }
 
 pub(super) fn caller_global_is_removed_from_safe_mappings() -> bool {
@@ -1999,8 +2007,10 @@ pub(super) fn paired_space_refusal_and_retirement_conserve_every_frame() -> bool
     checked && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
+// The direct map ensures the hostile walk reaches real entries to blank.
+// The canonical-hole check precedes half ownership, so the straddle must report that distinct
+// refusal, and the last mappable user page reaches the mapping lookup past the half refusal.
 pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
-    // The direct map ensures the hostile walk reaches real entries to blank.
     const KERNEL: u64 = 0xffff_8000_0010_0000;
     const HOLE_EDGE: u64 = x86_paging::USER_MAPPING_END;
     const LAST_USER: u64 = x86_paging::USER_MAPPING_END - PAGE_SIZE;
@@ -2011,12 +2021,8 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
         };
         let unmapped = user.unmap(KERNEL, PAGE_SIZE);
         let mapped = user.map_boot(KERNEL, region, Flags::NO_EXECUTE);
-        // The canonical-hole check precedes half ownership, so the straddle
-        // must report that distinct refusal.
         let straddles =
             user.unmap(HOLE_EDGE, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(HOLE_EDGE));
-        // The last mappable user page reaches mapping lookup rather than half
-        // refusal.
         let reaches_its_own =
             user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
 
@@ -2027,9 +2033,9 @@ pub(super) fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     })
 }
 
+// Code ending on this page would trap with a non-canonical return address, which `iretq` refuses
+// in ring 0.
 pub(super) fn the_last_canonical_page_is_never_user_memory() -> bool {
-    // Code ending on this page would trap with a non-canonical return
-    // address, which `iretq` refuses in ring 0 (D-348).
     const TOP: u64 = x86_paging::USER_MAPPING_END;
     const BELOW: u64 = TOP - PAGE_SIZE;
 
@@ -2092,16 +2098,15 @@ pub(super) fn a_user_mapping_cannot_widen_a_supervisor_table() -> bool {
     })
 }
 
+// Unaligned and empty ranges are refused before the map is consulted, and a range that runs off
+// the end of physical space cannot overflow its way into looking described.
 pub(super) fn an_undescribed_range_cannot_be_mapped() -> bool {
     /// Far above anything a PC memory map describes, and above `mm::CEILING`.
     const NOWHERE: u64 = 0x0000_7000_0000_0000;
 
     BootRegion::describe(NOWHERE, PAGE_SIZE).is_none()
-        // Unaligned and empty ranges are refused before the map is consulted.
         && BootRegion::describe(PAGE_SIZE + 1, PAGE_SIZE).is_none()
         && BootRegion::describe(PAGE_SIZE, 0).is_none()
-        // And a range that runs off the end of physical space cannot overflow
-        // its way into looking described.
         && BootRegion::describe(u64::MAX - PAGE_SIZE + 1, PAGE_SIZE).is_none()
 }
 
@@ -2154,70 +2159,6 @@ pub(super) fn malformed_device_extents_are_refused() -> bool {
 }
 
 pub(super) fn device_window_reuses_arbitrary_order_gaps() -> bool {
-    fn exercise(context: &mut ThreadContext, physical: u64) -> Option<bool> {
-        let before = mem::device_mappings(context)?;
-        let first = match mem::map_device(context, physical, PAGE_SIZE)? {
-            Ok(mapping) => mapping,
-            Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => return None,
-            Err(_) => return Some(false),
-        };
-        let first_address = first.address();
-        let Ok(first) = first.claim_releasable() else {
-            return Some(false);
-        };
-
-        let second = match mem::map_device(context, physical + PAGE_SIZE, PAGE_SIZE)? {
-            Ok(mapping) => mapping,
-            Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => {
-                if matches!(
-                    mem::unmap_device_exact(context, first),
-                    mem::DeviceRetirement::Retired
-                ) {
-                    return None;
-                }
-                return Some(false);
-            }
-            Err(_) => return Some(false),
-        };
-        let Ok(second) = second.claim_releasable() else {
-            return Some(false);
-        };
-
-        paging::refuse_device_unmap_for_test();
-        let first_removed = match mem::unmap_device(context, first) {
-            mem::DeviceUnmapOutcome::Refused(failure) => {
-                let unchanged = mem::device_mappings(context) == Some(before + 2);
-                unchanged
-                    && matches!(
-                        mem::unmap_device_exact(context, failure.region),
-                        mem::DeviceRetirement::Retired
-                    )
-            }
-            _ => false,
-        };
-        let second_removed = matches!(
-            mem::unmap_device_exact(context, second),
-            mem::DeviceRetirement::Retired
-        );
-        if !first_removed || !second_removed {
-            return Some(false);
-        }
-
-        let third = match mem::map_device(context, physical, PAGE_SIZE)? {
-            Ok(mapping) => mapping,
-            Err(_) => return Some(false),
-        };
-        let reused = third.address() == first_address;
-        let Ok(third) = third.claim_releasable() else {
-            return Some(false);
-        };
-        let restored = matches!(
-            mem::unmap_device_exact(context, third),
-            mem::DeviceRetirement::Retired
-        ) && mem::device_mappings(context) == Some(before);
-        Some(reused && restored)
-    }
-
     let Some(map) = mm::memory_map_for_test() else {
         return false;
     };
@@ -2249,7 +2190,9 @@ pub(super) fn device_window_reuses_arbitrary_order_gaps() -> bool {
                         boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
                     )
             });
-            if exclusively_device && let Some(result) = exercise(&mut context, physical) {
+            if exclusively_device
+                && let Some(result) = device_gaps_are_reused_at(&mut context, physical)
+            {
                 return result;
             }
             let Some(next) = physical.checked_add(PAGE_SIZE) else {
@@ -2259,6 +2202,70 @@ pub(super) fn device_window_reuses_arbitrary_order_gaps() -> bool {
         }
     }
     false
+}
+
+fn device_gaps_are_reused_at(context: &mut ThreadContext, physical: u64) -> Option<bool> {
+    let before = mem::device_mappings(context)?;
+    let first = match mem::map_device(context, physical, PAGE_SIZE)? {
+        Ok(mapping) => mapping,
+        Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => return None,
+        Err(_) => return Some(false),
+    };
+    let first_address = first.address();
+    let Ok(first) = first.claim_releasable() else {
+        return Some(false);
+    };
+
+    let second = match mem::map_device(context, physical + PAGE_SIZE, PAGE_SIZE)? {
+        Ok(mapping) => mapping,
+        Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => {
+            if matches!(
+                mem::unmap_device_exact(context, first),
+                mem::DeviceRetirement::Retired
+            ) {
+                return None;
+            }
+            return Some(false);
+        }
+        Err(_) => return Some(false),
+    };
+    let Ok(second) = second.claim_releasable() else {
+        return Some(false);
+    };
+
+    paging::refuse_device_unmap_for_test();
+    let first_removed = match mem::unmap_device(context, first) {
+        mem::DeviceUnmapOutcome::Refused(failure) => {
+            let unchanged = mem::device_mappings(context) == Some(before + 2);
+            unchanged
+                && matches!(
+                    mem::unmap_device_exact(context, failure.region),
+                    mem::DeviceRetirement::Retired
+                )
+        }
+        _ => false,
+    };
+    let second_removed = matches!(
+        mem::unmap_device_exact(context, second),
+        mem::DeviceRetirement::Retired
+    );
+    if !first_removed || !second_removed {
+        return Some(false);
+    }
+
+    let third = match mem::map_device(context, physical, PAGE_SIZE)? {
+        Ok(mapping) => mapping,
+        Err(_) => return Some(false),
+    };
+    let reused = third.address() == first_address;
+    let Ok(third) = third.claim_releasable() else {
+        return Some(false);
+    };
+    let restored = matches!(
+        mem::unmap_device_exact(context, third),
+        mem::DeviceRetirement::Retired
+    ) && mem::device_mappings(context) == Some(before);
+    Some(reused && restored)
 }
 
 pub(super) struct DeviceLiveness {
@@ -2365,6 +2372,10 @@ pub(super) fn active_kernel_topology_is_frozen() -> bool {
     mem::active_kernel_topology_is_frozen(&mut context()) == Some(true)
 }
 
+// A page is mapped first, so the later `None` is about the reclaim.
+// Never bound, so reclaim exercises the cold-space path.
+// Refusals are counted because frame zero reads as zeros, so an unguarded `lookup` returns the
+// same `None` the guard does.
 pub(super) fn a_reclaimed_space_answers_nothing() -> bool {
     let allocator_before = AllocatorSnapshot::capture();
     let Ok(mut space) = AddressSpace::for_user() else {
@@ -2372,8 +2383,6 @@ pub(super) fn a_reclaimed_space_answers_nothing() -> bool {
     };
     let zero_is_live = space.zero_root_is_live_for_test();
 
-    // Something to look up, so the `None` below is about the reclaim and not
-    // about an empty space.
     let Some(mut page) = mm::allocate_contiguous(1, 1) else {
         let reclaimed = space.reclaim(None).is_ok();
         drop(space);
@@ -2409,12 +2418,9 @@ pub(super) fn a_reclaimed_space_answers_nothing() -> bool {
     let answered_before = space.lookup(at).is_some();
     let unmapped = space.unmap(at, PAGE_SIZE).map(drop).is_ok();
 
-    // Never bound, so reclaim exercises the cold-space path.
     let reclaimed = space.reclaim(None).is_ok();
     let empty = space.is_reclaimed();
 
-    // Counted, not observed: frame zero reads as zeros, so an unguarded
-    // `lookup` returns the same `None` the guard does (D-139).
     let refusals = paging::reclaimed_refusals();
 
     let silent = space.lookup(at).is_none();

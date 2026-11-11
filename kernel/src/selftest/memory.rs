@@ -78,6 +78,7 @@ pub(super) fn allocation_is_zeroed() -> bool {
     mm::allocate_zeroed().and_then(|frame| frame.is_zero()) == Some(true)
 }
 
+// An allocation overlapping the run would disprove exclusive contiguity.
 pub(super) fn a_run_is_contiguous_and_aligned() -> bool {
     const FRAMES: usize = 8;
     /// Distinct per frame, so a page from somewhere else reads as the wrong one.
@@ -96,7 +97,6 @@ pub(super) fn a_run_is_contiguous_and_aligned() -> bool {
         spans &= run.write_at(at, &[MARK ^ frame as u8]);
     }
 
-    // An overlapping allocation would disprove exclusive contiguity.
     let start = run.address();
     let end = start + (FRAMES as u64 * 4096);
     let elsewhere = mm::allocate_zeroed()
@@ -116,9 +116,10 @@ pub(super) fn a_run_is_contiguous_and_aligned() -> bool {
     aligned && sized && spans && elsewhere && intact && mm::free_frames() == before
 }
 
+// The class is warmed first, since any first allocation of a class must pay for a refill.
+// Accounting cannot see a free-list leak, so LIFO reuse must return the same address;
+// `black_box` orders both allocations.
 pub(super) fn the_heap_reuses_a_freed_slot() -> bool {
-    // Warm the class, so what is measured below is a reuse and not the refill
-    // that any first allocation of a class must pay for.
     drop(core::hint::black_box(Box::new(0u32)));
 
     let before = mm::heap::stats();
@@ -128,8 +129,6 @@ pub(super) fn the_heap_reuses_a_freed_slot() -> bool {
     let after = mm::heap::stats();
     let balanced = taken && after.live == before.live && after.slab_frames == before.slab_frames;
 
-    // Accounting cannot see a free-list leak; LIFO reuse must return the
-    // same address, with `black_box` ordering both allocations (D-124).
     let first = core::hint::black_box(Box::new(0u32));
     let address = core::hint::black_box(core::ptr::from_ref(&*first) as usize);
     drop(first);
@@ -140,12 +139,12 @@ pub(super) fn the_heap_reuses_a_freed_slot() -> bool {
     balanced && reused
 }
 
+// The vector's buffer outlives all three snapshots, so only the slots under test move between
+// them; a slot handed out twice would overwrite what an earlier one was given.
 pub(super) fn a_refill_costs_one_frame_and_balances() -> bool {
     /// Enough allocations of one class to span several slab frames.
     const TAKEN: usize = 512;
 
-    // The vector's buffer outlives all three snapshots, so only the slots
-    // under test move between them.
     let mut held: Vec<Box<[u8; 64]>> = Vec::with_capacity(TAKEN);
     let before = mm::heap::stats();
     for index in 0..TAKEN {
@@ -153,8 +152,6 @@ pub(super) fn a_refill_costs_one_frame_and_balances() -> bool {
     }
     let after_taking = mm::heap::stats();
 
-    // Each slot still holds what it was given, which is what a slot handed out
-    // twice would have overwritten.
     let intact = held
         .iter()
         .enumerate()
