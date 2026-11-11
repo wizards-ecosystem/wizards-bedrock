@@ -173,7 +173,7 @@ const UNISOLATED_PROFILE: DegradedProfile = DegradedProfile {
     required: UNISOLATED_REQUIRED_MARKERS,
 };
 
-/// Every other boot has x2APIC and PCI configuration, and a precondition only ever met is
+/// The other boots keep PCI configuration, and a precondition only ever met is
 /// indistinguishable from one never checked; this one keeps its exact terminal panic.
 pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_PCI_PROFILE)
