@@ -571,4 +571,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
         breaks: "optional DMA mapping ownership occupies a second word and inflates the candidate stack",
         reddens: Caught::Check("a mapped dma owner drop retains its allocation"),
     },
+    Mutation {
+        id: 2479,
+        file: "wost/src/mm/direct.rs",
+        find: "        unsafe { word.write_volatile(value.to_le()) };\n        true\n    }\n",
+        replace: "        unsafe { word.write_volatile(value.to_be()) };\n        true\n    }\n\n    // unsafe { word.write_volatile(value.to_le()) };\n",
+        breaks: "a live VT-d entry is published byte-swapped while its exact store text survives outside the qword primitive",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::dma::vtd::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
 ];

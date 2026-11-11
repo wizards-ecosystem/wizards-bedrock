@@ -204,7 +204,6 @@ fn vtd_revocation_drains_older_dma_before_recycling_frames() {
 
 #[test]
 fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
-    let memory = module_source("wost/src/mm.rs");
     let memory_syntax = parse_module("wost/src/mm.rs");
     let atomic = method(&memory_syntax, "DirectSpan", "write_u64_volatile_at")
         .expect("typed volatile qword publication primitive");
@@ -229,9 +228,12 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             "the qword publication primitive must not call {forbidden}"
         );
     }
+    let direct = source("wost/src/mm/direct.rs");
+    let publication =
+        function_after(&direct, "fn write_u64_volatile_at(").expect("qword publication body");
     assert!(
-        memory.contains("let word = destination.cast::<u64>();")
-            && memory.contains("unsafe { word.write_volatile(value.to_le()) };"),
+        publication.contains("let word = destination.cast::<u64>();")
+            && publication.contains("unsafe { word.write_volatile(value.to_le()) };"),
         "live VT-d entries must use one aligned qword publication"
     );
     let table_writer =
