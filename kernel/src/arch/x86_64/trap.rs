@@ -1,14 +1,8 @@
-//! What the kernel does when the CPU raises a vector.
-//!
-//! Every vector arrives here — exceptions the CPU raised against itself, and
-//! interrupts the local APIC delivered. An interrupt is dismissed and returned
-//! from; an unexpected one still ends the machine, which is what keeps a leaked
-//! legacy line from arriving as something else.
-//!
-//! Fault disposition follows its origin. A user-copy fault resumes at the
-//! fixup (D-120), a ring-3 fault retires the program (D-102), and other faults
-//! halt the kernel. Breakpoints resume; supervised restart remains absent
-//! (D-14, D-31).
+//! What the kernel does when the CPU raises a vector: an exception or a local APIC interrupt.
+//! An interrupt is dismissed and returned from; an unexpected one still ends the machine,
+//! which keeps a leaked legacy line from arriving as something else.
+//! A user-copy fault resumes at the fixup, a ring-3 fault retires the program, other faults halt.
+//! Breakpoints resume; supervised restart remains absent.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
@@ -22,8 +16,6 @@ use wost::arch::current::usercopy;
 
 #[cfg(feature = "selftest")]
 use wost::arch::current::paging;
-#[cfg(feature = "selftest")]
-use wost::arch::current::segment;
 
 use super::vector;
 
@@ -39,10 +31,9 @@ pub(crate) use selftest::{
 };
 #[cfg(feature = "selftest")]
 use selftest::{
-    KERNEL_STACK_SELECTOR_ON_ENTRY, LAST_BREAKPOINT, LAST_INVALID_USER_RETURN,
-    LAST_INVALID_USER_RETURN_KIND, LAST_PING, LAST_SYSCALL, LAST_USER_FAULT,
-    REJECTED_DUPLICATE_EOI_CLAIMS, SMAP_ON_ENTRY, SPURIOUS_OBSERVATIONS, USER_COPY_RECOVERIES,
-    invalid_user_return_kind, maybe_reclaim_ping,
+    LAST_BREAKPOINT, LAST_INVALID_USER_RETURN, LAST_INVALID_USER_RETURN_KIND, LAST_PING,
+    LAST_USER_FAULT, REJECTED_DUPLICATE_EOI_CLAIMS, SPURIOUS_OBSERVATIONS, USER_COPY_RECOVERIES,
+    invalid_user_return_kind, maybe_reclaim_ping, observe_syscall_entry,
 };
 
 static HANDLERS: interrupt::Handlers =
@@ -66,12 +57,21 @@ fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
 }
 
 /// The kernel's response to every vector.
-///
-/// Nothing here logs. A fault can be raised while a lock is held, so taking the
-/// console lock in trap context can deadlock against the interrupted code.
+/// Dispatched on the decoded cause, never the raw vector: `libs/trap-cause` reads its meaning once.
+/// Nothing here logs: a fault can be raised while a lock is held, and taking the console lock
+/// in trap context can deadlock against the interrupted code.
+/// The timer is dismissed before any switch: the APIC holds its priority class until EOI,
+/// and a switched-in thread would hold every expiry hostage.
+/// A thread woken by a keystroke must not wait for the next expiry: there may not be one.
+/// The saved privilege decides: a kernel-context `int 0x80` must not be served as a ring-3 call.
+/// A spurious interrupt is not dismissed: it sets no in-service bit, so an EOI here would retire
+/// a real interrupt underneath it.
+/// The controlled ring-0 write-protection probe has an exact error code and private recovery
+/// interval; ordinary kernel faults remain fatal.
+/// Only a ring-0 fault inside the user-copy interval recovers; a ring-3 fault at the same address
+/// is the program's.
+/// Other survivable ring-3 faults retire the program, not the machine.
 fn on_trap(frame: &TrapFrame) {
-    // Dispatched on the decoded cause, not the raw vector (D-81): the
-    // architecture's meaning is read once, in `libs/trap-cause`, host-tested.
     let cause = TrapCause::decode(frame.vector(), frame.error_code());
     match cause {
         TrapCause::Fault(trap_cause::Fault::Breakpoint) => {
@@ -100,8 +100,6 @@ fn on_trap(frame: &TrapFrame) {
         TrapCause::Interrupt(raw) if raw == vector::TIMER.get() => {
             let eoi = claim_eoi(frame, vector::TIMER);
             crate::time::on_expiry();
-            // Dismissed before any switch: the APIC holds this priority class
-            // until EOI, and a switched-in thread would hold every expiry hostage.
             dismiss(eoi);
             crate::thread::reschedule(frame);
         }
@@ -110,34 +108,19 @@ fn on_trap(frame: &TrapFrame) {
             let eoi = claim_eoi(frame, vector::KEYBOARD);
             let woke = crate::input::on_interrupt();
             dismiss(eoi);
-            // A thread woken by a keystroke must not wait for the next
-            // expiry: there may not be one.
             if woke {
                 crate::thread::reschedule(frame);
             }
         }
 
-        // The CPU's saved privilege decides: a kernel-context `int 0x80` must
-        // not be served as a ring-3 call (D-96, D-124).
         TrapCause::Interrupt(raw)
             if raw == vector::SYSCALL.get() && frame.code_selector() & 0b11 == 3 =>
         {
             #[cfg(feature = "selftest")]
-            KERNEL_STACK_SELECTOR_ON_ENTRY.store(
-                u64::from(segment::stack_selector().bits()),
-                Ordering::Release,
-            );
-            #[cfg(feature = "selftest")]
-            LAST_SYSCALL.record(frame);
-            // Whether SMAP is on inside the handler, after the entry path ran,
-            // which is what D-101 is about.
-            #[cfg(feature = "selftest")]
-            SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
+            observe_syscall_entry(frame);
             crate::user::call(frame);
         }
 
-        // Not dismissed: a spurious interrupt sets no in-service bit, so an
-        // EOI here would retire a real interrupt underneath it.
         TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {
             #[cfg(feature = "selftest")]
             SPURIOUS_OBSERVATIONS.fetch_add(1, Ordering::Relaxed);
@@ -149,14 +132,10 @@ fn on_trap(frame: &TrapFrame) {
             frame.instruction_pointer()
         ),
 
-        // The controlled ring-0 write-protection probe has an exact error code
-        // and private recovery interval; ordinary kernel faults remain fatal.
         #[cfg(feature = "selftest")]
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if cpu::recover_write_protection_probe(frame, fault) => {}
 
-        // Only a ring-0 fault inside the user-copy interval recovers; a ring-3
-        // fault at the same address is the program's (D-120, D-126).
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if usercopy::recover(frame, fault) =>
         {
@@ -164,7 +143,6 @@ fn on_trap(frame: &TrapFrame) {
             USER_COPY_RECOVERIES.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Other survivable ring-3 faults retire the program, not the machine.
         TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
             #[cfg(feature = "selftest")]
             LAST_USER_FAULT.record(frame);
@@ -193,13 +171,10 @@ fn dismiss(token: apic::EoiToken<'_>) {
     }
 }
 
-/// Whether this fault is a program's to die of rather than the machine's.
-///
-/// Two conditions, and both are needed. It must have come from ring 3 — the
-/// kernel faulting is still a kernel bug and still terminal. And it must be a
-/// fault a program can cause and the machine can survive: a double fault means
-/// the fault path itself failed, and a machine check is the hardware reporting
-/// its own failure. Neither becomes survivable because a program was running.
+/// Whether this fault is a program's to die of rather than the machine's; both must hold.
+/// It came from ring 3: the kernel faulting is still a kernel bug and still terminal.
+/// The machine survives it: a double fault means the fault path itself failed, a machine check is
+/// the hardware reporting its own failure, and neither becomes survivable because a program ran.
 fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
     let from_ring_three = frame.code_selector() & 0b11 == 3;
     let survivable = !matches!(
@@ -212,8 +187,9 @@ fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
 }
 
 /// A fault formatted for the panic message.
-struct Report<'a> {
-    frame: &'a TrapFrame,
+/// CR2 belongs only to page faults; other vectors leave its old value.
+struct Report<'frame> {
+    frame: &'frame TrapFrame,
     cause: TrapCause,
 }
 
@@ -235,7 +211,6 @@ impl fmt::Display for Report<'_> {
             frame.stack_pointer(),
         )?;
 
-        // CR2 belongs only to page faults; other vectors leave its old value.
         if let TrapCause::Fault(trap_cause::Fault::PageFault(fault)) = self.cause {
             write!(
                 f,

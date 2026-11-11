@@ -1,7 +1,5 @@
-//! Framebuffer text console.
-//!
-//! Renders Noto Sans Mono bitmap glyphs onto the framebuffer the bootloader
-//! handed us. This is user-facing output; diagnostics go to the serial log.
+//! Framebuffer text console in Noto Sans Mono bitmap glyphs, for user-facing output.
+//! Diagnostics go to the serial log.
 
 use core::fmt;
 
@@ -81,8 +79,8 @@ impl Console {
         self.show_cursor();
     }
 
+    /// Write `text` with the cursor hidden: moving visible content would copy its mark too.
     fn write_text(&mut self, text: &str) {
-        // Moving visible framebuffer content would copy the cursor mark too.
         self.hide_cursor();
         self.put(text);
         self.show_cursor();

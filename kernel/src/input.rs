@@ -1,19 +1,12 @@
 //! The keyboard input path: drain, decode, queue, wake.
-//!
-//! The routed handler drains the controller; without a route, a thread polls
-//! by sleeping or yielding cooperatively (D-37, D-49, D-57). Both paths feed
-//! every byte through the
-//! decoder, and each completed event is queued for a reader **if the queue has
-//! room** — sixteen deep, and a keystroke arriving at a full one is dropped
-//! rather than queued (D-145). Self-test counts losses; a waiting reader is
-//! woken (D-61).
-//!
-//! Nothing here draws or logs: both are the reading thread's, which is what
-//! keeps a console scroll off every other interrupt's latency path (D-63).
-//!
-//! The singleton is module-local rather than in `dev`, whose charter is the
-//! output devices the panic path must reach; a panicking kernel has no use
-//! for its keyboard.
+//! The routed handler drains the controller; without a route, a thread polls by sleeping or
+//! yielding cooperatively. Both feed every byte through the decoder.
+//! Each completed event is queued **if the queue has room**: sixteen deep, and a keystroke
+//! arriving at a full one is dropped. Self-test counts losses; a waiting reader is woken.
+//! Nothing here draws or logs: both are the reading thread's, which keeps a console scroll off
+//! every other interrupt's latency path.
+//! The singleton is module-local, not in `dev`, which holds the output devices the panic path must
+//! reach; a panicking kernel has no use for its keyboard.
 
 #[cfg(feature = "selftest")]
 use core::sync::atomic::Ordering;
@@ -51,22 +44,18 @@ pub(crate) use selftest::{
 struct Keyboard {
     controller: Controller,
     decoder: Decoder,
-    /// Whether the stream has said which numbering it is in.
-    ///
-    /// False until a byte only one set can produce arrives. Every probe the
-    /// controller answers has been observed to lie in one direction or the
-    /// other, so the bytes are the arbiter and `held` is what waiting for
-    /// them costs (D-239).
+    /// Whether the stream has said which numbering it is in: false until a byte only one set can
+    /// produce arrives.
+    /// Every probe the controller answers has been observed to lie one way or the other, so the
+    /// bytes are the arbiter and `held` is what waiting for them costs.
     settled: bool,
     /// What the deciding byte proved to the self-test.
     #[cfg(feature = "selftest")]
     evidence: Option<Arriving>,
-    /// Bytes seen before the numbering was known, replayed once it is.
-    ///
-    /// A keystroke decides within three bytes and set 2's longest sequence
-    /// within five, so this is a keystroke's worth and then some. Decoding a
-    /// held byte under the wrong numbering would name a different key, which
-    /// is the whole defect.
+    /// Bytes seen before the numbering was known, replayed once it is; decoding one under the
+    /// wrong numbering would name a different key.
+    /// A keystroke decides within three bytes and set 2's longest sequence within five, so this is
+    /// a keystroke's worth and then some.
     held: [u8; HELD_BYTES],
     held_len: usize,
     held_at: usize,
@@ -77,13 +66,9 @@ struct Keyboard {
 const HELD_BYTES: usize = 16;
 
 impl Keyboard {
-    /// Pull bytes until one completes an event, the buffer runs dry, or the
-    /// per-call byte budget is spent.
-    ///
-    /// The budget is what makes a controller streaming protocol garbage —
-    /// bytes that never complete an event — unable to pin the caller's lock:
-    /// without it, "drain until empty" is bounded only by the device's good
-    /// behaviour.
+    /// Pull bytes until one completes an event, the buffer runs dry, or the byte budget is spent.
+    /// The budget stops a controller streaming bytes that never complete an event from pinning the
+    /// caller's lock, which "drain until empty" bounds only by the device's good behaviour.
     fn next_event(&mut self) -> Option<KeyEvent> {
         const BYTE_BUDGET: u32 = 16;
 
@@ -97,15 +82,12 @@ impl Keyboard {
         None
     }
 
-    /// The next byte to decode, under the numbering the stream proved.
-    ///
-    /// Held bytes first, then the controller. Nothing is ever dropped and
-    /// nothing is latched: until a byte answers the question, bytes wait; when
-    /// one does, what waited is replayed under the numbering it proved.
+    /// The next byte to decode under the numbering the stream proved: held bytes first, then the
+    /// controller. Nothing is ever dropped or latched: bytes wait until one answers, then replay.
+    /// Holding ends when a byte answers or a keystroke's worth has not; those pass under the
+    /// opening guess.
     fn next_byte(&mut self) -> Option<u8> {
         loop {
-            // Holding ends when a byte answers or a keystroke's worth has not;
-            // the latter go through under the opening guess, nothing is dropped.
             let holding = !self.settled && self.held_len < HELD_BYTES;
             if !holding && self.held_at < self.held_len {
                 let byte = self.held[self.held_at];
@@ -127,10 +109,7 @@ impl Keyboard {
     }
 
     /// Adopt what the stream proved, and say whether it proved anything.
-    ///
-    /// Replaying what was held under the numbering it decided on is what keeps
-    /// the keystroke that answered the question from being the one keystroke
-    /// decoded wrongly.
+    /// Held bytes replay under it, so the keystroke that answered is not the one decoded wrongly.
     fn adopt(&mut self, arriving: Arriving) -> bool {
         let translated = match arriving {
             Arriving::Undecided => return false,
@@ -155,11 +134,8 @@ impl Keyboard {
 
 static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
 
-/// One decoded event, with the character it typed resolved while the shift
-/// state around it was still current.
-///
-/// The character travels with the event: the shift state that decided it was
-/// current then, and a reader may not look for milliseconds.
+/// One decoded event, with its character resolved while the shift state around it was current;
+/// a reader may not look for milliseconds.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Keystroke {
     /// The key, and whether it went down or up.
@@ -168,18 +144,16 @@ pub(crate) struct Keystroke {
     pub(crate) character: Option<char>,
 }
 
-/// Events decoded per hold of the keyboard lock. With the byte budget in
-/// [`Keyboard::next_event`], a hold is bounded in bytes as well as events,
-/// so no stream of input can pin the lock for its whole length.
+/// Events decoded per hold of the keyboard lock; with [`Keyboard::next_event`]'s byte budget, no
+/// stream of input can pin the lock for its whole length.
 const BATCH: usize = 8;
 
 /// Bring the keyboard up, or report why the kernel runs without one.
+/// The identity is only the opening guess: it and the configuration byte are each wrong on some
+/// machine, so the first decisive byte replaces it.
 pub(crate) fn init() {
     match Controller::new() {
         Ok(controller) => {
-            // The identity is only the opening guess: it and the config byte
-            // are each wrong on some machine, so the first decisive byte
-            // replaces it (D-178, D-179, D-239).
             let translated = controller.is_translated();
             let decoder = if translated {
                 Decoder::translated()
@@ -204,21 +178,14 @@ pub(crate) fn init() {
     }
 }
 
-/// Drain what the controller is holding. The idle loop's work.
-///
-/// Bounded like every other wait in this kernel, and for the same reason: a
-/// controller that never stops producing complete events would otherwise own
-/// the idle loop for as long as it kept producing. The lock is already
-/// bounded per batch, so what this bound protects is the loop's turn, not the
-/// lock — anything still waiting is drained on the next pass, one interval
-/// later.
-///
-/// Returns how many threads the events it queued woke, which the trap handler
-/// uses to decide whether the scheduler needs asking who should run now.
+/// Drain what the controller is holding, and return how many threads its queued events woke.
+/// Bounded so a controller that never stops producing complete events cannot own the idle loop;
+/// the lock is bounded per batch already, and what remains drains on the next pass.
+/// The wake is last and outside every other lock: a woken reader may be picked the moment the
+/// handler returns, and it will want the queue this filled.
+/// The trap handler uses the count to decide whether the scheduler needs asking who runs now.
 pub(crate) fn poll() -> usize {
-    /// Batches per call. With [`BATCH`] events each, one pass at the keyboard
-    /// is two orders of magnitude more than a person can type into it, and
-    /// finite either way.
+    /// Batches per call: two orders of magnitude past human typing, and finite either way.
     const BATCHES: usize = 8;
 
     let mut delivered = 0;
@@ -229,18 +196,16 @@ pub(crate) fn poll() -> usize {
             break;
         }
     }
-    // Outside every other lock, and last: a woken reader may be picked the
-    // moment the handler returns, and it will want the queue this filled.
     if delivered > 0 { READERS.wake_all() } else { 0 }
 }
 
+/// A second polling producer must not enqueue a later batch ahead of this one, so interrupts stay
+/// excluded; the keyboard and event guards stay sequential under this exclusion.
 fn produce_batch(
     drain: impl FnOnce(&mut [Option<Keystroke>; BATCH]) -> usize,
     mut deliver: impl FnMut(Keystroke) -> bool,
     after_drain: impl FnOnce(),
 ) -> (usize, usize) {
-    // A second polling producer must not enqueue a later batch ahead of this
-    // one. The keyboard and event guards stay sequential under this exclusion.
     let exclusion = interrupt::disable();
     let mut keystrokes = [None; BATCH];
     let count = drain(&mut keystrokes);
@@ -278,9 +243,8 @@ fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
 }
 
 /// Queue the event for whoever is reading, and note it for the self-checks.
-///
-/// Touches no output device: the console lock is one a handler is now refused
-/// (D-63), and a glyph can cost a scroll.
+/// It touches no output device: a handler is refused the console lock, and a glyph can cost a
+/// scroll.
 fn deliver(keystroke: Keystroke) -> bool {
     admit_and_observe(
         keystroke,
@@ -306,10 +270,8 @@ fn admit_and_observe(
     admitted
 }
 
-/// Decoded events waiting for a reader.
-///
-/// A fixed ring: the producer is an interrupt handler, where D-55 forbids the
-/// heap.
+/// Decoded events waiting for a reader, in a fixed ring: the producer is an interrupt handler,
+/// where the heap is forbidden.
 const QUEUED: usize = 16;
 
 /// The events themselves, and what has been lost.
@@ -361,19 +323,14 @@ static EVENTS: SpinLock<Events> = SpinLock::new(Events::new());
 /// Threads waiting for a keystroke.
 static READERS: WaitQueue = WaitQueue::new();
 
-/// Wait for the next key event, blocking until one arrives.
-///
-/// The thread stops being runnable, nothing is armed for it, and the
-/// keyboard's interrupt is what makes it runnable again. Nothing polls.
-///
-/// The check and the registration happen with the flag clear, together: a
-/// wakeup arriving between "empty" and "waiting" is the classic way to lose
-/// one for good.
+/// Wait for the next key event; nothing is armed and nothing polls until the interrupt wakes it.
+/// The check and the registration happen with the flag clear, together: a wakeup arriving between
+/// "empty" and "waiting" is the classic way to lose one for good.
+/// The queue guard is its own statement: held across the restore, it would leave the queue locked
+/// with interrupts on.
 pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
     loop {
         let saved = interrupt::disable();
-        // Its own statement: held across the restore, this guard would leave
-        // the queue locked with interrupts on (D-66).
         let keystroke = EVENTS.lock(context).pop();
         if let Some(keystroke) = keystroke {
             saved.restore();
@@ -384,10 +341,8 @@ pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
     }
 }
 
-/// Where the line could not be routed, give the drain a thread of its own.
-///
-/// The fallback owns its polling interval because no periodic tick wakes it
-/// (D-37). Does nothing where the interrupt does the work.
+/// Where the line could not be routed, give the drain a thread of its own; else do nothing.
+/// The fallback owns its polling interval because no periodic tick wakes it.
 pub(crate) fn start_poller() {
     if is_interrupt_driven() {
         return;
@@ -418,13 +373,13 @@ pub(crate) fn start_poller() {
 /// Interval required by the fallback polling path.
 const POLL_INTERVAL_MS: u64 = 10;
 
-/// Drain, wait, drain again — the whole of the fallback.
+/// Drain, wait, drain again: the whole of the fallback.
+/// The round count uses `then`, since `then_some` would evaluate the subtraction at zero.
 fn poll_forever() {
     let mut context = ThreadContext::require();
     loop {
         #[cfg(feature = "selftest")]
         if POLLER_ROUNDS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |rounds| {
-            // `then_some` would evaluate the subtraction at zero.
             (rounds > 0).then(|| {
                 if rounds == FOREVER {
                     FOREVER
@@ -475,12 +430,9 @@ pub(crate) fn take_interrupts() {
     record_interrupt_handoff(&INTERRUPT_DRIVEN);
 }
 
-/// Drain the controller from its interrupt handler.
-///
-/// The same work [`poll`] does, and bounded the same way. Safe to take the
-/// keyboard and console locks from here for the reason `006-cpu-fundamentals.md`
-/// establishes: `SpinLock` clears the interrupt flag while a lock is held, so
-/// code holding either one cannot have been interrupted by this handler.
+/// Drain the controller from its interrupt handler, as [`poll`] does and bounded the same way.
+/// The keyboard and console locks are safe here, as `006-cpu-fundamentals.md` establishes:
+/// `SpinLock` clears the interrupt flag while held, so no holder was interrupted by this handler.
 pub(crate) fn on_interrupt() -> bool {
     #[cfg(feature = "selftest")]
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
@@ -488,7 +440,6 @@ pub(crate) fn on_interrupt() -> bool {
 }
 
 /// Ask the controller to raise its line when a byte arrives.
-///
 /// Called only after the I/O APIC has been given somewhere to send it.
 pub(crate) fn enable_interrupts() -> Result<(), InterruptEnableError> {
     let mut guard = KEYBOARD.lock_leaf();

@@ -1,15 +1,12 @@
-//! 16550 UART driver — the kernel's serial console.
-//!
+//! 16550 UART driver for the kernel's serial console.
 //! QEMU maps COM1 to stdio (`-serial stdio`); VMware maps it to `vm/serial.log`.
 
 use core::fmt;
 
 use wost::arch::current::port::{self, PortBlock};
 
-/// I/O port base of the first serial controller.
-///
-/// `wost::arch::current::port::com1` owns this number for the driver; the
-/// self-test keeps it to probe that the driver's ports are exclusively held.
+/// I/O port base of the first serial controller, which `wost::arch::current::port::com1` owns.
+/// The self-test keeps it to probe that the driver's ports are exclusively held.
 #[cfg(feature = "selftest")]
 pub(crate) const COM1: u16 = 0x3F8;
 
@@ -17,8 +14,6 @@ pub(crate) const COM1: u16 = 0x3F8;
 const REGISTER_COUNT: usize = 8;
 
 /// Register offsets from the port base.
-///
-/// Registers 0 and 1 change meaning while [`line_control::DIVISOR_LATCH`] is set.
 mod register {
     pub(crate) const DATA: usize = 0;
     pub(crate) const DIVISOR_LOW: usize = 0;
@@ -48,8 +43,7 @@ mod modem_control {
     pub(crate) const DATA_TERMINAL_READY: u8 = 0x01;
     pub(crate) const REQUEST_TO_SEND: u8 = 0x02;
     pub(crate) const OUT1: u8 = 0x04;
-    /// Gates the controller's interrupt line through to the PIC. Nothing is
-    /// actually delivered until the interrupt-enable register is non-zero.
+    /// Gates the interrupt line through to the PIC; nothing arrives while interrupt-enable is zero.
     pub(crate) const OUT2: u8 = 0x08;
     /// Route transmitted bytes straight back into the receiver.
     pub(crate) const LOOPBACK: u8 = 0x10;
@@ -102,11 +96,9 @@ pub(crate) struct Uart {
 
 impl Uart {
     /// Claim and configure the first serial controller for 115200 baud, 8N1.
-    ///
-    /// Interrupts stay masked: this is a polled driver until the kernel has an
-    /// IDT. The probe runs after configuration, so a machine without a
-    /// controller reports [`UartError::NotPresent`] rather than silently
-    /// swallowing every log line.
+    /// Interrupts stay masked: this is a polled driver until the kernel has an IDT.
+    /// The probe runs after configuration, so a machine without a controller reports
+    /// [`UartError::NotPresent`] rather than silently swallowing every log line.
     pub(crate) fn new() -> Result<Self, UartError> {
         let registers = port::com1().ok_or(UartError::PortsUnavailable)?;
         let mut uart = Self { registers };
@@ -168,8 +160,7 @@ impl Uart {
         Ok(())
     }
 
-    /// Poll the line-status register until `flags` are set, giving up rather
-    /// than hanging the kernel on a controller that has stopped answering.
+    /// Poll line status until `flags` are set, giving up rather than hanging on a dead controller.
     fn wait_for(&mut self, flags: u8) -> bool {
         const ATTEMPTS: u32 = 100_000;
         (0..ATTEMPTS)

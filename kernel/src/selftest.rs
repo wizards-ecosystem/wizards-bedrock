@@ -1580,5 +1580,5 @@ pub(crate) fn run(serial: Result<(), UartError>) {
             VERDICT_VERSION, report.passed, report.failed, EXPECTED_CHECKS
         );
     }
-    debug_exit::report(passed);
+    debug_exit::report(debug_exit::Verdict::from_passed(passed));
 }

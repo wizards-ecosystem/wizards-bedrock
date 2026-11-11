@@ -18,15 +18,10 @@ SECTIONS
     /* Top 2 GiB of the address space, as the kernel code model requires. */
     . = 0xffffffff80000000;
 
-    /* The symbol pairs below bound each protection class of the loaded image,
-       so `wost` can map its own tables W^X-correct without guessing where one
-       ends and the next begins (D-45). Each section is already aligned to
-       MAXPAGESIZE, so every _start lands on a page boundary; the _end symbols
-       are rounded up by the mapping code, not here. */
-    /* D-407's entry instructions occupy their own complete 4 KiB pages. Each
-       accepted input name is enumerated: a new enclave resident must first
-       extend the reviewed linker and ELF contracts rather than silently
-       joining a broad wildcard. */
+    /* Each symbol pair bounds one protection class, so `wost` maps its tables W^X without guessing.
+       Sections align to MAXPAGESIZE, so each _start is on a page; mapping code rounds _end up. */
+    /* The entry instructions occupy their own complete 4 KiB pages. Each input name is enumerated:
+       a new enclave resident must first extend the reviewed linker and ELF contracts. */
     .kpti.text : ALIGN(4096) {
         __kpti_text_start = .;
         KEEP(*(.kpti.text))
@@ -56,10 +51,9 @@ SECTIONS
 
     __rodata_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    /* The full root writes these pages while constructing routes and tables;
-       the stripped root maps the table and routing pages read-only. The
-       guard is a named page so paired-root construction can omit it rather
-       than trusting an address-sized hole inferred from stack arithmetic. */
+    /* The full root writes these pages while building routes and tables; the stripped root maps
+       the table and routing pages read-only. A guard is a named page, so paired-root construction
+       omits it rather than trusting a hole inferred from stack arithmetic. */
     .kpti.tables : ALIGN(4096) {
         __kpti_tables_start = .;
         KEEP(*(.kpti.tables.idt))
@@ -99,14 +93,9 @@ SECTIONS
 
     __data_start = .;
 
-    /* Limine scans between the markers for request structures and writes its
-       answers back into them, so this is loaded and writable. Its own output
-       section rather than folded into .data, for two reasons: KEEP() states
-       that the `#[used]` statics `wost::entry!` emits must survive section
-       garbage collection whatever a future build turns on (D-21), and a
-       section with a name is one `cargo xtask image` can check is there. A
-       request block that silently failed to link is a kernel reading
-       responses nobody filled in. */
+    /* Limine writes its answers into these requests, so this is loaded and writable. KEEP() states
+       that the `#[used]` statics `wost::entry!` emits must survive section garbage collection
+       whatever a future build turns on, and a named section is one `cargo xtask image` checks. */
     .requests : {
         KEEP(*(.requests_start_marker))
         KEEP(*(.requests))
@@ -116,25 +105,20 @@ SECTIONS
     .data : {
         *(.data .data.*)
 
-        /* Named, not left to the linker's orphan placement. A static build
-           should produce neither of these, but "should" is how an orphan ends
-           up after .bss — which forces the whole of .bss to be written into
-           the file as zeros, because a segment cannot go back to NOBITS once
-           something loadable follows it. */
+        /* Named, so no orphan lands after .bss: a segment cannot go back to NOBITS once something
+           loadable follows it, and the whole of .bss would be written into the file as zeros. */
         *(.got .got.plt)
         *(.data.rel.ro .data.rel.ro.*)
     } :data
 
-    /* Last in the segment and NOLOAD, so it costs nothing in the image and
-       the bootloader zeroes it. `cargo xtask image` checks that it stayed
-       that way, since the failure is silent bloat rather than a link error. */
+    /* Last in the segment and NOLOAD, so it costs nothing in the image and the bootloader zeroes
+       it. `cargo xtask image` checks it stayed so, since the failure is silent bloat. */
     .bss (NOLOAD) : {
         *(.bss .bss.*)
         *(COMMON)
     } :data
 
-    /* `.requests`, `.data` and `.bss` are one writable run, so one symbol
-       bounds all three. */
+    /* `.requests`, `.data` and `.bss` are one writable run, so one symbol bounds all three. */
     __data_end = .;
 
     /DISCARD/ : {

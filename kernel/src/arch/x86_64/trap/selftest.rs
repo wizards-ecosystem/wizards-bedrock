@@ -1,9 +1,20 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use wost::arch::current::apic;
 use wost::arch::current::interrupt::{self, TrapFrame};
+use wost::arch::current::{apic, cpu, segment};
 
 use super::vector;
+
+/// SMAP is read inside the handler, after the entry path ran.
+#[cfg(feature = "selftest")]
+pub(super) fn observe_syscall_entry(frame: &TrapFrame) {
+    KERNEL_STACK_SELECTOR_ON_ENTRY.store(
+        u64::from(segment::stack_selector().bits()),
+        Ordering::Release,
+    );
+    LAST_SYSCALL.record(frame);
+    SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
+}
 
 #[cfg(feature = "selftest")]
 pub(super) fn maybe_reclaim_ping<'frame>(
@@ -32,11 +43,9 @@ pub(crate) fn user_copy_recoveries() -> usize {
     USER_COPY_RECOVERIES.load(Ordering::Acquire)
 }
 
-/// How many spurious interrupts have been delivered.
-///
-/// Should stay at zero. A count that climbs means an interrupt was dismissed
-/// that should not have been, or a vector was reprogrammed while one was in
-/// flight — neither of which shows up any other way.
+/// How many spurious interrupts have been delivered; it should stay at zero.
+/// A climbing count means a wrong dismissal or a vector reprogrammed in flight, which nothing
+/// else shows.
 #[cfg(feature = "selftest")]
 pub(super) static SPURIOUS_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -108,10 +117,10 @@ pub(crate) fn last_invalid_user_return() -> (Record, InvalidUserReturnKind) {
 
 /// One if SMAP was still on when the last ring-3 call reached the handler.
 #[cfg(feature = "selftest")]
-pub(super) static SMAP_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
+static SMAP_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "selftest")]
-pub(super) static KERNEL_STACK_SELECTOR_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
+static KERNEL_STACK_SELECTOR_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
 
 /// The live stack selector observed on the most recent call from ring 3.
 #[cfg(feature = "selftest")]
@@ -127,7 +136,7 @@ pub(crate) fn smap_survived_the_last_syscall() -> bool {
 
 /// What the last call from ring 3 looked like.
 #[cfg(feature = "selftest")]
-pub(super) static LAST_SYSCALL: Recorder = Recorder::new();
+static LAST_SYSCALL: Recorder = Recorder::new();
 
 /// The frame of the last call from ring 3.
 #[cfg(feature = "selftest")]
@@ -135,12 +144,8 @@ pub(crate) fn last_syscall() -> Record {
     Recorder::read(&LAST_SYSCALL)
 }
 
-/// What the last vector of one kind saw.
-///
-/// A vector that resumes leaves no trace unless something records it, and both
-/// of the ones that resume — the breakpoint and the ping — are deliberate acts
-/// whose whole point is to be observed afterwards. Atomics rather than a lock
-/// because this is written from trap context.
+/// What the last vector of one kind saw, so the resuming breakpoint and ping can be observed.
+/// Atomics, not a lock, because this is written from trap context.
 #[cfg(feature = "selftest")]
 pub(super) struct Recorder {
     count: AtomicUsize,
@@ -172,8 +177,7 @@ impl Recorder {
         }
     }
 
-    /// Record `frame`, publishing the count last so a reader that sees it sees
-    /// the rest.
+    /// Record `frame`, publishing the count last so a reader that sees it sees the rest.
     pub(super) fn record(&self, frame: &TrapFrame) {
         self.slot
             .store(wost::arch::current::task::current(), Ordering::Relaxed);
@@ -230,9 +234,7 @@ pub(crate) struct Record {
     /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
     /// The thread slot that took it.
-    ///
-    /// Slots identify callers even when sequential threads correctly reuse a
-    /// stack (D-117).
+    /// Slots identify callers even when sequential threads correctly reuse a stack.
     pub(crate) slot: usize,
     /// The general register loaded with the interrupted stack pointer.
     pub(crate) rax: u64,
