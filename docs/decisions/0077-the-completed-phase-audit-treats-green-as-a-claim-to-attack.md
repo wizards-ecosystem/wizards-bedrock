@@ -2,18 +2,9 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** A fresh adversarial pass covered every implemented Phase 0 to 4
-boundary: pure arithmetic, boot handoff, interrupt entry and return, physical
-memory, page-table construction and activation, device mapping, firmware
-parsing, panic recovery, scheduler state, input protocols, and the host gate.
-The green baseline admitted safe ways to invalidate live guards, rewrite an
-interrupt return frame, read arbitrary described physical memory, alias one
-device with conflicting cache types, map RAM as MMIO, and partially mutate
-page tables before rejecting malformed input. The gate accepted ambiguous
-verdict streams and never proved the shipped keyboard path progressed by
-interrupt.
-
-**Decision.** The completed phases harden as one checkpoint:
+**Decision.** A completed phase's green is a claim to attack: an adversarial
+pass covers every implemented boundary, and Phases 0 to 4 harden as one
+checkpoint:
 
 - The panic proof and lock-recovery operation are crate-private. `wost` enters
   recovery only through a non-returning function-pointer boundary, and kernel
@@ -28,7 +19,11 @@ interrupt.
   token.
 - Firmware access is an ACPI-only copying capability. RSDP, SDT, pointer-array
   and MADT parsing enforce the caller's buffer and the structure's declared
-  budget before exposing a prefix.
+  budget before exposing a prefix. `Rsdp::parse` reads the identifying bytes
+  before the revision, so its error names non-RSDP bytes, not an undefined
+  revision. Every silent refusal on the firmware-read path names the address
+  it refused, because this narrower authority makes a routing-less boot the
+  likely first encounter.
 - Mapping preflights the whole range before writing an entry. Activation
   proves physical identity for the running code and stack, image permissions
   across linked and direct aliases, and every stack page and guard in the
@@ -39,11 +34,7 @@ interrupt.
   physical interval, and verify every claimed translation. The framebuffer's
   validated geometry is mapped once, WC; a reversible read-modify transition
   changes PAT entry 1. Kernel text is not writable through the direct map.
-- Hardware-free bounds moved to their `libs/` crates, fixing frame-run search
-  at region edges, pixel stride and format validation, slab placement
-  overflow, private stack-layout invariants, huge-page PAT encoding, canonical
-  mapping ranges, EEVDF's half-range ordering, PS/2 prefix state, and the
-  local APIC's legal spurious-vector floor. `libs/mmio-range` now owns
+- Hardware-free bounds live in their `libs/` crates; `libs/mmio-range` owns
   repeated-access alignment, multiplication and end-bound arithmetic.
 - A self-test verdict is exactly one well-formed versioned record with the
   expected non-zero count; missing, duplicate and malformed records fail.
@@ -72,13 +63,7 @@ user authority would rest on unsound kernel authority).
 - **Corrected the same day.** The first entry-path check recorded the stack
   pointer *after* the alignment mask, so `alignment == 0` was a tautology:
   D-28's failure mode, in the commit claiming every check was broken red. It
-  now records where the frame begins and checks its extent; shortening the
-  declared frame made the boot report 78 of 79. Two smaller corrections:
-  `Rsdp::parse` reads the RSDP's identifying bytes before the revision, so the
-  field that says so names non-RSDP bytes, not an undefined revision. Every
-  silent refusal on the firmware-read path names the address it refused,
-  because this narrower authority makes a routing-less boot the likely first
-  encounter.
+  now records where the frame begins and checks its extent.
 - D-31, D-34, D-50, D-64 and D-76 are amended where their mechanisms were too
   broad. What they protected stands: terminal kernel faults, IRQ-safe locks,
   WC framebuffer output, bounded firmware input, and a sound `wost` boundary.
