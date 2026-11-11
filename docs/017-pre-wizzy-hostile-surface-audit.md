@@ -160,13 +160,12 @@ claim that path preflight eliminates it.
 | Vendored and supply-chain inputs | `Cargo.lock`, member manifests, inventory/SPDX/notice text, checksum listings, vendored payloads and advisory output | [`vendor.rs`](../xtask/src/vendor.rs), [`supply_chain.rs`](../xtask/src/supply_chain.rs), advisory qualification | Fails closed as D-345, D-360 and D-380 state; bounded exact inventories cover both directions, the EFI buffer is authenticated against its sole adjacent listing entry, non-canonical table headers are refused, SPDX publishes through an exclusive synchronized stage, and an advisory result binds tool, DB, time and lockfile | Checksum/license/link fixtures and D-345, D-360, D-362 and D-380 fixtures; D-362 closes PW-576 and D-380 closes PW-589; v0.2.0 closed `PW-028` (D-449) | Phase close and releases |
 | Destructive cleanup | Requested clean scope, Cargo exit status and target residuals, VMware root, concurrent ancestor replacement and link/junction/reparse substitution at any depth | [`tasks.rs`](../xtask/src/tasks.rs) and the no-follow directory opener in [`mutate/workspace/tree.rs`](../xtask/src/mutate/workspace/tree.rs) | Fails closed as D-382, D-418 and D-437 state | Exact-root, redirect, ancestor-swap, traversal-budget and Windows residual fixtures with retained mutations | Explicit `clean` and `clean --all` only; D-437's parser proof closed `PW-718` in v0.2.0 (D-449) |
 
-D-421 closes a verifier-internal blind spot without closing the machine gate: a
-host test derives the exact successful delayed-read record from the kernel's
+D-421 closes a verifier-internal blind spot: a host test derives the exact successful delayed-read record from the kernel's
 unique delayed-read format literal, and mutation 2,164 restores the obsolete
 field name and reds that test. The lexical guard does not prove the literal's
-callgraph, and the source-literal check cannot substitute for observing the
-machine; v0.2.0 closed `PW-003` with fresh VMware qualifications of `694061f`
-(D-449).
+callgraph, and the source-literal check alone could not close the machine gate,
+because it cannot substitute for observing the machine; v0.2.0's fresh VMware
+qualifications of `694061f` closed it as `PW-003` (D-449).
 
 ## Threat model and trust boundaries
 
@@ -324,7 +323,7 @@ architectural read; those dated boots supplied design evidence rather than
 implementation or machine evidence, and host and retained-red evidence does not
 replace fresh VMware qualification.
 
-### Historical Q diagnostic observations awaiting qualification
+### Historical Q diagnostic observations
 
 Candidate Q, `6d00ba3`, passed full CI and two release plus two debug QEMU
 boots at 271/271; its fresh human VMware self-test passed 242/271, every
