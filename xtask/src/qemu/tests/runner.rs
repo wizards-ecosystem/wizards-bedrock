@@ -310,6 +310,33 @@ fn a_missing_qemu_setting_is_not_blamed_on_firmware() {
             exe_name("qemu-system-x86_64")
         )
     );
+    let advice = "set QEMU to the executable or QEMU_DIR to its installation";
+    let undefaulted = locate(None, None, None, std::iter::empty::<PathBuf>())
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        undefaulted,
+        format!(
+            "QEMU not found: looked for {} on PATH; {advice}",
+            exe_name("qemu-system-x86_64")
+        )
+    );
+    let defaulted = locate(
+        None,
+        None,
+        Some(&fixture.root),
+        std::iter::empty::<PathBuf>(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        defaulted,
+        format!(
+            "QEMU not found: looked for {} in {} and on PATH; {advice}",
+            exe_name("qemu-system-x86_64"),
+            fixture.root.display()
+        )
+    );
 }
 
 #[test]

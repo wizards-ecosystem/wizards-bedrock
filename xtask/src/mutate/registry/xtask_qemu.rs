@@ -1569,4 +1569,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "qemu::tests::runner::installation_finds_firmware_under_an_fhs_prefix",
         },
     },
+    Mutation {
+        id: 2475,
+        file: "xtask/src/qemu.rs",
+        find: "                None => \"on PATH\".to_owned(),",
+        replace: "                None => r\"in C:\\Program Files\\qemu and on PATH\".to_owned(),",
+        breaks: "a host with no default installation is told QEMU was sought in the Windows one",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::runner::a_missing_qemu_setting_is_not_blamed_on_firmware",
+        },
+    },
 ];
