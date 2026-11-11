@@ -2,20 +2,6 @@
 
 Status: Accepted, 2026-10-01. Amends D-357; closes PW-567, PW-568, PW-569 and PW-570.
 
-**Context.** D-357 decided that the storage controller runs behind an
-identity-scoped VT-d domain and that storage fails closed without one, and left
-the programming to the implementation. Building it forced choices the design
-section did not settle: which invalidation interface to drive, what to do with a
-unit whose page walks bypass the processor caches, how to take the unit over
-from firmware, where the unit lives relative to the storage candidate lifecycle,
-how the domain proof binds to the function, and what a blocked access looks like
-on the development machine so the fence check asks the right question. QEMU's
-unit reports `ECAP.C = 0`, so the first draft, which refused such a unit as
-unservable, would have left the development machine permanently unisolated. The
-first boot also showed that a candidate which allocates on the heap cannot
-restore its resource baseline (D-199), because a slab the heap grows into never
-returns its frame.
-
 **Decision.**
 
 1. *Register-based invalidation.* The unit drives the Context Command and IOTLB
@@ -30,7 +16,7 @@ returns its frame.
    written entry has its cache line written back with `clflush`, ordered by a
    fence, before the unit can be told about it. The instruction is one new
    two-line `unsafe` in `wost` (`cpu::flush_cache_line` and its one caller in
-   `mm`), and the measured unsafe total moves to 379 lines.
+   `mm`), and the measured unsafe total moved to 379 lines.
 3. *Takeover inherits only interrupt state.* The command shadow starts from
    `inherited_command(GSTS)`: interrupt remapping and compatibility-format
    interrupts keep whatever state firmware left, translation and queued
@@ -50,11 +36,11 @@ returns its frame.
    proven and firmware's command word restored; that word may leave bus
    mastering enabled on the stopped controller, so the interval after release
    is bounded by the proven stop alone (Left owed). The candidate baseline
-   sees every table frame and the register window come back. A quarantined controller, or a unit whose
-   translation will not switch off, leaves the unit installed with translation
-   on while selection halts. The firmware table is read once at boot and the
-   unit holds its second-level tables in one owned arena, so no heap allocation
-   happens inside a candidate.
+   sees every table frame and the register window come back. A quarantined
+   controller, or a unit whose translation will not switch off, leaves the unit
+   installed with translation on while selection halts. The firmware table is
+   read once at boot and the unit holds its second-level tables in one owned
+   arena, so no heap allocation happens inside a candidate.
 5. *The proof binds the function twice.* `Vtd::domain` mints a `DmaDomain` only
    when translation is on and the root and context entries name the kernel's
    own context table and second-level tree with the identifier and width it
@@ -113,37 +99,29 @@ bounded by its one-byte scope entry, and all range, presence and ancestry
 answers come from one sealed topology. Mutation 1,563 is retired; 1,691 keeps
 the valid-long-path wrong-unit regression.
 
-**Evidence.** On 2026-10-03 the release and debug self-tests each passed 270/270
-on QEMU's unit (`cap 0x80d2008c222f06c6`, `ecap 0xf02`: four-level walks,
-caching mode, no page-walk coherency), the shipped boot settled, and the
-degraded gate passed both its boots, the second refusing each candidate with
-`storage: no DMA isolation`, retiring the first cleanly and ending with
-`nvme: no usable controller`. Each retained mutation went red once. In release
-boots that each failed one check at 269/270, mutation 1,545 failed
-`the dma domain reaches exactly the live queue frames`, 1,546 failed
-`a domain proof is refused while translation is off`, and 1,544, which skips the
-unmap's invalidation, failed
-`a device write into an unmapped frame faults and changes nothing` with no
-translation failure in QEMU's log. Mutations 1,547 and 1,548 leave no
-controller, so `translation is active for the storage function` failed under the
-mutation runner's lenient boot, and 1,555, which programs the root pointer with
-the context table's address, failed `the unit walks the kernel's root table`
-the same way; 1,549 made the degraded check report the missing
-refusal; and 1,540 through 1,543 and 1,550 through 1,554 each failed its named
-host test. Two defects the gate found on the way shaped the design: a candidate
-failed its resource baseline while the unit allocated on the heap, and the debug
-boot double-faulted when the candidate path, moving the unit by value, overran
-the guarded boot stack (D-287). The design above answers both: the DMAR is read
-once at boot, the unit keeps its second-level tables in one owned arena, and it
-lives in the kernel-owned slot of item 4, which every DMA seam locks, so no
-signature in the candidate path carries it. Item 9 was verified the same day:
-the release and debug self-tests again reported
-`verdict v1 PASS passed=270 failed=0 expected=270`, each logging
-`iommu: 00:05.0 is governed by the unit at 0xfed90000 through an endpoint scope`
-before translation went on, and the degraded gate passed both its boots. Host
-mutations 1,556 through 1,568 each failed its named `acpi-tables` test, 1,569
-failed `pci-config`'s `tests::a_bridge_subordinate_bus_is_read_from_its_own_byte`,
-and the debug self-test build's `iommu::establish` frame stayed at 3,304 bytes.
+**Rationale.** D-357 left the programming to the implementation. QEMU's unit
+(`cap 0x80d2008c222f06c6`, `ecap 0xf02`: four-level walks, caching mode, no
+page-walk coherency) reports `ECAP.C = 0`, so refusing a non-coherent unit
+would have left the development machine permanently unisolated. A candidate
+that allocates on the heap cannot restore its resource baseline (D-199),
+because a slab the heap grows into never returns its frame, and moving the
+unit by value overran the guarded debug boot stack (D-287); the boot-time
+DMAR read, the owned arena and the slot of item 4 answer both.
+
+**Evidence.** On 2026-10-03, with the release and debug self-tests passing on
+QEMU's unit and the degraded gate refusing each candidate with
+`storage: no DMA isolation`, each retained mutation went red once. Mutation
+1,545 failed `the dma domain reaches exactly the live queue frames`, 1,546
+failed `a domain proof is refused while translation is off`, and 1,544, which
+skips the unmap's invalidation, failed
+`a device write into an unmapped frame faults and changes nothing`. Mutations
+1,547 and 1,548 failed `translation is active for the storage function`, 1,555,
+which programs the root pointer with the context table's address, failed
+`the unit walks the kernel's root table`, and 1,549 made the degraded check
+report the missing refusal. Mutations 1,540 through 1,543 and 1,550 through
+1,554 each failed its named host test. For item 9, host mutations 1,556
+through 1,568 each failed its named `acpi-tables` test, and 1,569 failed
+`pci-config`'s `tests::a_bridge_subordinate_bus_is_read_from_its_own_byte`.
 
 **Alternatives.** Implementing queued invalidation was rejected for a first
 unit: the register interface is sufficient for one domain and both targets

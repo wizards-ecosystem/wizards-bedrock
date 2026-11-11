@@ -2,14 +2,6 @@
 
 Status: Accepted, 2026-09-29. Amends D-138; closes PW-561.
 
-**Context.** Each fixed-device driver reserved its I/O ports by naming the raw
-number through `port::claim` and its block and pair variants. The exclusive
-registry made sure two callers could not hold the same ports, but nothing said
-that the caller naming 0x60 was the keyboard driver rather than some unrelated
-kernel component. Any code with the port module in scope could reserve any
-device's ports, and the numbers lived scattered through the kernel's driver
-modules.
-
 **Decision.** `wost` exposes one typed door per known device: `debug_exit`,
 `i8042`, `pit`, `com1` and `pci_configuration`. Each names its own ports and
 returns the exact `Port` or `PortBlock` that device needs. The device port
@@ -23,13 +15,11 @@ dynamic PCI I/O BAR path keeps `claim_spans`, which a function claim already
 gates. The raw doors stay public so the self-test harness can probe the
 registry, which is the one place that still names a raw claim.
 
-**Evidence.** On 2026-09-29 the debug-exit, i8042, PIT and COM1 drivers and
-the degraded-boot configuration-port assertion moved to the typed doors, and
-the source contract passed with no production raw claim outside the harness. A
-release self-test passed 265/265, so every typed door claims the ports its
-device actually uses. Mutation 1,533 reverts the debug-exit driver to
-`port::claim::<u32>(0xF4)` and fails the contract, which names the offending
-file and call.
+**Rationale.** The exclusive registry kept two callers from holding the same
+ports, but nothing said that the caller naming 0x60 was the keyboard driver:
+any code with the port module in scope could reserve any device's ports.
+Mutation 1,533 reverts the debug-exit driver to `port::claim::<u32>(0xF4)` and
+fails the contract, which names the offending file and call.
 
 **Alternatives.** Making the raw doors private was rejected because the
 self-test harness probes the registry through them to prove exclusivity, and a

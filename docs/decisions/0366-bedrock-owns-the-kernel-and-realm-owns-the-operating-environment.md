@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-10-07.
 
-**Context.** Isaac requested the full rename of wizards-os to wizards-bedrock,
-the kernel/userland separation and takeover of both projects' handoffs. The
-local folder already has its new name. GitHub now retains the existing history
-under wizards-bedrock; Realm remains its separate repository.
-
 **Decision.** Bedrock owns Rust kernel mechanisms, wost, hardware drivers,
 kernel ABI, diagnostic boot images and their qualification. Realm owns the
 compiler-readiness decision, application-facing platform semantics, both
@@ -34,17 +29,20 @@ wizard-platform-v1, x86_64-unknown-wizard and wire identifiers are compatibility
 contracts, not marketing names; changing them requires a separate ABI decision.
 Historical decisions, sealed receipts and original artwork retain provenance.
 
-**Qualification.** The migration supersedes Q's source freeze, not its unmet
-proof obligations. Q's interrupted sweep and failed VMware round remain
-historical. The successor needs its own ordinary CI before commit and fresh
-source-bound exceptional qualifications before foundation close. Neither the
-compiler gate nor a PW row opens or closes because a name changed.
+The migration supersedes Q's source freeze, not its unmet proof obligations.
+Q's interrupted sweep and failed VMware round remain historical. The successor
+needs its own ordinary CI before commit and fresh source-bound exceptional
+qualifications before foundation close. Neither the compiler gate nor a PW row
+opens or closes because a name changed.
+
+**Rationale.** The project was renamed from wizards-os to wizards-bedrock with
+the kernel and userland separated; GitHub retains the existing history under
+wizards-bedrock, and Realm remains its separate repository.
 
 **Alternatives.** A forked kernel would discard the continuity of almost all
 implemented work. Sibling path dependencies would prevent independent builds.
 Duplicating current userland specifications would create competing authorities.
 Deleting the ABI pressure test would discard kernel contract coverage.
 
-**Validation required.** Kernel CI, retained mutation-anchor coverage, Realm
-standalone document/input checks, brand export validation and a current-name
-inventory. Review brand proofs at README and icon sizes before distribution.
+**Consequences.** Review brand proofs at README and icon sizes before
+distribution.

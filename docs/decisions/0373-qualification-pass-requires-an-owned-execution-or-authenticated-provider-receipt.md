@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-10-09. Amends D-330, D-342, D-344 and D-347; closes PW-582.
 
-**Context.** Codex Security occurrence `occ_b06f0364edc18c50bc4df22d`
-identified that both exceptional qualification paths trusted files in a
-caller-selected directory. `qualify-mutants-grade --seal` replayed internally
-consistent cargo-mutants JSON, and `qualify-security-deep --seal` replayed
-internally consistent zero-finding scan artifacts. In both cases an attacker
-with the operator's file authority could manufacture the complete directory,
-including its hashes and claimed provider fields, and cause `xtask` to write
-`result=pass`. Source binding, strict schemas and semantic replay detect stale
-or malformed bytes; they do not authenticate who performed the computation.
-
 **Decision.** Qualification format v5 and evidence format v9 invalidate every
 record and bundle from the unauthenticated formats. The `--seal` action is
 removed from both tasks. `qualify-mutants-grade --run` is now the only grade
@@ -57,27 +47,15 @@ receipt authenticated over the request/challenge, source revision, scan
 identity, scope, findings, coverage and report, or `xtask` can invoke and fetch
 the scan through an authenticated provider channel.
 
-**Proof required.** Parser tests must reject `--seal` for both tasks and keep
-the remaining actions task-local. The Deep diagnostic path must contain no
-record commit; Deep and mutation-grade attempts must remain separate
-capability types; and the sole Deep authority boundary must stop its protected
-continuation before both online and offline consumers can read unsigned
-records. Grade tests must prove the exact command, cleared and pinned
-environment, bounded owner, output path, final post-use identity checks,
-owned temp discovery chain, tracked policy digest and exact-diff adjudications.
-Failed campaigns, changed source or tools, caller-supplied policies and nested
-cleanup targets must fail closed. Each authority predicate receives an exact
-retained red mutation.
-
-**Evidence.** The host implementation compiles with qualification v5 and
-evidence v9. Mutations 1,743 through 1,758 cover the retired seal spelling,
-sole Deep authority boundary, hostile compiler environment, exact toolchain
-contract, parent and scratch Cargo configuration, owned temporary directory,
-bounded process owner, successful exit, stable source and tools, tracked policy
-bytes and digest, exact mutant diff, direct-child cleanup and final post-use
-remeasurement. Final focused, ordinary-gate and fresh
-post-patch security results are recorded by the closing commit rather than
-claimed in advance here.
+**Rationale.** Codex Security occurrence `occ_b06f0364edc18c50bc4df22d`
+identified that both exceptional qualification paths trusted files in a
+caller-selected directory: `qualify-mutants-grade --seal` replayed internally
+consistent cargo-mutants JSON and `qualify-security-deep --seal` replayed
+internally consistent zero-finding scan artifacts, so an attacker with the
+operator's file authority could manufacture the complete directory, including
+its hashes and claimed provider fields, and cause `xtask` to write
+`result=pass`. Source binding, strict schemas and semantic replay detect stale
+or malformed bytes; they do not authenticate who performed the computation.
 
 **Alternatives.** A nonce in a request is still forgeable when the same caller
 writes the result. Hashes authenticate bytes, not their producer. A provider
@@ -96,3 +74,10 @@ boundary remains an exclusive clean run under that account; evidence hashes
 detect later transport or storage substitution. Cargo-mutants needs no remote
 provider receipt because `xtask` owns its live execution inside that boundary.
 Deep remains fail-closed because its computation still occurs outside it.
+
+**Consequences.** Mutations 1,743 through 1,758 cover the retired seal
+spelling, sole Deep authority boundary, hostile compiler environment, exact
+toolchain contract, parent and scratch Cargo configuration, owned temporary
+directory, bounded process owner, successful exit, stable source and tools,
+tracked policy bytes and digest, exact mutant diff, direct-child cleanup and
+final post-use remeasurement.
