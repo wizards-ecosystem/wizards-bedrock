@@ -2,26 +2,12 @@
 
 Status: Accepted, 2026-08-29. Closes PW-512.
 
-**Context.** QMP already avoided a bind/connect race by making `xtask` listen
-before QEMU dialled it, but the human monitor did not. Its port was found by
-binding port zero, reading the result, dropping the socket and asking QEMU to
-bind the same number later. Another local process could take that port in the
-gap. Every run also copied the firmware variable template to the same
-`target/efi-vars.fd`; two otherwise independent runners could therefore write
-one firmware store. The first two-run experiment exposed the same defect in
-the boot artifact itself: both builders truncated `target/wizard-os.img`, and
-one failed while reading back a short `wizard-kernel.elf`. A first construction
-of the shared NVMe corpus had no cross-process exclusion either. Finally,
-every disk path was interpolated into QEMU's comma-separated `-drive`
-key/value syntax without escaping commas. `Command` preserved spaces as one
-argument, but that did not make the argument's inner grammar safe.
-
 **Decision.** Each boot reserves both QMP and human-monitor loopback listeners
 before spawning QEMU. QEMU is the client for both; the exact human-monitor
-suffix is `server=off`, because a real boot proved that QEMU rejects `wait` in
-client mode. The harness accepts and keeps one monitor stream, consumes its
-initial prompt once and uses the same bounded connection for every later
-query. No control port is ever probed, dropped and rebound.
+suffix is `server=off`, because QEMU rejects `wait` in client mode. The harness
+accepts and keeps one monitor stream, consumes its initial prompt once and uses
+the same bounded connection for every later query. No control port is ever
+probed, dropped and rebound.
 
 Each run creates a unique variable-store file with `create_new` beneath the
 fixed `target/qemu runs,private/` directory, copies the pristine firmware into
@@ -44,13 +30,18 @@ and is joined on every exit path. A harness-requested stop waits for QEMU to be
 reaped before private-file guards drop, so Windows has released the handles
 when cleanup runs.
 
-**Rationale.** Holding a kernel socket is the only local proof that its port
-is reserved. Retrying a guessed port merely narrows the race. Writable UEFI
-state and a boot under construction belong to one virtual machine, not shared
-build output. A read-only NVMe backend was rejected by the real QEMU
-controller, so a temporary snapshot is the isolation primitive it can consume.
-Exercising the hostile directory names in every real boot proves the path
-encoder against the same QEMU parser and bytes the gate relies on, while a pure
+**Rationale.** QMP already avoided the bind/connect race by having `xtask`
+listen before QEMU dialled it, but the human monitor's port was found by
+binding port zero, dropping the socket and asking QEMU to bind the same number
+later, and every run shared one firmware variable store, one boot image under
+construction and an unlocked NVMe corpus. Disk paths were also interpolated
+into `-drive` without escaping commas. Holding a kernel socket is the only
+local proof that its port is reserved; retrying a guessed port merely narrows
+the race. Writable UEFI state and a boot under construction belong to one
+virtual machine, not shared build output. The real QEMU controller rejected a
+read-only NVMe backend, so a temporary snapshot is the isolation primitive it
+can consume. Exercising the hostile directory names in every real boot proves
+the path encoder against the same QEMU parser the gate relies on, while a pure
 argument test identifies the exact doubling rule when a boot fails before
 storage comes up.
 
@@ -65,10 +56,5 @@ inside QEMU's grammar and must be escaped there.
 **Consequences.** Concurrent runners have disjoint control sockets, firmware
 stores, boot images and guest-write overlays; shared NVMe construction is
 serialized and a completed corpus is reused only after its complete contents
-match. Two simultaneous shipped boot checks both built, booted, advanced their
-keyboard IRQ count from 24 to 30 and settled; the failed precursor is what
-found the shared-image race. Release self-test QEMU passed 213/213 through the
-real comma/space paths, and the shipped check exercised repeated commands on
-one accepted monitor stream. Reaping before teardown left the private-run
-directory empty. Eight deliberately broken host witnesses went red and persist
-as mutations 251 through 258. No machine check was added.
+match. Reaping before teardown leaves the private-run directory empty.
+Mutations 251 through 258 keep the host witnesses red.

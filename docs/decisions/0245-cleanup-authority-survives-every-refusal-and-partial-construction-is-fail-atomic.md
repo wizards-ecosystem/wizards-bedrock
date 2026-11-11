@@ -2,26 +2,6 @@
 
 Status: Accepted, 2026-08-30. Amends D-106, D-117, D-190, D-191, D-206 and D-243; closes PW-527.
 
-**Context.** Re-auditing cleanup as hostile code found the same defect at four
-ownership layers. The process region ledger silently discarded its final entry
-when a maximum-size image also owned a stack. Loader rollback, construction
-drop and zombie collection discarded `unmap` or release refusals; in the last
-case `.ok()` consumed the only `Bound` token that could authorize a retry.
-`AddressSpace::Drop` deliberately cannot walk or free live mappings, so those
-discarded results were safe from use-after-free only by leaking every remaining
-owner.
-
-Boot paging had the production form of the same problem. A failed kernel-space
-build dropped an unreclaimed root, stack-arena construction kept the prefix it
-had already mapped, and boot continued with that partial arena. Guard
-verification also ignored rollback refusal. Separately, task construction
-ignored a retirement refusal before returning its scheduler slot, and a free
-scheduler slot could still have an older process zombie attached to the same
-index. A later orphan could then replace the retained owner. Finally, user
-launch remained open when XSAVE isolation was unavailable, and `Frame` and
-`Segment` drop ignored allocator-ledger refusal even though D-206 classifies
-such internal ownership contradiction as fatal.
-
 **Decision.** Cleanup state is complete, typed and retryable. The fixed process
 ledger has one entry for every admitted image segment plus the stack, and
 overflow is an error rather than a dropped record. Loader and process rollback
@@ -53,10 +33,21 @@ and a second refusal is an internal contradiction.
 Ring 3 also requires isolated extended state before its first allocation.
 Absent or contradictory XSAVE state now produces `NoExtendedState`; boot may
 continue, but user launch stays closed. Kernel stacks remain guarded and are
-32 KiB: the linear construction path exceeded the former 16 KiB debug stack,
-while a measured publication point on the restored build retained 11,216 bytes
-above the guard and the complete debug and release machine suites crossed it.
-No guard was weakened.
+32 KiB, because the linear construction path exceeded the former 16 KiB debug
+stack; a measured publication point on the restored build retained 11,216 bytes
+above the guard. No guard was weakened.
+
+**Rationale.** Re-auditing cleanup as hostile code found one defect at four
+ownership layers: the ledger dropped its final entry for a maximum-size image
+with a stack; loader rollback, construction drop and zombie collection
+discarded `unmap` or release refusals, the last consuming the only `Bound`
+token that could authorize a retry; boot paging dropped an unreclaimed root and
+kept a partial stack arena; and task construction ignored a retirement refusal
+while a free scheduler slot could still carry an older zombie. Because
+`AddressSpace::Drop` cannot walk or free live mappings, the discarded results
+were safe only by leaking every remaining owner. D-206 classifies an
+allocator-ledger refusal in `Frame` and `Segment` drop as fatal internal
+contradiction.
 
 **Alternatives.** Treating cleanup refusal as a harmless leak was rejected:
 it loses retry authority and turns bounded pressure into permanent exhaustion.
@@ -73,7 +64,7 @@ rollback, failed boot-space and range-map table reclamation, commit-authority
 reunion, retirement retry, zombie non-aliasing/retry and the no-XSAVE gate.
 Host ELF tests prove power-of-two `p_align` and file/address congruence; the
 machine loader additionally refuses non-page placement before taking a frame.
-The integrated release QEMU suite passed 218/218. Exact retained breaks cover
-progress-token loss, forgotten table rollback, rollback-walk refusal,
-commit-owner loss, loader alignment and activation privilege/cache drift. The
-new table transaction remains inside `wost`'s reviewed unsafe boundary.
+Retained breaks cover progress-token loss, forgotten table rollback,
+rollback-walk refusal, commit-owner loss, loader alignment and activation
+privilege/cache drift. The table transaction remains inside `wost`'s reviewed
+unsafe boundary.

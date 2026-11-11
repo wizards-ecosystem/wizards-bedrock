@@ -2,21 +2,6 @@
 
 Status: Accepted, 2026-08-30. Amends D-85, D-150 and D-223; closes PW-529 and PW-530.
 
-**Context.** D-85 recorded three compiler experiments: a live token-bearing
-spin guard made a second lock and reuse of its `ThreadContext` fail with
-`E0499`, dropping the guard made reuse compile, and removing the guard's
-`Drop` implementation made both refusals disappear under non-lexical
-lifetimes. They were the right breaks and remained a one-time transcript.
-D-223 later built the missing durable mechanism — a host test that
-cross-compiles a throwaway crate against the real `wost` — but used it only
-for the guards' `!Send` contract.
-
-D-150 had the inverse problem. Its semantic rule is intentionally not a
-whole-program source analysis: whether an operation can wait is a design fact,
-not a function-name fact. Its direct-call surface nevertheless had no
-mechanical inventory, so adding a variant or a wildcard arm could bypass even
-the point where that fact must be decided.
-
 **Decision.** The actual-`wost` probe now carries D-85 as well as D-223. Two
 negative programs use `SpinLock::lock` and the real `ThreadContext`: one takes
 a second token-bearing lock and one passes the still-borrowed token to a
@@ -38,6 +23,16 @@ reviewer still owns the semantic classification D-150 requires; the machine
 now makes omitting that classification impossible and pins the one deliberate
 trap-side wait to the completion plane that owns it.
 
+**Rationale.** D-85's three compiler experiments (a second lock and reuse of a
+live guard's `ThreadContext` fail with `E0499`, dropping the guard compiles,
+and removing the guard's `Drop` makes both refusals vanish under non-lexical
+lifetimes) were the right breaks but a one-time transcript, and D-223's
+cross-compiling harness covered only the guards' `!Send` contract. D-150's
+rule is deliberately not a whole-program analysis, because whether an
+operation can wait is a design fact, not a function-name fact, but its
+direct-call surface had no inventory, so a new variant or wildcard arm could
+bypass the point where that fact must be decided.
+
 **Alternatives.** Copying `ThreadContext` and a guard into a host-only crate was
 rejected because it would test a model that can drift from `wost`. Matching
 rustc's prose was rejected because wording is not the language contract;
@@ -46,12 +41,9 @@ both false positives and renamed helpers would turn prose convention into a
 claimed call-graph proof. Whole-program analysis remains rejected for D-150's
 original reason.
 
-**Evidence and consequences.** The three compiler probes and both existing
-guard `!Send` probes pass against the current target. Compiling out `Drop for
-SpinLockGuard` made the two negative programs compile and failed only
-`contracts::a_live_spin_guard_keeps_the_thread_context_borrowed`; restoring it
-returned the test to green. Deleting `RingEnter`'s typed row failed
-`contracts::every_direct_door_has_an_explicit_wait_owner` with the enum/registry
-set difference, and restoration returned it to green. Both exact breaks are
-retained as host mutations. No kernel behavior, unsafe operation, ABI or
-machine-check count changed.
+**Evidence and consequences.** Compiling out `Drop for SpinLockGuard` makes the
+two negative programs compile and fails only
+`contracts::a_live_spin_guard_keeps_the_thread_context_borrowed`. Deleting
+`RingEnter`'s typed row fails `contracts::every_direct_door_has_an_explicit_wait_owner`
+with the enum/registry set difference. Both breaks are retained as host
+mutations.
