@@ -2,19 +2,6 @@
 
 Status: Accepted, 2026-09-06. Amends D-291; advances PW-544.
 
-**Context.** The first optimized full audit refused thirteen live sites of
-the form `Type::from(value)`: `wost::mm::DmaSegment::from`,
-`mm::USegment::from` and `EnableFailure::from` in the kernel, its self-tests
-and `pci-config`. Each names an exact audited type in its callee path and
-calls a `core::convert::From` implementation that the audited crate declares
-exactly once for that type. D-291 admitted an external trait implementation
-only with an explicit `<Type as Trait>::member` qualifier, because bare method
-syntax can auto-reference into a different implementation and a matching
-member name alone is not evidence. A static path call has neither weakness:
-the compiler resolves `Type::member` against that one type's inherent items
-and then the traits implemented for it, and an inherent or free selection is
-already visible to the audit and already excludes trait routing.
-
 **Decision.** At a static path call whose callee path names an exact,
 non-alias, non-generic audited type and carries no explicit `qself`, an
 external-trait activation for that same type is matched exactly as the
@@ -26,6 +13,17 @@ form. Method syntax, explicit `qself` without a trait, aliased callees and
 generic callee arguments keep D-291's refusal, and argument zero never
 supplies the `Self` of a path call whose callee could not, so an aliased
 callee fails closed instead of borrowing its argument's type.
+
+**Rationale.** The first optimized full audit refused thirteen live sites of
+the form `Type::from(value)`, such as `wost::mm::DmaSegment::from`, each naming
+an exact audited type in its callee path and calling a `core::convert::From`
+implementation the audited crate declares exactly once for that type. D-291 admitted an external trait implementation
+only with an explicit `<Type as Trait>::member` qualifier, because bare method
+syntax can auto-reference into a different implementation and a matching
+member name alone is not evidence. A static path call has neither weakness:
+the compiler resolves `Type::member` against that one type's inherent items
+and then the traits implemented for it, and an inherent or free selection is
+already visible to the audit and already excludes trait routing.
 
 **Why this is exact.** Two different external traits offering one member
 name for one type make `Type::member` a compile error, so they cannot reach

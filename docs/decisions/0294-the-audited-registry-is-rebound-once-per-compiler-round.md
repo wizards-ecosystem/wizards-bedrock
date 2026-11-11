@@ -2,18 +2,18 @@
 
 Status: Accepted, 2026-09-06. Amends D-263 and D-275.
 
-**Context.** The API audit materializes the locked registry into a private
-Cargo home and proves it unchanged by hashing every file it holds. D-275's
-implementation repeated that proof after every compiler graph: forty-four
-graphs per round, nineteen rounds, each proof reading 6,853 files and 119 MB.
-The source copy and the original tree are small and stay cheap to rebind, but
-the registry proof alone cost more per round than the compilation it guarded.
-
 **Decision.** `compile_graph` still rebinds the copied and original source
 trees after every graph, before any diagnostic is read. The registry is
 rebound once after the pristine round and once after every instrumented
 round, before that round's target libraries are rechecked and before any
 verdict is derived. Cargo metadata discovery keeps its own registry proof.
+
+**Rationale.** The API audit materializes the locked registry into a private
+Cargo home and proves it unchanged by hashing every file it holds. D-275's
+implementation repeated that proof after every compiler graph, each proof
+reading 6,853 files and 119 MB. The source copy and the original tree stay
+cheap to rebind, but the registry proof alone cost more per round than the
+compilation it guarded.
 
 **Why this loses nothing.** Neither placement observes a change made and
 reverted inside one compilation; both detect a change that persists to the

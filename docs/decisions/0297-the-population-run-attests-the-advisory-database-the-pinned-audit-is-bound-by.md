@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-09-06. Amends D-274; advances PW-028.
 
-**Context.** The first real `cargo xtask qualify-advisory` on a clean commit
-failed with "cargo-audit `last-commit` is not a string". D-274 required the
-revision-pinned `--no-fetch` report to name the exact database revision.
-`cargo-audit` 0.22.2 learns a database commit only from the fetch it
-performs: the same tool against the same checkout reports
-`"last-commit":"5a0e…"` when it fetches and `"last-commit":null,
-"last-updated":null` under `--no-fetch`. Reproduced by hand outside the
-qualification, so D-274's pinned-run expectation could never be met by the
-tool it names.
-
 **Decision.** The two runs keep their roles and both are recorded. The
 population run's report is the tool's attestation: its `last-commit` must
 equal the Git revision captured after it and its `last-updated` must be an
@@ -24,6 +14,14 @@ D-274 already required. Both transcripts are artifacts of the record and of
 the evidence bundle, whose schema becomes v6 because its file set grew.
 Offline replay verifies the population transcript as fetched, the pinned
 transcript as pinned, their agreement, and the record's repeated time.
+
+**Rationale.** D-274 required the revision-pinned `--no-fetch` report to name
+the exact database revision, but `cargo-audit` 0.22.2 learns a database commit
+only from the fetch it performs: the same tool against the same checkout
+reports `"last-commit":"5a0e…"` when it fetches and `"last-commit":null,
+"last-updated":null` under `--no-fetch`. D-274's pinned-run expectation could
+never be met by the tool it names, and the first real `cargo xtask
+qualify-advisory` failed with "cargo-audit `last-commit` is not a string".
 
 **Alternatives.** Dropping `--no-fetch` from the pinned run was rejected
 because the verdict would again run against a database the tool may change

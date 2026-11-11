@@ -2,13 +2,6 @@
 
 Status: Accepted, 2026-09-04. Amends D-187, D-197, D-251 and D-265; advances PW-536 and PW-537.
 
-**Context.** The storage path enabled memory decoding before page-rounded RAM
-exclusion and mapped a raw physical range against the page-table format's
-static 52-bit ceiling. Bus mastering then required only the PCI function claim
-and a copied NVMe observation. Safe callers could therefore map reserved
-physical-address bits, enable a changed BAR, or pair one disabled controller
-with another function.
-
 **Decision.** Physical MMIO admission first decodes the running CPU's
 `MAXPHYADDR`, validates the complete page-rounded extent against that width and
 the immutable boot memory map, and produces a linear range token. A live PCI
@@ -39,6 +32,13 @@ afterward it either retires the BAR exactly or returns the still-mapped owner.
 The selector retains any uncertain mapping with its PCI lease instead of
 reporting an ordinary clean retirement or dropping the sole cleanup route.
 
+**Rationale.** The storage path enabled memory decoding before page-rounded RAM
+exclusion and mapped a raw physical range against the page-table format's
+static 52-bit ceiling. Bus mastering then required only the PCI function claim
+and a copied NVMe observation. Safe callers could therefore map reserved
+physical-address bits, enable a changed BAR, or pair one disabled controller
+with another function.
+
 **Alternatives and proof obligation.** Passing an address, a boolean, or a
 copyable controller-state record was rejected because each lets the caller
 restate the conclusion. Checking only the unrounded BAR was rejected because a
@@ -53,11 +53,9 @@ The implementation now carries one chain from `PhysicalAddressWidth` through a
 page-rounded `AdmittedDeviceRange`, exact `BarAuthority`, inaccessible mapping,
 fresh BAR identity readback and `MappedBar`, then through typed preparation,
 fresh `CC`/`CSTS` classification and a borrowed `NvmeBusMasterAuthority` to the
-sole bus-master write. Focused `pci-config` and `nvme` suites pass 72 plus two
-doctests and 33 plus two doctests respectively; the memory-map, paging and
-CPUID suites and the compile/source door contracts also pass. Inherited-BME,
-staged-owner, clean-rollback, BAR-type, identity, preparation-quarantine and
-retirement-owner breaks reddened their focused witnesses before restoration,
-and retained equivalents are registered. Current release-machine mutation
+sole bus-master write. Inherited-BME, staged-owner, clean-rollback, BAR-type,
+identity, preparation-quarantine and retirement-owner breaks redden their
+focused `pci-config` and `nvme` witnesses, and retained equivalents are
+registered. Current release-machine mutation
 runs, PW-206's causal refusal, the live `MAXPHYADDR` marker break, VMware and
 the complete mutation sweep remain open, so PW-536 and PW-537 remain `READY`.
