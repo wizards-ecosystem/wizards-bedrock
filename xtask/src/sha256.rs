@@ -1,6 +1,4 @@
-//! SHA-256, so vendored binaries can be checksum-pinned without taking on a
-//! dependency for it. Straight from FIPS 180-4; verified against the NIST
-//! vectors below.
+//! SHA-256 from FIPS 180-4, so vendored binaries are checksum-pinned without a dependency.
 
 const ROUND_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -19,11 +17,7 @@ const INITIAL_STATE: [u32; 8] = [
 
 const BLOCK_SIZE: usize = 64;
 
-/// Hash `data`.
-///
-/// # Panics
-///
-/// Panics if the resident input exceeds SHA-256's 64-bit length field.
+/// The digest of `data`; panics if it exceeds SHA-256's 64-bit length field.
 pub fn digest(data: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new();
     let byte_length = data.len() as u128;
@@ -48,6 +42,7 @@ pub(crate) fn digest_reader(mut reader: impl std::io::Read) -> std::io::Result<(
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Hasher {
     state: [u32; 8],
     buffer: [u8; BLOCK_SIZE],
@@ -113,11 +108,11 @@ impl Hasher {
             compress(&mut self.state, &length_block);
         }
 
-        let mut out = [0u8; 32];
-        for (chunk, word) in out.chunks_exact_mut(4).zip(self.state) {
+        let mut digest = [0u8; 32];
+        for (chunk, word) in digest.chunks_exact_mut(4).zip(self.state) {
             chunk.copy_from_slice(&word.to_be_bytes());
         }
-        out
+        digest
     }
 }
 
@@ -132,9 +127,9 @@ fn input_too_large() -> std::io::Error {
 pub fn hex(digest: &[u8; 32]) -> String {
     digest
         .iter()
-        .fold(String::with_capacity(64), |mut out, byte| {
-            out.push_str(&format!("{byte:02x}"));
-            out
+        .fold(String::with_capacity(64), |mut text, byte| {
+            text.push_str(&format!("{byte:02x}"));
+            text
         })
 }
 

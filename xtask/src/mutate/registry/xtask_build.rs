@@ -125,8 +125,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 732,
         file: "xtask/src/supply_chain.rs",
-        find: "    let result = (|| {\n        let mut options = OpenOptions::new();",
-        replace: "    std::fs::write(destination, bytes)\n        .with_context(|| format!(\"writing old SPDX document {}\", destination.display()))?;\n    let result = (|| {\n        let mut options = OpenOptions::new();",
+        find: "    let publication = write_spdx_stage(&staging, bytes).and_then(|()| {",
+        replace: "    std::fs::write(destination, bytes)\n        .with_context(|| format!(\"writing old SPDX document {}\", destination.display()))?;\n    let publication = write_spdx_stage(&staging, bytes).and_then(|()| {",
         breaks: "SPDX publication writes through a preexisting hardlink before replacing its name",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -373,8 +373,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1182,
         file: "xtask/src/image.rs",
-        find: "        build(&staging, &mut disk)?;",
-        replace: "        let _ignored_construction_failure = build(&staging, &mut disk);",
+        find: "    build(staging, &mut disk)?;",
+        replace: "    let _ignored_construction_failure = build(staging, &mut disk);",
         breaks: "a failed boot-image construction can publish its partial stage over the complete image",
         reddens: Caught::HostTest {
             package: "xtask",

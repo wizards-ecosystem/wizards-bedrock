@@ -1,7 +1,6 @@
 use super::*;
 use crate::test_support::function_after;
 
-/// A `.text`-shaped section: allocated, with contents.
 const SHT_PROGBITS: u32 = 1;
 
 /// `SHF_ALLOC | SHF_EXECINSTR`.
@@ -27,8 +26,7 @@ fn section(name: &str, addr: u64, size: u64, kind: u32, flags: u64) -> Section {
     }
 }
 
-/// The shape `kernel/linker.ld` is written to produce: exact enclave
-/// segments followed by the three ordinary protection classes, with
+/// The shape `kernel/linker.ld` produces: exact enclave segments, three protection classes,
 /// `.bss` last and costing no file space.
 fn good_image() -> Image {
     let data = Segment {
@@ -479,8 +477,7 @@ fn kpti_exit_loads_stripped_root_after_scrub_and_last_secret_access() {
     );
 }
 
-/// The defect that motivated this module: `.got` placed after `.bss` by
-/// orphan heuristics, which forces the whole of `.bss` into the file.
+/// The motivating defect: an orphan `.got` after `.bss` forces all of `.bss` into the file.
 #[test]
 fn an_orphan_after_bss_is_caught_by_the_file_space_it_costs() {
     let mut image = good_image();
@@ -509,9 +506,7 @@ fn an_orphan_after_bss_is_caught_by_the_file_space_it_costs() {
     );
 }
 
-/// The subtler shape of the same defect: file bytes reach only part-way
-/// into `.bss`, so `memsz > filesz` still holds and the whole-segment
-/// comparison would look fine.
+/// File bytes reach part-way into `.bss`, so `memsz > filesz` holds and a segment check passes.
 #[test]
 fn a_partially_file_backed_bss_is_caught() {
     let mut image = good_image();
@@ -543,8 +538,7 @@ fn a_section_stranded_outside_every_segment_is_caught() {
     );
 }
 
-/// A section running off the end of its segment is stranded too — the
-/// bound has to be the whole span, not just where it starts.
+/// The bound is the section's whole span, not just where it starts.
 #[test]
 fn a_section_overrunning_its_segment_is_not_covered_by_it() {
     let mut image = good_image();
@@ -564,7 +558,7 @@ fn a_section_overrunning_its_segment_is_not_covered_by_it() {
     );
 }
 
-/// W^X, which Limine enforces from these flags: nothing may be both.
+/// Limine enforces W^X from these flags.
 #[test]
 fn a_writable_executable_segment_is_caught() {
     let mut image = good_image();
@@ -601,8 +595,6 @@ fn a_missing_request_block_is_caught() {
     );
 }
 
-/// A `.requests` section that exists but is not loaded is as useless as an
-/// absent one, and looks different in the section table.
 #[test]
 fn an_unallocated_request_block_does_not_count_as_present() {
     let mut image = good_image();
@@ -619,8 +611,6 @@ fn an_unallocated_request_block_does_not_count_as_present() {
     );
 }
 
-/// Non-allocated sections — symbols, strings, debug info — are not part of
-/// the loaded image and must not be judged as if they were.
 #[test]
 fn debug_sections_are_not_expected_to_be_loaded() {
     let mut image = good_image();
@@ -653,11 +643,7 @@ fn every_fault_says_something_specific() {
     assert!(messages.iter().any(|message| message.contains(".requests")));
 }
 
-// --- the reader ---
-
-/// Assemble a minimal but genuine ELF64 file from `segments` and
-/// `sections`, so the parser is tested against bytes rather than against
-/// the struct it is supposed to produce.
+/// Genuine ELF64 bytes, so the parser is tested against bytes rather than the struct it produces.
 fn encode(image: &Image) -> Vec<u8> {
     const HEADER: usize = elf64::HEADER_BYTES;
     const PH_STRIDE: usize = elf64::PROGRAM_HEADER_BYTES;
@@ -760,8 +746,7 @@ fn a_parsed_image_is_the_one_that_was_encoded() {
 fn a_file_that_is_not_an_elf_is_refused() {
     assert!(parse(b"").is_err());
     assert!(parse(b"MZ\x90\x00 a PE executable").is_err());
-    // Full headers make rejection reach class/endianness; shorter fixtures
-    // stop at truncation (D-105).
+    // Full headers let refusal reach class and endianness; shorter fixtures stop at truncation.
     let mut thirty_two = encode(&good_image());
     thirty_two[4] = 1;
     let message = parse(&thirty_two).expect_err("32-bit").to_string();
@@ -773,8 +758,6 @@ fn a_file_that_is_not_an_elf_is_refused() {
     assert!(message.contains("little-endian"), "said {message:?}");
 }
 
-/// A header that promises more tables than the file holds must be an
-/// error, not an index out of bounds.
 #[test]
 fn a_truncated_file_is_refused_rather_than_panicking() {
     let whole = encode(&good_image());
@@ -784,12 +767,8 @@ fn a_truncated_file_is_refused_rather_than_panicking() {
     }
 }
 
-/// A header field near the top of the range is refused, not added to.
-///
-/// Truncation shrinks the buffer and never produces a large offset, so the
-/// sweep above cannot reach the arithmetic. These inputs panicked the
-/// build — `xtask` builds in the dev profile, so the overflow checks are
-/// on, and `verify_file` runs after every kernel build (D-105).
+/// Truncation never yields a large offset, so only these inputs reach the header arithmetic.
+/// `xtask` builds with overflow checks on, and `verify_file` runs after every kernel build.
 #[test]
 fn a_header_field_near_the_top_of_the_range_is_refused() {
     let mut section_table = encode(&good_image());
@@ -808,8 +787,7 @@ fn a_header_field_near_the_top_of_the_range_is_refused() {
     assert!(parse(&names).is_err(), "e_shstrndx = u16::MAX");
 }
 
-/// Keep the verifier's machine and header-shape refusals aligned with the
-/// loader because `verify_file` judges every kernel image (D-105, D-124).
+/// The verifier's machine and header-shape refusals must stay aligned with the loader's.
 #[test]
 fn an_image_for_another_machine_or_of_another_shape_is_refused() {
     let mut aarch64 = encode(&good_image());
@@ -824,8 +802,7 @@ fn an_image_for_another_machine_or_of_another_shape_is_refused() {
     let message = parse(&wrong_stride).expect_err("stride").to_string();
     assert!(message.contains("program headers"), "said {message:?}");
 
-    // Shared constants prevent reader drift; literal anchors still catch a
-    // crate-wide typo that would move both readers together (D-158).
+    // Literal anchors catch a crate-wide typo that would move both readers together.
     assert_eq!(elf64::PROGRAM_HEADER_BYTES, 56);
     assert_eq!(elf64::MACHINE_X86_64, 62);
 }
@@ -863,9 +840,8 @@ fn section_count_and_owned_name_bytes_are_bounded_before_amplification() {
         .to_string();
     assert!(message.contains("aggregate limit"), "said {message:?}");
 
-    // Exercise the parser seam, not only the budget helper: every header
-    // names the same long string, so a parser that forgets to carry the
-    // running total would clone more than the admitted aggregate.
+    // Every header names one long string, so a parser that drops the running total
+    // would clone more than the admitted aggregate.
     let repeated_name = "n".repeat(257);
     let mut repeated_image = good_image();
     repeated_image.sections = (0..MAX_SECTION_COUNT - 1)
@@ -914,11 +890,7 @@ fn a_kernel_file_over_the_shared_ceiling_is_refused_before_allocation() {
     );
 }
 
-/// A segment whose file size runs off the end does not overflow the
-/// nobits comparison.
-///
-/// `covers` checks `vaddr + memory_size`, so a huge `p_filesz` walks past
-/// it and reaches the addition in `verify` (D-105).
+/// `covers` checks `vaddr + memory_size`, so a huge `p_filesz` reaches the addition in `verify`.
 #[test]
 fn a_segment_that_claims_the_whole_range_is_refused_rather_than_panicking() {
     let mut image = good_image();

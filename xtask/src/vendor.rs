@@ -1,12 +1,8 @@
-//! Verifying vendored binaries against recorded digests.
-//!
-//! `boot/limine/BOOTX64.EFI` is a prebuilt binary from another project. Pinning
-//! its digest is what makes "update the bootloader" a reviewable change rather
-//! than an opaque one.
+//! Vendored files checked against recorded digests, so a prebuilt bootloader update is reviewable.
 
 use std::collections::BTreeSet;
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -18,7 +14,6 @@ const MAX_DIRECTORY_ENTRIES: usize = 256;
 pub(crate) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DIRECTORY_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
-/// One line of a `sha256sum`-style checksum file.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// Lowercase hex digest.
@@ -27,10 +22,7 @@ pub struct Entry {
     pub name: String,
 }
 
-/// Parse a `sha256sum` listing.
-///
-/// Accepts both the text (`digest  name`) and binary (`digest *name`) forms,
-/// ignoring blank lines and `#` comments.
+/// Both `sha256sum` forms, `digest  name` and `digest *name`; blank and `#` lines are skipped.
 pub fn parse(listing: &str) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     let mut names = BTreeSet::new();
@@ -76,16 +68,10 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Files a vendored directory carries as its own paperwork rather than as
-/// payload, and which therefore need no digest.
-///
-/// Everything else in the directory must be listed. A digest catches a file
-/// being *changed*; only this catches one being *added*, which is the easier
-/// of the two to slip past a reviewer.
+/// The only unlisted files allowed: a digest catches a changed file, never an added one.
 const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
-/// Names in a vendored directory that neither an entry nor the directory's own
-/// paperwork accounts for, sorted so the report is stable.
+/// Names no entry or paperwork accounts for, sorted so the report is stable.
 pub fn unaccounted<'name, I>(present: I, entries: &[Entry]) -> Vec<String>
 where
     I: IntoIterator<Item = &'name str>,
@@ -100,8 +86,6 @@ where
     extra
 }
 
-/// Check every file beside `listing`: each entry against its recorded digest,
-/// and the directory against the listing.
 pub fn verify_listing(listing: &Path) -> Result<usize> {
     let dir = listing.parent().unwrap_or(Path::new("."));
     crate::mutate::workspace::canonical_existing_real_directory(dir, "vendor directory")?;
@@ -109,9 +93,30 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
     let text = read_listing(listing)?;
     let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
 
+    for (entry, file, length) in measure_payloads(dir, &entries)? {
+        verify_payload_digest(dir, entry, &file, length)?;
+    }
+
+    let present = directory_names(dir)?;
+    let extra = unaccounted(present.iter().map(String::as_str), &entries);
+    if !extra.is_empty() {
+        bail!(
+            "{} has files no digest accounts for: {}\n  add them to {} or remove them",
+            dir.display(),
+            extra.join(", "),
+            listing.display()
+        );
+    }
+    Ok(entries.len())
+}
+
+fn measure_payloads<'entries>(
+    dir: &Path,
+    entries: &'entries [Entry],
+) -> Result<Vec<(&'entries Entry, PathBuf, u64)>> {
     let mut measured = Vec::with_capacity(entries.len());
     let mut total = 0u64;
-    for entry in &entries {
+    for entry in entries {
         let file = dir.join(&entry.name);
         crate::mutate::workspace::require_direct_file(dir, &file, "vendored payload")?;
         let length = crate::mutate::workspace::open_real_file(&file, "vendored payload")?
@@ -133,34 +138,38 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
         );
         measured.push((entry, file, length));
     }
+    Ok(measured)
+}
 
-    for (entry, file, length) in measured {
-        crate::mutate::workspace::require_direct_file(dir, &file, "vendored payload")?;
-        let input = crate::mutate::workspace::open_real_file(&file, "vendored payload")?;
-        let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
-            .with_context(|| format!("hashing {}", file.display()))?;
-        crate::mutate::workspace::require_direct_file(dir, &file, "vendored payload")?;
-        ensure!(
-            bytes == length
-                && crate::mutate::workspace::open_real_file(&file, "vendored payload")?
-                    .metadata()
-                    .with_context(|| format!("remeasuring {}", file.display()))?
-                    .len()
-                    == length,
-            "{} changed length while it was hashed",
-            file.display()
+fn verify_payload_digest(dir: &Path, entry: &Entry, file: &Path, length: u64) -> Result<()> {
+    crate::mutate::workspace::require_direct_file(dir, file, "vendored payload")?;
+    let input = crate::mutate::workspace::open_real_file(file, "vendored payload")?;
+    let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
+        .with_context(|| format!("hashing {}", file.display()))?;
+    crate::mutate::workspace::require_direct_file(dir, file, "vendored payload")?;
+    ensure!(
+        bytes == length
+            && crate::mutate::workspace::open_real_file(file, "vendored payload")?
+                .metadata()
+                .with_context(|| format!("remeasuring {}", file.display()))?
+                .len()
+                == length,
+        "{} changed length while it was hashed",
+        file.display()
+    );
+    let actual = sha256::hex(&digest);
+    if actual != entry.digest {
+        bail!(
+            "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
+            file.display(),
+            entry.digest,
+            actual
         );
-        let actual = sha256::hex(&digest);
-        if actual != entry.digest {
-            bail!(
-                "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
-                file.display(),
-                entry.digest,
-                actual
-            );
-        }
     }
+    Ok(())
+}
 
+fn directory_names(dir: &Path) -> Result<Vec<String>> {
     let mut present = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
         let entry = entry.with_context(|| format!("reading an entry in {}", dir.display()))?;
@@ -176,23 +185,11 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
                 .map_err(|_| anyhow::anyhow!("{} has a non-UTF-8 entry", dir.display()))?,
         );
     }
-
-    let extra = unaccounted(present.iter().map(String::as_str), &entries);
-    if !extra.is_empty() {
-        bail!(
-            "{} has files no digest accounts for: {}\n  add them to {} or remove them",
-            dir.display(),
-            extra.join(", "),
-            listing.display()
-        );
-    }
-    Ok(entries.len())
+    Ok(present)
 }
 
-/// Verify one already-read vendored payload against its sole checksum entry.
-///
-/// The caller can write `bytes` after this returns without reopening `payload`,
-/// so authentication and consumption name the same snapshot.
+/// Authenticates the already-read `bytes` against the listing's sole entry, so a caller that
+/// writes them without reopening `payload` consumes exactly the snapshot that was checked.
 pub(crate) fn verify_payload_bytes(listing: &Path, payload: &Path, bytes: &[u8]) -> Result<()> {
     let directory = listing
         .parent()
@@ -290,11 +287,7 @@ where
     String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
 }
 
-/// Verify everything vendored in the repository.
-///
-/// Every listing, not the first one: a directory added and not added *here* is
-/// a directory nothing checks, which is the drift `paths.rs`'s
-/// `default-members` test exists to prevent one layer up (D-105).
+/// A vendored directory added and not added here is a directory nothing checks.
 pub fn verify(paths: &Paths) -> Result<()> {
     for listing in [
         paths.limine_checksums(),

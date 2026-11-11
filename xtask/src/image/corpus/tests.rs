@@ -1,7 +1,6 @@
 use super::*;
 
-/// A source of sectors backed by a slice, which is what the host has where
-/// the kernel has a controller.
+#[derive(Debug)]
 struct Bytes<'bytes>(&'bytes [u8]);
 
 impl fat32::Sectors for Bytes<'_> {
@@ -20,12 +19,7 @@ impl fat32::Sectors for Bytes<'_> {
     }
 }
 
-/// The corpus is the same bytes every time it is built.
-///
-/// What `012` §1 measured and what the whole arrangement rests on: with
-/// chrono off, `fatfs` pins the volume id and the timestamps, so a volume
-/// built now and one built in a second are identical. A corpus that
-/// changed under the checks would make every disagreement below suspect.
+/// With chrono off `fatfs` pins the volume id and timestamps; every check below rests on this.
 #[test]
 fn the_corpus_is_the_same_bytes_every_time() {
     let first = build().expect("a volume");
@@ -34,11 +28,6 @@ fn the_corpus_is_the_same_bytes_every_time() {
     assert!(first == second, "two builds of the corpus differ");
 }
 
-/// It really is FAT32, and not FAT16 wearing the name.
-///
-/// Below 65525 clusters `fatfs` formats FAT16 whatever it is asked for,
-/// and `libs/fat32` refuses that — correctly, and in a way that would look
-/// like a bug in the reader rather than a volume too small.
 #[test]
 fn the_corpus_really_is_fat32() {
     let bytes = build().expect("a volume");
@@ -48,18 +37,12 @@ fn the_corpus_really_is_fat32() {
     assert!(bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER);
 }
 
-/// `libs/fat32` reads what `fatfs` wrote, byte for byte.
-///
-/// The oracle. Two independent implementations of one format over one
-/// corpus, and the disagreement is the failure — which is a better
-/// arrangement than depending on the mature one, because a dependency
-/// cannot disagree with itself (`012` §1, D-170).
+/// The oracle: two independent readers of one corpus, as a dependency cannot disagree with itself.
 #[test]
 fn the_reader_reads_what_the_writer_wrote() {
     let bytes = build().expect("a volume");
     let mut volume = fat32::Volume::mount(Bytes(&bytes), 0).expect("mounting the corpus");
 
-    // The small file, whole.
     let root = volume.bpb().root_cluster();
     let small = volume
         .lookup(root, SMALL_NAME.as_bytes())
@@ -72,7 +55,6 @@ fn the_reader_reads_what_the_writer_wrote() {
     );
     assert_eq!(read, SMALL_CONTENT);
 
-    // The large one, whole, which walks the chain.
     let large = volume
         .lookup(root, LARGE_NAME.as_bytes())
         .expect("BIG.BIN is there");
@@ -86,7 +68,6 @@ fn the_reader_reads_what_the_writer_wrote() {
         assert_eq!(*byte, large_byte(index), "byte {index}");
     }
 
-    // And a directory below the root.
     let directory = volume
         .lookup(root, DIRECTORY_NAME.as_bytes())
         .expect("DATA is there");
@@ -102,13 +83,7 @@ fn the_reader_reads_what_the_writer_wrote() {
     assert_eq!(inside, NESTED_CONTENT);
 }
 
-/// A read from the middle of a file starts where it was told to.
-///
-/// The property a chain walk breaks silently: reading from offset zero
-/// works whatever the walk does, because the first cluster is the entry's
-/// own. Only a read that has to *skip* clusters exercises it, and only a
-/// file whose bytes differ by position can tell a skip of three from a
-/// skip of four.
+/// Offset zero reads the entry's own cluster whatever the walk does; only skipped clusters test it.
 #[test]
 fn a_read_from_the_middle_starts_where_it_was_told() {
     let bytes = build().expect("a volume");
@@ -143,10 +118,7 @@ fn a_read_from_the_middle_starts_where_it_was_told() {
     }
 }
 
-/// A read stops at the end of the file rather than at the end of a cluster.
-///
-/// The last cluster's tail holds whatever its previous occupant left, and a
-/// reader bounded by the cluster rather than by the size hands that back.
+/// The last cluster's tail holds stale bytes that a reader bounded by the cluster hands back.
 #[test]
 fn a_read_stops_at_the_end_of_the_file() {
     let bytes = build().expect("a volume");
@@ -165,18 +137,14 @@ fn a_read_stops_at_the_end_of_the_file() {
     );
     assert_eq!(&greedy[..got], SMALL_CONTENT);
 
-    // Past the end is nothing at all, rather than the next file.
     let past = volume
         .read_file(&small, small.size, &mut greedy)
         .expect("readable");
     assert_eq!(past, 0);
 }
 
-/// Every file the corpus holds is listed, and nothing else is.
-///
-/// The directory walk seen from the other side: a reader that stopped at
-/// the first deleted entry, or that returned long-name fragments, would
-/// produce a different set and every lookup above would still pass.
+/// A reader stopping at the deleted entry or returning long-name fragments lists another set.
+/// Sorted, so walk order is not the claim: `GONE.TXT` is absent and every later entry present.
 #[test]
 fn the_root_lists_exactly_what_was_written() {
     let bytes = build().expect("a volume");
@@ -196,12 +164,9 @@ fn the_root_lists_exactly_what_was_written() {
     }
     names.sort();
 
-    // Sorted, so walk order is not the claim: `GONE.TXT` is absent and
-    // everything after its slot is present.
     assert_eq!(names, vec![LARGE_NAME, DIRECTORY_NAME, SMALL_NAME]);
 }
 
-/// A path is resolved component by component.
 #[test]
 fn a_path_is_resolved_component_by_component() {
     let bytes = build().expect("a volume");
@@ -212,7 +177,6 @@ fn a_path_is_resolved_component_by_component() {
         .expect("DATA/NESTED.TXT");
     assert_eq!(nested.size as usize, NESTED_CONTENT.len());
 
-    // A component that is not a directory cannot be walked through.
     assert_eq!(
         volume.resolve(&[SMALL_NAME.as_bytes(), NESTED_NAME.as_bytes()]),
         Err(fat32::FatError::WrongKind)
