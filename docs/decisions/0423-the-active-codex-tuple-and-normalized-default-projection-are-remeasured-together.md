@@ -41,9 +41,10 @@ which must remeasure this exact tuple after its last use and replay the
 canonical zero-finding artifacts into final evidence.
 
 **Rationale.** The ChatGPT Codex installation replaced D-417's
-content-addressed `e78bad9887fa50cf` child with `896a0166b774037a`; the version,
-file sizes, aggregate byte count and skill tree were unchanged but every file
-digest changed, so the old path or an ambient executable would stop or weaken
+content-addressed `e78bad9887fa50cf` child with `896a0166b774037a`; the
+entrypoint still reports `codex-cli 0.163.0-alpha.10.2` and the file sizes,
+aggregate byte count and skill tree were unchanged, but every file digest
+changed, so the old path or an ambient executable would stop or weaken
 the workflow. Accepting any directory with the same version string, trusting
 vendor signing without content hashes or keeping only the entrypoint digest
 would lose the exact process-tree authority. The projection's only delta from
