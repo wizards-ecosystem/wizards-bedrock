@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-09-12. Refines D-10 and D-183.
 
-**Context.** `015` slice 8 requires a TTY protocol, a line editor, a shell and
-pipelines made from explicit channels with no `fork` and no inherited
-descriptors. `018` section 4 found the structured shells proven with one
-recurring failure (type inference that passes on the first rows and fails on
-the stream), the structured-shell interoperation tax concentrated at the byte
-boundary, every successful terminal extending VT100 toward records, and the
-critics of VT100 right about the cause. A compiler on the target is
-deliberately later.
-
 **Decision.** The shell speaks Wizzy's expression syntax over Wizzy's values
 and evaluates a bounded command sublanguage itself, single-pass and without
 macro processing; larger programs compile where the compiler runs. Pipes carry
@@ -28,8 +19,13 @@ images, text sizes, hyperlinks and typed clipboard entries are native. VT100
 is a compatibility component that decodes a foreign program's bytes into the
 same records inside the annex. `019` sections 7 and 8 have the details.
 
-**Rationale.** Typed inside is what a single-language OS can afford and what
-every shell user wanted from nushell without the breakage; bytes at the
+**Rationale.** `015` slice 8 requires a TTY protocol, a line editor, a shell
+and pipelines from explicit channels with no `fork` and no inherited
+descriptors, and a target-side compiler is deliberately later. Structured
+shells (`018` section 4) are proven except for type inference that passes on
+the first rows and fails on the stream, and their interoperation tax sits at
+the byte boundary. Typed inside is what a single-language OS can afford and
+what every shell user wanted from nushell without the breakage; bytes at the
 boundary is YSH's exterior-first rule and D-10's translation-layer rule
 applied to pipes. Records are where Warp, Ghostty and tmux are already going
 one escape sequence at a time.

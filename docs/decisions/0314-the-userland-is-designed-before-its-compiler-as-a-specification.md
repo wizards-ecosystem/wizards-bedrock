@@ -2,19 +2,6 @@
 
 Status: Accepted, 2026-09-12. Refines D-19, D-183 and D-184.
 
-**Context.** D-183 closed the compiler-readiness gate and stopped Phase 7
-product implementation; D-184 made `016-pre-wizzy-foundation.md` the only
-pre-gate backlog so that kernel polish could not become userland design before
-a real compiler artifact exists. Neither said when the userland's design is
-written. The four earlier research passes cover the kernel, Rust practice,
-POSIX and storage and nothing above them; the vision names a compositor, a
-toolkit, a shell and a terminal but no interaction model, no file model, no
-service model and no style. Meanwhile the language repository's roadmap homes
-the OS userland at its last milestone and asks, in `os-userland.md`, what the
-OS needs from the platform seam. The owner asked on 2026-09-12 for the
-userland to be researched and designed now, as if Wizzy were complete, for one
-developer at a keyboard-first desktop.
-
 **Decision.** `018-research-notes-5.md` records the research pass,
 `019-userland.md` designs the userland and `020-style-guide.md` fixes its
 visual and interaction language. All three are specification: they add no
@@ -30,8 +17,11 @@ identity lives in the ecosystem brand, the boot messages and the copy voice,
 which refines D-19's theme sentence without changing its rule that code stays
 conventional.
 
-**Rationale.** A design document is the "specification" work D-183 admits,
-and writing it while the gate is closed is what `015` calls harmless. Every
+**Rationale.** D-183 closed the compiler gate and D-184 made `016` the only
+pre-gate backlog, but neither said when the userland is designed, and the
+owner asked on 2026-09-12 for it now, for one developer at a keyboard-first
+desktop. A design document is the "specification" work D-183 admits, and
+writing it while the gate is closed is what `015` calls harmless. Every
 desktop in `018` that designed each surface when its phase arrived grew two of
 everything: two settings applications, two menus, three theming systems, two
 workspace concepts. Designing the whole userland at once is the only way to
@@ -52,8 +42,3 @@ Nothing in `016` changes: the kernel prerequisites in `019` are post-gate items
 with named callers, exactly as `016`'s "Explicitly after the compiler gate"
 classifies such work, and they enter the register only when the gate opens and
 a caller exists.
-
-**Proof.** Removing the literal `D-183` from `019-userland.md` made
-`wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed` fail naming
-that file; restoring it passed, with the register-shape, link and citation
-checks green beside it.

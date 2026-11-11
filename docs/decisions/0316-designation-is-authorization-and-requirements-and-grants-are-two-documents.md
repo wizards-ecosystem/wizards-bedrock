@@ -2,17 +2,6 @@
 
 Status: Accepted, 2026-09-12. Refines D-111 and D-183; resolves the placement fork in `013-application-platform.md`.
 
-**Context.** D-111 gives a program exactly one handle at birth. `013` reserved
-an ELF note namespace for what a program requires and left open whether a
-program's requirements and a deployment's grants are one document or two,
-because no package format existed. `015` fixed that effects are requests and
-never grants. Three independent traditions in `018` section 3.4 (the powerbox,
-Access Control Gadgets, Sculpt's component graph) reached the same rule for
-the user interface: derive authority from what the user is already doing and
-show the graph, never ask. Fuchsia's manifest-only routing, which asks nobody,
-is documented to encourage over-permissioning; macOS's re-consent prompts are
-documented to loop.
-
 **Decision.** Requirements are derived by the compiler, carried in the D-226
 envelope as `effects.required`, copied into the package manifest, and never
 hand-edited past the image build. Grants are the user's decision, kept by the
@@ -31,11 +20,16 @@ which `019` section 15 names as a prerequisite with the Ledger as caller. A
 component that acts without a user in the loop is marked `agent`, runs in
 restricted mode, is logged under its own identity and cannot grant to itself.
 
-**Rationale.** Two documents because they are two things: a claim a program
-makes about itself and a decision its user made. Deltas because lists get
-rubber-stamped and deltas get read. No prompts because a prompt asks the
-user about authority instead of deriving it from designation, and the
-evidence that this fails is thirty years old.
+**Rationale.** D-111 gives a program one handle at birth, `013` left open
+whether requirements and grants are one document or two, and `015` fixed that
+effects are requests and never grants. The powerbox, Access Control Gadgets
+and Sculpt (`018` section 3.4) reached the same rule: derive authority from
+what the user is already doing and show the graph, never ask; manifest-only
+routing over-permissions and re-consent prompts loop. Two documents because
+they are two things: a claim a program makes about itself and a decision its
+user made. Deltas because lists get rubber-stamped and deltas get read. No
+prompts because a prompt asks the user about authority instead of deriving it
+from designation, and the evidence that this fails is thirty years old.
 
 **Alternatives.** Requirements in the executable alone were rejected because a
 deployment's policy must be able to differ from a build. Runtime prompts were
