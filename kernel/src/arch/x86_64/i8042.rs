@@ -75,7 +75,8 @@ mod reply {
 }
 
 /// An MF2 keyboard's identity behind a translating controller; `(0xAB, 0x83)` when unrewritten.
-/// VMware answers this while reporting its translation bit clear, so the driver asks no bit.
+/// VMware answers this while reporting its translation bit clear, so the driver does not consult
+/// the bit.
 pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
 /// A missing controller floats the bus high, so the status register reads as this forever.
@@ -180,9 +181,10 @@ impl core::error::Error for I8042Error {}
 pub(crate) struct Controller {
     data: Port<u8>,
     control: Port<u8>,
-    /// Whether the bytes this delivers are set 1 rather than set 2, read from the identity.
-    /// A real controller translates while reporting the bit clear, and the identity is the reply it
-    /// cannot answer falsely.
+    /// Whether the bytes this delivers are set 1 rather than set 2, read from the keyboard's
+    /// identity at bring-up, not from the configuration byte.
+    /// Some real controllers translate while reporting the bit clear, and the identity is the reply
+    /// they cannot answer falsely.
     translated: bool,
 }
 

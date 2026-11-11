@@ -83,9 +83,9 @@ impl Keyboard {
     }
 
     /// The next byte to decode under the numbering the stream proved: held bytes first, then the
-    /// controller. Nothing is ever dropped or latched: bytes wait until one answers, then replay.
-    /// Holding ends when a byte answers or a keystroke's worth has not; those pass under the
-    /// opening guess.
+    /// controller. Nothing is ever dropped or latched: until a byte answers, bytes wait.
+    /// Holding ends when a byte answers, and the held bytes replay under the numbering it proved,
+    /// or when a keystroke's worth has not, and they pass under the opening guess.
     fn next_byte(&mut self) -> Option<u8> {
         loop {
             let holding = !self.settled && self.held_len < HELD_BYTES;
