@@ -2,23 +2,6 @@
 
 Status: Accepted, 2026-10-18. Implemented with qualification OPEN; amends D-417 and D-422; advances PW-026.
 
-**Context.** Before D-422's corrected worker boundary could be frozen, the
-ChatGPT Codex installation replaced D-417's content-addressed
-`e78bad9887fa50cf` child with `896a0166b774037a`. The old directory is absent.
-The entrypoint still reports `codex-cli 0.163.0-alpha.10.2`, and all four file
-sizes, the aggregate byte count and the generated system-skill tree are
-unchanged, but every runtime file digest and the folded tree digest changed.
-Using D-417's missing path or silently selecting an ambient executable would
-therefore stop or weaken the owned workflow.
-
-Two new empty private-home probes also agreed on a canonical 3,041-byte
-originless default projection with SHA-256
-`d78831b7ffc95fa8e14e2cf26770c3d8138156b7496a699a3567a465929e8aea`
-instead of D-417's 3,056-byte projection. The exact field-level delta is only
-the removal of top-level `windows: null`: reinserting that member reproduces
-the old bytes and SHA-256 exactly. This is a normalization change for the
-qualifier-owned `windows.sandbox` field, not an activated ambient default.
-
 **Decision.** The owned Codex child advances only to
 `896a0166b774037a`. Its exact files are
 `codex-code-mode-host.exe` (74,921,776 bytes, SHA-256
@@ -39,7 +22,9 @@ exact paths, inventory, sizes and content hashes, but does not enforce
 Authenticode signer or certificate identity.
 
 The default projection advances to the independently repeated 3,041-byte
-digest above. Normalization may remove only the qualifier-owned
+originless projection with SHA-256
+`d78831b7ffc95fa8e14e2cf26770c3d8138156b7496a699a3567a465929e8aea`.
+Normalization may remove only the qualifier-owned
 `windows.sandbox` value and collapse an otherwise absent, null or empty
 `windows` object; other Windows defaults remain identity-bearing. The
 effective configuration still requires the safety-last
@@ -48,19 +33,6 @@ missing origin, a different backend or an unexpected sibling value. The
 generated system-skill identity remains 71 entries, 314,963 file bytes and
 SHA-256 `54c2abe5f6017b67270f4bbb993b3b1e3a808da31575a1d24174cb4b2edd99c8`.
 
-**Proof.** Independent host remeasurement verified each file's absolute
-content identity and size, and the separate manual Authenticode review verified
-the signer and signing-certificate thumbprint. Both empty-home probes produced
-byte-identical defaults. A
-field-by-field comparison found no added member and no changed common value;
-programmatic reconstruction with only `windows: null` reproduced D-417's old
-projection and hash. Focused Deep and qualification suites accept the new
-tuple, while their existing witnesses still reject runtime, default,
-effective-config, origin and unexpected-Windows-field drift. At this decision's
-implementation point the active mutation registry contained 2,203 entries with
-next permanent identity 2,235; that count excluded the 31 permanently retired
-identities and does not include D-424's later additions.
-
 **Qualification boundary.** These measurements establish what the owned
 workflow must execute; they are not a Deep result or release qualification.
 D-422 and PW-026 remain open until the new clean frozen commit passes ordinary
@@ -68,10 +40,15 @@ CI, the complete then-current mutation registry and the real owned Deep workflow
 which must remeasure this exact tuple after its last use and replay the
 canonical zero-finding artifacts into final evidence.
 
-**Alternatives.** Restoring the missing D-417 child, accepting any directory
-with the same version string, trusting signatures without content hashes or
-retaining only the entrypoint digest was rejected because each loses the exact
-process-tree authority. Treating the removed null member as a security default
-change was rejected by the byte-for-byte reconstruction. Ignoring all Windows
-defaults was rejected because only the owned sandbox field may be normalized;
-every unexpected sibling remains digest-bearing and fail-closed.
+**Rationale.** The ChatGPT Codex installation replaced D-417's
+content-addressed `e78bad9887fa50cf` child with `896a0166b774037a`; the version,
+file sizes, aggregate byte count and skill tree were unchanged but every file
+digest changed, so the old path or an ambient executable would stop or weaken
+the workflow. Accepting any directory with the same version string, trusting
+vendor signing without content hashes or keeping only the entrypoint digest
+would lose the exact process-tree authority. The projection's only delta from
+D-417's 3,056-byte form is the removal of top-level `windows: null`, and
+reinserting it reproduces the old bytes and SHA-256 exactly, so this is a
+normalization change for the qualifier-owned `windows.sandbox` field rather
+than an activated ambient default; every other Windows sibling stays
+digest-bearing and fail-closed.

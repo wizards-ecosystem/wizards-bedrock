@@ -2,19 +2,6 @@
 
 Status: Accepted, 2026-10-19. Amends D-330, D-373 and D-406; supersedes PW-025 and PW-026 as release prerequisites.
 
-**Context.** Since D-330 the planned close bound every qualification to one
-frozen commit and then admitted only an exact documentation-only child for the
-closing prose. D-373 and D-406 made the independent `cargo-mutants` grade and
-the owned Codex Security Deep scan PASS records that only `xtask` can mint, and
-both remained mandatory release inputs. Each is a multi-day or externally
-authenticated campaign whose prerequisites (provider runtime tuples, account
-access, a several-day host reservation) move independently of the kernel
-source. Every source repair therefore restarted both campaigns, and no release
-had been cut in the meantime. The complete 2,228-entry `cargo xtask mutate`
-sweep on `20cf580` caught 2,222; its survivors and inconclusive outcome are
-repair input under PW-001, not qualification, and repairing them again
-invalidated every grade and Deep run that had depended on that commit.
-
 **Decision.** Bedrock adopts Linux-kernel-style release practice. The v0.1.0
 gate is `cargo xtask ci`, a complete curated `cargo xtask mutate` sweep,
 `cargo xtask model-check`, the RustSec `cargo xtask qualify-advisory`
@@ -56,8 +43,7 @@ bundle is the v11 same-commit bundle. Evidence v10 manifests are refused.
 Permanent mutations 2,262 through 2,271 cover the new checks, and mutations
 1,744 and 1,907 keep their identities while targeting the guarded Deep calls.
 On 2026-10-19 each named witness passed on the pristine source and failed under
-its mutation:
-mutations 2,262, 2,263 and 2,264, which drop the deferral check, accept the
+its mutation: mutations 2,262, 2,263 and 2,264, which drop the deferral check, accept the
 record it observed or never observe a present record, red
 `a_deferred_campaign_carrying_a_record_is_refused`; mutation 2,265, which drops
 a passing campaign's files, reds
@@ -73,12 +59,14 @@ and online Deep guards, red
 implementation checks; only the complete current-registry sweep on the release
 commit qualifies them.
 
-**Alternatives.** Keeping the grade and Deep as release prerequisites was
-rejected because their external dependencies, not kernel defects, set the
-release cadence. Omitting their keys when absent was rejected because absence
-would then be indistinguishable from a manifest that lost them; the explicit
-`deferred` value keeps the schema exact. Accepting a campaign record from an
-older `main` commit was rejected because it would qualify a source the release
-does not ship. Keeping the documentation-only child as the planned close was
-rejected because a direct tag of the qualified commit needs no relation beyond
-the identity evidence already verifies.
+**Rationale.** Under D-330, D-373 and D-406 every qualification was bound to
+one frozen commit and the independent grade and owned Deep scan were mandatory
+release inputs, yet each is a multi-day or externally authenticated campaign
+whose prerequisites (provider runtime tuples, account access, a several-day
+host reservation) move independently of the kernel source. Every source repair
+restarted both, so their external dependencies, not kernel defects, set the
+release cadence, and no release had been cut. Omitting a campaign's keys when
+absent would make absence indistinguishable from a manifest that lost them, so
+`deferred` keeps the schema exact; a record from an older `main` commit would
+qualify a source the release does not ship; and a direct tag of the qualified
+commit needs no relation beyond the identity evidence already verifies.

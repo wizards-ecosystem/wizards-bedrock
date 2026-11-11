@@ -2,31 +2,6 @@
 
 Status: Accepted, 2026-10-17. Implemented with qualification OPEN; amends D-406, D-417 and D-419; advances PW-026.
 
-**Context.** The owned Deep attempt on `4d4ab8c` passed the ordinary CI and
-native-debug gates, then stopped before Daybreak, MCP worker launch or scan
-creation because its live credential sentinel could open the projected
-`auth.json`. Failure cleanup unlinked that exact private credential and minted
-no qualification authority. The retained non-secret sandbox log reported both
-`MXC availability: true` and `Windows sandbox selection: disabled`. A separate
-harmless fixture containing no login secret reproduced the boundary: an
-unelevated selector, `useMxc` alone and MXC without a file deny each returned
-the fixture's readable exit 74; only MXC plus an exact deny for the projected
-auth path returned silent permission-denied exit 73. The probe also established
-that this runtime requires `sandboxCwd` as a canonical Windows file URL rather
-than a native path string. An independent immutable-diff review then reproduced
-a High-severity alias bypass against a non-secret hard-link fixture: denying
-only the projected name still allowed the same file to be opened through its
-live `%USERPROFILE%\.codex\auth.json` name. Scan
-`8fc00696-4491-4db4-bec0-6df1cbceb083` binds that finding to snapshot
-`00b19fc9a9266a686d8e0c5945b76c6a8b6791115d9be54d4819d60fe099c2dd`.
-The resulting dual-name fix still left the managed worker with host-root read;
-repository-controlled instructions could therefore steer it toward unrelated
-host secrets. Formal diff scan `fa648a6b-c7a4-4f6f-933f-3ef9e3fa37e0`
-reported that Medium finding as `csf_fb54adbba70a8faebc6b1451`, occurrence
-`occ_25625841eed533f656ff28b8`, against snapshot
-`codex-security-snapshot/v1:sha256:4160aa136faa808980771acf66f72297973f870870d67033ab70114b732e42b2`.
-Both scans are correction evidence, not qualification authority.
-
 **Decision.** The owned environment advances to
 `xtask-owned-codex-security-hermetic-v6`, execution authority advances to
 `xtask-mcp-wrapper-windows-job-v5`, and the existing sealed worker-permission
@@ -65,44 +40,45 @@ output fails closed. The canaries, runtime, credentials and owned source are
 remeasured around and after their last use, and Daybreak, start and completion
 receive the same qualified policy object.
 
-**Proof.** The focused configuration, wrapper, protocol, request, sealing and
-credential suite covers exact effective value and origin, clone construction
-and rebinding, file-URL encoding, root-deny/minimal/ordered exact entries,
-safety-last placement for app-server, new and resumed workers, identical policy
-propagation in all three MCP calls, exact two-link lifecycle, positive and
-negative probes, and content-free diagnostics. Replacement mutations 2,033
-through 2,035 and new mutations 2,125 through 2,150 remove or broaden one of
-those controls; each names its exact red witness. Retained mutations continue
-to cover MXC selection, credential identity and link cardinality, effective
-configuration, diagnostic secrecy, final override order, sealed policy and
-file-URL serialization. The focused Deep suite executes 59 passing tests with
-two child fixtures intentionally ignored. Independent sealed post-patch scan
+Replacement mutations 2,033 through 2,035 and new mutations 2,125 through 2,150
+each remove or broaden one of these controls and name an exact red witness;
+retained mutations continue to cover MXC selection, credential identity and
+link cardinality, effective configuration, diagnostic secrecy, final override
+order, sealed policy and file-URL serialization. Sealed post-patch scan
 `24ea21fd-3abf-495b-b5f9-a1c0e99e8ddf` reported no findings against snapshot
-`codex-security-snapshot/v1:sha256:1d2d590e07e6980622dff040021f3b75ff5b77ac1cc3b727b62c0b0d58d62a40`.
-That scan and the non-secret runtime matrices bind their own snapshots and
-remain diagnosis and correction evidence, not release qualification; the
-final frozen source must still pass the owned workflow.
+`codex-security-snapshot/v1:sha256:1d2d590e07e6980622dff040021f3b75ff5b77ac1cc3b727b62c0b0d58d62a40`;
+it and the non-secret runtime matrices are correction evidence, not release
+qualification.
 
 **Qualification boundary.** D-420 changes the source after every result on
 `4d4ab8c`. PW-026 remains open until one new clean frozen commit passes the
 complete registry and the real owned D-406/D-416/D-417/D-419/D-420 workflow,
 then replays its canonical zero-finding artifacts into final evidence.
 
-**Alternatives.** Accepting exit 74, removing the credential probe, relying on
-an ambient Windows setting or selecting the unelevated backend was rejected
-because each leaves credential content readable. Fixing only the sentinel was
-rejected because actual model workers would retain the disabled backend.
-Trusting `useMxc` without the explicit deny was rejected by the live matrix,
-and recording log text without verifying effective configuration was rejected
-because diagnostics are not execution authority. Denying only the projected
-name was rejected by the reproduced hard-link bypass. Merely adding the live
-name without constraining link count was also rejected because a pre-existing
-third name would retain the same access path.
-Keeping root read while adding more secret-path denies was rejected because it
-cannot enumerate every unrelated host secret. Granting the live checkout was
-rejected because ignored artifacts, reparse points, alternate streams and
-hard-link aliases are outside Git's tracked-source identity. Explicitly
-denying the outside canary was rejected because it would still pass after a
-regression from root deny to root read. Broad Node, Python or Git installation
-grants were rejected because their unread bytes are not covered by the sealed
-runtime identities.
+**Rationale.** The owned attempt on `4d4ab8c` stopped because its credential
+sentinel could open the projected `auth.json` while the log reported `MXC
+availability: true` and `Windows sandbox selection: disabled`. A non-secret
+fixture showed that the unelevated selector, `useMxc` alone and MXC without a
+file deny all read the file (exit 74), and only MXC plus an exact deny refused
+it (exit 73); the runtime also requires `sandboxCwd` as a canonical Windows file
+URL. Scan `8fc00696-4491-4db4-bec0-6df1cbceb083` (snapshot
+`00b19fc9a9266a686d8e0c5945b76c6a8b6791115d9be54d4819d60fe099c2dd`)
+reproduced a High-severity bypass through the live
+`%USERPROFILE%\.codex\auth.json` hard-link name, and diff scan
+`fa648a6b-c7a4-4f6f-933f-3ef9e3fa37e0` reported the remaining host-root read as
+Medium finding `csf_fb54adbba70a8faebc6b1451`, occurrence
+`occ_25625841eed533f656ff28b8`, against snapshot
+`codex-security-snapshot/v1:sha256:4160aa136faa808980771acf66f72297973f870870d67033ab70114b732e42b2`.
+Both scans are correction evidence, not qualification authority.
+
+Accepting exit 74, removing the probe, relying on an ambient Windows setting or
+the unelevated backend each leaves credential content readable, and fixing
+only the sentinel would leave model workers on the disabled backend.
+Diagnostics are not execution authority, so the effective configuration is
+verified. Denying one name, or both names without constraining link count,
+leaves an alias. Root read with more denies cannot enumerate every unrelated
+host secret. The live checkout carries ignored artifacts, reparse points,
+alternate streams and hard-link aliases outside Git's tracked-source identity.
+An explicit deny on the outside canary would still pass after a regression to
+root read, and broad Node, Python or Git installation grants cover unread bytes
+outside the sealed runtime identities.

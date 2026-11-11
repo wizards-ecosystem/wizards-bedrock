@@ -2,26 +2,6 @@
 
 Status: Accepted, 2026-10-14. Implemented with external qualification OPEN; amends D-45, D-81, D-88, D-106 and D-250; advances PW-580 and PW-706.
 
-**Context.** D-81 declined kernel page-table isolation because the intended
-processor was expected to report `RDCL_NO`. D-250 corrected the authority
-error in that assumption: shared higher-half mappings may authorize ring 3
-only when the running guest reads affirmative `RDCL_NO`, or when the exact
-host-pinned QEMU TCG development tuple is present. The current VMware guest
-reads architectural capabilities `0x44`, without `RDCL_NO`, even though a
-Workstation log has described `0x2f`. Instrumentation has not established why
-those observations differ. The log, CPU signature and hypervisor name are not
-architectural guest evidence, and setting or inferring the missing bit would
-manufacture the premise D-250 exists to require.
-
-That observation fires PW-706: VMware is a supported native qualification
-target on which user programs must run, and its guest has not claimed immunity
-from Meltdown-style supervisor-data disclosure. The existing user root copies
-the kernel's complete higher-half topology, so merely relaxing D-250 would put
-kernel text, data, the direct map, stacks, page tables and device mappings back
-inside the speculative reach KPTI removes. The repair must preserve the
-current trap, scheduling, cleanup and translation-ownership arguments rather
-than add an unmeasured alternate entry path.
-
 **Decision.** A native processor without guest-read affirmative `RDCL_NO` may
 enter ring 3 only through a fully constructed KPTI pair. The pair has one
 **full root**, containing the process's user mappings and the frozen kernel
@@ -103,7 +83,7 @@ D-250 remains the only authority for shared higher-half execution and gains
 the independent paired-isolation admission reason; no bit, signature or
 hypervisor log is promoted into CPU evidence.
 
-**Proof required.** Host layout tests must accept only the exact dedicated
+Host layout tests must accept only the exact dedicated
 enclave ranges and permissions, then reject one missing page, one extra
 higher-half leaf, one user/global/W+X bit, one non-identical backing frame, one
 unguarded stack and one pair whose lower-half leaf differs. Allocation and
@@ -133,36 +113,25 @@ ordinary-stack and device addresses without preventing a fresh process from
 continuing the suite. The no-PCID/non-global premise is read back rather than
 assumed.
 
-**Implementation and evidence.** The linear pair, shared lower subtree,
-stripped enclave, guarded transition and IST stacks, paired binding/reclaim,
+**Consequences.** The pair, enclave, guarded stacks, paired binding and reclaim,
 assembly-only CR3 crossings and forced self-test selection are implemented.
-The optimized build exposed one additional linker contract: distinct boundary
-symbols may resolve to the same address, so the address observation crosses a
-compiler black box before equality checks. The final review also moved the
-post-CR3 `VERW` selector into dedicated read-only enclave data, leaving the
-already-scrubbed transition stack untouched.
+Distinct boundary symbols may resolve to the same address in an optimized
+build, so the address observation crosses a compiler black box before equality
+checks, and the post-CR3 `VERW` selector lives in dedicated read-only enclave
+data, leaving the scrubbed transition stack untouched. Mutations 2,048 through
+2,061 retain the paired lower-half admission, exact enclave, shared subtree,
+pair publication/cleanup, full-root Rust entry, stripped-root return, stack
+scrub, atomic pair switch, frame conservation, optimized linker-address
+handling, self-test image identity and post-root no-stack-write invariants,
+each observed red against its named witness.
 
-Mutations 2,048 through 2,061 retain the paired lower-half admission, exact
-enclave, shared subtree, pair publication/cleanup, full-root Rust entry,
-stripped-root return, stack scrub, atomic pair switch, frame conservation,
-optimized linker-address handling, self-test image identity and post-root
-no-stack-write invariants. Each was observed red against its named host or
-machine witness before restoration. The first restored debug and optimized
-forced-paired QEMU runs each passed 290/290. The reviewed unsafe surface is 388
-lines in 160 blocks; the six-line increase is the architecture boundary for
-the paired root and its hardware-retained tables, with per-file fingerprints
-updated after review.
-
-**2026-10-16 validation amendment.** The later complete sweep found a witness
-gap in permanent mutation 196, not a new paired-root defect. That mutation
-removes the shared-root return's `verw word ptr [rsp]`; the forced-paired
-self-test selected D-407's different exit and therefore could not observe the
-shared path. The host assembly contract now enumerates both required buffer
+**2026-10-16 validation amendment.** Permanent mutation 196 removes the
+shared-root return's `verw word ptr [rsp]`, which the forced-paired self-test
+cannot observe. The host assembly contract now enumerates both required buffer
 clears and binds each tally to its exact preceding operand: `verw word ptr
 [rbx - 8]` for the paired exit and `verw word ptr [rsp]` for the shared exit.
-Mutation 196 now names that host contract directly. The stronger verifier is
-implemented, but its green focused test and the earlier 290/290 boots are not a
-substitute for observing the mutation red in the replacement complete sweep.
+Mutation 196 names that host contract directly, and only a replacement complete
+sweep observing it red substitutes for the earlier boots.
 
 PW-580 and PW-706 remain open only for the complete current release sweep and
 fresh self-test plus shipped VMware qualifications. Those records must show
@@ -172,17 +141,24 @@ or retained secret. The unresolved reason Workstation logged `0x2f` may remain
 a diagnostic question; it is neither required nor permitted to stand in for
 that proof.
 
-**Alternatives.** Trusting the Workstation log, CPU model, host capability or
-vendor signature was rejected because none is the architectural value the
-guest executes under. Inventing `RDCL_NO` was rejected because it erases the
-security boundary rather than repairing it. Keeping the complete kernel mapped
-but clearing `GLOBAL`, relying on SMEP/SMAP, or adding `LFENCE` at entry was
-rejected because none removes supervisor data from the speculative address
-space. A trampoline mapped from an ordinary kernel text or data page was
-rejected because unrelated bytes on that page become part of the exception.
-Mapping each user leaf twice into independent lower trees was rejected because
-the two views can drift. Enabling PCID in the same change was rejected because
-it adds identifier lifetime, reuse and invalidation obligations before the
-unoptimized security path is proved. Switching roots in Rust was rejected
-because Rust and its stack would already have been reached under the stripped
-root on entry, or secrets would remain live after the switch on exit.
+**Rationale.** D-81 declined KPTI expecting `RDCL_NO`, and D-250 then allowed
+shared higher-half mappings to authorize ring 3 only on guest-read affirmative
+`RDCL_NO` or the exact host-pinned QEMU TCG tuple. The VMware guest reads
+architectural capabilities `0x44`, without `RDCL_NO`, although a Workstation log
+described `0x2f`, and the cause is not established. That observation fires
+PW-706: VMware is a supported native qualification target on which user
+programs must run, and its guest has not claimed immunity from Meltdown-style
+supervisor-data disclosure. The existing user root copies the complete kernel
+higher half, so relaxing D-250 would put kernel text, data, the direct map,
+stacks, page tables and device mappings back in speculative reach, and the
+repair had to preserve the trap, scheduling, cleanup and translation-ownership
+arguments rather than add an unmeasured alternate entry path.
+The Workstation log, CPU model, host capability or a vendor-signed claim is not the
+architectural value the guest executes under, and inventing `RDCL_NO` erases
+the boundary. Clearing `GLOBAL`, relying on SMEP/SMAP or adding `LFENCE` leaves
+supervisor data in the speculative address space; a trampoline on an ordinary
+kernel page makes unrelated bytes part of the exception; mapping each user leaf
+twice lets the views drift; PCID adds identifier lifetime and invalidation
+obligations before the unoptimized path is proved; and switching roots in Rust
+would reach Rust and its stack under the stripped root on entry or leave
+secrets live after the switch on exit.
