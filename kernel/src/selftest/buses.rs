@@ -110,7 +110,7 @@ pub(super) fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
 
 fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let claims_before = pci::claims();
-    if !the_bus_walks_to_an_unclaimed_function() {
+    if !the_bus_walk_completes() {
         return false;
     }
 
@@ -189,7 +189,7 @@ fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     surveyed && seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
 }
 
-fn the_bus_walks_to_an_unclaimed_function() -> bool {
+fn the_bus_walk_completes() -> bool {
     let mut candidate = None;
     pci::enumerate(|function| {
         if candidate.is_none() && !function.header.is_bridge() && !pci::is_claimed(function.at) {

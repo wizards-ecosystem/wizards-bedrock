@@ -130,7 +130,6 @@ pub(super) fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> boo
     else {
         return false;
     };
-    // A file offset past every file this kernel can hold.
     let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
         return false;
     };
@@ -195,6 +194,7 @@ fn serve_an_unfit_rights_word_and_token(
     Some((widened, queue.read_completion(1)))
 }
 
+// A file offset past every file this kernel can hold.
 fn read_past_every_file(
     queue: &Arc<queue::Queue>,
     table: &Arc<HandleTable>,
@@ -510,7 +510,7 @@ fn a_queued_open_cancels_without_its_handle(
         && queue::queued_work_for_test() == queued
 }
 
-// A refused cancellation leaves the open admitted, so the worker still installs its handle.
+// A cancellation refused for want of a completion slot leaves the open admitted and queued.
 fn a_refused_cancellation_keeps_the_open_queued(
     retry: &Arc<queue::Queue>,
     table: &Arc<HandleTable>,
@@ -630,9 +630,9 @@ pub(super) fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() 
         "selftest: awaiting storage-delay keystroke",
         "  PRESS  c   to continue the storage round",
     );
-    // This runs before the permanent fallback starts so later scheduler checks keep their tickless
-    // baseline. Draining here while the storage worker is held proves polling and unrelated IRQ
-    // admission can progress together.
+    // This self-test runs before the permanent fallback starts so the scheduler checks below
+    // retain their tickless baseline. Drain explicitly while the storage worker is held, proving
+    // polling and unrelated IRQ admission can progress together.
     let arrived = finish_delayed_read_input(
         || {
             runs_until(input::HUMAN_WAIT_MS, || {
