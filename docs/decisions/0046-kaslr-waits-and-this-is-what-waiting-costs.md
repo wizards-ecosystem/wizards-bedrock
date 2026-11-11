@@ -2,37 +2,21 @@
 
 Status: Accepted, 2026-08-22.
 
-**Context.** D-12 put KASLR in the security baseline "on from the start, not
-retrofitted". It has been owed since Phase 0, blocked throughout on one
-thing: `linker.ld` hardcodes `0xffffffff80000000`, so the image is not
-relocatable and `kaslr: yes` in `boot/limine.conf` would have nothing to
-randomise. `007-memory.md` requires this phase to take the relocation work
-or record the deferral.
-
-**Options.** (a) Make the image relocatable now: position-independent code,
-a relocation pass at boot, and every hardcoded address in the linker script
-and mapping code made base-relative; (b) defer, and name the cost.
-
-**Decision.** (b), deferred to Phase 12 with the other hardware-security
+**Decision.** KASLR is deferred to Phase 12 with the other hardware-security
 items, with the cost stated.
 
-**Rationale.** The relocation work is not large, but it is the wrong shape
-for this phase. Slice 2 has just made the image's layout matter in a new
-way: six linker symbols now bound the protection classes, and the mapping
-code turns each into a physical address through the bootloader's reported
-base. Making that base-relative in the phase that first depends on it would
-change the foundation and what stands on it together. The failure mode is a
-triple fault with nothing on the wire.
+**Rationale.** `linker.ld` hardcodes `0xffffffff80000000`, and making the
+image relocatable means position-independent code, a boot relocation pass
+and base-relative mapping code. Doing that in the phase whose mapping code
+first depends on the image layout would change the foundation and what
+stands on it together, with a triple fault as the failure mode.
 
 **What the deferral costs.** Every phase that adds a mapping adds an
-assumption about where the kernel lives. Slice 2 added three. Phase 4's
-per-CPU stacks will add more, and Phase 5's userspace will add the first
-mappings whose *absence* of randomisation is externally observable. The work
-is strictly cheaper now than after those land, and the case for deferring
-weakens with each one: a debt with interest, not at par.
-
-Two Phase 12 items assume the kernel controls its own layout and would be
-taken together: CET shadow stacks, a per-stack allocation decision, and
+assumption about where the kernel lives, and Phase 5's userspace adds the
+first mappings whose *absence* of randomisation is externally observable.
+The work is strictly cheaper now than later: a debt with interest, not at
+par. Two Phase 12 items assume the kernel controls its own layout and would
+be taken together: CET shadow stacks, a per-stack allocation decision, and
 LASS, whose premise is a hard user/kernel address split
 (`008-research-notes-2.md` §6).
 

@@ -2,25 +2,17 @@
 
 Status: Accepted, 2026-08-12.
 
-**Context.** A GitHub Actions workflow ran `fmt --check`, clippy, tests, the
-vendor digests and an image build on Linux for every push.
+**Decision.** The GitHub Actions workflow is removed. `cargo xtask ci` is
+the only gate. Branch protection is rejected.
 
-**Decision.** Removed. `cargo xtask ci` is the only gate.
+**Rationale.** On a single-developer project the workflow repeated the local
+gate after the push instead of before it, and with no second author branch
+protection has no review to enforce.
 
-**Rationale.** This is a single-developer project on a single machine. The
-workflow ran the same steps `cargo xtask ci` already runs locally in about
-twenty seconds, before the push instead of after it. On a private
-repository it also spent metered minutes telling one person what they
-already knew. Branch protection is rejected for the same reason: with
-no second author there is no review to enforce, only a barrier to
-`git push`.
-
-**Consequences.** Nothing now proves the build works on a non-Windows host.
-That guarantee was real (it is why `xtask` uses `EXE_SUFFIX` and `QEMU_DIR`
-instead of hardcoding `.exe` and a Program Files path), so the portability
-*code* stays, untested. Revisit when a second person contributes,
-or if this is ever built on Linux in earnest; the deleted workflow is
-recoverable from history.
+**Consequences.** Nothing now proves the build works on a non-Windows host,
+so the portability *code* (`EXE_SUFFIX`, `QEMU_DIR`) stays, untested.
+Revisit when a second person contributes, or if this is ever built on Linux
+in earnest.
 
 **Current disposition (2026-08-30).** PW-708 turns that prose into an exact
 trigger: restore a supported-host gate when a second active contributor or

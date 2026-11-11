@@ -2,30 +2,23 @@
 
 Status: Accepted, 2026-08-14. Amended by D-77.
 
-**Context.** `001-boot.md` recorded the hazard when `SpinLock` was written: a
-lock taken both in ordinary kernel context and from an interrupt handler
-deadlocks, and on one CPU that is a certainty, not a race. Nothing could
-reach it while interrupts were off. Slice 2 turns them on.
-
 **Decision.** Acquiring a `SpinLock` clears `IF`; the guard restores what it
 found on drop. Every kernel lock does this; there is no second lock type.
 
-**Rationale.** The fix belongs in the lock, not at the call sites, as the
-original note said. Restoring instead of enabling makes nesting correct: an
-inner lock that found the flag clear puts back a clear flag, so it cannot
-re-enable interrupts while an outer section holds one. Release order is
-unlock, then restore; the other order lets an interrupt arrive at code still
-holding the lock.
-
-Asterinas parameterises its lock over the guard discipline
-(`LocalIrqDisabled`, `PreemptDisabled`). That distinction pays off with a
-scheduler; until then it is a type parameter with one useful value.
+**Rationale.** A lock taken both in ordinary kernel context and from an
+interrupt handler deadlocks, and on one CPU that is a certainty, not a race
+(`001-boot.md`). The fix belongs in the lock, not at the call sites.
+Restoring instead of enabling makes nesting correct: an inner lock that
+found the flag clear puts back a clear flag, so it cannot re-enable
+interrupts while an outer section holds one. Release order is unlock, then
+restore; the other order lets an interrupt arrive at code still holding the
+lock.
 
 **Consequences.**
 
-- The surviving hazards are entries `IF` does not mask: a fault can be raised
-  while a lock is held, and an NMI can arrive at any time. So D-31's rule that
-  a trap handler must not log still stands, for a narrower reason.
+- The surviving hazards are entries `IF` does not mask: a fault can be
+  raised while a lock is held, and an NMI can arrive at any time. So D-31's
+  rule that a trap handler must not log still stands, for a narrower reason.
 - Interrupt latency is now bounded by the longest critical section.
   Scrolling the framebuffer console holds a lock across a screenful of pixel
   copies. Acceptable with no scheduler; revisit with one.
