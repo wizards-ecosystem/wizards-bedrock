@@ -21,13 +21,15 @@ algebra of its own inputs, and it must fail for the reason it names. Its fixes:
   construction, so `push_back` cannot grow under a leaf guard.
   `Queue::install` uses `SpinLock::get_mut`: `&mut self` proves nobody holds
   the guard, where copying the address out would hand on a number in place of
-  the type's evidence. `post` takes its locks in `take`'s order.
+  the type's evidence. `post` takes its locks in `take`'s order: it took
+  `shared` then `state`, the reverse of `take`, which is no deadlock on one
+  CPU but an inversion pre-seeded for SMP.
 - **`map_stack` rolls back** a failed guard check, the shape D-105 gave
   `load_image`.
 - **`USegment::reclaim` leaks rather than frees when the clear fails**, because
   those frames still hold a program's bytes.
-- `serve`'s missing-reservation `break` is a `debug_assert`: D-112's model
-  shows it unreachable. `spawn_prepared` retires `wost`'s slot as well as the
+- `serve`'s missing-reservation `break` is a `debug_assert`: silent, it would
+  wedge a ring for a process's life, and D-112's model shows it unreachable. `spawn_prepared` retires `wost`'s slot as well as the
   kernel's when binding fails, so the tables never disagree.
 - Checks that could not fail are rewritten or deleted. A rewritten submission
   is read back so the rewrite is shown to have landed. `extended_control()`

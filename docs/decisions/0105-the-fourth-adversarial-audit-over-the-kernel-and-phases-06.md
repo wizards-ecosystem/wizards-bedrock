@@ -57,9 +57,10 @@ The fixes:
   `limine.conf`, and one counts `report.check(` calls against
   `EXPECTED_CHECKS`.
 
-**Rationale.** Every surviving defect was a check that restated its input or
-a contract written in two places; both rules make a check say something the
-code did not already say.
+**Rationale.** The two rules came from what the check failures had in common:
+each failing check restated its own inputs or failed for a reason other than
+the one it named, so both rules make a check say something the code did not
+already say.
 
 **Consequences.** Left owed: `xtask/src/elf.rs` still transcribes the ELF header
 offsets instead of using `libs/elf64`, the duplication that crate exists to
