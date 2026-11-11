@@ -2,34 +2,6 @@
 
 Status: Accepted, 2026-08-26. Amends D-06, D-10, D-72, D-80, D-114, D-116, D-118, D-149, D-150, D-151, D-152, D-164, D-166, D-169 and D-173.
 
-**Context.** The D-180 audit followed Phase 5's mlibc pressure test back to its
-evidence and found that the checked 5/10/1 tally was precise arithmetic over
-false categories. `sys_libc_log` was counted as MAPS while its body was a
-silent no-op. `sys_read` had a shipped explicit-offset ring operation, while
-`sys_write` had no operation at all; calling both OWED hid the difference.
-`sys_seek` needs POSIX open-file-description cursor state the native protocol
-deliberately omits. `WaitQueue::wait_unless` closes an internal wakeup window,
-but is not a futex keyed by a validated userspace atomic and its lifetime.
-Phase 6 built native OpenAt, so calling the entire `sys_open` mechanism ABSENT
-confused the rejection of an ambient root with the absence of relative lookup.
-
-The implementation transcription disagreed with its labels too.
-`sys_clock_get` ignored the requested clock ID and returned monotonic uptime
-as realtime, sampled a bare `rdtsc` after the sequence snapshot, and performed
-the fixed-point multiply in `u64`. At a 3 GHz counter that multiply can wrap
-in a few seconds. `sys_close` invoked proposed call 4 even though the kernel
-decodes only 0–3. The header numbered eight such unimplemented calls, assigned
-`WIZ_OP_SIGNAL = 3` on top of Duplicate, and described signals as opcodes even
-though a completion has no opcode field or unsolicited-event discriminator.
-
-D-114 also recorded no mlibc source revision. Its C++ has never been compiled.
-The local toolchain measurement changed by 2026-08-26—WinLibs GCC/G++ 16.1,
-Ninja 1.13.2 and Python 3.14.3 through `py` appeared (`python` and `python3`
-remain non-working Store aliases). Meson, pinned mlibc source, Wizard target
-integration and a repository-owned toolchain are still absent. A
-current-looking function signature is therefore not current upstream evidence,
-and executables found on one workstation are not a D-16 build.
-
 **Decision.** Preserve D-114's counts as a dated pressure-test result and
 retire its one-dimensional taxonomy for present-tense claims. Every one of the
 sixteen inspected functions now has two separate fields in
@@ -109,6 +81,31 @@ adapter still owns descriptor numbering, preopens, cursor and inheritance
 state, and root/cwd policy. Those are COMPAT semantics; their cost does not
 justify putting a cursor or a descriptor table into the native ABI.
 
+**Rationale.** The D-180 audit found D-114's checked 5/10/1 tally was precise
+arithmetic over false categories. `sys_libc_log` was counted as MAPS while its
+body was a silent no-op. `sys_read` had a shipped explicit-offset ring
+operation while `sys_write` had no operation at all, and calling both OWED hid
+the difference. `sys_seek` needs POSIX open-file-description cursor state the
+native protocol deliberately omits. `WaitQueue::wait_unless` closes an internal
+wakeup window but is not a futex keyed by a validated userspace atomic and its
+lifetime. Calling all of `sys_open` ABSENT confused the rejection of an ambient
+root with the absence of relative lookup. The transcription also disagreed with
+its labels: `sys_clock_get` ignored the requested clock ID and returned
+monotonic uptime as realtime, sampled a bare `rdtsc` after the sequence
+snapshot, and multiplied in `u64`, which can wrap within seconds at a 3 GHz
+counter; `sys_close` invoked proposed call 4 though the kernel decodes only 0
+to 3; and the header numbered eight unimplemented calls, assigned
+`WIZ_OP_SIGNAL = 3` on top of Duplicate, and described signals as opcodes
+though a completion has no opcode field or unsolicited-event discriminator.
+
+D-114 recorded no mlibc source revision, and its C++ has never been compiled.
+By 2026-08-26 the local toolchain had WinLibs GCC/G++ 16.1, Ninja 1.13.2 and
+Python 3.14.3 through `py` (`python` and `python3` remain non-working Store
+aliases); Meson, pinned mlibc source, Wizard target integration and a
+repository-owned toolchain are still absent. A current-looking function
+declaration is not current upstream evidence, and executables found on one
+workstation are not a D-16 build.
+
 **Alternatives.** Broaden OWED to include “some related primitive exists” was
 rejected because it would continue to equate Read with no Write and WaitQueue
 with a futex. An implementation-only classification was rejected because a
@@ -143,37 +140,34 @@ speculative member, commented-out decoder arm, reordered field or stale program
 operand cannot hide after the known members. Aggregate counts are derived facts
 and are not restated as authority.
 
-The first check was broken four ways and red each time (D-28): Exit actively
-rang the wrong call; Read and Close exchanged remainder labels in both C++ and
-README; the clock's 128-bit intermediate narrowed to `u64`; and proposed call
-4 returned to the C enum. The two-file label swap had gone red only because
-the test contained a third copy of the whole register, violating D-157. That
-result was rejected rather than counted: the copied map was removed, named
-platform witnesses were added, and the same swap then went red for the
-Read/Close evidence it actually contradicted.
+The first check was broken four ways and red each time (D-28): Exit rang the
+wrong call; Read and Close exchanged remainder labels in both C++ and README;
+the clock's 128-bit intermediate narrowed to `u64`; and proposed call 4 returned
+to the C enum. The label swap had gone red only because the test held a third
+copy of the whole register, violating D-157. That result was rejected rather
+than counted: the copied map was removed, named platform witnesses were added,
+and the same swap then went red for the Read/Close evidence it contradicted.
 
 The repaired checks were broken thirteen further ways and red: a duplicate
-active definition, a body hidden behind `#if 0`, the Exit call hidden in a
-block comment, a stub with an extra success return, EINVAL renumbered, the C
-clock's first two fields exchanged, a non-literal decoder arm, and the TSC
-halves recombined backwards; then a spaced macro directive, a dead conditional
-that called Exit, a block-commented errno definition, a block-commented kernel
-decoder arm, and a 64-bit C `shift` over the kernel's 32-bit field. These are
-host repository-claim checks, not QEMU verdicts, so they do not add a machine
-mutation to `cargo xtask mutate`.
+active definition, a body hidden behind `#if 0`, the Exit call in a block
+comment, a stub with an extra success return, EINVAL renumbered, the C clock's
+first two fields exchanged, a non-literal decoder arm, the TSC halves recombined
+backwards, a spaced macro directive, a dead conditional that called Exit, a
+block-commented errno definition, a block-commented kernel decoder arm, and a
+64-bit C `shift` over the kernel's 32-bit field. These are host
+repository-claim checks, not QEMU verdicts, so they add no machine mutation to
+`cargo xtask mutate`.
 
-The authority and layout repair added seven more observed host reds: the
-kernel submission `argument` offset moved from 24 to 8; an eighth opcode entered
-the decoder; the OpenAt witness was hidden in a block comment; the clock's
-seconds store was commented out; rights intersection became union; and Panic
-and Open were each relabelled with the broader remainder their platform witness
-contradicts. Six target breaks were then booted and red: OpenAt restored every
-universal right, File admitted inert `WRITE`, Directory admitted inert
-`MODIFY`, the kernel parsed `argument` at offset 8, and OpenAt read a malformed
-path before reserving against a full table; finally Duplicate validated malformed
-rights before making the same reservation. The six target defects have
-persistent mutations; the then-current register held 188 machine checks and 75
-mutations.
+The authority and layout repair added seven host reds: the submission
+`argument` offset moved from 24 to 8; an eighth opcode in the decoder; the
+OpenAt witness hidden in a block comment; the clock's seconds store commented
+out; rights intersection made union; and Panic and Open each relabelled with
+the broader remainder their witness contradicts. Six target breaks were booted
+and red: OpenAt restoring every universal right, File admitting inert `WRITE`,
+Directory admitting inert `MODIFY`, the kernel parsing `argument` at offset 8,
+OpenAt reading a malformed path before reserving against a full table, and
+Duplicate validating malformed rights before that reservation. The six target
+defects have persistent mutations.
 
 No kernel ABI was added and no libc was claimed compiled. Phase 7 slice 2 now
 starts from an honest pressure-test transcription; Phase 9 still owns the

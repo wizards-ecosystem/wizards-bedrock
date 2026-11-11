@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-08-27. Amends D-92; closes PW-107.
 
-**Context.** D-92 deliberately kept booting on the bootloader's unguarded
-stack when the guarded replacement could not be allocated. At that point no
-shipped path ran untrusted code, so the decision called this a lost guard
-rather than a lost boot. D-116 later made a user program part of every shipped
-boot without revisiting the fallback. `boot_continue` did not remember which
-stack path reached it, and `user::spawn` therefore built a process and opened
-ring 3 even when the trusted kernel itself lacked the stack boundary the
-security baseline promises.
-
 **Decision.** The boot continuation records whether it was reached through
 `continue_on_stack` with a `MappedStack`. The state begins false, and any
 unrecognised continuation value also records false. Process construction reads
@@ -24,21 +15,22 @@ ring 3 is closed. Only the crate root can mark the production state true; the
 self-test build can temporarily inject the false state around one attempted
 launch and then restores it.
 
-**Rationale.** The guard protects the kernel while it handles untrusted work,
-so losing it must revoke that work rather than every diagnostic service. A
-panic would be fail-closed but would throw away the machine's ability to say
-what failed. Keeping the earlier fallback unchanged would make a best-effort
-allocation silently weaken a privilege boundary. Retrying allocation cannot
-guarantee progress under the memory pressure which caused the first refusal.
-A boot-global fact is smaller than threading a token through every later
-process caller, and its sole production writer is the continuation that knows
-which path actually ran.
+**Rationale.** D-92 kept booting on the bootloader's unguarded stack when no
+shipped path ran untrusted code; D-116 then made a user program part of every
+boot without revisiting that fallback. The guard protects the kernel while it
+handles untrusted work, so losing it must revoke that work rather than every
+diagnostic service. A panic would be fail-closed but would throw away the
+machine's ability to say what failed. Keeping the earlier fallback unchanged
+would make a best-effort allocation silently weaken a privilege boundary.
+Retrying allocation cannot guarantee progress under the memory pressure which
+caused the first refusal. A boot-global fact is smaller than threading a token
+through every later process caller, and its sole production writer is the
+continuation that knows which path actually ran.
 
 **Consequences.** `an unguarded boot stack closes the user boundary` injects
 the exact state left by `boot_continue(0)`, requires the typed refusal, no new
 syscall crossing and an unchanged frame, heap, arena, channel, ring, thread and
 process-record ledger. Restoring the state lets all later user checks run,
 which proves the degraded state is controllable rather than sticky test damage.
-Bypassing the process gate launched a real ring-3 program and reddened only
-that check with `passed=197 failed=1 expected=198`; it is mutation 101. No
-unsafe operation was added. The image now carries 198 machine checks.
+Bypassing the process gate launches a real ring-3 program and reddens only that
+check; it is mutation 101. No unsafe operation was added.

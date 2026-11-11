@@ -2,27 +2,6 @@
 
 Status: Accepted, 2026-08-26. Amends D-01, D-05, D-20 and D-180.
 
-**Context.** D-01 settled Rust as the kernel language. D-04 put drivers,
-filesystems and the network stack in that kernel, so D-08's WizFS is Rust too;
-the shared name is not a language exception. D-05 chose an own userland but did
-not choose its implementation language. D-180 then chose Wizzy for a measured
-first native language/runtime proof while keeping a compiled Rust probe and a
-permanent Rust fallback.
-
-That left two different properties under the word "language-neutral." The ABI
-must not privilege one source language: ports, runtimes and future compilers all
-consume the same handles, rings and bootstrap protocols. The product still
-needs a language identity. Leaving that identity revisitable after building
-`init`, a shell or tools lets schedule pressure turn temporary scaffolding into
-the userland by default, then charges a rewrite to the language it was meant to
-test.
-
-The other missing boundary is readiness. The D-180 snapshot had no reachable
-pin, non-interactive build command or target-suitable separated runtime. A full
-Wizzy `init` is too late to discover that no reproducible program can be built;
-building the OS userland in Rust while waiting is too early to make Wizzy the
-system language.
-
 **Decision — privilege fixes the first language boundary.** The kernel and all
 first-party code that executes in kernel context remain Rust. That includes the
 architecture boundary, drivers, filesystems and network stack. Required
@@ -127,6 +106,21 @@ facts, not compiler features. The exceptions keep bootstrapping honest: mlibc,
 CPython, a WASI interpreter and host `xtask` do not become Wizzy by declaration.
 Narrowing them and requiring migration of first-party portions prevents
 "temporary shim" from becoming a second native application model.
+
+"Language-neutral" named two different properties. The ABI must not privilege
+one source language: ports, runtimes and future compilers all consume the same
+handles, rings and bootstrap protocols. The product still needs a language
+identity, and leaving it revisitable after building `init`, a shell or tools
+lets schedule pressure turn temporary scaffolding into the userland by default,
+then charges a rewrite to the language it was meant to test. D-04 puts drivers,
+filesystems and the network stack in the kernel, so D-08's WizFS is Rust too;
+the shared name is not a language exception.
+
+The gate exists because the D-180 snapshot had no reachable pin,
+non-interactive build command or target-suitable separated runtime. A full
+Wizzy `init` is too late to discover that no reproducible program can be built;
+building the OS userland in Rust while waiting is too early to make Wizzy the
+system language.
 
 **Alternatives.** D-180's measured choice with a permanent Rust fallback was
 rejected because the fallback can consume the product surface before the

@@ -2,16 +2,7 @@
 
 Status: Accepted, 2026-08-27. Amends D-113 and D-115, closes PW-100 and PW-101.
 
-**Context.** The D-184 foundation audit found two safe paging doors whose
-ownership claims were weaker than their signatures. `map_shared` borrowed a
-`Shared`, wrote a reachable user mapping and retained nothing; dropping the
-borrowed owner returned those frames while the page-table entries still named
-them. Separately, `map_range` allowed an identical rewrite and, on a later
-failure, cleared every earlier entry in the request. An identical entry that
-predated the request was therefore erased by rollback even though the call did
-not create it.
-
-**Decision — shared mappings retain ownership.** `Shared` has one inaccessible
+**Decision: shared mappings retain ownership.** `Shared` has one inaccessible
 reference-counted allocation. It remains the sole safe data-access handle and
 is deliberately not `Clone`; a private keepalive can extend the allocation's
 lifetime but exposes no bytes. Every successful `map_shared` stores one such
@@ -22,7 +13,7 @@ safe root token can reach those mappings. Dropping a bound or active space
 leaks the keepalives with the already-leaked tables: loss is preferable to
 recycling a frame a CPU may still reach.
 
-**Decision — a mapping transaction has one initial state.** `map_range`
+**Decision: a mapping transaction has one initial state.** `map_range`
 preflights every target entry without allocating or writing. A range that is
 entirely absent may be installed and its partial failure may clear everything
 written so far. A range that is entirely identical succeeds without writing.
@@ -32,12 +23,15 @@ larger mapping to absorb an older prefix. No current caller needs the latter,
 and refusing it is a checkable transaction boundary rather than a rollback log
 whose size depends on the mapping length before the heap exists.
 
-**Rationale.** A prose outlives obligation cannot make a safe function sound.
-The keepalive makes frame lifetime a property of the mapping owner, and the
-private non-accessing reference preserves `Shared`'s exclusive safe accessor.
-For rollback, preflight keeps the boot-time path allocation-free and makes the
-old `undo` argument true: every leaf it clears was absent when this transaction
-began.
+**Rationale.** The D-184 foundation audit found `map_shared` borrowed a
+`Shared` and retained nothing, so dropping the owner returned frames the page
+tables still named, and `map_range`'s rollback erased an identical entry that
+predated the request. A prose outlives obligation cannot make a safe function
+sound. The keepalive makes frame lifetime a property of the mapping owner, and
+the private non-accessing reference preserves `Shared`'s exclusive safe
+accessor. For rollback, preflight keeps the boot-time path allocation-free and
+makes the old `undo` argument true: every leaf it clears was absent when this
+transaction began.
 
 **Alternatives.** Making `map_shared` unsafe was rejected because the lifetime
 is mechanically enforceable. Leaking every shared run forever was safe but

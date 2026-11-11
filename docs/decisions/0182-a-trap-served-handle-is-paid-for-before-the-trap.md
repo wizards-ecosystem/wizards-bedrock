@@ -2,22 +2,6 @@
 
 Status: Accepted, 2026-08-26. Amends D-78, D-128, D-141, D-151, D-171, D-180 and D-181.
 
-**Context.** D-181 made Duplicate and OpenAt reserve a table slot before
-validating the rest of their submissions, but that promise covered only the
-table's count. Installing the result still called `reserve_a_slot`, which grew
-the global arena's `Vec` when its existing buffer was full. The heap correctly
-refuses allocation in trap context: an interrupt can arrive while the heap is
-refilling itself, so re-entering it would corrupt or deadlock the allocator.
-
-That made a successful ring operation an unprivileged machine panic. The
-shipped bootstrap channel carries `DUPLICATE`; enough valid Duplicate
-submissions reached `HandleTable::fill` from the `int 0x80` handler and crossed
-the arena's next capacity boundary. The self-tests missed it because their
-queue submissions called `Queue::serve` from kernel-thread context, while the
-one emitted ring-3 program submitted only Echo. OpenAt held a second instance
-of the same class: wrapping D-171's copyable `File` and `Directory` values in a
-fresh `Arc` allocated after the trap had begun.
-
 **Decision.** A handle table is not made reachable until the global arena has
 capacity for its entire quota. Construction is fallible and commits that quota
 outside trap context. The arena records the sum of every live table's quota;
@@ -63,6 +47,19 @@ Close can release the last object reference, while VM unmap and anonymous free
 carry flush and reclamation obligations. All three are STUB/PARTIAL until a
 deferred or otherwise trap-safe user execution contract exists.
 
+**Rationale.** D-181's reservation covered only the table's count; installing
+the result still called `reserve_a_slot`, which grew the global arena's `Vec`
+when its buffer was full. The heap correctly refuses allocation in trap
+context, because an interrupt can arrive while the heap is refilling itself and
+re-entering it would corrupt or deadlock the allocator. So enough valid
+Duplicate submissions on the shipped bootstrap channel, which carries
+`DUPLICATE`, crossed the arena's next capacity boundary from the `int 0x80`
+handler and made a successful ring operation an unprivileged machine panic.
+The self-tests missed it because they called `Queue::serve` from kernel-thread
+context and the one emitted ring-3 program submitted only Echo. OpenAt held a
+second instance of the class: wrapping D-171's copyable `File` and `Directory`
+values in a fresh `Arc` allocated after the trap had begun.
+
 **Alternatives.** Growing on demand before taking `ARENA` was the old design.
 It kept the lock order sound but could not make a trap allocator-safe. Returning
 `ArenaFull` at the capacity boundary was rejected because admission had already
@@ -97,8 +94,7 @@ obsolete arena-growth mutation; two new mutations change the ring-3 request
 away from Duplicate and restore universal rights on a directory result. The
 ring-3 mutation targets the rebuilt kernel launch route rather than the
 already-running image builder; the mutation driver now refuses any entry aimed
-at its own `xtask/` source. The register holds 189 machine checks and 77
-mutations.
+at its own `xtask/` source.
 
 D-163's promise-lifetime mutation also preserves the allocation-free trap arm
 while giving a kernel-thread reservation the wrong table. Constructing the
