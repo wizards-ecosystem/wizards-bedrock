@@ -68,7 +68,8 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// The only unlisted files allowed: a digest catches a changed file, never an added one.
+/// The directory's own paperwork, which carries no payload. Every other file must be listed,
+/// since a digest catches a changed file but never an added one.
 const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
 /// Names no entry or paperwork accounts for, sorted so the report is stable.
