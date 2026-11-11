@@ -2,24 +2,13 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** D-28 is the rule this project takes most seriously: every new check
-is broken once and watched go red, because a check that cannot fail is worth
-less than no check. It is also a claim. Five adversarial audits have now found
-roughly twenty checks that could not fail, several in the same commit as an ADR
-asserting they had been broken.
-
-The rule stands; **doing it by hand fails.** A break-test happens once, when the
-check is written, and never again. A check that *stops* being able to fail
-because the code around it changed is invisible from then on. No amount of
-discipline fixes that, so it is worth automating.
-
 **Decision.** `cargo xtask mutate`. Each entry is a defect, such as a bound
 removed, a flag not stripped or a guard inverted. Applying one and booting must
 turn some check **red**. A mutation that survives is a property nothing checks,
 and the report names it.
 
-Ten to begin with, each removing something else depends on, none a cosmetic edit
-that would fail the build instead. A mutation that cannot compile has not been
+Each mutation removes something else depends on, never a cosmetic edit that
+would fail the build instead. A mutation that cannot compile has not been
 tested by anything, so a build failure is reported as **inconclusive and counted
 as a survivor**. Reporting it as caught would hide the failure this task exists
 to find.
@@ -39,21 +28,19 @@ costs ten minutes.
 back *before* anything may fail, including the check on whether the mutation was
 caught, so no error path can leave the tree modified.
 
-**The first run found a defect of the same class in itself.** The mutation meant
-to test "a boot mapping cannot launder a frame into the allocator" targeted the
-flag strip in `map_run`. That function adds `OWNED` back on the next line.
-Stripping the caller's flag changed nothing, and the mutation survived. The
-property was checked all along; the *mutation* was not testing it. A
-hand-written break-test makes the same mistake and never reports it.
+**Rationale.** D-28 stands: every new check is broken once and watched go red.
+**Doing it by hand fails**, because a break-test happens once, when the check is
+written, and a check that *stops* being able to fail because the code around it
+changed is invisible from then on. The first run proved the point on itself: a
+mutation of `map_run`'s flag strip survived because the next line adds `OWNED`
+back, so it was retargeted at `map_boot`'s own strip. A hand-written
+break-test makes the same mistake and never reports it.
 
-Retargeted at `map_boot`'s own strip, all ten are caught.
+**Consequences.** Mutated properties are checked *and shown to be checkable*,
+continuously, not at one past moment. Adding a mutation is the natural companion
+to adding a check, and the gate notices when one rots.
 
-**Consequences.** The next audit starts from a shorter list. These ten
-properties are now checked *and shown to be checkable*, continuously, not at one
-past moment. Adding a mutation is the natural companion to adding a check, and
-the gate notices when one rots.
-
-Left owed: ten mutations is a sample, not a sweep. The obvious growth is one
-mutation per invariant an ADR claims, so the machine says "this decision is
+Left owed: the first mutations are a sample, not a sweep. The obvious growth is
+one mutation per invariant an ADR claims, so the machine says "this decision is
 enforced" instead of a document. Nothing yet mutates the `libs/` crates, where
 `cargo test` is fast enough that a full sweep takes seconds, not minutes.

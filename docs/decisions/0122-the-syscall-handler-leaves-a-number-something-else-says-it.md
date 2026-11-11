@@ -2,43 +2,28 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** D-116 gave the gate a dispatcher and made the shipped kernel run a
-program. The unknown-call arm answered `-ENOSYS` and then logged the refusal.
-Logging takes the console's `ThreadLock`, whose first line is
-`assert!(!interrupt::in_trap() || is_panicking())` — the assert D-63 put there
-so that a lock a handler must not take says so rather than deadlocking.
+**Decision.** **A trap handler that wants to say something writes a number, and
+a thread says it.** The handler cannot know which locks its caller holds; a
+thread can. A refused call increments a counter and stores the number asked
+for, and the **idle thread** reports it, in a context where taking the
+console's lock is legal. At most once per boot, so a program in a loop cannot
+turn refusals into a flood.
 
-So **`mov rax, 3; int 0x80` from ring 3 halted the machine.** Unprivileged,
-unconditional, no recovery, and shipped — the initrd is untrusted input by
-D-100, and D-116 put a program in the boot image people actually run.
+**Rationale.** The unknown-call arm answered `-ENOSYS` and then logged, and
+logging takes the console's `ThreadLock`, whose
+`assert!(!interrupt::in_trap() || is_panicking())` is D-63's way of making a
+lock a handler must not take say so. So **`mov rax, 3; int 0x80` from ring 3
+halted the machine**: unprivileged, unconditional, and shipped, since the
+initrd is untrusted input by D-100. It was green because **no check had ever
+issued an unrecognised call number.**
 
-It was green because **no check had ever issued an unrecognised call number.**
-Every check drove the two calls that exist. The arm had never executed.
-
-It also falsified three comments at once, all written in the same commit:
-`user::call`'s "nothing here may allocate, block, **or take a lock a handler
-cannot**", `trap.rs`'s "**Nothing here logs**", and D-116's own "refused *with
-an answer*, never ignored" — describing a path that halts before the program
-can read the answer.
-
-**Decision.** The handler leaves a number; something else says it. The refusal
-increments a counter and stores the number asked for, and the **idle thread**
-reports it — a kernel thread, in a context where taking the console's lock is
-legal. At most once per boot, so a program in a loop cannot turn refusals into
-a flood.
-
-That is the general shape and worth stating as one: **a trap handler that
-wants to say something writes a number, and a thread says it.** The handler
-cannot know which locks its caller holds; a thread can.
-
-**Consequences.** 129 checks. The program gained a third behaviour — argument
-two asks for `0x0BAD_0BAD` and then exits — so the arm is now executed on every
-boot, which is the only reason a check about it can fail. `an_unserved_call_is_refused_without_stopping_the_machine`
-reads the *count*, because "the machine is still here" is established by the
-check running at all.
-
-Broken once, and the break panics at `sync.rs:406` — the assert itself, which
-is the defect being a defect. `cargo xtask mutate` carries it.
+**Consequences.** The program has a third behaviour (argument two asks for
+`0x0BAD_0BAD` and then exits), so the arm is executed on every boot, which is
+the only reason a check about it can fail.
+`an_unserved_call_is_refused_without_stopping_the_machine` reads the *count*,
+because "the machine is still here" is established by the check running at all.
+Its break panics on the assert itself, which is the defect being a defect.
+`cargo xtask mutate` carries it.
 
 **2026-10-16 validation amendment.** Mutation 1,630 changes the one-shot latch
 so each later unknown syscall can re-arm synchronous UART output. Its original
@@ -54,23 +39,15 @@ witness, not the once-per-boot production policy. Implementation of that
 hermetic witness is present; the replacement full sweep is still qualification
 work rather than evidence already earned.
 
-**And the program's own jump was hand-computed and wrong.** Adding the third
-behaviour meant a new `jz`, and computing its displacement by hand put it two
-bytes past the target and into the middle of an instruction — where it
-assembled, ran, and did something else. That is precisely the failure D-116
-built the label-patching machinery to prevent, made by the person who built it,
-in the same file. The `jz` is patched from its label now like every other
-branch, and the encoding test checks where it lands.
+The program's new `jz` is patched from its label like every other branch,
+because the hand-computed one landed mid-instruction, the failure D-116's
+label patching exists to prevent; the encoding test checks where it lands.
 
-**A second finding, from the same audit, about this session's own process.**
-An adversarial audit was mutating `libs/x86-apic` to find survivors when a
-`git add -A` here swept its in-flight edit and its `.bak` into a commit.
-`BOOTSTRAP` shipped as `1 << 9` with its own doc comment one line above still
-saying bit 8, so `main` was red while the working tree was not. `git add -A` in
-a tree another process is editing is the mistake, and it is recorded here
-because the same reflex will be available next time.
+`git add -A` in a tree another process is editing is a mistake: it once swept
+an audit's in-flight `libs/x86-apic` edit into a commit, leaving `main` red
+while the working tree was not.
 
-Left owed: the two other audits from this pass have findings not yet acted on —
+Left owed: the two other audits from this pass have findings not yet acted on:
 `send_self_interrupt` accepting a vector the CPU pushes an error code for,
 `reclaim` not consulting `bound`, `unmap` handing back user pages unzeroed, and
 a list of checks that cannot fail. Each is named in the audit and is next.

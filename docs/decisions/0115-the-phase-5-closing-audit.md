@@ -2,115 +2,53 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** Slice 11 re-attacks the interfaces the phase froze (D-77's
-pattern): can a hostile ring-3 program reach UB through any `wost` export, a
-safe caller manufacture a handle, or a ring entry be double-fetched? The audit
-was held to D-105's two rules: a check must not be satisfiable by the algebra of
-its own inputs, and it must fail for the reason it names.
+**Decision.** Slice 11 re-attacks the interfaces the phase froze (D-77's
+pattern), held to D-105's two rules: a check must not be satisfiable by the
+algebra of its own inputs, and it must fail for the reason it names. Its fixes:
 
-**Decision.** Fix what it found, and record two findings *about* the audit.
+- **No boot check reads numbers ring 3 owns.** `Queue::shape` reports the
+  kernel's own record; `published_shape` reads the user-writable header page and
+  asserts only *publication*.
+- **`xstate::init` refuses before it enables.** `CPUID.0DH` needs no control
+  bit, so every refusal happens first and nothing below can fail; enabling SSE
+  and then refusing left two ring-3 processes sharing the register file.
+- **`translate_in_root` takes a `Root`**, mintable only by
+  `task::address_space_of`, not a bare physical address: D-77's named debt in
+  read form.
+- **`USegment::share` is one-way to a `Shared` that `map_user` will not take**,
+  so a run cannot be both shared and owned.
+- **`lock_leaf` obligations hold.** `Channel::send` reserves `DEPTH` at
+  construction, so `push_back` cannot grow under a leaf guard.
+  `Queue::install` uses `SpinLock::get_mut`: `&mut self` proves nobody holds
+  the guard, where copying the address out would hand on a number in place of
+  the type's evidence. `post` takes its locks in `take`'s order.
+- **`map_stack` rolls back** a failed guard check, the shape D-105 gave
+  `load_image`.
+- **`USegment::reclaim` leaks rather than frees when the clear fails**, because
+  those frames still hold a program's bytes.
+- `serve`'s missing-reservation `break` is a `debug_assert`: D-112's model
+  shows it unreachable. `spawn_prepared` retires `wost`'s slot as well as the
+  kernel's when binding fails, so the tables never disagree.
+- Checks that could not fail are rewritten or deleted. A rewritten submission
+  is read back so the rewrite is shown to have landed. `extended_control()`
+  guards on `CR4.OSXSAVE`, not a Rust early return. A runaway tail is tested
+  against an admitted ring, so deleting the `posted > SUBMISSIONS` bound turns
+  it red.
 
-### Five that were reachable
+**Rationale.** What held: no double fetch in `queue.rs`, no userspace index
+reaching memory, `serve` bounded whatever ring 3 publishes, handles
+unforgeable and unwidenable, and `bind`'s comparison of the whole higher half
+doing what D-106 claimed.
 
-**A boot check read numbers ring 3 owns.** `ring_shape_of` read the ring's
-*header page*, mapped `USER|WRITABLE` into a program that is live when the check
-runs. One store of `0x8000_0000` to `[RING + 4]` makes `2 * submissions`
-overflow and panic the debug kernel. The conjunct also asserted a property of
-userspace-writable memory. `Queue::shape` now reports the kernel's own record;
-`published_shape` reads the page and asserts only *publication*.
+**Two findings about the audit, not about the code.** `reap_up_to`'s
+unvalidated head does not defeat D-79's claim: `Ring::reap` returns `None` on
+an empty completion queue. The explicit bound stays beside it, though
+**neither can be shown necessary, because the other covers every input**; it
+states the intent and would matter if `reap` became infallible, and is
+recorded so the next audit does not flag a redundant guard. And
+`Segment::read_at`'s doc named the `USegment` exception it had denied.
 
-**`xstate::init` enabled SSE and then refused.** `cpu::enable_extended_state`
-clears `CR0.EM` and sets `CR4.OSFXSR`, so SSE becomes legal at CPL 3, and it was
-called before three `return None` paths. On any of them `FORM` stays zero, the
-switch saves nothing, and two ring-3 processes share the x87/SSE register file.
-Before `init` that would have been a `#UD`, so the failure path left the machine
-*worse than not calling it*. `CPUID.0DH` needs no control bit, so every refusal
-now happens first and nothing below can fail.
-
-**`translate_in_root` took a bare physical address.** It was a safe public
-function walking caller-chosen physical memory through the direct map, and its
-own doc left reachability to the caller. That is a fault on an unhandled address
-or an arbitrary-read oracle. This was D-77's named debt in read form, in the
-phase meant to discharge it. It now takes a `Root`, mintable only by
-`task::address_space_of`.
-
-**`map_shared` and `map_user` could alias one run.** Share it, map it owned,
-unmap the owned mapping, and the frames are freed while a live `USER` mapping
-still reaches them. `USegment::share` is one-way to a `Shared` that `map_user`
-will not take, so the aliasing is no longer expressible.
-
-**Three `lock_leaf` obligations were breached**, all added by this phase.
-`Channel::send` reserved a `VecDeque` under a leaf guard, which reaches the
-allocator, so `heap`'s `assert!(!in_trap())` would turn a `Channel::send` from a
-handler into a panic, not an `OutOfMemory`. Reserving `DEPTH` once at
-construction, so `push_back` cannot grow, fixed it before the audit reported it.
-`Queue::install` held the run's guard across `map_shared`, which allocates
-page-table frames. The new `SpinLock::get_mut` fixes it: `&mut self` proves
-nobody holds the guard, where copying the address out would hand on a number in
-place of the type's evidence. And `post` took `shared` then `state`, the reverse
-of `take`: no deadlock on one CPU, but an inversion pre-seeded for SMP.
-
-### Two structural repairs
-
-`map_stack` verified its guard *after* mapping the stack. A `Conflict` there
-left the stack mapped, its frames owned by the space with no handle, while
-`map_owned`'s own doc says "on failure nothing was mapped". It now rolls back,
-the shape D-105 gave `load_image`. And `USegment::reclaim` **leaks rather than
-frees** when the clear fails. Those frames still hold a program's bytes, and
-freeing them was the one path where the type's purpose lapsed silently.
-
-`serve`'s silent `break` on a missing reservation would wedge a ring for a
-process's life: `outstanding()` never drains and `admit` returns zero for ever.
-D-112's model shows it unreachable, and it is now a `debug_assert` rather than a
-bug report nobody can diagnose. `spawn_prepared` retires `wost`'s slot as well
-as the kernel's when binding fails. Releasing only one leaves the tables
-disagreeing, and every later spawn of that slot is refused for ever.
-
-### Nine checks that could not fail, and three that failed wrongly
-
-The audit has the reductions; each check is rewritten or deleted. Three show one
-mistake in three forms:
-
-- `a_rewritten_submission_cannot_change_what_was_served` read the completion
-  slot 128 bytes away from the submission the "hostile rewrite" touched, so it
-  reduced to `posted == posted`: **no line in `queue.rs` could falsify it.** It
-  now reads the rewritten submission back, so the rewrite is shown to have
-  landed, and asserts that serving again yields nothing.
-- `xstate::extended_control()` began `if !is_enabled() { return 0 }`, so the
-  check's `extended_control() == 0` conjunct read a Rust early return, not
-  `XGETBV`. This is D-105's own `VERW`-arming finding again, three ADRs later.
-  It guards on `CR4.OSXSAVE` now.
-- **Nothing in 124 checks reached `posted > SUBMISSIONS`**, the bound that stops
-  the kernel walking submission slots nothing was written into. The runaway-tail
-  case ran against a *drained* ring, where `take` refuses anyway. The new case
-  admits three and publishes a tail of four billion, and deleting the bound
-  turns it red.
-
-`attenuate` returning its own argument made three "narrowing" assertions
-`X == X`. The content was always in the refusals, and the vacuous conjuncts are
-gone.
-
-### Two findings about the audit, not about the code
-
-**One finding did not reproduce as described.** The audit rated `reap_up_to`'s
-unvalidated head as defeating D-79's headline claim. It does not: `Ring::reap`
-returns `None` on an empty completion queue, so a lying head reaps what is there
-and no more. I added the explicit bound anyway, then broke each in turn.
-**Neither can be shown necessary, because the other covers every input**. Both
-stay; the explicit one states the intent and would matter if `reap` became
-infallible. It is recorded so the next audit does not flag a redundant guard.
-
-**A doc comment claimed an exception did not exist.** `Segment::read_at` said it
-was "deliberately on `Segment` alone" because a `USegment` holds ring 3's bytes,
-while `USegment::read_at` sat forty lines below forwarding to it. It was false
-within the hour, and now names the exception and why `Shared` has one.
-
-**Consequences.** 124 checks, and the rewrites let several of them fail for the
-first time. `SpinLock::get_mut`, `task::retire`, `mm::Shared`, `task::Root` and
-`Queue::published_shape` are new. What held: no double fetch in `queue.rs`, no
-userspace index reaching memory, `serve` bounded whatever ring 3 publishes,
-handles unforgeable and unwidenable, and `bind`'s comparison of the whole higher
-half doing what D-106 claimed.
+**Consequences.** 124 checks at the close.
 
 Left owed and named: the cross-process arena-occupancy oracle.
 `Mixer::for_table` is a public pure function of a small counter, so slot
