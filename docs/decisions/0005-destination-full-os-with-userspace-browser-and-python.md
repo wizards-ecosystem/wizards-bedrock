@@ -2,21 +2,15 @@
 
 Status: Accepted, 2026-07-18.
 
-**Context.** Sets the architecture bar and multi-year scope.
-
 **Decision.** The endpoint is a complete OS: own userland and shell,
 networking, GUI with own compositor, and two flagship port ladders: Python
 (RustPython early, CPython later) and web browsing (ported `links` text
 browser, then NetSurf graphical). Pace: massive and multi-year; milestones
 favor always-finishable increments.
 
-**Rationale.** CPython and NetSurf are the classic proof-of-real-OS
-trophies and force every subsystem (FS, network, graphics, libc) to work.
-RustPython runs pre-libc (pure Rust), so scripting comes early; links proves
-the network stack before graphics.
-
-**Consequences.** Demands the POSIX translation layer (D-10) however novel
-the native ABI is.
+**Rationale.** CPython and NetSurf force every subsystem (FS, network,
+graphics, libc) to work, which demands the POSIX translation layer (D-10)
+however novel the native ABI is.
 
 **Amended by D-75.** NetSurf remains the integration target; "browser" and
 "web browsing" are historical shorthand. The current milestone is

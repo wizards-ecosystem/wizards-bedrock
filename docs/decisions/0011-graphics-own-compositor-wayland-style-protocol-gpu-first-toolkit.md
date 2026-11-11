@@ -2,9 +2,6 @@
 
 Status: Accepted, 2026-07-18.
 
-**Context.** Isaac wants his own windowing system: "probably Wayland
-style, but maybe something way more custom."
-
 **Decision.** Own compositor and window protocol in the Wayland model:
 clients render into shared `MemoryObject` buffers and the compositor
 composites. Protocol details may diverge from Wayland where we have better
@@ -12,9 +9,8 @@ ideas. The native widget toolkit renders GPU-first (wgpu/vello-style compute
 2D), targeting virtio-gpu in VMs with a dumb-framebuffer fallback. NetSurf
 gets a toolkit/framebuffer backend when its phase arrives.
 
-**Rationale.** Wayland's buffer-sharing model is the proven 2026 shape and
-maps directly onto our memory-object handles; GPU-compute 2D is where
-rendering is headed.
+**Rationale.** Wayland's buffer sharing maps directly onto our memory-object
+handles.
 
 **Consequences.** The GUI phase needs solid memory objects and channels; a
 terminal emulator is the first GUI client.

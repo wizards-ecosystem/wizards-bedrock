@@ -2,17 +2,15 @@
 
 Status: Accepted, 2026-07-18. Review trigger owned by PW-705 (2026-08-30).
 
+**Decision.**
+
 - **Rust 1.97.1**, pinned exactly via `rust-toolchain.toml`
   (`profile = "minimal"`, `rustfmt`/`clippy`, the `x86_64-unknown-none`
   target). `rust-mingw` is absent from the component list: rustup supplies
   it with a Windows-GNU host, and naming it breaks other hosts (D-24).
-  *Corrected 2026-08-12: this bullet previously read "stable (1.97.x),
-  pinned" while the file said `channel = "stable"`, a floating channel. See
-  D-24.*
 - **`limine` crate = 0.5.0 exactly**: 0.6.x requires nightly
   (`ptr_metadata`). The pinned crate requests protocol base revision 4
-  through `with_revision` (D-42), confirmed against the vendored Limine v10
-  binary by booting QEMU and VMware. Revisit the crate pin when 0.6's
+  through `with_revision` (D-42). Revisit the crate pin when 0.6's
   requirement reaches stable or we adopt nightly. Crate and protocol
   revisions are separate.
 - **`fatfs` without its `chrono` feature**: chrono's Windows bindings need

@@ -7,12 +7,11 @@ before implementation, citing references (OSDev wiki, Osdev-Notes, Intel
 SDM, phil-opp as reference, never followed linearly). *Theme*: the
 wizard/magic identity lives at the product level (app names, shell
 personality, boot messages such as the serial banner "The Wizard's OS
-awakens"); code uses conventional professional naming. Docs are
-numbered in creation order and never renumbered.
+awakens"); code uses conventional professional naming. Docs are numbered in
+creation order and never renumbered.
 
-**Rationale.** Multi-year projects survive on re-enterable context;
-docs-before-code makes every subsystem resumable after months away. Theme in
-code ages badly; theme in product is charm.
+**Rationale.** Docs-before-code makes every subsystem resumable after months
+away. Theme in code ages badly.
 
 **Amended by D-314.** Product names are plain instrument words; apps are
 named by function. The wizard identity stays in the ecosystem brand, boot
