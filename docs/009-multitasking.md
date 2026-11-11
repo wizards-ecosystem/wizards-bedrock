@@ -125,7 +125,9 @@ phase (D-18). No identity comparisons, no dependence on allocator or codegen
 ordering, no early return that makes the failure path unreachable. **A check
 that has never failed is not evidence; it is an untested claim.** A break has
 to reach the path the check watches and fail it: a break that crashes or hangs
-the machine proves nothing about the check. A wake check measures from inside
+the machine proves nothing about the check. A check samples inside the lock or
+guard it is about, not after the guard drops, where a pending interrupt lands
+the instant it does. A wake check measures from inside
 the thing it is about, because an outcome cannot distinguish a working wake
 from a working poll (D-49's lesson).
 
