@@ -2,17 +2,13 @@
 
 Status: Accepted, 2026-08-24.
 
-**Context.** `002-architecture.md` owed "handle table representation and rights
-taxonomy" before Phase 5. `010` §3 answered the taxonomy: 16 to 24 rights in one
-`u32`, each naming a distinction the kernel makes about the object, not a
-syscall. The layout and lifetime rules remained, and they must be settled before
-the first object exists, because the first caller freezes them.
-
 **Decision.** One global arena, not per-process arrays. A slot's base value is
 `generation ‖ arena_index`; a process sees `(base_value << 2 | 0b11) ^
 per_table_mixer`. Lookup is arithmetic and one ownership comparison. The
 encode/decode arithmetic goes to `libs/handle-space`; the kernel keeps the
-arena and the lock.
+arena and the lock. This answers the layout and lifetime rules
+`002-architecture.md` owed, before the first caller freezes them; `010` §3
+answered the taxonomy.
 
 - **No lowest-free promise.** The reserved low bits forbid a dense encoding, so
   the promise is unmakeable rather than merely unmade.
@@ -21,7 +17,8 @@ arena and the lock.
   touching a call site.
 - **The table is a refcounted object**, not an inline field of `Process`.
 - **Rights are 16 to 24 bits of one `u32`**, universal (`DUPLICATE`, `TRANSFER`,
-  `WAIT`, `INSPECT`) split from per-type.
+  `WAIT`, `INSPECT`) split from per-type. A right must correspond to a
+  distinction the kernel actually makes about that object, not a syscall.
 - **Type encodings have headroom for 64 object types.** Policy is monotonic and
   frozen (tighten-only, immutable once a process has children); adding a type
   never renumbers an existing one.
@@ -31,35 +28,18 @@ arena and the lock.
 - The per-process **quota** D-44 assigned to this doc is answered here: a
   process's kernel memory is bounded by what its handle table can name.
 
-**Rationale.** The encoding is Zircon's. Two independent research angles reached
-it separately: security, because generation tagging kills use-after-free on
-handle reuse, and scalability, via the Scalable Commutativity Rule. Zircon's
-contract commutes *by construction*. POSIX's "lowest free descriptor" does not:
-it is an ordering promise that serialises allocation. sv6 measured the unordered
-alternative scaling linearly with **no single-core penalty**: "at one core, both
-cases perform identically." The scalable choice is free today, so it is taken
-now, not in Phase 12.
-
-One-directional evidence settles the rights number: seL4 has 4, Zircon 25,
-CloudABI 31, Capsicum ~81. Capsicum's taxonomy outgrew a machine word and
-broke its ABI: `cap_rights_t` is a multi-word struct spending 7 of every 64
-bits on metadata, with an `init`/`set`/`is_set` API because two rights can no
-longer be OR'd. WASI deleted its rights system in Preview 2 for creating "a
-lot of ambiguity about how it mapped to POSIX semantics", which the "a right
-is a distinction, not a syscall" rule prevents. managarm, adding fine-grained
-rights ten years in, landed on ~14.
-
-The refcounted table hedges a named precedent: Zircon's strict per-process
-invariant was the first casualty of its own compatibility layer (RFC-0261
-shares handle tables for Starnix). Free now; a redesign later.
-
-No revocation: the one system that has it paid for it. seL4's recursive
-revocation is preemptible and resumable, with progress stored in a zombie
-capability, and a pre-mitigation worst-case execution time of about one
-second, reduced to 436 µs computed and 81 µs observed. Object death plus a
-strippable `TRANSFER` right covers the real cases. If revocation is ever
-needed, a per-object **epoch bump is O(1)**, with no traversal, preemption
-points or zombies, and the generation counter already is the epoch.
+**Rationale.** The encoding is Zircon's: generation tagging kills
+use-after-free on handle reuse, and its contract commutes by construction,
+where POSIX's "lowest free descriptor" is an ordering promise that serialises
+allocation. sv6 measured the unordered alternative with no single-core
+penalty, so the scalable choice is free today and taken now, not in Phase 12.
+Capsicum's rights outgrew a machine word and broke its ABI, and WASI deleted
+its rights for ambiguity against POSIX; the distinction rule prevents both.
+The refcounted table hedges Zircon's per-process invariant, the first casualty
+of its own compatibility layer (RFC-0261). Revocation is omitted on seL4's
+cost; object death plus a strippable `TRANSFER` right covers the real cases,
+and if it is ever needed a per-object epoch bump is O(1), and the generation
+counter already is the epoch.
 
 **Alternatives.** A per-process array with dense indices (rejected: it is the
 POSIX promise, it serialises allocation, and Zircon does not have one); rights
@@ -78,4 +58,3 @@ is a permanent ABI decision, a quota revisable policy).
 - The arena lives in `kernel`, not `wost`: it holds no raw pointer and touches
   no hardware, `005`'s own test.
 - D-70 rules 7 and 9 are discharged for this interface.
-- `002`'s open-questions list loses its first entry.

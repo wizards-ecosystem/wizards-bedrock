@@ -2,13 +2,8 @@
 
 Status: Accepted, 2026-08-24. Its one-thread limit lifted by D-99; corrected and hardened by D-101.
 
-**Context.** D-81 shaped the entry path and left open whether the synchronous
-call set arrives by `syscall`/`sysret` or a trap gate. `sysret`'s non-canonical
-`RCX` hazard is a known CVE class costing a branch on every return; a trap gate
-costs more per call. *The measurement that would settle it is meaningless under
-TCG* (`010` §8).
-
 **Decision. An interrupt gate at DPL 3, and the reason is not performance.**
+This settles what D-81 left open: `syscall`/`sysret` or a gate.
 (The first version of this entry called it "a trap gate". That was wrong twice:
 an *interrupt* gate clears the flag on entry, and `libs/x86-tables` says a trap
 gate "is deliberately unavailable". Corrected by D-101.) `syscall` needs
@@ -29,19 +24,16 @@ unmapped address in a privilege level that cannot report it, so every
 precondition is walked first. The tables are live; the entry is present, `USER`
 and executable; the stack is present, `USER`, writable and *not* executable; the
 stack pointer is sixteen-byte aligned; and `RSP0` names somewhere for the trap
-to land. A caller that gets one wrong is told. Breaking the code page's `USER`
-bit produces *"0x400000000000 is not executable from ring 3"* and a red check,
-where without the walk it would triple fault.
+to land. A caller that gets one wrong is told.
 
 The frame it pushes sets the interrupt flag, because a ring-3 thread that cannot
 be preempted owns the machine. Every general register is zeroed on the way out,
 so no kernel pointer reaches user code.
 
 **The descriptor order is fixed now.** `USER_DATA` sits *before* `USER_CODE`,
-which looks backwards and is what `sysret` requires: it derives `CS` from
-`STAR + 16` and `SS` from `STAR + 8`. Nothing uses `sysret`, and the order is
-settled anyway, because moving a descriptor later means moving every selector
-that names it.
+which is what `sysret` requires: it derives `CS` from `STAR + 16` and `SS` from
+`STAR + 8`. Nothing uses `sysret`, and the order is settled anyway, because
+moving a descriptor later means moving every selector that names it.
 
 **Rationale.** The check reads the code selector the *CPU* pushed when it took
 the interrupt. A kernel thread saying `int 0x80` cannot manufacture a ring-3
@@ -50,17 +42,11 @@ was. It also checks that the stack selector is ring 3, the stack pointer is in
 the low half the kernel never maps, the vector is the one gate, and no other
 gate has DPL 3.
 
-When the gate is closed, the machine says so precisely:
-`general protection fault (vector 13, error 0x402) at 0x400000000000, cs 0x33, rsp 0x300000001000`.
-Error `0x402` is IDT entry `0x80` refused; `cs 0x33` is selector 6 at RPL 3.
-
-**The first program is four bytes and deliberately not an ELF.** It is
-`int 0x80` then `jmp .`. Slice 7 brings `libs/elf64`, an initrd and `spawn`;
-this is the layer beneath, so a failure here is a failure of the boundary, not
-of a parser. The trailing jump is unreachable, since the caller is retired from
-the far side, but a program falling off its last instruction executes whatever
-the page holds, and stopping deliberately is cheaper than reasoning about what
-the page holds.
+**The first program is four bytes and deliberately not an ELF**: `int 0x80`
+then `jmp .`, so a failure here is a failure of the boundary, not of a parser.
+The trailing jump is unreachable, but a program falling off its last
+instruction executes whatever the page holds, and stopping deliberately is
+cheaper than reasoning about it.
 
 **`retire_from_trap` is `park`'s trap-side twin.** A thread that has crossed
 into ring 3 cannot `park`: that wants a `ThreadContext`, and trap context cannot
@@ -81,17 +67,15 @@ boundary cannot be crossed from where it is needed).
 - `Frame::write_at` and `Segment::write_at` are the one way safe code puts
   chosen bytes in a frame. They exist so a page can be filled *before* it is
   mapped read-only and executable, rather than mapped writable and demoted. W^X
-  is not relaxed for user memory; it is the reason user memory exists. Slice 7's
-  loader is their second caller.
+  is not relaxed for user memory; it is the reason user memory exists.
 - **One thread may be in ring 3 at a time.** `RSP0` is set once, to its own
   stack, not the calling thread's. Per-thread `RSP0`, updated by the scheduler
   on every switch, arrives with the processes that need it in slice 7. This is a
   limitation, not a design.
 - The retired thread keeps its slot and its two mapped pages for the life of the
-  boot. Nothing reclaims a retired thread yet; `spawn`'s counterpart is what
-  will.
+  boot. Nothing reclaims a retired thread yet.
 - `mod user` is `#[cfg(feature = "selftest")]`, like `handle` and `object`:
   built and proven, and nothing ships it until there is a program to run.
-- Ninety-seven named machine checks. The break that goes red is the code page
-  losing its `USER` bit. The break that goes *bang* is closing the gate, and its
-  fault is better evidence than any assertion.
+- The break that goes red is the code page losing its `USER` bit. Closing the
+  gate faults with error `0x402`, IDT entry `0x80` refused, which is better
+  evidence than any assertion.

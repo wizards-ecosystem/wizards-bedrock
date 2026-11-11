@@ -2,14 +2,10 @@
 
 Status: Accepted, 2026-08-24. Amended by D-181.
 
-**Context.** D-74 named this the question hardest to answer late, and the reason
-mlibc moved forward to Phase 5. `002` does not mention signals. The native ABI
-would never raise it; a POSIX libc raises it immediately.
-
 **Decision.** A signal is an entry posted to the completion queue. A blocking
 wait is interruptible because a wakeup is indistinguishable from a completion.
 The kernel has no signal frame, no signal mask, and no restart-after-interrupt
-semantics.
+semantics. D-74 named this the question hardest to answer late.
 
 **Narrowed by D-181.** This decides the event plane, not a version-1 wire
 record. Today's completion has no kind or opcode and every token belongs to a
