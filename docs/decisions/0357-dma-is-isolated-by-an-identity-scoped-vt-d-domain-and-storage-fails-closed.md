@@ -2,14 +2,6 @@
 
 Status: Accepted, 2026-09-29.
 
-**Context.** The storage controller bus-masters, so it reads and writes physical
-memory without the CPU and outside the page tables. Every DMA property the
-storage phase built (PW-200, PW-206, PW-213, D-339) governs when a frame is
-device-owned; none governs which physical addresses the controller may name.
-Absent an IOMMU, a wedged, buggy or reprogrammed controller can reach any frame.
-The hostile-surface census (017) recorded the DMA lifetime; it did not record the
-DMA reach.
-
 **Decision.** The storage controller runs behind an Intel VT-d DMA-remapping
 domain, and the domain is a precondition of bus mastering. The second-level
 tables identity-map only the frames a live `DmaSegment` owns: IOVA equals host
@@ -32,17 +24,22 @@ the reach guarantee does not require, because identity-mapped-and-scoped already
 faults every access outside the live set. The QEMU unit runs `intremap=off`, and
 the qualified hosts present Intel units.
 
+**Rationale.** A bus-mastering controller reads and writes physical memory
+outside the page tables. The storage phase's DMA properties (PW-200, PW-206,
+PW-213, D-339) govern when a frame is device-owned, not which addresses the
+controller may name, so without an IOMMU a wedged, buggy or reprogrammed
+controller can reach any frame; the census (017) recorded the DMA lifetime but
+not the DMA reach.
+
 **Verification.** The table parse (`libs/acpi-tables`) and register encoding
-(`libs/vtd`) are host arithmetic checked under `cargo test`, refusing malformed
-DMAR structures, an inverted reserved region and a duplicate unit, and walking
-the capability and width arithmetic exhaustively. The programming and fault
-behaviour are checked by booting: translation active before the first doorbell,
-storage and the filesystem reading through the unit, a deliberate read into an
-unmapped address recording a fault and changing no memory, and an unmap
-invalidating before the frame returns. Each is broken once and its mutation kept:
+(`libs/vtd`) are host arithmetic that refuses malformed DMAR structures, an
+inverted reserved region and a duplicate unit and walks the capability and
+width arithmetic exhaustively. Boots check that translation is
+active before the first doorbell, that storage and the filesystem read through
+the unit, that a read into an unmapped address records a fault and changes no
+memory, and that an unmap invalidates before the frame returns. Mutations keep
 a skipped invalidation, an extra mapped page, bus mastering before the domain,
-translation left off, and a context for the wrong function. The work lands across
-the register's DMA-isolation rows, each closing with its own observed evidence.
+translation left off and a context for the wrong function.
 
 **Alternatives.** Trusting the controller not to DMA outside its buffers is the
 status quo the census exposed as unbacked. Per-segment IOVA translation was

@@ -2,23 +2,6 @@
 
 Status: Accepted, 2026-10-09. Amends D-358 and D-371; closes PW-710.
 
-**Context.** Codex Security occurrence `occ_66ce12f335b236e1daa2b291`
-identified a privilege-boundary gap separate from DMA reach. A hostile PCI
-function with BME authority could program MSI or MSI-X data for an arbitrary
-vector. The IDT contains timer, keyboard, syscall and exception paths whose
-handlers assume the vector came from their kernel-owned source; an unknown
-vector is terminal. DMA remapping constrained memory addresses but did not
-constrain this interrupt message. The previous takeover deliberately preserved
-firmware IRE and compatibility-format state, and QEMU qualification explicitly
-disabled interrupt remapping, so neither BME nor `sti` carried evidence that a
-device could not inject a privileged vector.
-
-The initial boundary cannot safely admit selected MSI vectors. The kernel has
-no IRTE allocator, no source-identifier-bound interrupt route and no device
-driver that needs interrupts: NVMe is polled. A deny-all table is therefore the
-smallest complete policy. It also avoids claiming that clearing a device's BME
-bit is a security boundary against hostile interrupt generation.
-
 **Decision.** VT-d lookup now requires the DMAR interrupt-remapping flag and
 refuses x2APIC opt-out. This first implementation supports exactly one live
 DRHD: the selected unit's bounded requester inventory must contain every
@@ -72,40 +55,18 @@ the no-DMAR refusal path cannot block forever waiting for a timer that `sti`
 correctly withheld. The fixed QEMU profile enables `intremap=on,eim=on` and
 keeps caching mode on.
 
-**Proof required.** Pure DMAR tests distinguish both platform flags. Pure VT-d
-tests independently prove IR/QI/EIM bit positions, IRTA EIME and size encoding,
-all status predicates, complete quiescence, global IEC granularity and the
-status-write wait descriptor. A production source contract must make the proof
-unforgeable, bind both preflight and proof readbacks, order table publication,
-queued invalidation, IRE and TE, require complete live-requester coverage, and
-place the proof at both BME and `sti`. Release and debug machine boots must show
-the live deny-all owner, exact masked I/O APIC rollback, zero legacy keyboard
-interrupts, polling progress and the unchanged storage/filesystem result.
-Shipped boot must require the masked/polling records and prove injected input
-does not increment IRQ1. The no-DMAR boot must refuse storage and interrupt
-admission yet settle. Every predicate receives one retained exact-red mutation.
-
-**Evidence.** On 2026-10-09 the focused `acpi-tables` suite passed 82 tests and
-one doctest, `vtd` passed 37 tests and one doctest, the production DMA/interrupt
-contracts passed, and release QEMU passed 277/277 checks. The live machine
-reported nine governed requesters, parked the first controller's DMA domain,
-retargeted the second controller without dropping interrupt remapping, and
-reported `Interrupt Mask set, irq is not generated` when the deliberate hostile
-DMA check raised a VT-d fault. It also returned the masked I/O APIC owner,
-delivered no legacy keyboard interrupt, refused a queued local vector before
-`sti`, and woke the blocked reader through polling. Mutations 1,703 through
-1,742 cover the platform, capability, sole-unit topology, takeover, table,
-invalidation, FECTL, continuous-owner lifecycle, requester, proof, admission,
-IRR/`sti`, routing, poller and QEMU-profile predicates. The focused additions
-1,733 through 1,742 were each observed red against their exact host or machine
-witness and restored. The complete CI passed on the closing tree: all 2,026
-public API items had compiler-resolved callers, 726 `xtask` host tests plus the
-workspace integration tests and doctests passed, supply-chain and vendored
-inputs verified, release and debug QEMU each passed 277/277, the shipped kernel
-booted and settled with every legacy line masked, and both the no-PCI/no-x2APIC
-and no-DMAR degraded boots failed closed and settled. The fresh post-patch
-security review found no reportable post-IRE bypass under the documented boot
-boundary and recommended closing the occurrence.
+**Rationale.** Codex Security occurrence `occ_66ce12f335b236e1daa2b291`
+identified a privilege-boundary gap separate from DMA reach: a hostile PCI
+function with BME authority could program MSI or MSI-X data for an arbitrary
+vector, while the IDT's timer, keyboard, syscall and exception handlers assume
+their vector came from a kernel-owned source and an unknown vector is
+terminal. The previous takeover preserved firmware IRE and compatibility-format
+state and QEMU qualification disabled interrupt remapping, so neither BME nor
+`sti` carried evidence that a device could not inject a privileged vector. The
+kernel has no IRTE allocator, no source-identifier-bound interrupt route and no
+driver that needs interrupts, since NVMe is polled, so a deny-all table is the
+smallest complete policy; it also avoids claiming that clearing a device's BME
+bit is a security boundary against hostile interrupt generation.
 
 **Alternatives.** Trusting firmware's live IRE/CFI and IRTA preserves an
 unverified table and compatibility bypass. Enabling IRE without a global IEC
@@ -119,3 +80,13 @@ input failure; polling makes the deny-all policy explicit and testable.
 Treating an IRR snapshot as a drain for a message still in the PCI/APIC fabric
 was rejected because the architecture supplies no such completion boundary;
 the pre-IRE quiescence assumption above is explicit instead.
+
+**Consequences.** Release and debug machine boots show the live deny-all
+owner, exact masked I/O APIC rollback, zero legacy keyboard interrupts, polling
+progress and the unchanged storage/filesystem result. The shipped boot
+requires the masked/polling records and proves injected input does not
+increment IRQ1. The no-DMAR boot refuses storage and interrupt admission yet
+settles. Mutations 1,703 through 1,742 cover the platform, capability,
+sole-unit topology, takeover, table, invalidation, FECTL, continuous-owner
+lifecycle, requester, proof, admission, IRR/`sti`, routing, poller and
+QEMU-profile predicates.

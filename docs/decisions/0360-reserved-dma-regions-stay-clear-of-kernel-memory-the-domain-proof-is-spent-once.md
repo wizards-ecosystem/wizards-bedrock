@@ -2,34 +2,6 @@
 
 Status: Accepted, 2026-10-03. Amends D-345, D-351 and D-358; closes PW-573 and PW-574.
 
-**Context.** D-358 left two items of the VT-d domain owed. The regions the DMAR
-reserves for the storage function were identity-mapped as declared, with no
-check that they lie outside the kernel's usable memory, so a firmware table
-could hand the controller kernel frames. `DmaDomain` derived `Clone` and
-`Copy`, so a proof could outlive the release that invalidated it, although no
-caller kept one. The 2026-10-03 triage of the Daybreak scan lists these as
-residuals R3 and R4 of findings 1 and 8. The same triage found four checks,
-each built by an earlier decision, that let one shape of their input through:
-
-- D-351's port-claim contract visited only expression paths, so
-  `use wost::arch::current::port::claim;` followed by `claim::<u32>(0xF4)`, or
-  `use wost::arch::current::port as io;`, passed it (finding 5).
-- D-345's manifest reader marked a runtime section only for the exact
-  spellings `[dependencies]` and `[target.<cfg>.dependencies]` and skipped
-  every other header without an error, so `[dependencies] # c`,
-  `[ dependencies ]`, `["dependencies"]`, `[dependencies . x]` and a target
-  header followed by a comment each dropped their section from the runtime
-  closure (finding 11).
-- A source-less package in `Cargo.lock` was never checked to be a workspace
-  member, so a path crate outside the workspace left the inventory and the
-  SPDX document (finding 15).
-- The notice check's set equality had no retained witness for a missing
-  entry, because mutation 1,508 weakens only the extra-entry direction
-  (finding 13).
-
-The committed sources pass every strengthened check, so each of the four was a
-defect of the check alone.
-
 **Decision.**
 
 1. *A reserved region may not reach kernel memory.*
@@ -77,61 +49,50 @@ defect of the check alone.
    decoy, which a subset-only comparison accepts, is the retained witness for
    a missing entry.
 
-**Evidence.** On 2026-10-03, on `2506a74` carrying this change,
-`cargo xtask fmt`, `cargo xtask clippy` over its four graphs,
-`cargo test -p memory-map` and `cargo test -p xtask` passed. The release and
-debug self-tests each reported `verdict v1 PASS passed=271 failed=0 expected=271`,
-and in each the new check refused the usable page at physical address 0 with
-`iommu: reserved region [0x0, 0xfff] reaches memory the kernel owns` and
-admitted the device-hole page. Runs made while other builds loaded the host
-failed only on timing: one release boot missed its QMP greeting and timed out
-awaiting the storage-delay keystroke before the new check ran, and three debug
-boots failed `the clock advances in steps finer than a microsecond`, one of
-them also `the polled keyboard fallback runs its rounds, sleeps and stops`,
-while the new check passed in each. `cargo xtask boot-check --release`
-settled, and
-`cargo xtask degraded-check --release` passed both boots, ending with
-`unisolated kernel refuses storage and settles`. The debug self-test build's
-`iommu::establish` frame measured 3,304 bytes before and after the change; the
-screen runs in its own 152-byte frame, which returns before the registers are
-mapped. Each retained mutation was applied once, its source restored byte for
-byte, and each failed its exact witness. Mutation 1,589 (the screen checks only
-that a region is ordered) made the release self-test report
-`verdict v1 FAIL passed=270 failed=1 expected=271` with
-`a reserved dma region over kernel memory refuses isolation` failed. In
-`memory-map`, 1,573 (a region refused wherever the map describes it) failed
-`tests::a_reserved_region_inside_a_device_hole_is_admitted` with `Reserved`;
-1,574 (the first page rounded up) and 1,575 (the last byte read as the
-exclusive end) failed
-`tests::a_reserved_region_one_byte_into_kernel_memory_is_refused` with
-`Usable below the hole` and `Usable above the hole`; 1,576 (the order test
-removed) failed `tests::an_empty_or_inverted_reserved_region_is_refused` with
-`[0x3800, 0x37ff]`; and 1,577 and 1,578 (no rounding at the first or the last
-page) failed `tests::a_reserved_region_sharing_a_page_with_kernel_memory_is_refused`
-with `Usable in the first page` and `Usable in the last page`. Mutation 1,579
-restored both derives and 1,580 derived `Clone` alone; each probe compiled with
-dead-code warnings and no error, and
-`contracts::pci_configuration_writes_require_function_authority` failed with
-`one DMA domain proof could be spent twice` and
-`a DMA domain proof could be cloned`. Mutations 1,581 through 1,584 made the
-UART, i8042, PIT and debug-exit drivers claim through an imported
-`claim_block`, a `claim_pair as pair`, a `port as io` rename and a `port::*`
-glob; each compiled in the self-test kernel, and
-`contracts::production_kernel_code_claims_no_port_by_number` failed naming
-`use wost::arch::current::port::claim_block`,
-`use wost::arch::current::port::claim_pair as pair`,
-`use wost::arch::current::port as io` and `use wost::arch::current::port::*`
-in turn. Mutation 1,585 removed the header refusal, and
-`supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused`
-failed with `"[dependencies] # c\nhidden = \"1\"\n" was read rather than refused`.
-Mutation 1,586 removed the member check and 1,587 kept membership without
-distinctness, and
-`supply_chain::tests::a_locked_path_package_must_be_a_distinct_workspace_member`
-failed with `a path package outside the workspace was admitted` and
-`a path package under a member's name was admitted`. Mutation 1,588 made the
-notice comparison `noticed.is_subset(&runtime)`, and
-`supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry`
-failed with `the decoy notices were accepted`.
+**Rationale.** D-358 left two items of the VT-d domain owed, residuals R3 and
+R4 of Daybreak findings 1 and 8 in the 2026-10-03 triage: reserved regions were
+identity-mapped as declared, so a firmware table could hand the controller
+kernel frames, and a `Clone` and `Copy` proof could outlive the release that
+invalidated it. The same triage found four checks that let one input shape
+through, each a defect of the check alone because the committed sources pass
+every strengthened check:
+
+- D-351's port-claim contract visited only expression paths, so
+  `use wost::arch::current::port::claim;` followed by `claim::<u32>(0xF4)`, or
+  `use wost::arch::current::port as io;`, passed it (finding 5).
+- D-345's manifest reader marked a runtime section only for the exact
+  spellings `[dependencies]` and `[target.<cfg>.dependencies]` and skipped
+  every other header without an error, so `[dependencies] # c`,
+  `[ dependencies ]`, `["dependencies"]`, `[dependencies . x]` and a target
+  header followed by a comment each dropped their section from the runtime
+  closure (finding 11).
+- A source-less package in `Cargo.lock` was never checked to be a workspace
+  member, so a path crate outside the workspace left the inventory and the
+  SPDX document (finding 15).
+- The notice check's set equality had no retained witness for a missing
+  entry, because mutation 1,508 weakens only the extra-entry direction
+  (finding 13).
+
+**Evidence.** On 2026-10-03, on `2506a74` carrying this change, each retained
+mutation was applied once, failed its exact witness and was restored byte for
+byte. Mutation 1,589 (the screen checks only that a region is ordered) failed
+`a reserved dma region over kernel memory refuses isolation`. In `memory-map`,
+1,573 failed `tests::a_reserved_region_inside_a_device_hole_is_admitted`;
+1,574 and 1,575 failed
+`tests::a_reserved_region_one_byte_into_kernel_memory_is_refused`; 1,576
+failed `tests::an_empty_or_inverted_reserved_region_is_refused`; and 1,577 and
+1,578 failed `tests::a_reserved_region_sharing_a_page_with_kernel_memory_is_refused`.
+Mutation 1,579 restored both derives and 1,580 derived `Clone` alone, and
+`contracts::pci_configuration_writes_require_function_authority` failed each.
+Mutations 1,581 through 1,584 claimed through an imported `claim_block`, a
+`claim_pair as pair`, a `port as io` rename and a `port::*` glob, and
+`contracts::production_kernel_code_claims_no_port_by_number` failed each.
+Mutation 1,585 removed the header refusal and failed
+`supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused`;
+1,586 removed the member check and 1,587 kept membership without distinctness,
+and `supply_chain::tests::a_locked_path_package_must_be_a_distinct_workspace_member`
+failed each; 1,588 made the notice comparison `noticed.is_subset(&runtime)` and
+failed `supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry`.
 
 **Alternatives.** Checking a reserved region byte by byte was rejected: the
 unit maps whole pages, so a region that shares a page with kernel memory would
