@@ -2,12 +2,10 @@
 
 Status: Accepted, 2026-10-28. Applies D-425, D-441 and D-448.
 
-**Context.** D-425 tags the qualified commit directly and closes, in the next
-commit, every register row its gate proves. `694061f` carries D-447's
-retargeted mutation and D-448's version.
-
 **Decision.** v0.2.0 is the annotated tag on `694061f` and its GitHub release,
-the first qualified diagnostic release. All of the following ran on that exact
+the first qualified diagnostic release; `694061f` carries D-447's retargeted
+mutation and D-448's version, and, as D-425 requires, the next commit closes
+every register row its gate proves. All of the following ran on that exact
 commit. `cargo xtask ci` passed: release and debug self-tests at 294/294, shipped
 and both degraded boots, all 2,235 public API callers and 946 host tests. The
 complete 2,412-entry sweep caught every mutation (report sequence 2). Model

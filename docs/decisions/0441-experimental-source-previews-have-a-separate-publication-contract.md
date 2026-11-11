@@ -2,11 +2,6 @@
 
 Status: Accepted, 2026-10-25. Amends D-26 and supersedes only D-425's first-v0.1.0 assignment.
 
-**Context.** Public source and outside contributions need a truthful entry
-point before the open kernel foundation and hardware qualification finish.
-D-425 assigned the full qualified contract to the first v0.1.0 publication;
-that assignment postpones collaboration behind hours of machine qualification.
-
 **Decision.** There are two release classes. An **experimental source preview**
 publishes reviewed source and contribution infrastructure with a bounded
 source/build check record and disclosed limitations. It establishes no phase
@@ -57,7 +52,10 @@ results are plain reports, never v11 evidence or qualification-record PASS.
 The supply-chain policy separates source previews from qualified binary
 distribution, including its fresh advisory and accompanying notices duties.
 
-**Alternatives.** Waiting for the full qualified contract delays useful public
-review. Silently waiving it confuses publication with qualification. A public
-mirror loses the existing history. A movable preview tag would obscure which
-source was checked. Each is rejected in favor of this explicit narrow class.
+**Rationale.** Public source and outside contributions need a truthful entry
+point before the open kernel foundation and hardware qualification finish, and
+D-425 assigned the full qualified contract to the first v0.1.0 publication,
+which postponed collaboration behind hours of machine qualification. Silently
+waiving that contract would confuse publication with qualification, a public
+mirror would lose the existing history, and a movable preview tag would obscure
+which source was checked.

@@ -2,15 +2,6 @@
 
 Status: Accepted, 2026-11-07. Amends D-275, advances PW-708.
 
-**Context.** `cargo xtask ci` must pass on Linux hosts as well as on the
-Windows release host. D-275 binds the API audit's host linker to the sysroot's
-`rust-lld`. That linker is self-contained on `x86_64-pc-windows-gnu`, but on a
-glibc host it finds no C runtime objects or library search path, so every
-audited host link fails. Linux also activates `libc` 0.2.189 through `xtask`'s
-unix dependency and `nix` 0.29.0 through `fs_at`, and the audit refused both
-build scripts as unreviewed. Several host tests assumed Windows paths or drove
-Security Deep paths that refuse off Windows.
-
 **Decision.** On Windows hosts the audit keeps the sysroot `rust-lld`. On
 other hosts it resolves `cc` from the absolute entries of `PATH`, binds the
 canonical driver by SHA-256 in the compiler identity as it binds `rust-lld`,
@@ -36,6 +27,13 @@ and writes no files.
 Host tests that need Windows paths compile only on Windows, and one test
 proves the owned Security Deep campaign refuses elsewhere. That campaign stays
 a Windows-host qualification.
+
+**Rationale.** `cargo xtask ci` must pass on Linux hosts as well as on the
+Windows release host. D-275's sysroot `rust-lld` is self-contained on
+`x86_64-pc-windows-gnu`, but on a glibc host it finds no C runtime objects or
+library search path, so every audited host link failed; Linux also activates
+`libc` through `xtask`'s unix dependency and `nix` through `fs_at`, whose build
+scripts the audit refused as unreviewed.
 
 **Consequences.** Windows behaviour is unchanged. Mutation 2,452 makes a
 Windows host select `cc` and fails the linker selection test. PW-708 still

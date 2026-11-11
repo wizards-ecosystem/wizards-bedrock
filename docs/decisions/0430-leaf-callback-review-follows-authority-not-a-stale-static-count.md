@@ -2,12 +2,6 @@
 
 Status: Accepted, 2026-10-23. Clarifies D-121, D-126 and D-200; preserves PW-707.
 
-**Context.** PW-707 still described three leaf-lock statics and a future fourth
-as the trigger for enforcement. D-126 had already found four and replaced
-that counting proposal with an observed lock-order witness. The current tree
-also contains D-200's bounded atomic readiness predicate, so a claim that no
-callback-shaped leaf API exists would misdescribe the implementation.
-
 **Decision.** D-121's prohibition remains on exposing protected contents to
 caller-supplied general work while a leaf guard is held. Copy owned results
 out and drop the guard before that work. The existing crate-private
@@ -41,8 +35,10 @@ nesting; it neither proves every unexecuted path nor statically enforces the
 atomic-only predicate. The inspected call chain supplies the latter's present
 review evidence. No new machine result or foundation closure is claimed.
 
-**Alternatives.** Retaining the fourth-static threshold would reopen a
-condition D-126 already resolved while overlooking the actual callback
-authority. Banning the existing readiness recheck would undo D-200's wait
-protocol without a demonstrated defect. Treating the observed nesting check
+**Rationale.** PW-707 still described three leaf-lock statics and a future
+fourth as the enforcement trigger, but D-126 had already found four and replaced
+that counting proposal with an observed lock-order witness, and D-200's bounded
+atomic readiness predicate means a claim that no callback-shaped leaf API
+exists would misdescribe the tree. Banning that recheck would undo D-200's wait
+protocol without a demonstrated defect, and treating the observed nesting check
 as a whole-program callback proof would overstate its coverage.
