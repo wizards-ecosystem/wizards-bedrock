@@ -1,7 +1,7 @@
 use super::*;
 
-// Invalidates any legacy PASS record before reading unsigned provider output: its consistency
-// helps the operator, but caller-selected bytes have no release authority.
+// Invalidates any legacy PASS record before reading unsigned provider output: the output's
+// semantic consistency helps the operator, but caller-selected bytes have no release authority.
 pub(super) fn verify(paths: &Paths, scan_directory: &Path) -> Result<()> {
     let attempt = qualification::begin_security_deep(paths, true)?;
     let request = read(
