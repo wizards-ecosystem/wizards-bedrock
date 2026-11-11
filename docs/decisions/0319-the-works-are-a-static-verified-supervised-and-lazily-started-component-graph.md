@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-09-12. Refines D-14 and D-111.
 
-**Context.** `002` pillar 4 says no daemons by default and pillar 6 says
-services are supervised, not unwound; D-14 chose supervision on Theseus's
-evidence; D-111 gives every program one handle. `015` slice 7 will add
-process objects and exit status. `018` section 6 found the pieces proven
-separately: a service database compiled and verified offline (s6-rc), typed
-dependency edges with readiness (dinit), on-demand start from a declared
-endpoint (launchd), a fixed task set with no fork (Hubris), and the runtime
-graph as the admin view with parents paying for children (Genode, Sculpt).
-Nothing ships the combination.
-
 **Decision.** A component is one Wizzy program plus a manifest naming its
 artifact, its derived requirements, the interfaces it exposes, its
 dependencies with a readiness kind, its start policy, its supervision policy
@@ -28,10 +18,15 @@ route edits the works file, which applies when written. Log records carry
 supervisor-asserted fields apart from program-written ones. `019` section 3
 has the details.
 
-**Rationale.** A base system whose component set is fixed cannot accrete
-daemons, a graph verified offline fails at build time, and a graph that is
-also the admin view is how sandboxing becomes legible instead of prompt-heavy.
-User-installed programs stay dynamic leaves under the bench.
+**Rationale.** `002` pillars 4 and 6 say no daemons by default and supervised
+services, D-14 chose supervision and D-111 gives every program one handle;
+`018` section 6 found offline-verified service databases, typed readiness
+edges, on-demand start, fixed task sets and the runtime graph as admin view
+each proven separately but never combined. A base system whose component set
+is fixed cannot accrete daemons, a graph verified offline fails at build time,
+and a graph that is also the admin view is how sandboxing becomes legible
+instead of prompt-heavy. User-installed programs stay dynamic leaves under the
+bench.
 
 **Alternatives.** A dynamic service manager with units was rejected because
 flexibility in the base system is how daemons accrete. Unsupervised services

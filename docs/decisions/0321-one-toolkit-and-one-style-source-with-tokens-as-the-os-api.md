@@ -2,14 +2,6 @@
 
 Status: Accepted, 2026-09-12. Amends D-11 and refines D-19.
 
-**Context.** D-11 chose a GPU-first native toolkit and said nothing about its
-style. `.github/BRAND.md` fixed the ecosystem's palette, typefaces, voice and
-interface rules on 2026-09-08. `018` found every desktop that grew a second
-toolkit or theming system paying for it for years, Windows' three UI
-generations and macOS's Liquid Glass as the current cautionary examples, and
-the Design Tokens format, OKLCH, libadwaita's accent derivation, Windows'
-contrast themes and base24 as settled practice.
-
 **Decision.** One toolkit draws every first-party surface from one token
 document per theme in the Design Tokens format with OKLCH values, resolved
 global to semantic to component; a theme may set semantic tokens only and is
@@ -28,11 +20,14 @@ the GPU one so the bench runs before a GPU driver exists, which amends D-11's
 GPU-first sentence into GPU-first with a CPU fallback for the toolkit as well
 as the framebuffer.
 
-**Rationale.** A tiny vocabulary is what let Windows' new surfaces feel like
-one product cheaply and what let libadwaita apps look like they belong; the
-failure in both cases was covering only part of the system. A first-party
-toolkit used by every first-party app, with tokens third parties inherit, is
-the only design that covers all of it.
+**Rationale.** D-11 chose a GPU-first native toolkit without a style, and
+`.github/BRAND.md` fixed the ecosystem's palette, faces, voice and interface
+rules on 2026-09-08. `018` found every desktop that grew a second toolkit or
+theming system paying for it for years. A tiny vocabulary is what let Windows'
+new surfaces feel like one product cheaply and what let libadwaita apps look
+like they belong; the failure in both cases was covering only part of the
+system. A first-party toolkit used by every first-party app, with tokens third
+parties inherit, is the only design that covers all of it.
 
 **Alternatives.** Per-app themes were rejected on the evidence. A cascading
 style system was rejected because the cascade is where consistency goes to
