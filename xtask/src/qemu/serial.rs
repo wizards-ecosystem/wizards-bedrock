@@ -7,33 +7,25 @@ use super::*;
 pub(super) const SELFTEST_PASSED: i32 = 33;
 pub(super) const SELFTEST_FAILED: i32 = 35;
 
-/// A complete, structurally valid self-test machine outcome.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SelftestOutcome {
-    /// Every registered check passed.
     Passed,
-    /// The final verdict failed and names each red check in report order.
+    /// Each red check, in report order.
     Failed(Vec<String>),
-    /// The kernel stopped before a verdict and carries its exact serial panic
-    /// transcript plus every check that had already gone red.
+    /// The exact single-line panic body and every check that went red before it.
     Panicked {
-        /// The complete single-line panic body.
         transcript: String,
-        /// Named failures printed before the terminal panic.
         failed: Vec<String>,
     },
 }
 
-/// A complete degraded-boot outcome.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DegradedOutcome {
-    /// Every required refusal and fallback marker preceded a settled boot.
+    /// Every required refusal and fallback record preceded a settled boot.
     Settled,
-    /// The kernel stopped before settling.
+    /// The exact single-line panic body, and whether the no-x2APIC refusal came first.
     Panicked {
-        /// The complete single-line panic body.
         transcript: String,
-        /// The no-x2APIC refusal appeared before the panic.
         no_x2apic_diagnosed: bool,
     },
 }
@@ -52,7 +44,6 @@ pub(super) struct SelftestVerdict {
     pub(super) expected: usize,
 }
 
-/// One guest-side foundation measurement from a clean self-test boot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct PerformanceSample {
     pub(crate) boot_ns: u64,
@@ -83,8 +74,7 @@ pub(super) struct SerialObservation {
     pub(super) nvme_stack: Option<StackSample>,
     pub(super) qemu_tcg_isolation: bool,
     pub(super) strict_dma_handoff: bool,
-    /// Ordered failures, so mutation grading cannot accept an unrelated red
-    /// (D-134).
+    /// Ordered, so mutation grading cannot accept an unrelated red.
     pub(super) failed: Vec<String>,
     pub(super) panic: Option<String>,
     pub(super) panic_complete: bool,
@@ -261,13 +251,12 @@ pub(super) fn is_settled_record(line: &str) -> bool {
         .is_some()
 }
 
-// Cover ordinary input and both editing paths (D-51).
+/// Ordinary input and both editing paths.
 pub(super) const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 
 pub(super) const STORAGE_DELAY_QCODES: &[&str] = &["c"];
 
-// A distinct second key prevents a queued first-round key satisfying the
-// translated-path check (D-155, D-179).
+/// A distinct key, so a queued first-round key cannot satisfy the translated-path check.
 pub(super) const TRANSLATED_QCODES: &[&str] = &["b"];
 
 pub(super) const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
@@ -504,6 +493,38 @@ pub(super) fn correlate_selftest(
     let verdict = observation
         .verdict
         .context("QEMU exited without a serial self-test verdict")?;
+    require_verdict_counts(verdict)?;
+    if observation.failed.len() != verdict.failed {
+        bail!(
+            "self-test verdict counted {} failures but named {}",
+            verdict.failed,
+            observation.failed.len()
+        );
+    }
+    if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {
+        bail!("self-test passed without consuming the exact QEMU TCG isolation policy");
+    }
+    if verdict.status == VerdictStatus::Pass && !observation.strict_dma_handoff {
+        bail!("self-test passed without the strict QEMU DMA-handoff policy");
+    }
+    if verdict.status == VerdictStatus::Pass {
+        require_nvme_stack(observation.nvme_stack)?;
+    }
+
+    match (exit_code, verdict.status) {
+        (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(SelftestOutcome::Passed),
+        (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
+            Ok(SelftestOutcome::Failed(observation.failed))
+        }
+        (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
+            bail!("self-test serial verdict contradicts its debug-exit status")
+        }
+        (Some(other), _) => bail!("QEMU exited with {other}; debug-exit gave no verdict"),
+        (None, _) => bail!("QEMU was terminated by a signal"),
+    }
+}
+
+fn require_verdict_counts(verdict: SelftestVerdict) -> Result<()> {
     if verdict.expected != EXPECTED_SELFTEST_CHECKS {
         bail!(
             "self-test expected {} checks, harness requires {EXPECTED_SELFTEST_CHECKS}",
@@ -520,61 +541,36 @@ pub(super) fn correlate_selftest(
             verdict.expected
         );
     }
-
     let counts_pass = verdict.failed == 0 && verdict.passed == verdict.expected;
     if (verdict.status == VerdictStatus::Pass) != counts_pass {
         bail!("self-test serial status contradicts its counts");
     }
-    if observation.failed.len() != verdict.failed {
-        bail!(
-            "self-test verdict counted {} failures but named {}",
-            verdict.failed,
-            observation.failed.len()
-        );
-    }
-    if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {
-        bail!("self-test passed without consuming the exact QEMU TCG isolation policy");
-    }
-    if verdict.status == VerdictStatus::Pass && !observation.strict_dma_handoff {
-        bail!("self-test passed without the strict QEMU DMA-handoff policy");
-    }
-    if verdict.status == VerdictStatus::Pass {
-        let sample = observation
-            .nvme_stack
-            .context("self-test passed without an NVMe stack record")?;
-        ensure!(
-            sample.capacity == NVME_STACK_CAPACITY,
-            "NVMe stack record named a {}-byte capacity, expected {NVME_STACK_CAPACITY}",
-            sample.capacity
-        );
-        ensure!(
-            sample.used.checked_add(sample.headroom) == Some(sample.capacity),
-            "NVMe stack record does not conserve its capacity"
-        );
-        ensure!(
-            sample.leaf <= sample.used,
-            "NVMe stack record's live-leaf use {} exceeds its painted high-water mark {}",
-            sample.leaf,
-            sample.used
-        );
-        ensure!(
-            sample.headroom >= NVME_STACK_MIN_HEADROOM,
-            "NVMe candidates retained only {} bytes of stack headroom",
-            sample.headroom
-        );
-    }
+    Ok(())
+}
 
-    match (exit_code, verdict.status) {
-        (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(SelftestOutcome::Passed),
-        (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
-            Ok(SelftestOutcome::Failed(observation.failed))
-        }
-        (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
-            bail!("self-test serial verdict contradicts its debug-exit status")
-        }
-        (Some(other), _) => bail!("QEMU exited with {other}; debug-exit gave no verdict"),
-        (None, _) => bail!("QEMU was terminated by a signal"),
-    }
+fn require_nvme_stack(sample: Option<StackSample>) -> Result<()> {
+    let sample = sample.context("self-test passed without an NVMe stack record")?;
+    ensure!(
+        sample.capacity == NVME_STACK_CAPACITY,
+        "NVMe stack record named a {}-byte capacity, expected {NVME_STACK_CAPACITY}",
+        sample.capacity
+    );
+    ensure!(
+        sample.used.checked_add(sample.headroom) == Some(sample.capacity),
+        "NVMe stack record does not conserve its capacity"
+    );
+    ensure!(
+        sample.leaf <= sample.used,
+        "NVMe stack record's live-leaf use {} exceeds its painted high-water mark {}",
+        sample.leaf,
+        sample.used
+    );
+    ensure!(
+        sample.headroom >= NVME_STACK_MIN_HEADROOM,
+        "NVMe candidates retained only {} bytes of stack headroom",
+        sample.headroom
+    );
+    Ok(())
 }
 
 // Registers are the only hang evidence when the serial log is empty.
@@ -611,11 +607,10 @@ pub(super) fn report_hang(qmp: Option<&mut Qmp>) {
     }
 }
 
-/// QMP on the child's own standard streams, which only the harness holds
-/// (D-346). Serial output therefore uses a separate private OS transport.
+/// Only the harness holds the child's standard streams, so serial uses a separate private
+/// transport.
 pub(super) const QMP_ON_STDIO: [&str; 2] = ["-qmp", "stdio"];
 
-/// Negotiate QMP over the piped standard streams of a freshly spawned QEMU.
 pub(super) fn attach_qmp(
     child: &mut Child,
     deadline: Instant,
@@ -626,13 +621,10 @@ pub(super) fn attach_qmp(
     Qmp::negotiate(input, output, deadline, cancelled)
 }
 
-/// One run's private, backpressured serial transport.
-///
-/// Windows QEMU creates a duplex named pipe. Its default DACL and a fresh
-/// 256-bit name keep the endpoint private to this run; the kernel's output
-/// can fill only the operating system's bounded pipe buffer. Unix QEMU uses
-/// a socket beneath the private run directory. Neither route writes guest
-/// bytes to an unbounded host file (D-367).
+/// A Windows named pipe stays private to the run by its default DACL and fresh 256-bit name;
+/// Unix uses a socket in the private run directory. Guest output fills only a bounded OS
+/// buffer; neither route writes guest bytes to an unbounded host file.
+#[derive(Debug)]
 pub(super) struct SerialChannel {
     #[cfg(windows)]
     pub(super) name: String,
@@ -685,7 +677,6 @@ impl SerialChannel {
         }
     }
 
-    /// The bounded character device that carries the guest's first serial port.
     pub(super) fn arguments(&self) -> [OsString; 4] {
         #[cfg(windows)]
         let backend = OsString::from(format!("pipe,id=serial0,path={}", self.name));
@@ -702,8 +693,7 @@ impl SerialChannel {
         ]
     }
 
-    /// Connect after QEMU creates its endpoint, refusing an exited or silent
-    /// emulator rather than opening some ambient transport.
+    /// Opens only QEMU's own fresh endpoint, refusing an exited or silent emulator.
     pub(super) fn connect(&self, child: &mut Child, deadline: Instant) -> Result<SerialReader> {
         loop {
             #[cfg(windows)]
@@ -740,7 +730,7 @@ impl SerialChannel {
         }
     }
 
-    /// Record that QEMU has exited, so an observed pipe close is clean EOF.
+    /// Called once QEMU has exited, so an observed pipe close reads as clean EOF.
     pub(super) fn close(&self) {
         self.closed.store(true, Ordering::Release);
     }
@@ -757,7 +747,6 @@ impl Drop for SerialChannel {
     }
 }
 
-/// The host side of the bounded serial transport.
 pub(super) struct SerialReader {
     pub(super) inner: Box<dyn Read + Send>,
     pub(super) closed: Arc<AtomicBool>,
@@ -791,15 +780,12 @@ fn await_serial_close(closed: &AtomicBool) -> std::io::Result<usize> {
     }
 }
 
-/// How often a serial connector looks for QEMU's freshly created endpoint.
 const SERIAL_POLL: Duration = Duration::from_millis(10);
-/// Enough for the parent loop to observe a QEMU exit before pipe EOF is judged
-/// premature; the parent polls every 50 ms.
+/// Lets the parent, polling every 50 ms, observe a QEMU exit before pipe EOF is judged early.
 const SERIAL_CLOSE_GRACE: Duration = Duration::from_millis(250);
 
-/// One guest record and one complete run are separately bounded. Once the
-/// reader refuses the aggregate, OS backpressure bounds any bytes QEMU can
-/// still write before the parent terminates it.
+/// One guest record and one run are bounded apart; once the reader refuses the aggregate, OS
+/// backpressure bounds what QEMU can still write before the parent terminates it.
 const MAX_SERIAL_LINE_BYTES: usize = 64 * 1024;
 const MAX_SERIAL_BYTES: usize = 16 * 1024 * 1024;
 
@@ -852,8 +838,8 @@ pub(super) fn read_serial_line_with_limits(
     }
 }
 
-/// Render untrusted guest bytes without passing terminal controls through to
-/// the operator's console. The parser still receives the original bytes.
+/// Guest bytes are untrusted, so terminal controls never reach the operator's console; the
+/// parser still receives the original bytes.
 pub(super) fn escaped_serial_line(line: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let visible = line.strip_suffix(b"\n").unwrap_or(line);

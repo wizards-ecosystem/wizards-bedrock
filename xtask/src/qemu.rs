@@ -47,36 +47,28 @@ const DEFAULT_INSTALLATION: Option<&str> = if cfg!(windows) {
     None
 };
 
-/// The q35 machine type shared by both runners.
 pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
 
 /// Whether the fixed machine presents the DMA-remapping unit storage requires.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Remapping {
-    /// The ordinary machine: an Intel unit ahead of every PCI device (D-357).
     Present,
     /// The degraded machine that proves storage fails closed without one.
     Absent,
 }
 
-/// The remapping unit owns both DMA and interrupt delivery. Its empty IR table
-/// blocks every PCI interrupt while caching mode makes the unit cache
-/// not-present DMA entries, so every mapping change must be invalidated.
+/// The unit owns DMA and interrupt delivery: its empty IR table blocks every PCI interrupt, and
+/// caching mode caches not-present DMA entries, so every mapping change must be invalidated.
 const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"];
 
-/// QEMU 9.2 deliberately emits a scoped DRHD even though its one emulated
-/// unit intercepts every PCI DMA request. The release boundary does not infer
-/// catch-all authority from that implementation detail, so the fixed test
-/// platform supplies a separate checksummed attestation naming the real unit.
+/// QEMU 9.2 emits a scoped DRHD although its one unit intercepts every PCI DMA request, so the
+/// fixed platform supplies a separate checksummed attestation naming the real catch-all unit.
 const QEMU_DMA_COVERAGE_BYTES: usize = 48;
 
-/// The fixed machine profile, with or without the remapping unit.
-///
-/// Pins the CPU, TCG, and ambient configuration so protection checks cannot
-/// pass under a weaker or different execution model (D-18). Its exact
-/// CPU-resident hypervisor leaf authenticates D-390's otherwise writable ACPI
-/// handoff bytes. The unit comes ahead of the bridge and the storage devices,
-/// which QEMU requires of it.
+/// Pins CPU, TCG and ambient configuration so protection checks cannot pass under a weaker
+/// model; the hypervisor leaf authenticates the otherwise writable ACPI handoff bytes.
+/// QEMU requires the unit ahead of the bridge and the storage devices.
+/// The bridge makes a bus-zero-only scan fail as it would on VMware's bridged topology.
 fn machine_args(remapping: Remapping) -> Vec<&'static str> {
     let mut arguments = vec![
         "-no-user-config",
@@ -92,8 +84,6 @@ fn machine_args(remapping: Remapping) -> Vec<&'static str> {
     if remapping == Remapping::Present {
         arguments.extend(IOMMU_DEVICE);
     }
-    // Provide a downstream bus so a bus-zero-only scan fails as it would on
-    // VMware's bridged topology (D-168).
     arguments.extend(["-device", "pci-bridge,id=behind,chassis_nr=1"]);
     arguments
 }
@@ -129,17 +119,13 @@ fn validate_run_arguments(extra: &[OsString]) -> Result<()> {
     Ok(())
 }
 
-/// Subdirectories of the QEMU installation that may hold firmware images.
 const FIRMWARE_DIRS: &[&str] = &["share", "share/qemu", "share/OVMF", "."];
 
-/// The UEFI firmware image, mapped read-only.
 const CODE_FIRMWARE: &str = "edk2-x86_64-code.fd";
 
-/// Template for the writable UEFI variable store. The i386 naming is genuine
-/// QEMU packaging, not a mistake.
+/// QEMU packages the x86_64 variable store template under its i386 name.
 const VARS_FIRMWARE: &str = "edk2-i386-vars.fd";
 
-/// Resolved emulator and firmware inputs used by every QEMU runner.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Installation {
     pub(crate) emulator: PathBuf,
@@ -147,22 +133,17 @@ pub(crate) struct Installation {
     pub(crate) vars_firmware: PathBuf,
 }
 
-/// Append the platform's executable suffix to `stem`.
 pub fn exe_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
 }
 
-/// Find `exe` in `dirs`.
 pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<PathBuf> {
     dirs.into_iter()
         .map(|dir| dir.join(exe))
         .find(|candidate| candidate.is_file())
 }
 
-/// Locate the exact QEMU executable.
-///
-/// `QEMU` names the emulator binary outright; `QEMU_DIR` names the installation
-/// it lives in. Both win over the default location and over `PATH`.
+/// `QEMU` names the emulator and `QEMU_DIR` its installation; both win over the default and `PATH`.
 fn locate(
     binary: Option<PathBuf>,
     directory: Option<PathBuf>,
@@ -237,7 +218,6 @@ fn firmware(qemu_dir: &Path, name: &str) -> Result<PathBuf> {
         })
 }
 
-/// Resolve the exact emulator and pristine firmware inputs a boot will use.
 pub(crate) fn installation() -> Result<Installation> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     installation_with(
@@ -265,7 +245,7 @@ fn installation_with(
     })
 }
 
-/// Boot `image` in QEMU with non-profile `extra` arguments.
+/// QEMU's status is printed only: a non-zero one usually means the user closed the window.
 pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     validate_run_arguments(extra)?;
     let installation = installation()?;
@@ -290,19 +270,14 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
         .status()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
-    // A non-zero status here usually means the user closed the window, which is
-    // how you quit QEMU — reporting it as a build failure would be a lie.
     if !status.success() {
         println!("[xtask] QEMU exited with {status}");
     }
     Ok(())
 }
 
-/// An optimization-stable payload marker shared with `kernel/src/selftest.rs`.
-///
-/// The formatted verdict is not a sound build-identity marker: optimized Rust
-/// may split its literal around formatting placeholders. This fixed record is
-/// emitted only by a self-test kernel and remains one contiguous byte string.
+/// Shared with `kernel/src/selftest.rs`. Optimized Rust may split the formatted verdict's literal
+/// around its placeholders; this record stays contiguous, and only a self-test kernel prints it.
 pub(crate) const SELFTEST_IMAGE_MARKER: &str = "selftest: image marker v1";
 
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
@@ -318,15 +293,12 @@ const SELFTEST_QEMU_TCG_ISOLATION_MARKER: &str =
 const SHIPPED_QEMU_TCG_ISOLATION_MARKER: &str =
     "cpu: user isolation shared kernel mappings: qemu_tcg";
 const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
-/// Checks the self-test kernel must report, held independently of its own
-/// tally so a deleted or skipped one turns the verdict red.
-/// Changes require mutation evidence (D-28, D-119).
+/// Held apart from the kernel's own tally so a deleted or skipped check turns the verdict red.
+/// A change requires mutation evidence.
 const EXPECTED_SELFTEST_CHECKS: usize = 296;
 
-/// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
 
-/// Prefix and bounds of the painted NVMe candidate-stack record.
 const NVME_STACK_PREFIX: &str = "selftest: nvme-stack ";
 const NVME_STACK_CAPACITY: u64 = 32 * 1024;
 const NVME_STACK_MIN_HEADROOM: u64 = 2 * 4096;
@@ -334,24 +306,18 @@ const NVME_STACK_MIN_HEADROOM: u64 = 2 * 4096;
 /// The worker has submitted an NVMe command but remains preemptible.
 const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
 
-/// Line the self-test kernel prints immediately before its bounded wait for
-/// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
+/// Printed just before the bounded keystroke wait; kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
 
-/// Line the self-test prints before its second wait, with the controller made
-/// to translate. Kept in step with `kernel/src/selftest.rs`.
-///
-/// A second round reaches the distinct set-1 translation path (D-179).
+/// Kept in step with `kernel/src/selftest.rs`: this second wait reaches the set-1 translation path.
 const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 
-/// Line the shipped kernel prints once it has finished booting and is doing
-/// the one thing it does. Kept in step with `kernel/src/main.rs`.
+/// Printed once the shipped kernel has booted; kept in step with `kernel/src/main.rs`.
 const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 
 /// Evidence emitted only after the shipped program calls from saved CPL 3.
 pub(crate) const SHIPPED_USER_EXECUTION_MARKER: &str = "user: ring 3 call observed";
 
-/// Proof that the shipped selector retired QEMU's first storage candidate.
 pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
@@ -370,14 +336,6 @@ const SHIPPED_CHALLENGE_QCODE: &str = "a";
 const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
-/// What a kernel that has given up says. Watched for rather than inferred
-/// from an exit code: a panicking kernel halts, it does not exit.
-/// How a red self-test reports itself, and how a dead one does.
-///
-/// Named rather than written twice because `cargo xtask mutate` has to tell a
-/// kernel that *noticed* a deliberate defect from one that would not build —
-/// the first is the mutation being caught and the second proves nothing
-/// (D-119).
 pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
 pub const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 
@@ -391,20 +349,15 @@ pub(crate) fn canonical_decimal(text: &str) -> Option<u64> {
     <u64 as core::str::FromStr>::from_str(text).ok()
 }
 
-/// What the kernel must say when it finds no x2APIC.
-///
-/// The refusal D-33 chose and D-90 made a gate check: xAPIC needs page tables
-/// that do not exist when the APIC is brought up, so there is no fallback —
-/// only a diagnosis.
+/// What the kernel must say without x2APIC: xAPIC needs page tables that do not exist yet when
+/// the APIC starts, so there is no fallback.
 const NO_X2APIC_DIAGNOSIS: &str = "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off";
 const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC_DIAGNOSIS);
 
-/// The entry boundary must stop before memory initialization when even one
-/// requester cannot be fenced (D-390).
+/// The entry boundary must stop before memory initialization when any requester cannot be fenced.
 pub const NO_PCI_HANDOFF_PANIC: &str =
     "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable";
 
-/// The hardware-free namespace witness targeted by the PW-207 mutation.
 pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
 
 /// Both device names must resolve through devfs without a bus.
@@ -414,7 +367,6 @@ const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is a character device";
 /// Optional hardening is absent, while mandatory WP and NX remain active.
 const DEGRADED_PROTECTIONS_MARKER: &str = "cpu: protections wp nx";
 
-/// The degraded CPU independently proves that extended state is unavailable.
 pub const DEGRADED_XSTATE_MARKER: &str = "cpu: extended state unavailable; ring 3 stays closed";
 
 /// Missing x2APIC leaves interrupts unadmitted, the first user-launch veto.
@@ -433,15 +385,12 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::warning(DEGRADED_USER_MARKER),
 ];
 
-/// What a storage candidate says when no remapping unit can isolate it (D-357).
 pub const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
 
-/// With every candidate refused, selection ends with no controller.
 pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 
-/// The unisolated boot must refuse every candidate and still settle; the
-/// first candidate's clean retirement proves the refusal path returns the
-/// lease exactly.
+/// The unisolated boot must refuse every candidate and still settle; the first candidate's clean
+/// retirement proves the refusal path returns the lease exactly.
 const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),

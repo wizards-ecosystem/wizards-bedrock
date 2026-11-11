@@ -11,6 +11,7 @@ use crate::contracts::abi::lexers::{compact_cpp, rust_function_body, rust_withou
 use super::*;
 use crate::test_support::{create_directory_symlink, create_file_symlink};
 
+#[derive(Debug)]
 struct QemuFixture {
     root: PathBuf,
     template: PathBuf,
@@ -40,6 +41,7 @@ fn publish_fixture(parent: &Path, bytes: &'static [u8]) -> Result<PathBuf> {
     Ok(backing)
 }
 
+#[derive(Debug)]
 struct FakeQemuChild {
     exited: bool,
     killed: bool,

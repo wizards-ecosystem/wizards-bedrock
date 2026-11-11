@@ -1110,8 +1110,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1596,
         file: "xtask/src/qemu/serial.rs",
-        find: "            sample.leaf <= sample.used,",
-        replace: "            sample.leaf <= sample.capacity,",
+        find: "        sample.leaf <= sample.used,",
+        replace: "        sample.leaf <= sample.capacity,",
         breaks: "a stack record whose live-leaf use exceeds its painted high-water mark is accepted",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1396,8 +1396,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2381,
         file: "xtask/src/qemu/selftest.rs",
-        find: "                let worker = std::thread::spawn(move || report_hang(qmp.as_mut()));",
-        replace: "                report_hang(qmp.as_mut());\n                let worker = std::thread::spawn(|| ());",
+        find: "    let worker = std::thread::spawn(move || report_hang(qmp.as_mut()));",
+        replace: "    report_hang(qmp.as_mut());\n    let worker = std::thread::spawn(|| ());",
         breaks: "a hang report can block the main observation thread",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1418,8 +1418,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2383,
         file: "xtask/src/qemu/selftest.rs",
-        find: "    combine_qemu_cleanup(outcome, cleanup)\n}\n\npub(super) enum SelftestTermination",
-        replace: "    let _ = cleanup;\n    outcome\n}\n\npub(super) enum SelftestTermination",
+        find: "    combine_qemu_cleanup(outcome, cleanup)\n}\n\n#[derive(Debug)]\npub(super) enum SelftestTermination",
+        replace: "    let _ = cleanup;\n    outcome\n}\n\n#[derive(Debug)]\npub(super) enum SelftestTermination",
         breaks: "the self-test return discards cleanup failure",
         reddens: Caught::HostTest {
             package: "xtask",
