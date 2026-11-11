@@ -81,14 +81,14 @@ activation, bypassing diagnostic-origin binding and admitting a rebound `core`
 root respectively make `ambiguous_variable_receiver_dispatch_fails_closed`,
 `a_reviewed_owned_self_producer_activates_drop_without_type_use_shortcuts`,
 `cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target` and
-`a_rebound_core_root_cannot_forge_the_approved_global_asm_macro` red. The real
-entry fixture reproduces all four consumer-origin definition shapes and goes
-red when raw discovery is granted authority, `BootInfo` is omitted, or the
-identity/site, declaration, terminal expansion, macro identity, callsite,
-target or same-`wost` opacity is weakened; the registry, generated-input,
-compiler-runtime, target-metadata, digest and active-package guards each have
-a focused witness. The remaining trusted
-base is the Cargo command path embedded in `xtask`, stable rustc diagnostic
+`a_rebound_core_root_cannot_forge_the_approved_global_asm_macro` red before
+restoration. The real entry fixture reproduces all four consumer-origin
+definition shapes; granting raw discovery authority, omitting `BootInfo`, or
+weakening the identity/site, declaration, terminal expansion, macro identity,
+callsite, target or same-`wost` opacity made its exact witness red before
+restoration. Removing the registry, generated-input, compiler-runtime,
+target-metadata, digest or active-package guards likewise made their focused
+witnesses red before restoration. The remaining trusted base is the Cargo command path embedded in `xtask`, stable rustc diagnostic
 behavior, the snapshot-bound compiler bytes, checksum-matched archives and
 reviewed build scripts. An opaque compiler input which synthesizes a marker not
 present in its exact bytes, or a same-authority mutation restored byte-for-byte

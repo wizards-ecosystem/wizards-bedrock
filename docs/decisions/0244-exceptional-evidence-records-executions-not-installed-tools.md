@@ -112,11 +112,21 @@ cryptographic claim from host-generated metadata was rejected because the
 guest never consumes or returns that metadata. Deleting the whole `vm/` root
 was rejected because one selector must never destroy its sibling.
 
-**Evidence and consequences.** Host fixtures cover the mutation report and
-lock rules, every TLC refusal above with a parked child proving the deadline,
-and every VMware count, path, link, inventory, manifest and snapshot refusal;
-each guard was removed or weakened once and its restored defect persists in
-the mutation registry. PW-007 and PW-008 are closed as observer
+**Evidence and consequences.** Host fixtures complete and consume a clean
+isolated mutation sweep, retain an older pass beside a newer failure, reject
+failed and stale reports and block a concurrent replacement until the current
+pass is consumed. TLC fixtures distinguish clean success and the exact named
+invariant from wrong status, wrong invariant, mixed verdict, truncation,
+unrelated error, diagnostic output, Java throwable, fatal output and a
+missing or contradictory behavior trace; a parked child proves the deadline.
+Other host fixtures reject zero, noncanonical and multiple `vmrun` counts,
+missing and extra paths, relative and foreign VMXs, linked selector and
+qualification parents, stale NVRAM, authoritative-name substitution, shared
+serial names, linked evidence roots, broken staging links, reordered manifests
+and a changed mutation snapshot. The command seam executes exact pre-probe,
+`-T ws list` and post-probe order, and production requires the real observer
+before result and commit. Each guard was removed or weakened once and its exact
+fixture went red; the restored defects persist in the mutation registry. PW-007 and PW-008 are closed as observer
 implementations, while the real current-registry mutation and TLC executions
 remain PW-001 and PW-002. No real exceptional close is claimed here: PW-009 is
 `REQUIRED` until one clean final commit completes mutation, TLC, both human

@@ -43,11 +43,13 @@ with a stack; loader rollback, construction drop and zombie collection
 discarded `unmap` or release refusals, the last consuming the only `Bound`
 token that could authorize a retry; boot paging dropped an unreclaimed root and
 kept a partial stack arena; and task construction ignored a retirement refusal
-while a free scheduler slot could still carry an older zombie. Because
-`AddressSpace::Drop` cannot walk or free live mappings, the discarded results
-were safe only by leaking every remaining owner. D-206 classifies an
-allocator-ledger refusal in `Frame` and `Segment` drop as fatal internal
-contradiction.
+while a free scheduler slot could still carry an older zombie, so a later
+orphan could then replace the retained owner. Because `AddressSpace::Drop`
+cannot walk or free live mappings, the discarded results were safe only by
+leaking every remaining owner. User launch also remained open when XSAVE
+isolation was unavailable, and `Frame` and `Segment` drop ignored
+allocator-ledger refusal even though D-206 classifies such internal ownership
+contradiction as fatal.
 
 **Alternatives.** Treating cleanup refusal as a harmless leak was rejected:
 it loses retry authority and turns bounded pressure into permanent exhaustion.
@@ -64,7 +66,7 @@ rollback, failed boot-space and range-map table reclamation, commit-authority
 reunion, retirement retry, zombie non-aliasing/retry and the no-XSAVE gate.
 Host ELF tests prove power-of-two `p_align` and file/address congruence; the
 machine loader additionally refuses non-page placement before taking a frame.
-Retained breaks cover progress-token loss, forgotten table rollback,
+The integrated release QEMU suite passed 218/218. Exact retained breaks cover progress-token loss, forgotten table rollback,
 rollback-walk refusal, commit-owner loss, loader alignment and activation
 privilege/cache drift. The table transaction remains inside `wost`'s reviewed
 unsafe boundary.

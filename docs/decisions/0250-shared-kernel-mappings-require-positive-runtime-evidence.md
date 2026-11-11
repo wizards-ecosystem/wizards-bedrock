@@ -56,7 +56,8 @@ described zero word, the historical VMware tuple and every one-bit mutation of
 all four QEMU tuple registers, and prove the hypervisor leaf is not read
 without the hypervisor bit. Host runner tests pin every launch site, reject all
 profile-changing aliases and config avenues, allow unrelated debug arguments,
-and require the exact guest record only for a passing verdict. The machine
+and require the exact guest record only for a passing verdict. Each guard was
+broken once and its named host witness went red before restoration. The machine
 check injects the production refusal, requires the typed error, no syscall
 crossing and an unchanged resource ledger, then proves the accepted state was
 restored. Its retained mutation and the current QEMU and VMware observations

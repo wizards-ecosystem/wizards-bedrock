@@ -37,8 +37,12 @@ replacement frame or relying on normal unmap to clean an intentionally broken
 pin check was rejected because either would add ownership noise or leave the
 hostile guard mapped.
 
-Machine checks preserve exact guard, lower and upper lookups and free frame
-counts around lower-leaf substitutions in the running boot stack, a noncurrent
-task stack and the TSS double-fault stack, and later task switches prove the
-cleanup leaves no residual alias. The map-admission and task hardware-use
+On 2026-08-31 release QEMU passed 251/251 with exact guard, lower and upper
+lookups and free frame counts preserved around lower-leaf substitutions in the
+running boot stack, a noncurrent task stack and the TSS double-fault stack.
+Skipping the first leaf (mutation 819) failed all three new checks. Disabling
+map-side pin admission failed the exact protected-map check and its three
+older consumers, while the restored substitution checks and all later task
+switches still passed, proving cleanup left no residual alias. Restoration
+returned 251/251. The map-admission and task hardware-use
 breaks are retained beside the existing first/middle/last rewalk mutations.
