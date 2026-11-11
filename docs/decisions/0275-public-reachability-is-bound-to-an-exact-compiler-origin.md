@@ -2,16 +2,6 @@
 
 Status: Accepted, 2026-09-01. Amends D-213; advances PW-519, PW-523 and PW-532.
 
-**Context.** D-213's deprecation-marker direction was sound, but its claim that
-one host graph compiled all targets was not an exact root model. Target programs
-and standard test harnesses have different roots, a custom harness can generate
-its own `main`, and a dependency compiling included first-party text can report
-a first-party-looking source span. Macros, conditional attributes, trait method
-dispatch and implicit `Drop` or `GlobalAlloc` calls also contain resolved
-execution which syntax alone can over-credit. Repeated compilation additionally
-inherited Cargo configuration, registry source, environment tools and build
-scripts which the copied source snapshot did not bind.
-
 **Decision.** Cargo metadata v1 defines each registered pass's exact package
 identities, dependency-kind closure, targets and target roots. Every registered
 pass, metadata-declared example and standard harness target receives a distinct
@@ -68,6 +58,16 @@ and the checksum-bound reviewed dependency-build-script set are admitted, and
 their Cargo output and `OUT_DIR` authority must remain identical and
 marker-free between pristine and instrumented rounds.
 
+**Rationale.** D-213's `#[deprecated]` direction was sound, but its claim that
+one host graph compiled all targets was not an exact root model. Target programs
+and standard test harnesses have different roots, a custom harness can generate
+its own `main`, and a dependency compiling included first-party text can report
+a first-party-looking source span. Macros, conditional attributes, trait method
+dispatch and implicit `Drop` or `GlobalAlloc` calls also contain resolved
+execution which syntax alone can over-credit. Repeated compilation additionally
+inherited Cargo configuration, registry source, environment tools and build
+scripts which the copied source snapshot did not bind.
+
 **Alternatives and current evidence.** Rendered short diagnostics were rejected
 because they carry no trustworthy package/target origin. Merging targets was
 rejected because it confuses target `main` with harness roots. Trusting a
@@ -76,20 +76,18 @@ map can be changed together; the lock-matched archive is the authority.
 Pretending stable diagnostics prove destructor execution was rejected in favor
 of the explicit construction boundary.
 
-The focused API suite passed 107/107 in both debug and release. Weakening exact dispatch selection,
-removing reviewed owned-`Self` producer activation, bypassing diagnostic-origin
-binding and admitting a rebound `core` root respectively made
-`ambiguous_variable_receiver_dispatch_fails_closed`,
+Weakening exact dispatch selection, removing reviewed owned-`Self` producer
+activation, bypassing diagnostic-origin binding and admitting a rebound `core`
+root respectively make `ambiguous_variable_receiver_dispatch_fails_closed`,
 `a_reviewed_owned_self_producer_activates_drop_without_type_use_shortcuts`,
 `cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target` and
-`a_rebound_core_root_cannot_forge_the_approved_global_asm_macro` red before
-restoration. The real entry fixture additionally reproduced all four
-consumer-origin definition shapes; granting raw discovery authority, omitting
-`BootInfo`, or weakening the identity/site, declaration, terminal expansion,
-macro identity, callsite, target or ordinary same-`wost` opacity made its exact
-witness red before restoration. Removing the registry, generated-input,
-compiler-runtime, target-metadata, digest or active-package guards likewise
-made their focused witnesses red before restoration. The remaining trusted
+`a_rebound_core_root_cannot_forge_the_approved_global_asm_macro` red. The real
+entry fixture reproduces all four consumer-origin definition shapes and goes
+red when raw discovery is granted authority, `BootInfo` is omitted, or the
+identity/site, declaration, terminal expansion, macro identity, callsite,
+target or same-`wost` opacity is weakened; the registry, generated-input,
+compiler-runtime, target-metadata, digest and active-package guards each have
+a focused witness. The remaining trusted
 base is the Cargo command path embedded in `xtask`, stable rustc diagnostic
 behavior, the snapshot-bound compiler bytes, checksum-matched archives and
 reviewed build scripts. An opaque compiler input which synthesizes a marker not

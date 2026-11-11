@@ -2,12 +2,6 @@
 
 Status: Accepted, 2026-08-31. Amends D-187, D-197 and D-251; advances PW-118, PW-125 and PW-129.
 
-**Context.** Address equality was not function authority. A command snapshot
-could be replayed through another function or another registry with the same
-generation, nested command transitions could overlap, and a failed BAR restore
-could retain uncertain hardware without returning the one owner allowed to
-retry it.
-
 **Decision.** The exclusive function claim mints one non-duplicable authority
 bound to its issuing registry, canonical function address and generation.
 Memory decode, bus mastering, command commit/restore and BAR probe/retry borrow
@@ -15,6 +9,12 @@ or consume registry-bound subleases from that authority. The verified header,
 not a caller count, fixes the BAR slots. A possibly effective write is settled
 only after exact current-state observation; uncertain restoration returns a
 linear retry owner and continues to exclude every competing transition.
+
+**Rationale.** Address equality was not function authority: a command snapshot
+could be replayed through another function or registry with the same
+generation, nested command transitions could overlap, and a failed BAR restore
+could retain uncertain hardware without returning the one owner allowed to
+retry it.
 
 **Alternatives and current evidence.** Raw `Address` write APIs and caller BAR
 counts were rejected because neither proves ownership or header shape. Dropping
