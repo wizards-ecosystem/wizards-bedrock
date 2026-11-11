@@ -57,14 +57,14 @@ dramatically simpler to read than ext2.**
 MBR disk with a FAT32 ESP in process through `fatfs` (`default-features =
 false`, chrono off). Two images built seconds apart hash **identically**,
 because `fatfs` defaults `volume_id` to a constant and, without chrono,
-timestamps pin to the DOS epoch. So the Phase 6 test corpus is **the boot image
-`cargo xtask` already produces**, reproducible at zero new tooling. On the
-ext2 side all three pure-Rust image builders failed here ✓ (`ext4-mkfs` 0.1.0
-needs a C compiler; `ext2` 0.1.1 has 48 compile errors and no mkfs;
-`tpdenk/mkfs` exits 0 and writes no file), and the reference read-only crate
-`ext4-view-rs` shells out to `mkfs.ext2` and `debugfs`, unavailable under
-D-16's no-system-installs rule; a frozen corpus that cannot be regenerated
-cannot grow.
+timestamps pin to the DOS epoch. Turn chrono on and the same builds differ. So
+the Phase 6 test corpus is **the boot image `cargo xtask` already produces**,
+reproducible at zero new tooling. On the ext2 side all three pure-Rust image
+builders failed here ✓ (`ext4-mkfs` 0.1.0 needs a C compiler; `ext2` 0.1.1 has
+48 compile errors and no mkfs; `tpdenk/mkfs` exits 0 and writes no file), and
+the reference read-only crate `ext4-view-rs` shells out to `mkfs.ext2` and
+`debugfs`, unavailable under D-16's no-system-installs rule; a frozen corpus
+that cannot be regenerated cannot grow.
 
 *The patents are dead* ◆: US5758352A, US5579517A, US6286013B1 and US5745902A
 read "Expired - Lifetime" (2013 to 2015), and Microsoft's licensing page has
@@ -273,7 +273,8 @@ handle is one mask check and the main reason to have per-type rights.
   pair; Fuchsia's invariant (*rights are never increased*; a nested open may
   request the same or fewer) is one `u32` and one comparison.
 - **`APPEND` and `RESIZE` only if enforced.** Zircon separates
-  `ZX_RIGHT_RESIZE` from `ZX_RIGHT_WRITE`; neither system has an append right.
+  `ZX_RIGHT_RESIZE` from `ZX_RIGHT_WRITE`; `fuchsia.io` folds resize into
+  `WRITE_BYTES`; neither has an append right.
   An append-only handle is a real distinction if Phase 6 has such a caller and
   a syscall name if it does not.
 
@@ -373,7 +374,7 @@ filesystems"*; MemFS, MinFS and BlobFS are processes speaking one protocol).
 
 The polymorphism is already free: a directory handle arrives over a channel and
 the receiver cannot tell tmpfs from devfs from a disk, so only *where dispatch
-happens* is open. **Use an enum while all backends are in-kernel**:
+happens* is open. **Use an enum while all three backends are in-kernel**:
 monomorphic, allocation-free, exhaustively checked when a fourth arrives.
 Promote to dynamic dispatch only when a filesystem lives in userspace and speaks
 the channel protocol, at which point the protocol is the abstraction.
@@ -405,12 +406,13 @@ device handle, and keep a small byte trait for the two file backends.
 worker. So work is punted when it returned `-EAGAIN`, the caller did not ask for
 nonblocking, **and the file is not pollable**. Regular files are never pollable,
 so a page-cache miss always ends in a worker; sockets and pipes almost never do.
-`IOSQE_ASYNC` *"should not be used liberally"*. The 5.10 async-buffered-reads
-series added a page-unlock callback so a cache-warm buffered read never touches
-a worker (12.054s → 9.283s on 4 GB in 4 K chunks). **io_uring's history is a
-steady march away from its worker pool, not toward it.** Its bounded pool
-defaults to `min(sq_entries, 4 × nr_cpus)`, the unbounded one to `RLIMIT_NPROC`,
-both far outside a sixteen-slot budget.
+`IOSQE_ASYNC` is an override for work the application *knows* will block, and
+the man page warns it *"should not be used liberally"*; it is not a default. The
+5.10 async-buffered-reads series added a page-unlock callback so a cache-warm
+buffered read never touches a worker (12.054s → 9.283s on 4 GB in 4 K chunks).
+**io_uring's history is a steady march away from its worker pool, not toward
+it.** Its bounded pool defaults to `min(sq_entries, 4 × nr_cpus)`, the unbounded
+one to `RLIMIT_NPROC`, both far outside a sixteen-slot budget.
 
 **Recommendation for sixteen thread slots** (inference, marked):
 
@@ -513,17 +515,19 @@ There is **no `IORING_OP_ACCEPT_DIRECT`**: it is `IORING_OP_ACCEPT` with
 not an ABI entry. And the motivation was never exhaustion: Begunkov's 5.15 cover
 letter, the `IORING_FILE_INDEX_ALLOC` commit message and
 `io_uring_registered_files(7)` all give **per-operation overhead and
-round-trips**.
+round-trips**, and none of them mentions backpressure or table limits.
 
 **The conclusion survives on a better argument.** io_uring can install at
 completion only because `IORING_FEAT_NODROP` gives it an **unbounded kernel-side
 overflow backlog**. D-79 refused that for reservation admission, so
 completion-time installation has nowhere to put a failure: reserving is not a
 preference, it is what the earlier decision implies. io_uring's own source
-agrees: `io_accept_prep()` refuses multishot with a *specific* fixed slot, and
-`IORING_FILE_INDEX_ALLOC` still allocates at completion and reports `-ENFILE` in
-`cqe->res`, at the one moment the submitter can do nothing about it. Corrected
-in the log and in `013` before this document was written.
+agrees: `io_accept_prep()` refuses multishot with a *specific* fixed slot,
+because one submission producing unbounded installs is the case that forces
+kernel-managed allocation, and `IORING_FILE_INDEX_ALLOC` still allocates at
+completion and reports `-ENFILE` in `cqe->res`, at the one moment the submitter
+can do nothing about it. Corrected in the log and in `013` before this document
+was written.
 
 **D-153 needs one addition: exit must be a wait, not a signal.** ◆ Closing an
 io_uring instance cancels pending requests, but until Axboe's March 2025 series

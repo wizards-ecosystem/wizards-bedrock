@@ -145,9 +145,9 @@ itself*: an ABI that lets callers stay synchronous delivers the 1.06×.
   forbids deregistration while requests are outstanding.
 - **Backpressure: reserve completion-queue space at submission.** io_uring's
   `CQ_NODROP` took an unbounded kernel memory liability; **RIO's
-  reservation-based admission control makes overflow structurally
-  impossible.** Take RIO's, and its CQ sizing: a power of two **≥ 2× the SQ
-  size**.
+  reservation-based admission control makes overflow structurally impossible.**
+  Take RIO's, not Linux's, and Windows' requirement that the CQ be a power of
+  two **≥ 2× the SQ size**.
 - **Shared-ring security: copy each entry out exactly once, then validate the
   copy.** CVE-2025-39816 is *"always use `READ_ONCE()` to read ring pointers."*
 
@@ -244,7 +244,8 @@ children), encoded so a new type renumbers nothing. `003`'s seL4 "~720 cycles"
 is ◆ **718 ± 29 cycles on x86_64 Skylake, same-core fastpath, hot cache,
 *without Meltdown mitigation***, and 468 → 687 (+47%) with mitigations, the
 figure to compare against. Capsicum's "few percent" ◆ is measured **against
-standard UNIX syscalls, not message passing**; worst case `fstat` **10.2%**,
+standard UNIX syscalls, not message passing**, and the paper contains no
+message-passing measurement at all; worst case `fstat` **10.2%**,
 `cap_new` versus `dup` **50.7%**.
 
 ---
@@ -299,7 +300,8 @@ eight cores; **seL4, one release** with a big kernel lock).
 - **Make `SpinLockGuard` and `ThreadLockGuard` `!Send`** ✓ with
   `PhantomData<*const ()>`, the idiom `ThreadContext` uses.
 - **No lock guard live across a context switch.** Redox's September-2025 hang
-  fix was **292 lines of `{ }` scoping**. We enforce it at runtime ✓ (D-66's
+  fix was **292 lines of `{ }` scoping**, because Rust temporaries held
+  guards across `context::switch()`. We enforce it at runtime ✓ (D-66's
   assert in `prepare()`), but it was reached from a UP deadlock, so the ADR
   should name the SMP rationale too, or someone will weaken it thinking it only
   guards a UP bug.
@@ -312,7 +314,9 @@ eight cores; **seL4, one release** with a big kernel lock).
 implementation exists and before the necessary hardware is available."* Linux
 scales for 68% of 13,664 POSIX tests, sv6 for 99%: **the difference is
 interface, not effort.** So: no lowest-free handles (§3); **the async queue ABI
-must not promise global FIFO across submitters**; **unmap, close and release
+must not promise global FIFO across submitters** (sv6's mail-server
+benchmark: an ordered socket forces one shared queue, unordered allows
+per-core queues); **unmap, close and release
 must not promise global visibility on return** (Linux's `mmu_gather`); and **a
 full barrier on both sides of the lost-wakeup re-check**, one locked
 instruction on the slow path. **Rust does not save you here**: Converos's 20
@@ -364,7 +368,7 @@ needing *zero* kernel work, **died of adoption**, and even it kept `proc_fork`.
 ### The recommendation, and it is the largest in this pass
 
 **Move mlibc from Phase 9 to immediately after the Phase 5 ABI stabilises.** ⊕
-The plan built a Phase 7 userland on a bespoke ABI and introduced mlibc in
+The plan then put a userland in Phase 7 against a bespoke ABI and mlibc in
 Phase 9: **writing the userland twice.** mlibc's `sysdeps/demo` is a five-file
 ~9.4 KB skeleton. The goal is to answer *"can a POSIX libc sit on this ABI?"*
 while the ABI is cheap to change, and find which of `openat`, `dup`,
@@ -409,8 +413,8 @@ that ratification is "a fact rather than a projection" is right. But:
 - **wasmi has no Component Model and no plans for one**: its maintainer
   (September 2025) called it *"an enormous undertaking"* and said it remains
   uncertain if a Wasm interpreter will ever even profit; the tracking issue,
-  open since 2024-01-16, left the planned list in February 2025. WasmEdge's funded team has worked on it
-  since early 2024 and is not done.
+  open since 2024-01-16, left the planned list in February 2025. WasmEdge's
+  funded team has worked on it since early 2024 and is not done.
 - **Cost**: the spec is **~12,200 lines / ~66,000 words** on top of core Wasm;
   Wasmtime's implementation is **40,902 lines of Rust, larger than wasmi's
   entire core interpreter.**
@@ -418,8 +422,8 @@ that ratification is "a fact rather than a projection" is right. But:
   micro-utilities); `wa.dev` returns **"No packages available."** CPython, Ruby
   and Go target `wasm32-wasip1`. **No component build of a shell, an editor,
   coreutils, SQLite, or a compiler exists**, and the niche is **a typed plugin
-  ABI for a host application**. **No component-capable runtime is an
-  interpreter.**
+  ABI for a host application**, not an application distribution format. **No
+  component-capable runtime is an interpreter.**
 
 WASI's authority model aligns with handle grants and components survive a
 port; D-181 adds that a descriptor adapter still owns numbering, preopens and
@@ -456,11 +460,11 @@ read-modify-write; a sub-block write is a self-contained record).
 
 **The parity-RAID reason is wrong; the conclusion survives.** ZFS's RAID-Z
 *eliminates* the write hole; btrfs's RAID56 (still **unstable**, *"write journal
-is not implemented"*) and classic RAID5 carry it. The correct reason: **every
-correct solution needs buckets, copying GC and backpointers first.** And FAST
-'18 *kept* full-path indexing with a range-rename; choose inode indirection
-because range-rename is research we do not want to invent, not because
-full-path keying is wrong.
+is not implemented"* in 2026, 17 years in) and classic RAID5 carry it. The
+correct reason: **every correct solution needs buckets, copying GC and
+backpointers first.** And FAST '18 *kept* full-path indexing with a
+range-rename; choose inode indirection because range-rename is research we do
+not want to invent, not because full-path keying is wrong.
 
 **The schedule is the problem** ⊕. **bcachefs**: "more or less feature
 complete" 2015-08-21, experimental label dropped 2026-06-19, **ten years and ten
@@ -490,15 +494,18 @@ phase whose definition of done includes crash injection and a repair tool:
   snapshots, checksums or GC, *"simply fails when it runs out of blocks"*, but
   with the `snapshot` key field from v0, always zero, because adding a key
   field later is a format break.
-- **Not yet**: 128 to 256K log-structured nodes (justified by petabyte scale on
-  spinning disks) or a copying collector.
+- **Not yet**: 128 to 256K log-structured nodes (they cost bset merge-sorting,
+  whiteout deletion, packed keys and auxiliary search trees, and bcachefs
+  justifies them by petabyte scale on spinning disks), and no copying collector
+  in v0, which is four subsystems on its own.
 
 Two hazards. **Free-space deadlock**, in btrfs's words:
 *"The balance operation needs enough work space … otherwise this may lead to
 ENOSPC reports."* bcachefs's answer is a **seven-level watermark ladder** plus a
 reserve normal writes cannot touch, arithmetic for a `libs/` crate. **Devices
-that lie about flushes** (*"historically a major (potentially disastrous)
-problem for COW filesystems"*): journal scrub at mount plus a bounded rewind.
+that lie about flushes**, which bcachefs calls *"historically a major
+(potentially disastrous) problem for COW filesystems"*: journal scrub at mount
+plus a bounded rewind.
 Read bcachefs's ~117-page Principles of Operation (revision 1.39.2,
 **2026-08-22**) end to end before designing.
 
@@ -517,10 +524,10 @@ Read bcachefs's ~117-page Principles of Operation (revision 1.39.2,
 - **Extended state.** A context switch is 1,000 to 2,000 cycles direct, **10k to
   1M** with cache and TLB damage. **AMX `TILE_DATA` is 8 KiB, up to 64 KiB
   architecturally.** Linux uses **XFD** (first-touch `#NM`, then allocate), and
-  **not lazy FPU restore** (CVE-2018-3665). With D-29's XSAVE deferral ending
-  at ring 3: **compute the compacted XSAVE size at boot, use
-  `XSAVES`/`XRSTORS`, gate with XFD, never lazy**; the size leaks into
-  stack-guard arithmetic, so it is a Phase 5 decision.
+  **not lazy FPU restore** (CVE-2018-3665). Since D-29 defers XSAVE to "when
+  there is a scheduler" and Phase 5 brings ring 3: **compute the compacted XSAVE
+  size at boot, use `XSAVES`/`XRSTORS`, gate with XFD, never lazy**; the size
+  leaks into stack-guard arithmetic, so it is a Phase 5 decision.
 - **Data path.** SPSC ring versus Unix socket at 32 bytes: **270 ns versus 5,910
   ns**, because "the data path contains zero system calls", the quantitative
   case for D-06. A silent `io_worker` fallback costs **7.3 µs**: *no silent
@@ -548,11 +555,13 @@ catch are counts. Instruction-count benchmarking may hit the
 AMD and one Intel**, because Zen 5 and Intel no longer predict each other.
 
 **Decide before Phase 5 closes**: (1) ring transitions per unit of work, which
-*is* the ABI; (2) the buffer-ownership type (pool provenance, DMA mapping,
-lifetime, `Drop` returning to the pool), which decides channels, I/O and
-networking at once; (3) page- versus folio-oriented memory; (4) per-CPU data
-and the interrupt-state token; (5) extended state, which sizes the TCB; (6) an
-entry path patchable per attack vector and FRED-shaped; (7) a measurement
+*is* the ABI; (2) the buffer-ownership type, which decides channels, I/O and
+networking at once; not zero-copy itself but the *type*: pool provenance, DMA
+mapping, lifetime, `Drop` returning to the pool; (3) page- versus folio-oriented
+memory, meaning `(order, base-PFN)` runs with tagged descriptors, which Linux is
+spending years retrofitting; (4) per-CPU data and the interrupt-state token,
+free on one CPU and expensive later; (5) extended state, which sizes the TCB;
+(6) an entry path patchable per attack vector and FRED-shaped; (7) a measurement
 capability. If only three fit: **the buffer type, the async ABI shape, and the
 measurement loop.**
 
@@ -585,15 +594,15 @@ ratio as **7.5:1**; the SOSP'25 paper says **3.32:1** (20,098 proof lines over
 6,048 executable), and 7.5:1 is the earlier KISV'23 workshop paper's. **Our note
 understated Verus by 2.26×** (seL4 20:1, CertiKOS 14.9:1, NrOS 10:1, SeKVM
 6.9:1, VeriSMo 2:1). Atmosphere took **three clean-slate rewrites** and leaves a
-~3,000-line trusted TCB plus 172 lines of assembly unverified. A `no_std`,
-`forbid(unsafe_code)` crate went green under `cargo test` and
-`verus.exe --crate-type=lib` (6 verified, 0 errors); **Verus pins stable
-1.97.1, this project's exact version.** Asterinas × CertiK's page-table race and
-the TASE 2026 buddy result check out. The curve: spec arithmetic promotes to
-`int`, bitmasks need `by(bit_vector)`, and **multiplication and division need
-`by(nonlinear_arith)`**, the shape of EEVDF weighting and ring indices; about
-**15 proof lines per 4 executable**. **Kani is out**: Linux and macOS only,
-zero Windows artifacts.
+~3,000-line trusted TCB plus 172 lines of assembly and the bootloader
+unverified. A `no_std`, `forbid(unsafe_code)` crate went green under `cargo
+test` and `verus.exe --crate-type=lib` (6 verified, 0 errors); **Verus pins
+stable 1.97.1, this project's exact version.** Asterinas × CertiK's page-table
+race and the TASE 2026 buddy result check out. The curve: spec arithmetic
+promotes to `int`, bitmasks need `by(bit_vector)`, and **multiplication and
+division need `by(nonlinear_arith)`**, the shape of EEVDF weighting and ring
+indices; about **15 proof lines per 4 executable**. **Kani is out**: Linux and
+macOS only, zero Windows artifacts.
 
 **What the tools catch, measured.** A `Relaxed` publish where `Release` is
 required **passed `shuttle`** (2,000 iterations): it checks interleavings and
@@ -613,8 +622,9 @@ a check that cannot fail is also a claim.
 
 The doorbell protocol, §4's store-then-load shape, **must therefore be reasoned
 about by hand, not merely tested.** **Loom's two threads over-approximate a
-uniprocessor kernel with interrupts**, so a loom-clean primitive is correct on
-UP today and pre-validated for SMP: a reason to do this in Phase 5.
+uniprocessor kernel with interrupts**, since an interrupt is preemption at an
+arbitrary point, so a loom-clean primitive is correct on UP today and
+pre-validated for SMP: a reason to do this in Phase 5.
 
 **TLA+ runs before any Rust exists.** A 39-line ring-buffer spec checks in
 **under a second** (35 states); delete the producer's free-slot check and TLC
@@ -685,8 +695,9 @@ check, SMEP/SMAP/UMIP. UEFI-only with no CSM remains correct. **D-33's
 x2APIC-only decision holds** (MSR access is a smaller `unsafe` surface than an
 MMIO window), but it should become a **checked, diagnosable boot precondition
 rather than an assumption**, a D-28 negative test because `-cpu qemu64,-x2apic`
-produces a machine without it. No Broadcom document says VMware exposes x2APIC;
-empirically it does.
+produces a machine without it. I could not find a Broadcom document stating
+plainly that VMware Workstation exposes x2APIC; empirically it does, but the
+check turns a triple fault into a message.
 
 | Feature | Hardware 2026 | Linux | Shape before Phase 5? |
 |---|---|---|---|
@@ -707,17 +718,17 @@ Since the last pass: **ITS** (2025), **VMSCAPE** (CVE-2025-40300), and Linux's
 **Attack Vector Controls** (6.16), whose shape is worth stealing.
 
 **FRED** replaces IDT delivery and `IRET` with `ERETS`/`ERETU`, IST with four
-reentrant stack levels, `SWAPGS` with `LKGS`, delivers a uniform frame, and
-makes supervisor shadow stacks tractable. Our QEMU 11.0.50 ✓ lists `fred`,
-`lkgs` and `wrmsrns` among its known CPU features and accepts
+reentrant stack levels, makes `SWAPGS` a `#UD` in favour of `LKGS`, delivers a
+uniform frame, and makes supervisor shadow stacks tractable. Our QEMU 11.0.50 ✓
+lists `fred`, `lkgs` and `wrmsrns` among its known CPU features and accepts
 `-cpu max,fred=on`; full emulation needs a boot test, but FRED is "testable
 here, today". **Design Phase 5's trap entry FRED-shaped without implementing
 FRED**: `swapgs` behind `arch::percpu`; `iretq` behind
 `arch::trap::return_to_user`; trap stacks as an enum mapped onto IST today; and
-**dispatch from a table on a decoded `TrapCause`, rather than 256 IDT stubs
-that each know their own vector.** The decode is arithmetic for `libs/`, and
-it is what an aarch64 port needs, a signal it is the right abstraction rather
-than speculative generality.
+**dispatch from a table on a decoded `TrapCause`, rather than 256 IDT stubs that
+each know their own vector.** The decode is arithmetic for `libs/`, and it is
+what an aarch64 port needs, a signal it is the right abstraction rather than
+speculative generality.
 
 **The XSAVE decision Phase 5 forces** (D-29 deferred it until a scheduler):
 **eager, compacted, boot-sized, out-of-line, CPUID-derived, with the arithmetic
@@ -728,7 +739,8 @@ in `libs/`.**
 - **`XSAVES` → `XSAVEC` → `XSAVE`, never `XSAVEOPT`**, whose
   modified-optimisation is a correctness hazard. Prefer `XSAVES` even with no
   supervisor state: it shares `XSAVEC`'s compacted format, and CET's
-  shadow-stack pointers live in supervisor xstate.
+  shadow-stack pointers live in supervisor xstate, so wanting CET later means
+  wanting `XSAVES` now.
 - **`XCR0` = x87 + SSE + AVX only**: every enabled bit is per-thread memory
   forever, and **AMX's `XTILEDATA` alone is 8 KiB.**
 - **`XstateBuf` out-of-line and growable**, 64-byte aligned, sized at boot,
@@ -941,10 +953,11 @@ them now would be tooling in search of a subject.
 36. **Full functional verification** (§9).
 37. **seL4-style revocation** (§3): a one-second pre-mitigation worst case,
     zombie capabilities, and two documented partial-completion cases.
-38. **Writing an AML interpreter**: `rust-osdev/acpi` has one, and Redox rebased
-    onto it in April 2026 where it *fixed real hardware*.
-39. **The own-bootloader side-quest**: a maintained alternative exists and it
-    teaches nothing Phases 0 to 4 have not.
+38. **Writing an AML interpreter**: `rust-osdev/acpi` gained one, and Redox
+    rebased onto it in April 2026 where it *fixed real hardware*.
+39. **The own-bootloader side-quest**: the one Phase 12 item with a maintained
+    alternative and essentially no learning Phases 0 to 4 have not already
+    delivered.
 40. **Kani** (§9). Revisit only if a Linux CI runner appears, where
     `--autoharness` makes it nearly free.
 41. **Coverage-guided fuzzing** (`cargo-fuzz`, afl.rs, honggfuzz): Unix or

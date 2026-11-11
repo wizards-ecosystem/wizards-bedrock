@@ -393,12 +393,13 @@ root would say what they collectively guarantee.
 
 ### 4.2 Klint — the bug class no lint here can currently catch
 
-Klint performs compile-time **preemption-count analysis** ◆. Functions and
-types carry `#[klint::preempt_count]` annotations declaring the *adjustment* a
-call makes and the *expected range* at entry: `spin_lock` can be called from
-any context but adjusts on return; sleepable functions adjust by zero and
-require exactly zero. Analysis across call sites (monomorphising generics,
-warning on indirect calls) then finds sleep-in-atomic-context.
+Klint performs compile-time **preemption-count analysis** ◆. Functions and types
+carry `#[klint::preempt_count]` annotations declaring the *adjustment* a call
+makes and the *expected range* at entry: `spin_lock` can be called from any
+context but adjusts on return; sleepable functions adjust by zero and require
+exactly zero. Analysis across call sites (monomorphising generics, warning on
+indirect calls through fn pointers and trait objects) then finds
+sleep-in-atomic-context.
 
 It matters beyond deadlock: `synchronize_rcu()` is sound only if nothing sleeps
 inside an RCU read side, or it can return early and free memory before
