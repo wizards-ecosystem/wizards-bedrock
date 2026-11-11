@@ -2,19 +2,15 @@
 
 Status: Accepted, 2026-07-18. Amended by D-181.
 
-**Context.** CPython and NetSurf (D-05) require POSIX; the native ABI
-(D-06) is not POSIX.
-
 **Decision.** POSIX lives entirely in userspace. Phase 9's mlibc sysdeps
 make descriptors compatibility objects over native handles: they add
 numbering, shared cursors, inheritance and root/cwd policy, and blocking
 calls wrap ring submission and wait. A gated compat clone remains Phase 9
-work, not a current kernel primitive. Native software never links this
-layer (D-181).
+work, not a current kernel primitive. Native software never links this layer
+(D-181).
 
-**Rationale.** mlibc exists for hobby-OS ports (from Managarm); this keeps
-both the modern core and the porting trophies.
+**Rationale.** CPython and NetSurf (D-05) require POSIX and the native ABI
+(D-06) is not; mlibc exists for hobby-OS ports.
 
-**Consequences.** Phase 9 is the steepest climb in the roadmap. The Phase-5
-ABI design doc must be written with mlibc's sysdeps checklist open so no
-primitive is missing.
+**Consequences.** The Phase-5 ABI design doc must be written with mlibc's
+sysdeps checklist open so no primitive is missing.
