@@ -8,8 +8,13 @@ use crate::vfs;
 
 pub(super) fn a_second_backend_answers_the_same_three_operations() -> bool {
     let root = vfs::tmp_root();
+    let mut window = [0u8; 8];
+    tmp_files_read_back(root, &mut window) && tmp_listing_agrees_and_walks_stop(root, &mut window)
+}
 
-    // Resolve and read a file at the top.
+// A read from the middle starts at its offset and stops at the file's end, before the arena's.
+// A lookup ignoring the parent is only wrong when names repeat, so `NOTES/MOTD` repeats one.
+fn tmp_files_read_back(root: vfs::Directory, window: &mut [u8; 8]) -> bool {
     let Ok(vfs::Node::File(motd)) = vfs::resolve(root, b"MOTD") else {
         return false;
     };
@@ -21,20 +26,16 @@ pub(super) fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A read from the middle starts where it was told, and stops at the end
-    // rather than at the arena's.
-    let mut window = [0u8; 8];
-    let Ok(partial) = vfs::read(motd, 4, &mut window) else {
+    let Ok(partial) = vfs::read(motd, 4, window) else {
         return false;
     };
     if partial != window.len() || window[..] != read[4..12] {
         return false;
     }
-    if vfs::read(motd, got as u32, &mut window) != Ok(0) {
+    if vfs::read(motd, got as u32, window) != Ok(0) {
         return false;
     }
 
-    // Resolve through a directory, which is the walk rather than a lookup.
     let Ok(vfs::Node::File(nested)) = vfs::resolve(root, b"NOTES/ONE.TXT") else {
         return false;
     };
@@ -45,19 +46,17 @@ pub(super) fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A name in two directories resolves to the right one; a lookup ignoring
-    // the parent is only wrong when names repeat, so here they do (D-172).
     let Ok(vfs::Node::File(shadowed)) = vfs::resolve(root, b"NOTES/MOTD") else {
         return false;
     };
     let Ok(shadow) = vfs::read(shadowed, 0, &mut read) else {
         return false;
     };
-    if &read[..shadow] != b"a different motd\n" {
-        return false;
-    }
+    &read[..shadow] == b"a different motd\n"
+}
 
-    // And enumeration agrees with what resolves.
+// Walking through a file is refused here too, because that rule belongs to the VFS.
+fn tmp_listing_agrees_and_walks_stop(root: vfs::Directory, window: &mut [u8; 8]) -> bool {
     let mut names = 0usize;
     let mut directories = 0usize;
     if vfs::enumerate(root, |_, is_directory| {
@@ -72,8 +71,6 @@ pub(super) fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // A file walked through is refused here too, which is the rule being the
-    // VFS's rather than FAT's.
     let through = vfs::resolve(root, b"MOTD/ONE.TXT");
     let hostile = vfs::read(
         vfs::File::Tmp {
@@ -81,7 +78,7 @@ pub(super) fn a_second_backend_answers_the_same_three_operations() -> bool {
             len: usize::MAX,
         },
         1,
-        &mut window,
+        window,
     );
     names == 2
         && directories == 1
@@ -121,6 +118,8 @@ pub(super) fn enumeration_callbacks_run_without_backend_ownership() -> bool {
     tmp_walked.is_ok() && tmp_reentered && fat_walked.is_ok() && fat_reentered
 }
 
+// A device is a third kind of node, which makes the distinction structural.
+// A path through a device is refused as one through a file is, since it has nothing inside.
 pub(super) fn a_device_is_not_a_file() -> bool {
     let root = vfs::dev_root();
 
@@ -130,8 +129,6 @@ pub(super) fn a_device_is_not_a_file() -> bool {
     if storage.name() != b"storage" {
         return false;
     }
-    // Not a file and not a directory: the *node* is a third thing, which is
-    // what makes the distinction structural rather than a flag.
     if matches!(vfs::resolve(root, b"console"), Ok(vfs::Node::File(_))) {
         return false;
     }
@@ -142,7 +139,6 @@ pub(super) fn a_device_is_not_a_file() -> bool {
         return false;
     }
 
-    // Every device is listed, and none of them claims to be a directory.
     let mut listed = 0usize;
     let mut any_directory = false;
     if vfs::enumerate(root, |_, is_directory| {
@@ -155,8 +151,6 @@ pub(super) fn a_device_is_not_a_file() -> bool {
         return false;
     }
 
-    // A device has nothing inside it, so a path through one is refused for the
-    // same reason a path through a file is.
     let through = vfs::resolve(root, b"storage/anything");
     let missing = vfs::resolve(root, b"nothing");
 
@@ -166,6 +160,7 @@ pub(super) fn a_device_is_not_a_file() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
+// Each crossing name resolves on its own backend, so its refusal elsewhere is about the backend.
 pub(super) fn no_backend_lets_a_path_escape_or_cross() -> bool {
     let escaping: &[&[u8]] = &[b"..", b"../MOTD", b"NOTES/../..", b"./.."];
     let absolute: &[&[u8]] = &[b"/", b"/MOTD"];
@@ -189,8 +184,6 @@ pub(super) fn no_backend_lets_a_path_escape_or_cross() -> bool {
         }
     }
 
-    // Names that exist on one backend and not another. Each of these resolves
-    // from its own root and from nowhere else.
     let crossings: &[(vfs::Directory, &[u8])] = &[
         (vfs::tmp_root(), SMALL_NAME),
         (vfs::tmp_root(), b"storage"),
@@ -203,23 +196,19 @@ pub(super) fn no_backend_lets_a_path_escape_or_cross() -> bool {
         }
     }
 
-    // And each name does resolve where it belongs, so the refusals above are
-    // about the backend rather than about the name.
     vfs::resolve(vfs::tmp_root(), b"MOTD").is_ok()
         && vfs::resolve(vfs::dev_root(), b"storage").is_ok()
 }
 
+// A FAT root must resolve to a FAT file, through the exhaustive enum dispatch.
 pub(super) fn a_path_resolves_from_a_directory_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
     };
 
-    // A file at the top.
     let Ok(vfs::Node::File(small)) = vfs::resolve(root, SMALL_NAME) else {
         return false;
     };
-    // The variant matters: a FAT root resolves to a FAT file, and the match
-    // is the enum dispatch being exhaustive (D-172).
     let vfs::File::Fat { size, .. } = small else {
         return false;
     };
@@ -234,7 +223,6 @@ pub(super) fn a_path_resolves_from_a_directory_handle() -> bool {
         return false;
     }
 
-    // A directory, then a file inside it, through one path.
     let Ok(vfs::Node::Directory(_)) = vfs::resolve(root, DIRECTORY_NAME) else {
         return false;
     };
@@ -253,13 +241,13 @@ pub(super) fn a_path_resolves_from_a_directory_handle() -> bool {
         return false;
     };
 
-    // And `.` and a cancelled `..` both name the directory they started from.
     let here = matches!(vfs::resolve(root, b"."), Ok(vfs::Node::Directory(_)));
     let round_trip = matches!(vfs::resolve(root, b"DATA/.."), Ok(vfs::Node::Directory(_)));
 
     got == NESTED_CONTENT.len() && &inside[..got] == NESTED_CONTENT && here && round_trip
 }
 
+// An empty path names nothing; a resolver treating it as `.` would answer the directory.
 pub(super) fn no_path_can_name_anything_above_the_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -293,8 +281,6 @@ pub(super) fn no_path_can_name_anything_above_the_handle() -> bool {
         }
     }
 
-    // And an empty path names nothing rather than the directory itself, which
-    // is what a resolver that treated it as `.` would answer.
     matches!(
         vfs::resolve(root, b""),
         Err(vfs::VfsError::Path(path_walk::PathError::Empty))
@@ -319,6 +305,8 @@ pub(super) fn a_file_cannot_be_walked_through() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
+// Names resolve only after enumeration: both take the controller leaf, so the callback would
+// re-enter it.
 pub(super) fn enumeration_lists_what_traversal_would_find() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -342,8 +330,6 @@ pub(super) fn enumeration_lists_what_traversal_would_find() -> bool {
         return false;
     }
 
-    // Resolve after enumeration because both paths take the controller leaf;
-    // resolving in the callback would re-enter it (D-171).
     let mut listed = [[0u8; 12]; 4];
     let mut lengths = [0usize; 4];
     let mut count = 0usize;
@@ -369,6 +355,8 @@ pub(super) fn the_volume_mounts_and_says_what_a_fat32_volume_says() -> bool {
     matches!(fs::mount(), Some(Ok(volume)) if volume.layout_is_fat32())
 }
 
+// A deleted slot separates live entries, so traversal must continue past it.
+// The sector-sized buffer exposes a read wrongly bounded by the cluster size.
 pub(super) fn the_kernel_reads_the_file_the_host_wrote() -> bool {
     matches!(
         fs::mount().map(|result| result.and_then(|mut volume| {
@@ -378,7 +366,6 @@ pub(super) fn the_kernel_reads_the_file_the_host_wrote() -> bool {
                 return Ok(false);
             }
 
-            // A deleted slot separates live entries, so traversal must continue.
             let mut live = 0usize;
             let mut cursor = fat32::DirectoryCursor::new(root);
             while !cursor.is_done() {
@@ -388,8 +375,6 @@ pub(super) fn the_kernel_reads_the_file_the_host_wrote() -> bool {
                 return Ok(false);
             }
 
-            // Extra buffer exposes a read incorrectly bounded by cluster size
-            // instead of file size (D-170).
             let mut read = [0u8; fat32::SECTOR_BYTES];
             let got = volume.read_file(entry.cluster, entry.size, 0, &mut read)?;
             Ok(got == SMALL_CONTENT.len() && &read[..got] == SMALL_CONTENT)
@@ -431,7 +416,6 @@ pub(super) fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
                 }
             }
 
-            // And nothing past the end, rather than the next file's bytes.
             let mut past = [0u8; 16];
             Ok(volume.read_file(entry.cluster, entry.size, entry.size, &mut past)? == 0)
         })),
@@ -439,6 +423,7 @@ pub(super) fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
     )
 }
 
+// A file is never walked as a directory, whatever its bytes look like.
 pub(super) fn a_path_resolves_through_a_directory() -> bool {
     matches!(
         fs::mount().map(|result| result.and_then(|mut volume| {
@@ -453,7 +438,6 @@ pub(super) fn a_path_resolves_through_a_directory() -> bool {
                 return Ok(false);
             }
 
-            // A file is not a directory, whatever its bytes look like.
             let through_a_file = volume.resolve(root, &[SMALL_NAME, NESTED_NAME]);
             let missing = volume.resolve(root, &[b"NOPE.TXT"]);
             Ok(through_a_file == Err(fat32::FatError::WrongKind)
@@ -463,10 +447,8 @@ pub(super) fn a_path_resolves_through_a_directory() -> bool {
     )
 }
 
-/// What `xtask` put on the namespace.
-///
-/// Transcribed from `xtask/src/image/corpus.rs`, which writes it — two copies
-/// of one table, so a host test compares them (D-158, D-170).
+/// What `xtask` put on the namespace, transcribed from `xtask/src/image/corpus.rs`, which
+/// writes it; a host test compares the two copies.
 pub(super) const SMALL_NAME: &[u8] = b"HELLO.TXT";
 /// See [`SMALL_NAME`].
 pub(super) const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";

@@ -68,6 +68,8 @@ pub(super) fn a_program_cannot_bring_smap_down_with_it() -> bool {
     the_program_tried && the_kernel_undid_it && interrupt::access_clear_is_armed()
 }
 
+// `rax` still holds the FAULT argument (1), which survives the dispatch to the `ud2`.
+// Retirement is the exact incarnation's last rites, never a global tally.
 pub(super) fn a_faulting_program_dies_alone() -> bool {
     let before = trap::last_user_fault();
     let Ok(spawned) = user::run_faulting() else {
@@ -82,21 +84,17 @@ pub(super) fn a_faulting_program_dies_alone() -> bool {
     }
     let fault = trap::last_user_fault();
 
-    // This process's own fault: its slot, and the FAULT argument (1) it left
-    // in `rax`, which survives the dispatch to the `ud2` (D-327).
     let this_child = fault.slot == spawned.slot && fault.rax == 1;
-    // From ring 3, by the CPU's own account.
     let from_user = fault.code_selector & 0b11 == 3;
-    // The fault the program chose, and no other.
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
-    // Its stack pointer is in user memory, not the kernel's.
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
-    // The exact incarnation reached its last rites, not a global tally.
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
     this_child && from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
+// A refusal is process-local: the timer keeps arriving and a clean child can still cross the
+// same gate, return through the same tail and exit.
 pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
     let (before, _) = trap::last_invalid_user_return();
     let expiries = time::expiries();
@@ -116,8 +114,6 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> boo
         && kind == trap::InvalidUserReturnKind::StackPointer;
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
-    // A refusal is process-local: the timer keeps arriving and a clean child
-    // can still cross the same gate, return through the same tail and exit.
     let calls = trap::last_syscall();
     let Ok(successor) = user::run_for_bootstrap() else {
         return false;
@@ -161,6 +157,10 @@ pub(super) fn unsafe_user_return_flags_retire_only_their_program() -> bool {
     this_child && retired && successor_retired && successor_ran && time::expiries() > expiries
 }
 
+// `rax` still holds the window address the program jumped to when the fetch faulted.
+// A ring-3 page fault on the copy window is the case the recovery arm must refuse, so the
+// program reaches its last rites and is never resumed at the fixup.
+// An empty `fault_window` would let the check pass with the arm deleted.
 pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let recoveries_before = trap::user_copy_recoveries();
     let before = trap::last_user_fault();
@@ -178,20 +178,11 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
-    // This process's own fault: its slot, and the window address it jumped to,
-    // still in `rax` when the fetch faulted (D-327).
     let this_child = fault.slot == spawned.slot && fault.rax == start;
-    // A page fault on the copy window, the case the arm must refuse.
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
-    // From ring 3, which is what makes this the case the arm must refuse.
     let from_user = fault.code_selector & 0b11 == 3;
-    // The exact incarnation reached its last rites, rather than being resumed
-    // at the fixup.
     let retired = last_rites_for(&spawned, 2_000).is_some();
-    // The counter did not move: nothing was recovered.
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
-    // And the window is a real range: an empty `fault_window` would make
-    // the check pass with the arm deleted.
     let real_window = start < end;
 
     this_child && page_fault && from_user && retired && not_recovered && real_window
@@ -201,128 +192,169 @@ pub(super) fn the_loader_refuses_what_it_may_not_map() -> bool {
     let Some(original) = user::image() else {
         return false;
     };
-    /// Offset of the first program header's flags, from the ELF64 layout.
-    const FLAGS: usize = elf64::HEADER_BYTES + 4;
-    /// The image entry point in the ELF64 header.
-    const ENTRY: usize = 24;
-    /// Its `p_offset`, `p_filesz` and `p_vaddr`.
-    const OFFSET: usize = elf64::HEADER_BYTES + 8;
-    const VADDR: usize = elf64::HEADER_BYTES + 16;
-    const FILE_SIZE: usize = elf64::HEADER_BYTES + 32;
-    const MEMORY_SIZE: usize = elf64::HEADER_BYTES + 40;
-    const ALIGNMENT: usize = elf64::HEADER_BYTES + 48;
+    let segments_refused = doctored_segments_are_refused(original);
+    let placements_refused = misplaced_images_are_refused_before_mapping(original);
+    let independent = each_load_keeps_its_own_placement(original);
+    segments_refused && placements_refused && independent
+}
 
-    let doctor = |at: usize, value: u64| -> Vec<u8> {
-        let mut copy = original.to_vec();
-        copy[at..at + 8].copy_from_slice(&value.to_le_bytes());
-        copy
-    };
-    let field = |at: usize| {
-        let mut value = [0u8; 8];
-        value.copy_from_slice(&original[at..at + 8]);
-        u64::from_le_bytes(value)
-    };
-    let load = |bytes: &[u8], shift: u64| {
-        let allocator_before = AllocatorSnapshot::capture();
-        let Ok(mut space) = AddressSpace::for_user() else {
-            return (Err(user::LoadError::OutOfMemory), false, false);
+/// Offset of the first program header's flags, from the ELF64 layout.
+const SEGMENT_FLAGS: usize = elf64::HEADER_BYTES + 4;
+/// The image entry point in the ELF64 header.
+const ELF_ENTRY: usize = 24;
+/// The first program header's `p_offset`, `p_vaddr`, `p_filesz`, `p_memsz` and `p_align`.
+const SEGMENT_OFFSET: usize = elf64::HEADER_BYTES + 8;
+const SEGMENT_VADDR: usize = elf64::HEADER_BYTES + 16;
+const SEGMENT_FILE_SIZE: usize = elf64::HEADER_BYTES + 32;
+const SEGMENT_MEMORY_SIZE: usize = elf64::HEADER_BYTES + 40;
+const SEGMENT_ALIGNMENT: usize = elf64::HEADER_BYTES + 48;
+
+fn doctored(original: &[u8], at: usize, value: u64) -> Vec<u8> {
+    let mut copy = original.to_vec();
+    copy[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    copy
+}
+
+fn field(original: &[u8], at: usize) -> u64 {
+    let mut value = [0u8; 8];
+    value.copy_from_slice(&original[at..at + 8]);
+    u64::from_le_bytes(value)
+}
+
+// `user` keeps its loaded image type private, so a success hands back a reader of its regions.
+struct Loaded<R> {
+    result: Result<R, user::LoadError>,
+    cleaned: bool,
+    preflighted: bool,
+}
+
+fn load_and_clean(bytes: &[u8], shift: u64) -> Loaded<impl Fn() -> Vec<(u64, u64)>> {
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return Loaded {
+            result: Err(user::LoadError::OutOfMemory),
+            cleaned: false,
+            preflighted: false,
         };
-        let held = mm::free_frames();
-        let result = user::load_image(&mut space, bytes, shift);
-        let refused_before_mapping = mm::free_frames() == held;
-        let mappings_cleaned = result.as_ref().map_or(true, |image| {
-            image
-                .regions()
-                .all(|(at, len)| space.unmap(at, len).map(drop).is_ok())
-        });
-        let tables_cleaned = space.reclaim(None).is_ok();
-        drop(space);
-        let cleaned = mappings_cleaned
-            && tables_cleaned
-            && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
-        (result, cleaned, refused_before_mapping)
     };
+    let held = mm::free_frames();
+    let result = user::load_image(&mut space, bytes, shift);
+    let refused_before_mapping = mm::free_frames() == held;
+    let mappings_cleaned = result.as_ref().map_or(true, |image| {
+        image
+            .regions()
+            .all(|(at, len)| space.unmap(at, len).map(drop).is_ok())
+    });
+    let tables_cleaned = space.reclaim(None).is_ok();
+    drop(space);
+    let cleaned = mappings_cleaned
+        && tables_cleaned
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+    let regions = result.map(|image| move || image.regions().collect());
+    Loaded {
+        result: regions,
+        cleaned,
+        preflighted: refused_before_mapping,
+    }
+}
 
-    // Writable and executable at once.
+// Moving only `p_offset` isolates the contents bound from the file-size-versus-memory-size refusal.
+// Code on the topmost user page could trap with a non-canonical return address.
+fn doctored_segments_are_refused(original: &[u8]) -> bool {
     let mut write_execute = original.to_vec();
-    write_execute[FLAGS..FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
+    write_execute[SEGMENT_FLAGS..SEGMENT_FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
     let wx_refused = matches!(
-        load(&write_execute, 0).0,
+        load_and_clean(&write_execute, 0).result,
         Err(user::LoadError::WriteExecute(_))
     );
 
-    // Moving only `p_offset` isolates the contents bound from the independent
-    // file-size-versus-memory-size refusal (D-105).
-    let overrun = doctor(OFFSET, original.len() as u64);
-    let overrun_refused = matches!(load(&overrun, 0).0, Err(user::LoadError::Truncated(_)));
+    let overrun = doctored(original, SEGMENT_OFFSET, original.len() as u64);
+    let overrun_refused = matches!(
+        load_and_clean(&overrun, 0).result,
+        Err(user::LoadError::Truncated(_))
+    );
 
-    // More file than memory to put it in, and only that.
-    let mut oversized = doctor(FILE_SIZE, 8);
-    oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
-    let oversized_refused = matches!(load(&oversized, 0).0, Err(user::LoadError::Malformed(_)));
+    let mut oversized = doctored(original, SEGMENT_FILE_SIZE, 8);
+    oversized[SEGMENT_MEMORY_SIZE..SEGMENT_MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
+    let oversized_refused = matches!(
+        load_and_clean(&oversized, 0).result,
+        Err(user::LoadError::Malformed(_))
+    );
 
-    // Placed in the kernel's half.
-    let mut intruding = doctor(VADDR, 0xffff_8000_0000_0000);
-    intruding[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
+    let mut intruding = doctored(original, SEGMENT_VADDR, 0xffff_8000_0000_0000);
+    intruding[SEGMENT_ALIGNMENT..SEGMENT_ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let intruding_refused = matches!(
-        load(&intruding, 0).0,
+        load_and_clean(&intruding, 0).result,
         Err(user::LoadError::NotUserMemory(_))
     );
 
-    // Code there could trap with a non-canonical return address (D-348).
-    let mut topmost = doctor(VADDR, x86_paging::USER_MAPPING_END);
-    topmost[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
-    let (topmost_result, topmost_cleaned, topmost_preflight) = load(&topmost, 0);
-    let topmost_refused = matches!(topmost_result, Err(user::LoadError::NotUserMemory(_)))
-        && topmost_cleaned
-        && topmost_preflight;
+    let mut topmost = doctored(original, SEGMENT_VADDR, x86_paging::USER_MAPPING_END);
+    topmost[SEGMENT_ALIGNMENT..SEGMENT_ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
+    let topmost_load = load_and_clean(&topmost, 0);
+    let topmost_refused = matches!(topmost_load.result, Err(user::LoadError::NotUserMemory(_)))
+        && topmost_load.cleaned
+        && topmost_load.preflighted;
 
-    // ELF congruence is still valid, but this loader deliberately places only
-    // whole-page segments and refuses that narrower contract before mapping.
-    let mut unaligned = doctor(VADDR, field(VADDR) + 1);
-    unaligned[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
-    let (unaligned_result, unaligned_cleaned, unaligned_preflight) = load(&unaligned, 0);
-    let unaligned_refused = matches!(unaligned_result, Err(user::LoadError::Unaligned(_)))
-        && unaligned_cleaned
-        && unaligned_preflight;
+    wx_refused && overrun_refused && oversized_refused && intruding_refused && topmost_refused
+}
 
-    let invalid_alignment = doctor(ALIGNMENT, 3);
-    let (alignment_result, alignment_cleaned, alignment_preflight) = load(&invalid_alignment, 0);
+// ELF congruence alone is valid, but this loader places only whole-page segments and refuses
+// that narrower contract before mapping.
+// The entry is validated before the first placement: zero is a valid user address outside the
+// executable segment, so a late refusal would be observable.
+fn misplaced_images_are_refused_before_mapping(original: &[u8]) -> bool {
+    let mut unaligned = doctored(original, SEGMENT_VADDR, field(original, SEGMENT_VADDR) + 1);
+    unaligned[SEGMENT_ALIGNMENT..SEGMENT_ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
+    let unaligned_load = load_and_clean(&unaligned, 0);
+    let unaligned_refused = matches!(unaligned_load.result, Err(user::LoadError::Unaligned(_)))
+        && unaligned_load.cleaned
+        && unaligned_load.preflighted;
+
+    let invalid_alignment = doctored(original, SEGMENT_ALIGNMENT, 3);
+    let alignment_load = load_and_clean(&invalid_alignment, 0);
     let alignment_refused = matches!(
-        alignment_result,
+        alignment_load.result,
         Err(user::LoadError::InvalidAlignment { alignment: 3, .. })
-    ) && alignment_cleaned
-        && alignment_preflight;
+    ) && alignment_load.cleaned
+        && alignment_load.preflighted;
 
-    let mut incongruent = doctor(VADDR, field(VADDR) + 1);
-    incongruent[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&PAGE_SIZE.to_le_bytes());
-    let (congruence_result, congruence_cleaned, congruence_preflight) = load(&incongruent, 0);
+    let mut incongruent = doctored(original, SEGMENT_VADDR, field(original, SEGMENT_VADDR) + 1);
+    incongruent[SEGMENT_ALIGNMENT..SEGMENT_ALIGNMENT + 8].copy_from_slice(&PAGE_SIZE.to_le_bytes());
+    let congruence_load = load_and_clean(&incongruent, 0);
     let congruence_refused = matches!(
-        congruence_result,
+        congruence_load.result,
         Err(user::LoadError::InvalidAlignment { .. })
-    ) && congruence_cleaned
-        && congruence_preflight;
+    ) && congruence_load.cleaned
+        && congruence_load.preflighted;
 
-    // And something that is not an ELF at all.
     let not_an_elf = [0u8; 64];
-    let refused_outright = matches!(load(&not_an_elf, 0).0, Err(user::LoadError::NotAnElf(_)));
+    let refused_outright = matches!(
+        load_and_clean(&not_an_elf, 0).result,
+        Err(user::LoadError::NotAnElf(_))
+    );
 
-    // Validated before the first placement: zero is a valid user address but
-    // outside the executable segment, so a late refusal is observable.
-    let invalid_entry = doctor(ENTRY, 0);
-    let (entry_result, entry_cleaned, entry_preflight) = load(&invalid_entry, 0);
-    let entry_refused = matches!(entry_result, Err(user::LoadError::InvalidEntry(0)))
-        && entry_cleaned
-        && entry_preflight;
+    let invalid_entry = doctored(original, ELF_ENTRY, 0);
+    let entry_load = load_and_clean(&invalid_entry, 0);
+    let entry_refused = matches!(entry_load.result, Err(user::LoadError::InvalidEntry(0)))
+        && entry_load.cleaned
+        && entry_load.preflighted;
 
-    // Each success carries its own immutable placement record. Loading again
-    // cannot overwrite the first call's cleanup evidence.
-    let (first, first_cleaned, _) = load(original, 0);
-    let (second, second_cleaned, _) = load(original, 0x1_0000);
-    let independent = match (first, second) {
+    unaligned_refused
+        && alignment_refused
+        && congruence_refused
+        && refused_outright
+        && entry_refused
+}
+
+// Each success carries its own immutable placement record, so loading again cannot overwrite the
+// first call's cleanup evidence.
+fn each_load_keeps_its_own_placement(original: &[u8]) -> bool {
+    let first = load_and_clean(original, 0);
+    let second = load_and_clean(original, 0x1_0000);
+    let independent = match (first.result, second.result) {
         (Ok(first), Ok(second)) => {
-            let first: Vec<_> = first.regions().collect();
-            let second: Vec<_> = second.regions().collect();
+            let first = first();
+            let second = second();
             !first.is_empty()
                 && first.len() == second.len()
                 && first
@@ -334,22 +366,12 @@ pub(super) fn the_loader_refuses_what_it_may_not_map() -> bool {
         }
         _ => false,
     };
-
-    wx_refused
-        && overrun_refused
-        && oversized_refused
-        && intruding_refused
-        && topmost_refused
-        && unaligned_refused
-        && alignment_refused
-        && congruence_refused
-        && refused_outright
-        && entry_refused
-        && first_cleaned
-        && second_cleaned
-        && independent
+    first.cleaned && second.cleaned && independent
 }
 
+// Slot identity is the witness because sequential threads may correctly reuse a stack.
+// Both landings are kernel stacks, which a shared or stale `RSP0` pointing at user memory would
+// not be.
 pub(super) fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     let first = trap::last_syscall();
     if first.count == 0 {
@@ -365,35 +387,29 @@ pub(super) fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     }
     let second = trap::last_syscall();
 
-    // Ring 3 again, through the same one gate.
     let from_user = second.code_selector & 0b11 == 3;
     let through_the_gate = second.vector as u8 == vector::SYSCALL.get();
-    // At its own user addresses, not the first program's.
     let elsewhere =
         second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
-    // Slot identity is the witness because sequential threads may correctly
-    // reuse a stack (D-117).
     let landed_on_its_own = thread::layout()
         .and_then(|layout| layout.slot(second.slot.checked_sub(1)?))
         .is_some_and(|slot| {
             second.frame_address > slot.stack_base() && second.frame_address <= slot.stack_top()
         });
-    // Both are kernel stacks, which a shared or stale `RSP0` pointing at user
-    // memory would not be.
     let kernel_stacks =
         second.frame_address >= usercopy::USER_END && first_landing >= usercopy::USER_END;
 
     from_user && through_the_gate && elsewhere && landed_on_its_own && kernel_stacks
 }
 
+// Buffers clear once per crossing: every syscall returns through the branch, so its tally cannot
+// lag the crossings.
 pub(super) fn the_return_to_ring_three_clears_buffers() -> bool {
     let armed = interrupt::buffer_clear_is_armed();
     let executed = interrupt::buffer_clears();
     if !armed || executed == 0 {
         return false;
     }
-    // Once per crossing, not once at boot: every syscall came through this
-    // branch, so the tally cannot lag the crossings.
     executed >= trap::last_syscall().count as u64
 }
 
@@ -404,6 +420,8 @@ pub(super) fn a_faulting_user_copy_resumes_and_reports() -> bool {
     exact && recovered
 }
 
+// The code page is read-only and executable, as program text is, because the boundary check's
+// write refusal is about the leaf's own permission and needs a page that has it.
 pub(super) fn boundary_probe() -> Option<(u64, u64)> {
     /// Well clear of anything a program is loaded at.
     const CODE: u64 = user::CODE + 0x20_0000;
@@ -425,8 +443,6 @@ pub(super) fn boundary_probe() -> Option<(u64, u64)> {
     }
 
     let mut context = context();
-    // Read-only and executable, as a program's text is: the write refusal
-    // below is about the leaf's own permission and needs a page that has it.
     mem::map_user_for_test(&mut context, CODE, code.into(), Flags::NONE)?.ok()?;
     mem::map_user_for_test(
         &mut context,
@@ -440,6 +456,7 @@ pub(super) fn boundary_probe() -> Option<(u64, u64)> {
     Some((CODE, STACK))
 }
 
+// Ring 3 may execute the program's own page, and neither ring may write it.
 pub(super) fn bytes_cross_the_boundary_only_where_they_may() -> bool {
     let Some((code, stack)) = boundary_probe() else {
         return false;
@@ -458,28 +475,22 @@ pub(super) fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && echoed == written;
 
     let mut scratch = [0u8; 8];
-    // Kernel memory, named as if it were the user's.
     let kernel_refused = matches!(
         usercopy::copy_from_user(boot::sections().text.start, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))
     );
-    // A range that starts inside user space and ends outside it.
     let straddling_refused = matches!(
         usercopy::copy_from_user(usercopy::USER_END - 4, &mut scratch),
         Err(UserCopyError::NotUserMemory(_))
     );
-    // One that wraps rather than describing a span at all.
     let wrap_refused = matches!(
         usercopy::copy_from_user(u64::MAX - 2, &mut scratch),
         Err(UserCopyError::Wraps(_))
     );
-    // User memory that is not there.
     let hole_refused = matches!(
         usercopy::copy_from_user(0x0000_2000_0000_0000, &mut scratch),
         Err(UserCopyError::Unmapped(_))
     );
-    // And a write to the program's own page, which ring 3 may execute and
-    // neither ring may write.
     let read_only_refused = matches!(
         usercopy::copy_to_user(code, &written),
         Err(UserCopyError::ReadOnly(_))
@@ -691,75 +702,12 @@ pub(super) fn cleanup_refusals_retain_reachable_tables() -> bool {
     const FIRST: u64 = 0x0000_4100_0000_0000;
     const SECOND: u64 = FIRST + 2 * PAGE_SIZE;
     const BLOCKER: u64 = FIRST + 4 * PAGE_SIZE;
-    const SEGMENTS: usize = 3;
-    const PHNUM: usize = 56;
 
     let allocator_before = AllocatorSnapshot::capture();
-    let Ok(mut space) = AddressSpace::for_user() else {
+    let Some(mut space) = a_user_space_with_a_blocker(BLOCKER, &allocator_before) else {
         return false;
     };
-    let Some(mut blocker) = mm::allocate_contiguous(1, 1) else {
-        let reclaimed = space.reclaim(None).is_ok();
-        drop(space);
-        assert!(
-            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-            "a missing blocker did not return its address-space tables"
-        );
-        return false;
-    };
-    if !blocker.zero() {
-        drop(blocker);
-        let reclaimed = space.reclaim(None).is_ok();
-        drop(space);
-        assert!(
-            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-            "a refused blocker zero did not return setup resources"
-        );
-        return false;
-    }
-    if space
-        .map_user(
-            BLOCKER,
-            blocker.into(),
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )
-        .is_err()
-    {
-        let reclaimed = space.reclaim(None).is_ok();
-        drop(space);
-        assert!(
-            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-            "a refused blocker map did not return setup resources"
-        );
-        return false;
-    }
-
-    let data = elf64::HEADER_BYTES + SEGMENTS * elf64::PROGRAM_HEADER_BYTES;
-    let mut image = alloc::vec![0u8; data + SEGMENTS];
-    image[0..4].copy_from_slice(&elf64::MAGIC);
-    image[4] = elf64::CLASS_64;
-    image[5] = elf64::LITTLE_ENDIAN;
-    image[6] = 1;
-    image[16..18].copy_from_slice(&2u16.to_le_bytes());
-    image[18..20].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
-    image[20..24].copy_from_slice(&1u32.to_le_bytes());
-    image[24..32].copy_from_slice(&FIRST.to_le_bytes());
-    image[32..40].copy_from_slice(&(elf64::HEADER_BYTES as u64).to_le_bytes());
-    image[52..54].copy_from_slice(&(elf64::HEADER_BYTES as u16).to_le_bytes());
-    image[54..56].copy_from_slice(&(elf64::PROGRAM_HEADER_BYTES as u16).to_le_bytes());
-    image[PHNUM..PHNUM + 2].copy_from_slice(&(SEGMENTS as u16).to_le_bytes());
-    for (index, (at, flags)) in [(FIRST, 5u32), (SECOND, 6u32), (BLOCKER, 6u32)]
-        .into_iter()
-        .enumerate()
-    {
-        let header = elf64::HEADER_BYTES + index * elf64::PROGRAM_HEADER_BYTES;
-        image[header..header + 4].copy_from_slice(&1u32.to_le_bytes());
-        image[header + 4..header + 8].copy_from_slice(&flags.to_le_bytes());
-        image[header + 8..header + 16].copy_from_slice(&((data + index) as u64).to_le_bytes());
-        image[header + 16..header + 24].copy_from_slice(&at.to_le_bytes());
-        image[header + 32..header + 40].copy_from_slice(&1u64.to_le_bytes());
-        image[header + 40..header + 48].copy_from_slice(&PAGE_SIZE.to_le_bytes());
-    }
+    let image = three_segment_image([(FIRST, 5), (SECOND, 6), (BLOCKER, 6)]);
 
     user::refuse_cleanup_unmap_after_for_test(1);
     let load_result = user::load_image(&mut space, &image, 0);
@@ -791,7 +739,86 @@ pub(super) fn cleanup_refusals_retain_reachable_tables() -> bool {
     let cleaned = mappings_cleaned
         && tables_cleaned
         && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+    let construction_refused = a_refused_construction_unmap_is_counted();
 
+    typed && retained && cleaned && construction_refused
+}
+
+fn a_user_space_with_a_blocker(
+    blocker_at: u64,
+    allocator_before: &AllocatorSnapshot,
+) -> Option<AddressSpace> {
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return None;
+    };
+    let Some(mut blocker) = mm::allocate_contiguous(1, 1) else {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(allocator_before),
+            "a missing blocker did not return its address-space tables"
+        );
+        return None;
+    };
+    if !blocker.zero() {
+        drop(blocker);
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(allocator_before),
+            "a refused blocker zero did not return setup resources"
+        );
+        return None;
+    }
+    if space
+        .map_user(
+            blocker_at,
+            blocker.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        )
+        .is_err()
+    {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(allocator_before),
+            "a refused blocker map did not return setup resources"
+        );
+        return None;
+    }
+    Some(space)
+}
+
+fn three_segment_image(segments: [(u64, u32); 3]) -> Vec<u8> {
+    const PHNUM: usize = 56;
+
+    let data = elf64::HEADER_BYTES + segments.len() * elf64::PROGRAM_HEADER_BYTES;
+    let mut image = alloc::vec![0u8; data + segments.len()];
+    image[0..4].copy_from_slice(&elf64::MAGIC);
+    image[4] = elf64::CLASS_64;
+    image[5] = elf64::LITTLE_ENDIAN;
+    image[6] = 1;
+    image[16..18].copy_from_slice(&2u16.to_le_bytes());
+    image[18..20].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
+    image[20..24].copy_from_slice(&1u32.to_le_bytes());
+    image[24..32].copy_from_slice(&segments[0].0.to_le_bytes());
+    image[32..40].copy_from_slice(&(elf64::HEADER_BYTES as u64).to_le_bytes());
+    image[52..54].copy_from_slice(&(elf64::HEADER_BYTES as u16).to_le_bytes());
+    image[54..56].copy_from_slice(&(elf64::PROGRAM_HEADER_BYTES as u16).to_le_bytes());
+    image[PHNUM..PHNUM + 2].copy_from_slice(&(segments.len() as u16).to_le_bytes());
+    for (index, (at, flags)) in segments.into_iter().enumerate() {
+        let header = elf64::HEADER_BYTES + index * elf64::PROGRAM_HEADER_BYTES;
+        image[header..header + 4].copy_from_slice(&1u32.to_le_bytes());
+        image[header + 4..header + 8].copy_from_slice(&flags.to_le_bytes());
+        image[header + 8..header + 16].copy_from_slice(&((data + index) as u64).to_le_bytes());
+        image[header + 16..header + 24].copy_from_slice(&at.to_le_bytes());
+        image[header + 32..header + 40].copy_from_slice(&1u64.to_le_bytes());
+        image[header + 40..header + 48].copy_from_slice(&PAGE_SIZE.to_le_bytes());
+    }
+    image
+}
+
+fn a_refused_construction_unmap_is_counted() -> bool {
     let construction_before = spawn_resources();
     user::refuse_cleanup_unmap_after_for_test(0);
     let spawn_result = user::spawn_refusing(user::SpawnEdge::Image);
@@ -801,12 +828,10 @@ pub(super) fn cleanup_refusals_retain_reachable_tables() -> bool {
         mapping_refusals: construction_before.mapping_refusals + 1,
         ..construction_before
     };
-    let construction_refused = matches!(
+    matches!(
         spawn_result,
         Err(user::SpawnError::Injected(user::SpawnEdge::Image))
-    ) && construction_after.has_same_ownership(&expected_construction);
-
-    typed && retained && cleaned && construction_refused
+    ) && construction_after.has_same_ownership(&expected_construction)
 }
 
 pub(super) fn partial_stack_rollback_is_retryable() -> bool {
@@ -1241,103 +1266,7 @@ pub(super) fn a_task_release_refusal_retains_the_zombie_for_retry() -> bool {
     let baseline = spawn_resources();
     let reclaimed_before = user::reclaimed();
 
-    let checked = (|| -> bool {
-        let Ok(spawned) = user::run_for_bootstrap() else {
-            return false;
-        };
-        if !wait_for_exact_zombie(&spawned) {
-            return false;
-        }
-
-        let crossings = trap::last_syscall().count;
-        task::refuse_releases_for_test();
-        let refused = matches!(user::collect(), user::CollectOutcome::Retained);
-        let retained_resources = spawn_resources();
-        let retained = refused
-            && user::has_zombies()
-            && exact_zombie(&spawned)
-            && trap::last_syscall().count == crossings
-            && user::reclaimed() == reclaimed_before;
-
-        let Ok(probe) = user::run_for_bootstrap() else {
-            return false;
-        };
-        let admission_closed = probe.slot != spawned.slot && exact_zombie(&spawned);
-        let probe_retired = wait_for_exact_zombie(&probe);
-
-        task::restore_release_for_test();
-        let mut old_reclaimed = false;
-        let mut probe_reclaimed = false;
-        let mut returned_pages = 0usize;
-        let mut returned_tables = 0usize;
-        let mut exact_reclaims = probe_retired && exact_zombie(&spawned) && exact_zombie(&probe);
-        for _ in 0..2 {
-            if !exact_reclaims {
-                break;
-            }
-            let old_before = exact_zombie(&spawned);
-            let probe_before = exact_zombie(&probe);
-            let user::CollectOutcome::Reclaimed(result) = user::collect() else {
-                exact_reclaims = false;
-                break;
-            };
-            let old_after = exact_zombie(&spawned);
-            let probe_after = exact_zombie(&probe);
-            let reclaimed_old = old_before && !old_after;
-            let reclaimed_probe = probe_before && !probe_after;
-            if reclaimed_old == reclaimed_probe
-                || (reclaimed_old && old_reclaimed)
-                || (reclaimed_probe && probe_reclaimed)
-            {
-                exact_reclaims = false;
-                break;
-            }
-            let Some(pages) = returned_pages.checked_add(result.pages) else {
-                exact_reclaims = false;
-                break;
-            };
-            let Some(tables) = returned_tables.checked_add(result.tables) else {
-                exact_reclaims = false;
-                break;
-            };
-            returned_pages = pages;
-            returned_tables = tables;
-            old_reclaimed |= reclaimed_old;
-            probe_reclaimed |= reclaimed_probe;
-        }
-        let both_exact_zombies_reclaimed = exact_reclaims
-            && old_reclaimed
-            && probe_reclaimed
-            && returned_pages > 0
-            && returned_tables > 0
-            && !user::zombie_owns_slot_for_test(spawned.slot)
-            && !user::zombie_owns_slot_for_test(probe.slot);
-
-        let reclaimed_after = user::reclaimed();
-        let resources_after = spawn_resources();
-        let one_retained_record = retained_resources.process_records == (0, 0, 1);
-        let resources_restored = resources_after.has_same_ownership(&baseline);
-        let page_tally_is_exact =
-            reclaimed_after.0.checked_sub(reclaimed_before.0) == Some(returned_pages);
-        let table_tally_is_exact =
-            reclaimed_after.1.checked_sub(reclaimed_before.1) == Some(returned_tables);
-        let complete = retained
-            && one_retained_record
-            && admission_closed
-            && probe_retired
-            && both_exact_zombies_reclaimed
-            && !user::has_zombies()
-            && resources_restored
-            && page_tally_is_exact
-            && table_tally_is_exact;
-        if !complete {
-            info!(
-                "selftest: task-release detail retained={retained} one-record={one_retained_record} admission={admission_closed} probe-retired={probe_retired} exact-reclaims={both_exact_zombies_reclaimed} zombies={} resources={resources_restored} pages={page_tally_is_exact} tables={table_tally_is_exact} before={baseline:?} after={resources_after:?}",
-                user::has_zombies()
-            );
-        }
-        complete
-    })();
+    let checked = a_refused_release_retains_its_zombie(&baseline, reclaimed_before);
     task::restore_release_for_test();
     queue::pause_worker_for_test(false);
     let cleaned = yields_until(|| {
@@ -1345,6 +1274,119 @@ pub(super) fn a_task_release_refusal_retains_the_zombie_for_retry() -> bool {
         !user::has_zombies()
     });
     checked && cleaned
+}
+
+fn a_refused_release_retains_its_zombie(
+    baseline: &SpawnResources,
+    reclaimed_before: (usize, usize),
+) -> bool {
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
+    if !wait_for_exact_zombie(&spawned) {
+        return false;
+    }
+
+    let crossings = trap::last_syscall().count;
+    task::refuse_releases_for_test();
+    let refused = matches!(user::collect(), user::CollectOutcome::Retained);
+    let retained_resources = spawn_resources();
+    let retained = refused
+        && user::has_zombies()
+        && exact_zombie(&spawned)
+        && trap::last_syscall().count == crossings
+        && user::reclaimed() == reclaimed_before;
+
+    let Ok(probe) = user::run_for_bootstrap() else {
+        return false;
+    };
+    let admission_closed = probe.slot != spawned.slot && exact_zombie(&spawned);
+    let probe_retired = wait_for_exact_zombie(&probe);
+
+    task::restore_release_for_test();
+    let exact_so_far = probe_retired && exact_zombie(&spawned) && exact_zombie(&probe);
+    let (exact_reclaims, returned_pages, returned_tables) =
+        reclaim_both_zombies(&spawned, &probe, exact_so_far);
+    let both_exact_zombies_reclaimed = exact_reclaims
+        && returned_pages > 0
+        && returned_tables > 0
+        && !user::zombie_owns_slot_for_test(spawned.slot)
+        && !user::zombie_owns_slot_for_test(probe.slot);
+
+    let reclaimed_after = user::reclaimed();
+    let resources_after = spawn_resources();
+    let one_retained_record = retained_resources.process_records == (0, 0, 1);
+    let resources_restored = resources_after.has_same_ownership(baseline);
+    let page_tally_is_exact =
+        reclaimed_after.0.checked_sub(reclaimed_before.0) == Some(returned_pages);
+    let table_tally_is_exact =
+        reclaimed_after.1.checked_sub(reclaimed_before.1) == Some(returned_tables);
+    let complete = retained
+        && one_retained_record
+        && admission_closed
+        && probe_retired
+        && both_exact_zombies_reclaimed
+        && !user::has_zombies()
+        && resources_restored
+        && page_tally_is_exact
+        && table_tally_is_exact;
+    if !complete {
+        info!(
+            "selftest: task-release detail retained={retained} one-record={one_retained_record} admission={admission_closed} probe-retired={probe_retired} exact-reclaims={both_exact_zombies_reclaimed} zombies={} resources={resources_restored} pages={page_tally_is_exact} tables={table_tally_is_exact} before={baseline:?} after={resources_after:?}",
+            user::has_zombies()
+        );
+    }
+    complete
+}
+
+fn reclaim_both_zombies(
+    spawned: &user::Spawned,
+    probe: &user::Spawned,
+    mut exact_reclaims: bool,
+) -> (bool, usize, usize) {
+    let mut old_reclaimed = false;
+    let mut probe_reclaimed = false;
+    let mut returned_pages = 0usize;
+    let mut returned_tables = 0usize;
+    for _ in 0..2 {
+        if !exact_reclaims {
+            break;
+        }
+        let old_before = exact_zombie(spawned);
+        let probe_before = exact_zombie(probe);
+        let user::CollectOutcome::Reclaimed(result) = user::collect() else {
+            exact_reclaims = false;
+            break;
+        };
+        let old_after = exact_zombie(spawned);
+        let probe_after = exact_zombie(probe);
+        let reclaimed_old = old_before && !old_after;
+        let reclaimed_probe = probe_before && !probe_after;
+        if reclaimed_old == reclaimed_probe
+            || (reclaimed_old && old_reclaimed)
+            || (reclaimed_probe && probe_reclaimed)
+        {
+            exact_reclaims = false;
+            break;
+        }
+        let Some(pages) = returned_pages.checked_add(result.pages) else {
+            exact_reclaims = false;
+            break;
+        };
+        let Some(tables) = returned_tables.checked_add(result.tables) else {
+            exact_reclaims = false;
+            break;
+        };
+        returned_pages = pages;
+        returned_tables = tables;
+        old_reclaimed |= reclaimed_old;
+        probe_reclaimed |= reclaimed_probe;
+    }
+    (
+        exact_reclaims && old_reclaimed && probe_reclaimed,
+        returned_pages,
+        returned_tables,
+    )
 }
 
 static PAUSED_COLLECTOR_OUTCOME: AtomicUsize = AtomicUsize::new(0);
@@ -1426,6 +1468,8 @@ pub(super) fn one_zombie_has_one_settlement_collector() -> bool {
     checked && cleaned && spawn_resources().has_same_ownership(&baseline)
 }
 
+// Nothing else exits, spawns or collects after the refusal lifts, so the worker can finish only
+// through its production retry.
 pub(super) fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
     task::restore_release_for_test();
     user::pause_collection_after_take_for_test(false);
@@ -1481,8 +1525,6 @@ pub(super) fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
             && user::zombie_owns_slot_for_test(slot);
         task::restore_release_for_test();
 
-        // Nothing else exits, spawns or collects after the refusal lifts, so
-        // the worker can finish only through its production retry.
         let worker_finished_its_retry = runs_until(2_000, || {
             queue::worker_reaps_for_test() > reaped && !user::has_zombies()
         });
@@ -1505,9 +1547,11 @@ pub(super) fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
     checked && cleaned && spawn_resources().has_same_ownership(&baseline)
 }
 
+// Earlier checks' zombies drain first, so the measurement is about this program alone.
+// Collection is asked directly, because waiting for idle in a busy self-test may wait for ever.
+// Forty programs through sixteen slots: without reclamation every spawn after the sixteenth is
+// refused.
 pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
-    // Drain anything earlier checks left, so the measurement below is about
-    // this program and not about theirs.
     while user::collect().is_some() {}
 
     let resources_before = spawn_resources();
@@ -1521,27 +1565,18 @@ pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
         return false;
     }
 
-    // Its slot came back with it: the thread is gone from both tables, which
-    // is what makes the index usable again.
     let slot_returned = runs_until(500, || {
         thread::free_slots() >= resources_before.thread_slots
     });
 
-    // And its memory, once collected: asked directly, because waiting for
-    // idle in a busy self-test may wait for ever.
     let collected_directly = user::collect().is_some();
     let (pages_after, tables_after) = user::reclaimed();
     let gave_back = pages_after > pages_before && tables_after > tables_before;
     let collected = collected_directly || (gave_back && !user::has_zombies());
     let resources_after = spawn_resources();
     let owners_returned = resources_after.has_same_ownership(&resources_before);
-
-    // And nothing is left waiting: one program made one zombie, and it is
-    // collected.
     let drained = !user::has_zombies();
 
-    // Sixteen slots, forty programs: without reclamation every spawn after
-    // the sixteenth is refused, and the snapshot says the memory came back.
     let repetition_before = spawn_resources();
     let mut ran = 0;
     for _ in 0..40 {
@@ -1561,9 +1596,15 @@ pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
     slot_returned && collected && gave_back && owners_returned && drained && repeated && steady
 }
 
+// Runs before the stateful ring-3 group, and waits: the trap-context logging mutation must assert
+// before later state can hide the cause.
+// Every answer is written back, since a program given nothing cannot tell a call it made wrong
+// from one the kernel dropped; a clean exit shows the refusal returned to ring 3.
+// Whichever observer wins says the one warning; a second refusal still advances accounting but
+// must not re-arm UART output.
+// A process not yet orphaned is no zombie, so cleanup also waits for its live process records,
+// thread slot and allocated resources to return to the ownership baseline.
 pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
-    // Before the stateful ring-3 group, and waited for: the trap-context
-    // logging mutation must assert before later state can hide the cause.
     let isolated = runs_until(2_000, || {
         while user::collect().is_some() {}
         !user::has_zombies()
@@ -1590,17 +1631,10 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
             }
 
             let (refused_after, number, unanswered) = user::refusals();
-            // Exactly one refusal, of the number the program asked for.
             let counted = refused_after == refused_before + 1 && number == 0x0BAD_0BAD;
-            // Every answer was written back: a program that got nothing cannot tell a
-            // call it made wrong from one the kernel dropped.
             let answered = unanswered == 0;
-            // And it left by exiting, not by faulting — so the refusal really did
-            // return to ring 3 and the program ran on.
             let exited = trap::last_user_fault().count == faults_before;
 
-            // Whichever observer wins says the one warning. A second real refusal
-            // still advances accounting but must not re-arm UART output.
             let _first_observer_may_already_have_reported = user::report_refusals();
             let Ok(second) = user::run_probing() else {
                 return false;
@@ -1625,9 +1659,6 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
         if user::has_zombies() {
             return false;
         }
-        // A process that has not reached orphaning is not a zombie yet. The
-        // ownership baseline keeps every early exit waiting for its live
-        // process records, thread slot, and allocated resources to return.
         match resources_before {
             Some(before) => spawn_resources_are_restored(&before),
             None => true,
@@ -1637,14 +1668,14 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
     result && cleaned
 }
 
+// Release follows every successful spawn, even when the observations fail, so the witness cannot
+// strand the process it uses.
 fn a_gated_process_holds_spawn_ownership(before: &SpawnResources) -> bool {
     let Ok(spawned) = user::run_gated_for_wake() else {
         return false;
     };
     let waiting = runs_until(500, user::gated_cross_is_waiting);
     let live_owner_visible = waiting && !spawn_resources_are_restored(before);
-    // Release after every successful spawn, even when the observations above
-    // fail, so the witness cannot strand the process it uses.
     let released = user::release_gated_cross() == 1;
     let finished = last_rites_for(&spawned, 2_000).is_some();
 
@@ -1664,6 +1695,9 @@ pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::L
     user::last_rites_of(spawned.slot).filter(|rites| rites.table == table)
 }
 
+// The exit record is read, because the program's ring pages are reclaimed by now and the record
+// was taken at death; `served` is the kernel's own tally, which ring 3 cannot write.
+// A program disagreeing with its answer executes `ud2`, so a clean exit is its agreement.
 pub(super) fn a_program_drives_its_own_ring() -> bool {
     let faults_before = trap::last_user_fault().count;
 
@@ -1671,26 +1705,16 @@ pub(super) fn a_program_drives_its_own_ring() -> bool {
         return false;
     };
 
-    // Read from the exit record, not the program: its ring pages are already
-    // reclaimed, and the record was taken at death (D-117).
     let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
     let (served, submitted, completed) = (rites.served, rites.submitted, rites.completed);
 
-    // The kernel's own tally, which ring 3 cannot write.
     let one_served = served == 1;
-
-    // The program wrote a submission, and it is the one the ABI describes.
     let asked = submitted.opcode == queue::Opcode::Echo && submitted.token != 0;
-
-    // And the completion answers *that* submission.
     let answered = completed.token == submitted.token
         && completed.status == queue::STATUS_OK
         && completed.value == submitted.argument;
-
-    // It left by exit, not by fault: a program disagreeing with its answer
-    // executes `ud2`.
     let exited = trap::last_user_fault().count == faults_before;
 
     one_served && asked && answered && exited
@@ -1752,6 +1776,10 @@ pub(super) fn report_baseline() {
     );
 }
 
+// The program began with one handle, so the nonzero handle ring 3 supplied can only be the
+// bootstrap entry; the exit record proves both entries were installed before teardown.
+// Every emitted-program disagreement executes `ud2`, so a clean exit is independent evidence that
+// ring 3 accepted the same result.
 pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let faults_before = trap::last_user_fault().count;
 
@@ -1764,15 +1792,11 @@ pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let submitted = rites.submitted;
     let completed = rites.completed;
 
-    // It began with one handle, so the nonzero handle ring 3 supplied can only
-    // be the bootstrap entry. The requested right is exactly INSPECT.
     let asked = submitted.opcode == queue::Opcode::Duplicate
         && submitted.token != 0
         && submitted.handle != 0
         && submitted.argument == u64::from(Rights::INSPECT.bits());
 
-    // The completion carries a distinct, representable handle, and the exit
-    // record proves both entries were installed before teardown reclaimed them.
     let new_handle = u32::try_from(completed.value).ok();
     let answered = completed.token == submitted.token
         && completed.status == queue::STATUS_OK
@@ -1780,9 +1804,6 @@ pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let retained = rites.served == 1
         && rites.handles == 2
         && rites.bootstrap == Some(object::ObjectType::Channel);
-
-    // Every emitted-program disagreement executes `ud2`, so a clean exit is
-    // independent evidence that ring 3 accepted the same result.
     let exited = trap::last_user_fault().count == faults_before;
 
     asked && answered && retained && exited
@@ -1900,9 +1921,14 @@ fn finish_syscall_wake_check(
         && settled
 }
 
+// Its own program: every ring-3 check counts crossings, and an extra one would land on whichever
+// check looked next.
+// The birth record was captured while the slot was still Reserved, since observing after `spawn`
+// returns races this short program's exit.
+// The ring is in place at the shared address before its first instruction, read from the
+// kernel's record and never from the rewritable header.
+// It is waited for, because retiring during a later check would move the free-slot count under it.
 pub(super) fn a_spawned_program_holds_exactly_one_handle() -> bool {
-    // Its own program: every ring-3 check counts crossings, and an extra one
-    // would land on whichever check looked next.
     let Ok(spawned) = user::run_for_bootstrap() else {
         return false;
     };
@@ -1910,21 +1936,15 @@ pub(super) fn a_spawned_program_holds_exactly_one_handle() -> bool {
         return false;
     };
 
-    // Captured while the slot was still Reserved: observing after `spawn`
-    // returns races this short program's exit (D-217).
     let exactly_one = birth.handles == 1;
     let a_channel = birth.bootstrap == object::ObjectType::Channel;
 
-    // And a ring at the shared address, in place before its first
-    // instruction (D-113); the kernel's record, not the rewritable header (D-115).
     let (version, submissions, completions) = birth.ring;
     let has_a_ring = version == ring_proto::VERSION
         && submissions > 0
         && completions >= submissions.saturating_mul(2);
     let mapped = birth.ring_flags.contains(Flags::USER);
 
-    // Leaves with one handle, and is waited for: retiring during a later
-    // check would move the free-slot count under it (D-117).
     let died_with_one = last_rites_for(&spawned, 2_000).is_some_and(|rites| {
         rites.handles == 1 && rites.bootstrap == Some(object::ObjectType::Channel)
     });
@@ -1932,14 +1952,13 @@ pub(super) fn a_spawned_program_holds_exactly_one_handle() -> bool {
     exactly_one && a_channel && has_a_ring && mapped && died_with_one
 }
 
+// Universal rights mean the same for every object.
 pub(super) fn a_meaningless_right_is_refused() -> bool {
     let table = handle_table_or_false!(4);
     let channel = object::bootstrap_identity();
 
     let refused = table.insert(channel.clone(), Rights::READ) == Err(HandleError::Meaningless);
     let also_refused = table.insert(channel.clone(), Rights::ALL) == Err(HandleError::Meaningless);
-
-    // Universal rights mean the same for every object.
     let allowed = table.insert(channel.clone(), Rights::UNIVERSAL).is_ok();
     let nothing_is_allowed = table.insert(channel, Rights::NONE).is_ok();
 
