@@ -39,8 +39,11 @@ registered terminal cause.
 **Consequences.** Two regression fixtures build against a mutated dependency
 and require every artifact that consumed it to be absent after the restore,
 one cross-building `wizard-kernel` against no-std `wost` and one inlining a
-`libs/` crate beneath both `wost` and a host consumer. Mutations 284 through
-287 keep them red for each missing reverse consumer. The interrupted 283-entry
+`libs/` crate beneath both `wost` and a host consumer, which requires all five
+artifacts to go. Mutations 284 through 287 retain four defects: disabling
+reverse-consumer invalidation, cleaning the host target instead of the cross
+target, stopping the target chain at `wizard-kernel`, and naming only the
+restored library on the host. The interrupted 283-entry
 run is diagnostic only.
 
 **Superseded by D-237 (2026-08-29).** The reverse consumers named here are

@@ -3,8 +3,8 @@
 Status: Accepted, 2026-08-29. Closes PW-511.
 
 **Amended by D-384.** The bands below are the original reviewed values; D-384
-replaces the footprint, free-frame, live-allocation and upper timing values and
-keeps the rest.
+replaces the footprint, free-frame, live-allocation and upper boot-time bounds
+and keeps the rest.
 
 **Decision.** `cargo xtask baseline` is a bounded qualification task over the
 pinned QEMU machine, not a CI stage and not a benchmark of hardware. It builds
@@ -35,14 +35,15 @@ buffer is a correctness failure before it is a performance sample. The host
 parser refuses duplicate records, missing or reordered fields, unknown
 versions, arithmetic overflow and a baseline attached to anything but a clean
 verdict. Pure tick conversion and band/variance evaluation stay in `xtask`,
-where host tests cover their boundaries.
+where host tests cover their boundaries. Each new check gets its deliberate
+red witness and persistent mutation.
 
-The reviewed release bands are 6.4 to 7.1 MB ELF, 3.5 to 9 ms boot, 114,800
+The reviewed release bands were 6.4 to 7.1 MB ELF, 3.5 to 9 ms boot, 114,800
 to 115,000 free frames, 16 to 24 slab / 990 to 1,010 large / exactly 4 live
 heap allocations, empty handles, 10 to 100 microseconds at the ring boundary
-and 10 to 100 MiB/s storage. Debug uses 8.2 to 9.1 MB, 20 to 45 ms, 114,150
+and 10 to 100 MiB/s storage. Debug used 8.2 to 9.1 MB, 20 to 45 ms, 114,150
 to 114,400 frames, 14 to 24 / 990 to 1,010 / exactly 4 heap state, empty
-handles, 50 to 400 microseconds and 3 to 20 MiB/s. Both require a 3 to 4 GHz
+handles, 50 to 400 microseconds and 3 to 20 MiB/s. Both required a 3 to 4 GHz
 calibrated counter, the exact 64 MiB image, exact 4 KiB read and the existing
 exact unsafe count. No threshold is a compatibility promise, and a threshold
 change is a reviewed measurement update rather than an ABI decision.

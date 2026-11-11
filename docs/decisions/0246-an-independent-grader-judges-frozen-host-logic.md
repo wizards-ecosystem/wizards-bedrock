@@ -34,7 +34,8 @@ not yet carry.
 
 Equivalent mutants, by argument: `|` replaced by `^` between operands that
 occupy disjoint bit positions, including where `^` binds tighter and joins two
-disjoint constants the constructors keep disjoint; `>` replaced by `>=` where
+disjoint constants (descriptor, control-word, rights, flag, slot, command and
+address fields whose disjointness the constructors enforce); `>` replaced by `>=` where
 both branches yield the clamp value at equality; `1 << 0` replaced by
 `1 >> 0`; comparisons whose extra case feeds a `max` that already holds the
 value or is refused by the following guard (`covered_by`, `first_fit_by`,
