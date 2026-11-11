@@ -2,11 +2,11 @@
 
 Status: Accepted, 2026-08-22.
 
-**Decision.** The policy is `libs/eevdf`, pure functions over plain data.
-Virtual time wraps and compares by signed difference; charging is scaled by
-weight; a weighted average is the fair-share point. Eligibility is
-non-negative lag, the pick is the earliest eligible deadline, and placement
-clamps lag to one slice either way.
+**Decision.** The policy is `libs/eevdf`, pure functions over plain data, on
+D-30's pattern. Virtual time wraps and compares by signed difference;
+charging is scaled by weight; a weighted average is the fair-share point.
+Eligibility is non-negative lag, the pick is the earliest eligible deadline,
+and placement clamps lag to one slice either way.
 
 The kernel's `thread.rs` is the mechanism side: it keeps an `Entity` per
 thread, feeds the runnable ones to the policy, and acts on the answer.
