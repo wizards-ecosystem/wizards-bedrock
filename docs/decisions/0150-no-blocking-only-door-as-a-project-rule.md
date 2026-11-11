@@ -12,7 +12,9 @@ The carve-out that makes it liveable already exists and is not an exception:
 D-166 later removed the clock door in favour of a page load. The rule is about
 waiting, not about syscalls.
 
-**Rationale.** A phase rule gets re-argued: the first person to want a
+**Rationale.** A project rule is stronger and forecloses a synchronous door
+somebody may later want for an operation that only *looks* blocking; that cost
+is accepted, because a phase rule gets re-argued: the first person to want a
 synchronous `stat` will have a good local argument, and granting it costs the
 property that makes the ring worth having. D-117 caps this machine at sixteen
 concurrent programs, so thread-per-outstanding-operation is already wrong here;

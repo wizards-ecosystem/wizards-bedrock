@@ -40,7 +40,7 @@ Left owed: an `AddressSpace` still has no `Drop`. The intended path is
 `reclaim`, which D-117 added and the zombie collector calls, so a *retired
 program's* space is given back. A space built and **abandoned** without that
 call still costs its table frames, as does a half-loaded program's memory. This
-is bounded today and named here rather than carried quietly; D-44's accounting
+is bounded today (three programs and a handful of refusals per boot) and named here rather than carried quietly; D-44's accounting
 is where it is settled.
 ~~Nothing yet unmaps a retired thread's space~~ (**closed by D-117**), and
 `APART` still separates two programs' addresses where it no longer needs to.

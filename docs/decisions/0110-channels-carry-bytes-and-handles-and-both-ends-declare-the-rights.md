@@ -41,9 +41,10 @@ is no `send_with_all_rights`.
 D-151 amended the provenance clause when completions became a handle-producing
 path.
 
-**Rationale.** `002` named `Channel` as the IPC primitive, and Pillar 1 says a
-process receives every handle after its bootstrap one through a channel, so
-the move and both declarations are where authority crosses.
+**Rationale.** `002` named `Channel` as the IPC primitive, and Pillar 1 then
+said a process received one bootstrap handle and every later handle through a
+channel, so the move and both declarations were where authority crossed.
+D-151 later amended that provenance clause.
 
 **Consequences.** `wait_for_message` waits with the message already queued, so
 a registration that does not re-read blocks for good and the check fails as an

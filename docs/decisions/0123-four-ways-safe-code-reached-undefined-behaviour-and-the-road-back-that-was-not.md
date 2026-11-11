@@ -20,7 +20,8 @@ D-122's critical one:
   **borrows** rather than consumes, because a refusal that consumed the thing
   it declined to act on leaks the tables it was protecting. On success the
   space is *emptied*: `is_reclaimed` is true and `may_reach` refuses.
-  `address_space_of` reports only a **live** slot's tables.
+  `address_space_of` reports only a **live** slot's tables, because a dead
+  slot's are nobody's.
 - **`cpu::enable_extended_state` is `pub(super)`**: D-115's ordering argument is
   about one call site, and a public door made it an argument about nothing.
 - **`unmap` is not a second road out of untyped memory.** It checked `OWNED`

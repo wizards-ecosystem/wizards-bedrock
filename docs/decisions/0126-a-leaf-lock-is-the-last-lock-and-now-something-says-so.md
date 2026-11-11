@@ -2,7 +2,10 @@
 
 Status: Accepted, 2026-08-24.
 
-**Decision.** D-121's rule is enforced at run time. `LEAVES_HELD` is
+**Decision.** D-121 wrote down the closure-form ban, because a leaf guard's
+whole obligation is that **nothing is called while it is live**; it is not
+mechanically enforced. This counter detects the other direction of that
+obligation, a lock taken under a leaf, at run time. `LEAVES_HELD` is
 incremented only by `lock_leaf` and `lock_from_trap`, and any acquisition made
 while it is non-zero records `Location::caller()` for **both ends**: the lock
 being taken, and the outermost leaf that was held. A boot-time check, `no lock
@@ -13,7 +16,7 @@ recently, held or not.
 The obligation is asymmetric. A leaf taken *under* a token-bearing lock is the
 design: it is the only acquisition a `Drop` can perform, since `drop` takes no
 arguments and a freed `Frame` must reach the allocator from wherever it dies.
-Only an acquisition under a leaf is the violation.
+It is the other direction, a lock taken under a leaf, that this check reports.
 
 D-121's left-owed lint was to wait for a fourth offender; there were four
 already. Each is fixed by D-121's move, copying out what the caller needs and
