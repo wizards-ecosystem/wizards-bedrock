@@ -78,9 +78,7 @@ impl Debugger {
             }
         }
 
-        bail!(
-            "the pinned native GDB is unavailable; install it with `winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact`, open a fresh terminal, or set GDB"
-        )
+        bail!("{}", missing_debugger())
     }
 
     fn at(executable: PathBuf) -> Result<Self> {
@@ -147,6 +145,14 @@ impl Debugger {
         println!("[xtask] debugger proof passed");
         Ok(())
     }
+}
+
+fn missing_debugger() -> String {
+    format!(
+        "the pinned native GDB is unavailable; expected `{GDB_IDENTITY}`. \
+         Install it with `winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact`, \
+         open a fresh terminal, or set GDB to that executable. Another gdb is refused even when it is on PATH"
+    )
 }
 
 fn require_identity(stdout: &str) -> Result<&str> {
@@ -279,6 +285,18 @@ fn require_proof(transcript: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_debugger_names_the_pinned_identity_and_the_install() {
+        let message = missing_debugger();
+        assert!(message.contains(GDB_IDENTITY), "{message}");
+        assert!(
+            message.contains("BrechtSanders.WinLibs.POSIX.UCRT"),
+            "{message}"
+        );
+        assert!(message.contains("set GDB"), "{message}");
+        assert!(message.contains("Another gdb is refused"), "{message}");
+    }
 
     #[test]
     fn only_the_reviewed_native_gdb_identity_is_accepted() {

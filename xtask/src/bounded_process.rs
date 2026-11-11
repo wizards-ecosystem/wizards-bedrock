@@ -1586,6 +1586,9 @@ mod tests {
         }
     }
 
+    /// Windows process trees keep a lock open across `output`. These helpers
+    /// exist for that witness; on other hosts the tests are not compiled.
+    #[cfg(windows)]
     fn parked_family(label: &str, lingers: bool) -> (PathBuf, PathBuf, Command) {
         let root = crate::test_support::reserve_temp_directory(&format!("wizard-parked-{label}"));
         let lock = root.join("parked.lock");
@@ -1604,6 +1607,7 @@ mod tests {
     }
 
     /// The lock goes away only once no process holds it open.
+    #[cfg(windows)]
     fn released(lock: &std::path::Path) -> bool {
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {

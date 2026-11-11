@@ -116,6 +116,7 @@ pub struct SpinLock<T> {
 /// the operation that creates [`Self::Forgotten`].
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SpinLockWitness {
     /// No guard owns the lock.
     Free,

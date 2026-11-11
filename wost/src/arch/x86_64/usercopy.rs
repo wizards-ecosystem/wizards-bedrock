@@ -105,7 +105,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
+    interrupt::resume_usercopy(frame, &RecoveryTarget::fixup())
 }
 
 /// The instruction range a user copy can fault inside.

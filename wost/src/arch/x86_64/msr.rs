@@ -40,14 +40,15 @@ pub(super) fn read(msr: u32) -> u64 {
 /// controller lives, and there is no bit pattern the processor rejects on the
 /// grounds of being unwise.
 pub(super) unsafe fn write(msr: u32, value: u64) {
+    let (low, high) = crate::u32_halves(value);
     // SAFETY: `wrmsr` writes the register named in `ecx`, which is the operation
     // the caller has just taken responsibility for.
     unsafe {
         asm!(
             "wrmsr",
             in("ecx") msr,
-            in("eax") value as u32,
-            in("edx") (value >> 32) as u32,
+            in("eax") low,
+            in("edx") high,
             options(nomem, nostack, preserves_flags),
         );
     }

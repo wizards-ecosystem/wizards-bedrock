@@ -130,7 +130,7 @@ pub fn halt_forever() -> ! {
 /// Without this CPUID guarantee, throttling and deep idle may change or stop
 /// the count, making it a performance counter rather than a clock.
 pub fn has_invariant_tsc() -> bool {
-    /// `cpuid` leaf 0x8000_0007, `EDX` bit 8.
+    /// `cpuid` leaf `0x8000_0007`, `EDX` bit 8.
     const INVARIANT: u32 = 1 << 8;
 
     max_leaf(0x8000_0000) >= 0x8000_0007 && cpuid(0x8000_0007, 0).edx & INVARIANT != 0
@@ -222,6 +222,10 @@ pub fn faulting_address() -> u64 {
 /// Each is independent, and each may be absent on an older CPU or a virtual
 /// machine that does not expose it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "kernel/src/user.rs and selftest.rs read these fields by name"
+)]
 pub struct Protections {
     /// Supervisor writes honour read-only page-table entries.
     pub write_protect: bool,
@@ -426,7 +430,7 @@ pub fn recover_write_protection_probe(
     if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    interrupt::resume_write_protection(frame, WriteProtectionRecoveryTarget::fixup())
+    interrupt::resume_write_protection(frame, &WriteProtectionRecoveryTarget::fixup())
 }
 
 fn enable_write_protection() {
@@ -570,7 +574,7 @@ pub fn shared_kernel_mapping_reason(
 ///
 /// PCI requesters can rewrite guest RAM but cannot forge the architectural
 /// hypervisor leaf. ACPI handoff bytes therefore have authority only on the
-/// exact QEMU TCG and VMware release environments recognized by `x86-cpuid`.
+/// exact QEMU TCG and `VMware` release environments recognized by `x86-cpuid`.
 pub fn dma_handoff_platform() -> Option<DmaHandoffPlatform> {
     execution_environment().dma_handoff_platform()
 }
@@ -599,7 +603,7 @@ struct CpuidResult {
 
 /// The highest sub-leaf `cpuid` will answer for `leaf`'s family.
 ///
-/// Both this and [`cpuid`] are safe calls: `cpuid` is architectural on x86_64,
+/// Both this and [`cpuid`] are safe calls: `cpuid` is architectural on `x86_64`,
 /// so `core` exposes it without an obligation. A leaf the CPU does not
 /// implement answers with the highest one it does, which is why the callers
 /// check the range first rather than trusting the answer.

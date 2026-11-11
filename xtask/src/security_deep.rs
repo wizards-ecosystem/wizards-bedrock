@@ -99,6 +99,10 @@ const PRIVATE_DESCENDANT_PROBE_ARGUMENT: &str =
 const PRIVATE_CREDENTIAL_DENIED_EXIT: i32 = 73;
 const PRIVATE_CREDENTIAL_READABLE_EXIT: i32 = 74;
 const PRIVATE_CREDENTIAL_ERROR_EXIT: i32 = 75;
+/// `FILE_READ_DATA` for the Windows credential probe. Absent from a non-test
+/// Linux build: the open that consumes it is Windows-only, and the constant
+/// would otherwise be dead there.
+#[cfg(any(windows, test))]
 const FILE_READ_DATA_ACCESS: u32 = 0x0000_0001;
 const WORKER_ALLOWED_CANARY_NAME: &str = "worker-allowed-read-canary";
 const WORKER_DENIED_CANARY_NAME: &str = "worker-denied-read-canary";

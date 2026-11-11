@@ -450,7 +450,7 @@ pub(super) fn entry_stacks_are_guarded_and_scrubbed() -> bool {
     };
     let guards_absent = enclave.guards().into_iter().all(|guard| {
         (guard.start..guard.end)
-            .step_by(PAGE_BYTES as usize)
+            .step_by(crate::usize_from_u64(PAGE_BYTES))
             .all(|address| super::paging::translate(address).is_none())
     });
     if !guards_absent || !segment::enclave_ist_stack_is_zeroed_for_test() {
