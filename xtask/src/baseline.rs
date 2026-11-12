@@ -1,7 +1,5 @@
-//! Repeating the fixed-QEMU foundation baseline.
-//!
-//! These bands catch large regressions on the development machine. They are
-//! deliberately not hardware-performance claims or ABI promises (D-230).
+//! Bands that catch large regressions on the development machine; they are not
+//! hardware-performance claims or ABI promises.
 
 use std::fs;
 use std::time::Duration;

@@ -411,8 +411,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1320,
         file: "xtask/src/paths.rs",
-        find: "    !is_symlink && !is_reparse_point && (is_dir || is_file)",
-        replace: "    is_dir || is_file",
+        find: "    matches!(kind, EntryKind::Directory | EntryKind::File) && !is_reparse_point",
+        replace: "    matches!(kind, EntryKind::Directory | EntryKind::File | EntryKind::Symlink)",
         breaks: "a redirected entry enters a repository proof walk",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -422,8 +422,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1321,
         file: "xtask/src/paths.rs",
-        find: "    !is_symlink && !is_reparse_point && (is_dir || is_file)",
-        replace: "    !is_symlink && !is_reparse_point",
+        find: "    matches!(kind, EntryKind::Directory | EntryKind::File) && !is_reparse_point",
+        replace: "    !matches!(kind, EntryKind::Symlink) && !is_reparse_point",
         breaks: "a special entry enters a repository proof walk",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -501,8 +501,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1450,
         file: "xtask/src/cli.rs",
-        find: "    ) && (run || begin || verify.is_some())",
-        replace: "    ) && (run && begin && verify.is_some())",
+        find: "        && (options.run || options.begin || options.verify.is_some())",
+        replace: "        && (options.run && options.begin && options.verify.is_some())",
         breaks: "external qualification options leak onto other tasks",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -809,8 +809,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2415,
         file: "xtask/src/cli.rs",
-        find: "    if profile_option\n",
-        replace: "    if false && profile_option\n",
+        find: "    if options.profile_option\n",
+        replace: "    if false && options.profile_option\n",
         breaks: "a profile option reaches a task that discards it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -820,8 +820,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2416,
         file: "xtask/src/cli.rs",
-        find: "                profile = Profile::Release;\n                profile_option = true;",
-        replace: "                profile = Profile::Release;\n                profile_option = false;",
+        find: "                options.profile = Profile::Release;\n                options.profile_option = true;",
+        replace: "                options.profile = Profile::Release;\n                options.profile_option = false;",
         breaks: "an explicit release profile disappears before task validation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -831,8 +831,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2417,
         file: "xtask/src/cli.rs",
-        find: "                profile = Profile::Dev;\n                profile_option = true;",
-        replace: "                profile = Profile::Dev;\n                profile_option = false;",
+        find: "                options.profile = Profile::Dev;\n                options.profile_option = true;",
+        replace: "                options.profile = Profile::Dev;\n                options.profile_option = false;",
         breaks: "an explicit debug profile disappears before task validation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -842,8 +842,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2418,
         file: "xtask/src/cli.rs",
-        find: "    if check && !matches!(name.as_str(), \"fmt\" | \"debug\") {",
-        replace: "    if false && check && !matches!(name.as_str(), \"fmt\" | \"debug\") {",
+        find: "    if options.check && !matches!(name, \"fmt\" | \"debug\") {",
+        replace: "    if false && options.check && !matches!(name, \"fmt\" | \"debug\") {",
         breaks: "a check option silently dispatches cleanup or another unrelated task",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -853,8 +853,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2419,
         file: "xtask/src/cli.rs",
-        find: "    if all && name != \"clean\" {",
-        replace: "    if false && all && name != \"clean\" {",
+        find: "    if options.all && name != \"clean\" {",
+        replace: "    if false && options.all && name != \"clean\" {",
         breaks: "an all option reaches a task that cannot consume it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -864,8 +864,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2420,
         file: "xtask/src/cli.rs",
-        find: "    if shipped && !matches!(name.as_str(), \"vmware\" | \"qualify-vmware\") {",
-        replace: "    if false && shipped && !matches!(name.as_str(), \"vmware\" | \"qualify-vmware\") {",
+        find: "    if options.shipped && !matches!(name, \"vmware\" | \"qualify-vmware\") {",
+        replace: "    if false && options.shipped && !matches!(name, \"vmware\" | \"qualify-vmware\") {",
         breaks: "a shipped selector reaches a non-VMware task",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -875,8 +875,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2421,
         file: "xtask/src/cli.rs",
-        find: "    if message_format.is_some() && name != \"check\" {",
-        replace: "    if false && message_format.is_some() && name != \"check\" {",
+        find: "    if options.message_format.is_some() && name != \"check\" {",
+        replace: "    if false && options.message_format.is_some() && name != \"check\" {",
         breaks: "a message format reaches a task that discards it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -886,8 +886,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2422,
         file: "xtask/src/cli.rs",
-        find: "    if passthrough_option && name != \"run\" {",
-        replace: "    if false && passthrough_option && name != \"run\" {",
+        find: "    if options.passthrough_option && name != \"run\" {",
+        replace: "    if false && options.passthrough_option && name != \"run\" {",
         breaks: "passthrough arguments silently dispatch a task other than run",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -897,8 +897,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2423,
         file: "xtask/src/cli.rs",
-        find: "    if passthrough_option && name != \"run\" {",
-        replace: "    if !passthrough.is_empty() && name != \"run\" {",
+        find: "    if options.passthrough_option && name != \"run\" {",
+        replace: "    if !options.passthrough.is_empty() && name != \"run\" {",
         breaks: "an empty passthrough separator evades task validation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -908,8 +908,8 @@ pub(super) const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 2424,
         file: "xtask/src/cli.rs",
-        find: "    if message_format.is_some() && name != \"check\" {",
-        replace: "    if message_format.as_ref().is_some_and(|value| !value.is_empty()) && name != \"check\" {",
+        find: "    if options.message_format.is_some() && name != \"check\" {",
+        replace: "    if options.message_format.as_ref().is_some_and(|value| !value.is_empty()) && name != \"check\" {",
         breaks: "an empty message format evades task validation",
         reddens: Caught::HostTest {
             package: "xtask",

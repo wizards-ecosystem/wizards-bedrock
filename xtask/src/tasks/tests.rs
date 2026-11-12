@@ -103,8 +103,6 @@ fn nothing_follows_a_bare_double_dash() {
     assert!(!args.contains(&"--".to_string()));
 }
 
-/// `cargo doc` rejects `--all-targets` rather than ignoring it, so the
-/// scope has to be part of the call and not inferred from the graph.
 #[test]
 fn a_default_scope_asks_for_no_extra_targets() {
     let args = pass_args("doc", pass(None, None), Scope::Default, &[], &[]);
@@ -112,8 +110,7 @@ fn a_default_scope_asks_for_no_extra_targets() {
     assert_eq!(args, ["doc", "--package", "pixel"]);
 }
 
-/// Both shipped and self-test feature graphs must be linted because one
-/// graph can hide dead code in the other.
+// One feature graph can hide dead code in the other, so both are linted.
 #[test]
 fn the_gate_covers_every_kernel_feature_graph_it_boots() {
     let kernel: Vec<Option<&str>> = gate::REGISTRY
@@ -144,8 +141,7 @@ fn the_gate_covers_the_host_packages_exactly_once() {
     assert_eq!(host, 1);
 }
 
-/// Every pass has to be distinguishable in the log, or a failure in one
-/// configuration reads as a failure in the other.
+// A pass must be distinguishable in the log, or one configuration's failure reads as another's.
 #[test]
 fn every_pass_is_labelled_distinctly() {
     let labels: Vec<String> = gate::REGISTRY
@@ -163,9 +159,7 @@ fn every_pass_is_labelled_distinctly() {
     }
 }
 
-/// Kernel passes are cross-compiled and host passes are not — the property
-/// that stops a kernel crate being checked for the host triple, which is
-/// what produces phantom errors across every kernel file.
+// A kernel crate checked for the host triple produces phantom errors across every kernel file.
 #[test]
 fn only_the_host_pass_builds_for_the_host() {
     for pass in gate::REGISTRY.cargo_passes() {

@@ -1,14 +1,11 @@
-//! Where everything lives.
-//!
-//! Every path the build touches is derived here from a handful of constants, so
-//! renaming a package or switching profile is a one-line change rather than a
-//! hunt for string literals.
+//! Where everything lives: every path the build touches derives from the constants here.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
+use crate::files::is_reparse_point;
 
 fn collect_directory_entries<T>(
     entries: impl Iterator<Item = std::io::Result<T>>,
@@ -20,36 +17,37 @@ fn collect_classified_entries<T>(entries: impl Iterator<Item = Result<T>>) -> Re
     entries.collect()
 }
 
-const fn repository_entry_is_supported(
-    is_symlink: bool,
-    is_reparse_point: bool,
-    is_dir: bool,
-    is_file: bool,
-) -> bool {
-    !is_symlink && !is_reparse_point && (is_dir || is_file)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EntryKind {
+    Symlink,
+    Directory,
+    File,
+    Other,
+}
+
+impl EntryKind {
+    fn of(file_type: std::fs::FileType) -> Self {
+        if file_type.is_symlink() {
+            Self::Symlink
+        } else if file_type.is_dir() {
+            Self::Directory
+        } else if file_type.is_file() {
+            Self::File
+        } else {
+            Self::Other
+        }
+    }
+}
+
+const fn repository_entry_is_supported(kind: EntryKind, is_reparse_point: bool) -> bool {
+    matches!(kind, EntryKind::Directory | EntryKind::File) && !is_reparse_point
 }
 
 fn metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
-    let file_type = metadata.file_type();
     repository_entry_is_supported(
-        file_type.is_symlink(),
+        EntryKind::of(metadata.file_type()),
         is_reparse_point(metadata),
-        file_type.is_dir(),
-        file_type.is_file(),
     )
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 /// One repository entry with its fallible file type already resolved.
@@ -106,9 +104,7 @@ pub const KERNEL_PACKAGE: &str = "wizard-kernel";
 /// Packages that only ever build for the kernel target.
 pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 
-/// Packages that build and run their tests on the host. `libs/` crates are
-/// `no_std` but compile for the host under `cfg(test)`, which is the whole
-/// point of putting pure logic there.
+/// Packages that build and test on the host; `libs/` crates are `no_std` but compile for it.
 pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
@@ -141,31 +137,27 @@ pub const HOST_PACKAGES: &[&str] = &[
     "xtask",
 ];
 
-/// The `default-members` entries of a workspace manifest, as package names.
+/// The `default-members` entries of a workspace manifest, as package names (the last path segment).
 ///
-/// This list exists twice — here as [`HOST_PACKAGES`], and in the root
-/// manifest, where it scopes bare cargo commands to the half that builds for
-/// the host. Two copies of a list is two chances to add a crate to one of
-/// them, which is exactly what happened to `port-space`: the gate silently
-/// stopped covering it. A test below reads the real manifest through this
-/// function and requires the two to agree.
-///
-/// Hand-rolled rather than a TOML dependency, on the `sha256.rs` precedent —
-/// one array, one call site. Entries are directory paths and the package name
-/// is the last segment, a convention the same test enforces by comparing.
+/// The list exists twice, here as [`HOST_PACKAGES`] and in the manifest, so a test requires the
+/// two to agree. Hand-rolled rather than a TOML dependency: one array, one call site.
 pub fn default_members(manifest: &str) -> Vec<String> {
     manifest
         .split_once("default-members = [")
         .and_then(|(_, rest)| rest.split_once(']'))
         .map(|(list, _)| {
             list.lines()
-                .map(|line| line.split('#').next().unwrap_or(line))
+                .map(without_toml_comment)
                 .filter_map(|line| line.split('"').nth(1))
                 .filter_map(|path| path.rsplit('/').next())
                 .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn without_toml_comment(line: &str) -> &str {
+    line.split_once('#').map_or(line, |(code, _)| code)
 }
 
 /// Triple the kernel is cross-compiled for.
@@ -176,8 +168,7 @@ pub const SELFTEST_FEATURE: &str = "selftest";
 
 /// The same feature spelled the way a workspace-scoped `--features` wants it.
 ///
-/// Written out rather than formatted, because a `const` cannot be — so a test
-/// below asserts it against the two constants it is made of.
+/// Written out because a `const` cannot be formatted; a test asserts it against its two parts.
 pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
 /// Cargo feature which makes the production PCI configuration claim refuse.
@@ -205,7 +196,7 @@ pub const DISK_MIB: u64 = 64;
 /// Bytes per logical sector.
 pub const SECTOR_SIZE: u64 = 512;
 
-/// First partition begins 1 MiB in — the conventional alignment.
+/// First partition begins 1 MiB in, the conventional alignment.
 pub const PART_START_LBA: u64 = 2048;
 
 /// FAT volume label: exactly eleven bytes, space padded.
@@ -219,8 +210,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Derive every path from an explicit root, touching no environment, so
-    /// tests can drive it.
+    /// Derive every path from an explicit root, touching no environment, so tests can drive it.
     pub fn new(root: PathBuf, target_dir_override: Option<&Path>) -> Self {
         let target_dir = match target_dir_override {
             Some(dir) if dir.is_absolute() => dir.to_path_buf(),
@@ -232,9 +222,8 @@ impl Paths {
 
     /// Locate the workspace from cargo's environment.
     ///
-    /// `build.target-dir` in a cargo config is deliberately not honoured —
-    /// reading it would mean parsing `cargo metadata`. Set `CARGO_TARGET_DIR`
-    /// instead; see `docs/005-code-conventions.md`.
+    /// `build.target-dir` in a cargo config is not honoured: reading it would mean parsing
+    /// `cargo metadata`. Set `CARGO_TARGET_DIR` instead (`docs/005-code-conventions.md`).
     pub fn discover() -> Result<Self> {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir

@@ -1,22 +1,20 @@
-# WARNING: never set the RUSTFLAGS environment variable when building this repo.
-# It *replaces* the [target.x86_64-unknown-none] rustflags below, so the kernel
-# links without code-model=kernel — a broken higher-half image with no build
-# error. Pass lint flags after `--`: cargo kclippy -- -D warnings
+# WARNING: never set RUSTFLAGS when building this repo. It replaces the
+# [target.x86_64-unknown-none] rustflags below, so the kernel links without code-model=kernel
+# and the higher-half image is broken with no build error. Pass lint flags after `--`:
+# cargo kclippy -- -D warnings
 
 [alias]
 xtask = "run --profile xtask --package xtask --"
 
-# The cross-compiled half of the workspace. Bare `cargo check`/`clippy`/`test`
-# cover the host half via `default-members` in Cargo.toml. No --all-targets here:
-# the kernel crates have no host test or bench targets and never will.
+# The cross-compiled half; bare `cargo check`/`clippy`/`test` cover the host half through
+# `default-members` in Cargo.toml. No --all-targets: the kernel crates have no test targets.
 kcheck = "check --package wost --package wizard-kernel --target x86_64-unknown-none"
 kclippy = "clippy --package wost --package wizard-kernel --target x86_64-unknown-none"
 kbuild = "build --package wizard-kernel --target x86_64-unknown-none --release"
 
 [target.x86_64-unknown-none]
 rustflags = [
-    # Higher-half kernel at 0xffffffff80000000 needs the kernel code model
-    # and no position-independent relocations.
+    # The higher-half kernel at 0xffffffff80000000 needs the kernel code model, no PIC relocations.
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",
 ]

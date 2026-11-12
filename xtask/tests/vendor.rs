@@ -1,5 +1,4 @@
-//! Tampering with a vendored binary must fail `cargo test`, not just
-//! `cargo xtask verify-vendor`.
+//! Tampering with a vendored binary must fail `cargo test`, not just `cargo xtask verify-vendor`.
 
 use std::path::PathBuf;
 

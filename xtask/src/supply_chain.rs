@@ -647,7 +647,7 @@ fn manifest_array<'manifest>(manifest: &'manifest str, key: &str) -> Result<Vec<
         .with_context(|| format!("workspace manifest has no `{key}` array"))?;
     Ok(body
         .lines()
-        .map(|line| line.split('#').next().unwrap_or(line))
+        .map(crate::paths::without_toml_comment)
         .filter_map(|line| line.split('"').nth(1))
         .collect())
 }
