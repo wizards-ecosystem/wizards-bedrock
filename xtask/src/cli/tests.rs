@@ -143,6 +143,10 @@ fn a_mistyped_task_or_run_option_says_what_was_meant() {
         error(&["run", "-display"]),
         "unknown option `-display`; pass QEMU arguments after `--`"
     );
+    assert_eq!(
+        error(&["run", "--relase"]),
+        "unknown option `--relase`; pass QEMU arguments after `--`"
+    );
     assert_eq!(error(&["build", "-display"]), "unknown option `-display`");
 }
 

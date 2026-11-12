@@ -1061,4 +1061,15 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "cli::tests::a_name_too_short_or_too_far_from_every_task_suggests_nothing",
         },
     },
+    Mutation {
+        id: 2482,
+        file: "xtask/src/cli.rs",
+        find: "                } else if name == \"run\" {",
+        replace: "                } else if name == \"run\" && !flag.starts_with(\"--\") {",
+        breaks: "a mistyped long option given to run is refused without the QEMU argument hint",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::a_mistyped_task_or_run_option_says_what_was_meant",
+        },
+    },
 ];
