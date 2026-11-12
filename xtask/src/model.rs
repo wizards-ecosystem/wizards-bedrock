@@ -1,9 +1,4 @@
-//! TLC qualification for the queue protocol models.
-//!
-//! `Ring.tla` checks anonymous admission; `RingMemory.tla` checks weak-memory
-//! publication through normal, cancelled and retired operations (D-79, D-221,
-//! D-229). The task remains outside `ci` because its JVM cannot be vendored;
-//! phase-close qualification records the external execution instead.
+//! TLC qualification of the queue protocol models; outside `ci` because its JVM cannot be vendored.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -18,13 +13,9 @@ use crate::sha256;
 /// The pinned TLA+ tools jar, relative to the workspace root.
 pub const JAR: &str = "tools/tla/tla2tools.jar";
 
-/// Its SHA-256, pinned the way `boot/limine`'s binaries are (D-25).
-///
-/// TLC is a tool that decides whether a design is correct, so a silently
-/// swapped one is a silently swapped answer.
+/// Its SHA-256, pinned like `boot/limine`'s binaries: a silently swapped TLC is a swapped answer.
 pub const JAR_DIGEST: &str = "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a";
 
-/// The model directory, relative to the workspace root.
 const MODEL_DIR: &str = "models";
 const TRANSCRIPT_FORMAT: &str = "wizard-model-transcript-v1";
 
@@ -114,7 +105,6 @@ const RUNS: &[Run] = &[
     },
 ];
 
-/// What TLC prints when every invariant held in every reachable state.
 const CLEAN: &str = "Model checking completed. No error has been found.";
 const BEHAVIOR: &str = "Error: The behavior up to this point is:";
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -142,12 +132,6 @@ impl RunTranscript {
 }
 
 /// Check both models and require every deliberate mutation to fail exactly.
-///
-/// # Errors
-///
-/// If the jar is missing or its digest has changed, if `java` cannot be run,
-/// or if TLC reports anything other than the expected clean or exact-mutant
-/// verdict.
 pub fn check(paths: &Paths) -> Result<()> {
     let qualification_attempt = qualification::begin_model(paths)?;
     let jar = paths.root().join(JAR);
@@ -490,58 +474,9 @@ fn classify(stdout: &str, stderr: &str) -> Result<Verdict> {
         "TLC reported an unrelated error beside its verdict"
     );
 
-    let finished: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            (line.starts_with("Finished in ") && line.contains(" at (") && line.ends_with(')'))
-                .then_some(index)
-        })
-        .collect();
-    ensure!(
-        finished.len() == 1 && finished[0] + 1 == lines.len(),
-        "TLC has no single final completion record"
-    );
-
-    let mut verdict = None;
-    for (index, line) in lines.iter().enumerate() {
-        let candidate = if *line == CLEAN {
-            Some(Verdict::Clean)
-        } else {
-            line.strip_prefix("Error: Invariant ")
-                .and_then(|name| name.strip_suffix(" is violated."))
-                .map(|name| Verdict::Violated(name.to_string()))
-        };
-        if let Some(candidate) = candidate {
-            ensure!(index < finished[0], "TLC verdict follows its completion");
-            ensure!(verdict.is_none(), "TLC printed mixed verdicts");
-            verdict = Some((index, candidate));
-        }
-    }
-    let (verdict_index, verdict) = verdict.context("TLC printed no terminal verdict")?;
-    let behavior: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| (*line == BEHAVIOR).then_some(index))
-        .collect();
-    let mut states = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if line.starts_with("State ") {
-            states.push((index, trace_state_number(line)?));
-        }
-    }
-    let trace_is_exact = match &verdict {
-        Verdict::Clean => behavior.is_empty() && states.is_empty(),
-        Verdict::Violated(_) => {
-            behavior.len() == 1
-                && verdict_index < behavior[0]
-                && behavior[0] < finished[0]
-                && states.first().map(|(index, _)| *index) == Some(behavior[0] + 1)
-                && states.iter().enumerate().all(|(offset, (index, number))| {
-                    behavior[0] < *index && *index < finished[0] && *number == offset + 1
-                })
-        }
-    };
+    let finished = final_completion(&lines)?;
+    let (verdict_index, verdict) = terminal_verdict(&lines, finished)?;
+    let trace_is_exact = trace_matches(&lines, &verdict, verdict_index, finished)?;
     ensure!(
         trace_is_exact,
         "TLC terminal verdict has no one exact matching behavior trace"
@@ -556,6 +491,72 @@ fn classify(stdout: &str, stderr: &str) -> Result<Verdict> {
         );
     }
     Ok(verdict)
+}
+
+fn final_completion(lines: &[&str]) -> Result<usize> {
+    let finished: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.starts_with("Finished in ") && line.contains(" at (") && line.ends_with(')'))
+                .then_some(index)
+        })
+        .collect();
+    ensure!(
+        finished.len() == 1 && finished[0] + 1 == lines.len(),
+        "TLC has no single final completion record"
+    );
+    Ok(finished[0])
+}
+
+fn terminal_verdict(lines: &[&str], finished: usize) -> Result<(usize, Verdict)> {
+    let mut verdict = None;
+    for (index, line) in lines.iter().enumerate() {
+        let candidate = if *line == CLEAN {
+            Some(Verdict::Clean)
+        } else {
+            line.strip_prefix("Error: Invariant ")
+                .and_then(|name| name.strip_suffix(" is violated."))
+                .map(|name| Verdict::Violated(name.to_string()))
+        };
+        if let Some(candidate) = candidate {
+            ensure!(index < finished, "TLC verdict follows its completion");
+            ensure!(verdict.is_none(), "TLC printed mixed verdicts");
+            verdict = Some((index, candidate));
+        }
+    }
+    verdict.context("TLC printed no terminal verdict")
+}
+
+fn trace_matches(
+    lines: &[&str],
+    verdict: &Verdict,
+    verdict_index: usize,
+    finished: usize,
+) -> Result<bool> {
+    let behavior: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == BEHAVIOR).then_some(index))
+        .collect();
+    let mut states = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("State ") {
+            states.push((index, trace_state_number(line)?));
+        }
+    }
+    Ok(match verdict {
+        Verdict::Clean => behavior.is_empty() && states.is_empty(),
+        Verdict::Violated(_) => {
+            behavior.len() == 1
+                && verdict_index < behavior[0]
+                && behavior[0] < finished
+                && states.first().map(|(index, _)| *index) == Some(behavior[0] + 1)
+                && states.iter().enumerate().all(|(offset, (index, number))| {
+                    behavior[0] < *index && *index < finished && *number == offset + 1
+                })
+        }
+    })
 }
 
 fn trace_state_number(line: &str) -> Result<usize> {
@@ -602,7 +603,6 @@ fn is_runtime_failure(line: &str) -> bool {
         || fatal.contains("fatal error")
 }
 
-/// Require the jar to be present and to be the one that was pinned.
 fn verify_jar(jar: &Path) -> Result<()> {
     let file = std::fs::File::open(jar).with_context(|| {
         format!(

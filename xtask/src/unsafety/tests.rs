@@ -308,9 +308,7 @@ fn the_unsafe_in_wost_is_inside_its_budget() {
     );
 }
 
-/// `kernel/` has none at all, which `#![deny(unsafe_code)]` enforces — so
-/// this is the check that the *counter* agrees with the lint, and would
-/// notice an `#[allow]` slipped in beside it.
+// The lint already denies it; this checks that the counter agrees and notices a slipped `#[allow]`.
 #[test]
 fn the_kernel_has_no_unsafe_at_all() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -320,8 +318,7 @@ fn the_kernel_has_no_unsafe_at_all() {
     assert_eq!((lines, blocks), (0, 0), "kernel/ grew an unsafe block");
 }
 
-/// Check the declarations because counting blocks cannot see an unused
-/// `unsafe fn` or `unsafe impl` (D-147).
+// Counting blocks cannot see an unused `unsafe fn` or `unsafe impl`, so the declarations are read.
 #[test]
 fn the_crate_boundary_is_still_declared() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -351,8 +348,7 @@ fn the_crate_boundary_is_still_declared() {
         "only {crates} libs crates found; the walk is broken"
     );
 
-    // `kernel/` denies rather than forbids, because `wost`'s `entry!`
-    // macro expands `#[allow(unsafe_code)]` items into it (D-67).
+    // `kernel/` denies rather than forbids: `wost`'s `entry!` expands `#[allow(unsafe_code)]` in.
     let main = std::fs::read_to_string(root.join("kernel/src/main.rs")).expect("main.rs");
     assert!(
         main.contains("#![deny(unsafe_code)]"),

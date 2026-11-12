@@ -9,9 +9,7 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Project-authored Markdown whose paths and commands are promises to a
-/// reader. The bootloader README is upstream material and stays outside
-/// this list.
+// Project-authored Markdown whose paths and commands are promises; upstream READMEs stay out.
 fn markdown_documents(root: &Path) -> Vec<PathBuf> {
     let mut documents = [
         "README.md",
@@ -205,7 +203,6 @@ fn xtask_invocations(document: &str) -> Vec<(usize, Vec<OsString>)> {
     invocations
 }
 
-/// The crates `libs/` actually holds.
 fn built(root: &Path) -> BTreeSet<String> {
     crate::paths::directory_entries(&root.join("libs"))
         .expect("complete libs directory listing")
@@ -221,8 +218,7 @@ fn built(root: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// `014`'s current closing table must match source; dated per-slice history
-/// remains historical rather than being rewritten (D-175).
+// Only `014`'s current closing table must match source; dated per-slice history stays historical.
 #[test]
 fn the_phase_close_says_what_the_source_says() {
     let root = root();
@@ -290,8 +286,7 @@ fn the_phase_close_says_what_the_source_says() {
     );
 }
 
-/// Living documents cite mutations by permanent identity, so every cited
-/// identity must still name a registered mutation (D-341).
+// Living documents cite mutations by permanent identity, so each must still be registered.
 #[test]
 fn every_living_mutation_citation_names_a_registered_identity() {
     let root = root();
@@ -330,8 +325,7 @@ fn every_living_mutation_citation_names_a_registered_identity() {
     );
 }
 
-/// The sweep guide's boot count is derived from the registry, so an
-/// operator budgeting machine time never reads an estimate.
+// The guide's boot count comes from the registry, so nobody budgets machine time on an estimate.
 #[test]
 fn the_sweep_guide_states_the_exact_machine_witness_count() {
     use crate::mutate::Caught;
@@ -386,9 +380,8 @@ fn mutation_citations_read_every_list_and_range_form() {
     assert!(ids("mutation-only recovery; the mutation sweep; 12 mutations").is_empty());
 }
 
-/// Every identity a citation such as `mutations 12, 14 and 1,020 through
-/// 1,022` names, with its one-based line. An inverted range yields
-/// `u64::MAX`, which no registry holds.
+/// Every identity a citation such as `mutations 12, 14 and 1,020 through 1,022` names, with its
+/// one-based line; an inverted range yields `u64::MAX`, which no registry holds.
 fn mutation_citations(document: &str) -> Vec<(usize, u64)> {
     let mut cited = Vec::new();
     for (index, line) in document.lines().enumerate() {
@@ -444,8 +437,6 @@ fn mutation_citations(document: &str) -> Vec<(usize, u64)> {
     cited
 }
 
-/// One decimal number, with or without thousands separators, and the text
-/// after it.
 fn citation_number(text: &str) -> Option<(u64, &str)> {
     let bytes = text.as_bytes();
     let mut end = bytes
@@ -480,7 +471,6 @@ fn current_numeric_history_is_distinct_from_a_current_claim() {
     assert_eq!(current_numeric_claim("concurrently 189 checks"), None);
 }
 
-/// Current summaries name later resolutions without rewriting old evidence.
 #[test]
 fn current_facing_foundation_prose_names_the_later_resolutions() {
     let root = root();
@@ -573,7 +563,6 @@ fn current_facing_foundation_prose_names_the_later_resolutions() {
     );
 }
 
-/// The first number in the table row whose left cell is `label`.
 fn table_number(document: &str, label: &str) -> usize {
     table_numbers(document, label)
         .into_iter()
@@ -682,7 +671,6 @@ fn every_documented_xtask_invocation_parses() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Every crate the documents name either exists or is declared absent.
 #[test]
 fn every_crate_the_documents_name_exists_or_is_declared_absent() {
     let root = root();
@@ -703,7 +691,6 @@ fn every_crate_the_documents_name_exists_or_is_declared_absent() {
     );
 }
 
-/// No declared absence names a crate that now exists.
 #[test]
 fn no_declared_absence_is_stale() {
     let root = root();
@@ -714,8 +701,7 @@ fn no_declared_absence_is_stale() {
             "`libs/{}` exists now; remove its line from `ABSENT`",
             absent.crate_name
         );
-        // A label is not a reason, and this list is only worth having if
-        // each line says enough to judge it by.
+        // A label is not a reason; each line must say enough to judge it by.
         assert!(
             absent.because.len() > 40,
             "`libs/{}` needs a reason, not a label",
@@ -724,7 +710,6 @@ fn no_declared_absence_is_stale() {
     }
 }
 
-/// Current-facing plans cannot quietly turn D-183 back into an experiment.
 #[test]
 fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
     const CURRENT_PLANS: [&str; 7] = [
@@ -779,7 +764,6 @@ fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
     }
 }
 
-/// Closed-gate work is a finite register, not an unbounded polish label.
 #[test]
 fn the_pre_wizzy_register_is_finite_and_evidence_bound() {
     const STATES: [&str; 8] = [

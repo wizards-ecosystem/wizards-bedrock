@@ -107,6 +107,7 @@ impl Step {
 }
 
 /// The two dimensions every consumer renders from.
+#[derive(Debug)]
 pub(crate) struct Registry {
     cargo_passes: &'static [CargoPass],
     steps: &'static [Step],

@@ -1,7 +1,6 @@
 [workspace]
-# A virtual manifest inherits no edition, so the resolver must be stated
-# explicitly or cargo falls back to resolver 1. Resolver 3 is the edition-2024
-# default and honours `rust-version` when picking dependency versions.
+# A virtual manifest inherits no edition, so state the resolver or cargo falls back to resolver 1;
+# resolver 3 is the edition-2024 default and honours `rust-version`.
 resolver = "3"
 members = [
     "kernel",
@@ -37,9 +36,8 @@ members = [
     "xtask",
 ]
 
-# Bare root commands are scoped to the half that builds for the host; the
-# kernel crates are reached through the aliases in .cargo/config.toml, and
-# `cargo xtask ci` runs both. See the README's Development section for why.
+# Bare root commands cover the host half; the kernel crates are reached through the aliases in
+# .cargo/config.toml, and `cargo xtask ci` runs both (README, Development).
 default-members = [
     "libs/acpi-tables",
     "libs/eevdf",
@@ -110,9 +108,8 @@ x86-paging = { path = "libs/x86-paging" }
 x86-pit = { path = "libs/x86-pit" }
 x86-tables = { path = "libs/x86-tables" }
 
-# Kernel side (no_std). 0.6.x of limine requires nightly (ptr_metadata);
-# 0.5.0 builds on stable, and requests base revision 4 through
-# `with_revision` (D-42) — crate version and protocol revision are distinct.
+# Kernel side (no_std). limine 0.6.x requires nightly (ptr_metadata); 0.5.0 builds on stable and
+# requests base revision 4 through `with_revision`: crate version and protocol revision differ.
 limine = "=0.5.0"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = [
     "regular",
@@ -120,8 +117,8 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = 
     "unicode-basic-latin",
 ] }
 
-# Host side (xtask). fatfs drops default features to avoid chrono, whose Windows
-# bindings need dlltool.exe — absent from the GNU toolchain we build with.
+# Host side (xtask). fatfs drops default features to avoid chrono, whose Windows bindings need
+# dlltool.exe, absent from the GNU toolchain we build with.
 anyhow = "1"
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1"
@@ -129,22 +126,19 @@ fs_at = "=0.2.1"
 libc = "=0.2.189"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
-# Windows job objects hold every process a bounded command starts (D-347). Its
-# `winapi` backend uses no procedural macros, which the API audit forbids in the
-# active graph (D-275); the modern `windows` crate would pull them in.
+# Windows job objects hold every process a bounded command starts. Its `winapi` backend uses no
+# procedural macros, which the API audit forbids in the active graph; `windows` would pull them in.
 command-group = "=5.0.1"
 # Safe GetFileInformationByHandle access keeps credential identity checks out of
 # xtask's unsafe-forbidden source; its only dependency is already locked.
 winapi-util = "=0.1.11"
 
-# Host-only verification. D-242 admits `proptest` in the five pure libraries
-# that state measured generated-input reach; `shuttle` remains confined to
-# `libs/ring-proto`. These are dev-dependencies, so none reaches an OS image.
+# Host-only verification: `proptest` is admitted in the five pure libraries that state measured
+# generated-input reach, and `shuttle` stays confined to `libs/ring-proto`. All are
+# dev-dependencies, so none reaches an OS image.
 #
-# `getrandom` is pinned because proptest's default features reach it and 0.3.2+
-# needs a `windows-sys` this toolchain's `dlltool.exe` cannot link — the same
-# wall `fatfs` avoids by dropping chrono. Recorded as the toolchain tax it is
-# rather than left to be rediscovered (`010` §9).
+# `getrandom` is pinned because proptest's default features reach it and 0.3.2+ needs a
+# `windows-sys` this toolchain's `dlltool.exe` cannot link, the wall `fatfs` avoids (`010` §9).
 proptest = { version = "1", default-features = false, features = ["std"] }
 getrandom = "=0.3.1"
 shuttle = "0.9"
@@ -178,17 +172,15 @@ missing_safety_doc = "deny"
 [profile.release]
 panic = "abort"
 lto = true
-# Debug info costs nothing at runtime (no PT_LOAD segment) and makes objdump/nm
-# triage of a hung kernel possible.
+# Debug info costs nothing at runtime (no PT_LOAD segment) and makes objdump/nm triage possible.
 debug = true
 
 [profile.dev]
 panic = "abort"
 
-# The orchestrator binary hashes and parses the whole tree many times per gate;
-# unoptimized it turns the API audit into hours. Only the `cargo xtask` alias
-# selects this profile, so tests and audited graphs keep the plain dev
-# profile (D-292).
+# The orchestrator hashes and parses the whole tree many times per gate; unoptimized it turns
+# the API audit into hours. Only the `cargo xtask` alias selects this profile, so tests and
+# audited graphs keep the plain dev profile.
 [profile.xtask]
 inherits = "dev"
 opt-level = 3

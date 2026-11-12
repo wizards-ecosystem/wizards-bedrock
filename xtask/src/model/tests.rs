@@ -81,8 +81,7 @@ fn named_set<'spec>(spec: &'spec str, name: &str) -> Vec<&'spec str> {
         .collect()
 }
 
-/// Every model invariant must appear in its TLC configuration; otherwise
-/// TLC can report a clean run without checking it (D-148).
+// An invariant missing from its TLC configuration is never checked, yet the run reports clean.
 #[test]
 fn every_invariant_the_model_defines_is_checked() {
     let root = root();
@@ -105,7 +104,6 @@ fn every_invariant_the_model_defines_is_checked() {
     }
 }
 
-/// Every bad configuration changes one rule and names its exact failure.
 #[test]
 fn every_model_mutation_names_one_exact_invariant() {
     let root = root();
@@ -125,7 +123,6 @@ fn every_model_mutation_names_one_exact_invariant() {
     }
 }
 
-/// Every terminal cause in the model's own domain has a reachable action.
 #[test]
 fn every_terminal_cause_is_a_reachable_model_action() {
     let spec = std::fs::read_to_string(root().join(MODEL_DIR).join("RingMemory.tla"))
@@ -163,8 +160,7 @@ fn every_terminal_cause_is_a_reachable_model_action() {
     }
 }
 
-/// Only registered model inputs may live in `models/`; ignored TLC scratch
-/// files are checked from the filesystem without adding a Git dependency.
+// Ignored TLC scratch files are checked from the filesystem, so the test needs no Git.
 #[test]
 fn models_holds_the_model_and_nothing_else_unignored() {
     let root = root();

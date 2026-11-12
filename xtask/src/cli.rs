@@ -1,7 +1,4 @@
-//! Argument parsing.
-//!
-//! Hand-rolled rather than `clap`: a dozen tasks and six flags are a `match`
-//! that is itself unit-testable, and this runs on every `cargo xtask`.
+//! Hand-rolled rather than `clap`: the tasks and flags are a `match` that unit tests can drive.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -105,14 +102,12 @@ pub enum Task {
     Image(Profile),
     /// Build an image and boot it in QEMU.
     Run {
-        /// Profile to build.
         profile: Profile,
         /// Arguments forwarded to QEMU after `--`.
         qemu_args: Vec<OsString>,
     },
     /// Build an image and generate a VMware VM directory.
     Vmware {
-        /// Kernel build profile.
         profile: Profile,
         /// Which image the generated VM boots.
         kernel: crate::image::Kernel,
@@ -136,8 +131,7 @@ pub enum Task {
     TestBoot(Profile),
     /// Boot the shipped kernel and require it to settle without panicking.
     BootCheck(Profile),
-    /// Boot without PCI configuration or x2APIC and require both refusals,
-    /// then without a remapping unit and require storage to refuse.
+    /// Boot without PCI or x2APIC, then without a remapping unit, requiring each refusal.
     DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
@@ -254,9 +248,22 @@ const TASK_NAMES: &[&str] = &[
     "clean",
 ];
 
-/// Parse the arguments after the task separator.
-///
-/// Empty input is refused so a mistyped task cannot default to booting a VM.
+#[derive(Default, Debug)]
+struct Options {
+    profile: Profile,
+    profile_option: bool,
+    message_format: Option<String>,
+    check: bool,
+    all: bool,
+    shipped: bool,
+    run: bool,
+    begin: bool,
+    verify: Option<PathBuf>,
+    passthrough: Vec<OsString>,
+    passthrough_option: bool,
+}
+
+/// Parse the arguments after the task separator; empty input is refused so a typo cannot boot a VM.
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut args = args.into_iter();
     let Some(first) = args.next() else {
@@ -268,60 +275,48 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         return Ok(Task::Help);
     }
 
-    let mut profile = Profile::default();
-    let mut profile_option = false;
-    let mut message_format = None;
-    let mut check = false;
-    let mut all = false;
-    let mut shipped = false;
-    let mut run = false;
-    let mut begin = false;
-    let mut verify = None;
-    let mut passthrough = Vec::new();
-    let mut passthrough_option = false;
-
-    let mut rest = args;
-    while let Some(arg) = rest.next() {
+    let mut options = Options::default();
+    while let Some(arg) = args.next() {
         let flag = arg.to_string_lossy().into_owned();
         match flag.as_str() {
             "--release" => {
-                profile = Profile::Release;
-                profile_option = true;
+                options.profile = Profile::Release;
+                options.profile_option = true;
             }
             "--debug" => {
-                profile = Profile::Dev;
-                profile_option = true;
+                options.profile = Profile::Dev;
+                options.profile_option = true;
             }
-            "--check" => check = true,
-            "--all" => all = true,
-            "--shipped" => shipped = true,
+            "--check" => options.check = true,
+            "--all" => options.all = true,
+            "--shipped" => options.shipped = true,
             "--run" => {
-                if run {
+                if options.run {
                     bail!("duplicate `--run`");
                 }
-                run = true;
+                options.run = true;
             }
             "--begin" => {
-                if begin {
+                if options.begin {
                     bail!("duplicate `--begin`");
                 }
-                begin = true;
+                options.begin = true;
             }
             "-h" | "--help" => return Ok(Task::Help),
             "--" => {
-                passthrough_option = true;
-                passthrough.extend(rest.by_ref());
+                options.passthrough_option = true;
+                options.passthrough.extend(args.by_ref());
                 break;
             }
             _ => {
                 if let Some(value) = flag.strip_prefix("--message-format=") {
-                    message_format = Some(value.to_string());
+                    options.message_format = Some(value.to_string());
                 } else if let Some(value) = flag.strip_prefix("--verify=") {
                     ensure_nonempty_path(value)?;
-                    if verify.is_some() {
+                    if options.verify.is_some() {
                         bail!("duplicate `--verify`");
                     }
-                    verify = Some(PathBuf::from(value));
+                    options.verify = Some(PathBuf::from(value));
                 } else if name == "run" {
                     bail!("unknown option `{flag}`; pass QEMU arguments after `--`");
                 } else {
@@ -331,39 +326,57 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         }
     }
 
-    if !matches!(
-        name.as_str(),
-        "qualify-mutants-grade" | "qualify-security-deep"
-    ) && (run || begin || verify.is_some())
+    require_options_apply(&name, &options)?;
+    task_named(&name, options)
+}
+
+fn require_options_apply(name: &str, options: &Options) -> Result<()> {
+    if !matches!(name, "qualify-mutants-grade" | "qualify-security-deep")
+        && (options.run || options.begin || options.verify.is_some())
     {
         bail!("external qualification options do not apply to `{name}`");
     }
 
-    if profile_option
+    if options.profile_option
         && !matches!(
-            name.as_str(),
+            name,
             "build" | "image" | "run" | "vmware" | "test-boot" | "boot-check" | "degraded-check"
         )
     {
         bail!("build profile options do not apply to `{name}`");
     }
-    if check && !matches!(name.as_str(), "fmt" | "debug") {
+    if options.check && !matches!(name, "fmt" | "debug") {
         bail!("`--check` does not apply to `{name}`");
     }
-    if all && name != "clean" {
+    if options.all && name != "clean" {
         bail!("`--all` does not apply to `{name}`");
     }
-    if shipped && !matches!(name.as_str(), "vmware" | "qualify-vmware") {
+    if options.shipped && !matches!(name, "vmware" | "qualify-vmware") {
         bail!("`--shipped` does not apply to `{name}`");
     }
-    if message_format.is_some() && name != "check" {
+    if options.message_format.is_some() && name != "check" {
         bail!("`--message-format` does not apply to `{name}`");
     }
-    if passthrough_option && name != "run" {
+    if options.passthrough_option && name != "run" {
         bail!("`--` passthrough does not apply to `{name}`");
     }
+    Ok(())
+}
 
-    match name.as_str() {
+fn task_named(name: &str, options: Options) -> Result<Task> {
+    let Options {
+        profile,
+        message_format,
+        check,
+        all,
+        shipped,
+        run,
+        begin,
+        verify,
+        passthrough,
+        ..
+    } = options;
+    match name {
         "build" => Ok(Task::Build(profile)),
         "image" => Ok(Task::Image(profile)),
         "run" => Ok(Task::Run {

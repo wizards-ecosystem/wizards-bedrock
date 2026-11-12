@@ -26,11 +26,11 @@ fn directory_classification_errors_are_not_hidden() {
 
 #[test]
 fn repository_entry_classification_rejects_redirects_and_special_files() {
-    assert!(repository_entry_is_supported(false, false, true, false));
-    assert!(repository_entry_is_supported(false, false, false, true));
-    assert!(!repository_entry_is_supported(true, false, true, false));
-    assert!(!repository_entry_is_supported(false, true, true, false));
-    assert!(!repository_entry_is_supported(false, false, false, false));
+    assert!(repository_entry_is_supported(EntryKind::Directory, false));
+    assert!(repository_entry_is_supported(EntryKind::File, false));
+    assert!(!repository_entry_is_supported(EntryKind::Symlink, false));
+    assert!(!repository_entry_is_supported(EntryKind::Directory, true));
+    assert!(!repository_entry_is_supported(EntryKind::Other, false));
 }
 
 #[test]
@@ -73,8 +73,6 @@ fn host_packages_are_exactly_the_workspace_default_members() {
     assert_eq!(default_members(&manifest), HOST_PACKAGES);
 }
 
-/// The spec is two other constants glued together; nothing but this notices
-/// if one of them moves.
 #[test]
 fn feature_specs_name_the_kernel_package_and_their_features() {
     assert_eq!(
@@ -133,13 +131,7 @@ fn image_lives_in_the_target_dir() {
     );
 }
 
-/// The names here and the paths in `boot/limine.conf` are one contract
-/// written twice.
-///
-/// `KERNEL_ON_ESP`'s doc says "must match the `path:` line" and nothing
-/// read that file. A drift produces an unbootable image, found forty-five
-/// seconds into `boot-check` rather than by `cargo test` — the same shape
-/// as the `default-members` drift the test above exists for (D-105).
+// Drift from `boot/limine.conf` builds an unbootable image that only `boot-check` would find.
 #[test]
 fn the_boot_configuration_names_the_files_the_image_builder_writes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -160,15 +152,8 @@ fn the_boot_configuration_names_the_files_the_image_builder_writes() {
     assert_eq!(named("module_path:"), PROGRAM_ON_ESP);
 }
 
-/// Every crate under `libs/` is in both lists.
-///
-/// The test above compares the two lists **to each other**, so a crate in
-/// *neither* is symmetric and passes — and it needs no manifest edit to
-/// exist, because Cargo promotes a path dependency inside the workspace
-/// directory to a member on its own. So `libs/foo` depended on by
-/// `kernel/` builds fine while `cargo xtask test`, clippy's host pass and
-/// `doc` never see it. That is the `port-space` drift the sibling test
-/// exists to prevent, entered by the other door (D-124).
+// The lists are compared to each other, so a crate in neither passes; Cargo makes a path
+// dependency a member by itself, so the host gate would never see it.
 #[test]
 fn every_libs_crate_is_in_both_lists() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -183,8 +168,7 @@ fn every_libs_crate_is_in_both_lists() {
         if !entry.is_dir() {
             continue;
         }
-        // A directory is a crate when it has a manifest; anything else is
-        // not this test's business.
+        // A directory is a crate only when it has a manifest.
         let manifest = path.join("Cargo.toml");
         match std::fs::symlink_metadata(&manifest) {
             Ok(metadata) => {

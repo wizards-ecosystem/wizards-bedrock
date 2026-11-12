@@ -1,8 +1,5 @@
-//! The EFI system partition is built in memory, so its layout is testable
-//! without a kernel build or a 64 MiB image.
-//!
-//! FAT16 rather than FAT32 here: FAT32 needs at least 65525 clusters, which
-//! would mean a ~33 MiB allocation per test.
+//! The ESP is built in memory so its layout is testable without a kernel build or a 64 MiB image.
+//! FAT16 rather than FAT32: FAT32 needs at least 65525 clusters, a ~33 MiB allocation per test.
 
 use std::io::Cursor;
 

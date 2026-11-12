@@ -1,6 +1,5 @@
 use super::*;
 
-/// The workspace root, from where this crate sits below it.
 fn root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -8,12 +7,6 @@ fn root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// The log numbers its entries from one upward with no gap and no repeat.
-///
-/// A gap is a decision that was minted and lost, or a number skipped by
-/// accident; the log is append-only, so either is a mistake rather than a
-/// style. The repeat half is not hypothetical either — two sessions
-/// appending on the same day is exactly how it would happen.
 #[test]
 fn the_decisions_are_numbered_without_a_gap() {
     let numbers = defined(&root()).expect("reading the decision log");
@@ -37,10 +30,6 @@ fn the_decisions_are_numbered_without_a_gap() {
     );
 }
 
-/// Every `D-NNN` written anywhere names an entry the log defines.
-///
-/// This is the one that would have caught D-121, cited in eight places
-/// with nothing behind it.
 #[test]
 fn every_citation_names_a_decision_that_exists() {
     let root = root();
@@ -165,8 +154,7 @@ fn a_decision_file_out_of_shape_is_refused() {
 fn a_citation_is_recognised_and_a_lookalike_is_not() {
     assert_eq!(cited("as D-105 says"), vec![(105, 1)]);
     assert_eq!(cited("(D-12, D-100)"), vec![(12, 1), (100, 1)]);
-    // Not citations: a boundary in front, a boundary behind, and digits
-    // too long to be one.
+    // Not citations: a boundary in front, a boundary behind, and digits too long.
     assert!(cited("MD-5 is a hash").is_empty());
     assert!(cited("D-0DEADBEEF").is_empty(), "hex, not a decision");
     assert!(cited("D-1234").is_empty(), "too long to be a decision");

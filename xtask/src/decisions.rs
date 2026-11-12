@@ -1,14 +1,4 @@
-//! The decision log, checked against the code that cites it.
-//!
-//! `docs/004-decision-log.md` is the authority on why this kernel is shaped the
-//! way it is, either as one log of `## D-N` entries or as the index of one file
-//! per decision under `docs/decisions/`. Host tests enforce two text properties
-//! where `cargo test` can reach them (D-41):
-//!
-//! - the entries run from `D-01` upward with no gap and no repeat, so a number
-//!   cannot be skipped when one is minted;
-//! - every `D-NNN` written anywhere in the tree names an entry that exists.
-//!
+//! The decision log: numbered without a gap or repeat, and every `D-NNN` cited names an entry.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,10 +17,6 @@ struct Entry {
 }
 
 /// Every decision number the log defines, in order.
-///
-/// # Errors
-///
-/// If the log cannot be read, or a split layout is malformed.
 pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
     Ok(entries(root)?
         .into_iter()
@@ -39,11 +25,6 @@ pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
 }
 
 /// The whole text of one decision.
-///
-/// # Errors
-///
-/// If the log cannot be read, a split layout is malformed, or the decision is
-/// not defined.
 pub fn decision_text(root: &Path, decision: u32) -> Result<String> {
     entries(root)?
         .into_iter()
@@ -166,9 +147,7 @@ fn index_rows(index: &str) -> Vec<(String, String)> {
 
 /// The decision number a `D-`-stripped string starts with, and what follows.
 ///
-/// The digits must end at a boundary, symmetric with the one the caller checks
-/// in front: a run of hex that merely opens with a digit is not a citation, and
-/// reporting one would name a decision nobody claimed.
+/// The digits must end at a boundary: a run of hex that opens with a digit is not a citation.
 fn number(rest: &str) -> Option<(u32, &str)> {
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() || digits.len() > 3 {
@@ -181,7 +160,6 @@ fn number(rest: &str) -> Option<(u32, &str)> {
     Some((<u32 as core::str::FromStr>::from_str(&digits).ok()?, after))
 }
 
-/// Every `D-NNN` cited in a file, with the line it is on.
 #[cfg(test)]
 fn cited(text: &str) -> Vec<(u32, usize)> {
     let mut found = Vec::new();
@@ -189,8 +167,7 @@ fn cited(text: &str) -> Vec<(u32, usize)> {
         let mut rest = line;
         while let Some(at) = rest.find("D-") {
             let after = &rest[at + 2..];
-            // A citation is preceded by nothing word-like, so `MD-5` and an
-            // identifier ending in `d_` are not one.
+            // A citation is preceded by nothing word-like, so `MD-5` is not one.
             let boundary = rest[..at]
                 .chars()
                 .next_back()
@@ -210,10 +187,8 @@ fn searchable_text(path: &Path) -> String {
         .unwrap_or_else(|reason| panic!("reading searchable file {}: {reason}", path.display()))
 }
 
-/// Every file worth searching for citations: sources, docs, and manifests.
 #[cfg(test)]
 fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
-    /// Directories whose contents are not ours to check.
     const SKIP: &[&str] = &["target", ".git", "vendor", "tools", "node_modules"];
 
     let mut found = Vec::new();
@@ -231,8 +206,7 @@ fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
                 }
             } else if matches!(
                 path.extension().and_then(|extension| extension.to_str()),
-                // Linker scripts cite decisions and therefore belong in the
-                // source inventory (D-147).
+                // Linker scripts cite decisions, so they are searched too.
                 Some("rs" | "md" | "toml" | "h" | "cpp" | "tla" | "cfg" | "ld")
             ) {
                 found.push(path);

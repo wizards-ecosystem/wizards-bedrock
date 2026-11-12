@@ -1,21 +1,6 @@
-//! Counting the `unsafe` in `wost`, and holding it to a budget.
+//! Counts lines inside `unsafe` blocks in `wost` against a budget kept close to the current count.
 //!
-//! `010` §1 is explicit that the framekernel paper's ~14% TCB *ratio* is not
-//! evidence of anything: a percentage falls when safe code is added, which is
-//! not a safety improvement, and it rises when unsafe code is deleted from a
-//! shrinking crate, which is not a regression. **Absolute lines are the
-//! relevant audit cost**, because the number a reviewer must read is the
-//! number of lines, and D-77's phase-close instruction is to track them
-//! against a budget rather than a ratio.
-//!
-//! So this counts lines *inside* `unsafe` blocks — not occurrences of the
-//! word, which double-counts every `// SAFETY:` comment that mentions it, and
-//! not blocks, which says nothing about how much is in each.
-//!
-//! The budget is a ceiling deliberately set close to the current number. A
-//! generous one would never fire, and a budget that never fires is a claim
-//! (D-28). Raising it is a reviewable line in a commit, which is the whole
-//! mechanism.
+//! Absolute lines are the audit cost, not a ratio (`010` §1); raising `BUDGET` is a reviewed edit.
 
 use std::path::Path;
 
@@ -75,20 +60,14 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 }
 
 /// Lines of `unsafe` `wost` may hold.
-///
-/// The measurement and per-file audit records below are executable evidence;
-/// change history belongs in the decision log (D-124).
 pub const BUDGET: usize = 386;
 
-/// What the crate measured when [`BUDGET`] was last reviewed.
-///
-/// Kept separately because a ceiling cannot reveal drift below it.
+/// What the crate measured when [`BUDGET`] was last reviewed; a ceiling cannot show drift below it.
 pub const MEASURED: usize = 386;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
-/// Parsed Rust syntax rather than occurrences of the word: comments, strings
-/// and unsafe declarations are not operations and do not enter this count.
+/// Parsed syntax, so comments, strings and unsafe declarations do not enter the count.
 pub fn measure(directory: &Path) -> Result<(usize, usize)> {
     let mut lines = 0;
     let mut blocks = 0;

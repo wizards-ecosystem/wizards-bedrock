@@ -369,12 +369,9 @@ fn help_and_repeated_ordinary_options_keep_their_existing_precedence() {
     );
 }
 
-/// A task the parser accepts but the help text never mentions is a task
-/// nobody will run; one the help offers but the parser rejects is worse.
 #[test]
 fn every_task_the_parser_accepts_is_named_in_the_help() {
-    // Derive this from the parser so the test cannot drift through a
-    // second handwritten task list.
+    // Read the names from the parser source so the test keeps no second task list.
     let names: Vec<&str> = include_str!("../cli.rs")
         .lines()
         .filter(|line| {

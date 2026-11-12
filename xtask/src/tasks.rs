@@ -1,7 +1,4 @@
-//! The check, format, and housekeeping tasks.
-//!
-//! Each Cargo-driven task runs over every graph in `crate::gate::REGISTRY`,
-//! so standalone commands and the complete local gate cannot drift apart.
+//! Cargo-driven tasks run over every graph in `crate::gate::REGISTRY`, so they match the full gate.
 
 use std::path::Path;
 use std::time::Duration;
@@ -13,15 +10,11 @@ use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
 use crate::{gate, image, qemu, supply_chain, vendor};
 
-/// Whether a subcommand should be pointed at a package's test and bench
-/// targets as well as the ones it ships.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
-    /// Everything a package builds, test code included. What `check` and
-    /// `clippy` want, and the reason the host half sees its own tests.
+    /// Everything a package builds, test code included.
     AllTargets,
-    /// What the subcommand builds by default. `cargo doc` rejects
-    /// `--all-targets` outright rather than ignoring it.
+    /// What the subcommand builds by default; `cargo doc` rejects `--all-targets`.
     Default,
 }
 
@@ -35,9 +28,8 @@ pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
 
 /// Lint every crate, treating warnings as errors.
 ///
-/// The `-D warnings` goes after `--` on purpose: setting `RUSTFLAGS` instead
-/// would replace the target rustflags in `.cargo/config.toml` and silently
-/// build a kernel without `code-model=kernel`.
+/// `-D warnings` goes after `--`: `RUSTFLAGS` would replace the target rustflags in
+/// `.cargo/config.toml` and silently build a kernel without `code-model=kernel`.
 pub fn clippy(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
@@ -49,7 +41,7 @@ pub fn clippy(paths: &Paths) -> Result<()> {
     )
 }
 
-/// Build the documentation, so the doc-link lints have something to fire on.
+/// Build the documentation so the doc-link lints fire.
 pub fn doc(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
@@ -70,8 +62,7 @@ pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
     cargo::run(paths, "formatting", &args)
 }
 
-/// Run the host test suite. The kernel crates have no host tests by
-/// construction — see `docs/005-code-conventions.md`.
+/// Run the host test suite; the kernel crates have no host tests (`docs/005-code-conventions.md`).
 pub fn test(paths: &Paths) -> Result<()> {
     let mut args = vec!["test".to_string()];
     args.extend(cargo::package_args(paths::HOST_PACKAGES));
@@ -79,20 +70,12 @@ pub fn test(paths: &Paths) -> Result<()> {
 }
 
 /// Boot a self-test kernel under QEMU and require its verdict.
-///
-/// This is the only automated check that exercises the kernel on a machine
-/// rather than as arithmetic on the host.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
     qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
 }
 
 /// Boot a self-test kernel while preserving a valid failed or panic verdict.
-///
-/// # Errors
-///
-/// If the kernel cannot be built, QEMU cannot run, or its serial and exit
-/// evidence do not form one valid outcome.
 pub fn observe_test_boot(
     paths: &Paths,
     profile: Profile,
@@ -102,11 +85,8 @@ pub fn observe_test_boot(
     qemu::observe_selftest(paths, image.path(), timeout)
 }
 
-/// How long a self-test boot may take, by profile.
-///
-/// A debug kernel runs several times slower under emulation — a console
-/// scroll alone costs the better part of a second — so holding it to the
-/// release budget would report load as a hang.
+/// A debug kernel runs several times slower under emulation, so the release budget would
+/// report load as a hang.
 const fn selftest_timeout(profile: Profile) -> Duration {
     match profile {
         Profile::Release => SELFTEST_TIMEOUT,
@@ -114,19 +94,14 @@ const fn selftest_timeout(profile: Profile) -> Duration {
     }
 }
 
-/// Generous enough for a cold QEMU start on a loaded machine; short enough that
-/// a hung kernel is reported rather than waited on.
+/// Generous for a cold QEMU start on a loaded machine, short enough to report a hung kernel.
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Machine mutations can trigger several bounded red paths before their exact
-/// witness. Keep enough room for those paths and the interactive rounds while
-/// retaining exact shorter deadlines for mutations whose property is timeout.
+/// Room for the bounded red paths a machine mutation can trigger before its exact witness;
+/// mutations whose property is a timeout keep their own shorter deadlines.
 pub(crate) const MUTATION_SELFTEST_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Boot the shipped kernel and require it to reach its steady state.
-///
-/// The self-test kernel exits at the debug-exit device the moment it has a
-/// verdict; this boots the image that goes on the disk.
+/// Boot the shipped kernel, the image that goes on the disk, and require its steady state.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
     boot_shipped_image(paths, image.path())
@@ -136,9 +111,8 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
     qemu::run_boot_check(paths, image, BOOT_SETTLE)
 }
 
-/// Boot without PCI configuration or x2APIC and require both refusals, then
-/// boot the shipped kernel without a remapping unit and require storage to
-/// refuse rather than run unisolated (D-357).
+/// Boot without PCI configuration or x2APIC and require both refusals, then without a
+/// remapping unit and require storage to refuse rather than run unisolated.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     match observe_degraded_boot(paths, profile)? {
         qemu::DegradedOutcome::Panicked {
@@ -176,7 +150,6 @@ pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     }
 }
 
-/// Boot a degraded kernel while preserving a valid terminal panic.
 pub(crate) fn observe_degraded_boot(
     paths: &Paths,
     profile: Profile,
@@ -185,7 +158,6 @@ pub(crate) fn observe_degraded_boot(
     qemu::observe_degraded(paths, image.path(), BOOT_SETTLE)
 }
 
-/// Boot the shipped kernel on a machine with no remapping unit.
 pub(crate) fn observe_unisolated_boot(
     paths: &Paths,
     profile: Profile,
@@ -194,7 +166,6 @@ pub(crate) fn observe_unisolated_boot(
     qemu::observe_unisolated(paths, image.path(), BOOT_SETTLE)
 }
 
-/// Boot the shipped kernel without x2APIC but with the DMA handoff intact.
 pub(crate) fn observe_no_x2apic_boot(
     paths: &Paths,
     profile: Profile,
@@ -203,8 +174,7 @@ pub(crate) fn observe_no_x2apic_boot(
     qemu::observe_no_x2apic(paths, image.path(), BOOT_SETTLE)
 }
 
-/// Seconds of running after the kernel says it has settled, so one that dies
-/// on its first interrupt is still caught.
+/// Running time after the kernel says it has settled, so one dying on its first interrupt shows.
 const BOOT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Everything the gate runs, in the order that fails fastest.
@@ -437,7 +407,6 @@ fn next_directory_entry(
     Ok(None)
 }
 
-/// Run `subcommand` over every registered Cargo graph.
 fn for_each_pass(
     paths: &Paths,
     description: &str,
@@ -454,13 +423,8 @@ fn for_each_pass(
     Ok(())
 }
 
-/// The command line for one pass.
-///
-/// `--all-targets` goes to the host half only, and only for a subcommand that
-/// takes it. The kernel crates have no test or bench targets and cannot have
-/// any, but the host crates do — and without it neither `check` nor `clippy`
-/// ever sees their test code. A `useless_vec` in `sha256.rs`'s tests sat there
-/// unreported until someone ran clippy by hand.
+/// `--all-targets` goes to the host half only, and only for a subcommand that takes it; without
+/// it neither `check` nor `clippy` sees the host crates' test code.
 fn pass_args(
     subcommand: &str,
     pass: gate::CargoPass,
