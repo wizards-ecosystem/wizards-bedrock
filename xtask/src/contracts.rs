@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, Item, Pat};
 
+use crate::files::is_reparse_point;
 use crate::paths::{KERNEL_TARGET, Paths};
 
 pub(crate) mod abi;
@@ -29,8 +30,8 @@ struct Probe {
 }
 
 impl Probe {
-    // A probe directory is created exclusively inside this checkout's target
-    // tree, so no other account can pre-place or redirect it (D-344).
+    // Created exclusively inside this checkout's target tree, so no other account can pre-place
+    // or redirect it.
     fn create(paths: &Paths, label: &str, source: &str) -> Self {
         let target = crate::mutate::workspace::canonical_existing_real_directory(
             paths.target_dir(),
@@ -46,26 +47,17 @@ impl Probe {
         let root = crate::test_support::reserve_directory(&parent, label);
         std::fs::create_dir(root.join("src")).expect("contract source directory");
 
-        let wost = paths
-            .root()
-            .join("wost")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let nvme = paths
-            .root()
-            .join("libs/nvme")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let pci_config = paths
-            .root()
-            .join("libs/pci-config")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let x86_apic = paths
-            .root()
-            .join("libs/x86-apic")
-            .to_string_lossy()
-            .replace('\\', "/");
+        let dependency = |relative: &str| {
+            paths
+                .root()
+                .join(relative)
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        let wost = dependency("wost");
+        let nvme = dependency("libs/nvme");
+        let pci_config = dependency("libs/pci-config");
+        let x86_apic = dependency("libs/x86-apic");
         let manifest = format!(
             "[package]\nname = \"{label}-contract\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
              \n[workspace]\n\n[dependencies]\nnvme = {{ path = {nvme:?} }}\npci-config = {{ path = {pci_config:?} }}\nwost = {{ path = {wost:?} }}\nx86-apic = {{ path = {x86_apic:?} }}\n"
@@ -205,19 +197,6 @@ fn cfg_test(attributes: &[syn::Attribute]) -> bool {
     })
 }
 
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-const fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
-
 fn rust_sources_below(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
     let metadata = std::fs::symlink_metadata(directory)
         .unwrap_or_else(|error| panic!("inspecting {}: {error}", directory.display()));
@@ -300,19 +279,20 @@ fn module_syntax(file: &std::path::Path) -> syn::File {
 }
 
 pub(crate) fn module_source(root: &std::path::Path, relative: &str) -> String {
-    let file = root.join(relative);
-    let children = file.with_extension("");
-    let mut files = vec![file];
-    if children.is_dir() {
-        files.extend(rust_sources_below(&children));
-    }
-    files
+    module_sources(&root.join(relative))
         .iter()
         .map(|path| {
             std::fs::read_to_string(path)
                 .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
         })
         .collect()
+}
+
+fn first_function<'ast>(syntax: &'ast syn::File, name: &str) -> Option<&'ast syn::ItemFn> {
+    syntax.items.iter().find_map(|item| match item {
+        Item::Fn(function) if function.sig.ident == name => Some(function),
+        _ => None,
+    })
 }
 
 fn is_named_path(expression: &Expr, expected: &str) -> bool {
