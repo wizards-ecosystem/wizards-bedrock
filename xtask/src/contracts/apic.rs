@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
 use syn::visit::{self, Visit};
-use syn::{Expr, ExprCall, ExprMatch, GenericArgument, Item, Pat, PathArguments, Type};
+use syn::{Expr, ExprCall, ExprMatch, GenericArgument, Pat, PathArguments, Type};
 
 use crate::paths::Paths;
 use crate::test_support::{function_after, source_through};
 
 use super::sources::production_sources_below;
 use super::{
-    cfg_not_selftest, module_source, module_syntax, observer_expr_attributes, require_error,
-    require_success, selftest_cfg,
+    cfg_not_selftest, first_function, module_source, module_syntax, observer_expr_attributes,
+    require_error, require_success, selftest_cfg,
 };
 
 #[derive(Default)]
@@ -352,13 +352,7 @@ fn apic_policy_observations_are_typed() {
         boolean_inputs.0
     );
 
-    let completion = in_service
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "may_complete" => Some(function),
-            _ => None,
-        })
+    let completion = first_function(&in_service, "may_complete")
         .expect("APIC in-service source has no completion planner");
     let observations: Vec<String> = completion
         .sig
@@ -716,14 +710,8 @@ fn every_interrupt_arm_has_explicit_completion_ownership() {
     let source = std::fs::read_to_string(paths.root().join("kernel/src/arch/x86_64/trap.rs"))
         .expect("trap source");
     let syntax = syn::parse_file(&source).expect("parse trap source");
-    let on_trap = syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "on_trap" => Some(function),
-            _ => None,
-        })
-        .expect("trap source has no on_trap dispatcher");
+    let on_trap =
+        first_function(&syntax, "on_trap").expect("trap source has no on_trap dispatcher");
     let mut dispatch = CompletionDispatch::default();
     Visit::visit_item_fn(&mut dispatch, on_trap);
 

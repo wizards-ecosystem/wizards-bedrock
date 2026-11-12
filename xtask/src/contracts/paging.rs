@@ -1,9 +1,9 @@
 use syn::visit::{self, Visit};
-use syn::{Expr, ExprCall, Item, Macro};
+use syn::{Expr, ExprCall, Macro};
 
 use crate::paths::Paths;
 
-use super::{is_named_path, module_source, require_error};
+use super::{first_function, is_named_path, module_source, require_error};
 
 #[derive(Default)]
 struct InvalidationShape {
@@ -28,12 +28,7 @@ fn invlpg_requires_canonical_address_authority() {
 
     let source = module_source(paths.root(), "wost/src/arch/x86_64/cpu.rs");
     let syntax = syn::parse_file(&source).expect("parse CPU source");
-    let function = |name: &str| {
-        syntax.items.iter().find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == name => Some(function),
-            _ => None,
-        })
-    };
+    let function = |name: &str| first_function(&syntax, name);
     let public = function("invalidate_page").expect("CPU source has no invalidate_page");
     assert!(
         function("invalidate_page_unchecked").is_none(),
@@ -75,11 +70,7 @@ struct ProductionActivationOrder {
 
 impl<'ast> Visit<'ast> for ProductionActivationOrder {
     fn visit_expr_call(&mut self, expression: &'ast ExprCall) {
-        let loads_root = matches!(expression.func.as_ref(), Expr::Path(function)
-            if function.qself.is_none()
-                && function.path.segments.len() == 2
-                && function.path.segments[0].ident == "cpu"
-                && function.path.segments[1].ident == "set_page_table_base")
+        let loads_root = is_path_to(&expression.func, "cpu", "set_page_table_base")
             && expression.args.len() == 1
             && expression.args.first().is_some_and(is_root_path);
         if loads_root {
@@ -100,6 +91,14 @@ impl<'ast> Visit<'ast> for ProductionActivationOrder {
     }
 }
 
+fn is_path_to(expression: &Expr, module: &str, name: &str) -> bool {
+    matches!(expression, Expr::Path(function)
+        if function.qself.is_none()
+            && function.path.segments.len() == 2
+            && function.path.segments[0].ident == module
+            && function.path.segments[1].ident == name)
+}
+
 fn is_root_path(expression: &Expr) -> bool {
     is_named_path(expression, "root")
 }
@@ -109,13 +108,7 @@ fn paging_activation_loads_cr3_before_publishing_ready() {
     let paths = Paths::discover().expect("workspace paths");
     let source = module_source(paths.root(), "wost/src/arch/x86_64/paging.rs");
     let syntax = syn::parse_file(&source).expect("parse paging source");
-    let activate = syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "activate" => Some(function),
-            _ => None,
-        })
+    let activate = first_function(&syntax, "activate")
         .expect("paging source has no production activate function");
 
     let mut order = ProductionActivationOrder::default();
@@ -179,14 +172,8 @@ fn task_init_validates_the_arena_before_publication_and_pinning() {
     let source = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/task.rs"))
         .expect("read task source");
     let syntax = syn::parse_file(&source).expect("parse task source");
-    let init = syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "init" => Some(function),
-            _ => None,
-        })
-        .expect("task source has no production init function");
+    let init =
+        first_function(&syntax, "init").expect("task source has no production init function");
 
     let mut order = ProductionTaskInitOrder::default();
     Visit::visit_item_fn(&mut order, init);
@@ -239,11 +226,7 @@ impl<'ast> Visit<'ast> for ProductionTaskSwitchOrder {
     }
 
     fn visit_expr_call(&mut self, expression: &'ast ExprCall) {
-        let loads_wanted = matches!(expression.func.as_ref(), Expr::Path(function)
-            if function.qself.is_none()
-                && function.path.segments.len() == 2
-                && function.path.segments[0].ident == "cpu"
-                && function.path.segments[1].ident == "set_page_table_base")
+        let loads_wanted = is_path_to(&expression.func, "cpu", "set_page_table_base")
             && expression.args.len() == 1
             && expression
                 .args
@@ -257,12 +240,8 @@ impl<'ast> Visit<'ast> for ProductionTaskSwitchOrder {
             }
         }
 
-        let starts_extended_state = matches!(expression.func.as_ref(), Expr::Path(function)
-            if function.qself.is_none()
-                && function.path.segments.len() == 2
-                && function.path.segments[0].ident == "xstate"
-                && function.path.segments[1].ident == "is_enabled")
-            && expression.args.is_empty();
+        let starts_extended_state =
+            is_path_to(&expression.func, "xstate", "is_enabled") && expression.args.is_empty();
         if starts_extended_state {
             self.events.push(TaskSwitchEvent::ExtendedState);
         }
@@ -285,12 +264,7 @@ fn is_task_page_table_guard(expression: &Expr) -> bool {
         return false;
     };
     let right_is_live_root = matches!(binary.right.as_ref(), Expr::Call(call)
-        if matches!(call.func.as_ref(), Expr::Path(function)
-            if function.qself.is_none()
-                && function.path.segments.len() == 2
-                && function.path.segments[0].ident == "cpu"
-                && function.path.segments[1].ident == "page_table_base")
-            && call.args.is_empty());
+        if is_path_to(&call.func, "cpu", "page_table_base") && call.args.is_empty());
     matches!(binary.op, syn::BinOp::Ne(_))
         && is_named_path(&binary.left, "wanted")
         && right_is_live_root
@@ -302,14 +276,8 @@ fn task_switch_loads_cr3_under_its_guard_before_context_state() {
     let source = std::fs::read_to_string(paths.root().join("wost/src/arch/x86_64/task.rs"))
         .expect("read task source");
     let syntax = syn::parse_file(&source).expect("parse task source");
-    let prepare = syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "prepare" => Some(function),
-            _ => None,
-        })
-        .expect("task source has no production prepare function");
+    let prepare =
+        first_function(&syntax, "prepare").expect("task source has no production prepare function");
 
     let mut order = ProductionTaskSwitchOrder::default();
     Visit::visit_item_fn(&mut order, prepare);

@@ -50,10 +50,9 @@ fn type_names_the_space(ty: &Type) -> bool {
     names.0
 }
 
-/// Every item `mem` exposes to the rest of the kernel whose type surface names
-/// the running `AddressSpace`. Function bodies are excluded on purpose: a body
-/// may reach the space through the private helper, but only a crossing
-/// signature or an accessible field hands it out (D-189).
+/// Every item `mem` exposes to the rest of the kernel whose type surface names the running
+/// `AddressSpace`. Bodies are excluded: only a crossing `fn` header or an accessible field
+/// hands it out.
 #[derive(Default)]
 struct AddressSpaceSurface(Vec<String>);
 
@@ -113,11 +112,8 @@ impl<'ast> Visit<'ast> for AddressSpaceSurface {
     }
 }
 
-/// D-189: the running `AddressSpace` carries reclaim and arbitrary-unmap
-/// authority, so nothing `mem` exposes to the rest of the kernel may name it.
-/// A rename of the private borrow helper fails compilation; a second borrow
-/// route under any other name is caught here, where the old name search could
-/// not see it (PW-552).
+/// The running `AddressSpace` carries reclaim and arbitrary-unmap authority, so nothing `mem`
+/// exposes may name it. A second borrow route under any other name is caught here (PW-552).
 #[test]
 fn no_item_mem_exposes_names_the_running_address_space() {
     let paths = Paths::discover().expect("workspace paths");

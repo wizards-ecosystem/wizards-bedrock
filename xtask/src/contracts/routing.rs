@@ -21,25 +21,8 @@ fn parse(relative: &str) -> syn::File {
     syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"))
 }
 
-fn rust_sources_below(relative: &str) -> Vec<(PathBuf, syn::File)> {
-    fn collect(directory: &std::path::Path, paths: &mut Vec<PathBuf>) {
-        let mut entries = crate::paths::directory_entries(directory)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", directory.display()));
-        entries.sort_by_key(|entry| entry.path());
-        for entry in entries {
-            let path = entry.path();
-            if entry.is_dir() {
-                collect(&path, paths);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                paths.push(path);
-            }
-        }
-    }
-
-    let directory = root().join(relative);
-    let mut paths = Vec::new();
-    collect(&directory, &mut paths);
-    paths
+fn parsed_sources_below(relative: &str) -> Vec<(PathBuf, syn::File)> {
+    super::rust_sources_below(&root().join(relative))
         .into_iter()
         .map(|path| {
             let source = std::fs::read_to_string(&path)
@@ -840,9 +823,9 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
     let mut pending_audit_sites = Vec::new();
     let mut pending_audit_references = 0;
     let mut pending_audit_imports = 0;
-    for (path, syntax) in rust_sources_below("kernel/src")
+    for (path, syntax) in parsed_sources_below("kernel/src")
         .into_iter()
-        .chain(rust_sources_below("wost/src"))
+        .chain(parsed_sources_below("wost/src"))
     {
         let mut calls = CallCount::default();
         calls.visit_file(&syntax);

@@ -10,8 +10,8 @@ use crate::paths::Paths;
 
 use super::sources::production_sources_below;
 use super::{
-    cfg_test, observer_impl_item_attributes, observer_item_attributes, require_error,
-    require_success,
+    cfg_test, first_function, observer_impl_item_attributes, observer_item_attributes,
+    require_error, require_success,
 };
 
 #[test]
@@ -87,7 +87,7 @@ fn pci_configuration_writes_require_function_authority() {
         |diagnostics| panic!("NVMe bus-master authority became forgeable:\n{diagnostics}"),
     );
 
-    // The domain proof is minted only by a programmed unit (D-357).
+    // The domain proof is minted only by a programmed unit.
     let forged_domain = "#![no_std]\n\
         fn forge(function: pci_config::Address) -> wost::arch::current::vtd::DmaDomain<'static> {\n\
             wost::arch::current::vtd::DmaDomain { function, _unit: core::marker::PhantomData }\n\
@@ -200,7 +200,7 @@ fn pci_configuration_writes_require_function_authority() {
     });
 }
 
-/// Types whose values are PCI function authority (D-335, D-342).
+/// Types whose values are PCI function authority.
 const PCI_AUTHORITY_ROOTS: [&str; 2] = ["FunctionAuthority", "FunctionClaim"];
 
 /// The only doors that may produce authority without consuming any.
@@ -1151,13 +1151,7 @@ fn pci_bar_mapping_requires_exact_linear_authority() {
     let main_source = std::fs::read_to_string(paths.root().join("kernel/src/main.rs"))
         .expect("read kernel main source");
     let main_syntax = syn::parse_file(&main_source).expect("parse kernel main source");
-    let admission = main_syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "admit_controller_window" => Some(function),
-            _ => None,
-        })
+    let admission = first_function(&main_syntax, "admit_controller_window")
         .expect("kernel main has no PCI BAR admission path");
     let mut shape = PciBarAdmissionShape::default();
     Visit::visit_item_fn(&mut shape, admission);
@@ -1177,14 +1171,8 @@ fn pci_bar_mapping_requires_exact_linear_authority() {
     );
 
     let nvme_syntax = super::module_syntax(&paths.root().join("kernel/src/nvme.rs"));
-    let prepare = nvme_syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "prepare" => Some(function),
-            _ => None,
-        })
-        .expect("NVMe source has no prepare function");
+    let prepare =
+        first_function(&nvme_syntax, "prepare").expect("NVMe source has no prepare function");
     let inputs = &prepare.sig.inputs;
     assert!(!inputs.is_empty(), "NVMe prepare has no context");
     assert!(

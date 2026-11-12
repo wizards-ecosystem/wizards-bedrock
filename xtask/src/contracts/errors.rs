@@ -162,34 +162,19 @@ fn public_failure_wrappers_are_must_use() {
 #[test]
 fn production_invariants_are_not_debug_only() {
     let paths = Paths::discover().expect("workspace paths");
-    let mut pending = ["kernel/src", "wost/src"]
-        .map(|directory| paths.root().join(directory))
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    while let Some(path) = pending.pop() {
-        for entry in crate::paths::directory_entries(&path)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
-        {
-            let source = entry.path();
-            if entry.is_dir() {
-                pending.push(source);
-            } else if source
-                .extension()
-                .is_some_and(|extension| extension == "rs")
-            {
-                let text = std::fs::read_to_string(&source)
-                    .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
-                let syntax = syn::parse_file(&text)
-                    .unwrap_or_else(|error| panic!("parsing {}: {error}", source.display()));
-                let mut assertions = DebugAssertions::default();
-                assertions.visit_file(&syntax);
-                assert!(
-                    assertions.found == 0,
-                    "{} makes an invariant debug-only",
-                    source.display()
-                );
-            }
+    for root in ["kernel/src", "wost/src"] {
+        for source in rust_sources_below(&paths.root().join(root)) {
+            let text = std::fs::read_to_string(&source)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
+            let syntax = syn::parse_file(&text)
+                .unwrap_or_else(|error| panic!("parsing {}: {error}", source.display()));
+            let mut assertions = DebugAssertions::default();
+            assertions.visit_file(&syntax);
+            assert!(
+                assertions.found == 0,
+                "{} makes an invariant debug-only",
+                source.display()
+            );
         }
     }
 }

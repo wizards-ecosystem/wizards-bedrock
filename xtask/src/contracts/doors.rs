@@ -9,7 +9,8 @@ use syn::{
 use crate::paths::Paths;
 
 use super::{
-    expression_is_ident, path_ends_with, require_error, require_success, rust_sources_below,
+    expression_is_ident, first_function, path_ends_with, require_error, require_success,
+    rust_sources_below,
 };
 
 fn top_level_function<'ast>(syntax: &'ast syn::File, name: &str, relative: &str) -> &'ast ItemFn {
@@ -858,10 +859,7 @@ fn wost_static_locks(paths: &Paths) -> BTreeMap<String, BTreeSet<String>> {
 /// The statics a module's `force_unlock` hands to the panic path.
 fn force_unlocked_statics(text: &str) -> Option<BTreeSet<String>> {
     let file = syn::parse_file(text).ok()?;
-    let function = file.items.iter().find_map(|item| match item {
-        Item::Fn(function) if function.sig.ident == "force_unlock" => Some(function),
-        _ => None,
-    })?;
+    let function = first_function(&file, "force_unlock")?;
     let mut statics = BTreeSet::new();
     for statement in &function.block.stmts {
         let syn::Stmt::Expr(expression, _) = statement else {
@@ -886,14 +884,7 @@ fn force_unlocked_statics(text: &str) -> Option<BTreeSet<String>> {
 /// The module paths `panic::reclaim` unlocks, as `crate::…` strings.
 fn reclaimed_modules(text: &str) -> BTreeSet<String> {
     let file = syn::parse_file(text).expect("parse wost panic source");
-    let reclaim = file
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "reclaim" => Some(function),
-            _ => None,
-        })
-        .expect("wost panic::reclaim");
+    let reclaim = first_function(&file, "reclaim").expect("wost panic::reclaim");
     let mut modules = BTreeSet::new();
     for statement in &reclaim.block.stmts {
         let syn::Stmt::Expr(Expr::Call(call), _) = statement else {

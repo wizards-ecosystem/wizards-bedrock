@@ -6,8 +6,9 @@ use syn::{Expr, ExprCall, Item, ItemFn, Macro, Pat, Type};
 use crate::paths::Paths;
 
 use super::{
-    Probe, asm_tokens, cfg_not_selftest, diagnostic_codes, module_source, observer_expr_attributes,
-    observer_impl_item_attributes, observer_item_attributes, require_error, selftest_cfg,
+    Probe, asm_tokens, cfg_not_selftest, diagnostic_codes, first_function, module_source,
+    observer_expr_attributes, observer_impl_item_attributes, observer_item_attributes,
+    require_error, selftest_cfg,
 };
 
 fn require_missing_items(
@@ -711,192 +712,204 @@ fn require_buffer_clear_state(source: &str) {
     ));
 }
 
-#[test]
-fn machine_evidence_writes_are_absent_from_shipped_paths() {
-    const OBSERVERS: &[(&str, &[(&str, usize)])] = &[
-        ("kernel/src/dev.rs", &[("KEYBOARD_GSI", 4)]),
-        (
-            "kernel/src/input.rs",
-            &[
-                ("evidence", 7),
-                ("dropped", 10),
-                ("POLLER_ROUNDS", 5),
-                ("FOREVER", 6),
-                ("POLLER_PASSES", 4),
-                ("POLLER_RUNNING", 7),
-                ("INTERRUPTS", 4),
-                ("WATCH", 5),
-                ("POLLER_STARTED", 5),
-                ("POLLER_SAW_PEER", 5),
-            ],
-        ),
-        (
-            "kernel/src/arch/x86_64/trap.rs",
-            &[
-                ("SPURIOUS_OBSERVATIONS", 4),
-                ("USER_COPY_RECOVERIES", 4),
-                ("LAST_USER_FAULT", 4),
-                ("SMAP_ON_ENTRY", 3),
-                ("LAST_SYSCALL", 3),
-                ("LAST_BREAKPOINT", 4),
-                ("LAST_PING", 5),
-                ("KERNEL_STACK_SELECTOR_ON_ENTRY", 3),
-                ("REJECTED_DUPLICATE_EOI_CLAIMS", 4),
-                ("RECLAIMED_ABANDONED_EOI", 3),
-                ("observe_syscall_entry", 3),
-            ],
-        ),
-        ("kernel/src/object.rs", &[("LIVE_CHANNELS", 4)]),
-        (
-            "kernel/src/time.rs",
-            &[
-                ("APIC_HZ", 4),
-                ("LAST_WATCHDOG_TSC", 4),
-                ("LAST_WATCHDOG_PIT", 4),
-                ("LAST_WATCHDOG_EXPECTED", 4),
-                ("EXPIRIES", 4),
-            ],
-        ),
-        (
-            "kernel/src/timepage.rs",
-            &[("WINDOW_LEFT_PREEMPTIBLE", 4), ("WINDOW_NEVER_OPENED", 4)],
-        ),
-        (
-            "kernel/src/queue.rs",
-            &[
-                ("settlement_refusals", 4),
-                ("LIVE_QUEUES", 5),
-                ("WORKER_REAPS", 4),
-                ("WORKER_RETAINED", 4),
-                ("WORKER_IS_PAUSED", 6),
-                ("WORK_RUNS", 4),
-            ],
-        ),
-        (
-            "kernel/src/thread.rs",
-            &[
-                ("POLICY_FALLBACKS", 4),
-                ("WAKES", 4),
-                ("BLOCKS", 5),
-                ("TRAP_WAITS", 4),
-                ("IDLE_HALTS", 4),
-                ("RETIREMENTS", 4),
-                ("HANDLER_ARMS", 4),
-            ],
-        ),
-        (
-            "kernel/src/user.rs",
-            &[
-                ("RECLAIMED_PAGES", 4),
-                ("RECLAIMED_TABLES", 3),
-                ("REFUSED_TABLE_RECLAIMS", 3),
-                ("REFUSED_RING_RECLAIMS", 3),
-                ("ROLLED_BACK_PAGES", 3),
-                ("ROLLED_BACK_TABLES", 3),
-                ("RITES", 3),
-                ("REFUSED_MAPPING_RECLAIMS", 5),
-                ("REFUSED_TASK_RETIREMENTS", 3),
-                ("BIRTHS", 3),
-                ("COLLECTION_IS_PAUSED", 4),
-                ("COLLECTION_IS_SETTLING", 4),
-                ("RING_ENTER_ARMS", 3),
-                ("observed_birth_handle", 7),
-                ("observed_table_incarnation", 3),
-                ("observed_returned_pages", 18),
-            ],
-        ),
-        (
-            "kernel/src/main.rs",
-            &[
-                ("EXTERNAL_MASK_REFUSAL_PROVED", 3),
-                ("NVME_CANDIDATE_ATTEMPTS", 3),
-                ("NVME_CLEAN_RETIREMENTS", 3),
-                ("NVME_SELECTED_ORDINAL", 3),
-                ("NVME_BME_REFUSAL_PROVED", 3),
-                ("NVME_BAR_ADMISSION_PROVED", 3),
-                ("ROUTING_ROLLBACK_PROVED", 3),
-                ("CandidateBaseline", 4),
-                ("CandidateStackMeasurement", 1),
-                ("finish_candidate_stack", 2),
-            ],
-        ),
-        ("kernel/src/pci.rs", &[("OBSERVED_BUS_MASTER_REFUSAL", 4)]),
-        (
-            "kernel/src/arch/x86_64/i8042.rs",
-            &[("CONTROL_COMMAND_REFUSED", 6)],
-        ),
-        (
-            "kernel/src/nvme.rs",
-            &[
-                ("BME_PRECEDING_CC", 4),
-                ("BME_PRECEDING_CSTS", 4),
-                ("REFUSED_BME_PRECEDING_CC", 4),
-                ("REFUSED_BME_PRECEDING_CSTS", 4),
-                ("START_ATTEMPTS", 4),
-                ("SUBMISSION_DOORBELLS", 4),
-                ("COMMAND_HELD", 5),
-                ("published_commands", 5),
-                ("intercepted_read_submissions", 5),
-                ("intercepted_io_queue_creations", 5),
-                ("observed_window", 14),
-                ("STACK_METER_STATE", 8),
-                ("STACK_LOWEST", 4),
-                ("STACK_MAX_USED", 3),
-                ("STACK_MAX_LEAF", 3),
-                ("STACK_CANDIDATES", 3),
-                ("STACK_MEASUREMENTS", 3),
-                ("STACK_MEASUREMENT_VALID", 3),
-                ("observe_candidate_stack", 4),
-                ("CandidateStackMeasurement", 5),
-                ("finish_candidate_stack", 2),
-            ],
-        ),
-        (
-            "wost/src/arch/x86_64/paging.rs",
-            &[
-                ("RECLAIMED_REFUSALS", 7),
-                ("CLEARED_ON_DROP", 4),
-                ("PROBE_OBSERVATIONS", 7),
-                ("PROBE_PARTIAL_OBSERVATIONS", 4),
-                ("mapping_refusal", 4),
-            ],
-        ),
-        ("wost/src/arch/x86_64/cpu.rs", &[("PAGE_INVALIDATIONS", 4)]),
-        (
-            "wost/src/arch/x86_64/apic.rs",
-            &[("INIT_OBSERVATIONS", 4), ("INIT_OBSERVATION_FAILED", 4)],
-        ),
-        ("wost/src/sync.rs", &[("forgotten_for_test", 5)]),
-        (
-            "wost/src/arch/x86_64/percpu.rs",
-            &[
-                ("leaves_held", 5),
-                ("under_a_leaf", 4),
-                ("the_leaf", 4),
-                ("last_leaf", 4),
-            ],
-        ),
-        (
-            "wost/src/mm/heap.rs",
-            &[("slab_frames", 7), ("record_slab_frame", 2)],
-        ),
-        ("wost/src/mmio.rs", &[("base_address", 1)]),
-    ];
+const SELFTEST_OBSERVERS: &[(&str, &[(&str, usize)])] = &[
+    ("kernel/src/dev.rs", &[("KEYBOARD_GSI", 4)]),
+    (
+        "kernel/src/input.rs",
+        &[
+            ("evidence", 7),
+            ("dropped", 10),
+            ("POLLER_ROUNDS", 5),
+            ("FOREVER", 6),
+            ("POLLER_PASSES", 4),
+            ("POLLER_RUNNING", 7),
+            ("INTERRUPTS", 4),
+            ("WATCH", 5),
+            ("POLLER_STARTED", 5),
+            ("POLLER_SAW_PEER", 5),
+        ],
+    ),
+    (
+        "kernel/src/arch/x86_64/trap.rs",
+        &[
+            ("SPURIOUS_OBSERVATIONS", 4),
+            ("USER_COPY_RECOVERIES", 4),
+            ("LAST_USER_FAULT", 4),
+            ("SMAP_ON_ENTRY", 3),
+            ("LAST_SYSCALL", 3),
+            ("LAST_BREAKPOINT", 4),
+            ("LAST_PING", 5),
+            ("KERNEL_STACK_SELECTOR_ON_ENTRY", 3),
+            ("REJECTED_DUPLICATE_EOI_CLAIMS", 4),
+            ("RECLAIMED_ABANDONED_EOI", 3),
+            ("observe_syscall_entry", 3),
+        ],
+    ),
+    ("kernel/src/object.rs", &[("LIVE_CHANNELS", 4)]),
+    (
+        "kernel/src/time.rs",
+        &[
+            ("APIC_HZ", 4),
+            ("LAST_WATCHDOG_TSC", 4),
+            ("LAST_WATCHDOG_PIT", 4),
+            ("LAST_WATCHDOG_EXPECTED", 4),
+            ("EXPIRIES", 4),
+        ],
+    ),
+    (
+        "kernel/src/timepage.rs",
+        &[("WINDOW_LEFT_PREEMPTIBLE", 4), ("WINDOW_NEVER_OPENED", 4)],
+    ),
+    (
+        "kernel/src/queue.rs",
+        &[
+            ("settlement_refusals", 4),
+            ("LIVE_QUEUES", 5),
+            ("WORKER_REAPS", 4),
+            ("WORKER_RETAINED", 4),
+            ("WORKER_IS_PAUSED", 6),
+            ("WORK_RUNS", 4),
+        ],
+    ),
+    (
+        "kernel/src/thread.rs",
+        &[
+            ("POLICY_FALLBACKS", 4),
+            ("WAKES", 4),
+            ("BLOCKS", 5),
+            ("TRAP_WAITS", 4),
+            ("IDLE_HALTS", 4),
+            ("RETIREMENTS", 4),
+            ("HANDLER_ARMS", 4),
+        ],
+    ),
+    (
+        "kernel/src/user.rs",
+        &[
+            ("RECLAIMED_PAGES", 4),
+            ("RECLAIMED_TABLES", 3),
+            ("REFUSED_TABLE_RECLAIMS", 3),
+            ("REFUSED_RING_RECLAIMS", 3),
+            ("ROLLED_BACK_PAGES", 3),
+            ("ROLLED_BACK_TABLES", 3),
+            ("RITES", 3),
+            ("REFUSED_MAPPING_RECLAIMS", 5),
+            ("REFUSED_TASK_RETIREMENTS", 3),
+            ("BIRTHS", 3),
+            ("COLLECTION_IS_PAUSED", 4),
+            ("COLLECTION_IS_SETTLING", 4),
+            ("RING_ENTER_ARMS", 3),
+            ("observed_birth_handle", 7),
+            ("observed_table_incarnation", 3),
+            ("observed_returned_pages", 18),
+        ],
+    ),
+    (
+        "kernel/src/main.rs",
+        &[
+            ("EXTERNAL_MASK_REFUSAL_PROVED", 3),
+            ("NVME_CANDIDATE_ATTEMPTS", 3),
+            ("NVME_CLEAN_RETIREMENTS", 3),
+            ("NVME_SELECTED_ORDINAL", 3),
+            ("NVME_BME_REFUSAL_PROVED", 3),
+            ("NVME_BAR_ADMISSION_PROVED", 3),
+            ("ROUTING_ROLLBACK_PROVED", 3),
+            ("CandidateBaseline", 4),
+            ("CandidateStackMeasurement", 1),
+            ("finish_candidate_stack", 2),
+        ],
+    ),
+    ("kernel/src/pci.rs", &[("OBSERVED_BUS_MASTER_REFUSAL", 4)]),
+    (
+        "kernel/src/arch/x86_64/i8042.rs",
+        &[("CONTROL_COMMAND_REFUSED", 6)],
+    ),
+    (
+        "kernel/src/nvme.rs",
+        &[
+            ("BME_PRECEDING_CC", 4),
+            ("BME_PRECEDING_CSTS", 4),
+            ("REFUSED_BME_PRECEDING_CC", 4),
+            ("REFUSED_BME_PRECEDING_CSTS", 4),
+            ("START_ATTEMPTS", 4),
+            ("SUBMISSION_DOORBELLS", 4),
+            ("COMMAND_HELD", 5),
+            ("published_commands", 5),
+            ("intercepted_read_submissions", 5),
+            ("intercepted_io_queue_creations", 5),
+            ("observed_window", 14),
+            ("STACK_METER_STATE", 8),
+            ("STACK_LOWEST", 4),
+            ("STACK_MAX_USED", 3),
+            ("STACK_MAX_LEAF", 3),
+            ("STACK_CANDIDATES", 3),
+            ("STACK_MEASUREMENTS", 3),
+            ("STACK_MEASUREMENT_VALID", 3),
+            ("observe_candidate_stack", 4),
+            ("CandidateStackMeasurement", 5),
+            ("finish_candidate_stack", 2),
+        ],
+    ),
+    (
+        "wost/src/arch/x86_64/paging.rs",
+        &[
+            ("RECLAIMED_REFUSALS", 7),
+            ("CLEARED_ON_DROP", 4),
+            ("PROBE_OBSERVATIONS", 7),
+            ("PROBE_PARTIAL_OBSERVATIONS", 4),
+            ("mapping_refusal", 4),
+        ],
+    ),
+    ("wost/src/arch/x86_64/cpu.rs", &[("PAGE_INVALIDATIONS", 4)]),
+    (
+        "wost/src/arch/x86_64/apic.rs",
+        &[("INIT_OBSERVATIONS", 4), ("INIT_OBSERVATION_FAILED", 4)],
+    ),
+    ("wost/src/sync.rs", &[("forgotten_for_test", 5)]),
+    (
+        "wost/src/arch/x86_64/percpu.rs",
+        &[
+            ("leaves_held", 5),
+            ("under_a_leaf", 4),
+            ("the_leaf", 4),
+            ("last_leaf", 4),
+        ],
+    ),
+    (
+        "wost/src/mm/heap.rs",
+        &[("slab_frames", 7), ("record_slab_frame", 2)],
+    ),
+    ("wost/src/mmio.rs", &[("base_address", 1)]),
+];
 
-    let paths = Paths::discover().expect("workspace paths");
+fn require_observer_inventory_size() {
     assert_eq!(
-        OBSERVERS
+        SELFTEST_OBSERVERS
             .iter()
             .map(|(_, observers)| observers.len())
             .sum::<usize>(),
         108,
         "D-290's evidence-identifier inventory"
     );
-    for &(relative, expected) in OBSERVERS {
-        require_selftest_observers(paths.root(), relative, expected);
+}
+
+fn require_every_selftest_observer(root: &std::path::Path) {
+    for &(relative, expected) in SELFTEST_OBSERVERS {
+        require_selftest_observers(root, relative, expected);
     }
-    require_selftest_parameter(paths.root(), "kernel/src/dev.rs", "keep_io_apic", 1);
-    require_selftest_call_argument(paths.root(), "kernel/src/main.rs", "keep_io_apic", 1);
+}
+
+fn require_keep_io_apic_is_selftest_only(root: &std::path::Path) {
+    require_selftest_parameter(root, "kernel/src/dev.rs", "keep_io_apic", 1);
+    require_selftest_call_argument(root, "kernel/src/main.rs", "keep_io_apic", 1);
+}
+
+#[test]
+fn machine_evidence_writes_are_absent_from_shipped_paths() {
+    let paths = Paths::discover().expect("workspace paths");
+    require_observer_inventory_size();
+    require_every_selftest_observer(paths.root());
+    require_keep_io_apic_is_selftest_only(paths.root());
     require_split_mapping_write(paths.root());
 }
 
@@ -1030,13 +1043,7 @@ fn allocator_ledgers_hold_one_interrupt_epoch() {
         "allocator snapshot",
     );
 
-    let resources = syntax
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "spawn_resources" => Some(function),
-            _ => None,
-        })
+    let resources = first_function(&syntax, "spawn_resources")
         .expect("kernel selftest has no spawn_resources ledger");
     require_one_observation_epoch(
         &resources.block,

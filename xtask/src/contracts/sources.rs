@@ -7,7 +7,7 @@ use crate::paths::Paths;
 
 use super::{cfg_test, observer_item_attributes, rust_sources_below};
 
-/// Checks that refuse a link or non-file at a path (D-344).
+/// Checks that refuse a link or non-file at a path.
 const PATH_CHECKS: [&str; 7] = [
     "canonical_existing_real_directory",
     "require_confined_file",
@@ -140,11 +140,11 @@ fn checked_reopens(relative: &str, source: &str) -> Vec<String> {
     violations
 }
 
-/// Record builders whose source is established again when their record is
-/// qualified, so the Git that answered is the qualifying run's (D-344).
+/// Record builders whose source is established again when their record is qualified, so the
+/// Git that answered is the qualifying run's.
 const SOURCE_WITHOUT_GIT: [&str; 1] = ["generation_record_from_digests"];
 
-/// Publishers that must re-measure Git after its last answer (D-344).
+/// Publishers that must re-measure Git after its last answer.
 const GIT_PUBLISHERS: [(&str, &str, &str); 2] = [
     ("xtask/src/evidence.rs", "create", "write_manifest"),
     (

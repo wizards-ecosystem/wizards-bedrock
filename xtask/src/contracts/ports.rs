@@ -116,11 +116,8 @@ impl RawPortClaims {
     }
 }
 
-/// Production kernel code names a device, never a raw port number (D-351).
-///
-/// A driver asks `port::i8042()` or `port::com1()`, not `port::claim(0x60)`.
-/// Only the self-test harness may probe the registry with a raw claim, so a
-/// component cannot reserve hardware it does not own.
+/// Production kernel code names a device, never a raw port number, so a component
+/// cannot reserve hardware it does not own. Only the self-test harness probes with a raw claim.
 #[test]
 fn production_kernel_code_claims_no_port_by_number() {
     let paths = Paths::discover().expect("workspace paths");
