@@ -146,6 +146,13 @@ fn a_mistyped_task_or_run_option_says_what_was_meant() {
     assert_eq!(error(&["build", "-display"]), "unknown option `-display`");
 }
 
+#[test]
+fn a_name_too_short_or_too_far_from_every_task_suggests_nothing() {
+    let error = |name: &str| parse_args(&[name]).unwrap_err().to_string();
+    assert_eq!(error("dc"), "unknown task `dc`");
+    assert_eq!(error("qualify-vmw"), "unknown task `qualify-vmw`");
+}
+
 fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
     for task in [
         "build",

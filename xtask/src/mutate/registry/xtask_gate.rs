@@ -1037,4 +1037,28 @@ pub(super) const MUTATIONS: &[Mutation] = &[
             name: "cli::tests::every_task_the_parser_accepts_is_named_in_the_help",
         },
     },
+    Mutation {
+        id: 2480,
+        file: "xtask/src/cli.rs",
+        find: "name.chars().count().saturating_sub(1) / 2",
+        replace: "name.chars().count().saturating_sub(0) / 2",
+        breaks: "a two letter name is offered the one task a letter away from it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::a_name_too_short_or_too_far_from_every_task_suggests_nothing",
+        },
+    },
+    Mutation {
+        id: 2481,
+        file: "xtask/src/cli.rs",
+        find: ".min(2);
+    TASK_NAMES",
+        replace: ".min(5);
+    TASK_NAMES",
+        breaks: "a long name three edits from a task is offered that task",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::a_name_too_short_or_too_far_from_every_task_suggests_nothing",
+        },
+    },
 ];
