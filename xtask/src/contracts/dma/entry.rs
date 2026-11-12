@@ -10,6 +10,30 @@ use super::{
 
 #[test]
 fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
+    entry_proof_precedes_memory_initialization();
+    let iommu = module_source("kernel/src/iommu.rs");
+    secure_handoff_fences_before_its_proof(&iommu);
+    let iommu_syntax = the_entry_proof_cannot_be_copied(&iommu);
+    early_table_lookup_refuses_duplicates();
+    memory_initialization_consumes_the_proof();
+
+    let pci = source("libs/pci-config/src/fence.rs");
+    let pci_crate = source_tree(&root().join("libs/pci-config/src"));
+    let fence = entry_fence_walks_every_function(&pci);
+    let pci_syntax = only_the_entry_fence_mints_non_requesters(&pci, &pci_crate);
+    let kernel_pci = source("kernel/src/pci.rs");
+    let snapshot = topology_snapshot_observes_entry_authority(&kernel_pci);
+    // The entry-quiesced ISA requester stays in every inventory, so a unit-wide fence must hold it
+    // by exact identity, command and a fresh 8237 remask rather than by a BME clear it cannot
+    // perform.
+    quiesced_isa_requester_stays_fenced(&kernel_pci, &pci, fence, &pci_syntax);
+    isa_controllers_are_claimed_before_the_fence_lock();
+    topology_requires_the_non_requester_proof(snapshot, &kernel_pci);
+    requester_inventory_reads_the_sealed_topology(&iommu_syntax);
+    entry_hands_both_authorities_to_the_topology();
+}
+
+fn entry_proof_precedes_memory_initialization() {
     let main = source("kernel/src/main.rs");
     let boot = main
         .split_once("fn kernel_main(boot: BootInfo) -> ! {")
@@ -28,8 +52,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .find("mem::init(boot.memory_map, boot.direct_map, early_dma);")
         .expect("proof-consuming memory initialization");
     assert!(proof < console && console < memory);
+}
 
-    let iommu = module_source("kernel/src/iommu.rs");
+fn secure_handoff_fences_before_its_proof(iommu: &str) {
     let boundary = iommu
         .split_once("pub(crate) fn secure_handoff")
         .expect("secure handoff")
@@ -55,6 +80,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .find("compiler_fence(Ordering::SeqCst)")
         .expect("compiler ordering after requester fence");
     assert!(platform < table && table < ports && ports < fence && fence < ordering);
+}
+
+fn the_entry_proof_cannot_be_copied(iommu: &str) -> syn::File {
     let iommu_syntax = parse("kernel/src/iommu.rs");
     let token = iommu_syntax
         .items
@@ -68,7 +96,10 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(exact_derives(&token.attrs, &["Debug"]));
     assert!(!iommu.contains("impl Clone for EarlyDmaBoundary"));
     assert!(!iommu.contains("impl Copy for EarlyDmaBoundary"));
+    iommu_syntax
+}
 
+fn early_table_lookup_refuses_duplicates() {
     let acpi = source("kernel/src/acpi.rs");
     let unique = acpi
         .split_once("pub(crate) fn find_unique_early")
@@ -81,7 +112,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(unique.contains("return Err(EarlyTableError::RootEntry);"));
     assert!(unique.contains("if found.replace(table).is_some()"));
     assert!(unique.contains("return Err(EarlyTableError::Duplicate);"));
+}
 
+fn memory_initialization_consumes_the_proof() {
     let memory = source("kernel/src/mem.rs");
     let init = memory
         .split_once("pub(crate) fn init(")
@@ -91,10 +124,10 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         .expect("memory initialization signature")
         .0;
     assert!(init.contains("_dma: EarlyDmaBoundary"));
+}
 
-    let pci = source("libs/pci-config/src/fence.rs");
-    let pci_crate = source_tree(&root().join("libs/pci-config/src"));
-    let fence = source_through(&pci, "pub fn fence_dma_handoff(", "fn verify_unchanged(")
+fn entry_fence_walks_every_function(pci: &str) -> &str {
+    let fence = source_through(pci, "pub fn fence_dma_handoff(", "fn verify_unchanged(")
         .expect("pure entry fence");
     assert!(fence.contains("for bus in 0..=u8::MAX"));
     assert!(fence.contains("for device in 0..DEVICES"));
@@ -106,9 +139,12 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(fence.contains(".classify_non_requester(at, identity, class, before, found)"));
     assert!(fence.contains("if current != identity"));
     assert!(fence.contains("if current_class != class"));
+    fence
+}
 
-    let profile = function_after(&pci, "fn classify_non_requester(")
-        .expect("qualified non-requester profile");
+fn only_the_entry_fence_mints_non_requesters(pci: &str, pci_crate: &str) -> syn::File {
+    let profile =
+        function_after(pci, "fn classify_non_requester(").expect("qualified non-requester profile");
     for exact in [
         "at.bus() == 0",
         "at.device() == 0",
@@ -144,10 +180,12 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     );
     assert!(!pci_crate.contains("impl Clone for QualifiedNonRequester"));
     assert!(!pci_crate.contains("impl Copy for QualifiedNonRequester"));
+    pci_syntax
+}
 
-    let kernel_pci = source("kernel/src/pci.rs");
+fn topology_snapshot_observes_entry_authority(kernel_pci: &str) -> &str {
     let snapshot = function_after(
-        &kernel_pci,
+        kernel_pci,
         "pub(crate) fn snapshot_topology(\n    mut non_requester: Option<QualifiedNonRequester>,\n    mut quiesced: Option<QuiescedIsaRequester>,\n)",
     )
     .expect("entry-proof-bound topology snapshot");
@@ -158,12 +196,17 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
     assert!(snapshot.contains("topology.observe_quiesced_requester("));
     assert!(snapshot.contains("if let Some(authority) = quiesced {"));
     assert!(snapshot.contains("TopologyError::QuiescedRequesterMissing"));
+    snapshot
+}
 
-    // D-426: the entry-quiesced ISA requester stays in every inventory, so a
-    // unit-wide fence must hold it by exact identity, command and a fresh
-    // 8237 remask rather than by a BME clear it cannot perform.
+fn quiesced_isa_requester_stays_fenced(
+    kernel_pci: &str,
+    pci: &str,
+    fence: &str,
+    pci_syntax: &syn::File,
+) {
     let requester_fence = source_through(
-        &kernel_pci,
+        kernel_pci,
         "pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {",
         "fn fence_quiesced_requester(",
     )
@@ -218,6 +261,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             .iter()
             .all(|field| matches!(field.vis, Visibility::Inherited))
     );
+}
+
+fn isa_controllers_are_claimed_before_the_fence_lock() {
     let wost_pci = module_source("wost/src/arch/x86_64/pci.rs");
     assert!(
         wost_pci.contains("HandoffAccess::QuiesceIsaDma => isa_dma.as_mut().map(IsaDma::quiesce),")
@@ -232,6 +278,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
         claim < lock,
         "the 8237 claim precedes the configuration guard"
     );
+}
+
+fn topology_requires_the_non_requester_proof(snapshot: &str, kernel_pci: &str) {
     assert!(snapshot.contains("if let Some(authority) = non_requester {"));
     assert!(snapshot.contains("TopologyError::QualifiedNonRequesterMissing"));
     assert!(
@@ -239,8 +288,10 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             "topology_contains_function(at) && TOPOLOGY.lock_leaf().contains_requester(at)"
         )
     );
+}
 
-    let inventory = function(&iommu_syntax, "requester_is_present");
+fn requester_inventory_reads_the_sealed_topology(iommu_syntax: &syn::File) {
+    let inventory = function(iommu_syntax, "requester_is_present");
     let mut inventory_paths = ReferencedPaths::default();
     inventory_paths.visit_item_fn(inventory);
     assert!(
@@ -256,7 +307,7 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             .all(|name| name != "topology_contains_function")
     );
 
-    let coverage = function(&iommu_syntax, "covers_every_present_requester");
+    let coverage = function(iommu_syntax, "covers_every_present_requester");
     let mut coverage_paths = ReferencedPaths::default();
     coverage_paths.visit_item_fn(coverage);
     assert!(
@@ -271,7 +322,9 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
             .iter()
             .all(|name| name != "topology_contains_function")
     );
+}
 
+fn entry_hands_both_authorities_to_the_topology() {
     let main = source("kernel/src/main.rs");
     assert!(main.contains("let dma_non_requester = early_dma.take_non_requester();"));
     assert!(main.contains("let dma_quiesced = early_dma.take_quiesced_requester();"));
@@ -283,6 +336,23 @@ fn memory_initialization_requires_the_exhaustive_entry_dma_boundary() {
 fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     let vtd_source = module_source("wost/src/arch/x86_64/vtd.rs");
     let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
+    interrupt_isolation_names_its_function(&vtd);
+    vtd_refuses_unsafe_interrupt_state(&vtd_source);
+    transition_masks_faults_before_enabling(&vtd);
+    takeover_preflight_repeats_before_the_first_write(&vtd_source);
+    queued_invalidation_and_fault_mask_are_exact(&vtd_source);
+    kernel_refuses_incomplete_interrupt_authority();
+    firmware_and_topology_queries_refuse_ambiguity();
+    let main = source("kernel/src/main.rs");
+    boot_checks_the_boundary_and_pending_vectors(&main);
+    survey_owns_the_fabric_before_enumeration(&main);
+    interrupts_start_after_the_boundary_and_pending_audit(&main);
+    pending_audit_precedes_the_first_sti();
+    keyboard_routing_rolls_back_while_pci_is_present(&main);
+    pollers_sleep_only_while_timers_can_wake_them();
+}
+
+fn interrupt_isolation_names_its_function(vtd: &syn::File) {
     let proof = vtd
         .items
         .iter()
@@ -301,8 +371,10 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(matches!(function.vis, Visibility::Inherited));
     assert!(matches!(&function.ty, Type::Path(path)
         if path.path.segments.last().is_some_and(|segment| segment.ident == "Address")));
-    assert_eq!(authority_alias_count(&vtd, &["InterruptIsolation"]), 0);
+    assert_eq!(authority_alias_count(vtd, &["InterruptIsolation"]), 0);
+}
 
+fn vtd_refuses_unsafe_interrupt_state(vtd_source: &str) {
     for requirement in [
         "if !platform_interrupt_remapping {",
         "if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
@@ -324,9 +396,11 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
             "VT-d interrupt boundary lost `{requirement}`"
         );
     }
+}
 
+fn transition_masks_faults_before_enabling(vtd: &syn::File) {
     let mut transition = CallNames::default();
-    transition.visit_impl_item_fn(method(&vtd, "Vtd", "transition").expect("VT-d transition"));
+    transition.visit_impl_item_fn(method(vtd, "Vtd", "transition").expect("VT-d transition"));
     let fault_mask = call_position(&transition, "mask_fault_interrupt");
     let root = call_position(&transition, "set_root_table");
     let interrupt_table = call_position(&transition, "set_interrupt_table");
@@ -342,12 +416,15 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
             && interrupt_enable < translation_enable
             && translation_enable < drain
     );
+}
+
+fn takeover_preflight_repeats_before_the_first_write(vtd_source: &str) {
     assert_eq!(
         vtd_source.matches("if !takeover_ready(status) {").count(),
         2,
         "read-only takeover preflight must be repeated after table allocation and before the first unit write"
     );
-    let establishment = function_after(&vtd_source, "    pub fn establish_deny_all(")
+    let establishment = function_after(vtd_source, "    pub fn establish_deny_all(")
         .expect("deny-all establishment");
     let allocation = establishment
         .find("IommuTable::new(TABLE_LIMIT, walks)")
@@ -359,6 +436,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("let mut unit = Self {")
         .expect("first hardware-owning value construction");
     assert!(allocation < repeated_preflight && repeated_preflight < construction);
+}
+
+fn queued_invalidation_and_fault_mask_are_exact(vtd_source: &str) {
     assert!(!vtd_source.contains("fn quiesce("));
     let invalidation = vtd_source
         .split_once("fn invalidate_interrupt_cache(")
@@ -390,7 +470,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(fault_mask.contains("let prior = read_u32(&self.registers, vtd::FECTL)?;"));
     assert!(fault_mask.contains("prior | fault_event_control::MASK"));
     assert!(fault_mask.contains("fault_event_control::masked(observed)"));
+}
 
+fn kernel_refuses_incomplete_interrupt_authority() {
     let iommu = module_source("kernel/src/iommu.rs");
     for requirement in [
         "if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
@@ -432,6 +514,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
     assert!(iommu.contains(
         "INSTALLED\n        .lock()\n        .as_ref()\n        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())"
     ));
+}
+
+fn firmware_and_topology_queries_refuse_ambiguity() {
     let acpi = source("libs/acpi-tables/src/requesters.rs");
     let early_unit = source_through(
         &acpi,
@@ -464,11 +549,15 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
             "if !topology_is_sealed() {\n        return TopologyPresence::Unsealed;\n    }"
         )
     );
+}
 
-    let main = source("kernel/src/main.rs");
+fn boot_checks_the_boundary_and_pending_vectors(main: &str) {
     assert!(main.contains("if !iommu::interrupt_boundary_active() {"));
     assert!(main.contains("pci::TopologyPresence::Empty"));
     assert!(main.contains("if let Err(reason) = apic::enable_after_pending_audit() {"));
+}
+
+fn survey_owns_the_fabric_before_enumeration(main: &str) {
     let survey = main
         .split_once(
             "fn survey_the_bus(\n    dma_non_requester: Option<pci_config::QualifiedNonRequester>,\n    dma_quiesced: Option<pci_config::QuiescedIsaRequester>,\n)",
@@ -486,6 +575,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .expect("PCI topology snapshot");
     let enumeration = survey.find("pci::enumerate(").expect("PCI enumeration");
     assert!(early < snapshot && snapshot < enumeration);
+}
+
+fn interrupts_start_after_the_boundary_and_pending_audit(main: &str) {
     let start = main
         .split_once("fn start_interrupts(")
         .expect("initial interrupt admission")
@@ -503,7 +595,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .find("MASKABLE_INTERRUPTS_READY.store(true")
         .expect("interrupt-ready publication");
     assert!(remapping < pending && pending < ready);
+}
 
+fn pending_audit_precedes_the_first_sti() {
     let apic = module_source("wost/src/arch/x86_64/apic.rs");
     assert!(apic.contains(
         "for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {"
@@ -526,6 +620,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .expect("pending-vector refusal");
     let sti = audit.find("interrupt::enable()").expect("initial sti");
     assert!(irr < refusal && refusal < sti);
+}
+
+fn keyboard_routing_rolls_back_while_pci_is_present(main: &str) {
     let route = main
         .split_once("fn route_keyboard(")
         .expect("keyboard routing boundary")
@@ -552,7 +649,9 @@ fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
         .rfind("commit_keyboard_route(routing)")
         .expect("non-PCI keyboard routing commit");
     assert!(boundary < rollback && rollback < returned && returned < commit);
+}
 
+fn pollers_sleep_only_while_timers_can_wake_them() {
     let input = module_source("kernel/src/input.rs");
     assert_eq!(
         input
