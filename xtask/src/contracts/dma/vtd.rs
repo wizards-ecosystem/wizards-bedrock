@@ -1,5 +1,6 @@
 use syn::{
-    Expr, ExprAssign, ExprCall, ExprMethodCall, Fields, FnArg, Item, Pat, Stmt, Type, visit::Visit,
+    Expr, ExprAssign, ExprCall, ExprMethodCall, Fields, FnArg, Item, Pat, Stmt, Type,
+    parse::Parser, visit::Visit,
 };
 
 use crate::test_support::function_after;
@@ -205,7 +206,23 @@ fn vtd_revocation_drains_older_dma_before_recycling_frames() {
 #[test]
 fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
     let memory_syntax = parse_module("wost/src/mm.rs");
-    let atomic = method(&memory_syntax, "DirectSpan", "write_u64_volatile_at")
+    qword_primitive_issues_one_volatile_store(&memory_syntax);
+    table_writer_publishes_one_exact_qword(&memory_syntax);
+
+    let vtd = module_source("wost/src/arch/x86_64/vtd.rs");
+    let vtd_syntax = parse_module("wost/src/arch/x86_64/vtd.rs");
+    mappings_forward_their_exact_direction(&vtd, &vtd_syntax);
+    map_page_publishes_one_pointer_and_one_leaf(&vtd_syntax);
+    nvme_maps_each_buffer_in_its_direction();
+
+    let main = source("kernel/src/main.rs");
+    let main_syntax = parse("kernel/src/main.rs");
+    startup_buffer_is_cleared_before_dma_authority(&main, &main_syntax);
+    startup_buffer_is_read_once_by_the_candidate(&main_syntax);
+}
+
+fn qword_primitive_issues_one_volatile_store(memory_syntax: &syn::File) {
+    let atomic = method(memory_syntax, "DirectSpan", "write_u64_volatile_at")
         .expect("typed volatile qword publication primitive");
     let Some(FnArg::Typed(value)) = atomic.sig.inputs.iter().nth(2) else {
         panic!("qword publication has no typed value");
@@ -236,8 +253,11 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             && publication.contains("unsafe { word.write_volatile(value.to_le()) };"),
         "live VT-d entries must use one aligned qword publication"
     );
+}
+
+fn table_writer_publishes_one_exact_qword(memory_syntax: &syn::File) {
     let table_writer =
-        method(&memory_syntax, "IommuTable", "write_u64").expect("IOMMU-table qword writer");
+        method(memory_syntax, "IommuTable", "write_u64").expect("IOMMU-table qword writer");
     assert_eq!(
         table_writer.block.stmts.len(),
         5,
@@ -300,9 +320,9 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         (1, 1, 0, 0, 0),
         "the IOMMU-table writer must have one exact span qword publication and no alternate write"
     );
+}
 
-    let vtd = module_source("wost/src/arch/x86_64/vtd.rs");
-    let vtd_syntax = parse_module("wost/src/arch/x86_64/vtd.rs");
+fn mappings_forward_their_exact_direction(vtd: &str, vtd_syntax: &syn::File) {
     for (name, direction) in [
         (
             "map_segment",
@@ -323,18 +343,21 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         );
     }
     exact_self_method_call(
-        method(&vtd_syntax, "Vtd", "map_segment_with").expect("directional mapping boundary"),
+        method(vtd_syntax, "Vtd", "map_segment_with").expect("directional mapping boundary"),
         "map_range",
         &["physical", "len"],
     );
     exact_self_method_call(
-        method(&vtd_syntax, "Vtd", "map_range").expect("directional mapping walk"),
+        method(vtd_syntax, "Vtd", "map_range").expect("directional mapping walk"),
         "map_page",
         &["page"],
     );
     assert!(vtd.contains("self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical, len)"));
     assert!(vtd.contains("self.map_page::<DEVICE_READS, DEVICE_WRITES>(page)"));
-    let map_page = method(&vtd_syntax, "Vtd", "map_page").expect("leaf mapping boundary");
+}
+
+fn map_page_publishes_one_pointer_and_one_leaf(vtd_syntax: &syn::File) {
+    let map_page = method(vtd_syntax, "Vtd", "map_page").expect("leaf mapping boundary");
     struct LeafPublications<'ast>(Vec<&'ast ExprMethodCall>);
     impl<'ast> Visit<'ast> for LeafPublications<'ast> {
         fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
@@ -369,6 +392,9 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             && path_expression_is(&pte.args[2], &["DEVICE_WRITES"]),
         "map_page's leaf publication widened or changed identity"
     );
+}
+
+fn nvme_maps_each_buffer_in_its_direction() {
     let nvme = module_source("kernel/src/nvme.rs");
     for mapping in [
         "map_segment_for_device_read(&mut self.submission)",
@@ -380,11 +406,11 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             "NVMe mapping lost its exact DMA direction: {mapping}"
         );
     }
+}
 
-    let main = source("kernel/src/main.rs");
-    let main_syntax = parse("kernel/src/main.rs");
+fn startup_buffer_is_cleared_before_dma_authority(main: &str, main_syntax: &syn::File) {
     assert!(main.contains("#[inline(never)]\nfn allocate_cleared_startup_buffer()"));
-    let preparation = function(&main_syntax, "allocate_cleared_startup_buffer");
+    let preparation = function(main_syntax, "allocate_cleared_startup_buffer");
     #[derive(Default)]
     struct StartupPreparation {
         events: Vec<&'static str>,
@@ -431,7 +457,9 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
             && preparation_trace.exact_wraps == 1,
         "one exact startup Segment must be cleared before that same Segment gains DMA authority"
     );
+}
 
+fn startup_buffer_is_read_once_by_the_candidate(main_syntax: &syn::File) {
     #[derive(Default)]
     struct StartupUses {
         helper_calls: usize,
@@ -463,9 +491,9 @@ fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
         }
     }
     let mut all_startup_uses = StartupUses::default();
-    all_startup_uses.visit_file(&main_syntax);
+    all_startup_uses.visit_file(main_syntax);
     assert_eq!(all_startup_uses.helper_calls, 1);
-    let start = function(&main_syntax, "start_candidate");
+    let start = function(main_syntax, "start_candidate");
     let mut start_uses = StartupUses::default();
     start_uses.visit_item_fn(start);
     assert_eq!(
@@ -1032,99 +1060,15 @@ fn firmware_reserved_dma_regions_never_become_mapping_authority() {
 
 #[test]
 fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
-    use syn::parse::Parser;
+    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
+    let mm = parse_module("wost/src/mm.rs");
+    segment_lease_has_one_exact_owner(&mm);
+    vtd_tables_are_published_owners(&vtd);
+    mapping_lease_settles_every_outcome(&vtd);
+    revocation_releases_only_after_the_drain(&vtd);
+}
 
-    fn local_value<'ast>(statement: &'ast Stmt, name: &str) -> &'ast Expr {
-        let Stmt::Local(local) = statement else {
-            panic!("missing {name} local");
-        };
-        assert!(matches!(&local.pat, Pat::Ident(binding) if binding.ident == name));
-        &local.init.as_ref().expect("owner initializer").expr
-    }
-    fn segment_call(expression: &Expr, name: &str) -> bool {
-        matches!(expression, Expr::MethodCall(call)
-            if call.method == name && path_expression_is(&call.receiver, &["segment"])
-                && call.args.len() == 1
-                && path_expression_is(call.args.first().expect("owner argument"), &["owner"]))
-    }
-    fn owner_is_root(statement: &Stmt) {
-        let Expr::Call(call) = local_value(statement, "owner") else {
-            panic!("mapping owner mint");
-        };
-        assert!(path_expression_is(&call.func, &["DmaMappingOwner", "new"]));
-        assert_eq!(call.args.len(), 1);
-        assert!(matches!(call.args.first(), Some(Expr::MethodCall(address))
-            if address.method == "address" && address.args.is_empty()
-                && field_chain_is(&address.receiver, "self", &["root"])));
-    }
-    fn owner_refusal(statement: &Stmt, name: &str) {
-        let Stmt::Expr(Expr::If(gate), _) = statement else {
-            panic!("mapping owner gate");
-        };
-        assert!(matches!(&*gate.cond, Expr::Unary(negative)
-            if matches!(negative.op, syn::UnOp::Not(_)) && segment_call(&negative.expr, name)));
-        assert!(gate.else_branch.is_none());
-        let [Stmt::Expr(Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice() else {
-            panic!("owner mismatch must return before any table access");
-        };
-        let reason = returned
-            .expr
-            .as_deref()
-            .and_then(|expr| call_is(expr, "Err"))
-            .and_then(|call| call.args.first())
-            .and_then(|expr| call_is(expr, "Refused"))
-            .and_then(|call| call.args.first())
-            .expect("clean owner refusal");
-        assert!(path_expression_is(reason, &["VtdError", "InvalidRange"]));
-    }
-    fn release(statement: &Stmt) {
-        let Stmt::Macro(assertion) = statement else {
-            panic!("exact mapping release assertion");
-        };
-        assert!(path_ends(&assertion.mac.path, &["assert"]));
-        let arguments = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
-            .parse2(assertion.mac.tokens.clone())
-            .expect("release assertion arguments");
-        assert_eq!(arguments.len(), 2);
-        assert!(segment_call(
-            arguments.first().expect("release expression"),
-            "release_mapping"
-        ));
-    }
-    fn retains(statement: &Stmt) {
-        assert!(
-            matches!(statement, Stmt::Expr(Expr::MethodCall(call), Some(_))
-            if call.method == "retain" && call.args.is_empty()
-                && path_expression_is(&call.receiver, &["segment"]))
-        );
-    }
-    fn error_kind(arm: &syn::Arm, name: &str) -> bool {
-        let Pat::TupleStruct(error) = &arm.pat else {
-            return false;
-        };
-        if !path_ends(&error.path, &["Err"]) || error.elems.len() != 1 {
-            return false;
-        }
-        let Some(Pat::Ident(binding)) = error.elems.first() else {
-            return false;
-        };
-        let Some((_, pattern)) = &binding.subpat else {
-            return false;
-        };
-        binding.ident == "error"
-            && matches!(&**pattern, Pat::TupleStruct(kind)
-            if path_ends(&kind.path, &["SegmentChangeError", name]))
-    }
-    fn error_tail(statement: &Stmt) {
-        assert!(matches!(statement, Stmt::Expr(expression, None)
-            if call_is(expression, "Err").is_some_and(|call|
-                call.args.len() == 1 && call.args.first().is_some_and(|arg| path_expression_is(arg, &["error"])) )));
-    }
-    fn ok_tail(statement: &Stmt) {
-        assert!(matches!(statement, Stmt::Expr(expression, None)
-            if call_is(expression, "Ok").is_some_and(|call|
-                call.args.len() == 1 && matches!(call.args.first(), Some(Expr::Tuple(unit)) if unit.elems.is_empty()))));
-    }
+fn segment_lease_has_one_exact_owner(mm: &syn::File) {
     fn refuses_false(gate: &syn::ExprIf) {
         assert!(gate.else_branch.is_none());
         assert!(
@@ -1149,21 +1093,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
             assert!(path_expression_is(&assignment.right, &["None"]));
         }
     }
-    #[derive(Default)]
-    struct TableTypes {
-        bare: usize,
-        published: usize,
-    }
-    impl<'ast> Visit<'ast> for TableTypes {
-        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
-            self.bare += usize::from(path_ends(&path.path, &["IommuTable"]));
-            self.published += usize::from(path_ends(&path.path, &["PublishedIommuTable"]));
-            syn::visit::visit_type_path(self, path);
-        }
-    }
-    let vtd = parse_module("wost/src/arch/x86_64/vtd.rs");
-    let mm = parse_module("wost/src/mm.rs");
-    let begin = method(&mm, "DmaSegment", "begin_mapping").expect("single-owner lease acquisition");
+    let begin = method(mm, "DmaSegment", "begin_mapping").expect("single-owner lease acquisition");
     assert_eq!(begin.block.stmts.len(), 3);
     let Stmt::Expr(Expr::If(gate), _) = &begin.block.stmts[0] else {
         panic!("lease acquisition gate");
@@ -1179,7 +1109,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     assert!(
         matches!(&begin.block.stmts[2], Stmt::Expr(value, None) if bool_literal_is(value, true))
     );
-    let released = method(&mm, "DmaSegment", "release_mapping").expect("exact-owner lease release");
+    let released = method(mm, "DmaSegment", "release_mapping").expect("exact-owner lease release");
     assert_eq!(released.block.stmts.len(), 3);
     let Stmt::Expr(Expr::If(gate), _) = &released.block.stmts[0] else {
         panic!("lease release gate");
@@ -1193,6 +1123,21 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     assert!(
         matches!(&released.block.stmts[2], Stmt::Expr(value, None) if bool_literal_is(value, true))
     );
+}
+
+fn vtd_tables_are_published_owners(vtd: &syn::File) {
+    #[derive(Default)]
+    struct TableTypes {
+        bare: usize,
+        published: usize,
+    }
+    impl<'ast> Visit<'ast> for TableTypes {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            self.bare += usize::from(path_ends(&path.path, &["IommuTable"]));
+            self.published += usize::from(path_ends(&path.path, &["PublishedIommuTable"]));
+            syn::visit::visit_type_path(self, path);
+        }
+    }
     let owner = vtd
         .items
         .iter()
@@ -1211,7 +1156,7 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     let Fields::Named(fields) = &owner.fields else {
         panic!("VT-d fields");
     };
-    let establishment = method(&vtd, "Vtd", "establish_deny_all").expect("VT-d establishment");
+    let establishment = method(vtd, "Vtd", "establish_deny_all").expect("VT-d establishment");
     let construction = establishment.block.stmts.iter().find_map(|statement| match statement {
         Stmt::Local(local) if matches!(&local.pat, Pat::Ident(binding) if binding.ident == "unit") => {
             match &*local.init.as_ref()?.expr { Expr::Struct(value) => Some(value), _ => None }
@@ -1244,7 +1189,10 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
             && call.args.len() == 1 && call.args.first().is_some_and(|arg| path_expression_is(arg, &[name])))
         );
     }
-    let mapping = method(&vtd, "Vtd", "map_segment_with").expect("mapping lease boundary");
+}
+
+fn mapping_lease_settles_every_outcome(vtd: &syn::File) {
+    let mapping = method(vtd, "Vtd", "map_segment_with").expect("mapping lease boundary");
     assert_eq!(mapping.block.stmts.len(), 4);
     owner_is_root(&mapping.block.stmts[1]);
     owner_refusal(&mapping.block.stmts[2], "begin_mapping");
@@ -1274,8 +1222,10 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     assert!(matches!(&outcome.arms[2].pat, Pat::TupleStruct(ok) if path_ends(&ok.path, &["Ok"])));
     assert!(outcome.arms[2].guard.is_none());
     ok_tail(&Stmt::Expr((*outcome.arms[2].body).clone(), None));
+}
 
-    let revocation = method(&vtd, "Vtd", "unmap_segment").expect("revocation lease boundary");
+fn revocation_releases_only_after_the_drain(vtd: &syn::File) {
+    let revocation = method(vtd, "Vtd", "unmap_segment").expect("revocation lease boundary");
     assert_eq!(revocation.block.stmts.len(), 9);
     owner_is_root(&revocation.block.stmts[0]);
     owner_refusal(&revocation.block.stmts[1], "is_mapped_by");
@@ -1317,4 +1267,104 @@ fn vtd_mapping_and_table_owners_are_composed_without_reclamation_gaps() {
     calls.visit_impl_item_fn(revocation);
     assert!(call_position(&calls, "is_mapped_by") < call_position(&calls, "unmap_page"));
     assert!(call_position(&calls, "unmap_page") < call_position(&calls, "drain_dma"));
+}
+
+fn local_value<'ast>(statement: &'ast Stmt, name: &str) -> &'ast Expr {
+    let Stmt::Local(local) = statement else {
+        panic!("missing {name} local");
+    };
+    assert!(matches!(&local.pat, Pat::Ident(binding) if binding.ident == name));
+    &local.init.as_ref().expect("owner initializer").expr
+}
+
+fn segment_call(expression: &Expr, name: &str) -> bool {
+    matches!(expression, Expr::MethodCall(call)
+        if call.method == name && path_expression_is(&call.receiver, &["segment"])
+            && call.args.len() == 1
+            && path_expression_is(call.args.first().expect("owner argument"), &["owner"]))
+}
+
+fn owner_is_root(statement: &Stmt) {
+    let Expr::Call(call) = local_value(statement, "owner") else {
+        panic!("mapping owner mint");
+    };
+    assert!(path_expression_is(&call.func, &["DmaMappingOwner", "new"]));
+    assert_eq!(call.args.len(), 1);
+    assert!(matches!(call.args.first(), Some(Expr::MethodCall(address))
+        if address.method == "address" && address.args.is_empty()
+            && field_chain_is(&address.receiver, "self", &["root"])));
+}
+
+fn owner_refusal(statement: &Stmt, name: &str) {
+    let Stmt::Expr(Expr::If(gate), _) = statement else {
+        panic!("mapping owner gate");
+    };
+    assert!(matches!(&*gate.cond, Expr::Unary(negative)
+        if matches!(negative.op, syn::UnOp::Not(_)) && segment_call(&negative.expr, name)));
+    assert!(gate.else_branch.is_none());
+    let [Stmt::Expr(Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice() else {
+        panic!("owner mismatch must return before any table access");
+    };
+    let reason = returned
+        .expr
+        .as_deref()
+        .and_then(|expr| call_is(expr, "Err"))
+        .and_then(|call| call.args.first())
+        .and_then(|expr| call_is(expr, "Refused"))
+        .and_then(|call| call.args.first())
+        .expect("clean owner refusal");
+    assert!(path_expression_is(reason, &["VtdError", "InvalidRange"]));
+}
+
+fn release(statement: &Stmt) {
+    let Stmt::Macro(assertion) = statement else {
+        panic!("exact mapping release assertion");
+    };
+    assert!(path_ends(&assertion.mac.path, &["assert"]));
+    let arguments = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+        .parse2(assertion.mac.tokens.clone())
+        .expect("release assertion arguments");
+    assert_eq!(arguments.len(), 2);
+    assert!(segment_call(
+        arguments.first().expect("release expression"),
+        "release_mapping"
+    ));
+}
+
+fn retains(statement: &Stmt) {
+    assert!(
+        matches!(statement, Stmt::Expr(Expr::MethodCall(call), Some(_))
+        if call.method == "retain" && call.args.is_empty()
+            && path_expression_is(&call.receiver, &["segment"]))
+    );
+}
+
+fn error_kind(arm: &syn::Arm, name: &str) -> bool {
+    let Pat::TupleStruct(error) = &arm.pat else {
+        return false;
+    };
+    if !path_ends(&error.path, &["Err"]) || error.elems.len() != 1 {
+        return false;
+    }
+    let Some(Pat::Ident(binding)) = error.elems.first() else {
+        return false;
+    };
+    let Some((_, pattern)) = &binding.subpat else {
+        return false;
+    };
+    binding.ident == "error"
+        && matches!(&**pattern, Pat::TupleStruct(kind)
+        if path_ends(&kind.path, &["SegmentChangeError", name]))
+}
+
+fn error_tail(statement: &Stmt) {
+    assert!(matches!(statement, Stmt::Expr(expression, None)
+        if call_is(expression, "Err").is_some_and(|call|
+            call.args.len() == 1 && call.args.first().is_some_and(|arg| path_expression_is(arg, &["error"])) )));
+}
+
+fn ok_tail(statement: &Stmt) {
+    assert!(matches!(statement, Stmt::Expr(expression, None)
+        if call_is(expression, "Ok").is_some_and(|call|
+            call.args.len() == 1 && matches!(call.args.first(), Some(Expr::Tuple(unit)) if unit.elems.is_empty()))));
 }
