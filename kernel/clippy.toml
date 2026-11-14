@@ -1,0 +1,5 @@
+disallowed-macros = [
+    { path = "core::debug_assert", reason = "an invariant that matters is checked in release builds too" },
+    { path = "core::debug_assert_eq", reason = "an invariant that matters is checked in release builds too" },
+    { path = "core::debug_assert_ne", reason = "an invariant that matters is checked in release builds too" },
+]

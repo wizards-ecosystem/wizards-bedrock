@@ -217,33 +217,32 @@ the message reads as "while doing X" when chained. No `unwrap`.
 
 ## Tests
 
-**Every change lands with the check that proves it.** There are three places
-a check can go, and which one is a property of the thing being checked, not a
-preference:
+The suite is small and every check earns its place (D-454). It has six tiers:
+
+1. One boot smoke that reaches the shell, settles and scans the serial log.
+2. Syscall and ABI behaviour through the real call boundary.
+3. Isolation and security: memory, handles, DMA, cleared reuse, SMAP, NX, KPTI.
+4. A few edge tests per hostile-input parser that pin a real edge or past bug.
+5. A regression for each fixed bug, never pruned.
+6. About ten tooling smoke tests.
+
+Where a check goes is a property of the thing being checked:
 
 | The thing under test | Where it goes | How it runs |
 |---|---|---|
 | Arithmetic, bit layout, parsing, with no hardware | a `libs/` crate | `cargo test` |
 | Anything needing a real machine | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
-| **What this repository says about itself** | a host test in `xtask/` | `cargo test` |
+| Tooling a user runs | a host test in `xtask/` | `cargo test` |
 
-The third row is the newest and the least obvious. A document that names a
-crate, a constant that states a count, a comment that claims a privilege: each
-is an assertion about the tree, and each was found wrong during the Phase 0-6
-sweep. So they are checked like any other: `xtask/src/decisions.rs` requires
-every `D-NNN` cited anywhere to name an entry the log defines and the log to
-have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
-name to exist or be declared absent with a reason, and the README's marked CI
-table to match the typed registry execution reads; `xtask/src/unsafety.rs` pins `wost`'s
-unsafe line count rather than only capping it; `xtask/src/contracts/abi.rs` compares the
-C header against the kernel's own constants, discovers every active sysdep,
-checks its BODY evidence, and checks its two-axis source marker against the exact
-register in `fixtures/abi-pressure/README.md`. Prose that cannot be
-checked should not state a number: point at the place that can (D-124).
-
-If a check fits none of the three, that is usually a sign the logic should be
-split so that the interesting half fits the first row. `libs/pixel` exists because the
-framebuffer's arithmetic was worth testing and its hardware access was not.
+A change adds at most one focused test, and only for a real bug. Do not test
+what the code merely restates: a constant, a table, a layout, a getter, a type,
+a whole-output snapshot or a mock call. Do not read source text in a test. A
+rule about source is a lint, a `deny` or `forbid` attribute or a type:
+`unsafe_code` is `forbid` in every `libs/` crate and `deny` in `kernel`, the
+clippy unsafe lints enforce `// SAFETY:` and one operation per block, and
+`kernel` and `wost` refuse `debug_assert` so no production invariant is
+debug-only. Prose that cannot be checked should not state a number: point at the
+place that can (D-124). A flaky or slow check is deleted, not fixed.
 
 `cargo test -p wizard-kernel` will never work: a `#![no_std] #![no_main]`
 binary cannot host the `test` harness, and in-QEMU `#[test_case]` runners need
@@ -255,16 +254,9 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   offset arithmetic: the code that carried a live out-of-bounds bug while it
   was buried in the kernel. `libs/x86-tables` is the second: GDT, IDT and TSS
   encoding, where the host test is the only thing that can check a bit position
-  against the manual. `libs/x86-apic` and `libs/x86-pit` follow on the same
-  grounds, and `libs/ps2-keys` for the scancode state machine.
-  `libs/port-space` is a particularly clear case of *why*: the I/O port
-  reservation bitmap sat inside `wost`, where nothing could test it, and it
-  spent Phase 2 recording one port per claim however wide the access it
-  authorised (D-39). Page-table bit packing has since become
-  `libs/x86-paging`, ELF parsing `libs/elf64`, ring index arithmetic
-  `libs/ring-proto`, and handle encoding `libs/handle-space`; add crates on the
-  same pattern for the WizFS on-disk format and its crash-injection harness as
-  those arrive.
+  against the manual. `libs/port-space` shows why: the I/O port reservation
+  bitmap sat inside `wost`, where nothing could test it, and it spent Phase 2
+  recording one port per claim however wide the access it authorised (D-39).
 - **The gate runs over a configuration matrix, not a codebase.** A cargo
   feature is a different crate graph, and a lint that fires in one need not
   fire in the other: `cargo xtask ci` covers the host packages plus shipped,
@@ -272,22 +264,12 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   adding a graph to `xtask/src/gate.rs`; D-212 makes the same registry drive
   execution, help and README, while D-22 records what missing the shipped graph
   once cost.
-- **Public foundation APIs need an exact compiler-resolved caller.** `cargo
-  xtask api-audit` inventories public item declarations and enum variants in
-  `libs/` and `wost`; re-exports and documentation are not callers. Structured
-  compiler evidence must bind the exact Cargo graph and source span, and every
-  route the audit cannot classify fails closed. Fields remain outside the claim
-  because stable rustc omits some live destructuring diagnostics. The
-  [development guide](../README.md#development) records the operational model;
-  D-213 and D-275 record its decisions and trust limits.
 - Anything the linker produces is checked rather than trusted:
   `xtask/src/elf.rs` reads the linked kernel back after every build and
   requires the properties `kernel/linker.ld` is written to produce (D-40).
   A linker script fails loudly when malformed and quietly when incomplete.
 - A `libs/` crate goes in `default-members` so a bare `cargo test` covers it,
   and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
-- `xtask` logic is unit-tested directly, in-module. Anything touching the
-  filesystem is driven through a `Cursor` rather than a real file.
 - Constructors that read the environment are split from pure ones:
   `Paths::new` takes everything explicitly, `Paths::discover` reads env and
   delegates. `std::env::set_var` is `unsafe` in edition 2024 and unsound across
@@ -298,89 +280,32 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   small, named as the property it asserts, and free of side effects on the
   running kernel. They execute against a live machine rather than a fixture.
 - A check that cannot fail is worth **less than no check**, because it is also
-  a claim. When adding one, break it once and confirm the harness goes red
-  before trusting it green (D-28).
-
-  Two things the sweeps since have added to that rule, both learned the hard
-  way. **Breaking it by hand happens once**, at the moment the check is
-  written, and never again, so a check that *stops* being able to fail,
-  because the code around it moved, is invisible from then on. `cargo xtask
-  mutate` is that rule made repeatable: each entry is a real defect applied to
-  the tree, and a boot must go red (D-119). And **write the check from the
-  claim, not from the implementation**. Restating what the code does always
-  passes and reads exactly like a check: `assert_eq!(GENERATION_BITS, 32 -
-  INDEX_BITS - RESERVED_BITS)` is a definition, and a frame-allocator check
-  that asserts the address, the count and the tally has checked the
-  allocator's *description* rather than its frames (D-124).
+  a claim. Break a new one by hand once and confirm it goes red, or run
+  `cargo mutants --in-diff` over the change on the laptop; nothing records it.
+  **Write the check from the claim, not from the implementation.** Restating
+  what the code does always passes and reads exactly like a check:
+  `assert_eq!(GENERATION_BITS, 32 - INDEX_BITS - RESERVED_BITS)` is a
+  definition (D-124).
 - **Choose inputs where the answers differ.** A realistic test value can be
-  worse than a contrived one, and this has now cost three checks.
-  `TYPICAL = 0xFEE0_0900` is a real `IA32_APIC_BASE` value that sets both the
-  bootstrap and enable bits, so every test using it was satisfied by the two
-  constants swapped (D-142). A framebuffer whose pitch equals its visible row
-  is a real configuration in which `pitch` and `width * bpp` are
-  interchangeable, so computing the span from the wrong one survives (D-155).
-  A clock frequency whose ratio lands nowhere near a halfway point is a real
-  clock that proves nothing about rounding.
-
-  Two rules follow, and they are the same rule from opposite ends: **make the
-  values pairwise distinct**, so no field or constant can stand in for another
-  (D-136); and **check the claim, not the trick**: "the multiplier is the
-  nearest integer to the ratio" is testable against both neighbours without
-  ever mentioning the `+ denominator / 2` that achieves it.
-
-- **A break is only red if the thing that went red is a check.** Absence of a
-  pass is not a failure: a build error, a harness crash, a timeout and a red
-  check all produce no verdict, and only one of them is evidence. A break
-  script that greps for the absence of success is measuring the wrong thing,
-  and a break that cannot run produces the *appearance* of having verified
-  something, which is what does the damage (D-175).
-
+  worse than a contrived one: a real `IA32_APIC_BASE` value that sets both the
+  bootstrap and enable bits was satisfied by the two constants swapped (D-142),
+  and a framebuffer whose pitch equals its visible row cannot tell `pitch` from
+  `width * bpp` (D-155). **Make the values pairwise distinct**, so no field or
+  constant can stand in for another (D-136), and check the claim, not the trick.
 - **A check must reach the code it is about.** Set-up chosen to make a failure
-  easy to trigger can make it impossible to *reach*: a full table refuses
-  early, a closed channel refuses early, an unmapped page faults early. If the
-  refusal under test is the second thing that could go wrong, the input has to
-  get past the first. A check for "a promised handle slot is given back on
-  every refusal" used a table with no room, so every refusal happened at the
-  reservation and no promise was ever made. It passed with the destructor that
-  returns promises deleted, and nothing about the assertion looked wrong,
-  because the assertion was not wrong (D-165).
-
-- **A check that quantifies must read its domain.** If the name begins
-  "every", "all" or "no", the body enumerates the domain rather than naming
-  its members. A list restated beside its source is a second copy with a
-  test-shaped wrapper, and it passes on the day the two disagree, which is the
-  failure it was written to catch. `vendor.rs` is the shape: it walks the tree
-  for `CHECKSUMS` files, cross-checks both directions and asserts the counts
-  match. The two checks that were wrong were the two that had a list (D-157).
-
-- **Measure what a tool does; do not reason about it.** This is the one rule
-  here that was learned twice in a day, in opposite directions, and it is
-  narrower and more useful than "check your assumptions".
-
-  `#[expect(lint)]` fails the build when the suppression stops being needed,
-  except inside a macro expansion, where `unfulfilled_lint_expectations` never
-  fires. Converting a macro's attributes therefore produces something that
-  *reads as checked* and is exactly as unfalsifiable as the `allow` it
-  replaced, which is worse than leaving it. Found by adding an
-  `#[expect(non_snake_case)]` to a `SCREAMING_CASE` static and watching nothing
-  happen (D-131).
-
-  The mutation sweep's `strip_suffix(" FAILED")` looked stricter than the
-  verdict check it replaced. Serial lines carry a trailing `
-`, so it matched
-  nothing, and the first strict run reported **eighteen survivors on boots that
-  had each reddened exactly the right check**: a stricter-looking tool that
-  was strictly worse, reporting failure for defects that were caught (D-134).
-
-  Both were ten minutes to measure and would have been a phase to find. The
-  pattern is not that premises need checking in general: it is that **a tool is
-  a thing we describe to ourselves in prose and then trust the prose**, so the
-  gap between what it does and what we say it does closes only when something
-  runs.
-
-- Hardware behaviour is *also* verified by eye: `cargo xtask run` for the loop,
-  a VMware boot as every phase's definition of done (D-18). The self-test
-  catches regressions; the eye catches things nobody thought to assert.
+  easy to trigger can make it impossible to reach: a full table refuses early,
+  a closed channel refuses early, an unmapped page faults early. If the refusal
+  under test is the second thing that could go wrong, the input has to get past
+  the first (D-165).
+- **A check that quantifies must read its domain.** If the name begins "every",
+  "all" or "no", the body enumerates the domain rather than naming its members;
+  a list restated beside its source passes on the day the two disagree (D-157).
+- **Measure what a tool does; do not reason about it.** `#[expect(lint)]` fails
+  the build when the suppression stops being needed, except inside a macro
+  expansion, where it never fires and so reads as checked while being as
+  unfalsifiable as the `allow` it replaced (D-131). A break that cannot run
+  produces the appearance of verification: absence of a pass is not a failure,
+  and only a red check is evidence (D-175).
 
 ## Building
 

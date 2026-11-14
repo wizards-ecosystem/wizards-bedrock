@@ -21,14 +21,8 @@ including generated changes, explain it in your own words, and avoid bulk PRs
 whose behavior and provenance you have not checked. Add no AI co-author trailers.
 
 Run focused real tests for changed logic, extending an existing test where
-possible. A new check must be deliberately broken once, observed red, then
-restored; machine checks need the existing persistent mutation discipline.
-For documentation, the existing decision and prose checks are:
-
-```powershell
-cargo test --locked -p xtask --lib decisions::tests::
-cargo test --locked -p xtask --lib prose::tests::
-```
+possible, and add one only for a real bug (D-454). A new check should be shown
+able to fail: break it once and watch it go red.
 
 For a library change, run `cargo test --locked -p PACKAGE` using its actual
 package name. Report exact commands, outcomes, host/toolchain, and anything not
@@ -37,7 +31,7 @@ a compile proves a boot, or an old transcript qualifies current source.
 
 The hosted **Source preview checks** are limited contributor feedback.
 Maintainers retain the complete local `cargo xtask ci` gate for substantive
-implementation and the stronger qualified-release process in D-425/D-441;
+implementation and the stronger release check in D-454 and D-441;
 outside contributors need not run multi-hour campaigns for documentation.
 D-441's first-launch exception is not a general merge or future-release waiver.
 

@@ -64,8 +64,7 @@ anyway. Do not create a branch unless Isaac asks.
 implementation work is done. D-441 permits only the first v0.1.0 launch's
 documentation, community infrastructure and source-preview packaging commits
 to use its bounded source-preview checks instead: disclosure/license review,
-whitespace, fmt, supply-chain, vendor, release compile and existing focused
-decision/documentation/registry tests on a clean candidate, with a 20-minute
+whitespace, fmt, supply-chain, vendor, release compile on a clean candidate, with a 20-minute
 aggregate automated budget. This is not permission to skip checks for kernel
 changes or future qualified releases. Publish v0.1.0 only after those checks
 pass; disclose every unrun qualification and distribute no new kernel/VM image
@@ -85,42 +84,32 @@ VMware boot reaches SMEP/SMAP/UMIP, the compacted
 `XSAVEC` path, a real x2APIC and a processor that reports `MD_CLEAR`, none of
 which the gate's QEMU does.
 
-**`cargo xtask mutate` is how D-28 is kept true over time.** Breaking a check
-by hand happens once, when it is written; a check that *stops* being able to
-fail is invisible from then on. The task applies known defects and requires a
-check to go red for each. Add a mutation whenever you add a check. `cargo
-test` verifies every mutation still matches its source, so a rotted one is
-caught in milliseconds even though each machine mutation still costs a boot.
+Five supported tasks are **not** in ordinary `ci`: `debug`, `baseline`,
+`vmware`, `qualify-vmware` and `model-check`. `vmware` generates each selected
+machine; `qualify-vmware` validates its fresh serial transcript after the human
+boot and keeps no record. Model checking runs when a model changes. These tasks
+need interactive or external tools, and putting them in the ordinary gate would
+make a missing tool look like a source failure.
 
-Nine supported tasks are **not** in ordinary `ci`: `debug`,
-`baseline`, `vmware`, `qualify-vmware`, `model-check`, `mutate` and
-`qualify-advisory`, plus the multi-day `qualify-mutants-grade --run` and the
-owned `qualify-security-deep --run` workflow. `vmware` generates each selected machine;
-`qualify-vmware` validates its fresh serial transcript after the human boot.
-VMware, model checking, the complete mutation sweep and the fresh RustSec
-review are release qualifications whose records enter offline evidence. The
-independently owned mutation grade and the owned authenticated Deep security
-scan are continuous campaigns against `main` (D-425): their records enter a
-release bundle only when present for its exact source, and otherwise the
-bundle declares each one `deferred`.
-Deep's `--begin` and imported `--verify` actions are diagnostic only and create
-no record; only the pinned live MCP session can create PASS (D-406). These tasks need
-interactive/external tools, current network data or much longer machine runs,
-and putting them in the ordinary gate would make a missing tool look like a
-source failure.
+A release (D-454) is `cargo xtask ci` green, `cargo xtask evidence` and
+`cargo xtask verify-evidence` on the exact commit, a VMware boot of both images
+and a person reading the release diff. `cargo mutants` over changed library code
+and fuzzing are laptop work that never blocks a commit.
 
 ## Testing, and the rule that matters most
 
-Every change lands with the check that proves it. Where the check goes is a
-property of the code, not a preference: hardware-free logic goes to a `libs/`
-crate and runs under `cargo test`; anything needing a real machine goes to
+The suite is small on purpose (D-454). It has six tiers: one boot smoke that
+also scans the serial log; syscall and ABI behaviour; isolation and security;
+a few edge tests per hostile-input parser; a regression for each fixed bug; and
+about ten tooling smoke tests. Hardware-free logic goes to a `libs/` crate and
+runs under `cargo test`; anything needing a real machine goes to
 `kernel/src/selftest.rs` and runs under `cargo xtask test-boot`.
 
-**Break every new check once and watch the harness go red** (D-28). A check
-written in slice 1 of Phase 3 passed with the code it tested
-deleted, because two early returns made its failure path unreachable, and
-nothing but breaking it would have found that. A check that cannot fail is
-worth less than no check, because it is also a claim.
+Do not add a test that restates the code, asserts a constant, a table or a
+layout, or reads source text: a source rule is a lint, a `deny` or `forbid`
+attribute, or a type. A change adds at most one focused test, and only for a
+real bug. A check that cannot fail is worth less than no check, so break a new
+one by hand once, or run `cargo mutants --in-diff` over the change on the laptop.
 
 Doctests run in `libs/` crates and nowhere else (D-41): those carry
 `#![cfg_attr(not(test), no_std)]` and build for the host, so examples there are

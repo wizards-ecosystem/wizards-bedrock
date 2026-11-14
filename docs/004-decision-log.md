@@ -459,3 +459,4 @@ to D-20 were made on 2026-07-18.
 | [D-451 Decisions, documentation and code voice](decisions/0451-decisions-documentation-and-code-voice.md) | Accepted | 2026-11-09 |
 | [D-452 The roadmap after the foundation close](decisions/0452-the-roadmap-after-the-foundation-close.md) | Accepted | 2026-11-09 |
 | [D-453 Worlds are the root of the roadmap](decisions/0453-worlds-are-the-root-of-the-roadmap.md) | Accepted | 2026-11-14 |
+| [D-454 A minimal test suite](decisions/0454-a-minimal-test-suite.md) | Accepted | 2026-11-14 |
