@@ -458,3 +458,4 @@ to D-20 were made on 2026-07-18.
 | [D-450 Linux hosts run the whole gate](decisions/0450-linux-hosts-run-the-whole-gate.md) | Accepted | 2026-11-07 |
 | [D-451 Decisions, documentation and code voice](decisions/0451-decisions-documentation-and-code-voice.md) | Accepted | 2026-11-09 |
 | [D-452 The roadmap after the foundation close](decisions/0452-the-roadmap-after-the-foundation-close.md) | Accepted | 2026-11-09 |
+| [D-453 Worlds are the root of the roadmap](decisions/0453-worlds-are-the-root-of-the-roadmap.md) | Accepted | 2026-11-14 |

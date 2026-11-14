@@ -190,7 +190,9 @@ chosen later.
 | When worlds carry their own stack over their own queue | After Phase 13's counts | Per-packet entries and copies against the stack service; a durable world needs its connection state in its own memory |
 | GPU device for Phase 19 | Before display work | VMware's SVGA and a driver world against the laptop's Gen 9.5 |
 | Cloud NICs (virtio-net, ENA, gVNIC) | At a named deployment | That deployment |
-| Ring version 2: unsolicited records for signals and scheduler notices (D-80, D-181) | At Phase 13 | Coalescing and overflow rules |
+| Ring version 2: unsolicited records for signals and scheduler notices (D-80, D-181) | At Phase 17 | Coalescing and overflow rules |
+| A bounded runner for static Linux binaries, at most about eighty system calls, with fork, control groups, ptrace and io_uring never offered | Late, after the planned phases | Phase 12's clone measurements: whether a cloned box is too heavy for small static servers |
+| Hardware for the user-interrupt and protection-key checks | When a phase needs them | Cost at that time |
 
 ## 8. What stays out
 
