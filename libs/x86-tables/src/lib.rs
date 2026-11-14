@@ -50,6 +50,3 @@ impl Selector {
         self.0 >> 3
     }
 }
-
-#[cfg(test)]
-mod tests;

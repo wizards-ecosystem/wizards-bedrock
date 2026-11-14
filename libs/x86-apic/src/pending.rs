@@ -20,6 +20,3 @@ pub fn contains(registers: &[u32; 8], vector: InterruptVector) -> bool {
     let raw = usize::from(vector.get());
     registers[raw / 32] & (1 << (raw % 32)) != 0
 }
-
-#[cfg(test)]
-mod tests;

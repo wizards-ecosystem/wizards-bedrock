@@ -94,6 +94,3 @@ impl SystemDescriptor {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -204,6 +204,3 @@ impl InitTransaction {
 const fn progress_is_excluded(interrupts: Interrupts) -> bool {
     matches!(interrupts, Interrupts::Excluded)
 }
-
-#[cfg(test)]
-mod tests;

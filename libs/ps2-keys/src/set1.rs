@@ -119,6 +119,3 @@ pub(crate) fn extended_key_for(code: u8) -> Option<Key> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests;

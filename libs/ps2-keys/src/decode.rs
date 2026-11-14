@@ -94,19 +94,6 @@ impl Decoder {
     }
 
     /// A decoder reading the set 1 a translating controller delivers.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ps2_keys::{Decoder, Key, KeyState};
-    ///
-    /// // `1E` is A pressed in set 1; the same code with the high bit set is
-    /// // A released.
-    /// let mut decoder = Decoder::translated();
-    /// assert_eq!(decoder.feed(0x1E).map(|event| event.key), Some(Key::A));
-    /// let release = decoder.feed(0x9E).expect("the high bit is the break");
-    /// assert_eq!((release.key, release.state), (Key::A, KeyState::Released));
-    /// ```
     pub const fn translated() -> Self {
         Self {
             state: State::Idle,

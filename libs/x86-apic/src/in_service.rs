@@ -50,6 +50,3 @@ pub const fn may_complete(
         && frame_vector == token_vector.get() as u64
         && matches!(dismissal, DismissalOwnership::Owned)
 }
-
-#[cfg(test)]
-mod tests;

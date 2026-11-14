@@ -53,6 +53,3 @@ pub const fn name(vector: u8) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests;

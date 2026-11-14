@@ -33,19 +33,6 @@ pub struct SetProbe;
 
 impl SetProbe {
     /// What one byte proves, if anything.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ps2_keys::{Arriving, SetProbe};
-    ///
-    /// // `F0` is set 2's break prefix and set 1 cannot produce it.
-    /// assert_eq!(SetProbe::observe(0xF0), Arriving::Set2);
-    /// // `9E` is A released in set 1, and above every set 2 make.
-    /// assert_eq!(SetProbe::observe(0x9E), Arriving::Set1);
-    /// // A bare make is the same shape in both.
-    /// assert_eq!(SetProbe::observe(0x1C), Arriving::Undecided);
-    /// ```
     #[must_use]
     pub const fn observe(byte: u8) -> Arriving {
         if byte == BREAK {

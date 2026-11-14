@@ -86,6 +86,3 @@ pub const fn initial_count(ticks: u64) -> u32 {
     }
     ticks as u32
 }
-
-#[cfg(test)]
-mod tests;

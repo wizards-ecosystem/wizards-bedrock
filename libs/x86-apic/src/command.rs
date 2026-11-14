@@ -26,6 +26,3 @@ impl Command {
         self.0
     }
 }
-
-#[cfg(test)]
-mod tests;

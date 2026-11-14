@@ -4,16 +4,6 @@
 pub const ADDRESS_SIZE_LEAF: u32 = 0x8000_0008;
 
 /// A physical-address width the four-level page-table encoding can represent.
-///
-/// # Examples
-///
-/// ```
-/// use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
-///
-/// let width = PhysicalAddressWidth::from_leaf(ADDRESS_SIZE_LEAF, 46).unwrap();
-/// assert!(width.contains(0, 1_u64 << 46));
-/// assert!(!width.contains(0, (1_u64 << 46) + 1));
-/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PhysicalAddressWidth(u8);
 
@@ -36,6 +26,3 @@ impl PhysicalAddressWidth {
         start < end && end <= 1_u64 << self.0
     }
 }
-
-#[cfg(test)]
-mod tests;

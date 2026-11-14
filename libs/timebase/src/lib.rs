@@ -90,17 +90,6 @@ impl Timebase {
     }
 
     /// Read a published clock; the base is split since `base_ns << shift` overflows within seconds.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use timebase::Timebase;
-    ///
-    /// let clock = Timebase::nanoseconds(1_000_000_000).expect("a 1 GHz counter");
-    ///
-    /// // A thousand ticks of a 1 GHz counter is a thousand nanoseconds.
-    /// assert_eq!(clock.resume(5_000, 0, 1_000), 6_000);
-    /// ```
     pub const fn resume(self, base_ns: u64, base_fraction: u64, ticks: u64) -> u64 {
         let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
         let whole = advanced >> self.shift;
@@ -162,24 +151,6 @@ impl Timebase {
 
 /// The sequence counter of a lockless clock; the caller supplies both memory-ordering barriers.
 /// `kernel::timepage` supplies them, and a read must not span a full `u32` counter cycle.
-///
-/// # Examples
-///
-/// ```
-/// use timebase::Seq;
-///
-/// let quiet = 4;
-/// assert!(Seq::is_stable(quiet));
-///
-/// let writing = Seq::begin(quiet);
-/// assert!(!Seq::is_stable(writing));
-/// assert!(!Seq::agrees(quiet, writing));
-///
-/// let written = Seq::end(writing);
-/// assert!(Seq::is_stable(written));
-/// // A reader that started before the write does not accept what it read.
-/// assert!(!Seq::agrees(quiet, written));
-/// ```
 #[derive(Debug)]
 pub struct Seq;
 

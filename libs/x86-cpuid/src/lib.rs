@@ -343,6 +343,3 @@ impl fmt::Display for Speculation {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

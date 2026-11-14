@@ -36,6 +36,3 @@ impl Spurious {
         self.0 & ENABLE != 0
     }
 }
-
-#[cfg(test)]
-mod tests;

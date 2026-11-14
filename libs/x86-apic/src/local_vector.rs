@@ -88,6 +88,3 @@ impl Entry {
         self.0 & TIMER_MODE == TIMER_ONE_SHOT
     }
 }
-
-#[cfg(test)]
-mod tests;

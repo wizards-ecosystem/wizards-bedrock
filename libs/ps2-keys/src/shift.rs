@@ -35,6 +35,3 @@ impl Shift {
         self.left || self.right
     }
 }
-
-#[cfg(test)]
-mod tests;

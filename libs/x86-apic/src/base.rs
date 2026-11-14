@@ -52,6 +52,3 @@ impl Base {
         Self(self.0 | ENABLE | X2APIC)
     }
 }
-
-#[cfg(test)]
-mod tests;

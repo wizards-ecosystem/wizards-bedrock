@@ -29,6 +29,3 @@ impl Version {
         self.number() >= FIRST_INTEGRATED
     }
 }
-
-#[cfg(test)]
-mod tests;

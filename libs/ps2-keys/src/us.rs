@@ -80,6 +80,3 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests;

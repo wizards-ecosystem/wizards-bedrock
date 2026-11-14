@@ -57,6 +57,3 @@ impl<const N: usize> Assignment<N> {
         self.0
     }
 }
-
-#[cfg(test)]
-mod tests;

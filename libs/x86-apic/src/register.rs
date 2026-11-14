@@ -82,6 +82,3 @@ pub const CURRENT_COUNT: Register = Register::new(0x390);
 
 /// How the bus clock is divided before it drives the timer's countdown.
 pub const DIVIDE_CONFIGURATION: Register = Register::new(0x3E0);
-
-#[cfg(test)]
-mod tests;

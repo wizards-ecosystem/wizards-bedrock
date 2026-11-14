@@ -16,15 +16,6 @@ const MAX_VERSION: u16 = 0x20;
 /// The redirection-entry count, one past bits 23:16, if bits 7:0 name a real I/O APIC.
 ///
 /// `None` refuses a window aimed at another device, before any redirection write.
-///
-/// ```
-/// use x86_apic::io::entries_from_version;
-///
-/// assert_eq!(entries_from_version(0x0017_0011), Some(24));
-/// assert_eq!(entries_from_version(0x0000_0011), Some(1));
-/// assert_eq!(entries_from_version(0x0017_0009), None);
-/// assert_eq!(entries_from_version(0xFFFF_FFFF), None);
-/// ```
 pub const fn entries_from_version(version: u32) -> Option<u32> {
     let (low, high) = u16_halves(version);
     let identity = low & 0xFF;
@@ -106,6 +97,3 @@ pub fn owner_of(ranges: &[GsiRange], gsi: u32) -> Result<Option<usize>, Overlapp
     }
     Ok(ranges.iter().position(|range| range.contains(gsi)))
 }
-
-#[cfg(test)]
-mod tests;

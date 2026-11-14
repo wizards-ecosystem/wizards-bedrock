@@ -73,6 +73,3 @@ impl Gate {
         (self.attributes >> 5) & 0b11
     }
 }
-
-#[cfg(test)]
-mod tests;

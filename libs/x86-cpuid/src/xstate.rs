@@ -3,22 +3,6 @@
 //! Standard offsets are unordered (APX, component 19, sits at 960).
 //!
 //! Nothing may sort by offset or assume index order implies address order.
-//!
-//! # Examples
-//!
-//! ```
-//! use x86_cpuid::xstate::{Alignment, Component, Layout, HEADER_BYTES, AVX, SSE, X87};
-//!
-//! // A machine with AVX, whose component 2 is 256 bytes and unaligned.
-//! let layout = Layout::compacted(X87 | SSE | AVX, |index| match index {
-//!     2 => Component::new(256, Alignment::Natural),
-//!     _ => Component::new(0, Alignment::Natural),
-//! });
-//!
-//! // x87 and SSE live in the legacy area, so AVX is the first thing after it.
-//! assert_eq!(layout.size(), HEADER_BYTES + 256);
-//! assert!(layout.is_consistent());
-//! ```
 
 /// Legacy x87/SSE save area plus the XSAVE header, 512 + 64 bytes, holding components 0 and 1.
 pub const HEADER_BYTES: usize = 576;

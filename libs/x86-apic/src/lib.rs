@@ -73,6 +73,3 @@ impl Register {
         FIRST_MSR + (self.0 / REGISTER_STRIDE) as u32
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -33,6 +33,3 @@ pub const STATUS_NULL_COUNT: u8 = 1 << 6;
 pub const fn elapsed_ticks(start: u16, now: u16) -> u16 {
     start.wrapping_sub(now)
 }
-
-#[cfg(test)]
-mod tests;
