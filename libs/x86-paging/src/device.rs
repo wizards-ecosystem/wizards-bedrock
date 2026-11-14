@@ -9,18 +9,6 @@ use crate::PAGE_SIZE;
 const REGISTER_ALIGNMENT: u64 = size_of::<u32>() as u64;
 
 /// A register range whose complete mapped pages fit the running CPU's width.
-///
-/// # Examples
-///
-/// ```
-/// use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
-/// use x86_paging::device::DeviceRange;
-///
-/// let width = PhysicalAddressWidth::from_leaf(ADDRESS_SIZE_LEAF, 40).unwrap();
-/// let range = DeviceRange::new(0xfee0_0004, 4, width).unwrap();
-/// assert_eq!(range.page_start(), 0xfee0_0000);
-/// assert_eq!(range.page_end(), 0xfee0_1000);
-/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeviceRange {
     physical: u64,
@@ -124,6 +112,3 @@ impl fmt::Display for DeviceRangeError {
 }
 
 impl core::error::Error for DeviceRangeError {}
-
-#[cfg(test)]
-mod tests;

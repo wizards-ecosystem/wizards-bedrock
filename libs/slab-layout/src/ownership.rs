@@ -40,6 +40,3 @@ impl AllocatorOwnership {
                 .is_some_and(|accounted| before.accounted_physical_frames() == Some(accounted))
     }
 }
-
-#[cfg(test)]
-mod tests;

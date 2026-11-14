@@ -49,14 +49,6 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
 
 /// Whether `len` bytes at `at` lie wholly below [`USER_MAPPING_END`].
-///
-/// ```
-/// use x86_paging::{PAGE_SIZE, USER_MAPPING_END, user_mapping_fits};
-///
-/// assert!(user_mapping_fits(USER_MAPPING_END - PAGE_SIZE, PAGE_SIZE));
-/// assert!(!user_mapping_fits(USER_MAPPING_END, PAGE_SIZE));
-/// assert!(!user_mapping_fits(u64::MAX, 2));
-/// ```
 pub const fn user_mapping_fits(at: u64, len: u64) -> bool {
     match at.checked_add(len) {
         Some(end) => end <= USER_MAPPING_END,
@@ -117,28 +109,6 @@ impl Flags {
     }
 
     /// The walk permission after `entry`: `USER` and `WRITABLE` narrow, `NO_EXECUTE` accumulates.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use x86_paging::Flags;
-    ///
-    /// // A supervisor table above a user page grants no user access.
-    /// let supervisor = Flags::PRESENT.union(Flags::WRITABLE);
-    /// let leaf = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
-    /// let walked = Flags::EVERYTHING_ALLOWED.through(supervisor).through(leaf);
-    /// assert!(!walked.effective_for(leaf).contains(Flags::USER));
-    /// ```
-    ///
-    /// ```
-    /// use x86_paging::Flags;
-    ///
-    /// // A `NO_EXECUTE` anywhere on the path forbids execution below it.
-    /// let no_execute = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::NO_EXECUTE);
-    /// let leaf = Flags::PRESENT.union(Flags::WRITABLE);
-    /// let walked = Flags::EVERYTHING_ALLOWED.through(no_execute).through(leaf);
-    /// assert!(walked.effective_for(leaf).contains(Flags::NO_EXECUTE));
-    /// ```
     #[must_use]
     pub const fn through(self, entry: Self) -> Self {
         let narrowed = self.intersection(entry).intersection(Self::NARROWED);

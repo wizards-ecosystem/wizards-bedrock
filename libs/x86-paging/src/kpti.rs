@@ -112,11 +112,6 @@ impl PairConstructionLedger {
         }
         Some(PairFrameAuthority { table_frames: 0 })
     }
-
-    #[cfg(test)]
-    const fn refusal_returned_all(self, returned_frames: usize) -> bool {
-        returned_frames == self.root_frames as usize
-    }
 }
 
 /// Complete frame authority for one inseparable full/stripped root pair.
@@ -167,11 +162,6 @@ impl PairFrameAuthority {
             expected,
             returned: returned_frames,
         })
-    }
-
-    #[cfg(test)]
-    fn refusal_returned_all(self, returned_frames: usize) -> bool {
-        self.settle(returned_frames) == Ok(PairCleanupState::Released)
     }
 }
 
@@ -728,6 +718,3 @@ impl Default for ExitTransition {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests;

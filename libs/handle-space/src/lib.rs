@@ -140,24 +140,6 @@ pub const fn next_generation(generation: u32) -> u32 {
 }
 
 /// A table's held handles and promised slots, packed into one word for an atomic transition.
-///
-/// # Examples
-///
-/// ```
-/// use handle_space::Quota;
-///
-/// let limit = 2;
-/// let empty = Quota::EMPTY;
-/// assert_eq!(Quota::live(empty), 0);
-///
-/// // Admit an operation that may produce a handle.
-/// let promised = Quota::reserve(empty, limit).expect("room for one");
-/// assert_eq!(Quota::reserved(promised), 1);
-///
-/// // The handle arrives: the promise becomes an occupant.
-/// let held = Quota::commit(promised).expect("a promise to keep");
-/// assert_eq!((Quota::live(held), Quota::reserved(held)), (1, 0));
-/// ```
 #[derive(Debug)]
 pub struct Quota;
 

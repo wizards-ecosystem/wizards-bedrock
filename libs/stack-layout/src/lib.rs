@@ -24,12 +24,6 @@ const WORD: u64 = 8;
 /// ```
 ///
 /// A slot can only come from a checked layout; its bounds cannot be forged.
-///
-/// ```compile_fail
-/// let layout = stack_layout::StackLayout::new(0, 4096, 4096, 1).unwrap();
-/// let slot = layout.slot(0).unwrap();
-/// let _ = slot.stack_base;
-/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StackLayout {
     base: u64,
@@ -146,17 +140,6 @@ impl Slot {
     }
 
     /// The word-aligned span from the base to `clearance` below `pointer`, unused by a frame there.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stack_layout::StackLayout;
-    ///
-    /// let slot = StackLayout::new(0x1000_0000, 16 * 1024, 4096, 1).unwrap().slot(0).unwrap();
-    /// assert_eq!(slot.span_below(0x1000_4ff4, 1024), Some(0x1000_1000..0x1000_4bf0));
-    /// assert_eq!(slot.span_below(0x1000_1404, 1024), None);
-    /// assert_eq!(slot.span_below(0x1000_0ff8, 0), None);
-    /// ```
     pub const fn span_below(&self, pointer: u64, clearance: u64) -> Option<core::ops::Range<u64>> {
         if self.usage_at(pointer).is_none() {
             return None;

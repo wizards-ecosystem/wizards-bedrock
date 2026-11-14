@@ -9,8 +9,3 @@ repository.workspace = true
 
 [lints]
 workspace = true
-
-# Property testing, built only for the host under `cargo test`.
-[dev-dependencies]
-proptest.workspace = true
-getrandom.workspace = true

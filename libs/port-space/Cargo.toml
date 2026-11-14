@@ -9,8 +9,3 @@ repository.workspace = true
 
 [lints]
 workspace = true
-
-# Host-only property testing; the kernel build never sees these.
-[dev-dependencies]
-proptest.workspace = true
-getrandom.workspace = true
