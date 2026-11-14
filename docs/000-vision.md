@@ -99,10 +99,7 @@ reference, not followed linearly). Docs are numbered in creation order.
    (D-110); a program born holding exactly one thing: a way to be spoken to
    (D-111); and the queue protocol **model-checked before the kernel
    implemented it** (D-112, D-113). Closed by a dated VMware boot and the
-   D-115 audit. 124 machine checks at the close, and 343 lines of `unsafe` in
-   `wost` against a budget of 380; both have moved since, and
-   `xtask/src/unsafety.rs` holds the current one because a number in prose
-   cannot be checked. The mlibc sysdep is written and analysed rather than
+   D-115 audit. The mlibc sysdep is written and analysed rather than
    compiled: the toolchain wall is measured in D-114. D-181 found that its
    three-bin summary conflated C++ body state with remaining platform work and
    replaced it with an exact two-axis row for each inspected function. The
@@ -118,8 +115,7 @@ reference, not followed linearly). Docs are numbered in creation order.
    device that is claimed rather than a port range (D-77's other half), a
    polled NVMe driver, FAT32 read-only checked against `fatfs` as an oracle, a
    VFS over directories whose resolver has no way up, tmpfs and devfs, and a
-   `read` that is a submission. The current check and mutation counts live in
-   `014-storage.md`'s checked closing table rather than being copied here. The
+   `read` that is a submission. Check counts are not kept in prose, because nothing checks them. The
    write path, a page cache, symlinks and namespace
    composition are carried deliberately; WizFS is still not here (D-73). Slice
    table in `014-storage.md`*

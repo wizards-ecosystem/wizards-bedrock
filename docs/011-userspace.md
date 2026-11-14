@@ -355,7 +355,7 @@ types live (D-41), and a copy in `libs/` would still drift. D-223 supplied the
 durable alternative: a host harness cross-compiles probes against the actual
 `wost`. D-247 extends it to require the two live-guard programs to fail with
 exactly `E0499`, require the explicit-drop control to compile, and retain
-removal of `SpinLockGuard`'s `Drop` impl as the mutation.
+removal of `SpinLockGuard`'s `Drop` impl as the defect it must catch.
 
 ## Slice 3 — the address space that grows (2026-08-24)
 
@@ -569,7 +569,7 @@ D-106's task binding becomes authority over both roots: a context switch
 installs the destination's full root, and only the final exit tail can install
 its stripped mate. D-88's no-PCID flush and release evidence cover the shared
 lower tables and both root frames, and cleanup retains the complete pair on any
-refusal. The host contracts and mutations 2,048 through 2,061 are retained, and forced-paired debug and
+refusal. The host contracts are retained, and forced-paired debug and
 optimized QEMU reached 290/290. PW-580 and PW-706 stay open for the complete
 release sweep and fresh self-test plus shipped VMware boots.
 
@@ -634,9 +634,8 @@ was proposed. Where the answer is "not paid", it says so and says where it went.
 
 ### What the phase cost, measured
 
-- **124 machine checks**, from 79 at the Phase 4 close.
 - **343 lines of `unsafe` in `wost`**, in 143 blocks, against a budget of 380
-  that `cargo test` now enforces. `kernel/` and every `libs/` crate have none,
+  that `cargo test` then enforced. `kernel/` and every `libs/` crate have none,
   and the counter checks that too rather than trusting the lint.
 - **Fifteen new decisions**, D-100 through D-114, and five amendments.
 - **Four adversarial audits** during the phase (D-94, D-95, D-101, D-105) plus

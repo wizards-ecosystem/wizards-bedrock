@@ -331,7 +331,7 @@ correlated by CID rather than slot; and **capacity is `size - 1`**, an
 off-by-one whose symptom is a hang.
 
 So: the queue-index and PRP arithmetic go to `libs/nvme`, where `cargo test`
-and a mutation reach them and where the `size - 1` rule is proved once. The
+reaches them and where the `size - 1` rule is proved once. The
 byte layout, phase tag, doorbell and MMIO stay in `wost`. **No shared
 `Ring<T>`.**
 
@@ -463,7 +463,7 @@ The entry is thirty-two bytes, because sixteen could not hold a handle, an
 offset, a buffer and a length. D-181 repaired the four transcriptions of its
 layout: one kernel offset map now feeds parser, serializer and helpers; the
 check derives C offsets, widths and sizes, then checks actual emitted-ELF
-operands plus entry base and count. A persistent `argument`-offset mutation
+operands plus entry base and count. Moving the `argument` offset
 must make the program-ring check red.
 
 The buffer bound is checked at submission, not after the read, where it would
@@ -501,12 +501,12 @@ first:
 
 | The thing under test | Where | How |
 |---|---|---|
-| PRP construction, queue indices, FAT cluster arithmetic, path component resolution | `libs/` | `cargo test`, doctests, mutation |
+| PRP construction, queue indices, FAT cluster arithmetic, path component resolution | `libs/` | `cargo test`, doctests |
 | A real read from a real device | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
 | What this repo says about itself | `xtask/` | `cargo test` |
 
 The phase's named checks: the FAT reader against `fatfs`; the `size - 1`
-capacity rule in `libs/` with a mutation, because getting it wrong hangs rather
+capacity rule in `libs/`, because getting it wrong hangs rather
 than errors; a path that tries to ascend from every direction (absolute, `..`
 past the root, `..` in the middle, a rename underneath a walk); a same-object
 Duplicate with rights it was not offered, and an OpenAt derivation that must
@@ -545,7 +545,7 @@ for a file that is not one, and holds `MOTD` twice in different directories.
 ## Decisions this phase had to make
 
 Each was minted when it was taken, not batched, because a citation to an entry
-that does not exist is what `xtask/src/decisions.rs` refuses (D-124).
+that does not exist is a defect (D-124).
 
 1. **Does a device claim replace a port claim, or sit above it?** A `Device`
    that *contains* the port and MMIO claims makes the registry's permanence
@@ -582,18 +582,12 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 296 |
-| Mutations | 2450 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-454 |
 
-The two counts are **checked against the source at every commit**
-(`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
-verdict. Source-bound qualification records carry those outcomes; this table
-keeps only the registry's checked count. A number copied anywhere else can
-disagree with both, which the per-slice tallies this file once carried did, in
-seven places (D-175). The host-test count is deliberately absent: it changes
-with every `libs/` crate and nothing would be learned from pinning it here.
+Check and test counts are deliberately absent: they change with every slice
+and nothing checks a copy in prose, which the per-slice tallies this file once
+carried got wrong in seven places (D-175).
 
 The five file sysdeps remain incomplete for distinguishable reasons.
 `sys_read` has a native explicit-offset Read, but needs a reachable file
@@ -874,7 +868,7 @@ keyboard interrupts and progress through the poller. The QEMU fixed profile
 presents `-device intel-iommu,intremap=on,eim=on,caching-mode=on` and injects
 the checksummed `WZDM` authority that exactly names that unit; the degraded gate boots the shipped image without it and
 requires the named refusal, and the VMware template enables its virtual unit.
-Each check is broken once and its mutation kept.
+Each check is broken once and watched to fail.
 
 D-364 separates supported table depth from effective coverage: SAGAW chooses
 the walk and every mapped byte stays below both AGAW and MGAW. A supported

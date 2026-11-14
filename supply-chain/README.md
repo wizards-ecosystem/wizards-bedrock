@@ -29,7 +29,7 @@ cargo xtask ci
 ```
 
 Fresh vulnerability data is inherently external. At each phase close and
-before qualified diagnostic/binary distribution, run `cargo xtask qualify-advisory`.
+before qualified diagnostic/binary distribution, run `cargo audit` against the exact `Cargo.lock` and read the result.
 D-441's experimental source preview instead requires disclosure/license review,
 the bounded source/build checks and explicit unrun-qualification disclosures;
 it distributes no newly built image or qualification bundle and makes no fresh

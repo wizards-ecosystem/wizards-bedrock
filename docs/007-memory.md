@@ -408,9 +408,8 @@ enclave leaf and every divergent user leaf. Fault-injection tests stop
 after each allocation and publication edge and account for every frame. The
 machine proof forces KPTI under QEMU, walks the stripped root, reads back that
 PCID is off and enclave leaves are non-global, and exercises entry, exit,
-fault, timer, context-switch and retirement order. Each predicate has the
-retained mutation D-407 enumerates; mutations 2,048 through 2,061 were each
-observed red before restoration. Debug and optimized QEMU both reached 290/290.
+fault, timer, context-switch and retirement order. Each predicate was
+observed red when broken, as D-407 enumerates. Debug and optimized QEMU both reached 290/290.
 PW-706 remains open for the complete release sweep and fresh VMware evidence.
 
 ## The implementation, closed; the VMware record missing

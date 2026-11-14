@@ -206,7 +206,7 @@ proof obligation, stated once, is genuine shared ground.
 
 **Recommendation.** Put the admission arithmetic (full given head, tail and
 size; may I submit given the reserved completions) in a `libs/` crate where
-`cargo test` and a D-28 mutation reach it and §3.3.1.5's `size − 1` rule is
+`cargo test` reaches it and §3.3.1.5's `size − 1` rule is
 proved once. Keep byte layout, phase tag, doorbell and PRP construction as
 NVMe-specific code in `wost`, the split already made for `port_space` and
 `frame_space`. **Do not build a shared `Ring<T>`**: it reads as elegance and
