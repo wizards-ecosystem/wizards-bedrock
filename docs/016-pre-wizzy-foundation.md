@@ -58,8 +58,8 @@ and the API caller audit as release prerequisites. Their earlier outcomes
 below are dated history. What remains, and how to run it:
 
 1. **PW-001, the registry sweep.** Closed by D-449 on 2026-10-28 and retired by
-   D-454. A changed library is checked with `cargo mutants --in-diff` on the
-   laptop, which never blocks a release.
+   D-454. `cargo mutants --in-diff` may be run on changed library code on the
+   laptop when useful; nothing requires or records it.
 2. **The `xtask` grade.** Retired by D-454 with D-425's continuous campaigns.
    No grade campaign completed (PW-025); its tooling stays in git history.
 3. **VMware.** PW-003, PW-004, PW-201, PW-301, PW-305 and the hardware half of
