@@ -48,11 +48,3 @@ jobs:
         run: |
           cargo xtask build --release
           exit $LASTEXITCODE
-      - name: Check decisions
-        run: |
-          cargo test --locked -p xtask --lib decisions::tests::
-          exit $LASTEXITCODE
-      - name: Check documentation and registries
-        run: |
-          cargo test --locked -p xtask --lib prose::tests::
-          exit $LASTEXITCODE

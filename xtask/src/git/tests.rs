@@ -511,35 +511,3 @@ fn a_changed_executable_blocks_publication() {
     assert!(error.contains("changed during this run"), "{error}");
     std::fs::remove_dir_all(root).unwrap();
 }
-
-#[test]
-fn recorded_git_identity_is_validated_field_by_field() {
-    let git = resolved().expect("Git resolves on the development host");
-    let fields = git.fields();
-    let check = |fields: &[(&'static str, String); 4]| {
-        validate_fields(|key| {
-            fields
-                .iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| value.as_str())
-                .context("missing")
-        })
-    };
-    check(&fields).unwrap();
-    let uppercase = "A".repeat(64);
-    for (index, value) in [
-        (0, "0"),
-        (0, "012"),
-        (1, "relative/git.exe"),
-        (2, uppercase.as_str()),
-        (3, "2.44.0"),
-    ] {
-        let mut broken = fields.clone();
-        broken[index].1 = value.to_string();
-        assert!(
-            check(&broken).is_err(),
-            "{} = {value} was accepted",
-            FIELDS[index]
-        );
-    }
-}

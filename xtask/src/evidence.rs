@@ -10,25 +10,23 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
-use crate::files::{is_reparse_point, require_real_directory};
+use crate::files::{
+    boot_image_bytes, is_reparse_point, namespace_bytes, read_bounded_file, read_bounded_text,
+    require_real_directory,
+};
 use crate::git::is_git_id;
 use crate::paths::Paths;
-use crate::qualification::{boot_image_bytes, namespace_bytes, validate_field};
-use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
+use crate::{bounded_process, gate, image, qemu, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v11";
+const FORMAT: &str = "wizard-evidence-v12";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
-const AVAILABLE: &str = "available";
-const UNAVAILABLE: &str = "unavailable";
-const QUALIFICATION_TOOLS: &[&str] = &["tool.java", "tool.vmware"];
 const IDENTITY_DEADLINE: Duration = Duration::from_secs(5);
 const QEMU_VERSION_DEADLINE: Duration = Duration::from_secs(5);
 const QEMU_VERSION_LABEL: &str = "QEMU version identity probe";
 const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
-const MAX_GIT_DIFF_BYTES: usize = 1024 * 1024;
 const MAX_TOOL_VERSION_BYTES: usize = 64 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_LOCK_BYTES: u64 = 4 * 1024 * 1024;
@@ -83,88 +81,17 @@ struct Record {
     fields: BTreeMap<String, String>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct QualificationRelation {
-    qualified: qualification::SourceIdentity,
-    policy: &'static str,
-    files: Vec<String>,
-    digest: String,
-}
-
-impl QualificationRelation {
-    fn discover(paths: &Paths, qualified: &qualification::SourceIdentity) -> Result<Self> {
-        let (commit, tree) = clean_source(paths.root())?;
-        let evidence = qualification::SourceIdentity { commit, tree };
-        if evidence == *qualified {
-            return Ok(Self {
-                qualified: qualified.clone(),
-                policy: "same-commit",
-                files: Vec::new(),
-                digest: sha256::hex(&sha256::digest(&[])),
-            });
-        }
-
-        let parents = git_output(
-            paths.root(),
-            &["rev-list", "--parents", "-n", "1", "HEAD"],
-            MAX_GIT_IDENTITY_BYTES,
-            "evidence source parents",
-        )?;
-        require_single_direct_parent(&parents, &evidence.commit, &qualified.commit)?;
-        let parent_tree_selector = format!("{}^{{tree}}", qualified.commit);
-        let parent_tree = git_output(
-            paths.root(),
-            &["rev-parse", &parent_tree_selector],
-            MAX_GIT_IDENTITY_BYTES,
-            "qualification parent tree",
-        )?;
-        ensure!(
-            parent_tree == qualified.tree,
-            "qualification parent tree differs from its records"
-        );
-        let raw = git_output_bytes(
-            paths.root(),
-            &[
-                "diff-tree",
-                "--no-commit-id",
-                "--raw",
-                "-r",
-                "--no-renames",
-                "-z",
-                &qualified.commit,
-                &evidence.commit,
-                "--",
-            ],
-            MAX_GIT_DIFF_BYTES,
-            "parent documentation diff",
-        )?;
-        Self::from_parent_diff(qualified, &raw)
-    }
-
-    fn from_parent_diff(qualified: &qualification::SourceIdentity, raw: &[u8]) -> Result<Self> {
-        Ok(Self {
-            qualified: qualified.clone(),
-            policy: "parent-docs-only-v1",
-            files: parse_parent_docs_diff(raw)?,
-            digest: sha256::hex(&sha256::digest(raw)),
-        })
-    }
-
-    fn add_to(&self, record: &mut Record) -> Result<()> {
-        record.insert("qualification.source.commit", &self.qualified.commit)?;
-        record.insert("qualification.source.tree", &self.qualified.tree)?;
-        record.insert("qualification.relation", self.policy)?;
-        record.insert("qualification.closure.files", self.files.len().to_string())?;
-        record.insert("qualification.closure.paths", self.files.join(","))?;
-        record.insert("qualification.closure.sha256", &self.digest)
-    }
-}
-
-fn require_single_direct_parent(parents: &str, evidence: &str, qualified: &str) -> Result<()> {
-    let words: Vec<_> = parents.split_whitespace().collect();
+fn validate_field(owner: &str, key: &str, value: &str) -> Result<()> {
     ensure!(
-        words == [evidence, qualified],
-        "parent-docs-only-v1 requires the qualification source to be the single direct parent"
+        !key.is_empty()
+            && key.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte)
+            }),
+        "invalid {owner} key `{key}`"
+    );
+    ensure!(
+        !value.contains(['\r', '\n', '\0']),
+        "{owner} value for `{key}` contains a forbidden byte"
     );
     Ok(())
 }
@@ -203,37 +130,25 @@ impl Record {
 /// The full gate, two reproductions of the shipped artifacts, and every input and verdict recorded.
 pub(crate) fn create(paths: &Paths) -> Result<()> {
     let root = invalidate_manifest(paths)?;
-    println!("[xtask] qualifying a reproducible release from a clean checkout");
+    println!("[xtask] reproducing a release from a clean checkout");
     qemu::nvme_image(paths.root()).context("materialising the deterministic NVMe input")?;
     vendor::verify(paths)?;
-    let qualified_source = qualification::recorded_source(paths)?;
-    let relation = QualificationRelation::discover(paths, &qualified_source)?;
-    let mut before = input_record(paths)?;
-    relation.add_to(&mut before)?;
-    let registry = mutate::registry_fingerprint();
-    let qualifications = qualification::snapshot(
-        paths,
-        &registry,
-        mutate::mutations().count(),
-        &qualified_source,
-        relation_requires_current_mutation(relation.policy),
-    )?;
+    let before = input_record(paths)?;
 
     tasks::ci(paths).context("release evidence stopped at the local gate")?;
     ensure!(
-        input_record_with_relation(paths, &qualified_source)? == before,
-        "source, tools, firmware or boot inputs changed during qualification"
+        input_record(paths)? == before,
+        "source, tools, firmware or boot inputs changed during the gate"
     );
 
     reproduce_into_bundle(paths, &root)?;
 
-    let mut record = input_record_with_relation(paths, &qualified_source)?;
+    let mut record = input_record(paths)?;
     ensure!(
         record == before,
         "source, tools, firmware or boot inputs changed during artifact reproduction"
     );
-    qualifications.install(&root)?;
-    add_bundle(&mut record, paths, &root, &qualifications.campaigns())?;
+    add_bundle(&mut record, &root)?;
 
     verify_record(paths, &root, &record)?;
     crate::git::resolved()?.require_unchanged()?;
@@ -249,7 +164,6 @@ fn reproduce_into_bundle(paths: &Paths, root: &Path) -> Result<()> {
         "work-b",
         "path-a",
         "path-b",
-        "qualification",
         "toolchain-b",
         "cargo-home-b",
     ] {
@@ -328,21 +242,8 @@ fn require_no_release_host_paths(
     Ok(())
 }
 
-fn add_bundle(
-    record: &mut Record,
-    paths: &Paths,
-    root: &Path,
-    campaigns: &qualification::CampaignStates,
-) -> Result<()> {
+fn add_bundle(record: &mut Record, root: &Path) -> Result<()> {
     add_artifacts(record, root)?;
-    add_qualification_files(record, root, campaigns)?;
-    for (key, label) in qualification::CampaignStates::status_keys()
-        .into_iter()
-        .zip(campaigns.labels())
-    {
-        record.insert(key, label)?;
-    }
-    verify_qualification_artifact_identity(paths, root)?;
     for step in gate::REGISTRY.steps() {
         record.insert(step.evidence_key(), PASS)?;
     }
@@ -361,7 +262,7 @@ fn reproduce_release(paths: &Paths, target: &Path, label: &str) -> Result<Reprod
             host_roots: crate::cargo::active_kernel_remap_roots(&copied)?,
         })
     };
-    crate::mutate::workspace::with_clean_source_copy(paths, build)
+    crate::workspace::with_clean_source_copy(paths, build)
 }
 
 fn reproduce_release_alternate(
@@ -445,7 +346,7 @@ fn build_alternate_release(
     toolchain: &Path,
     cargo_home: &Path,
 ) -> Result<ReproducedRelease> {
-    crate::mutate::workspace::with_clean_source_copy(paths, |source| {
+    crate::workspace::with_clean_source_copy(paths, |source| {
         run_alternate_release_build(source, target, toolchain, cargo_home)?;
         let copied = Paths::new(source.to_path_buf(), Some(target));
         let image = copied.image();
@@ -456,15 +357,15 @@ fn build_alternate_release(
             image,
             kernel,
             host_roots: [
-                crate::mutate::workspace::canonical_existing_real_directory(
+                crate::workspace::canonical_existing_real_directory(
                     source,
                     "alternate release source root",
                 )?,
-                crate::mutate::workspace::canonical_existing_real_directory(
+                crate::workspace::canonical_existing_real_directory(
                     toolchain,
                     "alternate release toolchain root",
                 )?,
-                crate::mutate::workspace::canonical_existing_real_directory(
+                crate::workspace::canonical_existing_real_directory(
                     cargo_home,
                     "alternate release Cargo home",
                 )?,
@@ -607,7 +508,7 @@ fn mirror_file(source: &Path, destination: &Path, metadata: &std::fs::Metadata) 
 }
 
 fn require_no_host_paths(path: &Path, maximum: u64, label: &str, roots: &[PathBuf]) -> Result<()> {
-    let bytes = qualification::read_bounded_file(path, maximum, label)?;
+    let bytes = read_bounded_file(path, maximum, label)?;
     for root in roots {
         let root = crate::cargo::child_process_path(root);
         let text = root
@@ -626,17 +527,12 @@ fn require_no_host_paths(path: &Path, maximum: u64, label: &str, roots: &[PathBu
     Ok(())
 }
 
-fn relation_requires_current_mutation(policy: &str) -> bool {
-    policy == "same-commit"
-}
-
 /// The bundle checked against the clean checkout and installed tools, with no network or rebuild.
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
     let root = evidence_root(paths);
     let manifest = root.join(MANIFEST_NAME);
     require_contained_regular_file(&root, &manifest, "evidence manifest")?;
-    let text =
-        qualification::read_bounded_text(&manifest, MAX_MANIFEST_BYTES, "evidence manifest")?;
+    let text = read_bounded_text(&manifest, MAX_MANIFEST_BYTES, "evidence manifest")?;
     let record = parse_manifest(&text)?;
 
     verify_record(paths, &root, &record)?;
@@ -646,20 +542,9 @@ pub(crate) fn verify(paths: &Paths) -> Result<()> {
 
 fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
     vendor::verify(paths)?;
-    let qualified_source = qualification::SourceIdentity {
-        commit: record.get("qualification.source.commit")?.to_string(),
-        tree: record.get("qualification.source.tree")?.to_string(),
-    };
-    let campaigns = declared_campaigns(record)?;
-    let observed = input_record_with_relation(paths, &qualified_source)?;
+    let observed = input_record(paths)?;
     let mut expected_keys: BTreeSet<String> = observed.fields.keys().cloned().collect();
     for spec in ARTIFACTS {
-        expected_keys.insert(format!("{}.path", spec.prefix));
-        expected_keys.insert(format!("{}.bytes", spec.prefix));
-        expected_keys.insert(format!("{}.sha256", spec.prefix));
-    }
-    expected_keys.extend(qualification::CampaignStates::status_keys());
-    for spec in campaigns.bundle_files() {
         expected_keys.insert(format!("{}.path", spec.prefix));
         expected_keys.insert(format!("{}.bytes", spec.prefix));
         expected_keys.insert(format!("{}.sha256", spec.prefix));
@@ -673,32 +558,8 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
 
     require_inputs_match(record, &observed)?;
     verify_artifacts(record, root)?;
-    verify_qualification_files(record, root, &campaigns)?;
-    verify_qualification_artifact_identity(paths, root)?;
-    qualification::verify_bundle(
-        paths,
-        root,
-        &qualified_source,
-        &mutate::registry_fingerprint(),
-        mutate::mutations().count(),
-        &campaigns,
-    )?;
     require_pass_results(record)?;
     Ok(())
-}
-
-fn declared_campaigns(record: &Record) -> Result<qualification::CampaignStates> {
-    let [grade, deep] = qualification::CampaignStates::status_keys();
-    qualification::CampaignStates::from_labels([record.get(&grade)?, record.get(&deep)?])
-}
-
-fn input_record_with_relation(
-    paths: &Paths,
-    qualified: &qualification::SourceIdentity,
-) -> Result<Record> {
-    let mut record = input_record(paths)?;
-    QualificationRelation::discover(paths, qualified)?.add_to(&mut record)?;
-    Ok(record)
 }
 
 fn input_record(paths: &Paths) -> Result<Record> {
@@ -770,73 +631,11 @@ fn input_record(paths: &Paths) -> Result<Record> {
             "NVMe namespace input",
         )?,
     )?;
-    add_optional_tool(&mut record, "tool.java", qualification::java(paths.root())?)?;
-    add_optional_tool(
-        &mut record,
-        "tool.vmware",
-        qualification::vmrun(paths.root())?,
-    )?;
     add_vendor_inputs(&mut record, paths)?;
     Ok(record)
 }
 
-fn add_optional_tool(
-    record: &mut Record,
-    prefix: &str,
-    tool: Option<qualification::Tool>,
-) -> Result<()> {
-    let identity = match tool {
-        Some(tool) => ToolIdentity::Available {
-            version: tool.version,
-            digest: digest_file_bounded(
-                &tool.path,
-                MAX_TOOL_BINARY_BYTES,
-                "qualification tool executable",
-            )?,
-        },
-        None => ToolIdentity::Unavailable,
-    };
-    add_tool_identity(record, prefix, &identity)
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-enum ToolIdentity {
-    Available { version: String, digest: Digest },
-    Unavailable,
-}
-
-fn add_tool_identity(record: &mut Record, prefix: &str, identity: &ToolIdentity) -> Result<()> {
-    let (state, version, bytes, sha256) = match identity {
-        ToolIdentity::Available { version, digest } => (
-            AVAILABLE,
-            version.replace('\n', "\\n"),
-            digest.bytes.to_string(),
-            digest.sha256.clone(),
-        ),
-        ToolIdentity::Unavailable => (
-            UNAVAILABLE,
-            UNAVAILABLE.to_string(),
-            UNAVAILABLE.to_string(),
-            UNAVAILABLE.to_string(),
-        ),
-    };
-    record.insert(format!("{prefix}.state"), state)?;
-    record.insert(format!("{prefix}.version"), version)?;
-    record.insert(format!("{prefix}.bytes"), bytes)?;
-    record.insert(format!("{prefix}.sha256"), sha256)?;
-    Ok(())
-}
-
 fn require_inputs_match(record: &Record, observed: &Record) -> Result<()> {
-    for prefix in QUALIFICATION_TOOLS {
-        let key = format!("{prefix}.state");
-        let expected = record.get(&key)?;
-        let actual = observed.get(&key)?;
-        ensure!(
-            expected == actual,
-            "qualification dependency `{prefix}` differs: manifest `{expected}`, current `{actual}`"
-        );
-    }
     for (key, actual) in &observed.fields {
         let expected = record.get(key)?;
         ensure!(
@@ -902,19 +701,6 @@ fn add_artifacts_with_image_bytes(
     Ok(())
 }
 
-fn add_qualification_files(
-    record: &mut Record,
-    root: &Path,
-    campaigns: &qualification::CampaignStates,
-) -> Result<()> {
-    for spec in campaigns.bundle_files() {
-        record.insert(format!("{}.path", spec.prefix), spec.relative)?;
-        let digest = verified_qualification_digest(root, spec)?;
-        add_known_digest(record, spec.prefix, digest)?;
-    }
-    Ok(())
-}
-
 fn verify_artifacts(record: &Record, root: &Path) -> Result<()> {
     verify_artifacts_with_image_bytes(record, root, boot_image_bytes())
 }
@@ -957,116 +743,6 @@ fn verify_artifacts_with_image_bytes(
         "the bundled image paths are not byte-identical"
     );
     Ok(())
-}
-
-fn verify_qualification_files(
-    record: &Record,
-    root: &Path,
-    campaigns: &qualification::CampaignStates,
-) -> Result<()> {
-    for spec in campaigns.bundle_files() {
-        ensure!(
-            record.get(&format!("{}.path", spec.prefix))? == spec.relative,
-            "{} names an unexpected bundle path",
-            spec.prefix
-        );
-        let digest = verified_qualification_digest(root, spec)?;
-        ensure!(
-            record.get(&format!("{}.bytes", spec.prefix))? == digest.bytes.to_string(),
-            "{} has a different length than its manifest",
-            spec.prefix
-        );
-        ensure!(
-            record.get(&format!("{}.sha256", spec.prefix))? == digest.sha256,
-            "{} has a different digest than its manifest",
-            spec.prefix
-        );
-    }
-    Ok(())
-}
-
-fn verify_qualification_artifact_identity(paths: &Paths, root: &Path) -> Result<()> {
-    verify_qualification_artifact_identity_with_sizes(
-        paths,
-        root,
-        boot_image_bytes(),
-        namespace_bytes(),
-    )
-}
-
-fn verify_qualification_artifact_identity_with_sizes(
-    paths: &Paths,
-    root: &Path,
-    expected_image_bytes: u64,
-    expected_namespace_bytes: u64,
-) -> Result<()> {
-    let selftest_image = digest_bundle_file_exact(
-        root,
-        "qualification/vmware-self-test/bedrock-flat.img",
-        "VMware self-test image",
-        expected_image_bytes,
-    )?;
-    let shipped_image = digest_bundle_file_exact(
-        root,
-        "qualification/vmware-shipped/bedrock-flat.img",
-        "VMware shipped image",
-        expected_image_bytes,
-    )?;
-    ensure!(
-        shipped_image
-            == digest_bundle_file_exact(
-                root,
-                ARTIFACTS[1].relative,
-                ARTIFACTS[1].prefix,
-                expected_image_bytes,
-            )?,
-        "the VMware shipped image differs from the reproduced release"
-    );
-    ensure!(
-        selftest_image != shipped_image,
-        "the VMware self-test and shipped selectors produced the same image"
-    );
-
-    let namespace = digest_file_exact(
-        &qemu::nvme_path(paths.root()),
-        expected_namespace_bytes,
-        "current storage namespace",
-    )?;
-    for kind in ["vmware-self-test", "vmware-shipped"] {
-        let bundled = digest_bundle_file_exact(
-            root,
-            &format!("qualification/{kind}/wizard-nvm-flat.img"),
-            "VMware namespace",
-            expected_namespace_bytes,
-        )?;
-        ensure!(
-            bundled == namespace,
-            "the {kind} namespace differs from the recorded boot input"
-        );
-    }
-    Ok(())
-}
-
-fn verified_qualification_digest(root: &Path, spec: &qualification::BundleFile) -> Result<Digest> {
-    verified_qualification_digest_with(root, spec, || Ok(()))
-}
-
-fn verified_qualification_digest_with<F>(
-    root: &Path,
-    spec: &qualification::BundleFile,
-    after_path_check: F,
-) -> Result<Digest>
-where
-    F: FnOnce() -> Result<()>,
-{
-    let path = checked_bundle_file(root, spec.relative, spec.prefix)?;
-    after_path_check()?;
-    let (maximum, exact) = qualification::bundle_file_size_policy(spec)?;
-    if exact {
-        digest_file_exact(&path, maximum, spec.prefix)
-    } else {
-        digest_file_bounded(&path, maximum, spec.prefix)
-    }
 }
 
 fn require_pass_results(record: &Record) -> Result<()> {
@@ -1190,67 +866,6 @@ fn git_output(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result
     normalize_command_output(Path::new("git"), args, output)
 }
 
-fn git_output_bytes(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<Vec<u8>> {
-    let mut command = crate::git::resolved()?.command(root);
-    command.args(args);
-    let output = bounded_process::output_with_limit(command, IDENTITY_DEADLINE, label, maximum)
-        .with_context(|| format!("running git {}", args.join(" ")))?;
-    ensure!(
-        output.status.success() && output.stderr.is_empty(),
-        "git {} failed or wrote diagnostics",
-        args.join(" ")
-    );
-    Ok(output.stdout)
-}
-
-fn parse_parent_docs_diff(raw: &[u8]) -> Result<Vec<String>> {
-    const ALLOWED: &[&str] = &[
-        "README.md",
-        "docs/004-decision-log.md",
-        "docs/014-storage.md",
-        "docs/016-pre-wizzy-foundation.md",
-        "docs/017-pre-wizzy-hostile-surface-audit.md",
-    ];
-    ensure!(
-        !raw.is_empty() && raw.last() == Some(&0),
-        "parent documentation diff is empty or not NUL terminated"
-    );
-    let fields: Vec<_> = raw[..raw.len() - 1].split(|byte| *byte == 0).collect();
-    ensure!(
-        fields.len() % 2 == 0,
-        "parent documentation diff has an incomplete row"
-    );
-    let mut files = Vec::new();
-    for row in fields.chunks_exact(2) {
-        let header = std::str::from_utf8(row[0]).context("parent diff header is not UTF-8")?;
-        let path = std::str::from_utf8(row[1]).context("parent diff path is not UTF-8")?;
-        let fields: Vec<_> = header.split_whitespace().collect();
-        ensure!(
-            fields.len() == 5
-                && fields[0] == ":100644"
-                && fields[1] == "100644"
-                && fields[2].len() == 40
-                && fields[3].len() == 40
-                && fields[2].bytes().all(|byte| byte.is_ascii_hexdigit())
-                && fields[3].bytes().all(|byte| byte.is_ascii_hexdigit())
-                && fields[4] == "M",
-            "parent-docs-only-v1 permits only ordinary 100644 file modifications"
-        );
-        ensure!(
-            ALLOWED.contains(&path),
-            "parent-docs-only-v1 refuses `{path}`"
-        );
-        ensure!(
-            files
-                .last()
-                .is_none_or(|previous: &String| previous.as_str() < path),
-            "parent documentation paths are not unique and sorted"
-        );
-        files.push(path.to_string());
-    }
-    Ok(files)
-}
-
 fn trusted_command_output(root: &Path, program: &Path, args: &[&str]) -> Result<String> {
     let mut command = Command::new(program);
     command.current_dir(root).args(args);
@@ -1355,9 +970,9 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutate::workspace::require_direct_file(parent, path, label)?;
-    let file = crate::mutate::workspace::open_real_file(path, label)?;
+    crate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::workspace::require_direct_file(parent, path, label)?;
+    let file = crate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1378,9 +993,9 @@ where
         "{label} changed length while it was hashed"
     );
     after_hash()?;
-    crate::mutate::workspace::require_direct_file(parent, path, label)?;
+    crate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
-        crate::mutate::workspace::open_real_file(path, label)?
+        crate::workspace::open_real_file(path, label)?
             .metadata()
             .with_context(|| format!("remeasuring {label} {}", path.display()))?
             .len()
@@ -1411,9 +1026,9 @@ where
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
-    crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
-    crate::mutate::workspace::require_direct_file(parent, path, label)?;
-    let file = crate::mutate::workspace::open_real_file(path, label)?;
+    crate::workspace::canonical_existing_real_directory(parent, label)?;
+    crate::workspace::require_direct_file(parent, path, label)?;
+    let file = crate::workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1424,7 +1039,7 @@ where
     );
     let mut limited = file.take(expected + 1);
     let digest = hash(&mut limited)?;
-    crate::mutate::workspace::require_direct_file(parent, path, label)?;
+    crate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
         digest.bytes == expected,
         "{label} hashed {} bytes, expected exactly {expected}",
@@ -1447,7 +1062,7 @@ fn byte_identical(first: &Digest, second: &Digest) -> bool {
 }
 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
-    let mut input = crate::mutate::workspace::open_real_file(source, "evidence source artifact")?;
+    let mut input = crate::workspace::open_real_file(source, "evidence source artifact")?;
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
@@ -1574,7 +1189,7 @@ fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Resu
         require_real_directory(&current, label)?;
     }
     let parent = path.parent().context("bundle file has no parent")?;
-    crate::mutate::workspace::require_direct_file(parent, path, label)?;
+    crate::workspace::require_direct_file(parent, path, label)?;
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("canonicalizing {}", root.display()))?;
     let canonical_path = std::fs::canonicalize(path)
@@ -1587,10 +1202,8 @@ fn require_contained_regular_file(root: &Path, path: &Path, label: &str) -> Resu
 }
 
 fn invalidate_manifest(paths: &Paths) -> Result<PathBuf> {
-    let root = crate::mutate::workspace::prepare_real_directory_tree(
-        &evidence_root(paths),
-        "evidence root",
-    )?;
+    let root =
+        crate::workspace::prepare_real_directory_tree(&evidence_root(paths), "evidence root")?;
     require_evidence_root(&root)?;
     for name in [MANIFEST_NAME, MANIFEST_TEMP] {
         let path = root.join(name);
@@ -1650,13 +1263,7 @@ fn checked_child(root: &Path, name: &str) -> Result<PathBuf> {
     ensure!(
         matches!(
             name,
-            "work-a"
-                | "work-b"
-                | "path-a"
-                | "path-b"
-                | "qualification"
-                | "toolchain-b"
-                | "cargo-home-b"
+            "work-a" | "work-b" | "path-a" | "path-b" | "toolchain-b" | "cargo-home-b"
         ),
         "refusing to modify unexpected evidence child `{name}`"
     );

@@ -48,20 +48,6 @@ fn the_host_half_lints_its_tests() {
 }
 
 #[test]
-fn the_mutation_observer_forwards_its_caller_deadline() {
-    let source = include_str!("../tasks.rs");
-    let start = source
-        .find("pub fn observe_test_boot(")
-        .expect("observe_test_boot definition");
-    let body = &source[start..];
-    let end = body.find("\n}\n").expect("observe_test_boot end");
-    let body = &body[..end];
-    let expected = ["qemu::observe_selftest(paths, image.path(), ", "timeout)"].concat();
-
-    assert!(body.contains(&expected), "caller deadline is not forwarded");
-}
-
-#[test]
 fn the_kernel_half_is_cross_compiled_and_has_no_extra_targets() {
     let args = args(Some(paths::KERNEL_TARGET));
     assert!(args.contains(&"--target".to_string()));
@@ -394,8 +380,7 @@ fn recursive_vm_cleanup_has_an_entry_budget_before_deleting() {
     std::fs::create_dir(&directory).unwrap();
     let sentinel = directory.join("sentinel");
     std::fs::write(&sentinel, b"generated state").unwrap();
-    let mut handle =
-        crate::mutate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+    let mut handle = crate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
     let mut remaining = 0;
 
     let error = empty_open_directory(&mut handle, &directory, 0, &mut remaining)
@@ -414,8 +399,7 @@ fn recursive_vm_cleanup_has_a_depth_bound_before_deleting() {
     std::fs::create_dir(&directory).unwrap();
     let sentinel = directory.join("sentinel");
     std::fs::write(&sentinel, b"generated state").unwrap();
-    let mut handle =
-        crate::mutate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+    let mut handle = crate::workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
     let mut remaining = MAX_VM_CLEANUP_ENTRIES;
 
     let error = empty_open_directory(

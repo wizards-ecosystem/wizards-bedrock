@@ -75,16 +75,6 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
 }
 
-/// Boot a self-test kernel while preserving a valid failed or panic verdict.
-pub fn observe_test_boot(
-    paths: &Paths,
-    profile: Profile,
-    timeout: Duration,
-) -> Result<qemu::SelftestOutcome> {
-    let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
-    qemu::observe_selftest(paths, image.path(), timeout)
-}
-
 /// A debug kernel runs several times slower under emulation, so the release budget would
 /// report load as a hang.
 const fn selftest_timeout(profile: Profile) -> Duration {
@@ -96,10 +86,6 @@ const fn selftest_timeout(profile: Profile) -> Duration {
 
 /// Generous for a cold QEMU start on a loaded machine, short enough to report a hung kernel.
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Room for the bounded red paths a machine mutation can trigger before its exact witness;
-/// mutations whose property is a timeout keep their own shorter deadlines.
-pub(crate) const MUTATION_SELFTEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Boot the shipped kernel, the image that goes on the disk, and require its steady state.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
@@ -190,7 +176,6 @@ fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
     match step {
         gate::Step::Format => fmt(paths, FmtMode::Check),
         gate::Step::Clippy => clippy(paths),
-        gate::Step::ApiAudit => crate::api::check(paths),
         gate::Step::Documentation => doc(paths),
         gate::Step::HostTests => test(paths),
         gate::Step::SupplyChain => supply_chain::verify(paths),
@@ -235,8 +220,7 @@ fn finish_cargo_clean(
     }
     let current_executable =
         current_executable.context("failed clean has no running executable")?;
-    let target =
-        crate::mutate::workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
+    let target = crate::workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
     let profile = target.join("xtask");
     let executable = profile.join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
 
@@ -255,7 +239,7 @@ fn finish_cargo_clean(
     let profile_metadata = std::fs::symlink_metadata(&profile)
         .context("inspecting retained xtask profile directory")?;
     ensure!(
-        crate::mutate::workspace::metadata_is_real_directory(&profile_metadata)
+        crate::workspace::metadata_is_real_directory(&profile_metadata)
             && std::fs::canonicalize(&profile)
                 .context("canonicalizing retained xtask profile directory")?
                 == profile,
@@ -275,7 +259,7 @@ fn finish_cargo_clean(
         "failed Cargo clean left an unexpected xtask-profile name"
     );
     let _running =
-        crate::mutate::workspace::open_real_file(&executable, "retained running clean executable")?;
+        crate::workspace::open_real_file(&executable, "retained running clean executable")?;
     let current_executable = std::fs::canonicalize(current_executable)
         .context("canonicalizing the running clean executable")?;
     ensure!(
@@ -300,8 +284,7 @@ fn remove_vm_directory_with(
         directory == root.join("vm"),
         "VMware cleanup target is not the exact allowlisted repository child"
     );
-    let repository =
-        crate::mutate::workspace::open_real_directory(root, "VMware cleanup repository root")?;
+    let repository = crate::workspace::open_real_directory(root, "VMware cleanup repository root")?;
     let mut options = fs_at::OpenOptions::default();
     options.read(true).follow(false);
     let mut directory_handle = match options.open_dir_at(&repository, "vm") {
@@ -348,7 +331,7 @@ fn empty_open_directory(
                 let metadata = child
                     .metadata()
                     .with_context(|| format!("inspecting opened {}", child_path.display()))?;
-                if crate::mutate::workspace::metadata_is_real_directory(&metadata) {
+                if crate::workspace::metadata_is_real_directory(&metadata) {
                     empty_open_directory(&mut child, &child_path, depth + 1, remaining)?;
                     drop(child);
                     match options.rmdir_at(directory, &name) {

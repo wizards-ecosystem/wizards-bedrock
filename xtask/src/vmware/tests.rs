@@ -108,34 +108,6 @@ fn selftest_transcript() -> String {
     selftest_transcript_with_isolation(FIXTURE_PAIRED_ISOLATION)
 }
 
-#[test]
-fn the_delayed_read_marker_matches_the_unique_kernel_format_literal() {
-    let kernel = crate::contracts::module_source(repository_root(), "kernel/src/selftest.rs");
-    let prefix = "\"selftest: delayed read evidence ";
-    let occurrences = kernel.match_indices(prefix).collect::<Vec<_>>();
-    assert_eq!(
-        occurrences.len(),
-        1,
-        "the kernel must own one delayed-read evidence format"
-    );
-    let format = &kernel[occurrences[0].0 + 1..];
-    let format = &format[..format
-        .find('"')
-        .expect("the delayed-read evidence format must terminate")];
-    let success = format
-        .replace("{deferred}", "true")
-        .replace("{reached_device}", "true")
-        .replace("{retained}", "true")
-        .replace("{input_progress}", "true")
-        .replace("{completed}", "true")
-        .replace("{exact}", "true");
-    assert!(
-        !success.contains('{') && !success.contains('}'),
-        "every delayed-read evidence placeholder must be rendered"
-    );
-    assert_eq!(success, SELFTEST_DELAYED_READ_MARKER);
-}
-
 fn shipped_transcript_with_isolation(isolation: &str) -> String {
     // The 2026-10-20 VMware shipped boot's order: the namespace survey precedes user isolation.
     let mut transcript = format!(
@@ -838,42 +810,6 @@ fn destructive_vmware_paths_require_one_canonical_parent() {
         .is_err()
     );
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn generation_invalidates_success_and_receipt_before_any_fallible_preflight() {
-    let dispatch = include_str!("../lib.rs");
-    assert!(
-        dispatch.contains("Task::QualifyVmware { kernel } => vmware::qualify(&paths, kernel),")
-    );
-    let vmware = dispatch.find("Task::Vmware { profile, kernel }").unwrap();
-    let qualify = dispatch[vmware..].find("Task::QualifyVmware").unwrap() + vmware;
-    let arm = &dispatch[vmware..qualify];
-    let invalidate_pass = arm.find("qualification::invalidate_vmware").unwrap();
-    let invalidate_receipt = arm.find("vmware::invalidate_generation").unwrap();
-    let build = arm.find("image::build").unwrap();
-    let generate = arm.find("vmware::generate").unwrap();
-    assert!(invalidate_pass < invalidate_receipt && invalidate_receipt < build && build < generate);
-
-    let source = include_str!("../vmware.rs");
-    let generate = source.find("pub fn generate").unwrap();
-    let qualify = source[generate..].find("pub(crate) fn qualify").unwrap() + generate;
-    let body = &source[generate..qualify];
-    let invalidate_pass = body
-        .find("qualification::invalidate_vmware(paths, kernel)")
-        .unwrap();
-    let invalidate_receipt = body.find("invalidate_generation(paths, kernel)").unwrap();
-    let preflight = body.find("qualification::vmrun").unwrap();
-    let reset = body.find("write_new(&serial_log, &[])").unwrap();
-    let receipt = body
-        .find("qualification::commit_vmware_generation")
-        .unwrap();
-    assert!(
-        invalidate_pass < invalidate_receipt
-            && invalidate_receipt < preflight
-            && preflight < reset
-            && reset < receipt
-    );
 }
 
 #[test]

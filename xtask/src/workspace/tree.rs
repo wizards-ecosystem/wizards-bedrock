@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -220,43 +220,6 @@ pub(crate) fn metadata_is_real_directory(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_dir()
         && !metadata.file_type().is_symlink()
         && !is_reparse_point(metadata)
-}
-
-#[derive(Debug)]
-pub(super) struct SweepLock {
-    _file: File,
-}
-
-pub(super) fn acquire_lock(path: &Path) -> Result<SweepLock> {
-    let parent = path.parent().context("mutation lock has no parent")?;
-    let parent_metadata = std::fs::symlink_metadata(parent)
-        .with_context(|| format!("inspecting {}", parent.display()))?;
-    require_real_directory_metadata(parent, &parent_metadata, "mutation lock parent")?;
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => require_real_file_metadata(path, &metadata, "mutation lock")?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("inspecting {}", path.display()));
-        }
-    }
-    let mut options = OpenOptions::new();
-    OpenOptions::create(&mut options, true);
-    OpenOptions::truncate(&mut options, false);
-    OpenOptions::read(&mut options, true);
-    OpenOptions::write(&mut options, true);
-    let file = OpenOptions::open(&options, path)
-        .with_context(|| format!("opening mutation lock {}", path.display()))?;
-    let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("inspecting {}", path.display()))?;
-    require_real_file_metadata(path, &metadata, "mutation lock")?;
-    require_canonical_child(parent, path, "mutation lock")?;
-    file.try_lock().with_context(|| {
-        format!(
-            "another mutation sweep holds {}; wait for it or stop it before resuming",
-            path.display()
-        )
-    })?;
-    Ok(SweepLock { _file: file })
 }
 
 fn require_real_file_metadata(

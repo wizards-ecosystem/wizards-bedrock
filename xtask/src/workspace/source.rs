@@ -9,22 +9,20 @@ use crate::files::is_reparse_point;
 use crate::paths::Paths;
 use crate::sha256;
 
-use super::journal::is_hex;
 use super::tree::{
     canonical_existing_real_directory, open_real_file, prepare_real_child, require_direct_file,
     require_direct_file_if_present, require_real_child, require_real_directory_metadata,
 };
-use super::{STATE_ROOT_NAME, read_bounded_bytes};
 
 // Git may contend with the compiler-heavy host suite on release builders; the bound is
 // generous so that scheduler latency alone should not fail the gate.
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
-pub(super) const MAX_GIT_IDENTITY_BYTES: usize = 4096;
+const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
 const MAX_GIT_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_PATH_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TRACKED_FILES: usize = 4096;
-pub(super) const MAX_TRACKED_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_TRACKED_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_TREE_BYTES: u64 = 64 * 1024 * 1024;
 static NEXT_SOURCE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEXT_SOURCE_COPY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -67,30 +65,12 @@ pub(crate) fn with_clean_source_copy<T>(
     }
 }
 
-/// The destination must already be owned; every tracked file is written anew and its bytes proven.
-pub(crate) fn copy_clean_tracked_to(source: &Path, destination: &Path) -> Result<()> {
-    let baseline = Baseline::discover(source)?;
-    let destination =
-        canonical_existing_real_directory(destination, "owned clean source-copy destination")?;
-    copy_tracked(source, &destination, &baseline.tracked)?;
-    ensure!(
-        digest_tracked(&destination, &baseline.tracked)? == baseline.source_digest,
-        "the owned clean source copy differs from the checkout"
-    );
-    Ok(())
+struct Baseline {
+    tracked: Vec<PathBuf>,
+    source_digest: String,
 }
 
-#[derive(Debug)]
-pub(super) struct Baseline {
-    pub(super) root: PathBuf,
-    pub(super) commit: String,
-    pub(super) tracked: Vec<PathBuf>,
-    pub(super) source_digest: String,
-    pub(super) index_path: PathBuf,
-    pub(super) index_digest: String,
-}
-
-pub(super) fn parse_tracked_paths(listed: &[u8]) -> Result<Vec<PathBuf>> {
+fn parse_tracked_paths(listed: &[u8]) -> Result<Vec<PathBuf>> {
     let mut tracked = Vec::new();
     let mut previous = None;
     for raw in listed
@@ -111,37 +91,40 @@ pub(super) fn parse_tracked_paths(listed: &[u8]) -> Result<Vec<PathBuf>> {
     ensure!(!tracked.is_empty(), "Git reports no tracked files");
     ensure!(
         tracked.len() <= MAX_TRACKED_FILES,
-        "Git reports {} tracked files, exceeding the {MAX_TRACKED_FILES}-file mutation limit",
+        "Git reports {} tracked files, exceeding the {MAX_TRACKED_FILES}-file limit",
         tracked.len()
     );
     Ok(tracked)
 }
 
 impl Baseline {
-    pub(super) fn discover(root: &Path) -> Result<Self> {
+    fn discover(root: &Path) -> Result<Self> {
         let status = git(
             root,
             ["status", "--porcelain=v1", "--untracked-files=all"],
             MAX_GIT_STATUS_BYTES,
-            "mutation source status",
+            "source status",
         )?;
         ensure!(
             status.is_empty(),
-            "mutation sweeps require a clean checkout; git reports:\n{}",
+            "a clean source copy requires a clean checkout; git reports:\n{}",
             String::from_utf8_lossy(&status)
         );
         let commit = git_text(
             root,
             ["rev-parse", "--verify", "HEAD"],
             MAX_GIT_IDENTITY_BYTES,
-            "mutation source commit",
+            "source commit",
         )?;
-        ensure!(is_hex(&commit, 40), "HEAD is not a full Git object id");
+        ensure!(
+            crate::git::is_git_id(&commit),
+            "HEAD is not a full Git object id"
+        );
         let listed = git(
             root,
             ["ls-files", "-z"],
             MAX_TRACKED_PATH_BYTES,
-            "mutation tracked-path inventory",
+            "tracked-path inventory",
         )?;
         let tracked = parse_tracked_paths(&listed)?;
 
@@ -149,20 +132,20 @@ impl Baseline {
             root,
             ["rev-parse", "--path-format=absolute", "--git-path", "index"],
             MAX_GIT_IDENTITY_BYTES,
-            "mutation Git index path",
+            "Git index path",
         )?;
-        let index_path = require_confined_absolute_file(root, &index_name, "mutation Git index")?;
+        let index_path = require_confined_absolute_file(root, &index_name, "Git index")?;
         let index_digest = digest_file(&index_path, MAX_GIT_INDEX_BYTES, "Git index")?;
         let source_digest = digest_tracked(root, &tracked)?;
         let settled_status = git(
             root,
             ["status", "--porcelain=v1", "--untracked-files=all"],
             MAX_GIT_STATUS_BYTES,
-            "settled mutation source status",
+            "settled source status",
         )?;
         ensure!(
             settled_status.is_empty(),
-            "mutation source changed while its baseline was captured; git reports:\n{}",
+            "source changed while its baseline was captured; git reports:\n{}",
             String::from_utf8_lossy(&settled_status)
         );
         ensure!(
@@ -170,34 +153,18 @@ impl Baseline {
                 root,
                 ["rev-parse", "--verify", "HEAD"],
                 MAX_GIT_IDENTITY_BYTES,
-                "settled mutation source commit",
+                "settled source commit",
             )? == commit,
-            "mutation source commit changed while its baseline was captured"
+            "source commit changed while its baseline was captured"
         );
         ensure!(
             digest_file(&index_path, MAX_GIT_INDEX_BYTES, "settled Git index")? == index_digest,
-            "Git index changed while the mutation baseline was captured"
+            "Git index changed while the baseline was captured"
         );
         Ok(Self {
-            root: root.to_path_buf(),
-            commit,
             tracked,
             source_digest,
-            index_path,
-            index_digest,
         })
-    }
-
-    pub(super) fn verify(&self) -> Result<()> {
-        ensure!(
-            digest_tracked(&self.root, &self.tracked)? == self.source_digest,
-            "the source checkout changed during the mutation sweep"
-        );
-        ensure!(
-            digest_file(&self.index_path, MAX_GIT_INDEX_BYTES, "Git index")? == self.index_digest,
-            "the Git index changed during the mutation sweep"
-        );
-        Ok(())
     }
 }
 
@@ -225,7 +192,7 @@ fn git<const N: usize>(
     Ok(output.stdout)
 }
 
-pub(super) fn git_text<const N: usize>(
+fn git_text<const N: usize>(
     root: &Path,
     args: [&str; N],
     maximum: usize,
@@ -238,16 +205,20 @@ pub(super) fn git_text<const N: usize>(
         .to_string())
 }
 
-pub(super) fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Result<()> {
-    let root = canonical_existing_real_directory(to, "mutation copy root")?;
+fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Result<()> {
+    let root = canonical_existing_real_directory(to, "source copy root")?;
     for relative in tracked {
         let relative = relative
             .to_str()
-            .context("a tracked mutation path is not UTF-8")?;
-        let source = require_confined_file(from, relative, "mutation copy source")?;
+            .context("a tracked source path is not UTF-8")?;
+        let source = require_confined_file(from, relative, "source copy source")?;
         let (_, destination) =
-            prepare_confined_destination(&root, relative, "mutation copy destination")?;
-        let bytes = read_bounded_bytes(&source, MAX_TRACKED_FILE_BYTES, "tracked mutation file")?;
+            prepare_confined_destination(&root, relative, "source copy destination")?;
+        let bytes = crate::files::read_bounded_file(
+            &source,
+            MAX_TRACKED_FILE_BYTES,
+            "tracked source file",
+        )?;
         write_source(&destination, &bytes)?;
     }
     Ok(())
@@ -255,36 +226,33 @@ pub(super) fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Resul
 
 /// Never copied: `fs::copy` keeps an old timestamp, so Cargo would call a restore fresh and
 /// keep the defect, in the package and in everything that inlined it.
-pub(super) fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
+fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
     write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))
 }
 
-pub(super) fn write_source_with(
+fn write_source_with(
     destination: &Path,
     bytes: &[u8],
     publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
     let parent = destination
         .parent()
-        .context("mutation source destination has no parent")?;
+        .context("source destination has no parent")?;
     ensure!(
         destination.parent() == Some(parent),
-        "mutation source destination escaped its parent"
+        "source destination escaped its parent"
     );
 
     let mut reserved = None;
     for _ in 0..64 {
         let nonce = NEXT_SOURCE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = parent.join(format!(
-            ".mutation-source-{}-{nonce:016x}",
-            std::process::id()
-        ));
+        let path = parent.join(format!(".source-{}-{nonce:016x}", std::process::id()));
         let mut options = OpenOptions::new();
         OpenOptions::create_new(&mut options, true);
         OpenOptions::write(&mut options, true);
         match OpenOptions::open(&options, &path) {
             Ok(file) => {
-                require_direct_file(parent, &path, "temporary mutation source")?;
+                require_direct_file(parent, &path, "temporary source")?;
                 reserved = Some((path, file));
                 break;
             }
@@ -295,8 +263,7 @@ pub(super) fn write_source_with(
             }
         }
     }
-    let (temporary, mut file) =
-        reserved.context("could not reserve a temporary mutation source")?;
+    let (temporary, mut file) = reserved.context("could not reserve a temporary source")?;
     let result = (|| {
         file.write_all(bytes)
             .with_context(|| format!("writing {}", temporary.display()))?;
@@ -308,23 +275,23 @@ pub(super) fn write_source_with(
             parent,
             &temporary,
             destination,
-            "mutation source",
+            "source",
             publish,
             |published| {
                 ensure!(
-                    read_bounded_bytes(
+                    crate::files::read_bounded_file(
                         published,
                         MAX_TRACKED_FILE_BYTES,
-                        "published mutation source",
+                        "published source",
                     )? == bytes,
-                    "published mutation source differs from its requested bytes"
+                    "published source differs from its requested bytes"
                 );
                 Ok(())
             },
         )?;
         Ok(())
     })();
-    finish_staged_operation(parent, &temporary, "temporary mutation source", result)
+    finish_staged_operation(parent, &temporary, "temporary source", result)
 }
 
 pub(crate) fn finish_staged_operation<T>(
@@ -332,18 +299,6 @@ pub(crate) fn finish_staged_operation<T>(
     staging: &Path,
     label: &str,
     result: Result<T>,
-) -> Result<T> {
-    finish_staged_operation_with(parent, staging, label, result, |path| {
-        std::fs::remove_file(path)
-    })
-}
-
-pub(super) fn finish_staged_operation_with<T>(
-    parent: &Path,
-    staging: &Path,
-    label: &str,
-    result: Result<T>,
-    remove: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<T> {
     match result {
         Ok(value) => Ok(value),
@@ -354,7 +309,7 @@ pub(super) fn finish_staged_operation_with<T>(
                     staging.display()
                 )
             })? {
-                remove(staging).with_context(|| {
+                std::fs::remove_file(staging).with_context(|| {
                     format!(
                         "after {operation_error:#}; removing failed {label} {}",
                         staging.display()
@@ -450,7 +405,7 @@ fn unused_source_path(parent: &Path, kind: &str) -> Result<PathBuf> {
     for _ in 0..64 {
         let nonce = NEXT_SOURCE_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = parent.join(format!(
-            ".mutation-{kind}-{}-{nonce:016x}",
+            ".source-{kind}-{}-{nonce:016x}",
             std::process::id()
         ));
         match std::fs::symlink_metadata(&path) {
@@ -462,7 +417,7 @@ fn unused_source_path(parent: &Path, kind: &str) -> Result<PathBuf> {
             }
         }
     }
-    bail!("could not reserve a mutation source {kind} path")
+    bail!("could not reserve a source {kind} path")
 }
 
 fn restore_previous_file(
@@ -490,29 +445,6 @@ fn restore_previous_file(
     Ok(())
 }
 
-pub(super) fn restore_file(snapshot: &Path, workspace: &Path, relative: &str) -> Result<()> {
-    let source = require_confined_file(snapshot, relative, "mutation snapshot source")?;
-    let bytes = read_bounded_bytes(&source, MAX_TRACKED_FILE_BYTES, "mutation snapshot")?;
-    let workspace = canonical_existing_real_directory(workspace, "mutation workspace")?;
-    let (parent, destination) =
-        prepare_confined_destination(&workspace, relative, "mutation restore destination")?;
-    if require_direct_file_if_present(&parent, &destination, "mutation restore destination")?
-        && read_direct_file(&parent, &destination, "mutation restore destination")? == bytes
-    {
-        return Ok(());
-    }
-    write_source(&destination, &bytes)?;
-    ensure!(
-        read_bounded_bytes(
-            &destination,
-            MAX_TRACKED_FILE_BYTES,
-            "restored mutation source",
-        )? == bytes,
-        "restored mutation file differs from its snapshot"
-    );
-    Ok(())
-}
-
 fn prepare_confined_destination(
     root: &Path,
     relative: &str,
@@ -534,146 +466,6 @@ fn prepare_confined_destination(
         }
     }
     unreachable!("validate_relative accepted an empty path")
-}
-
-fn read_direct_file(parent: &Path, path: &Path, label: &str) -> Result<Vec<u8>> {
-    require_direct_file(parent, path, label)?;
-    let bytes = read_bounded_bytes(path, MAX_TRACKED_FILE_BYTES, label)?;
-    require_direct_file(parent, path, label)?;
-    Ok(bytes)
-}
-
-pub(super) fn restore_workspace(
-    snapshot: &Path,
-    workspace: &Path,
-    tracked: &[PathBuf],
-) -> Result<()> {
-    require_mutation_layout(snapshot, workspace)?;
-    require_real_tree(snapshot, "mutation source snapshot")?;
-
-    clean_workspace(workspace, Path::new(""), tracked)?;
-    for relative in tracked {
-        let relative = relative
-            .to_str()
-            .context("a tracked workspace path is not UTF-8")?;
-        restore_file(snapshot, workspace, relative)?;
-    }
-    ensure!(
-        digest_tracked(workspace, tracked)? == digest_tracked(snapshot, tracked)?,
-        "the restored mutation workspace differs from its snapshot"
-    );
-    verify_workspace_layout(workspace, Path::new(""), tracked)
-}
-
-pub(super) fn require_mutation_layout(snapshot: &Path, workspace: &Path) -> Result<()> {
-    ensure!(
-        snapshot.file_name().and_then(|name| name.to_str()) == Some("source")
-            && workspace.file_name().and_then(|name| name.to_str()) == Some("workspace")
-            && snapshot.parent() == workspace.parent()
-            && snapshot.parent().and_then(Path::parent).is_some(),
-        "refusing to sanitize paths outside one mutation state directory"
-    );
-    let state = snapshot
-        .parent()
-        .context("mutation snapshot has no state directory")?;
-    let state_root = state.parent().context("mutation state has no state root")?;
-    let target = state_root
-        .parent()
-        .context("mutation state root has no target directory")?;
-    ensure!(
-        state_root.file_name().and_then(|name| name.to_str()) == Some(STATE_ROOT_NAME),
-        "mutation state root is not the exact `{STATE_ROOT_NAME}` directory"
-    );
-    let key = state
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("mutation state key is not UTF-8")?;
-    ensure!(valid_state_key(key), "mutation state key is malformed");
-
-    let target_metadata = std::fs::symlink_metadata(target)
-        .with_context(|| format!("inspecting {}", target.display()))?;
-    require_real_directory_metadata(target, &target_metadata, "mutation target directory")?;
-    for ancestor in target.ancestors() {
-        if ancestor.as_os_str().is_empty() {
-            continue;
-        }
-        let metadata = std::fs::symlink_metadata(ancestor)
-            .with_context(|| format!("inspecting ancestor {}", ancestor.display()))?;
-        require_real_directory_metadata(ancestor, &metadata, "mutation target ancestry")?;
-    }
-    require_real_child(target, state_root, "mutation state root")?;
-    require_real_child(state_root, state, "mutation state")?;
-    require_real_child(state, snapshot, "mutation source snapshot")?;
-    require_real_child(state, workspace, "mutation workspace")
-}
-
-fn valid_state_key(key: &str) -> bool {
-    let Some((commit, registry)) = key.split_once('-') else {
-        return false;
-    };
-    commit.len() == 12
-        && registry.len() == 12
-        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && registry.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-pub(super) fn require_real_tree(root: &Path, label: &str) -> Result<()> {
-    let metadata = std::fs::symlink_metadata(root)
-        .with_context(|| format!("inspecting {}", root.display()))?;
-    require_real_directory_metadata(root, &metadata, label)?;
-    for entry in std::fs::read_dir(root).with_context(|| format!("reading {}", root.display()))? {
-        let entry = entry.with_context(|| format!("reading an entry in {}", root.display()))?;
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("inspecting {}", path.display()))?;
-        ensure!(
-            !metadata.file_type().is_symlink() && !is_reparse_point(&metadata),
-            "{label} contains a redirected entry: {}",
-            path.display()
-        );
-        if metadata.file_type().is_dir() {
-            require_real_tree(&path, label)?;
-        } else {
-            ensure!(
-                metadata.file_type().is_file(),
-                "{label} contains a non-file entry: {}",
-                path.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-fn clean_workspace(root: &Path, relative: &Path, tracked: &[PathBuf]) -> Result<()> {
-    let directory = root.join(relative);
-    for entry in
-        std::fs::read_dir(&directory).with_context(|| format!("reading {}", directory.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("reading an entry in {}", directory.display()))?;
-        let child = relative.join(entry.file_name());
-        let metadata = std::fs::symlink_metadata(entry.path())
-            .with_context(|| format!("inspecting {}", entry.path().display()))?;
-        let expected_file = tracked.iter().any(|path| path == &child);
-        let expected_directory = tracked
-            .iter()
-            .any(|path| path != &child && path.starts_with(&child));
-
-        if expected_directory
-            && metadata.file_type().is_dir()
-            && !metadata.file_type().is_symlink()
-            && !is_reparse_point(&metadata)
-        {
-            clean_workspace(root, &child, tracked)?;
-        } else if !(expected_file
-            && metadata.file_type().is_file()
-            && !metadata.file_type().is_symlink()
-            && !is_reparse_point(&metadata))
-        {
-            remove_workspace_entry(&entry.path(), &metadata)?;
-        }
-    }
-    Ok(())
 }
 
 fn remove_workspace_entry(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
@@ -704,36 +496,7 @@ fn remove_workspace_entry(path: &Path, metadata: &std::fs::Metadata) -> Result<(
     }
 }
 
-fn verify_workspace_layout(root: &Path, relative: &Path, tracked: &[PathBuf]) -> Result<()> {
-    let directory = root.join(relative);
-    for entry in
-        std::fs::read_dir(&directory).with_context(|| format!("reading {}", directory.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("reading an entry in {}", directory.display()))?;
-        let child = relative.join(entry.file_name());
-        let metadata = std::fs::symlink_metadata(entry.path())
-            .with_context(|| format!("inspecting {}", entry.path().display()))?;
-        let expected_file = tracked.iter().any(|path| path == &child);
-        let expected_directory = tracked
-            .iter()
-            .any(|path| path != &child && path.starts_with(&child));
-        ensure!(
-            !metadata.file_type().is_symlink()
-                && !is_reparse_point(&metadata)
-                && ((expected_file && metadata.file_type().is_file())
-                    || (expected_directory && metadata.file_type().is_dir())),
-            "unexpected entry remained in the mutation workspace: {}",
-            child.display()
-        );
-        if expected_directory {
-            verify_workspace_layout(root, &child, tracked)?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn require_confined_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf> {
+fn require_confined_file(root: &Path, relative: &str, label: &str) -> Result<PathBuf> {
     validate_relative(relative)?;
     let root_metadata = std::fs::symlink_metadata(root)
         .with_context(|| format!("inspecting {}", root.display()))?;
@@ -758,11 +521,7 @@ pub(super) fn require_confined_file(root: &Path, relative: &str, label: &str) ->
     unreachable!("validate_relative accepted an empty path")
 }
 
-pub(super) fn require_confined_absolute_file(
-    root: &Path,
-    absolute: &str,
-    label: &str,
-) -> Result<PathBuf> {
+fn require_confined_absolute_file(root: &Path, absolute: &str, label: &str) -> Result<PathBuf> {
     let root = canonical_existing_real_directory(root, label)?;
     let path = Path::new(absolute);
     ensure!(
@@ -787,7 +546,7 @@ pub(super) fn require_confined_absolute_file(
     require_confined_file(&root, relative, label)
 }
 
-pub(super) fn validate_relative(relative: &str) -> Result<()> {
+fn validate_relative(relative: &str) -> Result<()> {
     let path = Path::new(relative);
     ensure!(
         !path.as_os_str().is_empty(),
@@ -801,7 +560,7 @@ pub(super) fn validate_relative(relative: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
+fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
     ensure!(
         tracked.len() <= MAX_TRACKED_FILES,
         "tracked source contains {} files, exceeding its {MAX_TRACKED_FILES}-file limit",
@@ -812,8 +571,8 @@ pub(super) fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String>
     for relative in tracked {
         let name = relative
             .to_str()
-            .context("a tracked mutation path is not UTF-8")?;
-        let path = require_confined_file(root, name, "tracked mutation source")?;
+            .context("a tracked source path is not UTF-8")?;
+        let path = require_confined_file(root, name, "tracked source source")?;
         let length = path
             .metadata()
             .with_context(|| format!("measuring tracked file {}", relative.display()))?
@@ -834,8 +593,8 @@ pub(super) fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String>
 
     let mut hasher = sha256::Hasher::new();
     for (name, path, length) in measured {
-        require_confined_file(root, name, "tracked mutation source")?;
-        let mut file = open_real_file(&path, "tracked mutation source")?;
+        require_confined_file(root, name, "tracked source source")?;
+        let mut file = open_real_file(&path, "tracked source source")?;
         ensure!(
             file.metadata()
                 .with_context(|| format!("remeasuring tracked file {name}"))?
@@ -876,16 +635,16 @@ pub(super) fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String>
                     == length,
             "tracked file {name} changed length while being hashed"
         );
-        require_confined_file(root, name, "tracked mutation source")?;
+        require_confined_file(root, name, "tracked source source")?;
     }
     Ok(sha256::hex(&hasher.finish()))
 }
 
-pub(super) fn digest_file(path: &Path, maximum: u64, label: &str) -> Result<String> {
+fn digest_file(path: &Path, maximum: u64, label: &str) -> Result<String> {
     digest_file_with(path, maximum, label, || Ok(()))
 }
 
-pub(super) fn digest_file_with<F>(
+fn digest_file_with<F>(
     path: &Path,
     maximum: u64,
     label: &str,

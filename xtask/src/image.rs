@@ -105,7 +105,7 @@ fn create_new_image(path: &Path) -> std::io::Result<File> {
 }
 
 pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
-    crate::mutate::workspace::prepare_real_directory_tree(
+    crate::workspace::prepare_real_directory_tree(
         &target.join(paths::QEMU_RUN_DIRECTORY),
         "QEMU private run directory",
     )
@@ -149,12 +149,10 @@ fn publish_image(
         destination == parent.join(paths::IMAGE_NAME),
         "boot image is not the exact configured target child"
     );
-    let canonical_parent = crate::mutate::workspace::prepare_real_directory_tree(
-        parent,
-        "boot-image target directory",
-    )?;
+    let canonical_parent =
+        crate::workspace::prepare_real_directory_tree(parent, "boot-image target directory")?;
     let published_path = canonical_parent.join(paths::IMAGE_NAME);
-    crate::mutate::workspace::require_direct_file_if_present(
+    crate::workspace::require_direct_file_if_present(
         &canonical_parent,
         &published_path,
         "existing boot image",
@@ -167,33 +165,30 @@ fn publish_image(
         std::process::id()
     ));
     let publication = write_image_stage(&staging, build).and_then(|()| {
-        crate::mutate::workspace::require_direct_file(
-            &canonical_parent,
-            &staging,
-            "boot-image stage",
-        )?;
+        crate::workspace::require_direct_file(&canonical_parent, &staging, "boot-image stage")?;
         ensure!(
-            crate::mutate::workspace::canonical_existing_real_directory(
+            crate::workspace::canonical_existing_real_directory(
                 parent,
                 "boot-image target directory",
             )? == canonical_parent,
             "boot-image target directory changed before publication"
         );
-        let staged = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
+        let staged = crate::sha256::digest_reader(crate::workspace::open_real_file(
             &staging,
             "boot-image stage",
         )?)
         .with_context(|| format!("hashing boot-image stage {}", staging.display()))?;
 
-        crate::mutate::workspace::publish_staged_file(
+        crate::workspace::publish_staged_file(
             &canonical_parent,
             &staging,
             &published_path,
             "boot image",
             |published| {
-                let digest = crate::sha256::digest_reader(
-                    crate::mutate::workspace::open_real_file(published, "boot image")?,
-                )
+                let digest = crate::sha256::digest_reader(crate::workspace::open_real_file(
+                    published,
+                    "boot image",
+                )?)
                 .with_context(|| format!("hashing boot image {}", destination.display()))?;
                 ensure!(
                     digest == staged,
@@ -204,7 +199,7 @@ fn publish_image(
         )?;
         Ok(())
     });
-    crate::mutate::workspace::finish_staged_operation(
+    crate::workspace::finish_staged_operation(
         &canonical_parent,
         &staging,
         "boot-image stage",

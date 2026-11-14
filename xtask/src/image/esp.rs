@@ -27,7 +27,7 @@ pub fn write_file<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, data: &[u8]) -
 }
 
 fn read_source(source: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
-    crate::qualification::read_bounded_file(source, maximum, label)
+    crate::files::read_bounded_file(source, maximum, label)
         .with_context(|| format!("reading {label} {}", source.display()))
 }
 

@@ -1,7 +1,6 @@
 //! Hand-rolled rather than `clap`: the tasks and flags are a `match` that unit tests can drive.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
@@ -20,7 +19,6 @@ BUILD TASKS:
     vmware            build an image and generate a VMware Workstation VM
 
 CHECK TASKS:
-    api-audit         prove every public foundation API has a resolved caller
     check             cargo check, host and kernel targets
     clippy            cargo clippy, host and kernel targets
     doc               build the docs, failing on a broken doc link
@@ -33,13 +31,10 @@ CHECK TASKS:
     verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                run the registered local gate shown below
 
-QUALIFICATION TASKS:
+RELEASE AND DIAGNOSTIC TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
     verify-evidence   verify the evidence bundle without network access
-    qualify-advisory  fetch RustSec data and qualify the exact Cargo.lock
-    qualify-mutants-grade  run the independent xtask cargo-mutants grade
-    qualify-security-deep  run, begin or verify the managed Codex Security deep scan
-    qualify-vmware    validate and preserve a fresh VMware serial transcript
+    qualify-vmware    validate a fresh VMware serial transcript
     baseline          repeat debug/release foundation measurements in QEMU
     debug             open the debug kernel at kmain in native GDB
 
@@ -52,11 +47,6 @@ NOT IN CI (exceptional dependency, interaction, or runtime):
     model-check       run TLC over the ring models (needs java)
     vmware            as above (needs VMware Workstation to boot the result)
     qualify-vmware    as above (validates a fresh human-boot transcript)
-    mutate            break the kernel on purpose, once per known defect, and
-                      require a check to go red (one QEMU boot each)
-    qualify-advisory  as above (needs cargo-audit and fresh RustSec data)
-    qualify-mutants-grade  as above (a complete run can take several days)
-    qualify-security-deep  as above (owned run can qualify; imported verification is diagnostic)
 
 HOUSEKEEPING:
     update-sbom       regenerate the SPDX SBOM from the reviewed inventory
@@ -69,9 +59,6 @@ OPTIONS:
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
     --shipped         vmware tasks: select the image users boot, not self-test
-    --run             cargo-mutants or Codex Security: run the owned campaign
-    --begin           Codex Security: write a source-bound scan request
-    --verify=<DIR>    Codex Security: verify unsigned artifacts without qualifying them
     --message-format=<FMT>
                       check only: forwarded to cargo
     -h, --help        print this help
@@ -117,8 +104,6 @@ pub enum Task {
         /// `--message-format` value forwarded to cargo, for editors.
         message_format: Option<String>,
     },
-    /// Prove every public foundation API has a compiler-resolved caller.
-    ApiAudit,
     /// Lint every crate.
     Clippy,
     /// Build the documentation, so the doc-link lints fire.
@@ -145,45 +130,19 @@ pub enum Task {
     Baseline,
     /// Open a private paused machine in the supported native debugger.
     Debug(DebugMode),
-    /// Break the kernel on purpose and require the checks to notice.
-    Mutate,
     /// Everything CI runs.
     Ci,
     /// Produce a reproducible release evidence bundle.
     Evidence,
     /// Verify a release evidence bundle without network access.
     VerifyEvidence,
-    /// Qualify the locked dependency graph against fresh RustSec data.
-    QualifyAdvisory,
-    /// Run the independent cargo-mutants grade under owned execution.
-    QualifyMutantsGrade(MutantsGradeAction),
-    /// Run, begin or diagnostically verify the managed Codex Security deep scan.
-    QualifySecurityDeep(SecurityDeepAction),
-    /// Validate and preserve one executed VMware machine.
+    /// Validate the serial transcript of one executed VMware machine.
     QualifyVmware {
         /// Which generated machine supplied the transcript.
         kernel: crate::image::Kernel,
     },
     /// Remove build output.
     Clean(CleanScope),
-}
-
-/// Which part of the external cargo-mutants qualification to perform.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum MutantsGradeAction {
-    /// Run and record the complete campaign under `xtask` process ownership.
-    Run,
-}
-
-/// Which part of the external Codex Security qualification to perform.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum SecurityDeepAction {
-    /// Run and record the complete scan under `xtask` process ownership.
-    Run,
-    /// Invalidate an older pass and write a source-bound scan request.
-    Begin,
-    /// Validate unsigned canonical artifacts without creating a pass record.
-    Verify(PathBuf),
 }
 
 /// Whether `fmt` rewrites files or just reports on them.
@@ -223,7 +182,6 @@ const TASK_NAMES: &[&str] = &[
     "run",
     "vmware",
     "check",
-    "api-audit",
     "clippy",
     "doc",
     "fmt",
@@ -237,13 +195,9 @@ const TASK_NAMES: &[&str] = &[
     "model-check",
     "baseline",
     "debug",
-    "mutate",
     "ci",
     "evidence",
     "verify-evidence",
-    "qualify-advisory",
-    "qualify-mutants-grade",
-    "qualify-security-deep",
     "qualify-vmware",
     "clean",
 ];
@@ -256,9 +210,6 @@ struct Options {
     check: bool,
     all: bool,
     shipped: bool,
-    run: bool,
-    begin: bool,
-    verify: Option<PathBuf>,
     passthrough: Vec<OsString>,
     passthrough_option: bool,
 }
@@ -290,18 +241,6 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             "--check" => options.check = true,
             "--all" => options.all = true,
             "--shipped" => options.shipped = true,
-            "--run" => {
-                if options.run {
-                    bail!("duplicate `--run`");
-                }
-                options.run = true;
-            }
-            "--begin" => {
-                if options.begin {
-                    bail!("duplicate `--begin`");
-                }
-                options.begin = true;
-            }
             "-h" | "--help" => return Ok(Task::Help),
             "--" => {
                 options.passthrough_option = true;
@@ -311,12 +250,6 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             _ => {
                 if let Some(value) = flag.strip_prefix("--message-format=") {
                     options.message_format = Some(value.to_string());
-                } else if let Some(value) = flag.strip_prefix("--verify=") {
-                    ensure_nonempty_path(value)?;
-                    if options.verify.is_some() {
-                        bail!("duplicate `--verify`");
-                    }
-                    options.verify = Some(PathBuf::from(value));
                 } else if name == "run" {
                     bail!("unknown option `{flag}`; pass QEMU arguments after `--`");
                 } else {
@@ -331,12 +264,6 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
 }
 
 fn require_options_apply(name: &str, options: &Options) -> Result<()> {
-    if !matches!(name, "qualify-mutants-grade" | "qualify-security-deep")
-        && (options.run || options.begin || options.verify.is_some())
-    {
-        bail!("external qualification options do not apply to `{name}`");
-    }
-
     if options.profile_option
         && !matches!(
             name,
@@ -370,9 +297,6 @@ fn task_named(name: &str, options: Options) -> Result<Task> {
         check,
         all,
         shipped,
-        run,
-        begin,
-        verify,
         passthrough,
         ..
     } = options;
@@ -392,7 +316,6 @@ fn task_named(name: &str, options: Options) -> Result<Task> {
             },
         }),
         "check" => Ok(Task::Check { message_format }),
-        "api-audit" => Ok(Task::ApiAudit),
         "clippy" => Ok(Task::Clippy),
         "doc" => Ok(Task::Doc),
         "fmt" => Ok(Task::Fmt(if check {
@@ -414,28 +337,9 @@ fn task_named(name: &str, options: Options) -> Result<Task> {
         } else {
             DebugMode::Interactive
         })),
-        "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),
         "evidence" => Ok(Task::Evidence),
         "verify-evidence" => Ok(Task::VerifyEvidence),
-        "qualify-advisory" => Ok(Task::QualifyAdvisory),
-        "qualify-mutants-grade" => match (run, begin, verify) {
-            (true, false, None) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Run)),
-            _ => bail!("qualify-mutants-grade requires exactly `--run`"),
-        },
-        "qualify-security-deep" => match (run, begin, verify) {
-            (true, false, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Run)),
-            (false, true, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),
-            (false, false, Some(directory)) => Ok(Task::QualifySecurityDeep(
-                SecurityDeepAction::Verify(directory),
-            )),
-            _ => {
-                bail!(
-                    "qualify-security-deep requires exactly one of `--run`, `--begin` or \
-                     `--verify=<DIR>`"
-                )
-            }
-        },
         "qualify-vmware" => Ok(Task::QualifyVmware {
             kernel: if shipped {
                 crate::image::Kernel::Shipped
@@ -480,13 +384,6 @@ fn edit_distance(left: &str, right: &str) -> usize {
         std::mem::swap(&mut previous, &mut current);
     }
     previous[right.len()]
-}
-
-fn ensure_nonempty_path(value: &str) -> Result<()> {
-    if value.is_empty() {
-        bail!("`--verify` requires a directory");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

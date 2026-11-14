@@ -3,16 +3,11 @@
 // In-source because xtask takes no workspace lints, so unsafe code is still forbidden here.
 #![forbid(unsafe_code)]
 
-pub mod api;
 pub mod baseline;
-pub mod boundary;
 mod bounded_process;
 pub mod cargo;
 pub mod cli;
-#[cfg(test)]
-mod contracts;
 mod debugger;
-pub mod decisions;
 pub mod elf;
 mod evidence;
 mod files;
@@ -22,39 +17,23 @@ pub mod image;
 mod json;
 pub mod machine;
 pub mod model;
-mod mutants_grade;
-pub mod mutate;
 pub mod paths;
 mod platform_acpi;
-pub mod prose;
 pub mod qemu;
 pub mod qmp;
-mod qualification;
-mod security_deep;
 pub mod sha256;
 pub mod supply_chain;
 pub mod tasks;
 #[cfg(test)]
 mod test_support;
-pub mod unsafety;
 pub mod vendor;
 pub mod vmware;
+mod workspace;
 
 use anyhow::Result;
 
 use crate::cli::Task;
 use crate::paths::Paths;
-
-/// Dispatch a private Codex/Python wrapper mode before ordinary CLI parsing.
-pub fn dispatch_private_codex_wrapper() -> Option<i32> {
-    security_deep::dispatch_private_wrapper().map(|result| match result {
-        Ok(code) => code,
-        Err(_) => {
-            eprintln!("error: private Codex child invocation was rejected");
-            2
-        }
-    })
-}
 
 /// Carry out `task`.
 pub fn run(task: Task) -> Result<()> {
@@ -71,14 +50,11 @@ pub fn run(task: Task) -> Result<()> {
             qemu::run(&paths, image.path(), &qemu_args)
         }
         Task::Vmware { profile, kernel } => {
-            qualification::invalidate_vmware(&paths, kernel)?;
-            vmware::invalidate_generation(&paths, kernel)?;
             let image = image::build(&paths, profile, kernel)?;
             vmware::generate(&paths, &image, kernel)
         }
         Task::QualifyVmware { kernel } => vmware::qualify(&paths, kernel),
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
-        Task::ApiAudit => api::check(&paths),
         Task::Clippy => tasks::clippy(&paths),
         Task::Doc => tasks::doc(&paths),
         Task::Fmt(mode) => tasks::fmt(&paths, mode),
@@ -92,13 +68,9 @@ pub fn run(task: Task) -> Result<()> {
         Task::ModelCheck => model::check(&paths),
         Task::Baseline => baseline::check(&paths),
         Task::Debug(mode) => debugger::run(&paths, mode),
-        Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Evidence => evidence::create(&paths),
         Task::VerifyEvidence => evidence::verify(&paths),
-        Task::QualifyAdvisory => qualification::qualify_advisory(&paths),
-        Task::QualifyMutantsGrade(action) => mutants_grade::run(&paths, action),
-        Task::QualifySecurityDeep(action) => security_deep::run(&paths, action),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }
 }

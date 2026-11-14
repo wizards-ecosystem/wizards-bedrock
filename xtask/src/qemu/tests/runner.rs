@@ -481,11 +481,9 @@ fn private_firmware_refuses_a_redirected_run_root_before_writing() {
 fn storage_construction_is_serialized_across_runners() {
     let fixture = QemuFixture::create();
     let lock_path = fixture.root.join("nvme.lock");
-    let canonical = crate::mutate::workspace::canonical_existing_real_directory(
-        &fixture.root,
-        "storage fixture",
-    )
-    .unwrap();
+    let canonical =
+        crate::workspace::canonical_existing_real_directory(&fixture.root, "storage fixture")
+            .unwrap();
     let held =
         acquire_storage_lock(&fixture.root, &lock_path, &canonical).expect("first storage builder");
     let (contended_tx, contended_rx) = std::sync::mpsc::sync_channel(0);
@@ -517,11 +515,9 @@ fn storage_construction_is_serialized_across_runners() {
 fn an_open_storage_lock_must_remain_at_its_name() {
     let fixture = QemuFixture::create();
     let lock_path = fixture.root.join("nvme.lock");
-    let canonical = crate::mutate::workspace::canonical_existing_real_directory(
-        &fixture.root,
-        "storage fixture",
-    )
-    .unwrap();
+    let canonical =
+        crate::workspace::canonical_existing_real_directory(&fixture.root, "storage fixture")
+            .unwrap();
 
     let error = open_storage_lock_with(&fixture.root, &lock_path, &canonical, |opened| {
         std::fs::remove_file(opened).expect("unlink the opened lock")
@@ -924,72 +920,6 @@ fn qemu_stop_attempts_termination_after_a_poll_failure_and_retains_every_error()
         if let Some(evidence) = evidence {
             assert!(text.contains(evidence), "{text}");
         }
-    }
-}
-
-#[test]
-fn selftest_owner_precedes_setup_and_stop_precedes_worker_joins() {
-    let source = concat!(
-        include_str!("../../qemu.rs"),
-        include_str!("../debug.rs"),
-        include_str!("../run_files.rs"),
-        include_str!("../storage.rs"),
-        include_str!("../serial.rs"),
-        include_str!("../selftest.rs"),
-        include_str!("../boot_check.rs")
-    );
-    let signature = "fn observe_selftest_run(\n    paths: &Paths,\n    image: &Path,\n    timeout: Duration,\n    echo_serial: bool,\n    marker_order: InteractiveMarkerOrder,\n) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {";
-    let body = compact_cpp(&rust_function_body(source, signature));
-    let after_spawn = body
-        .split_once(".spawn()")
-        .unwrap()
-        .1
-        .split_once("?;")
-        .unwrap()
-        .1;
-    assert!(after_spawn.starts_with("letmutmachine=QemuLifetime::new(child,stop_qemu);"));
-    let cancellation = body.find("machine.cancel();").unwrap();
-    let stop = body.find("letstopped=machine.stop();").unwrap();
-    let close = body.find("serial.close();").unwrap();
-    let joins = body
-        .find("letjoin_deadline=Instant::now()+QEMU_WORKER_STOP_TIMEOUT;")
-        .unwrap();
-    assert!(cancellation < stop && stop < close && close < joins);
-    assert!(body[joins..].contains("finish_injector(worker,&injection_cancelled,join_deadline)"));
-    assert!(body[joins..].contains("finish_selftest_serial(worker,join_deadline)"));
-    let hang_report = body
-        .find("lethang_report=start_hang_report(&observed,&mutinjector,&injection_cancelled);")
-        .unwrap();
-    assert!(cancellation < hang_report && hang_report < stop);
-    let hang = compact_cpp(&rust_function_body(
-        source,
-        "fn start_hang_report(\n    observed: &Result<SelftestTermination>,\n    injector: &mut Option<JoinHandle<Option<Qmp>>>,\n    injection_cancelled: &AtomicBool,\n) -> Result<Option<JoinHandle<()>>> {",
-    ));
-    assert!(hang.contains("injector.as_ref().is_some_and(JoinHandle::is_finished)"));
-    assert!(hang.contains("std::thread::spawn(move||report_hang(qmp.as_mut()))"));
-    assert!(hang.contains("worker_finished_by(&worker,Instant::now()+MONITOR_TIMEOUT);"));
-    assert!(body.contains(
-        "letoutcome=observed.and_then(|termination|selftest_exit(termination,timeout));"
-    ));
-    assert!(body.contains("combine_qemu_observation(outcome,serial_result)"));
-    assert!(body.ends_with("combine_qemu_cleanup(outcome,cleanup)"));
-    for signature in [
-        "pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {",
-        "fn observe_profile(\n    paths: &Paths,\n    image: &Path,\n    settle: Duration,\n    profile: DegradedProfile,\n) -> Result<DegradedOutcome> {",
-    ] {
-        let body = compact_cpp(&rust_function_body(source, signature));
-        let stop = body.find("letstop_outcome=stop_qemu(&mutchild);").unwrap();
-        let join = body
-            .find("finish_boot_serial(forwarder,Instant::now()+QEMU_WORKER_STOP_TIMEOUT)")
-            .or_else(|| {
-                body.find("finish_boot_serial(forwarder,Instant::now()+QEMU_WORKER_STOP_TIMEOUT,)")
-            })
-            .expect("the boot serial reader has the exact bounded join arguments");
-        assert!(stop < join);
-        assert!(
-            body.contains("combine_qemu_cleanup(outcome,stop_outcome)?")
-                || body.contains("combine_qemu_observation(outcome,serial_outcome),stop_outcome,")
-        );
     }
 }
 

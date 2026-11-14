@@ -12,7 +12,6 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::image::Kernel;
 use crate::paths::{self, Paths};
 use crate::qemu::{SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
-use crate::qualification;
 use crate::sha256;
 
 const VMDK_TEMPLATE: &str = include_str!("../templates/bedrock.vmdk.in");
@@ -44,6 +43,10 @@ const VMWARE_DMA_HANDOFF_MARKER: &str =
 const VMWARE_ISA_DMA_MARKER: &str = "iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester";
 const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_RUNTIME_VMX_BYTES: u64 = 1024 * 1024;
+const SERIAL_PREFIX: &str = "serial-";
+const SERIAL_SUFFIX: &str = ".log";
 
 /// The heads per cylinder and sectors per track that VMware expects.
 const HEADS: u64 = 255;
@@ -94,10 +97,6 @@ pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
 
 pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     let vm_dir = vm_directory(paths, kernel);
-    let receipt = vm_dir.join(qualification::VMWARE_GENERATION_RECEIPT);
-    qualification::invalidate_vmware(paths, kernel)?;
-    invalidate_generation(paths, kernel)?;
-    let vmrun = qualification::vmrun(paths.root())?;
     reset_vm_directory(paths, kernel)?;
 
     let flat = vm_dir.join(FLAT_NAME);
@@ -123,26 +122,12 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     let handoff = vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE);
     write_new(&handoff, &crate::platform_acpi::dma_handoff_table())?;
 
-    let serial_name = qualification::fresh_vmware_transcript_name()?;
+    let serial_name = fresh_serial_name()?;
     let vmx = generation_vmx(kernel, &serial_name)?;
     let vmx_path = vm_dir.join(VMX_NAME);
     write_new(&vmx_path, vmx.as_bytes())?;
     let serial_log = vm_dir.join(&serial_name);
     write_new(&serial_log, &[])?;
-    qualification::commit_vmware_generation(
-        paths,
-        kernel,
-        &qualification::VmwareArtifacts {
-            image: &flat,
-            namespace: &nvme_flat,
-            vmdk: &vm_dir.join(VMDK_NAME),
-            namespace_vmdk: &vm_dir.join(NVME_VMDK_NAME),
-            vmx: &vmx_path,
-            handoff: &handoff,
-            transcript: &serial_log,
-            receipt: &receipt,
-        },
-    )?;
 
     println!("[xtask] VMware VM ready: {}", vmx_path.display());
     println!(
@@ -150,19 +135,6 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
         image_label(kernel)
     );
     println!("[xtask] open it in VMware Workstation");
-    if let Some(vmrun) = vmrun {
-        println!("[xtask] VMware identity: {}", vmrun.version);
-        println!("[xtask] or run:");
-        println!(
-            "        \"{}\" -T ws start \"{}\"",
-            vmrun.path.display(),
-            vmx_path.display()
-        );
-    } else {
-        println!(
-            "[xtask] vmrun unavailable: install VMware Workstation or open the VMX on another recorded host"
-        );
-    }
     println!(
         "[xtask] serial output will appear in {}",
         serial_log.display()
@@ -208,14 +180,6 @@ fn print_checklist(kernel: Kernel) {
     }
 }
 
-pub(crate) fn invalidate_generation(paths: &Paths, kernel: Kernel) -> Result<()> {
-    require_safe_vm_root(paths)?;
-    require_safe_existing_vm_directory(paths, kernel)?;
-    qualification::invalidate_vmware_generation(
-        &vm_directory(paths, kernel).join(qualification::VMWARE_GENERATION_RECEIPT),
-    )
-}
-
 pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
     render(
         VMX_TEMPLATE,
@@ -237,27 +201,70 @@ pub(crate) fn verify_runtime_vmx(generated: &[u8], runtime: &[u8]) -> Result<()>
 }
 
 pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
-    let attempt = qualification::begin_vmware(paths, kernel)?;
     let vm_dir = vm_directory(paths, kernel);
-    let image = vm_dir.join(FLAT_NAME);
-    let namespace = vm_dir.join(NVME_FLAT_NAME);
-    let receipt = vm_dir.join(qualification::VMWARE_GENERATION_RECEIPT);
-    let transcript = qualification::generated_transcript_path(&receipt, kernel)?;
-    attempt.pass(&qualification::VmwareArtifacts {
-        image: &image,
-        namespace: &namespace,
-        vmdk: &vm_dir.join(VMDK_NAME),
-        namespace_vmdk: &vm_dir.join(NVME_VMDK_NAME),
-        vmx: &vm_dir.join(VMX_NAME),
-        handoff: &vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE),
-        transcript: &transcript,
-        receipt: &receipt,
-    })?;
+    require_safe_vm_root(paths)?;
+    require_safe_existing_vm_directory(paths, kernel)?;
+    let transcript = generated_transcript_path(&vm_dir)?;
+    let name = transcript
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("VMware transcript name is not UTF-8")?;
+    let runtime = crate::files::read_bounded_file(
+        &vm_dir.join(VMX_NAME),
+        MAX_RUNTIME_VMX_BYTES,
+        "runtime VMX",
+    )?;
+    verify_runtime_vmx(generation_vmx(kernel, name)?.as_bytes(), &runtime)?;
+    let handoff = crate::files::read_bounded_file(
+        &vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE),
+        acpi_tables::DmaHandoff::LEN as u64,
+        "DMA handoff authority",
+    )?;
+    ensure!(
+        handoff == crate::platform_acpi::dma_handoff_table(),
+        "VMware DMA handoff authority differs from the source-defined contract"
+    );
+    let bytes =
+        crate::files::read_bounded_file(&transcript, MAX_TRANSCRIPT_BYTES, "VMware transcript")?;
+    verify_transcript(paths.root(), kernel, &bytes)?;
     println!(
-        "[xtask] VMware {} execution qualified and copied into immutable evidence",
-        image_label(kernel)
+        "[xtask] VMware {} transcript {} verifies",
+        image_label(kernel),
+        transcript.display()
     );
     Ok(())
+}
+
+fn fresh_serial_name() -> Result<String> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("the host clock predates the Unix epoch")?;
+    Ok(format!(
+        "{SERIAL_PREFIX}{:x}-{}{SERIAL_SUFFIX}",
+        elapsed.as_nanos(),
+        std::process::id()
+    ))
+}
+
+fn generated_transcript_path(vm_dir: &Path) -> Result<PathBuf> {
+    let mut found = Vec::new();
+    for entry in
+        std::fs::read_dir(vm_dir).with_context(|| format!("listing {}", vm_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading {}", vm_dir.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(SERIAL_PREFIX) && name.ends_with(SERIAL_SUFFIX) {
+            found.push(entry.path());
+        }
+    }
+    ensure!(
+        found.len() == 1,
+        "{} holds {} generated serial logs, expected one",
+        vm_dir.display(),
+        found.len()
+    );
+    Ok(found.remove(0))
 }
 
 pub(crate) fn verify_transcript(root: &Path, kernel: Kernel, bytes: &[u8]) -> Result<()> {
@@ -705,7 +712,7 @@ fn source_usize(sources: &[PathBuf], prefix: &str) -> Result<usize> {
     let mut values = Vec::new();
     for path in sources {
         let source =
-            qualification::read_bounded_text(path, MAX_SOURCE_BYTES, "VMware source input")?;
+            crate::files::read_bounded_text(path, MAX_SOURCE_BYTES, "VMware source input")?;
         let found: Vec<usize> = source
             .lines()
             .filter_map(|line| line.trim().strip_prefix(prefix))
@@ -747,7 +754,7 @@ fn reset_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
         root == paths.root().join("vm") && root.parent() == Some(paths.root()),
         "VMware root escaped the workspace"
     );
-    crate::mutate::workspace::prepare_real_directory_tree(&root, "VMware root")?;
+    crate::workspace::prepare_real_directory_tree(&root, "VMware root")?;
     require_canonical_child(paths.root(), &root, "VMware root")?;
 
     let directory = vm_directory(paths, kernel);
@@ -811,10 +818,8 @@ fn require_safe_existing_vm_directory(paths: &Paths, kernel: Kernel) -> Result<(
 }
 
 fn require_canonical_child(parent: &Path, child: &Path, label: &str) -> Result<()> {
-    let canonical_parent =
-        crate::mutate::workspace::canonical_existing_real_directory(parent, label)?;
-    let canonical_child =
-        crate::mutate::workspace::canonical_existing_real_directory(child, label)?;
+    let canonical_parent = crate::workspace::canonical_existing_real_directory(parent, label)?;
+    let canonical_child = crate::workspace::canonical_existing_real_directory(child, label)?;
     ensure!(
         canonical_child.parent() == Some(canonical_parent.as_path()),
         "{label} escaped its canonical parent"
@@ -863,13 +868,13 @@ fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
 
 fn open_new_output(path: &Path) -> Result<File> {
     let parent = path.parent().context("VMware output has no parent")?;
-    crate::mutate::workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
+    crate::workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
     let file = OpenOptions::open(&options, path)
         .with_context(|| format!("creating new VMware output {}", path.display()))?;
-    crate::mutate::workspace::require_direct_file(parent, path, "VMware output")?;
+    crate::workspace::require_direct_file(parent, path, "VMware output")?;
     Ok(file)
 }
 

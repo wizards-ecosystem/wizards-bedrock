@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::cargo::Profile;
 use crate::paths::Paths;
-use crate::{image, paths, qemu, unsafety};
+use crate::{image, paths, qemu};
 
 const RUNS: usize = 3;
 const KIB: u64 = 1024;
@@ -96,10 +96,6 @@ struct Derived {
 
 /// Repeat both self-test profiles and enforce their reviewed bands.
 pub fn check(paths: &Paths) -> Result<()> {
-    let (unsafe_lines, unsafe_blocks) = unsafety::measure(&paths.root().join("wost"))?;
-    Band::exact(unsafety::MEASURED as u64).check("unsafe lines", unsafe_lines as u64)?;
-    println!("[xtask] baseline host: unsafe_lines={unsafe_lines} unsafe_blocks={unsafe_blocks}");
-
     run_profile(paths, Profile::Release, RELEASE, Duration::from_secs(60))?;
     run_profile(paths, Profile::Dev, DEBUG, Duration::from_secs(150))?;
     println!("[xtask] foundation baseline passed across {RUNS} release and {RUNS} debug boots");

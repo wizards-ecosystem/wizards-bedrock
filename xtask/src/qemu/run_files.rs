@@ -59,32 +59,31 @@ impl RunVars {
         let (directory, path, mut destination) = reserve_run_file(target, "efi-vars", "fd")?;
         after_reservation(&path);
         let copied = (|| -> Result<()> {
-            let mut source =
-                crate::mutate::workspace::open_real_file(template, "QEMU variable firmware")?;
+            let mut source = crate::workspace::open_real_file(template, "QEMU variable firmware")?;
             std::io::copy(&mut source, &mut destination)
                 .with_context(|| format!("copying {} to {}", template.display(), path.display()))?;
             destination
                 .sync_all()
                 .with_context(|| format!("flushing {}", path.display()))?;
             drop(destination);
-            crate::mutate::workspace::require_direct_file(
+            crate::workspace::require_direct_file(
                 &directory,
                 &path,
                 "private QEMU variable store",
             )?;
             ensure!(
-                crate::mutate::workspace::canonical_existing_real_directory(
+                crate::workspace::canonical_existing_real_directory(
                     &directory,
                     "QEMU private run directory",
                 )? == directory,
                 "QEMU private run directory changed while copying firmware"
             );
-            let source = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
+            let source = crate::sha256::digest_reader(crate::workspace::open_real_file(
                 template,
                 "QEMU variable firmware",
             )?)
             .with_context(|| format!("hashing private firmware {}", template.display()))?;
-            let copied = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
+            let copied = crate::sha256::digest_reader(crate::workspace::open_real_file(
                 &path,
                 "private QEMU variable store",
             )?)
@@ -92,7 +91,7 @@ impl RunVars {
             ensure!(copied == source, "private firmware copy changed bytes");
             Ok(())
         })();
-        crate::mutate::workspace::finish_staged_operation(
+        crate::workspace::finish_staged_operation(
             &directory,
             &path,
             "private QEMU variable store",
@@ -182,13 +181,9 @@ fn write_run_acpi_table(target: &Path, stem: &str, bytes: &[u8], label: &str) ->
             .sync_all()
             .with_context(|| format!("flushing {}", path.display()))?;
         drop(destination);
-        crate::mutate::workspace::require_direct_file(
-            &directory,
-            &path,
-            &format!("private QEMU {label}"),
-        )?;
+        crate::workspace::require_direct_file(&directory, &path, &format!("private QEMU {label}"))?;
         ensure!(
-            crate::mutate::workspace::canonical_existing_real_directory(
+            crate::workspace::canonical_existing_real_directory(
                 &directory,
                 "QEMU private run directory",
             )? == directory,
@@ -196,7 +191,7 @@ fn write_run_acpi_table(target: &Path, stem: &str, bytes: &[u8], label: &str) ->
         );
         Ok(())
     })();
-    crate::mutate::workspace::finish_staged_operation(
+    crate::workspace::finish_staged_operation(
         &directory,
         &path,
         &format!("private QEMU {label}"),

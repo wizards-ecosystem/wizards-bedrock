@@ -64,10 +64,6 @@ fn flags_after_a_double_dash_are_not_ours_to_read() {
 #[test]
 fn task_specific_flags_reach_their_task() {
     assert_eq!(
-        parse_args(&["qualify-advisory"]).unwrap(),
-        Task::QualifyAdvisory
-    );
-    assert_eq!(
         parse_args(&["fmt", "--check"]).unwrap(),
         Task::Fmt(FmtMode::Check)
     );
@@ -164,7 +160,6 @@ fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
         "run",
         "vmware",
         "check",
-        "api-audit",
         "clippy",
         "doc",
         "fmt",
@@ -178,13 +173,9 @@ fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
         "model-check",
         "baseline",
         "debug",
-        "mutate",
         "ci",
         "evidence",
         "verify-evidence",
-        "qualify-advisory",
-        "qualify-mutants-grade",
-        "qualify-security-deep",
         "qualify-vmware",
         "clean",
     ] {
@@ -192,9 +183,6 @@ fn assert_refused_elsewhere(options: &[&str], consumers: &[&str]) {
             continue;
         }
         let mut arguments = vec![task];
-        if matches!(task, "qualify-mutants-grade" | "qualify-security-deep") {
-            arguments.push("--run");
-        }
         assert!(
             parse_args(&arguments).is_ok(),
             "invalid fixture: {arguments:?}"
@@ -389,14 +377,7 @@ fn every_task_the_parser_accepts_is_named_in_the_help() {
 
     let help = help();
     for name in names {
-        let arguments = if name == "qualify-mutants-grade" {
-            vec![name, "--run"]
-        } else if name == "qualify-security-deep" {
-            vec![name, "--begin"]
-        } else {
-            vec![name]
-        };
-        assert!(parse_args(&arguments).is_ok(), "{name} does not parse");
+        assert!(parse_args(&[name]).is_ok(), "{name} does not parse");
         assert!(
             help.contains(&format!("\n    {name} ")),
             "{name} is missing from the help text"
@@ -407,47 +388,6 @@ fn every_task_the_parser_accepts_is_named_in_the_help() {
 #[test]
 fn the_doc_task_parses() {
     assert_eq!(parse_args(&["doc"]).unwrap(), Task::Doc);
-}
-
-#[test]
-fn external_qualification_actions_are_typed_and_task_local() {
-    assert_eq!(
-        parse_args(&["qualify-mutants-grade", "--run"]).unwrap(),
-        Task::QualifyMutantsGrade(MutantsGradeAction::Run)
-    );
-    assert_eq!(
-        parse_args(&["qualify-security-deep", "--verify=scan"]).unwrap(),
-        Task::QualifySecurityDeep(SecurityDeepAction::Verify(PathBuf::from("scan")))
-    );
-    assert_eq!(
-        parse_args(&["qualify-security-deep", "--run"]).unwrap(),
-        Task::QualifySecurityDeep(SecurityDeepAction::Run)
-    );
-    for task in ["qualify-mutants-grade", "qualify-security-deep"] {
-        assert!(parse_args(&[task]).is_err(), "{task} ran with no action");
-    }
-    assert!(parse_args(&["qualify-mutants-grade", "--begin"]).is_err());
-    assert!(parse_args(&["qualify-mutants-grade", "--verify=scan"]).is_err());
-    assert!(parse_args(&["qualify-mutants-grade", "--run", "--begin"]).is_err());
-    assert!(parse_args(&["qualify-mutants-grade", "--run", "--verify=scan"]).is_err());
-    assert!(parse_args(&["qualify-security-deep", "--run", "--begin"]).is_err());
-    assert!(parse_args(&["qualify-security-deep", "--run", "--verify=scan"]).is_err());
-    assert!(parse_args(&["qualify-security-deep", "--begin", "--verify=scan"]).is_err());
-    assert!(parse_args(&["qualify-security-deep", "--run", "--run"]).is_err());
-    assert!(parse_args(&["qualify-security-deep", "--verify=one", "--verify=two"]).is_err());
-    assert!(parse_args(&["build", "--begin"]).is_err());
-    assert!(parse_args(&["build", "--verify=scan"]).is_err());
-    assert!(parse_args(&["build", "--run"]).is_err());
-}
-
-#[test]
-fn unsigned_external_result_directories_have_no_seal_action() {
-    for task in ["qualify-mutants-grade", "qualify-security-deep"] {
-        let error = parse_args(&[task, "--seal=unsigned-bundle"])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("unknown option `--seal=unsigned-bundle`"));
-    }
 }
 
 #[test]
@@ -472,10 +412,6 @@ fn every_exceptional_task_is_named_in_the_not_in_ci_block() {
             "baseline",
             "debug",
             "model-check",
-            "mutate",
-            "qualify-advisory",
-            "qualify-mutants-grade",
-            "qualify-security-deep",
             "qualify-vmware",
             "vmware",
         ])

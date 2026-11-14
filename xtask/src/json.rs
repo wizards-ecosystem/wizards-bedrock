@@ -1,6 +1,6 @@
 //! Strict JSON parsing for caller-bounded host-tool output.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -14,142 +14,11 @@ pub(crate) fn parse_json(bytes: &[u8], label: &str) -> Result<JsonValue> {
     Ok(value)
 }
 
-/// Render one deterministic, compact JSON value.
-pub(crate) fn render_json(value: &JsonValue) -> Result<String> {
-    let mut rendered = String::new();
-    render_value(value, &mut rendered, 0)?;
-    Ok(rendered)
-}
-
-fn render_value(value: &JsonValue, rendered: &mut String, depth: usize) -> Result<()> {
-    ensure!(depth <= 128, "rendered JSON nesting is excessive");
-    match value {
-        JsonValue::Null => rendered.push_str("null"),
-        JsonValue::Bool(value) => rendered.push_str(if *value { "true" } else { "false" }),
-        JsonValue::Number(number) => {
-            let parsed = parse_json(number.as_bytes(), "rendered JSON number")?;
-            ensure!(
-                matches!(&parsed, JsonValue::Number(parsed) if parsed == number),
-                "rendered JSON number is not an isolated number"
-            );
-            rendered.push_str(number);
-        }
-        JsonValue::String(string) => render_string(string, rendered),
-        JsonValue::Array(array) => {
-            rendered.push('[');
-            for (index, value) in array.iter().enumerate() {
-                if index != 0 {
-                    rendered.push(',');
-                }
-                render_value(value, rendered, depth + 1)?;
-            }
-            rendered.push(']');
-        }
-        JsonValue::Object(object) => {
-            rendered.push('{');
-            for (index, (name, value)) in object.iter().enumerate() {
-                if index != 0 {
-                    rendered.push(',');
-                }
-                render_string(name, rendered);
-                rendered.push(':');
-                render_value(value, rendered, depth + 1)?;
-            }
-            rendered.push('}');
-        }
-    }
-    Ok(())
-}
-
-fn render_string(value: &str, rendered: &mut String) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    rendered.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => rendered.push_str("\\\""),
-            '\\' => rendered.push_str("\\\\"),
-            character if character <= '\u{001f}' => {
-                let scalar = u32::from(character) as usize;
-                rendered.push_str("\\u00");
-                rendered.push(char::from(HEX[scalar >> 4]));
-                rendered.push(char::from(HEX[scalar & 0xf]));
-            }
-            character => rendered.push(character),
-        }
-    }
-    rendered.push('"');
-}
-
-pub(crate) fn json_object<'json>(
-    value: &'json JsonValue,
-    label: &str,
-) -> Result<&'json BTreeMap<String, JsonValue>> {
-    match value {
-        JsonValue::Object(object) => Ok(object),
-        _ => bail!("{label} is not an object"),
-    }
-}
-
-pub(crate) fn json_array<'json>(
-    value: &'json JsonValue,
-    label: &str,
-) -> Result<&'json [JsonValue]> {
-    match value {
-        JsonValue::Array(array) => Ok(array),
-        _ => bail!("{label} is not an array"),
-    }
-}
-
 pub(crate) fn json_string<'json>(value: &'json JsonValue, label: &str) -> Result<&'json str> {
     match value {
         JsonValue::String(string) => Ok(string),
         _ => bail!("{label} is not a string"),
     }
-}
-
-pub(crate) fn json_string_array<'json>(
-    value: &'json JsonValue,
-    label: &str,
-) -> Result<Vec<&'json str>> {
-    json_array(value, label)?
-        .iter()
-        .map(|value| json_string(value, label))
-        .collect()
-}
-
-pub(crate) fn json_u64(value: &JsonValue, label: &str) -> Result<u64> {
-    let JsonValue::Number(number) = value else {
-        bail!("{label} is not a number");
-    };
-    let parsed = <u64 as core::str::FromStr>::from_str(number)
-        .with_context(|| format!("{label} is not an unsigned integer"))?;
-    ensure!(
-        parsed.to_string() == *number,
-        "{label} is not a canonical unsigned integer"
-    );
-    Ok(parsed)
-}
-
-pub(crate) fn json_field<'json>(
-    object: &'json BTreeMap<String, JsonValue>,
-    name: &str,
-    label: &str,
-) -> Result<&'json JsonValue> {
-    object
-        .get(name)
-        .with_context(|| format!("{label} has no `{name}` field"))
-}
-
-pub(crate) fn require_json_fields(
-    object: &BTreeMap<String, JsonValue>,
-    expected: &[&str],
-    label: &str,
-) -> Result<()> {
-    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
-    let expected: BTreeSet<&str> = expected.iter().copied().collect();
-    ensure!(actual == expected, "{label} schema differs");
-    Ok(())
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

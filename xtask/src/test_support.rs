@@ -15,10 +15,6 @@ pub(crate) fn reserve_temp_directory(label: &str) -> PathBuf {
     reserve_directory_with(&std::env::temp_dir(), label, &NEXT_DIRECTORY)
 }
 
-pub(crate) fn reserve_directory(parent: &Path, label: &str) -> PathBuf {
-    reserve_directory_with(parent, label, &NEXT_DIRECTORY)
-}
-
 pub(crate) fn reserve_temp_file(label: &str) -> (PathBuf, File) {
     reserve_file(&std::env::temp_dir(), label, &NEXT_DIRECTORY)
 }

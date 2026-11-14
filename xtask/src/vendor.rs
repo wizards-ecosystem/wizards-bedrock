@@ -89,8 +89,8 @@ where
 
 pub fn verify_listing(listing: &Path) -> Result<usize> {
     let dir = listing.parent().unwrap_or(Path::new("."));
-    crate::mutate::workspace::canonical_existing_real_directory(dir, "vendor directory")?;
-    crate::mutate::workspace::require_direct_file(dir, listing, "vendor checksum listing")?;
+    crate::workspace::canonical_existing_real_directory(dir, "vendor directory")?;
+    crate::workspace::require_direct_file(dir, listing, "vendor checksum listing")?;
     let text = read_listing(listing)?;
     let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
 
@@ -119,8 +119,8 @@ fn measure_payloads<'entries>(
     let mut total = 0u64;
     for entry in entries {
         let file = dir.join(&entry.name);
-        crate::mutate::workspace::require_direct_file(dir, &file, "vendored payload")?;
-        let length = crate::mutate::workspace::open_real_file(&file, "vendored payload")?
+        crate::workspace::require_direct_file(dir, &file, "vendored payload")?;
+        let length = crate::workspace::open_real_file(&file, "vendored payload")?
             .metadata()
             .with_context(|| format!("measuring {}", file.display()))?
             .len();
@@ -143,14 +143,14 @@ fn measure_payloads<'entries>(
 }
 
 fn verify_payload_digest(dir: &Path, entry: &Entry, file: &Path, length: u64) -> Result<()> {
-    crate::mutate::workspace::require_direct_file(dir, file, "vendored payload")?;
-    let input = crate::mutate::workspace::open_real_file(file, "vendored payload")?;
+    crate::workspace::require_direct_file(dir, file, "vendored payload")?;
+    let input = crate::workspace::open_real_file(file, "vendored payload")?;
     let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
         .with_context(|| format!("hashing {}", file.display()))?;
-    crate::mutate::workspace::require_direct_file(dir, file, "vendored payload")?;
+    crate::workspace::require_direct_file(dir, file, "vendored payload")?;
     ensure!(
         bytes == length
-            && crate::mutate::workspace::open_real_file(file, "vendored payload")?
+            && crate::workspace::open_real_file(file, "vendored payload")?
                 .metadata()
                 .with_context(|| format!("remeasuring {}", file.display()))?
                 .len()
@@ -251,9 +251,9 @@ where
     F: FnOnce() -> Result<()>,
 {
     let parent = path.parent().unwrap_or(Path::new("."));
-    crate::mutate::workspace::canonical_existing_real_directory(parent, "vendor directory")?;
-    crate::mutate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
-    let mut file = crate::mutate::workspace::open_real_file(path, "vendor checksum listing")?;
+    crate::workspace::canonical_existing_real_directory(parent, "vendor directory")?;
+    crate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
+    let mut file = crate::workspace::open_real_file(path, "vendor checksum listing")?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {}", path.display()))?
@@ -284,7 +284,7 @@ where
         "{} changed length while it was read",
         path.display()
     );
-    crate::mutate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
+    crate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
     String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
 }
 

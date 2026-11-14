@@ -36,7 +36,7 @@ pub(super) fn storage_paths(root: &Path) -> Result<(PathBuf, PathBuf)> {
         .parent()
         .context("NVMe image has no parent")?
         .to_path_buf();
-    crate::mutate::workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;
+    crate::workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;
     Ok((parent, backing))
 }
 
@@ -102,10 +102,8 @@ pub(super) fn open_storage_lock_with(
     after_open(path);
     require_storage_lock_path(parent, path, true)?;
     ensure!(
-        crate::mutate::workspace::canonical_existing_real_directory(
-            parent,
-            "QEMU storage directory",
-        )? == canonical_parent,
+        crate::workspace::canonical_existing_real_directory(parent, "QEMU storage directory",)?
+            == canonical_parent,
         "QEMU storage directory changed while opening its lock"
     );
     Ok(file)
@@ -116,11 +114,8 @@ fn require_storage_lock_path(parent: &Path, path: &Path, must_exist: bool) -> Re
         path == parent.join("nvme.lock"),
         "storage build lock is not the exact allowlisted path"
     );
-    let present = crate::mutate::workspace::require_direct_file_if_present(
-        parent,
-        path,
-        "storage build lock",
-    )?;
+    let present =
+        crate::workspace::require_direct_file_if_present(parent, path, "storage build lock")?;
     ensure!(
         !must_exist || present,
         "storage build lock disappeared after it was opened: {}",
@@ -138,24 +133,14 @@ pub(super) fn publish_namespace(
         backing == parent.join("nvme.img"),
         "NVMe image is not the exact allowlisted storage path"
     );
-    let canonical_parent = crate::mutate::workspace::canonical_existing_real_directory(
-        parent,
-        "QEMU storage directory",
-    )?;
+    let canonical_parent =
+        crate::workspace::canonical_existing_real_directory(parent, "QEMU storage directory")?;
     let lock_path = parent.join("nvme.lock");
     let _lock = acquire_storage_lock(parent, &lock_path, &canonical_parent)?;
-    crate::mutate::workspace::require_direct_file_if_present(
-        parent,
-        backing,
-        "existing NVMe image",
-    )?;
+    crate::workspace::require_direct_file_if_present(parent, backing, "existing NVMe image")?;
 
     let staging = parent.join(STORAGE_STAGING_NAME);
-    if crate::mutate::workspace::require_direct_file_if_present(
-        parent,
-        &staging,
-        "NVMe staging image",
-    )? {
+    if crate::workspace::require_direct_file_if_present(parent, &staging, "NVMe staging image")? {
         std::fs::remove_file(&staging)
             .with_context(|| format!("removing stale NVMe stage {}", staging.display()))?;
     }
@@ -171,29 +156,28 @@ pub(super) fn publish_namespace(
             .with_context(|| format!("syncing NVMe staging image {}", staging.display()))?;
         drop(file);
 
-        crate::mutate::workspace::require_direct_file(parent, &staging, "NVMe staging image")?;
+        crate::workspace::require_direct_file(parent, &staging, "NVMe staging image")?;
         ensure!(
-            crate::mutate::workspace::canonical_existing_real_directory(
-                parent,
-                "QEMU storage directory",
-            )? == canonical_parent,
+            crate::workspace::canonical_existing_real_directory(parent, "QEMU storage directory",)?
+                == canonical_parent,
             "QEMU storage directory changed during image construction"
         );
-        let expected = crate::sha256::digest_reader(crate::mutate::workspace::open_real_file(
+        let expected = crate::sha256::digest_reader(crate::workspace::open_real_file(
             &staging,
             "NVMe staging image",
         )?)
         .with_context(|| format!("hashing NVMe staging image {}", staging.display()))?;
 
-        crate::mutate::workspace::publish_staged_file(
+        crate::workspace::publish_staged_file(
             parent,
             &staging,
             backing,
             "NVMe image",
             |published| {
-                let digest = crate::sha256::digest_reader(
-                    crate::mutate::workspace::open_real_file(published, "published NVMe image")?,
-                )
+                let digest = crate::sha256::digest_reader(crate::workspace::open_real_file(
+                    published,
+                    "published NVMe image",
+                )?)
                 .with_context(|| format!("hashing published NVMe image {}", published.display()))?;
                 ensure!(
                     digest == expected,
@@ -204,12 +188,7 @@ pub(super) fn publish_namespace(
         )?;
         Ok(())
     })();
-    crate::mutate::workspace::finish_staged_operation(
-        parent,
-        &staging,
-        "NVMe staging image",
-        result,
-    )
+    crate::workspace::finish_staged_operation(parent, &staging, "NVMe staging image", result)
 }
 
 pub(super) fn write_nvme_namespace(file: &mut File) -> Result<()> {

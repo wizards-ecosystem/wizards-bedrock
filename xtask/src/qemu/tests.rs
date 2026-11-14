@@ -1,4 +1,3 @@
-mod kernel_source;
 mod runner;
 mod serial;
 
@@ -6,7 +5,6 @@ use std::io::{Seek, SeekFrom};
 
 use super::boot_check::*;
 use super::debug::*;
-use crate::contracts::abi::lexers::{compact_cpp, rust_function_body, rust_without_comments};
 
 use super::*;
 use crate::test_support::{create_directory_symlink, create_file_symlink};

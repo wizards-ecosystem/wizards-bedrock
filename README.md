@@ -80,7 +80,7 @@ The FAT32 reader is the same `no_std` crate on the host and in the kernel. It ac
 kernel/          kernel binary, higher-half, no hand-written unsafe
 wost/            privileged framework, the only crate that may write unsafe
 libs/            host-tested no_std arithmetic
-xtask/           build, image, QEMU, VMware, gate, mutation, evidence
+xtask/           build, image, QEMU, VMware, gate, evidence
 boot/            limine.conf and a digest-pinned Limine UEFI binary
 models/          TLA+ ring models and the four mutant configs
 tools/           pinned TLC jar and a digest-checked FAT32 corpus
@@ -167,7 +167,7 @@ Set `GDB` if that `gdb.exe` is not on `PATH`.
 | `cargo kclippy` | the same for clippy |
 | `cargo kbuild` | a release kernel build |
 
-`cargo xtask` runs the orchestrator under the optimized `xtask` profile. Audited graphs, host tests, and the mutation workspace keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
+`cargo xtask` runs the orchestrator under the optimized `xtask` profile. Audited graphs and host tests keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
 
 Release builds use `panic = "abort"`, LTO, and debug info that costs no loaded bytes.
 
@@ -195,20 +195,19 @@ Ordered `cargo xtask ci` stages:
 |---:|---|---|
 | 1 | `cargo xtask fmt --check` | refuse unformatted source |
 | 2 | `cargo xtask clippy` | lint every registered Cargo graph |
-| 3 | `cargo xtask api-audit` | prove every public foundation API has a caller |
-| 4 | `cargo xtask doc` | build docs for every registered Cargo graph |
-| 5 | `cargo xtask test` | run host tests and doctests |
-| 6 | `cargo xtask supply-chain` | bind locked bytes, licenses, scope and SPDX |
-| 7 | `cargo xtask verify-vendor` | verify every vendored digest |
-| 8 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
-| 9 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
-| 10 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
-| 11 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
+| 3 | `cargo xtask doc` | build docs for every registered Cargo graph |
+| 4 | `cargo xtask test` | run host tests and doctests |
+| 5 | `cargo xtask supply-chain` | bind locked bytes, licenses, scope and SPDX |
+| 6 | `cargo xtask verify-vendor` | verify every vendored digest |
+| 7 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
+| 8 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
+| 9 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
+| 10 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
 <!-- CI-REGISTRY:END -->
 
-`boot-check` boots the shipped image and requires the keyboard prompt. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `api-audit` requires a compiler-resolved caller for every public item in `libs/` and `wost`. `doc` exists so rustdoc's link lints run.
+`boot-check` boots the shipped image and requires the keyboard prompt. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `doc` exists so rustdoc's link lints run.
 
-These tasks stay outside `ci` because they need a tool, a person, or a long run: `debug`, `baseline` (six QEMU boots), `model-check`, `vmware`, `mutate` (one QEMU boot per registered defect, on a copy under `target/mutate/`), `qualify-advisory`, `qualify-mutants-grade --run`, and `qualify-security-deep --run`. After a human boots a generated VMware machine, `cargo xtask qualify-vmware` checks the self-test transcript and `cargo xtask qualify-vmware --shipped` checks the shipped one. `cargo xtask evidence` runs the gate, reproduces the shipped image twice, and writes a bundle that `cargo xtask verify-evidence` rechecks offline.
+These tasks stay outside `ci` because they need a tool, a person, or a long run: `debug`, `baseline` (six QEMU boots), `model-check`, and `vmware`. After a human boots a generated VMware machine, `cargo xtask qualify-vmware` checks the self-test transcript and `cargo xtask qualify-vmware --shipped` checks the shipped one. `cargo xtask evidence` runs the gate, reproduces the shipped image twice, and writes a bundle that `cargo xtask verify-evidence` rechecks offline. A release is the gate, that evidence, a VMware boot and a person reading the diff (D-454).
 
 ## Further reading
 

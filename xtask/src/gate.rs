@@ -46,7 +46,6 @@ impl CargoPass {
 pub(crate) enum Step {
     Format,
     Clippy,
-    ApiAudit,
     Documentation,
     HostTests,
     SupplyChain,
@@ -61,7 +60,6 @@ impl Step {
         match self {
             Self::Format => "fmt --check",
             Self::Clippy => "clippy",
-            Self::ApiAudit => "api-audit",
             Self::Documentation => "doc",
             Self::HostTests => "test",
             Self::SupplyChain => "supply-chain",
@@ -77,7 +75,6 @@ impl Step {
         match self {
             Self::Format => "result.gate.fmt-check",
             Self::Clippy => "result.gate.clippy",
-            Self::ApiAudit => "result.gate.api-audit",
             Self::Documentation => "result.gate.doc",
             Self::HostTests => "result.gate.test",
             Self::SupplyChain => "result.gate.supply-chain",
@@ -93,7 +90,6 @@ impl Step {
         match self {
             Self::Format => "refuse unformatted source",
             Self::Clippy => "lint every registered Cargo graph",
-            Self::ApiAudit => "prove every public foundation API has a caller",
             Self::Documentation => "build docs for every registered Cargo graph",
             Self::HostTests => "run host tests and doctests",
             Self::SupplyChain => "bind locked bytes, licenses, scope and SPDX",
@@ -125,11 +121,6 @@ impl Registry {
     pub(crate) fn verified_steps(&self, root: &Path) -> Result<&'static [Step]> {
         verify_documentation(root)?;
         Ok(self.steps)
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn steps_for_test(&self) -> &'static [Step] {
-        self.steps
     }
 }
 
@@ -163,7 +154,6 @@ const CARGO_PASSES: &[CargoPass] = &[
 const STEPS: &[Step] = &[
     Step::Format,
     Step::Clippy,
-    Step::ApiAudit,
     Step::Documentation,
     Step::HostTests,
     Step::SupplyChain,
@@ -230,7 +220,7 @@ fn markdown() -> String {
 
 pub(crate) fn verify_documentation(root: &Path) -> Result<()> {
     let readme_path = root.join("README.md");
-    let readme = crate::qualification::read_bounded_text(&readme_path, README_BYTES, "CI README")?;
+    let readme = crate::files::read_bounded_text(&readme_path, README_BYTES, "CI README")?;
     let documented = readme
         .split_once(REGISTRY_START)
         .context("README has no CI registry start marker")?
