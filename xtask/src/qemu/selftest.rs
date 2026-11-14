@@ -7,22 +7,8 @@ pub(super) const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A kernel that neither passes nor fails within `timeout` has hung, and its emulator is killed.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
-    let (outcome, _) =
-        observe_selftest_run(paths, image, timeout, true, InteractiveMarkerOrder::Strict)?;
+    let (outcome, _) = observe_selftest_run(paths, image, timeout, true)?;
     require_selftest(outcome)
-}
-
-/// Keeps a valid red or panic outcome for a mutation caller, which may skip a missing earlier
-/// interaction so its later exact verdict stays observable; ordinary boots stay strict.
-pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
-    observe_selftest_run(
-        paths,
-        image,
-        timeout,
-        true,
-        InteractiveMarkerOrder::Mutation,
-    )
-    .map(|(outcome, _)| outcome)
 }
 
 pub(crate) fn measure_performance(
@@ -30,8 +16,7 @@ pub(crate) fn measure_performance(
     image: &Path,
     timeout: Duration,
 ) -> Result<PerformanceSample> {
-    let (outcome, baseline) =
-        observe_selftest_run(paths, image, timeout, false, InteractiveMarkerOrder::Strict)?;
+    let (outcome, baseline) = observe_selftest_run(paths, image, timeout, false)?;
     require_selftest(outcome)?;
     baseline.context("a clean self-test boot emitted no foundation baseline")
 }
@@ -44,7 +29,6 @@ fn observe_selftest_run(
     image: &Path,
     timeout: Duration,
     echo_serial: bool,
-    marker_order: InteractiveMarkerOrder,
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -85,7 +69,6 @@ fn observe_selftest_run(
         SelftestWatch {
             timeout,
             echo_serial,
-            marker_order,
         },
         &injection_cancelled,
         &mut workers,
@@ -154,7 +137,6 @@ pub(super) fn selftest_exit(
 struct SelftestWatch {
     timeout: Duration,
     echo_serial: bool,
-    marker_order: InteractiveMarkerOrder,
 }
 
 #[derive(Debug)]
@@ -181,7 +163,6 @@ fn watch_selftest(
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
         watch.echo_serial,
-        watch.marker_order,
     ));
     let deadline = Instant::now() + watch.timeout;
     workers.injector = Some(inject_on_marker(
@@ -334,7 +315,6 @@ fn forward_serial(
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
     echo: bool,
-    marker_order: InteractiveMarkerOrder,
 ) -> JoinHandle<Result<SerialObservation>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(serial);
@@ -361,11 +341,7 @@ fn forward_serial(
             match observe_selftest_line(&mut observation, &text) {
                 Ok(transition) => {
                     transition.publish(&panicked);
-                    match observe_interactive_marker(
-                        &text,
-                        &mut next_interactive_marker,
-                        marker_order,
-                    ) {
+                    match observe_interactive_marker(&text, &mut next_interactive_marker) {
                         Ok(true) => markers_seen.store(next_interactive_marker, Ordering::Release),
                         Ok(false) => {}
                         Err(error) => {
@@ -411,12 +387,7 @@ fn inject_on_marker(
                 (2, INJECTED_QCODES),
                 (3, TRANSLATED_QCODES),
             ] {
-                let action = loop {
-                    let observed = markers_seen.load(Ordering::Acquire);
-                    let action = injection_action(observed, round);
-                    if action != InjectionAction::Wait {
-                        break action;
-                    }
+                while markers_seen.load(Ordering::Acquire) < round {
                     if cancelled.load(Ordering::Acquire) {
                         bail!("QMP injection was cancelled");
                     }
@@ -424,9 +395,6 @@ fn inject_on_marker(
                         bail!("QMP injection reached the run deadline");
                     }
                     std::thread::sleep(POLL_INTERVAL);
-                };
-                if action == InjectionAction::Skip {
-                    continue;
                 }
                 keys.iter()
                     .try_for_each(|qcode| qmp.inject_key(qcode, deadline, &cancelled))?;

@@ -50,6 +50,7 @@ pub fn run(task: Task) -> Result<()> {
             qemu::run(&paths, image.path(), &qemu_args)
         }
         Task::Vmware { profile, kernel } => {
+            vmware::reset_vm_directory(&paths, kernel)?;
             let image = image::build(&paths, profile, kernel)?;
             vmware::generate(&paths, &image, kernel)
         }

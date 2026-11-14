@@ -23,9 +23,10 @@ fatfs.workspace = true
 fscommon.workspace = true
 fs_at.workspace = true
 panic-record.workspace = true
+
+[dev-dependencies]
 proc-macro2.workspace = true
 syn.workspace = true
-wizzy-handoff.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 command-group.workspace = true

@@ -29,11 +29,11 @@ pub use self::boot_check::{
 pub(crate) use self::debug::DebugMachine;
 use self::run_files::*;
 pub(crate) use self::selftest::measure_performance;
+pub use self::selftest::run_selftest;
 use self::selftest::*;
-pub use self::selftest::{observe_selftest, run_selftest};
+pub use self::serial::DegradedOutcome;
 pub(crate) use self::serial::PerformanceSample;
 use self::serial::*;
-pub use self::serial::{DegradedOutcome, SelftestOutcome};
 pub(crate) use self::storage::nvme_path;
 use self::storage::*;
 pub use self::storage::{

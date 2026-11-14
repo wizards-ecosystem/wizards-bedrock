@@ -278,9 +278,7 @@ fn interactive_input_requires_exact_terminated_info_records() {
             .iter()
             .position(|candidate| candidate == record)
             .unwrap();
-        assert!(
-            observe_interactive_marker(&exact, &mut next, InteractiveMarkerOrder::Strict).unwrap()
-        );
+        assert!(observe_interactive_marker(&exact, &mut next).unwrap());
 
         for near_miss in [
             format!("[warn ] {}\r\n", record.message),
@@ -296,8 +294,7 @@ fn interactive_input_requires_exact_terminated_info_records() {
         ] {
             let before = next;
             assert!(
-                !observe_interactive_marker(&near_miss, &mut next, InteractiveMarkerOrder::Strict,)
-                    .unwrap(),
+                !observe_interactive_marker(&near_miss, &mut next).unwrap(),
                 "accepted {near_miss:?}"
             );
             assert_eq!(next, before);
@@ -312,68 +309,16 @@ fn interactive_input_markers_are_unique_and_ordered() {
         .map(|record| format!("[info ] {}\r\n", record.message))
         .collect();
     let mut next = 0;
-    assert!(
-        observe_interactive_marker(&records[1], &mut next, InteractiveMarkerOrder::Strict,)
-            .is_err()
-    );
+    assert!(observe_interactive_marker(&records[1], &mut next).is_err());
     assert_eq!(next, 0);
-    assert!(
-        observe_interactive_marker(&records[0], &mut next, InteractiveMarkerOrder::Strict,)
-            .unwrap()
-    );
+    assert!(observe_interactive_marker(&records[0], &mut next).unwrap());
     assert_eq!(next, 1);
-    assert!(
-        observe_interactive_marker(&records[0], &mut next, InteractiveMarkerOrder::Strict,)
-            .is_err()
-    );
+    assert!(observe_interactive_marker(&records[0], &mut next).is_err());
     assert_eq!(next, 1);
-    assert!(
-        observe_interactive_marker(&records[1], &mut next, InteractiveMarkerOrder::Strict,)
-            .unwrap()
-    );
-    assert!(
-        observe_interactive_marker(&records[2], &mut next, InteractiveMarkerOrder::Strict,)
-            .unwrap()
-    );
+    assert!(observe_interactive_marker(&records[1], &mut next).unwrap());
+    assert!(observe_interactive_marker(&records[2], &mut next).unwrap());
     assert_eq!(next, INTERACTIVE_MARKERS.len());
-    assert!(
-        !observe_interactive_marker(
-            "[info ] unrelated\r\n",
-            &mut next,
-            InteractiveMarkerOrder::Strict,
-        )
-        .unwrap()
-    );
-
-    let mut mutation_next = 0;
-    assert!(
-        observe_interactive_marker(
-            &records[1],
-            &mut mutation_next,
-            InteractiveMarkerOrder::Mutation,
-        )
-        .unwrap()
-    );
-    assert_eq!(mutation_next, 2);
-    assert!(
-        observe_interactive_marker(
-            &records[0],
-            &mut mutation_next,
-            InteractiveMarkerOrder::Mutation,
-        )
-        .is_err()
-    );
-    assert!(
-        observe_interactive_marker(
-            &records[2],
-            &mut mutation_next,
-            InteractiveMarkerOrder::Mutation,
-        )
-        .unwrap()
-    );
-    assert_eq!(injection_action(0, 1), InjectionAction::Wait);
-    assert_eq!(injection_action(1, 1), InjectionAction::Inject);
-    assert_eq!(injection_action(2, 1), InjectionAction::Skip);
+    assert!(!observe_interactive_marker("[info ] unrelated\r\n", &mut next).unwrap());
 }
 
 #[test]

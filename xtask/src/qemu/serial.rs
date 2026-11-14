@@ -8,7 +8,7 @@ pub(super) const SELFTEST_PASSED: i32 = 33;
 pub(super) const SELFTEST_FAILED: i32 = 35;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum SelftestOutcome {
+pub(super) enum SelftestOutcome {
     Passed,
     /// Each red check, in report order.
     Failed(Vec<String>),
@@ -74,7 +74,7 @@ pub(super) struct SerialObservation {
     pub(super) nvme_stack: Option<StackSample>,
     pub(super) qemu_tcg_isolation: bool,
     pub(super) strict_dma_handoff: bool,
-    /// Ordered, so mutation grading cannot accept an unrelated red.
+    /// Each red check, in report order.
     pub(super) failed: Vec<String>,
     pub(super) panic: Option<String>,
     pub(super) panic_complete: bool,
@@ -265,46 +265,15 @@ pub(super) const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(TRANSLATED_MARKER),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum InteractiveMarkerOrder {
-    Strict,
-    Mutation,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum InjectionAction {
-    Wait,
-    Inject,
-    Skip,
-}
-
-pub(super) const fn injection_action(observed: usize, round: usize) -> InjectionAction {
-    if observed < round {
-        InjectionAction::Wait
-    } else if observed == round {
-        InjectionAction::Inject
-    } else {
-        InjectionAction::Skip
-    }
-}
-
-pub(super) fn observe_interactive_marker(
-    line: &str,
-    next: &mut usize,
-    order: InteractiveMarkerOrder,
-) -> Result<bool> {
+pub(super) fn observe_interactive_marker(line: &str, next: &mut usize) -> Result<bool> {
     let Some(index) = INTERACTIVE_MARKERS
         .iter()
         .position(|record| is_required_boot_marker(line, *record))
     else {
         return Ok(false);
     };
-    let ordered = match order {
-        InteractiveMarkerOrder::Strict => index == *next,
-        InteractiveMarkerOrder::Mutation => index >= *next,
-    };
     ensure!(
-        ordered,
+        index == *next,
         "self-test interactive marker {} arrived while waiting for {}",
         index + 1,
         *next + 1

@@ -224,17 +224,8 @@ fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Never copied: `fs::copy` keeps an old timestamp, so Cargo would call a restore fresh and
-/// keep the defect, in the package and in everything that inlined it.
+/// Staged beside the destination and renamed into place, so a reader never sees half a file.
 fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
-    write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))
-}
-
-fn write_source_with(
-    destination: &Path,
-    bytes: &[u8],
-    publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-) -> Result<()> {
     let parent = destination
         .parent()
         .context("source destination has no parent")?;
@@ -271,24 +262,17 @@ fn write_source_with(
             .with_context(|| format!("syncing {}", temporary.display()))?;
         drop(file);
 
-        publish_staged_file_with(
-            parent,
-            &temporary,
-            destination,
-            "source",
-            publish,
-            |published| {
-                ensure!(
-                    crate::files::read_bounded_file(
-                        published,
-                        MAX_TRACKED_FILE_BYTES,
-                        "published source",
-                    )? == bytes,
-                    "published source differs from its requested bytes"
-                );
-                Ok(())
-            },
-        )?;
+        publish_staged_file(parent, &temporary, destination, "source", |published| {
+            ensure!(
+                crate::files::read_bounded_file(
+                    published,
+                    MAX_TRACKED_FILE_BYTES,
+                    "published source",
+                )? == bytes,
+                "published source differs from its requested bytes"
+            );
+            Ok(())
+        })?;
         Ok(())
     })();
     finish_staged_operation(parent, &temporary, "temporary source", result)
@@ -328,24 +312,6 @@ pub(crate) fn publish_staged_file(
     label: &str,
     validate: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<()> {
-    publish_staged_file_with(
-        parent,
-        staging,
-        destination,
-        label,
-        |from, to| std::fs::rename(from, to),
-        validate,
-    )
-}
-
-fn publish_staged_file_with(
-    parent: &Path,
-    staging: &Path,
-    destination: &Path,
-    label: &str,
-    publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-    validate: impl FnOnce(&Path) -> Result<()>,
-) -> Result<()> {
     ensure!(
         staging.parent() == Some(parent) && destination.parent() == Some(parent),
         "{label} publication paths are not exact siblings"
@@ -375,7 +341,7 @@ fn publish_staged_file_with(
             !require_direct_file_if_present(parent, destination, label)?,
             "{label} destination reappeared before publication"
         );
-        publish(staging, destination).with_context(|| {
+        std::fs::rename(staging, destination).with_context(|| {
             format!(
                 "publishing staged {label} {} as {}",
                 staging.display(),
@@ -572,7 +538,7 @@ fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
         let name = relative
             .to_str()
             .context("a tracked source path is not UTF-8")?;
-        let path = require_confined_file(root, name, "tracked source source")?;
+        let path = require_confined_file(root, name, "tracked source")?;
         let length = path
             .metadata()
             .with_context(|| format!("measuring tracked file {}", relative.display()))?
@@ -593,8 +559,8 @@ fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
 
     let mut hasher = sha256::Hasher::new();
     for (name, path, length) in measured {
-        require_confined_file(root, name, "tracked source source")?;
-        let mut file = open_real_file(&path, "tracked source source")?;
+        require_confined_file(root, name, "tracked source")?;
+        let mut file = open_real_file(&path, "tracked source")?;
         ensure!(
             file.metadata()
                 .with_context(|| format!("remeasuring tracked file {name}"))?
@@ -635,24 +601,12 @@ fn digest_tracked(root: &Path, tracked: &[PathBuf]) -> Result<String> {
                     == length,
             "tracked file {name} changed length while being hashed"
         );
-        require_confined_file(root, name, "tracked source source")?;
+        require_confined_file(root, name, "tracked source")?;
     }
     Ok(sha256::hex(&hasher.finish()))
 }
 
 fn digest_file(path: &Path, maximum: u64, label: &str) -> Result<String> {
-    digest_file_with(path, maximum, label, || Ok(()))
-}
-
-fn digest_file_with<F>(
-    path: &Path,
-    maximum: u64,
-    label: &str,
-    after_measurement: F,
-) -> Result<String>
-where
-    F: FnOnce() -> Result<()>,
-{
     let mut file = open_real_file(path, label)?;
     let initial = file
         .metadata()
@@ -662,7 +616,6 @@ where
         initial <= maximum,
         "{label} is {initial} bytes, exceeding its {maximum}-byte limit"
     );
-    after_measurement()?;
     let (observed, digest) = sha256::digest_reader((&mut file).take(maximum + 1))
         .with_context(|| format!("hashing {label} {}", path.display()))?;
     ensure!(

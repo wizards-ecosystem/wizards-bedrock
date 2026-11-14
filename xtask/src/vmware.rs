@@ -204,6 +204,23 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
     let vm_dir = vm_directory(paths, kernel);
     require_safe_vm_root(paths)?;
     require_safe_existing_vm_directory(paths, kernel)?;
+    for (generated, current, label) in [
+        (
+            vm_dir.join(FLAT_NAME),
+            paths.image(),
+            "VMware boot image differs from the current generated input",
+        ),
+        (
+            vm_dir.join(NVME_FLAT_NAME),
+            crate::qemu::nvme_path(paths.root()),
+            "VMware storage namespace differs from the current generated input",
+        ),
+    ] {
+        ensure!(
+            file_digest(&generated)? == file_digest(&current)?,
+            "{label}"
+        );
+    }
     let transcript = generated_transcript_path(&vm_dir)?;
     let name = transcript
         .file_name()
@@ -233,6 +250,11 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
         transcript.display()
     );
     Ok(())
+}
+
+fn file_digest(path: &Path) -> Result<(u64, [u8; 32])> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    sha256::digest_reader(file).with_context(|| format!("hashing {}", path.display()))
 }
 
 fn fresh_serial_name() -> Result<String> {
@@ -747,7 +769,7 @@ fn vm_directory(paths: &Paths, kernel: Kernel) -> PathBuf {
     }
 }
 
-fn reset_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
+pub(crate) fn reset_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
     let root = paths.vm_dir();
     require_safe_vm_root(paths)?;
     ensure!(
