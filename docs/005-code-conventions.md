@@ -254,9 +254,16 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   offset arithmetic: the code that carried a live out-of-bounds bug while it
   was buried in the kernel. `libs/x86-tables` is the second: GDT, IDT and TSS
   encoding, where the host test is the only thing that can check a bit position
-  against the manual. `libs/port-space` shows why: the I/O port reservation
-  bitmap sat inside `wost`, where nothing could test it, and it spent Phase 2
-  recording one port per claim however wide the access it authorised (D-39).
+  against the manual. `libs/x86-apic` and `libs/x86-pit` follow on the same
+  grounds, and `libs/ps2-keys` for the scancode state machine.
+  `libs/port-space` is a particularly clear case of *why*: the I/O port
+  reservation bitmap sat inside `wost`, where nothing could test it, and it
+  spent Phase 2 recording one port per claim however wide the access it
+  authorised (D-39). Page-table bit packing has since become
+  `libs/x86-paging`, ELF parsing `libs/elf64`, ring index arithmetic
+  `libs/ring-proto`, and handle encoding `libs/handle-space`; add crates on the
+  same pattern for the WizFS on-disk format and its crash-injection harness as
+  those arrive.
 - **The gate runs over a configuration matrix, not a codebase.** A cargo
   feature is a different crate graph, and a lint that fires in one need not
   fire in the other: `cargo xtask ci` covers the host packages plus shipped,
@@ -270,6 +277,8 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   A linker script fails loudly when malformed and quietly when incomplete.
 - A `libs/` crate goes in `default-members` so a bare `cargo test` covers it,
   and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
+- `xtask` logic is unit-tested directly, in-module. Anything touching the
+  filesystem is driven through a `Cursor` rather than a real file.
 - Constructors that read the environment are split from pure ones:
   `Paths::new` takes everything explicitly, `Paths::discover` reads env and
   delegates. `std::env::set_var` is `unsafe` in edition 2024 and unsound across
@@ -280,8 +289,8 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   small, named as the property it asserts, and free of side effects on the
   running kernel. They execute against a live machine rather than a fixture.
 - A check that cannot fail is worth **less than no check**, because it is also
-  a claim. Break a new one by hand once and confirm it goes red, or run
-  `cargo mutants --in-diff` over the change on the laptop; nothing records it.
+  a claim. `cargo mutants` runs on the laptop on demand; nothing requires or
+  records it.
   **Write the check from the claim, not from the implementation.** Restating
   what the code does always passes and reads exactly like a check:
   `assert_eq!(GENERATION_BITS, 32 - INDEX_BITS - RESERVED_BITS)` is a
@@ -306,6 +315,10 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   unfalsifiable as the `allow` it replaced (D-131). A break that cannot run
   produces the appearance of verification: absence of a pass is not a failure,
   and only a red check is evidence (D-175).
+
+- Hardware behaviour is *also* verified by eye: `cargo xtask run` for the loop,
+  a VMware boot as every phase's definition of done (D-18). The self-test
+  catches regressions; the eye catches things nobody thought to assert.
 
 ## Building
 

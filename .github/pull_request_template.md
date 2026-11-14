@@ -4,8 +4,7 @@ Explain the scoped change, relevant subsystem/PW row and design decisions.
 
 ## Validation
 
-Exact commands, outcomes, host/toolchain and checks not run. Include deliberate-red
-and restoration evidence for new checks; documentation needs no test run. Distinguish compile, host, QEMU and VMware results.
+Exact commands, outcomes, host/toolchain and checks not run. Documentation needs no test run. Distinguish compile, host, QEMU and VMware results.
 
 ## Limitations and provenance
 

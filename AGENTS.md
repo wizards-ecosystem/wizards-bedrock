@@ -64,8 +64,8 @@ anyway. Do not create a branch unless Isaac asks.
 implementation work is done. D-441 permits only the first v0.1.0 launch's
 documentation, community infrastructure and source-preview packaging commits
 to use its bounded source-preview checks instead: disclosure/license review,
-whitespace, fmt, supply-chain, vendor, release compile on a clean candidate, with a 20-minute
-aggregate automated budget. This is not permission to skip checks for kernel
+whitespace, fmt, supply-chain, vendor and release compile on a clean candidate, with a
+20-minute aggregate automated budget. This is not permission to skip checks for kernel
 changes or future qualified releases. Publish v0.1.0 only after those checks
 pass; disclose every unrun qualification and distribute no new kernel/VM image
 or evidence bundle. Its tag is immutable. D-26 permits only the lightweight
@@ -108,8 +108,9 @@ runs under `cargo test`; anything needing a real machine goes to
 Do not add a test that restates the code, asserts a constant, a table or a
 layout, or reads source text: a source rule is a lint, a `deny` or `forbid`
 attribute, or a type. A change adds at most one focused test, and only for a
-real bug. A check that cannot fail is worth less than no check, so break a new
-one by hand once, or run `cargo mutants --in-diff` over the change on the laptop.
+real bug. A check that cannot fail is worth less than no check, so write each
+one from the claim it makes. `cargo mutants` runs on the laptop on demand;
+nothing requires or records it.
 
 Doctests run in `libs/` crates and nowhere else (D-41): those carry
 `#![cfg_attr(not(test), no_std)]` and build for the host, so examples there are

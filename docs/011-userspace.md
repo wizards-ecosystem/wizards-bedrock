@@ -569,9 +569,9 @@ D-106's task binding becomes authority over both roots: a context switch
 installs the destination's full root, and only the final exit tail can install
 its stripped mate. D-88's no-PCID flush and release evidence cover the shared
 lower tables and both root frames, and cleanup retains the complete pair on any
-refusal. The host contracts are retained, and forced-paired debug and
-optimized QEMU reached 290/290. PW-580 and PW-706 stay open for the complete
-release sweep and fresh self-test plus shipped VMware boots.
+refusal. The host contracts were removed by D-454 on 2026-11-14. Forced-paired
+debug and optimized QEMU both passed, and PW-580 and PW-706 closed at the
+v0.2.0 qualification (D-449).
 
 **`enter_user` is safe because it checks** (D-96). `iretq` will send the CPU to
 an unmapped address in a privilege level that cannot report it, so the tables,
@@ -636,7 +636,8 @@ was proposed. Where the answer is "not paid", it says so and says where it went.
 
 - **343 lines of `unsafe` in `wost`**, in 143 blocks, against a budget of 380
   that `cargo test` then enforced. `kernel/` and every `libs/` crate have none,
-  and the counter checks that too rather than trusting the lint.
+  and the counter checked that too rather than trusting the lint; D-454 removed
+  the counter on 2026-11-14.
 - **Fifteen new decisions**, D-100 through D-114, and five amendments.
 - **Four adversarial audits** during the phase (D-94, D-95, D-101, D-105) plus
   the closing one, D-115.

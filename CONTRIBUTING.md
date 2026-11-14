@@ -21,8 +21,7 @@ including generated changes, explain it in your own words, and avoid bulk PRs
 whose behavior and provenance you have not checked. Add no AI co-author trailers.
 
 Run focused real tests for changed logic, extending an existing test where
-possible, and add one only for a real bug (D-454). A new check should be shown
-able to fail: break it once and watch it go red.
+possible, and add one only for a real bug (D-454).
 
 For a library change, run `cargo test --locked -p PACKAGE` using its actual
 package name. Report exact commands, outcomes, host/toolchain, and anything not

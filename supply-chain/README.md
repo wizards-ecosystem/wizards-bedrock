@@ -28,24 +28,19 @@ $env:CARGO_NET_OFFLINE = "true"
 cargo xtask ci
 ```
 
-Fresh vulnerability data is inherently external. At each phase close and
-before qualified diagnostic/binary distribution, run `cargo audit` against the exact `Cargo.lock` and read the result.
-D-441's experimental source preview instead requires disclosure/license review,
-the bounded source/build checks and explicit unrun-qualification disclosures;
-it distributes no newly built image or qualification bundle and makes no fresh
-advisory-review claim. This exception changes no advisory or evidence verifier.
-The qualified advisory task resolves `cargo-audit-audit 0.22.2` directly and invalidates any older pass. A first
-bounded run populates an empty qualification-local RustSec database; its clean
-commit and tree are then frozen for a second `--no-fetch` review of the exact
-repository `Cargo.lock`. The review denies warnings and permits no ignored
-advisories. Its canonical JSON must have the complete 0.22.2 report schema,
-name that database commit, and consistently report no vulnerabilities or
-dependency warnings. The checksummed record and bounded canonical transcript
-bind the executable digest, database identity, UTC observation, policy, locked
-bytes and result. `cargo xtask evidence` includes those artifacts; `cargo xtask
-verify-evidence` checks them without a network or scanner. This is deliberately
-exceptional, as are Java and VMware: ordinary CI neither downloads an advisory
-database nor claims that an absent scanner passed.
+Fresh vulnerability data is inherently external, and no task fetches it:
+ordinary CI neither downloads an advisory database nor claims that an absent
+scanner passed. The maintainer may run `cargo audit` by hand against the exact
+`Cargo.lock`; nothing records the result. The `qualify-advisory` task and its
+record were removed by D-454. D-441's experimental source preview requires
+disclosure/license review, the bounded source/build checks and explicit
+unrun-check disclosures; it distributes no newly built image or evidence
+bundle and makes no fresh advisory-review claim.
+
+`cargo xtask evidence` (format v12) binds the source commit and tree, the
+locked `Cargo.lock` and toolchain bytes, the tool versions and the two
+reproduced kernel and image artifacts. It carries no advisory, Java or VMware
+record. `cargo xtask verify-evidence` checks the bundle without a network.
 
 ## Distribution
 

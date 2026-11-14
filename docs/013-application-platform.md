@@ -193,9 +193,6 @@ The constraints are checked through their consequences.
   terminal completion before ring reclamation, and the frame count stays steady
   across the collection D-117 built.
 
-Every one of these is broken once and watched to fail (D-28, as D-454 now
-keeps it).
-
 ## Known holes, carried deliberately
 
 - **The ambient-authority question is settled only for time.** Randomness is

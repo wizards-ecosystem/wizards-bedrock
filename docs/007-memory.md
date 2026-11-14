@@ -409,8 +409,8 @@ after each allocation and publication edge and account for every frame. The
 machine proof forces KPTI under QEMU, walks the stripped root, reads back that
 PCID is off and enclave leaves are non-global, and exercises entry, exit,
 fault, timer, context-switch and retirement order. Each predicate was
-observed red when broken, as D-407 enumerates. Debug and optimized QEMU both reached 290/290.
-PW-706 remains open for the complete release sweep and fresh VMware evidence.
+observed red when broken, as D-407 enumerates. Debug and optimized QEMU both
+passed, and PW-706 closed at the v0.2.0 qualification (D-449).
 
 ## The implementation, closed; the VMware record missing
 

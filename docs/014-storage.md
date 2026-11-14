@@ -503,7 +503,7 @@ first:
 |---|---|---|
 | PRP construction, queue indices, FAT cluster arithmetic, path component resolution | `libs/` | `cargo test`, doctests |
 | A real read from a real device | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
-| What this repo says about itself | `xtask/` | `cargo test` |
+| What `xtask` does | `xtask/` | `cargo test` |
 
 The phase's named checks: the FAT reader against `fatfs`; the `size - 1`
 capacity rule in `libs/`, because getting it wrong hangs rather
