@@ -1,4 +1,5 @@
-//! TLC qualification of the queue protocol models; outside `ci` because its JVM cannot be vendored.
+//! TLC qualification of the queue protocol models; outside `ci` because its JVM cannot be vendored,
+//! so phase-close qualification records the external run instead.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};

@@ -24,7 +24,7 @@ pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
         .collect())
 }
 
-/// The whole text of one decision.
+/// The whole text of one decision; an undefined decision is an error, never an empty text.
 pub fn decision_text(root: &Path, decision: u32) -> Result<String> {
     entries(root)?
         .into_iter()

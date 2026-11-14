@@ -1,6 +1,7 @@
 [toolchain]
 # Pinned exactly: clippy gains lints every six weeks, and a floating channel lets CI go red from
-# a toolchain release rather than a commit. Bump deliberately.
+# a toolchain release rather than a commit. Bump deliberately; host-specific settings never go
+# in this file.
 channel = "1.97.1"
 profile = "minimal"
 # rust-mingw is absent on purpose: it does not exist for other hosts and naming it breaks Linux

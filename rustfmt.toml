@@ -1,5 +1,6 @@
-# Stable-only options, so `cargo fmt` agrees on Windows and Linux CI. Import grouping is a
-# convention (docs/005-code-conventions.md): stable rustfmt silently ignores `group_imports`.
+# Stable-only options, so `cargo fmt` agrees on Windows and Linux CI: nothing here may be
+# nightly-gated. Import grouping is a convention (docs/005-code-conventions.md): stable rustfmt
+# silently ignores `group_imports` and `imports_granularity`.
 style_edition = "2024"
 max_width = 100
 # Not "Auto": it infers from each file's first line, so a stray CRLF file would format to CRLF
