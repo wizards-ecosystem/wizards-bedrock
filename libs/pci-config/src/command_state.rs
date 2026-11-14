@@ -279,33 +279,6 @@ pub(crate) fn enable_memory_space_with_leases<const N: usize>(
     )
 }
 
-#[cfg(test)]
-pub(crate) fn enable_bus_master<const N: usize>(
-    functions: &mut FunctionClaims<N>,
-    authority: &FunctionAuthority,
-    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
-) -> Result<CommandState, EnableFailure> {
-    if !functions.holds(authority) {
-        return Err(EnableFailure::from(EnableError::Stale));
-    }
-    enable_bus_master_with_leases(&mut functions.commands, authority, access)
-}
-
-#[cfg(test)]
-pub(crate) fn enable_bus_master_with_leases<const N: usize>(
-    leases: &mut CommandLeases<N>,
-    authority: &FunctionAuthority,
-    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
-) -> Result<CommandState, EnableFailure> {
-    begin_command(
-        leases,
-        authority,
-        command::MEMORY_SPACE | command::BUS_MASTER,
-        0,
-        access,
-    )
-}
-
 fn begin_command<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -384,19 +357,6 @@ pub(crate) fn change_command(
         Some(bits) if bits as u16 == original => Err(failure),
         Some(_) | None => Err(EnableError::Restore),
     }
-}
-
-#[cfg(test)]
-pub(crate) fn admit_bus_master<const N: usize>(
-    functions: &mut FunctionClaims<N>,
-    authority: &FunctionAuthority,
-    state: &mut CommandState,
-    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
-) -> Result<(), EnableError> {
-    if !functions.holds(authority) {
-        return Err(EnableError::Stale);
-    }
-    admit_bus_master_with_leases(&mut functions.commands, authority.lease, state, access)
 }
 
 pub(crate) fn admit_bus_master_with_leases<const N: usize>(

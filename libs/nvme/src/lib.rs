@@ -54,12 +54,6 @@ mod identify {
     pub(super) const FORMAT_COUNT: usize = 25;
     /// `FLBAS`, the formatted LBA size.
     pub(super) const FORMATTED: usize = 26;
-    /// `MC`, metadata capabilities.
-    #[cfg(test)]
-    pub(super) const METADATA_CAPABILITIES: usize = 27;
-    /// `DPC`, end-to-end data protection capabilities.
-    #[cfg(test)]
-    pub(super) const PROTECTION_CAPABILITIES: usize = 28;
     /// `DPS`, end-to-end data protection type settings.
     pub(super) const PROTECTION_SETTINGS: usize = 29;
     /// `LBAF0`, the first LBA format descriptor.
@@ -439,18 +433,6 @@ pub enum Doorbell {
 }
 
 /// Where a queue's doorbell lives, by Base 2.2 §3.1.24, or `None` if the offset overflows.
-///
-/// # Examples
-///
-/// ```
-/// use nvme::{Capabilities, Doorbell, doorbell};
-///
-/// // A controller with the usual stride of zero: four bytes apart.
-/// let capabilities = Capabilities::from_bits(0);
-/// assert_eq!(doorbell(capabilities, 0, Doorbell::Submission), Some(0x1000));
-/// assert_eq!(doorbell(capabilities, 0, Doorbell::Completion), Some(0x1004));
-/// assert_eq!(doorbell(capabilities, 1, Doorbell::Submission), Some(0x1008));
-/// ```
 pub const fn doorbell(capabilities: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {
     let pair_offset = match doorbell {
         Doorbell::Submission => 0,

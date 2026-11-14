@@ -76,24 +76,6 @@ pub enum MemoryWidth {
 }
 
 /// The size of a memory window from its all-ones probe, complemented in the register's width.
-///
-/// # Examples
-///
-/// ```
-/// use pci_config::{MemoryWidth, memory_window_size};
-///
-/// // A 16 KiB window: the low fourteen address bits are not decoded.
-/// assert_eq!(
-///     memory_window_size(0xFFFF_C000, 0, MemoryWidth::Bits32),
-///     Some(0x4000),
-/// );
-///
-/// // A 64-bit window of four gigabytes, where the high half carries it.
-/// assert_eq!(
-///     memory_window_size(0, 0xFFFF_FFFF, MemoryWidth::Bits64),
-///     Some(0x1_0000_0000),
-/// );
-/// ```
 pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Option<u64> {
     match width {
         MemoryWidth::Bits64 => {

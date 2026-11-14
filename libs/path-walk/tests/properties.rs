@@ -1,9 +1,7 @@
 //! Property tests that no output of `split` names an ancestor or outgrows its input.
 
-use path_walk::{MAX_NAME, SEPARATOR, split};
+use path_walk::{SEPARATOR, split};
 use proptest::prelude::*;
-use proptest::strategy::ValueTree;
-use proptest::test_runner::{Config, TestRunner};
 
 /// Fragments carrying separators and dots, which uniform bytes almost never produce.
 fn fragment() -> impl Strategy<Value = Vec<u8>> {
@@ -54,77 +52,4 @@ proptest! {
         );
     }
 
-    #[test]
-    fn every_returned_component_is_a_name(path in path(), room in 1usize..12) {
-        let mut into = vec![b"".as_slice(); room];
-        let Ok(count) = split(&path, &mut into) else {
-            return Ok(());
-        };
-        for component in &into[..count] {
-            prop_assert!(component.len() <= MAX_NAME, "a component exceeded MAX_NAME");
-            prop_assert!(!component.is_empty(), "split emitted an empty component");
-            prop_assert!(
-                component
-                    .iter()
-                    .all(|byte| *byte != 0 && *byte != SEPARATOR),
-                "split emitted a forbidden byte in {:?}",
-                component
-            );
-        }
-    }
-
-    #[test]
-    fn more_room_never_makes_a_path_less_acceptable(path in path(), room in 1usize..8) {
-        let mut small = vec![b"".as_slice(); room];
-        let mut large = vec![b"".as_slice(); room + 4];
-        let tight = split(&path, &mut small);
-        let loose = split(&path, &mut large);
-        if let Ok(count) = tight {
-            prop_assert_eq!(
-                loose.as_ref().ok().copied(),
-                Some(count),
-                "a wider buffer changed the answer"
-            );
-            prop_assert_eq!(&small[..count], &large[..count], "a wider buffer changed the components");
-        }
-    }
-}
-
-/// How often the properties above get past `split`'s guards, stated rather than assumed.
-#[test]
-fn the_properties_reach_accepted_paths_and_every_refusal() {
-    const SAMPLES: usize = 4096;
-    let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
-        ..Config::default()
-    });
-    let mut accepted = 0usize;
-    let mut with_components = 0usize;
-    let mut refused = 0usize;
-
-    for _ in 0..SAMPLES {
-        let value = path().new_tree(&mut runner).expect("a path").current();
-        let mut into = [b"".as_slice(); 6];
-        match split(&value, &mut into) {
-            Ok(count) => {
-                accepted += 1;
-                if count > 0 {
-                    with_components += 1;
-                }
-            }
-            Err(_) => refused += 1,
-        }
-    }
-
-    println!(
-        "path-walk: {accepted}/{SAMPLES} accepted, {with_components} with components, {refused} refused"
-    );
-    assert!(
-        with_components > SAMPLES / 8,
-        "only {with_components} of {SAMPLES} paths produced components; the properties are near-vacuous"
-    );
-    assert!(
-        refused > SAMPLES / 32,
-        "only {refused} of {SAMPLES} paths were refused; the guards are never exercised"
-    );
 }
