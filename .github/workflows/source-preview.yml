@@ -11,17 +11,17 @@ permissions:
 
 concurrency:
   group: source-preview-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   source-preview:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 40
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Install the repository-pinned Windows GNU toolchain
@@ -35,6 +35,14 @@ jobs:
       - name: Check source formatting
         run: |
           cargo xtask fmt --check
+          exit $LASTEXITCODE
+      - name: Lint every Cargo graph
+        run: |
+          cargo xtask clippy
+          exit $LASTEXITCODE
+      - name: Run the host tests
+        run: |
+          cargo xtask test
           exit $LASTEXITCODE
       - name: Verify supply chain
         run: |
