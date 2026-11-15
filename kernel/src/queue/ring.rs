@@ -57,21 +57,17 @@ impl Queue {
             ring.protocol.submit()?;
             // Losing the slot `submit` just produced would strand the reservation: terminal in
             // every build.
-            let taken = ring.protocol.take();
-            assert!(
-                taken.is_some(),
-                "a submission was reserved and then was not there"
-            );
-            let slot = taken?;
+            let Some(slot) = ring.protocol.take() else {
+                panic!("a submission was reserved and then was not there");
+            };
 
             let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
             // Unreachable by construction, and terminal too: the submission is consumed, so this
             // would lose the operation.
-            let in_bounds = ring.pages.read_payload_at(at, &mut bytes);
-            assert!(in_bounds, "a submission slot was outside the shared pages");
-            if !in_bounds {
-                return None;
-            }
+            assert!(
+                ring.pages.read_payload_at(at, &mut bytes),
+                "a submission slot was outside the shared pages"
+            );
 
             // Published after the copy, so no program sees a slot released while still read.
             let head = ring.protocol.submissions().head();
