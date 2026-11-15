@@ -130,7 +130,10 @@ pub(super) fn kernel_image_gap(
             if translate_in(candidate, address).is_some() {
                 return Some(address);
             }
-            address = address.checked_add(PAGE_SIZE)?;
+            let Some(next) = address.checked_add(PAGE_SIZE) else {
+                return Some(address);
+            };
+            address = next;
         }
     }
     None
