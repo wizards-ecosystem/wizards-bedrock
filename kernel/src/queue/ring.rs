@@ -89,9 +89,7 @@ impl Queue {
         })
     }
 
-    /// Post one completion; `false` means no reservation accounting changed. A bounds failure
-    /// after the transition is fatal, because retrying a spent reservation would double-count.
-    pub(super) fn post(&self, completion: Completion) -> bool {
+    pub(super) fn post(&self, completion: Completion) {
         let mut bytes = [0u8; COMPLETION_BYTES];
         write_entry_u32(&mut bytes, completion::TOKEN, completion.token);
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);
@@ -101,7 +99,7 @@ impl Queue {
         // tail publish before an earlier slot.
         let mut ring = self.ring.lock_leaf();
         let Some(slot) = ring.protocol.complete() else {
-            return false;
+            panic!("a completion was posted without the reservation its admission took");
         };
         let tail = ring.protocol.completions().tail();
 
@@ -112,7 +110,6 @@ impl Queue {
         );
         // `complete` advanced the tail before the write; it is published after the entry is in.
         publish_index(&ring.pages, header::COMPLETION_TAIL, tail);
-        true
     }
 
     /// Let userspace's reaping through, so admission can proceed again.

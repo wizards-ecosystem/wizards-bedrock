@@ -325,8 +325,7 @@ impl RunningWork {
         request
     }
 
-    /// Return the still-live owner when terminal publication is refused.
-    fn finish(self, status: u32, value: u64) -> Option<Self> {
+    fn finish(self, status: u32, value: u64) {
         let entry = {
             let mut pending = self.work.ring.pending.lock_leaf();
             let Some(entry) = pending
@@ -344,16 +343,11 @@ impl RunningWork {
             *entry
         };
 
-        if !self
-            .work
+        self.work
             .ring
-            .settle_pending(self.work.pending, entry, status, value)
-        {
-            return Some(self);
-        }
+            .settle_pending(self.work.pending, entry, status, value);
         self.work.ring.served.fetch_add(1, Ordering::Release);
         self.work.ring.waiters.wake_all();
-        None
     }
 }
 
@@ -614,7 +608,7 @@ fn service(mut running: RunningWork) {
                         VfsError::NotADirectory | VfsError::NotFound => STATUS_NO_ENTRY,
                         VfsError::Backend(_) | VfsError::NoVolume => STATUS_IO,
                     };
-                    return finish_work(running, status, 0);
+                    return running.finish(status, 0);
                 }
             };
             let (produced, offered) = match node {
@@ -630,7 +624,7 @@ fn service(mut running: RunningWork) {
                 }
                 crate::vfs::Node::Device(_) => {
                     drop(reservation);
-                    return finish_work(running, STATUS_DENIED, 0);
+                    return running.finish(STATUS_DENIED, 0);
                 }
             };
             match reservation.install(produced, offered, offered) {
@@ -640,20 +634,7 @@ fn service(mut running: RunningWork) {
         }
     };
 
-    finish_work(running, status, value);
-}
-
-fn finish_work(mut running: RunningWork, status: u32, value: u64) {
-    // Admission reserved the completion, so a refusal is transient: keep ownership until it posts.
-    loop {
-        match running.finish(status, value) {
-            None => break,
-            Some(retry) => {
-                running = retry;
-                core::hint::spin_loop();
-            }
-        }
-    }
+    running.finish(status, value);
 }
 
 /// The longest path an `OpenAt` may name, far below a page because the buffer is on a 32 KiB

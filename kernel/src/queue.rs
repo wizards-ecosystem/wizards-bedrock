@@ -391,9 +391,7 @@ impl Queue {
             let Some(completion) = self.admit(submission, table) else {
                 continue;
             };
-            // Admission reserved this slot, so a failure breaks the model's invariant: terminal.
-            let posted = self.post(completion);
-            assert!(posted, "a reserved completion slot was not there");
+            self.post(completion);
             served += 1;
         }
 
@@ -512,9 +510,9 @@ impl Queue {
         Some((index, *entry))
     }
 
-    /// Post one pending operation's terminal record, or leave it live.
-    fn settle_pending(&self, index: usize, entry: Pending, status: u32, value: u64) -> bool {
-        let posted = self.post(Completion {
+    /// Post one pending operation's terminal record and free its slot.
+    fn settle_pending(&self, index: usize, entry: Pending, status: u32, value: u64) {
+        self.post(Completion {
             token: entry.token,
             status,
             value,
@@ -527,15 +525,7 @@ impl Queue {
             entry.settling && current == entry,
             "terminal work no longer owns its pending entry"
         );
-        if posted {
-            pending.slots[index] = None;
-        } else {
-            pending.slots[index] = Some(Pending {
-                settling: false,
-                ..entry
-            });
-        }
-        posted
+        pending.slots[index] = None;
     }
 
     /// End an operation early: the target gets exactly one [`STATUS_CANCELLED`] completion.
@@ -552,11 +542,7 @@ impl Queue {
         else {
             return refuse(submission.token, STATUS_NOT_FOUND);
         };
-        if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
-            // The cancellation still gets its reserved completion, while the target stays live
-            // and may be retried.
-            return refuse(submission.token, STATUS_NO_ROOM);
-        }
+        self.settle_pending(index, entry, STATUS_CANCELLED, 0);
         // If the worker has not claimed this operation, remove the payload
         // now. For OpenAt that drops its handle-slot promise before reporting
         // cancellation; for Read it avoids spending worker time on a tombstone.
@@ -588,9 +574,7 @@ impl Queue {
             } else {
                 (STATUS_UNAVAILABLE, 0)
             };
-            if !self.settle_pending(index, entry, status, value) {
-                break;
-            }
+            self.settle_pending(index, entry, status, value);
             due += 1;
         }
 
@@ -602,16 +586,11 @@ impl Queue {
     }
 
     /// End every operation still in flight, and report how many.
-    ///
-    /// A refused post keeps its pending entry, so the caller must keep the owner and retry until
-    /// [`is_quiet`](Self::is_quiet) permits release.
     pub(crate) fn abandon(&self) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
         {
-            if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
-                break;
-            }
+            self.settle_pending(index, entry, STATUS_CANCELLED, 0);
             drop(FILE_WORK.remove(self, index, entry.id));
             ended += 1;
         }

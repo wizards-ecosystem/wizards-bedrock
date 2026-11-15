@@ -157,8 +157,7 @@ pub(crate) fn orphan(slot: usize) {
 /// One per call: this runs when the machine had nothing better to do, and a loop freeing sixteen
 /// processes with interrupts on can be preempted halfway anyway, so one at a time is unremarkable.
 pub(crate) fn collect() -> CollectOutcome {
-    // The owner stays in the zombie table until its ring is quiet, so a refused terminal
-    // completion is retried and live pages are never reused.
+    // The zombie owns the ring until it is quiet, so running file work never meets reused pages.
     let (found, another_collector) = {
         let mut zombies = ZOMBIES.lock_leaf();
         let another_collector = zombies.settling.iter().any(|owned| *owned)
