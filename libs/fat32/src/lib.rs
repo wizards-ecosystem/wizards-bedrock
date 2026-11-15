@@ -505,12 +505,19 @@ pub struct Volume<S: Sectors> {
 }
 
 impl<S: Sectors> Volume<S> {
-    pub fn mount(mut source: S, base: u64) -> Result<Self, FatError> {
+    // `sectors` is the extent the device holds from `base`; the volume must fit inside it.
+    pub fn mount(mut source: S, base: u64, sectors: u64) -> Result<Self, FatError> {
+        if sectors == 0 {
+            return Err(FatError::Malformed);
+        }
         let mut sector = [0u8; SECTOR_BYTES];
         source
             .read_sector(base, &mut sector)
             .map_err(|_| FatError::Unreadable)?;
         let bpb = Bpb::parse(&sector)?;
+        if u64::from(bpb.total_sectors) > sectors {
+            return Err(FatError::Malformed);
+        }
         Ok(Self { source, base, bpb })
     }
 
@@ -519,6 +526,9 @@ impl<S: Sectors> Volume<S> {
     }
 
     fn sector(&mut self, sector: u64, into: &mut [u8; SECTOR_BYTES]) -> Result<(), FatError> {
+        if sector >= u64::from(self.bpb.total_sectors) {
+            return Err(FatError::Malformed);
+        }
         let at = self.base.checked_add(sector).ok_or(FatError::Malformed)?;
         self.source
             .read_sector(at, into)

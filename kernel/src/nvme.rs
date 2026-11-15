@@ -676,9 +676,11 @@ fn quarantine_controller(controller: Controller) -> ControllerRetirement {
     ControllerRetirement::Quarantined(ControllerQuarantine { _private: () })
 }
 
-/// Whether a retained controller exists.
-pub(crate) fn has_controller() -> bool {
-    CONTROLLER.lock().is_some()
+pub(crate) fn namespace_blocks() -> Option<u64> {
+    CONTROLLER
+        .lock()
+        .as_ref()
+        .map(|(controller, _)| controller.blocks)
 }
 
 /// Read one FAT-sized logical block into owned caller bytes.

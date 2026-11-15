@@ -79,11 +79,10 @@ impl Mounted {
     }
 }
 
-/// Mount the retained controller's volume: `None` without a controller, `Some(Err(..))` if it is
-/// malformed. Mounted per call, since a kept volume would hold the controller's borrow all boot.
 pub(crate) fn mount() -> Option<Result<Mounted, FatError>> {
-    if !crate::nvme::has_controller() {
-        return None;
-    }
-    Some(Volume::mount(Blocks, VOLUME_SECTOR).map(|volume| Mounted { volume }))
+    let blocks = crate::nvme::namespace_blocks()?;
+    Some(
+        Volume::mount(Blocks, VOLUME_SECTOR, blocks.saturating_sub(VOLUME_SECTOR))
+            .map(|volume| Mounted { volume }),
+    )
 }
