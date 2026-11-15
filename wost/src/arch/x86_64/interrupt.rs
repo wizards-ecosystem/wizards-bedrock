@@ -583,6 +583,12 @@ pub fn are_enabled() -> bool {
     flags() & FLAGS_INTERRUPT != 0
 }
 
+/// Clear the interrupt flag outside the exclusion ledger, for paths that never resume.
+pub(crate) fn disable_for_good() {
+    // SAFETY: `cli` clears IF on this CPU, touching nothing else, with no ring 0 precondition.
+    unsafe { asm!("cli", options(nostack)) };
+}
+
 /// Stop accepting maskable interrupts, reporting what it took to do so.
 ///
 /// The report is the argument for [`InterruptState::restore`]; dropping it leaves interrupts off,

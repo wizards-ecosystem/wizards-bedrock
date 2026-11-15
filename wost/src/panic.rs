@@ -17,7 +17,7 @@ pub(crate) struct PanicToken(());
 /// `report` is a function pointer because a lock guard cannot be carried across reclamation.
 /// Single-CPU only: this stops the calling CPU resuming interrupted code, never another CPU.
 pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
-    let _disabled = interrupt::disable();
+    interrupt::disable_for_good();
     if PANICKING.swap(true, Ordering::Relaxed) {
         cpu::halt_forever();
     }

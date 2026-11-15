@@ -124,7 +124,7 @@ pub fn halt() {
 ///
 /// The kernel's terminal state, for the panic handler and the idle path before a scheduler exists.
 pub fn halt_forever() -> ! {
-    let _disabled = interrupt::disable();
+    interrupt::disable_for_good();
     loop {
         halt();
     }
