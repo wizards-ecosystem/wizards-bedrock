@@ -445,10 +445,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wizzy-handoff"
-version = "0.3.0"
-
-[[package]]
 name = "wost"
 version = "0.3.0"
 dependencies = [
