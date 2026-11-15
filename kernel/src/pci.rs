@@ -123,10 +123,11 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
 }
 
 /// Buses waiting to be walked, each claimed when it is queued.
+#[derive(Debug)]
 struct Worklist {
     claimed: [bool; MAX_BUSES],
     pending: [u8; MAX_BUSES],
-    len: usize,
+    queued: usize,
     next: usize,
 }
 
@@ -135,23 +136,22 @@ impl Worklist {
         Self {
             claimed: [false; MAX_BUSES],
             pending: [0; MAX_BUSES],
-            len: 0,
+            queued: 0,
             next: 0,
         }
     }
 
-    fn push(&mut self, bus: u8) -> bool {
-        if self.claimed[usize::from(bus)] || self.len == MAX_BUSES {
-            return false;
+    fn push(&mut self, bus: u8) {
+        if self.claimed[usize::from(bus)] || self.queued == MAX_BUSES {
+            return;
         }
         self.claimed[usize::from(bus)] = true;
-        self.pending[self.len] = bus;
-        self.len += 1;
-        true
+        self.pending[self.queued] = bus;
+        self.queued += 1;
     }
 
     fn pop(&mut self) -> Option<u8> {
-        let bus = *self.pending[..self.len].get(self.next)?;
+        let bus = *self.pending[..self.queued].get(self.next)?;
         self.next += 1;
         Some(bus)
     }
@@ -377,14 +377,14 @@ pub(crate) enum DmaFenceError {
 }
 
 impl fmt::Display for DmaFenceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Claim(reason) => write!(f, "function claim: {reason}"),
-            Self::Command(reason) => write!(f, "command fence: {reason}"),
-            Self::Quiesce => f.write_str(
+            Self::Claim(reason) => write!(formatter, "function claim: {reason}"),
+            Self::Command(reason) => write!(formatter, "command fence: {reason}"),
+            Self::Quiesce => formatter.write_str(
                 "the entry-quiesced ISA requester changed or its 8237 controllers are not quiet",
             ),
-            Self::Function => f.write_str("function authority could not be returned"),
+            Self::Function => formatter.write_str("function authority could not be returned"),
         }
     }
 }
@@ -439,7 +439,7 @@ impl DmaFence {
         }
         pci::release_function(self.function).map_err(|failure| DmaFenceRelease {
             reason: DmaFenceError::Function,
-            fence: DmaFence {
+            fence: Self {
                 function: failure.into_function(),
                 command_state: None,
             },
@@ -586,16 +586,18 @@ impl ProbeRecovery {
 }
 
 impl fmt::Display for ClaimError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoBus => f.write_str("configuration space is not reachable"),
-            Self::Absent => f.write_str("nothing is at that address"),
-            Self::Taken => f.write_str("another driver holds it"),
-            Self::NoRoom => f.write_str("no room in the device registry"),
-            Self::InvalidWindow => f.write_str("a base address window is malformed"),
-            Self::ProbeRestore(_) => f.write_str("a base address probe could not be restored"),
+            Self::NoBus => formatter.write_str("configuration space is not reachable"),
+            Self::Absent => formatter.write_str("nothing is at that address"),
+            Self::Taken => formatter.write_str("another driver holds it"),
+            Self::NoRoom => formatter.write_str("no room in the device registry"),
+            Self::InvalidWindow => formatter.write_str("a base address window is malformed"),
+            Self::ProbeRestore(_) => {
+                formatter.write_str("a base address probe could not be restored")
+            }
             Self::FunctionRetained => {
-                f.write_str("the restored function claim could not be returned")
+                formatter.write_str("the restored function claim could not be returned")
             }
         }
     }
@@ -617,12 +619,12 @@ pub(crate) enum BarAdmissionError {
 }
 
 impl fmt::Display for BarAdmissionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing => f.write_str("the BAR slot is empty"),
-            Self::NotMemory => f.write_str("the BAR is not memory"),
-            Self::Range(reason) => write!(f, "physical range: {reason}"),
-            Self::Bind(reason) => write!(f, "function binding: {reason}"),
+            Self::Missing => formatter.write_str("the BAR slot is empty"),
+            Self::NotMemory => formatter.write_str("the BAR is not memory"),
+            Self::Range(reason) => write!(formatter, "physical range: {reason}"),
+            Self::Bind(reason) => write!(formatter, "function binding: {reason}"),
         }
     }
 }
@@ -668,10 +670,10 @@ pub(crate) enum ReleaseError {
 }
 
 impl fmt::Display for ReleaseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Command => f.write_str("the pci command word could not be restored"),
-            Self::Function => f.write_str("the function claim could not be returned"),
+            Self::Command => formatter.write_str("the pci command word could not be restored"),
+            Self::Function => formatter.write_str("the function claim could not be returned"),
         }
     }
 }

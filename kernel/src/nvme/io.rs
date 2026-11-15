@@ -178,23 +178,24 @@ impl Controller {
         self.submit_on(0, command, data)
     }
 
-    /// Submit `command` to queue `which` and spin until it is answered.
+    /// Submit `command` to queue `queue_id` and spin until it is answered.
     /// Nothing is published without an installed DMA domain; the transfer buffer enters it
     /// before the doorbell and leaves once the completion proves the device is done with it,
     /// so the device reaches exactly the published and unretired set.
     fn submit_on(
         &mut self,
-        which: u16,
+        queue_id: u16,
         command: Command,
         mut data: Option<&mut DmaSegment>,
     ) -> Result<Completion, BringUpError> {
         let expected = command.id();
         let capabilities = self.capabilities;
-        let submission_doorbell = nvme::doorbell(capabilities, which, nvme::Doorbell::Submission)
-            .ok_or(BringUpError::NotReady)?;
+        let submission_doorbell =
+            nvme::doorbell(capabilities, queue_id, nvme::Doorbell::Submission)
+                .ok_or(BringUpError::NotReady)?;
 
         {
-            let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+            let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
             if queue.capacity.has_room(queue.submission_head, queue.tail) != Some(true) {
                 return Err(BringUpError::NotReady);
             }
@@ -225,7 +226,7 @@ impl Controller {
 
         // Reserve ownership first: a refused staging cancels it, and only a rung doorbell needs
         // controller quiescence to recover.
-        let submission_tail = match self.stage_submission(which, &command) {
+        let submission_tail = match self.stage_submission(queue_id, &command) {
             Ok(tail) => tail,
             Err(reason) => {
                 if !self.dma.cancel_unpublished() {
@@ -255,7 +256,7 @@ impl Controller {
             limit = PollLimit::Attempts(0);
         }
         while limit.permit(clock_ns()) {
-            let found = match self.poll_completion(which) {
+            let found = match self.poll_completion(queue_id) {
                 Ok(found) => found,
                 Err(reason) => {
                     return self.fail_submitted(reason, data.as_deref_mut(), isolation, mapping);
@@ -263,7 +264,7 @@ impl Controller {
             };
 
             if let Some(entry) = found {
-                if let Err(reason) = self.accept_completion(which, expected, &entry) {
+                if let Err(reason) = self.accept_completion(queue_id, expected, &entry) {
                     return self.fail_submitted(reason, data.as_deref_mut(), isolation, mapping);
                 }
                 if !self.dma.complete() {
@@ -273,7 +274,7 @@ impl Controller {
                 if !unmap_data(isolation, data.as_deref_mut(), mapping) {
                     return self.fail_controller(BringUpError::Isolation);
                 }
-                if let Err(error) = self.acknowledge_completion(which) {
+                if let Err(error) = self.acknowledge_completion(queue_id) {
                     return self.fail_controller(error);
                 }
                 if !entry.is_success() {
@@ -286,20 +287,23 @@ impl Controller {
         self.fail_submitted(BringUpError::Timeout, data, isolation, mapping)
     }
 
-    /// Write `command` at the tail of queue `which` and return the tail the doorbell publishes.
-    fn stage_submission(&mut self, which: u16, command: &Command) -> Result<u32, BringUpError> {
-        let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+    /// Write `command` at the tail of queue `queue_id` and return the tail the doorbell publishes.
+    fn stage_submission(&mut self, queue_id: u16, command: &Command) -> Result<u32, BringUpError> {
+        let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
         let at = queue.tail as usize * nvme::SUBMISSION_ENTRY_BYTES;
         if !queue.submission.write_at(at, &command.to_bytes()) {
             return Err(BringUpError::NoMemory);
         }
-        queue.tail = Capacity::next(queue.capacity, queue.tail).ok_or(BringUpError::NotReady)?;
+        queue.tail = queue
+            .capacity
+            .next(queue.tail)
+            .ok_or(BringUpError::NotReady)?;
         Ok(queue.tail)
     }
 
     /// The entry at the completion head, if its phase tag says it is new (`012` §3).
-    fn poll_completion(&mut self, which: u16) -> Result<Option<Completion>, BringUpError> {
-        let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+    fn poll_completion(&mut self, queue_id: u16) -> Result<Option<Completion>, BringUpError> {
+        let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
         let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
         let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
         if !queue.completion.read_at(at, &mut bytes) {
@@ -317,13 +321,13 @@ impl Controller {
     /// Require `entry` to answer the command just published, then advance both heads.
     fn accept_completion(
         &mut self,
-        which: u16,
+        queue_id: u16,
         expected: u16,
         entry: &Completion,
     ) -> Result<(), BringUpError> {
-        let provenance = self.queue_mut(which).is_some_and(|queue| {
+        let provenance = self.queue_mut(queue_id).is_some_and(|queue| {
             entry.phase == queue.phase
-                && entry.matches_submission(which, expected, queue.tail, queue.capacity)
+                && entry.matches_submission(queue_id, expected, queue.tail, queue.capacity)
         });
         if !provenance {
             return Err(BringUpError::UnexpectedCompletion {
@@ -332,10 +336,12 @@ impl Controller {
                 submission_head: entry.submission_head,
             });
         }
-        let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+        let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
         queue.submission_head = u32::from(entry.submission_head);
-        let completion_head =
-            Capacity::next(queue.capacity, queue.completion_head).ok_or(BringUpError::NotReady)?;
+        let completion_head = queue
+            .capacity
+            .next(queue.completion_head)
+            .ok_or(BringUpError::NotReady)?;
         if completion_head == 0 {
             queue.phase = !queue.phase;
         }
@@ -344,11 +350,11 @@ impl Controller {
     }
 
     /// Ring the completion doorbell with the new head.
-    fn acknowledge_completion(&mut self, which: u16) -> Result<(), BringUpError> {
-        let doorbell = nvme::doorbell(self.capabilities, which, nvme::Doorbell::Completion)
+    fn acknowledge_completion(&mut self, queue_id: u16) -> Result<(), BringUpError> {
+        let doorbell = nvme::doorbell(self.capabilities, queue_id, nvme::Doorbell::Completion)
             .ok_or(BringUpError::NotReady)?;
         let head = self
-            .queue_mut(which)
+            .queue_mut(queue_id)
             .map(|queue| queue.completion_head)
             .ok_or(BringUpError::NotReady)?;
         self.registers
@@ -467,11 +473,11 @@ impl Controller {
     }
 
     /// The queue pair with this identifier.
-    fn queue_mut(&mut self, which: u16) -> Option<&mut QueuePair> {
-        if which == self.admin.id {
+    fn queue_mut(&mut self, queue_id: u16) -> Option<&mut QueuePair> {
+        if queue_id == self.admin.id {
             return Some(&mut self.admin);
         }
-        self.io.as_mut().filter(|queue| queue.id == which)
+        self.io.as_mut().filter(|queue| queue.id == queue_id)
     }
 }
 

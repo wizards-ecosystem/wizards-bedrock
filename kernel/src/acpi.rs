@@ -21,6 +21,8 @@ const ROOT_POINTER_PREFIX: usize = 24;
 
 const ROOT_POINTER_REVISION: usize = 15;
 
+const ISA_IRQS: u8 = 16;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TableError {
     NoReader,
@@ -32,14 +34,14 @@ pub(crate) enum TableError {
 }
 
 impl fmt::Display for TableError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoReader => f.write_str("no reader for firmware memory"),
-            Self::RootPointer => f.write_str("the ACPI root pointer is unreadable"),
-            Self::RootTable => f.write_str("the ACPI root table is unreadable"),
-            Self::Candidate => f.write_str("the requested ACPI table is malformed"),
-            Self::Missing => f.write_str("the requested ACPI table is missing"),
-            Self::Duplicate => f.write_str("the requested ACPI table is duplicated"),
+            Self::NoReader => formatter.write_str("no reader for firmware memory"),
+            Self::RootPointer => formatter.write_str("the ACPI root pointer is unreadable"),
+            Self::RootTable => formatter.write_str("the ACPI root table is unreadable"),
+            Self::Candidate => formatter.write_str("the requested ACPI table is malformed"),
+            Self::Missing => formatter.write_str("the requested ACPI table is missing"),
+            Self::Duplicate => formatter.write_str("the requested ACPI table is duplicated"),
         }
     }
 }
@@ -195,19 +197,15 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
         }
     };
 
-    let mut io_apics = interrupts.io_apics();
-    let mut next_io_apic = core::iter::Iterator::next(&mut io_apics);
-    while let Some(io_apic) = next_io_apic {
-        next_io_apic = core::iter::Iterator::next(&mut io_apics);
-        let id = io_apic.id();
-        let address = io_apic.address();
-        let gsi_base = io_apic.gsi_base();
+    for io_apic in interrupts.io_apics() {
         debug!(
             "acpi: io apic {} at {:#x}, gsi base {}",
-            id, address, gsi_base
+            io_apic.id(),
+            io_apic.address(),
+            io_apic.gsi_base()
         );
     }
-    for source in 0..16 {
+    for source in 0..ISA_IRQS {
         if let Some((gsi, flags)) = interrupts.override_for(source) {
             debug!("acpi: irq {source} is routed to gsi {gsi}, flags {flags:#x}");
         }

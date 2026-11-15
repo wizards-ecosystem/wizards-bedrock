@@ -95,19 +95,21 @@ pub(crate) enum EarlyDmaError {
 }
 
 impl fmt::Display for EarlyDmaError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnauthenticatedPlatform => {
-                f.write_str("CPU state does not authenticate a qualified DMA-handoff platform")
-            }
-            Self::BaseRevision => f.write_str("bootloader rejected Limine base revision 4"),
-            Self::MissingEvidence(name) => write!(f, "boot handoff has no {name}"),
-            Self::Table(reason) => write!(f, "DMA handoff authority: {reason}"),
-            Self::Contract(reason) => write!(f, "DMA handoff contract: {reason}"),
+            Self::UnauthenticatedPlatform => formatter
+                .write_str("CPU state does not authenticate a qualified DMA-handoff platform"),
+            Self::BaseRevision => formatter.write_str("bootloader rejected Limine base revision 4"),
+            Self::MissingEvidence(name) => write!(formatter, "boot handoff has no {name}"),
+            Self::Table(reason) => write!(formatter, "DMA handoff authority: {reason}"),
+            Self::Contract(reason) => write!(formatter, "DMA handoff contract: {reason}"),
             Self::Segment(segment) => {
-                write!(f, "DMA handoff names unsupported PCI segment {segment}")
+                write!(
+                    formatter,
+                    "DMA handoff names unsupported PCI segment {segment}"
+                )
             }
-            Self::Configuration(reason) => write!(f, "DMA handoff fence: {reason}"),
+            Self::Configuration(reason) => write!(formatter, "DMA handoff fence: {reason}"),
         }
     }
 }
@@ -294,7 +296,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    if !isolation.boundary_active() {
+    if !isolation.is_boundary_active() {
         warn!("iommu: the early default-deny boundary did not read back intact");
         install(InstalledUnit {
             register_base,
@@ -371,10 +373,10 @@ impl UnitFences {
         self.count += 1;
     }
 
-    /// Return whether every fence settled and the exact remainder, kept in a
-    /// fixed vault so an ownership-carrying refusal needs neither heap
-    /// indirection nor a pathologically large stack value.
-    fn release(self) -> (bool, Self) {
+    /// Return every fence, or the exact remainder, kept in a fixed vault so an
+    /// ownership-carrying refusal needs neither heap indirection nor a
+    /// pathologically large stack value.
+    fn release(self) -> Result<(), Self> {
         let mut retained_count = 0;
         for index in 0..self.count {
             let fence = {
@@ -396,12 +398,13 @@ impl UnitFences {
                 retained_count += 1;
             }
         }
-        (
-            retained_count == 0,
-            Self {
+        if retained_count == 0 {
+            Ok(())
+        } else {
+            Err(Self {
                 count: retained_count,
-            },
-        )
+            })
+        }
     }
 }
 
@@ -476,11 +479,11 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     if !covers_every_present_requester(&requesters) {
         return Err(LookupError::IncompleteInterruptBoundary);
     }
-    if !reserved_regions_are_supported(dmar.reserved_regions_for(
-        bdf,
-        bridge_buses,
-        hierarchy_contains,
-    )) {
+    if dmar
+        .reserved_regions_for(bdf, bridge_buses, hierarchy_contains)
+        .next()
+        .is_some()
+    {
         return Err(LookupError::UnsupportedReservedRegion);
     }
     let governing = requesters.unit();
@@ -488,11 +491,6 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
         register_base: governing.register_base,
         requesters,
     })
-}
-
-/// Whether firmware supplied no reserved DMA mapping authority for the device.
-fn reserved_regions_are_supported(mut reserved: impl Iterator<Item = (u64, u64)>) -> bool {
-    reserved.next().is_none()
 }
 
 /// Whether this one unit covers every requester in the sealed live topology.
@@ -686,11 +684,9 @@ pub(crate) fn admit_upstream_bus_master(
 }
 
 fn release_refused_fences(fences: UnitFences) -> FenceAcquisition {
-    let (released, fences) = fences.release();
-    if released {
-        FenceAcquisition::Refused
-    } else {
-        FenceAcquisition::Retained(fences)
+    match fences.release() {
+        Ok(()) => FenceAcquisition::Refused,
+        Err(fences) => FenceAcquisition::Retained(fences),
     }
 }
 
@@ -770,7 +766,7 @@ pub(crate) fn ensure_interrupt_boundary() -> bool {
     let installed = INSTALLED.lock();
     let Some(owner) = installed
         .as_ref()
-        .filter(|owner| owner.state == InstalledState::Ready && owner.boundary_active())
+        .filter(|owner| owner.state == InstalledState::Ready && owner.is_boundary_active())
     else {
         return false;
     };
@@ -787,14 +783,14 @@ pub(crate) fn ensure_interrupt_boundary() -> bool {
 }
 
 /// Whether the current installed owner still proves default-deny remapping.
-pub(crate) fn interrupt_boundary_active() -> bool {
+pub(crate) fn is_interrupt_boundary_active() -> bool {
     if matches!(pci::topology_presence(), pci::TopologyPresence::Unsealed) {
         return false;
     }
     INSTALLED
         .lock()
         .as_ref()
-        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.boundary_active())
+        .is_some_and(|unit| unit.state == InstalledState::Ready && unit.is_boundary_active())
 }
 
 fn install(unit: InstalledUnit) {
@@ -815,11 +811,13 @@ fn release_unavailable_fences(fences: UnitFences) -> EstablishOutcome {
 }
 
 fn release_fences(fences: UnitFences) -> bool {
-    let (released, fences) = fences.release();
-    if !released {
-        retain_fences(fences);
+    match fences.release() {
+        Ok(()) => true,
+        Err(fences) => {
+            retain_fences(fences);
+            false
+        }
     }
-    released
 }
 
 /// Park the candidate's DMA domain after it has stopped bus-mastering.
@@ -846,13 +844,15 @@ pub(crate) fn release_candidate() -> bool {
         }
         core::mem::replace(&mut unit.fences, UnitFences::empty())
     };
-    let (released, fences) = fences.release();
-    if released {
+    let Err(fences) = fences.release() else {
         return true;
-    }
+    };
     let mut installed = INSTALLED.lock();
     if let Some(unit) = installed.as_mut() {
-        assert_eq!(unit.fences.count, 0);
+        assert_eq!(
+            unit.fences.count, 0,
+            "a released unit kept requester fences beside a refused return"
+        );
         unit.fences = fences;
     } else {
         retain_fences(fences);

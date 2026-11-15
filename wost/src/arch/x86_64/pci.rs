@@ -23,6 +23,7 @@ use super::port::{self, Port, PortBlock};
 
 const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
+#[derive(Debug)]
 struct Configuration {
     ports: Option<(Port<u32>, Port<u32>)>,
     functions: FunctionClaims<FUNCTION_CLAIMS>,
@@ -84,11 +85,13 @@ pub enum DmaHandoffFenceError {
 }
 
 impl core::fmt::Display for DmaHandoffFenceError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Unavailable => f.write_str("PCI configuration is unavailable"),
-            Self::Busy => f.write_str("PCI function authority exists before the handoff fence"),
-            Self::Fence(reason) => core::fmt::Display::fmt(reason, f),
+            Self::Unavailable => formatter.write_str("PCI configuration is unavailable"),
+            Self::Busy => {
+                formatter.write_str("PCI function authority exists before the handoff fence")
+            }
+            Self::Fence(reason) => write!(formatter, "{reason}"),
         }
     }
 }
@@ -145,9 +148,21 @@ pub fn fence_dma_handoff(
 /// Both 8237 controllers, owned for the boot once claimed so no later owner can unmask a channel.
 static ISA_DMA: SpinLock<Option<IsaDma>> = SpinLock::new(None);
 
+#[derive(Debug)]
 struct IsaDma {
     first: PortBlock<16>,
     second: PortBlock<32>,
+}
+
+// The second 8237 decodes its registers at even ports, so its offsets are doubled.
+mod isa_dma {
+    pub(super) const FIRST_STATUS: usize = 0x08;
+    pub(super) const FIRST_MASTER_CLEAR: usize = 0x0D;
+    pub(super) const FIRST_MASK_ALL: usize = 0x0F;
+    pub(super) const SECOND_STATUS: usize = 0x10;
+    pub(super) const SECOND_MASTER_CLEAR: usize = 0x1A;
+    pub(super) const SECOND_MASK_ALL: usize = 0x1E;
+    pub(super) const EVERY_CHANNEL: u8 = 0x0F;
 }
 
 impl IsaDma {
@@ -155,17 +170,19 @@ impl IsaDma {
     ///
     /// A master clear masks every channel; the explicit mask follows since masks cannot be read.
     fn quiesce(&mut self) -> u32 {
-        self.first.write::<u8>(0x0D, 0);
-        self.second.write::<u8>(0x1A, 0);
+        self.first.write::<u8>(isa_dma::FIRST_MASTER_CLEAR, 0);
+        self.second.write::<u8>(isa_dma::SECOND_MASTER_CLEAR, 0);
         self.reassert()
     }
 
     /// Mask every channel again and read both status registers.
     fn reassert(&mut self) -> u32 {
-        self.first.write::<u8>(0x0F, 0x0F);
-        self.second.write::<u8>(0x1E, 0x0F);
-        let first = self.first.read::<u8>(0x08);
-        let second = self.second.read::<u8>(0x10);
+        self.first
+            .write::<u8>(isa_dma::FIRST_MASK_ALL, isa_dma::EVERY_CHANNEL);
+        self.second
+            .write::<u8>(isa_dma::SECOND_MASK_ALL, isa_dma::EVERY_CHANNEL);
+        let first = self.first.read::<u8>(isa_dma::FIRST_STATUS);
+        let second = self.second.read::<u8>(isa_dma::SECOND_STATUS);
         u32::from(first) | u32::from(second) << 8
     }
 }
@@ -259,11 +276,11 @@ pub enum NvmeObservationError {
 }
 
 impl core::fmt::Display for NvmeObservationError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::WrongBar(index) => write!(f, "NVMe registers came from BAR{index}"),
-            Self::Access(reason) => write!(f, "NVMe register access: {reason}"),
-            Self::State(reason) => core::fmt::Display::fmt(reason, f),
+            Self::WrongBar(index) => write!(formatter, "NVMe registers came from BAR{index}"),
+            Self::Access(reason) => write!(formatter, "NVMe register access: {reason}"),
+            Self::State(reason) => write!(formatter, "{reason}"),
         }
     }
 }
@@ -362,10 +379,10 @@ pub enum BarBindError {
 }
 
 impl core::fmt::Display for BarBindError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Range => f.write_str("the admitted range differs from the BAR"),
-            Self::Authority(reason) => write!(f, "BAR authority: {reason}"),
+            Self::Range => formatter.write_str("the admitted range differs from the BAR"),
+            Self::Authority(reason) => write!(formatter, "BAR authority: {reason}"),
         }
     }
 }
@@ -432,14 +449,14 @@ pub enum ClaimError {
 }
 
 impl core::fmt::Display for ClaimError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Unavailable => f.write_str("configuration space is unavailable"),
-            Self::Absent => f.write_str("the function is absent"),
-            Self::Taken => f.write_str("the function is already claimed"),
-            Self::NoRoom => f.write_str("the function registry is full"),
-            Self::Exhausted => f.write_str("function claim generations are exhausted"),
-            Self::Header(layout) => write!(f, "header layout {layout} is unsupported"),
+            Self::Unavailable => formatter.write_str("configuration space is unavailable"),
+            Self::Absent => formatter.write_str("the function is absent"),
+            Self::Taken => formatter.write_str("the function is already claimed"),
+            Self::NoRoom => formatter.write_str("the function registry is full"),
+            Self::Exhausted => formatter.write_str("function claim generations are exhausted"),
+            Self::Header(layout) => write!(formatter, "header layout {layout} is unsupported"),
         }
     }
 }
@@ -496,13 +513,13 @@ impl ReleaseFailure {
 }
 
 impl core::fmt::Display for ReleaseFailure {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.reason {
             FunctionReleaseError::Active => {
-                f.write_str("the function still has a configuration sublease")
+                formatter.write_str("the function still has a configuration sublease")
             }
             FunctionReleaseError::Stale => {
-                f.write_str("the function authority is foreign or stale")
+                formatter.write_str("the function authority is foreign or stale")
             }
         }
     }

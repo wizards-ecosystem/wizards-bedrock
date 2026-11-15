@@ -53,6 +53,12 @@ const POLL_ATTEMPTS: u32 = 5_000_000;
 /// Real-time bound for one command once the monotonic clock exists.
 const COMMAND_TIMEOUT_MS: u64 = 5_000;
 
+const MINIMUM_READY_TIMEOUT_MS: u64 = 500;
+
+const READY_POLLS_PER_MS: u64 = 20_000;
+
+const MAX_READY_POLLS: u64 = 20_000_000;
+
 /// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
 pub(crate) struct Controller {
@@ -193,15 +199,15 @@ pub(crate) enum BusMasterAdmissionError {
 }
 
 impl fmt::Display for BusMasterAdmissionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unisolated => f.write_str("no DMA domain isolates the function"),
+            Self::Unisolated => formatter.write_str("no DMA domain isolates the function"),
             Self::QueuesUnreachable => {
-                f.write_str("the admin queues could not enter the DMA domain")
+                formatter.write_str("the admin queues could not enter the DMA domain")
             }
-            Self::NotMapped => f.write_str("register BAR is absent"),
-            Self::Observation(reason) => write!(f, "controller observation: {reason}"),
-            Self::Command(reason) => write!(f, "PCI command: {reason}"),
+            Self::NotMapped => formatter.write_str("register BAR is absent"),
+            Self::Observation(reason) => write!(formatter, "controller observation: {reason}"),
+            Self::Command(reason) => write!(formatter, "PCI command: {reason}"),
         }
     }
 }
@@ -254,27 +260,32 @@ pub(crate) enum BringUpError {
 }
 
 impl fmt::Display for BringUpError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotMapped => f.write_str("the register window could not be mapped"),
-            Self::NoCommandSet => f.write_str("no nvm command set"),
-            Self::PageSize => f.write_str("this kernel's page size is outside mpsmin..mpsmax"),
-            Self::QueueSize => f.write_str("the reported queue size holds nothing"),
-            Self::NoMemory => f.write_str("no memory for the queues"),
-            Self::NotReady => f.write_str("the controller never became ready"),
-            Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
-            Self::Timeout => write!(f, "a command went unanswered for {COMMAND_TIMEOUT_MS} ms"),
+            Self::NotMapped => formatter.write_str("the register window could not be mapped"),
+            Self::NoCommandSet => formatter.write_str("no nvm command set"),
+            Self::PageSize => {
+                formatter.write_str("this kernel's page size is outside mpsmin..mpsmax")
+            }
+            Self::QueueSize => formatter.write_str("the reported queue size holds nothing"),
+            Self::NoMemory => formatter.write_str("no memory for the queues"),
+            Self::NotReady => formatter.write_str("the controller never became ready"),
+            Self::Command(status) => write!(formatter, "a command was refused: status {status:#x}"),
+            Self::Timeout => write!(
+                formatter,
+                "a command went unanswered for {COMMAND_TIMEOUT_MS} ms"
+            ),
             Self::UnexpectedCompletion {
                 queue,
                 id,
                 submission_head,
             } => write!(
-                f,
+                formatter,
                 "completion names queue {queue}, command {id}, submission head {submission_head}"
             ),
-            Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason}"),
-            Self::InvalidNamespace(reason) => write!(f, "an invalid namespace: {reason}"),
-            Self::Isolation => f.write_str("no dma domain admits the buffer"),
+            Self::InvalidTransfer(reason) => write!(formatter, "an invalid transfer: {reason}"),
+            Self::InvalidNamespace(reason) => write!(formatter, "an invalid namespace: {reason}"),
+            Self::Isolation => formatter.write_str("no dma domain admits the buffer"),
         }
     }
 }
@@ -439,7 +450,7 @@ fn wait_for_ready(
     capabilities: Capabilities,
     wanted: Readiness,
 ) -> Result<(), BringUpError> {
-    let timeout_ms = capabilities.timeout_ms().max(500);
+    let timeout_ms = capabilities.timeout_ms().max(MINIMUM_READY_TIMEOUT_MS);
     let fallback = fallback_polls(timeout_ms);
     let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
     while limit.permit(clock_ns()) {
@@ -462,7 +473,7 @@ fn wait_for_ready(
 
 /// Register polls a readiness wait may make before the clock is calibrated; the cap fits `u32`.
 fn fallback_polls(timeout_ms: u64) -> u32 {
-    (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32
+    (timeout_ms.saturating_mul(READY_POLLS_PER_MS)).min(MAX_READY_POLLS) as u32
 }
 
 pub(crate) fn clock_ns() -> Option<u64> {
@@ -470,11 +481,15 @@ pub(crate) fn clock_ns() -> Option<u64> {
 }
 
 fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {
-    MappedBar::read_u32(registers, offset).map_err(|_| BringUpError::NotMapped)
+    registers
+        .read_u32(offset)
+        .map_err(|_| BringUpError::NotMapped)
 }
 
 fn write(registers: &mut MappedBar, offset: usize, value: u32) -> Result<(), BringUpError> {
-    MappedBar::write_u32(registers, offset, value).map_err(|_| BringUpError::NotMapped)
+    registers
+        .write_u32(offset, value)
+        .map_err(|_| BringUpError::NotMapped)
 }
 
 fn write_submission(
@@ -604,6 +619,7 @@ static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLoc
 static IOMMU_QUARANTINE: ThreadLock<Option<(DisabledController, crate::pci::Device)>> =
     ThreadLock::new(None);
 
+#[derive(Debug)]
 struct RetainedController {
     _controller: Controller,
     device: Option<crate::pci::Device>,

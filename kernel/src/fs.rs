@@ -9,6 +9,7 @@ use fat32::{DirectoryChunk, DirectoryCursor, Entry, FatError, Sectors, Volume};
 /// `xtask` writes the volume there, and a host test compares the two.
 pub(crate) const VOLUME_SECTOR: u64 = 2048;
 
+#[derive(Debug)]
 struct Blocks;
 
 impl Sectors for Blocks {
@@ -24,6 +25,7 @@ impl Sectors for Blocks {
 }
 
 /// One mounted read-only volume without controller ownership.
+#[derive(Debug)]
 pub(crate) struct Mounted {
     volume: Volume<Blocks>,
 }

@@ -318,7 +318,7 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         warn!("ioapic: complete mask proof missing; interrupts stay off");
         return;
     }
-    if !PCI_INTERRUPT_BOUNDARY.load(Ordering::Acquire) || !iommu::interrupt_boundary_active() {
+    if !PCI_INTERRUPT_BOUNDARY.load(Ordering::Acquire) || !iommu::is_interrupt_boundary_active() {
         warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
         return;
     }

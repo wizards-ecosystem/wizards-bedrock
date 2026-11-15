@@ -53,6 +53,8 @@ const INVALIDATION_STATUS_INDEX: usize = 8;
 /// Value written by the wait descriptor after the IEC invalidation completes.
 const INVALIDATION_COMPLETE: u32 = 1;
 
+const INTERRUPT_TABLE_WORDS: usize = 4;
+
 /// Second-level tables one domain may hold, the top table included.
 ///
 /// Each 2 MiB region a segment touches costs a leaf table plus one per upper level; the arena is
@@ -61,7 +63,7 @@ const TABLE_LIMIT: usize = 24;
 
 /// Why a VT-d domain could not be established or changed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VtdError {
+pub enum Error {
     /// The supplied run is empty or its last byte wraps the address space.
     InvalidRange,
     /// The supplied run extends beyond this unit's effective address width.
@@ -115,23 +117,25 @@ pub enum VtdError {
     InvalidationTimeout,
 }
 
-impl fmt::Display for VtdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRange => f.write_str("the DMA run is empty or wraps the address space"),
+            Self::InvalidRange => {
+                formatter.write_str("the DMA run is empty or wraps the address space")
+            }
             Self::OutsideAddressWidth => {
-                f.write_str("the DMA run extends beyond the unit's address width")
+                formatter.write_str("the DMA run extends beyond the unit's address width")
             }
             Self::Register(offset) => {
-                write!(f, "the register window refused offset {offset:#x}")
+                write!(formatter, "the register window refused offset {offset:#x}")
             }
             Self::RegistersOutsideWindow(end) => {
-                write!(f, "unit registers end at {end:#x}, past the window")
+                write!(formatter, "unit registers end at {end:#x}, past the window")
             }
             Self::UnsupportedRegisterInvalidationVersion { version } => {
                 let version = Version::from_bits(*version);
                 write!(
-                    f,
+                    formatter,
                     "VT-d version {}.{} does not support register invalidation",
                     version.major(),
                     version.minor()
@@ -139,50 +143,56 @@ impl fmt::Display for VtdError {
             }
             Self::NoAddressWidth { capability } => {
                 write!(
-                    f,
+                    formatter,
                     "no modelled page-table depth in capability {capability:#x}"
                 )
             }
-            Self::NoDmaDraining => f.write_str("the unit does not drain both DMA reads and writes"),
+            Self::NoDmaDraining => {
+                formatter.write_str("the unit does not drain both DMA reads and writes")
+            }
             Self::NoInterruptRemapping => {
-                f.write_str("the unit lacks interrupt remapping or queued invalidation")
+                formatter.write_str("the unit lacks interrupt remapping or queued invalidation")
             }
             Self::NoExtendedInterruptMode => {
-                f.write_str("the unit cannot remap interrupts in x2apic mode")
+                formatter.write_str("the unit cannot remap interrupts in x2apic mode")
             }
-            Self::OutOfTables => f.write_str("no frame for a remapping table"),
-            Self::Misaligned => f.write_str("a remapping table is not page aligned"),
+            Self::OutOfTables => formatter.write_str("no frame for a remapping table"),
+            Self::Misaligned => formatter.write_str("a remapping table is not page aligned"),
             Self::FirmwareFacilitiesActive { status } => write!(
-                f,
+                formatter,
                 "firmware left a remapping facility active in status {status:#x}"
             ),
-            Self::RootTableRefused => f.write_str("the root-table pointer was not accepted"),
-            Self::InterruptTableRefused => {
-                f.write_str("the interrupt-table pointer was not accepted")
+            Self::RootTableRefused => {
+                formatter.write_str("the root-table pointer was not accepted")
             }
-            Self::InterruptRemappingTimeout => f.write_str("interrupt remapping did not switch"),
+            Self::InterruptTableRefused => {
+                formatter.write_str("the interrupt-table pointer was not accepted")
+            }
+            Self::InterruptRemappingTimeout => {
+                formatter.write_str("interrupt remapping did not switch")
+            }
             Self::FaultInterruptMaskRefused => {
-                f.write_str("the VT-d fault-event interrupt did not remain masked")
+                formatter.write_str("the VT-d fault-event interrupt did not remain masked")
             }
             Self::InterruptBoundaryLost => {
-                f.write_str("the unit lost its default-deny interrupt boundary")
+                formatter.write_str("the unit lost its default-deny interrupt boundary")
             }
-            Self::NoActiveDomain => f.write_str("the unit has no active DMA domain"),
-            Self::DomainStillActive => f.write_str("the prior DMA domain is still active"),
+            Self::NoActiveDomain => formatter.write_str("the unit has no active DMA domain"),
+            Self::DomainStillActive => formatter.write_str("the prior DMA domain is still active"),
             Self::InvalidationQueueRefused => {
-                f.write_str("the invalidation-queue address was not accepted")
+                formatter.write_str("the invalidation-queue address was not accepted")
             }
             Self::QueuedInvalidationEnableTimeout => {
-                f.write_str("queued invalidation did not enable")
+                formatter.write_str("queued invalidation did not enable")
             }
             Self::QueuedInvalidationIncomplete => {
-                f.write_str("queued invalidation descriptors did not complete")
+                formatter.write_str("queued invalidation descriptors did not complete")
             }
             Self::QueuedInvalidationDisableTimeout => {
-                f.write_str("queued invalidation did not disable")
+                formatter.write_str("queued invalidation did not disable")
             }
-            Self::TranslationTimeout => f.write_str("translation did not switch"),
-            Self::InvalidationTimeout => f.write_str("an invalidation did not complete"),
+            Self::TranslationTimeout => formatter.write_str("translation did not switch"),
+            Self::InvalidationTimeout => formatter.write_str("an invalidation did not complete"),
         }
     }
 }
@@ -191,18 +201,20 @@ impl fmt::Display for VtdError {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SegmentChangeError {
     /// No translation for the segment remains reachable or cached.
-    Refused(VtdError),
+    Refused(Error),
     /// Device reachability is uncertain, so the segment was retained.
-    Retained(VtdError),
+    Retained(Error),
 }
 
 impl fmt::Display for SegmentChangeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Refused(reason) => write!(f, "DMA segment change refused cleanly: {reason}"),
+            Self::Refused(reason) => {
+                write!(formatter, "DMA segment change refused cleanly: {reason}")
+            }
             Self::Retained(reason) => {
                 write!(
-                    f,
+                    formatter,
                     "DMA segment retained after an uncertain change: {reason}"
                 )
             }
@@ -212,7 +224,7 @@ impl fmt::Display for SegmentChangeError {
 
 impl core::error::Error for SegmentChangeError {}
 
-impl core::error::Error for VtdError {}
+impl core::error::Error for Error {}
 
 /// What the unit reported about itself when it was taken over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -293,9 +305,9 @@ pub enum Retargeting {
     /// Translation is active through the replacement requester's tables.
     Retargeted,
     /// Only parked, unpublished memory was changed; another candidate is safe.
-    Refused(VtdError),
+    Refused(Error),
     /// Hardware state may have changed, so selection must stop with the owner.
-    Retained(VtdError),
+    Retained(Error),
 }
 
 /// The ownership-preserving result of establishing one VT-d domain.
@@ -307,14 +319,14 @@ pub enum Establishment {
     /// Read-only preflight or unpublished table preparation refused.
     Refused {
         /// Why establishment did not begin.
-        reason: VtdError,
+        reason: Error,
         /// Register authority remains safe to return.
         registers: ReleasableDevice,
     },
     /// A unit-wide write was attempted, so every possible hardware owner stays inseparable.
     Retained {
         /// Why the transition could not be proved complete.
-        reason: VtdError,
+        reason: Error,
         /// Registers and every table the unit may be using.
         isolation: Vtd,
     },
@@ -332,6 +344,7 @@ pub struct Fault {
 }
 
 /// What the register window said before any table existed.
+#[derive(Debug)]
 struct Plan {
     capability: Capability,
     extended: ExtendedCapability,
@@ -374,7 +387,7 @@ impl Vtd {
             IommuTable::new(TABLE_LIMIT, walks),
         ) else {
             return Establishment::Refused {
-                reason: VtdError::OutOfTables,
+                reason: Error::OutOfTables,
                 registers,
             };
         };
@@ -403,14 +416,19 @@ impl Vtd {
     }
 
     /// Build one selected context and publish its bus root last.
-    fn prepare(&mut self, function: Address) -> Result<(), VtdError> {
-        let devfn = Self::devfn(function);
+    fn prepare(&mut self, function: Address) -> Result<(), Error> {
+        let device_function = Self::device_function(function);
         let bus = function.bus();
         let context_entry = ContextEntry::try_present(self.table_address(0), self.width, DOMAIN_ID)
-            .ok_or(VtdError::Misaligned)?;
-        write_entry(&mut self.context, devfn, context_entry.lo, context_entry.hi)?;
+            .ok_or(Error::Misaligned)?;
+        write_entry(
+            &mut self.context,
+            device_function,
+            context_entry.lo,
+            context_entry.hi,
+        )?;
         let root_entry =
-            RootEntry::try_present(self.context.address().get()).ok_or(VtdError::Misaligned)?;
+            RootEntry::try_present(self.context.address().get()).ok_or(Error::Misaligned)?;
         write_entry(&mut self.root, bus, root_entry.lo, root_entry.hi)
     }
 
@@ -418,7 +436,7 @@ impl Vtd {
     ///
     /// A non-identical root is never installed while TE is active; after TE, a read and write drain
     /// settles every request that entered before the default-deny boundary went live.
-    fn transition(&mut self) -> Result<(), VtdError> {
+    fn transition(&mut self) -> Result<(), Error> {
         self.mask_fault_interrupt()?;
         self.set_root_table()?;
         self.invalidate(Caches::ContextAndIotlb)?;
@@ -427,12 +445,12 @@ impl Vtd {
         self.enable_interrupt_remapping()?;
         self.enable_translation()?;
         self.drain_dma()?;
-        self.boundary_active()
+        self.is_boundary_active()
             .then_some(())
-            .ok_or(VtdError::InterruptBoundaryLost)
+            .ok_or(Error::InterruptBoundaryLost)
     }
 
-    const fn devfn(function: Address) -> u8 {
+    const fn device_function(function: Address) -> u8 {
         (function.device() << 3) | function.function()
     }
 
@@ -484,14 +502,14 @@ impl Vtd {
         &mut self,
         segment: &mut DmaSegment,
     ) -> Result<(), SegmentChangeError> {
-        let Some((physical, len)) = segment.address().zip(segment.len()) else {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        let Some((physical, length)) = segment.address().zip(segment.len()) else {
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         };
         let owner = DmaMappingOwner::new(self.root.address());
         if !segment.begin_mapping(owner) {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         }
-        match self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical.get(), len) {
+        match self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical.get(), length) {
             Err(error @ SegmentChangeError::Retained(_)) => {
                 segment.retain();
                 Err(error)
@@ -510,16 +528,16 @@ impl Vtd {
     fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
         &mut self,
         physical: u64,
-        len: u64,
+        length: u64,
     ) -> Result<(), SegmentChangeError> {
-        let Some(last) = len
+        let Some(last) = length
             .checked_sub(1)
             .and_then(|last| physical.checked_add(last))
         else {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         };
         if !self.width.covers_on(self.capability, last) {
-            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));
+            return Err(SegmentChangeError::Refused(Error::OutsideAddressWidth));
         }
         let start = physical & !(PAGE - 1);
         let mut page = start;
@@ -549,16 +567,16 @@ impl Vtd {
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
         let owner = DmaMappingOwner::new(self.root.address());
         if !segment.is_mapped_by(owner) {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         }
-        let Some((physical, len)) = segment.address().zip(segment.len()) else {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        let Some((physical, length)) = segment.address().zip(segment.len()) else {
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         };
-        let Some(last) = len
+        let Some(last) = length
             .checked_sub(1)
             .and_then(|last| physical.get().checked_add(last))
         else {
-            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+            return Err(SegmentChangeError::Refused(Error::InvalidRange));
         };
         let mut page = physical.get() & !(PAGE - 1);
         let mut failure = None;
@@ -584,7 +602,7 @@ impl Vtd {
     }
 
     /// Clear an inclusive page range and drain every request that could use a cached translation.
-    fn rollback_range(&mut self, start: u64, last: u64) -> Result<(), VtdError> {
+    fn rollback_range(&mut self, start: u64, last: u64) -> Result<(), Error> {
         let mut page = start;
         let mut failure = None;
         while page <= last {
@@ -618,10 +636,10 @@ impl Vtd {
         let entry = ContextEntry {
             lo: self
                 .context
-                .read_u64(usize::from(Self::devfn(function)) * 2)?,
+                .read_u64(usize::from(Self::device_function(function)) * 2)?,
             hi: self
                 .context
-                .read_u64(usize::from(Self::devfn(function)) * 2 + 1)?,
+                .read_u64(usize::from(Self::device_function(function)) * 2 + 1)?,
         };
         let names_this_domain = entry.is_present()
             && entry.translation_type() == 0
@@ -638,7 +656,7 @@ impl Vtd {
     #[must_use]
     pub fn interrupt_isolation(&self) -> Option<InterruptIsolation<'_>> {
         let function = self.function?;
-        self.boundary_active().then_some(InterruptIsolation {
+        self.is_boundary_active().then_some(InterruptIsolation {
             function,
             _unit: PhantomData,
         })
@@ -646,7 +664,7 @@ impl Vtd {
 
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
     #[must_use]
-    pub fn boundary_active(&self) -> bool {
+    pub fn is_boundary_active(&self) -> bool {
         let Ok(pointer) = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS) else {
             return false;
         };
@@ -681,7 +699,7 @@ impl Vtd {
         {
             return false;
         }
-        for index in 0..4 {
+        for index in 0..INTERRUPT_TABLE_WORDS {
             if self.interrupts.read_u64(index) != Some(0) {
                 return false;
             }
@@ -740,19 +758,19 @@ impl Vtd {
     /// The root entry goes absent before global invalidation and a full drain, and only then are
     /// context and second-level bytes cleared.
     /// TE, IRE, the register window and both kernel roots stay owned for the rest of the boot.
-    pub fn park(&mut self) -> Result<(), VtdError> {
-        if !self.boundary_active() {
-            return Err(VtdError::InterruptBoundaryLost);
+    pub fn park(&mut self) -> Result<(), Error> {
+        if !self.is_boundary_active() {
+            return Err(Error::InterruptBoundaryLost);
         }
-        let function = self.function.ok_or(VtdError::NoActiveDomain)?;
+        let function = self.function.ok_or(Error::NoActiveDomain)?;
         write_entry(&mut self.root, function.bus(), 0, 0)?;
         self.invalidate(Caches::ContextAndIotlb)?;
         self.drain_dma()?;
         self.clear_dma_tables()?;
         self.function = None;
-        self.boundary_active()
+        self.is_boundary_active()
             .then_some(())
-            .ok_or(VtdError::InterruptBoundaryLost)
+            .ok_or(Error::InterruptBoundaryLost)
     }
 
     /// Reuse a live default-deny owner for a replacement DMA requester.
@@ -760,11 +778,11 @@ impl Vtd {
     /// Tables are prepared behind an absent root entry, whose publication is the first live change;
     /// global invalidation follows while TE and IRE stay enabled.
     pub fn retarget(&mut self, function: Address) -> Retargeting {
-        if !self.boundary_active() {
-            return Retargeting::Retained(VtdError::InterruptBoundaryLost);
+        if !self.is_boundary_active() {
+            return Retargeting::Retained(Error::InterruptBoundaryLost);
         }
         if self.function.is_some() {
-            return Retargeting::Retained(VtdError::DomainStillActive);
+            return Retargeting::Retained(Error::DomainStillActive);
         }
         if let Err(reason) = self.clear_dma_tables() {
             return Retargeting::Refused(reason);
@@ -778,21 +796,21 @@ impl Vtd {
             return Retargeting::Retained(reason);
         }
         if self.domain().is_none() || self.interrupt_isolation().is_none() {
-            return Retargeting::Retained(VtdError::InterruptBoundaryLost);
+            return Retargeting::Retained(Error::InterruptBoundaryLost);
         }
         Retargeting::Retargeted
     }
 
     /// Clear the DMA tables of a parked unit, leaving the distinct interrupt-table frame untouched.
-    fn clear_dma_tables(&mut self) -> Result<(), VtdError> {
+    fn clear_dma_tables(&mut self) -> Result<(), Error> {
         for index in 0..ENTRIES {
             if !self.root.write_u64(index, 0) || !self.context.write_u64(index, 0) {
-                return Err(VtdError::OutOfTables);
+                return Err(Error::OutOfTables);
             }
         }
         for index in 0..TABLE_LIMIT * ENTRIES {
             if !self.tables.write_u64(index, 0) {
-                return Err(VtdError::OutOfTables);
+                return Err(Error::OutOfTables);
             }
         }
         Ok(())
@@ -801,23 +819,23 @@ impl Vtd {
     fn map_page<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
         &mut self,
         page: u64,
-    ) -> Result<(), VtdError> {
+    ) -> Result<(), Error> {
         let mut table = 0usize;
         let top = self.width.levels() - 1;
         for level in (1..=top).rev() {
             let slot = table * ENTRIES + usize::from(self.width.index(page, level));
-            let entry = self.tables.read_u64(slot).ok_or(VtdError::OutOfTables)?;
+            let entry = self.tables.read_u64(slot).ok_or(Error::OutOfTables)?;
             table = if second_level::is_present(entry) {
-                self.table_index(entry).ok_or(VtdError::OutOfTables)?
+                self.table_index(entry).ok_or(Error::OutOfTables)?
             } else {
                 let child = self.table_count;
                 if child >= TABLE_LIMIT {
-                    return Err(VtdError::OutOfTables);
+                    return Err(Error::OutOfTables);
                 }
                 // Carved from the arena zeroed at establishment, so it is empty before it is named.
                 let pointer = second_level::table_pointer(self.table_address(child));
                 if !self.tables.write_u64(slot, pointer) {
-                    return Err(VtdError::OutOfTables);
+                    return Err(Error::OutOfTables);
                 }
                 self.table_count = child + 1;
                 child
@@ -830,31 +848,31 @@ impl Vtd {
         {
             Ok(())
         } else {
-            Err(VtdError::OutOfTables)
+            Err(Error::OutOfTables)
         }
     }
 
-    fn unmap_page(&mut self, page: u64) -> Result<(), VtdError> {
+    fn unmap_page(&mut self, page: u64) -> Result<(), Error> {
         let mut table = 0usize;
         let top = self.width.levels() - 1;
         for level in (1..=top).rev() {
             let slot = table * ENTRIES + usize::from(self.width.index(page, level));
-            let entry = self.tables.read_u64(slot).ok_or(VtdError::OutOfTables)?;
+            let entry = self.tables.read_u64(slot).ok_or(Error::OutOfTables)?;
             if !second_level::is_present(entry) {
                 // Nothing below this entry is mapped, so the page is not either.
                 return Ok(());
             }
-            table = self.table_index(entry).ok_or(VtdError::OutOfTables)?;
+            table = self.table_index(entry).ok_or(Error::OutOfTables)?;
         }
         let slot = table * ENTRIES + usize::from(self.width.index(page, 0));
         if self.tables.write_u64(slot, second_level::NOT_PRESENT) {
             Ok(())
         } else {
-            Err(VtdError::OutOfTables)
+            Err(Error::OutOfTables)
         }
     }
 
-    fn set_root_table(&mut self) -> Result<(), VtdError> {
+    fn set_root_table(&mut self) -> Result<(), Error> {
         write_u64(
             &mut self.registers,
             vtd::register::ROOT_TABLE_ADDRESS,
@@ -862,18 +880,18 @@ impl Vtd {
         )?;
         let command = set_root_table_pointer(self.global_command);
         write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
-        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;
+        self.poll_status(root_table_pointer_set, Error::RootTableRefused)?;
         let pointer = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS)?;
         if root_table_address(pointer) == self.root.address().get() {
             Ok(())
         } else {
-            Err(VtdError::RootTableRefused)
+            Err(Error::RootTableRefused)
         }
     }
 
-    fn set_interrupt_table(&mut self) -> Result<(), VtdError> {
+    fn set_interrupt_table(&mut self) -> Result<(), Error> {
         let pointer = interrupt_table_address(self.interrupts.address().get())
-            .ok_or(VtdError::InterruptTableRefused)?;
+            .ok_or(Error::InterruptTableRefused)?;
         write_u64(
             &mut self.registers,
             vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
@@ -881,7 +899,7 @@ impl Vtd {
         )?;
         let command = set_interrupt_table_pointer(self.global_command);
         write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
-        self.poll_status(interrupt_table_pointer_set, VtdError::InterruptTableRefused)?;
+        self.poll_status(interrupt_table_pointer_set, Error::InterruptTableRefused)?;
         let observed = read_u64(
             &self.registers,
             vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
@@ -892,7 +910,7 @@ impl Vtd {
         {
             Ok(())
         } else {
-            Err(VtdError::InterruptTableRefused)
+            Err(Error::InterruptTableRefused)
         }
     }
 
@@ -900,12 +918,12 @@ impl Vtd {
     ///
     /// SIRTP does not imply this on the supported baseline hardware. The wait descriptor's status
     /// write marks completion; QI is disabled again before register DMA invalidation can be used.
-    fn invalidate_interrupt_cache(&mut self) -> Result<(), VtdError> {
+    fn invalidate_interrupt_cache(&mut self) -> Result<(), Error> {
         let invalidate = InvalidationDescriptor::global_interrupt_entry_cache();
         let status_address =
             self.invalidation_queue.address().get() + 8 * INVALIDATION_STATUS_INDEX as u64;
         let wait = InvalidationDescriptor::wait_status(status_address, INVALIDATION_COMPLETE)
-            .ok_or(VtdError::Misaligned)?;
+            .ok_or(Error::Misaligned)?;
         if !self
             .invalidation_queue
             .write_u64(INVALIDATION_STATUS_INDEX, 0)
@@ -914,10 +932,10 @@ impl Vtd {
             || !self.invalidation_queue.write_u64(2, wait.lo)
             || !self.invalidation_queue.write_u64(3, wait.hi)
         {
-            return Err(VtdError::OutOfTables);
+            return Err(Error::OutOfTables);
         }
         let queue = invalidation_queue_address(self.invalidation_queue.address().get())
-            .ok_or(VtdError::Misaligned)?;
+            .ok_or(Error::Misaligned)?;
         write_u64(
             &mut self.registers,
             vtd::register::INVALIDATION_QUEUE_TAIL,
@@ -931,7 +949,7 @@ impl Vtd {
         self.switch_queued_invalidation(Switch::On)?;
         let observed_queue = read_u64(&self.registers, vtd::register::INVALIDATION_QUEUE_ADDRESS)?;
         if observed_queue != queue {
-            return Err(VtdError::InvalidationQueueRefused);
+            return Err(Error::InvalidationQueueRefused);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         write_u64(
@@ -950,19 +968,19 @@ impl Vtd {
             // The status read also paces the fallback count like every register poll.
             let status = read_u32(&unit.registers, vtd::register::GLOBAL_STATUS)?;
             if status & global_status::QIES == 0 {
-                return Err(VtdError::QueuedInvalidationIncomplete);
+                return Err(Error::QueuedInvalidationIncomplete);
             }
             Ok(false)
         });
         let disabled = self.switch_queued_invalidation(Switch::Off);
         match completed {
             Ok(true) => disabled,
-            Ok(false) => Err(VtdError::QueuedInvalidationIncomplete),
+            Ok(false) => Err(Error::QueuedInvalidationIncomplete),
             Err(reason) => Err(reason),
         }
     }
 
-    fn switch_queued_invalidation(&mut self, state: Switch) -> Result<(), VtdError> {
+    fn switch_queued_invalidation(&mut self, state: Switch) -> Result<(), Error> {
         let on = state == Switch::On;
         self.global_command = if on {
             self.global_command | global_command::QIE
@@ -977,14 +995,14 @@ impl Vtd {
         self.poll_status(
             |status| (status & global_status::QIES != 0) == on,
             if on {
-                VtdError::QueuedInvalidationEnableTimeout
+                Error::QueuedInvalidationEnableTimeout
             } else {
-                VtdError::QueuedInvalidationDisableTimeout
+                Error::QueuedInvalidationDisableTimeout
             },
         )
     }
 
-    fn enable_interrupt_remapping(&mut self) -> Result<(), VtdError> {
+    fn enable_interrupt_remapping(&mut self) -> Result<(), Error> {
         self.global_command = enable_interrupt_remapping(self.global_command);
         write_u32(
             &mut self.registers,
@@ -995,14 +1013,14 @@ impl Vtd {
             |status| {
                 interrupt_remapping_enabled(status) && !compatibility_interrupts_enabled(status)
             },
-            VtdError::InterruptRemappingTimeout,
+            Error::InterruptRemappingTimeout,
         )
     }
 
     /// Permanently mask the unit's own fault-event MSI.
     ///
     /// It never traverses interrupt remapping, so default-deny can only poll the fault records.
-    fn mask_fault_interrupt(&mut self) -> Result<(), VtdError> {
+    fn mask_fault_interrupt(&mut self) -> Result<(), Error> {
         let prior = read_u32(&self.registers, vtd::register::FAULT_EVENT_CONTROL)?;
         write_u32(
             &mut self.registers,
@@ -1013,23 +1031,23 @@ impl Vtd {
         if fault_event_control::masked(observed) {
             Ok(())
         } else {
-            Err(VtdError::FaultInterruptMaskRefused)
+            Err(Error::FaultInterruptMaskRefused)
         }
     }
 
-    fn enable_translation(&mut self) -> Result<(), VtdError> {
+    fn enable_translation(&mut self) -> Result<(), Error> {
         self.global_command = enable_translation(self.global_command);
         write_u32(
             &mut self.registers,
             vtd::register::GLOBAL_COMMAND,
             self.global_command,
         )?;
-        self.poll_status(translation_enabled, VtdError::TranslationTimeout)
+        self.poll_status(translation_enabled, Error::TranslationTimeout)
     }
 
     /// Complete an architected read and write drain once every requester is behind translation or
     /// its root or leaves are clear, so later requests fault instead of reaching recyclable memory.
-    fn drain_dma(&mut self) -> Result<(), VtdError> {
+    fn drain_dma(&mut self) -> Result<(), Error> {
         self.flush_write_buffer()?;
         let command_register = self.extended.iotlb_register_offset_bytes() + iotlb_command::COMMAND;
         write_u64(
@@ -1040,7 +1058,7 @@ impl Vtd {
         self.poll_u64(command_register, iotlb_command::global_completed)
     }
 
-    fn invalidate(&mut self, caches: Caches) -> Result<(), VtdError> {
+    fn invalidate(&mut self, caches: Caches) -> Result<(), Error> {
         self.flush_write_buffer()?;
         if caches == Caches::ContextAndIotlb {
             write_u64(
@@ -1062,35 +1080,32 @@ impl Vtd {
         self.poll_u64(command_register, iotlb_command::global_completed)
     }
 
-    fn flush_write_buffer(&mut self) -> Result<(), VtdError> {
+    fn flush_write_buffer(&mut self) -> Result<(), Error> {
         if self.capability.requires_write_buffer_flush() {
             let command = self.global_command | global_command::WBF;
             write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
             self.poll_status(
                 |status| (status & global_status::WBFS) == 0,
-                VtdError::InvalidationTimeout,
+                Error::InvalidationTimeout,
             )?;
         }
         Ok(())
     }
 
-    fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: VtdError) -> Result<(), VtdError> {
+    fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: Error) -> Result<(), Error> {
         let register = vtd::register::GLOBAL_STATUS;
         self.wait(|unit| Ok(ready(read_u32(&unit.registers, register)?)))?
             .then_some(())
             .ok_or(timeout)
     }
 
-    fn poll_u64(&self, register: u64, done: impl Fn(u64) -> bool) -> Result<(), VtdError> {
+    fn poll_u64(&self, register: u64, done: impl Fn(u64) -> bool) -> Result<(), Error> {
         self.wait(|unit| Ok(done(read_u64(&unit.registers, register)?)))?
             .then_some(())
-            .ok_or(VtdError::InvalidationTimeout)
+            .ok_or(Error::InvalidationTimeout)
     }
 
-    fn wait(
-        &self,
-        mut done: impl FnMut(&Self) -> Result<bool, VtdError>,
-    ) -> Result<bool, VtdError> {
+    fn wait(&self, mut done: impl FnMut(&Self) -> Result<bool, Error>) -> Result<bool, Error> {
         let deadline = (self.clock)().map(|now| now.saturating_add(WAIT_NS));
         let mut attempts = POLL_LIMIT;
         loop {
@@ -1109,39 +1124,39 @@ impl Vtd {
 }
 
 impl Plan {
-    fn read(registers: &ReleasableDevice, window: u64) -> Result<Self, VtdError> {
+    fn read(registers: &ReleasableDevice, window: u64) -> Result<Self, Error> {
         let version = Version::from_bits(read_u32(registers, vtd::register::VERSION)?);
         if !version.register_invalidation_supported() {
-            return Err(VtdError::UnsupportedRegisterInvalidationVersion {
+            return Err(Error::UnsupportedRegisterInvalidationVersion {
                 version: version.bits(),
             });
         }
         let capability = Capability::from_bits(read_u64(registers, vtd::register::CAPABILITY)?);
         let extended =
             ExtendedCapability::from_bits(read_u64(registers, vtd::register::EXTENDED_CAPABILITY)?);
-        let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
+        let width = AddressWidth::choose(capability).ok_or(Error::NoAddressWidth {
             capability: capability.bits(),
         })?;
         if !capability.dma_draining() {
-            return Err(VtdError::NoDmaDraining);
+            return Err(Error::NoDmaDraining);
         }
 
         if !extended.interrupt_remapping() || !extended.queued_invalidation() {
-            return Err(VtdError::NoInterruptRemapping);
+            return Err(Error::NoInterruptRemapping);
         }
         if !extended.extended_interrupt_mode() {
-            return Err(VtdError::NoExtendedInterruptMode);
+            return Err(Error::NoExtendedInterruptMode);
         }
         let end = (extended.iotlb_register_offset_bytes() + IOTLB_BYTES).max(
             capability.fault_recording_offset_bytes()
                 + u64::from(capability.number_of_fault_recording_registers()) * ENTRY_BYTES,
         );
         if end > window {
-            return Err(VtdError::RegistersOutsideWindow(end));
+            return Err(Error::RegistersOutsideWindow(end));
         }
         let status = read_u32(registers, vtd::register::GLOBAL_STATUS)?;
         if !takeover_ready(status) {
-            return Err(VtdError::FirmwareFacilitiesActive { status });
+            return Err(Error::FirmwareFacilitiesActive { status });
         }
         Ok(Self {
             capability,
@@ -1152,7 +1167,7 @@ impl Plan {
 }
 
 /// Read a 64-bit register as its two aligned 32-bit halves, low first.
-fn read_u64(registers: &ReleasableDevice, offset: u64) -> Result<u64, VtdError> {
+fn read_u64(registers: &ReleasableDevice, offset: u64) -> Result<u64, Error> {
     let low = read_u32(registers, offset)?;
     let high = read_u32(registers, offset + 4)?;
     Ok(u64::from(low) | (u64::from(high) << 32))
@@ -1160,38 +1175,38 @@ fn read_u64(registers: &ReleasableDevice, offset: u64) -> Result<u64, VtdError> 
 
 /// Write a 64-bit register as two aligned 32-bit halves, low first so a command bit in the high
 /// half triggers after the low half is in place.
-fn write_u64(registers: &mut ReleasableDevice, offset: u64, value: u64) -> Result<(), VtdError> {
+fn write_u64(registers: &mut ReleasableDevice, offset: u64, value: u64) -> Result<(), Error> {
     let (low, high) = u32_halves(value);
     write_u32(registers, offset, low)?;
     write_u32(registers, offset + 4, high)
 }
 
-fn read_u32(registers: &ReleasableDevice, offset: u64) -> Result<u32, VtdError> {
+fn read_u32(registers: &ReleasableDevice, offset: u64) -> Result<u32, Error> {
     let offset = usize_from_u64(offset);
     registers
         .read_u32(offset)
-        .map_err(|_| VtdError::Register(offset))
+        .map_err(|_| Error::Register(offset))
 }
 
-fn write_u32(registers: &mut ReleasableDevice, offset: u64, value: u32) -> Result<(), VtdError> {
+fn write_u32(registers: &mut ReleasableDevice, offset: u64, value: u32) -> Result<(), Error> {
     let offset = usize_from_u64(offset);
     registers
         .write_u32(offset, value)
-        .map_err(|_| VtdError::Register(offset))
+        .map_err(|_| Error::Register(offset))
 }
 
 /// Write one sixteen-byte table entry as its low and high eight-byte halves.
 fn write_entry(
     table: &mut PublishedIommuTable,
     index: u8,
-    lo: u64,
-    hi: u64,
-) -> Result<(), VtdError> {
-    if table.write_u64(usize::from(index) * 2, lo)
-        && table.write_u64(usize::from(index) * 2 + 1, hi)
+    low: u64,
+    high: u64,
+) -> Result<(), Error> {
+    if table.write_u64(usize::from(index) * 2, low)
+        && table.write_u64(usize::from(index) * 2 + 1, high)
     {
         Ok(())
     } else {
-        Err(VtdError::OutOfTables)
+        Err(Error::OutOfTables)
     }
 }
