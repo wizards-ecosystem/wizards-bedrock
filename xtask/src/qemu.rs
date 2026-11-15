@@ -292,7 +292,7 @@ const SHIPPED_QEMU_TCG_ISOLATION_MARKER: &str =
     "cpu: user isolation shared kernel mappings: qemu_tcg";
 const STRICT_DMA_HANDOFF_MARKER: &str = "iommu: entry DMA fence policy strict";
 /// Held apart from the kernel's own tally so a deleted or skipped check turns the verdict red.
-const EXPECTED_SELFTEST_CHECKS: usize = 211;
+pub(crate) const EXPECTED_SELFTEST_CHECKS: usize = 211;
 
 const BASELINE_PREFIX: &str = "selftest: baseline ";
 

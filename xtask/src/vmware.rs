@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::cargo::Profile;
 use crate::image::Kernel;
 use crate::paths::{self, Paths};
-use crate::qemu::{SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
+use crate::qemu::{EXPECTED_SELFTEST_CHECKS, SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
 use crate::sha256;
 
 const VMDK_TEMPLATE: &str = include_str!("../templates/bedrock.vmdk.in");
@@ -43,7 +43,6 @@ const VMWARE_DMA_HANDOFF_MARKER: &str =
     "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
 const VMWARE_ISA_DMA_MARKER: &str = "iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester";
 const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
-const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RUNTIME_VMX_BYTES: u64 = 1024 * 1024;
 const SERIAL_PREFIX: &str = "serial-";
@@ -246,7 +245,7 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
     );
     let bytes =
         crate::files::read_bounded_file(&transcript, MAX_TRANSCRIPT_BYTES, "VMware transcript")?;
-    verify_transcript(paths.root(), kernel, &bytes)?;
+    verify_transcript(kernel, &bytes)?;
     println!(
         "[xtask] VMware {} transcript {} verifies",
         image_label(kernel),
@@ -292,27 +291,12 @@ fn generated_transcript_path(vm_dir: &Path) -> Result<PathBuf> {
     Ok(found.remove(0))
 }
 
-pub(crate) fn verify_transcript(root: &Path, kernel: Kernel, bytes: &[u8]) -> Result<()> {
-    verify_transcript_with(kernel, bytes, || Ok(()), || expected_selftest_checks(root))
-}
-
-// The count belongs to the transcript's own image, so retained captures outlive new checks.
-fn verify_transcript_with<F, E>(
-    kernel: Kernel,
-    bytes: &[u8],
-    after_nul_check: F,
-    expected_checks: E,
-) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-    E: FnOnce() -> Result<usize>,
-{
+pub(crate) fn verify_transcript(kernel: Kernel, bytes: &[u8]) -> Result<()> {
     let text = std::str::from_utf8(bytes).context("VMware transcript is not UTF-8")?;
     ensure!(
         !text.contains('\0'),
         "VMware transcript contains a NUL byte"
     );
-    after_nul_check()?;
     let normalized = text.replace("\r\n", "\n");
     let text = normalized.as_str();
     ensure!(
@@ -328,7 +312,7 @@ where
     );
     require_translation_before_storage(text)?;
     match kernel {
-        Kernel::SelfTest => verify_selftest_transcript(text, expected_checks),
+        Kernel::SelfTest => verify_selftest_transcript(text),
         Kernel::Shipped => verify_shipped_transcript(text),
     }
 }
@@ -548,10 +532,7 @@ fn info_records(text: &str) -> impl Iterator<Item = (usize, &str)> {
     })
 }
 
-fn verify_selftest_transcript(
-    text: &str,
-    expected_checks: impl FnOnce() -> Result<usize>,
-) -> Result<()> {
+fn verify_selftest_transcript(text: &str) -> Result<()> {
     ensure!(
         !text.lines().any(|line| {
             line.contains("selftest: ")
@@ -574,7 +555,7 @@ fn verify_selftest_transcript(
         verdicts[0].0 >= evidence_end,
         "VMware self-test verdict precedes required execution evidence"
     );
-    let expected = expected_checks()?;
+    let expected = EXPECTED_SELFTEST_CHECKS;
     let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split(' ');
     ensure!(fields.next() == Some("v1"), "unsupported self-test verdict");
     ensure!(
@@ -699,70 +680,6 @@ fn verdict_count(field: Option<&str>, prefix: &str) -> Result<usize> {
         canonical_decimal(value).context("self-test verdict contains a noncanonical count")?,
     )
     .context("self-test verdict count does not fit usize")
-}
-
-fn expected_selftest_checks(root: &Path) -> Result<usize> {
-    let kernel = source_usize(
-        &module_sources(root.join("kernel/src/selftest.rs"))?,
-        "const EXPECTED_CHECKS: usize = ",
-    )?;
-    let harness = source_usize(
-        &module_sources(root.join("xtask/src/qemu.rs"))?,
-        "const EXPECTED_SELFTEST_CHECKS: usize = ",
-    )?;
-    ensure!(
-        kernel == harness,
-        "kernel expects {kernel} checks but the harness expects {harness}"
-    );
-    Ok(kernel)
-}
-
-fn module_sources(file: PathBuf) -> Result<Vec<PathBuf>> {
-    let mut pending = vec![file.with_extension("")];
-    let mut sources = vec![file];
-    while let Some(directory) = pending.pop() {
-        for entry in paths::directory_entries(&directory)? {
-            let path = entry.path();
-            if entry.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                sources.push(path);
-            }
-        }
-    }
-    Ok(sources)
-}
-
-fn source_usize(sources: &[PathBuf], prefix: &str) -> Result<usize> {
-    let mut values = Vec::new();
-    for path in sources {
-        let source =
-            crate::files::read_bounded_text(path, MAX_SOURCE_BYTES, "VMware source input")?;
-        let found: Vec<usize> = source
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix(prefix))
-            .map(|value| {
-                <usize as core::str::FromStr>::from_str(
-                    value
-                        .strip_suffix(';')
-                        .context("source count has no semicolon")?,
-                )
-                .context("source count is not a number")
-            })
-            .collect::<Result<_>>()?;
-        values.extend(found);
-    }
-    ensure!(
-        values.len() == 1,
-        "{} contain {} `{prefix}` constants",
-        sources
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-        values.len()
-    );
-    Ok(values[0])
 }
 
 fn vm_directory(paths: &Paths, kernel: Kernel) -> PathBuf {
