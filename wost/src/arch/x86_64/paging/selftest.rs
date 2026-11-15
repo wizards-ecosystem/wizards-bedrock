@@ -593,12 +593,6 @@ pub fn refuse_mapping_after_for_test(writes: usize) {
     MAPPING_WRITES_BEFORE_REFUSAL.store(writes, Ordering::Release);
 }
 
-/// Refuse range rollback after `clears` leaf entries.
-#[cfg(feature = "selftest")]
-pub fn refuse_mapping_undo_after_for_test(clears: usize) {
-    MAPPING_UNDOS_BEFORE_REFUSAL.store(clears, Ordering::Release);
-}
-
 /// Refuse one device-unmap preflight without consuming its authority.
 #[cfg(feature = "selftest")]
 pub fn refuse_device_unmap_for_test() {

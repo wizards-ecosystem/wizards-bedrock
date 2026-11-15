@@ -17,9 +17,7 @@ use crate::arch::current::percpu;
 use crate::arch::current::percpu::LockKind;
 use crate::panic::PanicToken;
 #[cfg(feature = "selftest")]
-pub use selftest::{
-    ForgottenSpinLockGuard, Injection, SpinLockWitness, taken_under_a_leaf, the_leaf_it_was_under,
-};
+pub use selftest::{ForgottenSpinLockGuard, Injection, taken_under_a_leaf, the_leaf_it_was_under};
 
 /// How many spin locks this CPU holds, the runtime backstop for paths type borrows cannot see.
 ///

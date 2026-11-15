@@ -28,8 +28,7 @@ use crate::sync::Once;
 mod selftest;
 #[cfg(feature = "selftest")]
 pub use selftest::{
-    access_clear_is_armed, breakpoint, buffer_clear_is_armed, buffer_clears,
-    context_matches_for_test, exclusion_order_is_enforced_for_test, gate_privilege,
+    access_clear_is_armed, breakpoint, buffer_clear_is_armed, buffer_clears, gate_privilege,
     live_frame_address, table_is_loaded,
 };
 

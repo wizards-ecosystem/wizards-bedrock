@@ -79,12 +79,6 @@ pub fn pending_audit_refuses_queued_self_interrupt_for_test(
     sent && queued && refusal && stayed_excluded && arrived && interrupt::are_enabled()
 }
 
-/// The timer's local vector entry, read back from the hardware.
-#[cfg(feature = "selftest")]
-pub fn timer_entry() -> Entry {
-    Entry::from_bits(low_u32(read(register::LVT_TIMER)))
-}
-
 /// Whether the APIC is software-enabled and therefore delivering.
 #[cfg(feature = "selftest")]
 pub fn is_enabled() -> bool {

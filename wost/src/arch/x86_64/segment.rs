@@ -20,7 +20,7 @@ mod selftest;
 #[cfg(feature = "selftest")]
 pub(super) use selftest::enclave_ist_stack_is_zeroed_for_test;
 #[cfg(feature = "selftest")]
-pub use selftest::{code_selector, double_fault_stack, stack_selector, task_register};
+pub use selftest::{code_selector, double_fault_stack, stack_selector};
 
 /// Ring 0 code.
 pub const KERNEL_CODE: Selector = Selector::new(1, 0);

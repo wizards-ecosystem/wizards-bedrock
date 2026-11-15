@@ -26,9 +26,8 @@ pub use selftest::{
     paint_current_permanent_stack_for_test,
     permanent_stack_rejects_lower_leaf_substitution_for_test, reclaimed_refusals,
     refuse_device_unmap_for_test, refuse_mapping_after_for_test,
-    refuse_mapping_undo_after_for_test, refuse_stack_mapping_after_for_test,
-    refuse_stack_rollback_after_for_test, restore_mapping_refusals_for_test,
-    restore_stack_refusals_for_test,
+    refuse_stack_mapping_after_for_test, refuse_stack_rollback_after_for_test,
+    restore_mapping_refusals_for_test, restore_stack_refusals_for_test,
 };
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};

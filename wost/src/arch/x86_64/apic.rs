@@ -31,7 +31,7 @@ mod selftest;
 pub use selftest::{
     InitializationFailureProbe, initialization_failures_for_test,
     initialization_was_atomic_for_test, is_enabled,
-    pending_audit_refuses_queued_self_interrupt_for_test, timer_entry,
+    pending_audit_refuses_queued_self_interrupt_for_test,
 };
 #[cfg(feature = "selftest")]
 use selftest::{record_publication_observation, record_stage_observation};

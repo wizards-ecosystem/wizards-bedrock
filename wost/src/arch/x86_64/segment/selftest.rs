@@ -12,22 +12,6 @@ pub fn stack_selector() -> Selector {
     selectors().1
 }
 
-/// The selector in the task register, or a null selector if none is loaded.
-#[cfg(feature = "selftest")]
-pub fn task_register() -> Selector {
-    let bits: u16;
-    // SAFETY: `str` reads the task register. It is unprivileged, has no effects,
-    // and stores zero when no task-state segment has been loaded.
-    unsafe {
-        asm!(
-            "str {selector:x}",
-            selector = out(reg) bits,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    Selector::from_bits(bits)
-}
-
 /// Where the double-fault handler's stack currently starts.
 #[cfg(feature = "selftest")]
 pub fn double_fault_stack() -> u64 {

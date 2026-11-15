@@ -58,43 +58,7 @@ pub fn table_is_loaded() -> bool {
     idt_is_loaded()
 }
 
-impl InterruptState {
-    /// Transfer this state out of a guard without registering a replacement.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn take_for_transfer(&mut self) -> Self {
-        core::mem::replace(
-            self,
-            Self {
-                owner: usize::MAX,
-                level: 0,
-                live: false,
-                stays_here: PhantomData,
-            },
-        )
-    }
-}
-
-/// Prove nested restoration and direct admission share the production ledger.
-#[cfg(feature = "selftest")]
-pub fn exclusion_order_is_enforced_for_test() -> bool {
-    let owner = ACTIVE_CONTEXT.load(Ordering::Relaxed);
-    if !are_enabled() || !context_is_clear(owner) {
-        return false;
-    }
-    let outer = disable();
-    let inner = disable();
-    outer.restore();
-    let deferred = !are_enabled() && EXCLUSIONS[owner].depth.load(Ordering::Relaxed) == 2;
-    let direct_enable_refused = EXCLUSIONS[owner].depth.load(Ordering::Relaxed) != 0;
-    inner.restore();
-    deferred && direct_enable_refused && are_enabled()
-}
-
-/// Whether interrupt ownership follows `slot` on this instruction stream.
-#[cfg(feature = "selftest")]
-pub fn context_matches_for_test(slot: usize) -> bool {
-    ACTIVE_CONTEXT.load(Ordering::Relaxed) == slot
-}
+impl InterruptState {}
 
 /// Raise a breakpoint exception on this CPU.
 #[cfg(feature = "selftest")]
