@@ -370,7 +370,7 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         warn!("ioapic: complete mask proof missing; interrupts stay off");
         return;
     }
-    if !iommu::interrupt_boundary_active() {
+    if !PCI_INTERRUPT_BOUNDARY.load(Ordering::Acquire) || !iommu::interrupt_boundary_active() {
         warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
         return;
     }
@@ -510,12 +510,15 @@ fn refuse_pci_for_degraded_boot() {
     );
 }
 
+static PCI_INTERRUPT_BOUNDARY: AtomicBool = AtomicBool::new(false);
+
 /// Claim configuration space and say what is on the bus.
 ///
 /// Declines without failing: a machine whose configuration ports are already spoken for has no
 /// PCI as far as this kernel is concerned, and everything built so far works without it. The walk
 /// recurses through bridges: q35 and VMware place functions behind them, so a scan of bus zero
-/// can miss a controller entirely (`012` §2).
+/// can miss a controller entirely (`012` §2). Records whether every PCI requester is proved
+/// behind the default-deny owner.
 fn survey_the_bus(
     dma_non_requester: Option<pci_config::QualifiedNonRequester>,
     dma_quiesced: Option<pci_config::QuiescedIsaRequester>,
@@ -577,6 +580,7 @@ fn survey_the_bus(
             warn!("nvme: selection stopped because a candidate could not be retired")
         }
     }
+    PCI_INTERRUPT_BOUNDARY.store(interrupt_boundary, Ordering::Release);
 }
 
 /// Whether enumeration should try another storage function.
