@@ -756,6 +756,9 @@ pub(super) unsafe fn leave_for_user(entry: u64, stack_top: u64) -> ! {
 
 const _: () = assert!(idt::TABLE_LEN <= 256);
 
+// The stop path's marker, `[error] wost: kpti stop`, goes straight to the first serial port.
+const COM1: u16 = 0x3F8;
+
 ::core::arch::global_asm!(
     ".pushsection .kpti.text,\"ax\",@progbits",
     // Stubs are padded to one size so the table indexes by vector. Vectors
@@ -1011,6 +1014,21 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     "mov cr3, r11",
     "wost_kpti_stop:",
     "cli",
+    // Ports only: whatever root is live, nothing outside the enclave is touched.
+    ".irp byte, 0x0d,0x0a,0x5b,0x65,0x72,0x72,0x6f,0x72,0x5d,0x20,0x77,0x6f,0x73,0x74,0x3a,0x20,0x6b,0x70,0x74,0x69,0x20,0x73,0x74,0x6f,0x70,0x0d,0x0a",
+    "mov ecx, {transmit_polls}",
+    "16:",
+    "mov dx, {com1_line_status}",
+    "in al, dx",
+    "test al, {transmit_empty}",
+    "jnz 17f",
+    "dec ecx",
+    "jnz 16b",
+    "17:",
+    "mov dx, {com1}",
+    "mov al, \\byte",
+    "out dx, al",
+    ".endr",
     "11:",
     "hlt",
     "jmp 11b",
@@ -1037,6 +1055,10 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     clear = sym MDS_CLEAR,
     verw_selector = sym KPTI_VERW_SELECTOR,
     smap = sym SMAP_ARMED,
+    com1 = const COM1,
+    com1_line_status = const COM1 + 5,
+    transmit_empty = const 1 << 5,
+    transmit_polls = const 10_000,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,
     interrupts = const idt::TABLE_LEN - exception::COUNT as usize,
