@@ -269,7 +269,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    let isolation = match Vtd::establish_deny_all(registers, true) {
+    let isolation = match Vtd::establish_deny_all(registers, REGISTER_WINDOW, true) {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
             warn!("iommu: the early default-deny takeover refused: {reason}");

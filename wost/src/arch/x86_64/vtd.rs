@@ -40,6 +40,8 @@ const ENTRIES: usize = (PAGE / 8) as usize;
 /// Bytes in one root, context or fault-recording entry.
 const ENTRY_BYTES: u64 = 16;
 
+const IOTLB_BYTES: u64 = 16;
+
 /// Two 128-bit queued-invalidation descriptors.
 const INVALIDATION_TAIL: u64 = 32;
 
@@ -65,6 +67,8 @@ pub enum VtdError {
     OutsideAddressWidth,
     /// The register window refused a read or write at the named offset.
     Register(usize),
+    /// The IOTLB or fault-recording registers end past the mapped window.
+    RegistersOutsideWindow(u64),
     /// This architecture version ignores the register invalidation interface.
     UnsupportedRegisterInvalidationVersion { version: u32 },
     /// The unit reports no modelled page-table depth.
@@ -123,6 +127,9 @@ impl fmt::Display for VtdError {
             }
             Self::Register(offset) => {
                 write!(f, "the register window refused offset {offset:#x}")
+            }
+            Self::RegistersOutsideWindow(end) => {
+                write!(f, "unit registers end at {end:#x}, past the window")
             }
             Self::UnsupportedRegisterInvalidationVersion { version } => {
                 let version = Version::from_bits(*version);
@@ -372,21 +379,12 @@ enum Caches {
 }
 
 impl Vtd {
-    /// Take the unit over behind an empty, default-deny DMA root.
-    ///
-    /// Refuses every active firmware facility and installs empty kernel tables from observed TE
-    /// off; every requester then faults until [`retarget`](Self::retarget) publishes one context.
-    ///
-    /// # Errors
-    ///
-    /// The window with the reason, if it refuses an access, the unit has no usable width or domain,
-    /// firmware will not quiesce, a table frame is unavailable or misaligned, or the hardware
-    /// refuses the root-table pointer or translation.
     pub fn establish_deny_all(
         registers: ReleasableDevice,
+        window: u64,
         platform_interrupt_remapping: bool,
     ) -> Establishment {
-        let plan = match Plan::read(&registers, platform_interrupt_remapping) {
+        let plan = match Plan::read(&registers, window, platform_interrupt_remapping) {
             Ok(plan) => plan,
             Err(reason) => return Establishment::Refused { reason, registers },
         };
@@ -1164,12 +1162,9 @@ impl Vtd {
 }
 
 impl Plan {
-    /// Read and validate every capability needed before the first unit write.
-    ///
-    /// Every firmware facility must already be inactive; this read-only boundary refuses a live
-    /// non-identical SRTP and never guesses at firmware queue or remapping quiescence.
     fn read(
         registers: &ReleasableDevice,
+        window: u64,
         platform_interrupt_remapping: bool,
     ) -> Result<Self, VtdError> {
         let version = Version::from_bits(read_u32(registers, vtd::register::VERSION)?);
@@ -1198,6 +1193,13 @@ impl Plan {
         }
         if !extended.extended_interrupt_mode() {
             return Err(VtdError::NoExtendedInterruptMode);
+        }
+        let end = (extended.iotlb_register_offset_bytes() + IOTLB_BYTES).max(
+            capability.fault_recording_offset_bytes()
+                + u64::from(capability.number_of_fault_recording_registers()) * ENTRY_BYTES,
+        );
+        if end > window {
+            return Err(VtdError::RegistersOutsideWindow(end));
         }
         let status = read_u32(registers, vtd::register::GLOBAL_STATUS)?;
         if !takeover_ready(status) {
