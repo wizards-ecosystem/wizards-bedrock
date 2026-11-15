@@ -502,44 +502,31 @@ fn decode_windows<E>(
         let index = slots.low;
         let high = slots.high.map_or(0, |high| original[high]);
         let mask_high = slots.high.map_or(0, |high| masks[high]);
-        let (bar, size) = match Bar::decode(original[index], high).ok_or(ProbeError::Malformed)? {
-            Bar::Io { port } => {
-                let Some(size) = io_window_size(masks[index]) else {
-                    continue;
-                };
-                (Bar::Io { port }, u64::from(size))
-            }
-            bar @ Bar::Memory { wide, .. } => {
-                let width = if wide {
-                    MemoryWidth::Bits64
-                } else {
-                    MemoryWidth::Bits32
-                };
-                let Some(size) = memory_window_size(masks[index], mask_high, width) else {
-                    continue;
-                };
-                (bar, size)
-            }
-            Bar::Absent => {
-                let Some(size) = memory_window_size(masks[index], 0, MemoryWidth::Bits32) else {
-                    continue;
-                };
-                (
-                    Bar::Memory {
-                        address: 0,
-                        wide: false,
-                        prefetchable: false,
-                    },
-                    size,
-                )
-            }
-        };
-
-        let base = match bar {
-            Bar::Memory { address, .. } => address,
-            Bar::Io { port } => u64::from(port),
-            Bar::Absent => 0,
-        };
+        let (bar, size, base) =
+            match Bar::decode(original[index], high).ok_or(ProbeError::Malformed)? {
+                Bar::Io { port } => {
+                    let Some(size) = io_window_size(masks[index]) else {
+                        continue;
+                    };
+                    (Bar::Io { port }, u64::from(size), u64::from(port))
+                }
+                bar @ Bar::Memory { wide, address, .. } => {
+                    let width = if wide {
+                        MemoryWidth::Bits64
+                    } else {
+                        MemoryWidth::Bits32
+                    };
+                    let Some(size) = memory_window_size(masks[index], mask_high, width) else {
+                        continue;
+                    };
+                    (bar, size, address)
+                }
+                Bar::Absent => continue,
+            };
+        // Firmware left the BAR unassigned, so it decodes nothing the driver may claim.
+        if base == 0 {
+            continue;
+        }
         if !size.is_power_of_two() || !base.is_multiple_of(size) {
             return Err(ProbeError::InvalidWindow);
         }
