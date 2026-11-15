@@ -15,8 +15,8 @@
 
 # The VMware handoff worksheet: instructions, and the serial transcripts of the
 # two human boot rounds pasted back. Its content is distilled into the closing
-# ADR, which is the record; the worksheet itself is scratch, and both the
-# evidence and mutation gates require an untracked-clean tree.
+# ADR, which is the record; the worksheet itself is scratch, and the evidence gate
+# requires an untracked-clean tree.
 /TEMP_TESTING.md
 
 # TLC's working output: a states directory per run, and the pair of files it
@@ -33,8 +33,7 @@
 /.claude/
 
 # The one handoff note for agents picking up in-flight work. Local operational
-# state, not a product; the evidence and mutation gates require an
-# untracked-clean tree.
+# state, not a product; the evidence gate requires an untracked-clean tree.
 /HANDOFF.md
 
 # The note's working files: the scripts, plans, triage and logs it cites, kept

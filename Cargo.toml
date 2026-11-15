@@ -128,7 +128,7 @@ fscommon = "0.1"
 fs_at = "=0.2.1"
 libc = "=0.2.189"
 # Windows job objects hold every process a bounded command starts. Its `winapi` backend uses no
-# procedural macros, which the API audit forbids in the active graph; `windows` would pull them in.
+# procedural macros, which the `windows` backend would pull in.
 command-group = "=5.0.1"
 
 # Host-only verification: `proptest` is admitted in the five pure libraries that state measured
@@ -176,9 +176,8 @@ debug = true
 [profile.dev]
 panic = "abort"
 
-# The orchestrator hashes and parses the whole tree many times per gate; unoptimized it turns
-# the API audit into hours. Only the `cargo xtask` alias selects this profile, so tests and
-# audited graphs keep the plain dev profile.
+# The orchestrator hashes and parses the whole tree many times per gate; unoptimized it takes
+# hours. Only the `cargo xtask` alias selects this profile, so tests keep the plain dev profile.
 [profile.xtask]
 inherits = "dev"
 opt-level = 3
