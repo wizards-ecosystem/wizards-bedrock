@@ -23,8 +23,8 @@ const SET_2_HIGHEST_MAKE: u8 = 0x83;
 const SET_1_HIGHEST_BREAK: u8 = 0xDD;
 
 /// Set 1 releases that set 2 also sends as replies, so they must never decide.
-/// `AA` is set 2's self-test reply and `AB` begins every identity reply.
-const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];
+/// `AA` is set 2's self-test reply, `AB` begins every identity reply and `84` is set 2's SysRq.
+const AMBIGUOUS: [u8; 3] = [0xAA, 0xAB, 0x84];
 
 /// Reads the numbering off the stream without consuming it.
 /// Stateless, since every rule holds for a byte in any position.
@@ -42,6 +42,7 @@ impl SetProbe {
             && byte <= SET_1_HIGHEST_BREAK
             && byte != AMBIGUOUS[0]
             && byte != AMBIGUOUS[1]
+            && byte != AMBIGUOUS[2]
         {
             return Arriving::Set1;
         }
