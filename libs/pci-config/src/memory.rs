@@ -128,7 +128,13 @@ pub fn admit_mapped_bus_master<const N: usize>(
     if !functions.holds_bar(authority) {
         return Err(EnableError::Stale);
     }
-    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)
+    admit_bus_master_with_leases(
+        &mut functions.commands,
+        authority.function,
+        state,
+        command::MEMORY_SPACE | command::BUS_MASTER,
+        access,
+    )
 }
 
 pub fn bind_memory_bar<const N: usize>(

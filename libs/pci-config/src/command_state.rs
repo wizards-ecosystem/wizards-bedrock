@@ -1,7 +1,10 @@
 use core::fmt;
 
 use crate::claims::FunctionLease;
-use crate::{Address, CommandLease, CommandLeases, FunctionAuthority, FunctionClaims, command};
+use crate::{
+    Address, BRIDGE_BARS, CommandLease, CommandLeases, FunctionAuthority, FunctionClaims, command,
+    header, secondary_bus, subordinate_bus,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandAccess {
@@ -321,10 +324,43 @@ pub(crate) fn change_command(
     }
 }
 
+// The bridge must forward for `isolated`, which a DMA domain already isolates.
+pub fn admit_bridge_bus_master<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    bridge: &FunctionAuthority,
+    isolated: Address,
+    state: &mut CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !functions.holds(bridge) {
+        return Err(EnableError::Stale);
+    }
+    let at = bridge.address();
+    if bridge.registers != BRIDGE_BARS {
+        return Err(EnableError::ForeignDomain);
+    }
+    let numbers = at
+        .at(header::BUS_NUMBERS)
+        .and_then(|numbers| access(numbers, CommandAccess::Read))
+        .ok_or(EnableError::Access)?;
+    let secondary = secondary_bus(numbers);
+    if secondary <= at.bus() || !(secondary..=subordinate_bus(numbers)).contains(&isolated.bus()) {
+        return Err(EnableError::ForeignDomain);
+    }
+    admit_bus_master_with_leases(
+        &mut functions.commands,
+        bridge.lease,
+        state,
+        command::BUS_MASTER,
+        access,
+    )
+}
+
 pub(crate) fn admit_bus_master_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     function: FunctionLease,
     state: &mut CommandState,
+    enable: u16,
     mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
 ) -> Result<(), EnableError> {
     if !leases.holds_function(function, state.lease) || state.phase != CommandPhase::Installed {
@@ -335,7 +371,7 @@ pub(crate) fn admit_bus_master_with_leases<const N: usize>(
     if current != state.installed {
         return Err(EnableError::Changed(current));
     }
-    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;
+    let wanted = current | enable;
     state.phase = CommandPhase::Restoring(wanted);
     match change_command(at, current, wanted, &mut access) {
         Ok(()) => {

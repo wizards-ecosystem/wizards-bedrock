@@ -554,6 +554,8 @@ impl DisabledController {
             Ok(authority) => authority,
             Err(reason) => return Err(BusMasterAdmissionError::Observation(reason)),
         };
+        crate::iommu::admit_upstream_bus_master(&domain, &interrupts)
+            .map_err(BusMasterAdmissionError::Command)?;
         device
             .admit_bus_master(authority, domain, interrupts)
             .map_err(BusMasterAdmissionError::Command)

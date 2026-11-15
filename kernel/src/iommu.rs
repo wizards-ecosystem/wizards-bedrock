@@ -27,12 +27,14 @@ use acpi_tables::{
     Bdf, BusRange, DmaCoverage, DmaHandoff, DmaHandoffError, Dmar, RequesterInventory,
     RequesterInventoryError, Sdt,
 };
-use pci_config::{Address, HandoffFencePolicy, QualifiedNonRequester, QuiescedIsaRequester};
+use pci_config::{
+    Address, EnableError, HandoffFencePolicy, QualifiedNonRequester, QuiescedIsaRequester,
+};
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::pci::DmaHandoffFenceError;
-use wost::arch::current::vtd::{Establishment, Retargeting, Vtd};
+use wost::arch::current::vtd::{DmaDomain, Establishment, InterruptIsolation, Retargeting, Vtd};
 use wost::boot::BootInfo;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
@@ -675,6 +677,42 @@ fn acquire_fences(
         return FenceAcquisition::Retained(fences);
     }
     FenceAcquisition::Ready(fences)
+}
+
+// The caller holds the installed unit, so no other context reaches the fence vault meanwhile.
+pub(crate) fn admit_upstream_bus_master(
+    domain: &DmaDomain<'_>,
+    interrupts: &InterruptIsolation<'_>,
+) -> Result<(), EnableError> {
+    let function = domain.function();
+    for index in 0..pci::FUNCTION_AUTHORITY_LIMIT {
+        let Some(mut fence) = UNIT_FENCE_SLOTS
+            .lock_leaf()
+            .get_mut(index)
+            .and_then(Option::take)
+        else {
+            continue;
+        };
+        let admitted = fence
+            .address()
+            .filter(|&bridge| pci::topology_hierarchy_contains(bridge, function))
+            .map(|bridge| (bridge, fence.admit_bridge_bus_master(domain, interrupts)));
+        if let Some(slot) = UNIT_FENCE_SLOTS.lock_leaf().get_mut(index) {
+            *slot = Some(fence);
+        }
+        match admitted {
+            None | Some((_, Ok(()))) => {}
+            Some((_, Err(EnableError::Restore))) => return Err(EnableError::Restore),
+            // A clean refusal leaves the bridge as the entry fence did, which emulated bridges ignore.
+            Some((bridge, Err(reason))) => warn!(
+                "iommu: bridge {:02x}:{:02x}.{} kept bus mastering off: {reason}",
+                bridge.bus(),
+                bridge.device(),
+                bridge.function()
+            ),
+        }
+    }
+    Ok(())
 }
 
 fn release_refused_fences(fences: UnitFences) -> FenceAcquisition {

@@ -23,8 +23,9 @@ use bar::{MemoryWidth, memory_window_size};
 pub use claims::{FunctionAuthority, FunctionClaimError, FunctionClaims};
 pub use command_state::{
     CommandAccess, CommandState, EnableError, EnableFailure, FunctionReleaseError,
-    FunctionReleaseFailure, RestoreFailure, commit_command, disable_bus_master_for_retirement,
-    fence_bus_master, release_function, restore_command, verify_bus_master_fence,
+    FunctionReleaseFailure, RestoreFailure, admit_bridge_bus_master, commit_command,
+    disable_bus_master_for_retirement, fence_bus_master, release_function, restore_command,
+    verify_bus_master_fence,
 };
 pub use fence::{
     FUNCTION_AUTHORITY_LIMIT, HandoffAccess, HandoffFenceError, HandoffFencePolicy,

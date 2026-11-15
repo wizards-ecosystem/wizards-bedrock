@@ -575,6 +575,37 @@ pub fn admit_bus_master(
     )
 }
 
+// A bridge with BME clear does not forward its secondary side's DMA upstream.
+pub fn admit_bridge_bus_master(
+    bridge: &FunctionClaim,
+    domain: &DmaDomain<'_>,
+    interrupts: &InterruptIsolation<'_>,
+    state: &mut CommandState,
+) -> Result<(), EnableError> {
+    if interrupts.function() != domain.function() {
+        return Err(EnableError::Stale);
+    }
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    pci_config::admit_bridge_bus_master(
+        functions,
+        &bridge.authority,
+        domain.function(),
+        state,
+        |at, access| {
+            let (address, data) = ports.as_mut()?;
+            Port::write(address, at.bits());
+            match access {
+                CommandAccess::Read => Some(Port::read(data)),
+                CommandAccess::Write(value) => {
+                    Port::write(data, u32::from(value));
+                    Some(0)
+                }
+            }
+        },
+    )
+}
+
 /// Disable bus mastering for a rejected DMA lease, removing BME from its restoration word only
 /// after exact readback.
 pub fn disable_bus_master_for_retirement(

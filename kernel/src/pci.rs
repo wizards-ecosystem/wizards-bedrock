@@ -438,6 +438,22 @@ pub(crate) struct DmaFenceRelease {
 }
 
 impl DmaFence {
+    pub(crate) fn address(&self) -> Option<Address> {
+        self.function.as_ref().map(pci::FunctionClaim::address)
+    }
+
+    pub(crate) fn admit_bridge_bus_master(
+        &mut self,
+        domain: &DmaDomain<'_>,
+        interrupts: &InterruptIsolation<'_>,
+    ) -> Result<(), EnableError> {
+        let (Some(function), Some(state)) = (self.function.as_ref(), self.command_state.as_mut())
+        else {
+            return Err(EnableError::Stale);
+        };
+        pci::admit_bridge_bus_master(function, domain, interrupts, state)
+    }
+
     /// Restore the safe command word and return the exact function claim.
     pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
         if let Some(state) = self.command_state.take() {
