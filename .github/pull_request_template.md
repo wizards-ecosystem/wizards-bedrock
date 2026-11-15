@@ -1,12 +1,13 @@
-## Problem and change
+## Change
 
-Explain the scoped change, relevant subsystem/PW row and design decisions.
+What changed, in which subsystem, and why.
 
-## Validation
+## Checks
 
-Exact commands, outcomes, host/toolchain and checks not run. Documentation needs no test run. Distinguish compile, host, QEMU and VMware results.
+The exact commands you ran and their results, your host and toolchain, and anything you did not
+run. Keep compile, host test, QEMU and VMware results apart.
 
-## Limitations and provenance
+## Limits and provenance
 
-Known limits, licensing/provenance of new material, and relevant follow-up work.
-Review and understand all changes, including AI-assisted work, before submitting.
+Known limits, and the license and origin of any new material. You have reviewed and understood
+every change, including AI-assisted work.

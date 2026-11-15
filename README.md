@@ -5,221 +5,131 @@
   </picture>
 </h1>
 
-Bedrock is a from-scratch **Rust kernel** for x86_64 and UEFI. [Limine](https://github.com/limine-bootloader/limine) enters it in long mode at `0xffffffff80000000`. From that handoff the kernel installs its own descriptor tables and page tables, turns on the CPU's supervisor protections, schedules threads, fences PCI DMA with VT-d, reads an NVMe disk, and runs a ring-3 program whose external authority is a handle table.
+Bedrock is an experimental Rust kernel for x86_64 and UEFI, run in disposable virtual machines.
+[Limine](https://github.com/limine-bootloader/limine) enters it in long mode; the kernel then
+installs its own descriptor and page tables, turns on the CPU's supervisor protections, schedules
+threads, fences PCI DMA behind VT-d, reads an NVMe disk and runs a ring 3 program whose only
+authority is a handle table. The workspace version is in `Cargo.toml`.
 
-The workspace version is 0.3.0. Each release is recorded in [docs/releases/](docs/releases/). This repository is the kernel: hardware, memory, scheduling, storage, and the capability ABI. A shell, desktop, and network stack live outside it. Phases 0 to 6 are in [docs/000-vision.md](docs/000-vision.md); from Phase 7 on, [docs/021-roadmap.md](docs/021-roadmap.md) holds the order (D-452).
-
-## What a boot does
-
-`cargo xtask run` builds a 64 MiB UEFI disk and boots the shipped kernel in QEMU. The image is a raw MBR disk with one FAT32 EFI system partition, written entirely in Rust. Limine loads `wizard-kernel.elf` and the module `hello.elf`.
-
-On the way to the prompt the kernel:
-
-1. Fences inherited PCI bus masters before it trusts a device, and installs a default-deny VT-d domain before storage DMA.
-2. Opens a 16550 serial log at `COM1` (`0x3F8`) and, when Limine provides a linear framebuffer, a Noto Sans Mono console with its own shadow buffer.
-3. Installs the GDT, IDT, and TSS, then enables write protection, NX, SMEP, SMAP, and UMIP where the processor reports them. `syscall` and `sysenter` are shut. The only gate ring 3 may enter is interrupt `0x80`.
-4. Enables XSAVE, compacted when the CPU allows it. Without extended state, ring 3 stays closed.
-5. Builds a complete physical memory map, a two-bitmap frame allocator, W^X page tables, a direct map, and a heap whose size classes run from 16 to 2048 bytes. Page-table pages, heap frames, and user stacks are allocated zeroed. The boot thread then moves onto a guarded stack. If that allocation fails, ring 3 stays closed and the kernel continues.
-6. Silences the legacy PICs, reads speculation controls, and selects user page-table isolation (below). It starts the local APIC in x2APIC mode, calibrates the APIC timer and TSC from the PIT, and publishes a read-only time page.
-7. Walks PCI configuration space through bridges, claims one NVMe function, and mounts its FAT32 volume read-only. Without a complete VT-d domain the log says `storage: no DMA isolation` and the volume stays unmounted.
-8. Brings up tmpfs and a devfs that names `storage` (a block device) and `console` (a character device).
-9. Starts a tickless EEVDF scheduler and an idle thread that halts. It loads `hello.elf` into its own address space: one read-execute segment linked at `0x400000000000`, a guarded stack, the time page, a shared submission/completion ring, and a handle table whose single birth handle is an opaque bootstrap identity. The witness checks entry version 1, posts `Echo` with argument `0x00C0FFEE`, enters the kernel, checks the completion, and exits.
-10. The boot thread blocks on the PS/2 keyboard and paints each decoded character. With no PCI topology the I/O APIC routes that line and each key is an interrupt. While PCI is present, interrupt isolation keeps those lines masked and a poller drains the controller every 10 ms.
-
-Serial carries diagnostics. The framebuffer carries the banner and the echo.
-
-## How the kernel is put together
-
-### One crate may write `unsafe`
-
-`wost` is the privileged framework: Limine glue, ports, MMIO, paging, the VT-d unit, interrupt entry, context switch, and locks. It is the only crate allowed to write `unsafe`. The kernel binary is `no_std`, `no_main`, and `#![deny(unsafe_code)]`, because `wost::entry!` expands its boot glue there. Every `libs/` crate is `#![forbid(unsafe_code)]`. Arithmetic that can be checked without hardware lives in `libs/` and runs under `cargo test` on the host. `wost` keeps the lock and the instruction.
-
-Every kernel link is read back. The entry sits in the higher half, no section is orphaned, no segment is both writable and executable, and `.bss` costs no file bytes.
-
-### Processor, memory, and time
-
-The kernel runs on the boot processor. x2APIC is required; a CPU without it leaves interrupts off. The scheduler's timer is an alarm, armed for the next decision and stopped when nothing is due. A 3 ms slice is the EEVDF tunable. Sixteen kernel stacks of 32 KiB sit above an unmapped 4 KiB guard, plus the boot thread. The double-fault stack and the boot thread's own stack use the same geometry.
-
-User address spaces share the kernel half when the CPU's speculation controls admit it. When they do not, each user space gets a paired root: a full kernel root and a stripped root that maps only the linker-owned entry enclave. The self-test kernel forces the paired path so that entry is executed even on a CPU that would allow sharing. If neither path is available, ring 3 stays closed. Returns to ring 3 execute `verw` unless the processor reports `MDS_NO`.
-
-The time page, mapped at `0x10000000000` in every user space, publishes a fixed tick-to-nanosecond conversion under a seqlock. Constants on that page (version, page size, counter rate) are written once. Two consecutive disagreements with the PIT freeze public time.
-
-### The native ABI
-
-A program's external authority is its handle table. Handles are process-local integers: an 18-bit arena index (262,144 slots), a generation that rejects stale reuse, and a per-table mixer. Rights name what the holder may do. `Duplicate` returns a new handle with fewer rights. A spawned program is born holding exactly one handle, an opaque channel identity with no peer and no messages.
-
-The data path is a submission/completion ring, protocol version 1: 8 submission slots and 16 completion slots, kernel-owned pages mapped into the process. The kernel copies shared bytes once and validates the copy. Every accepted submission reserves a completion, and every operation posts exactly one. The opcodes are:
-
-| Opcode | What it does |
-|---|---|
-| `Echo` | Return the argument |
-| `Uptime` | Return kernel uptime in nanoseconds |
-| `Duplicate` | Narrow a held handle; the completion carries the new one |
-| `Timer` | Complete after the requested nanoseconds |
-| `Cancel` | End an in-flight operation by token; both the cancel and the target still complete once |
-| `OpenAt` | Resolve a path from a directory handle and return a handle for it |
-| `Read` | Read a file at an explicit offset into the ring's data page |
-
-Anything else completes as a refusal. Paths are relative to a held directory. `..` is resolved lexically and underflow is refused, so the resolver has no parent pointer to follow. FAT32 names are 8.3; long-name entries and the volume label are skipped. File reads have no cursor: each `Read` says where it starts.
-
-Four synchronous calls cross interrupt `0x80`: `Exit`, `RingEnter` (serve the ring and report how many operations completed), `RingWait` (sleep until a deferred completion is due), and `ThreadBase` (set this thread's `FS` base). `RingEnter` admits an NVMe read; one file worker polls the controller and posts the completion.
-
-The same ring protocol is a TLA+ model in `models/`. `Ring.tla` checks admission. `RingMemory.tla` checks publication across normal, cancelled, and retired operations. Four mutant configs must each violate a named invariant. `cargo xtask model-check` runs TLC against the digest-pinned jar in `tools/tla/`.
-
-`hello.elf` is the fixed ELF64 witness the image builder emits. It is the program the shipped boot runs. It is a boundary exercise, small enough that a wrong answer hits `ud2`.
-
-### Storage
-
-PCI enumeration uses CF8/CFC and walks bridges, because a scan of bus zero misses controllers behind them. A driver claims a function, not a bare port range. The first usable NVMe controller is brought up with one I/O queue pair and completion interrupts off. Queue depth, doorbell stride, timeout, and page size come from `CAP`. The register window is mapped uncacheable, and bus master stays off until the controller-disable readback matches. `libs/nvme` holds the command and queue arithmetic; the kernel holds the frames and the poll.
-
-The FAT32 reader is the same `no_std` crate on the host and in the kernel. It accepts 512-byte sectors, checks cluster chains, and allocates nothing. The volume begins at sector 2048, the offset the image builder writes. The VFS is a directory enum over FAT32, tmpfs, and devfs: resolve, enumerate, and a reserved modify. Backends are selected by an enum, so a new one is a compile error at every match.
-
-## Layout
-
-```
-kernel/          kernel binary, higher-half, no hand-written unsafe
-wost/            privileged framework, the only crate that may write unsafe
-libs/            host-tested no_std arithmetic
-xtask/           build, image, QEMU, VMware, gate, evidence
-boot/            limine.conf and a digest-pinned Limine UEFI binary
-models/          TLA+ ring models and the four mutant configs
-tools/           pinned TLC jar
-docs/            design docs, one per subsystem
-supply-chain/    SPDX SBOM, third-party notices, license texts
-fixtures/abi-pressure/   native ABI transcription
-handoff/         route-neutral envelope fixtures
-```
-
-| Crate | What it owns |
-|---|---|
-| `acpi-tables` | RSDP, XSDT, MADT, DMAR, validated before use |
-| `address` | physical addresses below the page-table limit |
-| `eevdf` | virtual-deadline scheduling |
-| `elf64` | ELF64 headers and loadable segments |
-| `fat32` | read-only FAT32 over any sector source |
-| `frame-space` | physical-frame bitmap allocation |
-| `handle-space` | handle encoding, rights, quotas |
-| `memory-map` | a firmware map that refuses rather than truncate |
-| `mmio-range` | repeated MMIO span checks |
-| `nvme` | NVMe registers, queues, and commands |
-| `panic-record` | framed panic text |
-| `path-walk` | lexical paths that cannot ascend |
-| `pci-config` | configuration-space addresses and BARs |
-| `pixel` | framebuffer pixel layout |
-| `port-space` | I/O port reservations, including wide `out`s |
-| `ps2-keys` | PS/2 set 2 scancodes and the US layout |
-| `register-bits` | register widths, with reserved high bits ignored on read |
-| `ring-proto` | ring admission and shared-memory layout |
-| `slab-layout` | heap size classes |
-| `stack-layout` | guarded stack geometry |
-| `timebase` | tick and nanosecond conversion |
-| `trap-cause` | exception vector and error-code decode |
-| `vtd` | VT-d tables, registers, and invalidation |
-| `wizzy-handoff` | route-neutral artifact identity envelopes |
-| `x86-apic` | local APIC registers |
-| `x86-cpuid` | CPUID leaves, including protection and x2APIC |
-| `x86-paging` | four-level page-table entries |
-| `x86-pit` | PIT commands and calibration arithmetic |
-| `x86-tables` | GDT, IDT, and TSS encodings |
+This repository is the kernel: hardware, memory, scheduling, storage and the native capability
+ABI. The operating environment, shell and desktop belong to Realm, which runs on Bedrock; the Wizzy
+language and compiler belong to Ink.
 
 ## Quick start
 
-The documented host is Windows with the GNU Rust toolchain. The pinned channel is `1.97.1` (`rust-toolchain.toml`), which also installs `rustfmt`, `clippy`, and the `x86_64-unknown-none` target. QEMU is optional for the compile.
+Install [rustup](https://rustup.rs) and QEMU 9.2 or later with its EDK2 firmware. The first build
+installs the pinned toolchain from `rust-toolchain.toml`.
 
-```powershell
+```
 git clone https://github.com/wizards-ecosystem/wizards-bedrock.git
 cd wizards-bedrock
 cargo fetch --locked
 cargo xtask build --release
+cargo xtask run
 ```
 
-A successful build compiles the kernel and checks the linked image. Boot it with `cargo xtask run`. The full local gate is `cargo xtask ci`.
+On Windows, install rustup with the GNU host (`rustup-init -y --default-host
+x86_64-pc-windows-gnu`) and QEMU with `winget install SoftwareFreedomConservancy.QEMU`, then open
+a fresh terminal. The runner finds QEMU through `QEMU` (the executable), then `QEMU_DIR` (its
+directory), then `C:\Program Files\qemu` on Windows, then `PATH`. It looks for
+`edk2-x86_64-code.fd` beside the emulator and under its installation's `share/`.
 
-## Building & running
-
-Install rustup with the GNU host (`rustup-init -y --default-host x86_64-pc-windows-gnu`). Open a fresh terminal so `cargo` is on `PATH`. The first build installs the pinned toolchain from `rust-toolchain.toml`. That file omits `rust-mingw` because the component does not exist on other hosts; rustup installs it with the Windows GNU toolchain. For boots, install QEMU (`winget install SoftwareFreedomConservancy.QEMU`). The runner looks at `QEMU`, then `QEMU_DIR`, then `C:\Program Files\qemu`, then `PATH`.
-
-```
-cargo xtask build --release   # compile the kernel
-cargo xtask image              # write target/bedrock.img
-cargo xtask run                # boot the shipped image in QEMU, serial on stdio
-cargo xtask vmware             # generate vm/self-test/
-cargo xtask vmware --shipped   # generate vm/shipped/
-cargo xtask help               # every task
-```
-
-`cargo xtask run` and `cargo xtask image` use the shipped kernel. `cargo xtask run --` forwards QEMU diagnostic options `-d`, `-D`, `-display`, and `--display`, each with a value. The machine profile stays fixed.
-
-`cargo xtask debug` opens a private QEMU at `kmain` under the pinned WinLibs GDB. `cargo xtask debug --check` proves the setup and exits. The accepted identity is GDB 17.2 from WinLibs r4:
+## Building and running
 
 ```
-winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact
+cargo xtask build --release    compile the kernel and check the linked image
+cargo xtask image              write target/bedrock.img
+cargo xtask run                boot the shipped image in QEMU, serial on stdio
+cargo xtask test-boot          boot the self-test kernel and read its verdict
+cargo xtask vmware             generate vm/self-test/ (add --shipped for vm/shipped/)
+cargo xtask debug              open the debug kernel at kmain under the pinned WinLibs GDB
+cargo xtask help               every task
 ```
 
-Set `GDB` if that `gdb.exe` is not on `PATH`.
+`cargo xtask run --` forwards only QEMU's `-d`, `-D` and `-display` options; the machine is fixed.
 
-**Never set `RUSTFLAGS`.** It replaces the `[target.x86_64-unknown-none]` rustflags in `.cargo/config.toml`, and the kernel links without `code-model=kernel`. Pass lint flags after `--`.
+Never set `RUSTFLAGS`. It replaces the `[target.x86_64-unknown-none]` rustflags in
+`.cargo/config.toml`, and the kernel then links without `code-model=kernel` and no error. Pass
+lint flags after `--` instead.
 
-`cargo build --workspace` cannot select a target per package on stable. Bare Cargo commands cover the host half through `default-members`. These aliases reach the kernel:
+`cargo build --workspace` does not work, because the kernel crates build only for
+`x86_64-unknown-none`. Bare `cargo check`, `clippy` and `test` cover the host crates through
+`default-members`, and three aliases reach the kernel: `cargo kcheck`, `cargo kclippy` and
+`cargo kbuild` (a release kernel build).
 
-| Alias | Runs |
-|---|---|
-| `cargo kcheck` | `cargo check` on `wost` and `wizard-kernel` for `x86_64-unknown-none` |
-| `cargo kclippy` | the same for clippy |
-| `cargo kbuild` | a release kernel build |
+## The gate
 
-`cargo xtask` runs the orchestrator under the optimized `xtask` profile. The gate's Cargo graphs and host tests keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
+`cargo xtask ci` is the gate, and it must pass at every commit.
 
-Release builds use `panic = "abort"`, LTO, and debug info that costs no loaded bytes.
-
-## Development
-
-```
-cargo xtask ci
-```
-
-`ci` is the local source gate (`cargo xtask help` prints the same list):
-
-Cargo graphs used by each Cargo-driven gate stage:
-
-| Graph | Target | Features |
-|---|---|---|
-| host | `host` | `none` |
-| kernel shipped | `x86_64-unknown-none` | `none` |
-| kernel self-test | `x86_64-unknown-none` | `wizard-kernel/selftest` |
-| kernel refuse-pci | `x86_64-unknown-none` | `wizard-kernel/refuse-pci` |
-
-Ordered `cargo xtask ci` stages:
-
-| Order | Invocation | Purpose |
+| Step | Task | What it requires |
 |---:|---|---|
-| 1 | `cargo xtask fmt --check` | refuse unformatted source |
-| 2 | `cargo xtask clippy` | lint every registered Cargo graph |
-| 3 | `cargo xtask doc` | build docs for every registered Cargo graph |
-| 4 | `cargo xtask test` | run host tests and doctests |
-| 5 | `cargo xtask supply-chain` | bind locked bytes, licenses, scope and SPDX |
-| 6 | `cargo xtask verify-vendor` | verify every vendored digest |
-| 7 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
-| 8 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
-| 9 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
-| 10 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
+| 1 | `fmt --check` | formatted source |
+| 2 | `clippy` | no lint on the host graph or the shipped and self-test kernel graphs |
+| 3 | `test` | host tests and doctests pass |
+| 4 | `supply-chain` | every locked crate has a reviewed license row in `supply-chain/inventory.txt` |
+| 5 | `verify-vendor` | every vendored binary matches its `CHECKSUMS` digest |
+| 6 | `test-boot --release` | the self-test kernel's verdict passes |
+| 7 | `test-boot --debug` | the same with overflow checks on |
+| 8 | `boot-check --release` | the shipped image settles with no panic, runs ring 3 and reads an injected key |
+| 9 | `degraded-check --release` | a machine without x2APIC and one without an IOMMU each refuse what they must |
 
-`boot-check` boots the shipped image, requires the keyboard prompt and requires the kernel to log that it consumed an injected key. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `doc` exists so rustdoc's link lints run.
+Outside the gate, because each needs a tool or a person: `model-check` (TLC over `models/`, needs
+Java; run it when a model changes), `vmware` and `qualify-vmware` (a VMware boot, then a check of
+its serial transcript), and `debug`. The hosted workflow in `.github/workflows/` runs a subset of
+the gate and boots nothing.
 
-These tasks stay outside `ci` because they need a tool, a person, or a long run: `debug`, `baseline` (six QEMU boots), `model-check`, and `vmware`. After a human boots a generated VMware machine, `cargo xtask qualify-vmware` rebuilds that kind's release image to compare with the booted one and checks the self-test transcript and `cargo xtask qualify-vmware --shipped` checks the shipped one. `cargo xtask evidence` runs the gate, reproduces the shipped image twice, and writes a bundle that `cargo xtask verify-evidence` rechecks offline against its own digests, which shows the bundle is consistent and not who made it. A release is the gate, that evidence, a VMware boot and a person reading the diff (D-454).
+## Layout
 
-## Further reading
+```
+kernel/          the kernel binary; no hand-written unsafe
+wost/            the privileged framework, the only crate that writes unsafe
+libs/            hardware-free no_std libraries, tested on the host
+xtask/           build, image, QEMU and VMware runners, the gate
+boot/            limine.conf and the digest-pinned Limine UEFI binary
+models/          TLA+ models of the ring protocol
+tools/tla/       the digest-pinned TLC jar
+supply-chain/    license inventory, third-party notices and license texts
+docs/            architecture, conventions, roadmap and decisions
+```
 
-See [docs/002-architecture.md](docs/002-architecture.md). Subsystem docs, written before the code:
+| Library | Owns |
+|---|---|
+| `acpi-tables` | RSDP, XSDT, MADT, DMAR and the platform DMA tables, validated before use |
+| `address` | physical addresses below the page-table limit |
+| `eevdf` | virtual-deadline scheduling arithmetic |
+| `elf64` | ELF64 headers and loadable segments |
+| `fat32` | a read-only FAT32 reader over any sector source |
+| `frame-space` | the physical frame bitmap |
+| `handle-space` | handle encoding, rights and quotas |
+| `memory-map` | a bounded firmware memory map that refuses rather than truncates |
+| `mmio-range` | checked offsets for repeated MMIO accesses |
+| `nvme` | NVMe registers, queues and commands |
+| `panic-record` | escaped, framed panic records |
+| `path-walk` | paths that cannot name an ancestor |
+| `pci-config` | configuration-space addresses, BARs, claims and topology |
+| `pixel` | colour and framebuffer offset arithmetic |
+| `port-space` | I/O port reservations, including wide accesses |
+| `ps2-keys` | PS/2 scancode sets 1 and 2 and the US layout |
+| `register-bits` | register width conversions |
+| `ring-proto` | ring index arithmetic and shared layout |
+| `slab-layout` | heap size classes |
+| `stack-layout` | guarded stack geometry |
+| `timebase` | ticks to nanoseconds by multiply and shift |
+| `trap-cause` | exception vector and error-code decoding |
+| `vtd` | VT-d registers, tables and invalidation |
+| `x86-apic` | local and I/O APIC encodings |
+| `x86-cpuid` | CPUID leaves, capability MSRs and the speculation policy |
+| `x86-paging` | four-level page-table entries |
+| `x86-pit` | 8254 commands and calibration arithmetic |
+| `x86-tables` | GDT, IDT, TSS and user-return encodings |
 
-- [Boot](docs/001-boot.md)
-- [CPU](docs/006-cpu-fundamentals.md)
-- [Memory](docs/007-memory.md)
-- [Scheduling](docs/009-multitasking.md)
-- [Ring 3 and the ABI](docs/011-userspace.md)
-- [Storage](docs/014-storage.md)
-- [Code conventions](docs/005-code-conventions.md)
+## Read next
 
-The language boundary is [docs/015-wizzy-userland.md](docs/015-wizzy-userland.md) (D-183). The record of the foundation close is [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md) (D-184), and [docs/021-roadmap.md](docs/021-roadmap.md) orders the work after it (D-452).
+- [docs/architecture.md](docs/architecture.md): how the kernel works today.
+- [docs/conventions.md](docs/conventions.md): how code and docs are written here.
+- [docs/roadmap.md](docs/roadmap.md): the plan, and where the code stands against it.
+- [docs/decisions.md](docs/decisions.md): the decisions that still govern the kernel.
 
-Outside contributions arrive through forks and pull requests. [CONTRIBUTING.md](CONTRIBUTING.md) covers scope and which checks a change needs. Report vulnerabilities through [SECURITY.md](SECURITY.md).
+Outside contributions arrive through forks and pull requests ([CONTRIBUTING.md](CONTRIBUTING.md)).
+Report vulnerabilities privately ([SECURITY.md](SECURITY.md)). Bedrock is MIT licensed
+([LICENSE](LICENSE)).

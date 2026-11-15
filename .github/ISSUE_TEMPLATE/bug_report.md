@@ -6,17 +6,17 @@ labels: ''
 assignees: ''
 ---
 
-Please report vulnerabilities through the private route in SECURITY.md.
+Report vulnerabilities through the private route in SECURITY.md.
 
-## Problem and subsystem
+## Problem
 
-What happened, what did you expect, and which subsystem or PW row is relevant?
+What happened, what you expected, and which subsystem it is in.
 
 ## Reproduction
 
-Commit, host/toolchain, exact commands and minimal steps. Redact private data.
+Commit, host and toolchain, the exact commands and the smallest steps. Redact private data.
 
-## Evidence and limitations
+## Evidence
 
-Actual checks and results, relevant output, and checks not run. Distinguish
-source/host results from QEMU or VMware observations.
+Relevant output, the checks you ran and their results, and anything you did not run. Keep host
+results apart from QEMU or VMware observations.
