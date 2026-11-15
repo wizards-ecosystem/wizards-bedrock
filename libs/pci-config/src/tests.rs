@@ -143,3 +143,19 @@ fn a_fence_that_cannot_verify_its_restore_never_revives_bus_master() {
     assert!(restored.is_ok());
     assert!(!revived);
 }
+
+#[test]
+fn a_bridge_observed_twice_is_refused() {
+    let mut topology = PciTopology::new();
+    let at = Address::new(0, 1, 0, 0).expect("valid");
+    let bridge = Class::from_bits(0x0604_0000);
+    let bus_numbers = Some(0x0001_0100);
+
+    topology
+        .observe(at, bridge, HeaderType::from_bits(1), bus_numbers)
+        .expect("first observation");
+    assert!(matches!(
+        topology.observe(at, bridge, HeaderType::from_bits(1), bus_numbers),
+        Err(TopologyError::DuplicateParent { bus: 1, .. })
+    ));
+}

@@ -264,7 +264,7 @@ impl PciTopology {
             });
         }
         let slot = &mut self.parent[usize::from(secondary)];
-        if *slot != 0 && *slot != at.bits() {
+        if *slot != 0 {
             return Err(TopologyError::DuplicateParent {
                 bus: secondary,
                 first: Address(*slot),
