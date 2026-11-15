@@ -1,24 +1,3 @@
-//! The storage controller's DMA-remapping domain.
-//!
-//! Firmware's DMAR, read once at boot, names the VT-d unit that governs a PCI function. An empty
-//! unit root is installed before topology discovery; then for each storage candidate, already
-//! BME-off, this module proves a complete bounded inventory of the live PCI requesters that
-//! exact unit governs, and every observed sibling requester is exclusively claimed and fenced
-//! BME-off as defence in depth. The installed owner keeps translation default-deny across
-//! discovery and fallback, keeps those fences with every table and register mapping until
-//! observed release, and retains the whole boundary after an uncertain transition or owner
-//! return.
-//!
-//! Firmware-reserved DMA regions are unsupported until a trusted physical ledger can distinguish
-//! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master admission all
-//! go through the installed domain, while candidate retirement still restores every ordinary
-//! frame and mapping it took. When no complete unit can be established the candidate is refused
-//! with `storage: no DMA isolation`, because an unisolated requester is exactly the case the
-//! domain exists to prevent.
-//!
-//! Nothing here allocates on the heap inside a candidate: a slab the heap grows into never
-//! returns its frame.
-
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
@@ -41,13 +20,10 @@ use crate::mem::{self, DeviceRetirement};
 use crate::thread::ThreadContext;
 use crate::{acpi, info, nvme, pci, warn};
 
-/// Bytes of register window one remapping unit occupies.
 const REGISTER_WINDOW: u64 = 4096;
 
-/// The PCI segment group the legacy configuration ports reach.
 const SEGMENT: u16 = 0;
 
-/// Linear proof that the platform contract and exhaustive entry fence agree.
 #[derive(Debug)]
 pub(crate) struct EarlyDmaBoundary {
     functions: u32,
@@ -82,7 +58,6 @@ impl EarlyDmaBoundary {
     }
 }
 
-/// Why the kernel cannot trust mutable memory at this handoff.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum EarlyDmaError {
     UnauthenticatedPlatform,
@@ -116,7 +91,6 @@ impl fmt::Display for EarlyDmaError {
 
 impl core::error::Error for EarlyDmaError {}
 
-/// Validate the platform DMA contract and fence every requester at entry.
 pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyDmaError> {
     let platform = cpu::dma_handoff_platform().ok_or(EarlyDmaError::UnauthenticatedPlatform)?;
     let policy = match platform {
@@ -159,45 +133,23 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
     })
 }
 
-/// Firmware's validated DMAR, read once before any candidate exists and kept
-/// for the rest of the boot.
 static DMAR: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
-/// Optional unique platform attestation for a sole scoped DMAR whose physical
-/// unit nevertheless intercepts the complete segment.
 static DMA_COVERAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
-/// The established unit: the candidate's while it runs and the kept controller's once selected.
-///
-/// A thread lock, because the seams that take it run commands under the guard, which a leaf guard
-/// forbids; the kept controller's own lock already follows that discipline. A quarantined
-/// transition leaves its complete unit owner here for as long as the boot lasts, without
-/// guessing whether TES is on or off.
+// A thread lock, because commands run under the guard, which a leaf guard forbids.
 static INSTALLED: ThreadLock<Option<InstalledUnit>> = ThreadLock::new(None);
 
-/// A register window whose exact unmap refused, kept owned.
 static RETAINED_REGISTERS: SpinLock<Option<ReleasableDevice>> = SpinLock::new(None);
 
-/// A register mapping the active root no longer showed, kept owned.
 static RETAINED_MAPPING: SpinLock<Option<DeviceMapping>> = SpinLock::new(None);
 
-/// Requester fences whose exact return refused after the unit was settled.
 static RETAINED_FENCES: SpinLock<Option<UnitFences>> = SpinLock::new(None);
 
-/// The opaque function and command authorities behind one unit-wide fence.
-///
-/// Keeping these large linear owners in a single fixed-capacity vault avoids
-/// materializing the whole array at every unoptimized move boundary. The
-/// private [`UnitFences`] token is still the only authority that may operate on
-/// occupied slots; dropping it leaks safe claims rather than making them
-/// available without an observed return.
 static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; pci::FUNCTION_AUTHORITY_LIMIT]);
 
-/// Read and validate firmware's DMAR while the heap is still free to grow.
-///
-/// A missing or malformed table is logged here and every later candidate is
-/// refused; nothing a candidate does can cure it.
+// Runs before any candidate, while the heap may still grow; candidates never allocate.
 pub(crate) fn discover(rsdp: u64) {
     match acpi::find_unique_table(rsdp, Sdt::DMA_COVERAGE) {
         Ok(table) => match DmaCoverage::new(&table) {
@@ -232,7 +184,6 @@ pub(crate) fn discover(rsdp: u64) {
     *DMAR.lock_leaf() = Some(table.leak());
 }
 
-/// Install the sole segment-zero unit's empty root before PCI discovery.
 pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
     if INSTALLED.lock().is_some() {
         return false;
@@ -320,9 +271,6 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
     true
 }
 
-/// The sole unit statically covers segment zero, either through standard DMAR
-/// authority or a unique checksummed platform attestation naming that exact
-/// RMRR-free DMAR unit.
 fn early_register_base(dmar: &Dmar<'_>) -> Option<u64> {
     if let Some(register_base) = dmar.sole_complete_unit_register_base(SEGMENT) {
         return Some(register_base);
@@ -334,14 +282,12 @@ fn early_register_base(dmar: &Dmar<'_>) -> Option<u64> {
         .then_some(register_base)
 }
 
-/// The remapping unit firmware says governs one function.
 #[derive(Debug)]
 struct Unit {
     register_base: u64,
     requesters: RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
 }
 
-/// Every non-selected requester kept BME-off while its DRHD may transition.
 #[derive(Debug)]
 struct UnitFences {
     count: usize,
@@ -373,9 +319,6 @@ impl UnitFences {
         self.count += 1;
     }
 
-    /// Return every fence, or the exact remainder, kept in a fixed vault so an
-    /// ownership-carrying refusal needs neither heap indirection nor a
-    /// pathologically large stack value.
     fn release(self) -> Result<(), Self> {
         let mut retained_count = 0;
         for index in 0..self.count {
@@ -408,8 +351,6 @@ impl UnitFences {
     }
 }
 
-/// The unit-wide owner: hardware tables and every sibling command fence stay
-/// inseparable through takeover, steady state and release.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum InstalledState {
     Ready,
@@ -438,7 +379,6 @@ impl DerefMut for InstalledUnit {
     }
 }
 
-/// Why no unit may be trusted to govern one function.
 #[derive(Debug)]
 enum LookupError {
     NoTable,
@@ -493,11 +433,6 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     })
 }
 
-/// Whether this one unit covers every requester in the sealed live topology.
-///
-/// The initial interrupt-remapping implementation deliberately supports one
-/// live DRHD. A second or ungoverned requester refuses PCI interrupt admission
-/// instead of leaving a vector-injection path through another unit.
 fn covers_every_present_requester(
     requesters: &RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
 ) -> bool {
@@ -520,10 +455,6 @@ fn covers_every_present_requester(
     true
 }
 
-/// The buses behind the bridge at `at` in the sealed topology snapshot.
-///
-/// `None` for an absent function, one that is not a bridge, or a segment the
-/// configuration ports do not reach.
 fn bridge_buses(at: Bdf) -> Option<BusRange> {
     if at.segment() != SEGMENT {
         return None;
@@ -536,7 +467,6 @@ fn bridge_buses(at: Bdf) -> Option<BusRange> {
     })
 }
 
-/// Whether one requester lies below one bridge in the sealed parent chain.
 fn hierarchy_contains(root: Bdf, target: Bdf) -> bool {
     if root.segment() != SEGMENT || target.segment() != SEGMENT {
         return false;
@@ -550,9 +480,6 @@ fn hierarchy_contains(root: Bdf, target: Bdf) -> bool {
     pci::topology_hierarchy_contains(root, target)
 }
 
-/// Whether one exact requester ID is present in the sealed DMA inventory.
-///
-/// Presence comes from the same sealed, all-function snapshot as ancestry.
 fn requester_is_present(at: Bdf) -> bool {
     if at.segment() != SEGMENT {
         return false;
@@ -601,7 +528,6 @@ fn unit_for(at: Address) -> Option<Unit> {
     }
 }
 
-/// Whether the candidate acquired a complete unit-wide DMA boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum EstablishOutcome {
     Established,
@@ -676,7 +602,7 @@ pub(crate) fn admit_upstream_bus_master(
         match admitted {
             None | Some(Ok(())) => {}
             Some(Err(EnableError::Restore)) => return Err(EnableError::Restore),
-            // A clean refusal leaves the bridge as the entry fence did, which emulated bridges ignore.
+            // A clean refusal leaves the bridge as the entry fence did; emulators ignore its BME.
             Some(Err(reason)) => warn!("iommu: bridge {bridge} kept bus mastering off: {reason}"),
         }
     }
@@ -690,13 +616,10 @@ fn release_refused_fences(fences: UnitFences) -> FenceAcquisition {
     }
 }
 
-/// The installed unit, or nothing: every DMA seam locks this and refuses
-/// without it.
 pub(crate) fn installed() -> ThreadLockGuard<'static, Option<InstalledUnit>> {
     INSTALLED.lock()
 }
 
-/// Retarget the early unit-wide DMA-remapping owner to `device`.
 pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
     let at = device.at();
     let Some(unit) = unit_for(at) else {
@@ -753,11 +676,6 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
     }
 }
 
-/// Verify every live PCI requester remains behind the early default-deny owner.
-///
-/// A selected storage controller has already proved complete requester
-/// coverage. With no selected controller, one anchor drives that same complete
-/// inventory proof; an empty snapshot still needs the real installed owner.
 pub(crate) fn ensure_interrupt_boundary() -> bool {
     match pci::topology_presence() {
         pci::TopologyPresence::Unsealed => return false,
@@ -782,7 +700,6 @@ pub(crate) fn ensure_interrupt_boundary() -> bool {
     unit_for(anchor).is_some_and(|unit| unit.register_base == owner.register_base)
 }
 
-/// Whether the current installed owner still proves default-deny remapping.
 pub(crate) fn is_interrupt_boundary_active() -> bool {
     if matches!(pci::topology_presence(), pci::TopologyPresence::Unsealed) {
         return false;
@@ -820,12 +737,7 @@ fn release_fences(fences: UnitFences) -> bool {
     }
 }
 
-/// Park the candidate's DMA domain after it has stopped bus-mastering.
-///
-/// The unit's register mapping, empty interrupt table, masked fault-event MSI
-/// and TE/IRE state remain installed forever. Only sibling requester fences
-/// are returned so selection can lease the next candidate; its DMA tables are
-/// retargeted through the same live default-deny owner.
+// The candidate's bus mastering must already be off.
 pub(crate) fn release_candidate() -> bool {
     let fences = {
         let mut installed = INSTALLED.lock();
@@ -860,7 +772,6 @@ pub(crate) fn release_candidate() -> bool {
     false
 }
 
-/// Clear one inventory-bounded fault batch and report it once.
 pub(crate) fn report_faults() {
     let drained = {
         let mut installed = INSTALLED.lock();

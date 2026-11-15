@@ -1,12 +1,6 @@
-//! A FAT32 volume on the one controller, read-only: nothing here writes (`014`), so the
-//! third-party volume carries no on-disk write risk.
-//!
-//! The NVMe sector source for `libs/fat32`, whose same reader runs on the host as the oracle.
-
 use fat32::{DirectoryChunk, DirectoryCursor, Entry, FatError, Sectors, Volume};
 
-/// Where the volume begins, in sectors: a megabyte in, where a partition table would put it.
-/// `xtask` writes the volume there, and a host test compares the two.
+// `xtask` writes the volume a megabyte in, where a partition table would put it.
 pub(crate) const VOLUME_SECTOR: u64 = 2048;
 
 #[derive(Debug)]
@@ -24,14 +18,12 @@ impl Sectors for Blocks {
     }
 }
 
-/// One mounted read-only volume without controller ownership.
 #[derive(Debug)]
 pub(crate) struct Mounted {
     volume: Volume<Blocks>,
 }
 
 impl Mounted {
-    /// Cluster count and bytes per cluster reported by the mounted layout.
     pub(crate) const fn shape(&self) -> (u32, u32) {
         (
             self.volume.bpb().clusters(),
@@ -39,12 +31,10 @@ impl Mounted {
         )
     }
 
-    /// Root directory cluster.
     pub(crate) const fn root_cluster(&self) -> u32 {
         self.volume.bpb().root_cluster()
     }
 
-    /// Resolve every component within this one mounted layout.
     pub(crate) fn resolve(&mut self, from: u32, components: &[&[u8]]) -> Result<Entry, FatError> {
         let mut directory = from;
         for (index, name) in components.iter().enumerate() {
@@ -60,7 +50,6 @@ impl Mounted {
         Err(FatError::NotFound)
     }
 
-    /// Read one file range.
     pub(crate) fn read_file(
         &mut self,
         cluster: u32,
@@ -72,7 +61,6 @@ impl Mounted {
             .read_file(&Entry::for_contents(cluster, size), offset, into)
     }
 
-    /// Copy the next bounded directory chunk.
     pub(crate) fn directory_chunk(
         &mut self,
         cursor: &mut DirectoryCursor,

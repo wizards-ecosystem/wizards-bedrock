@@ -7,14 +7,11 @@ use wost::mm::{self, EarlyFirmwareMemory};
 
 use crate::{debug, warn};
 
-/// I/O APIC descriptions this boot may temporarily map at once.
 const MAX_IO_APICS: usize = 16;
 
-/// A corrupt firmware length must not turn table discovery into an unbounded
-/// allocation. Real ACPI tables are far smaller than this ceiling.
+// A corrupt length must not become an unbounded allocation; real tables are far smaller.
 const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
 
-/// Maximum fixed root table extent: its header plus 256 XSDT pointers.
 const ROOT_TABLE_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
 
 const ROOT_POINTER_PREFIX: usize = 24;
@@ -105,8 +102,7 @@ fn find_table_with_multiplicity(
     )
 }
 
-// An entry whose header cannot be read, a null one included, is skipped; a matching table must be
-// whole and checksummed or the lookup fails.
+// Unreadable entries, null ones included, are skipped; a match must be whole and checksummed.
 fn find<T: AsMut<[u8]> + AsRef<[u8]>>(
     read: impl Fn(u64, &mut [u8]) -> bool,
     rsdp: u64,
@@ -174,13 +170,9 @@ fn find<T: AsMut<[u8]> + AsRef<[u8]>>(
     found.ok_or(TableError::Missing)
 }
 
-/// What ACPI says about interrupt routing.
 pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 
-/// Walk the ACPI tables from the root pointer and report interrupt routing.
-///
-/// `rsdp` is the *virtual* address the bootloader reported, which base
-/// revision 4 guarantees is inside the direct map.
+// `rsdp` is the bootloader's virtual address, which base revision 4 puts in the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     let madt = match find_table(rsdp, Sdt::MADT) {
         Ok(madt) => madt,
@@ -213,7 +205,7 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     (interrupts.io_apic_count() != 0).then_some(interrupts)
 }
 
-/// Allocate a zeroed firmware buffer without invoking the allocation handler.
+// Fallible, so a corrupt length never reaches the allocation-failure handler.
 fn zeroed(length: usize) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length).ok()?;

@@ -3,31 +3,24 @@ use wost::arch::current::vtd::{SegmentChangeError, Vtd};
 use wost::mm::{self, DmaSegment};
 use x86_paging::PAGE_SIZE;
 
-/// One submission queue and the completion queue that answers it.
 #[derive(Debug)]
 pub(super) struct QueuePair {
-    /// Which queue this is; zero is the admin pair.
     pub(super) id: u16,
-    /// How many entries each holds.
     pub(super) capacity: Capacity,
-    /// The submission entries, physically contiguous.
     pub(super) submission: DmaSegment,
-    /// The completion entries, likewise.
     pub(super) completion: DmaSegment,
-    /// Whether each segment may still have a live or cached VT-d translation; an uncertain map or
-    /// unmap leaves it set and retains the segment, so neither `Drop` nor teardown recycles it.
+    // Set while a translation may be live or cached; an uncertain change leaves it set.
     submission_mapped: bool,
     completion_mapped: bool,
-    /// Where the host writes next, shadowed because the doorbell is write-only.
+    // Shadowed because the doorbell is write-only.
     pub(super) tail: u32,
     pub(super) submission_head: u32,
     pub(super) completion_head: u32,
-    /// The phase a new completion carries; a zeroed queue reads zero, so the first pass wants one.
+    // A zeroed queue reads phase zero, so the first pass wants one.
     pub(super) phase: bool,
 }
 
 impl QueuePair {
-    /// Allocate and clear both queues.
     pub(super) fn new(id: u16, capacity: Capacity) -> Option<Self> {
         let submission_frames = frames_for(capacity.submission_bytes());
         let completion_frames = frames_for(capacity.completion_bytes());
@@ -53,13 +46,11 @@ impl QueuePair {
         })
     }
 
-    /// Withhold every queue frame a controller may still reach.
     pub(super) fn retain(&mut self) {
         self.submission.retain();
         self.completion.retain();
     }
 
-    /// Withhold only segments which may still be named by the domain.
     pub(super) fn retain_mapped(&mut self) {
         if self.submission_mapped {
             self.submission.retain();
@@ -73,7 +64,6 @@ impl QueuePair {
         self.submission_mapped || self.completion_mapped
     }
 
-    /// Make both queues reachable by the device, or neither.
     #[must_use = "unmapped queues cannot be published to the controller"]
     pub(super) fn map_into(&mut self, isolation: &mut Vtd) -> bool {
         if self.has_mappings() {
@@ -109,7 +99,6 @@ impl QueuePair {
         true
     }
 
-    /// Remove and invalidate every queue translation before its frames drop.
     pub(super) fn unmap_from(&mut self, isolation: &mut Vtd) -> bool {
         if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {
             self.submission_mapped = false;
@@ -127,7 +116,6 @@ impl Drop for QueuePair {
     }
 }
 
-/// Frames enough to hold `bytes`.
 const fn frames_for(bytes: u64) -> usize {
     bytes.div_ceil(PAGE_SIZE) as usize
 }

@@ -8,27 +8,19 @@ use super::PhysicalAddress;
 use super::direct::DirectSpan;
 use super::frame::{Segment, allocate_contiguous};
 
-/// Frames a device may reach by DMA; a live mapping keeps them from recycling even after drop.
-///
-/// A command of uncertain completion must never return its frames, since the device may write them.
-/// [`retain`](Self::retain) removes all safe access too when completion or revocation is uncertain.
+// A mapped or uncertain segment never returns its frames: the device may still write them.
 #[derive(PartialEq, Eq, Debug)]
 pub struct DmaSegment {
     segment: Option<Segment>,
     mapping_owner: Option<DmaMappingOwner>,
 }
 
-/// Stable identity of a VT-d root whose published frames cannot be recycled.
+// Unique for the boot because the root it names is never freed.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct DmaMappingOwner(NonZeroU64);
 
 impl DmaMappingOwner {
-    /// Name a root whose published owner permanently withholds its allocation.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the root is not frame aligned.
     pub(crate) const fn new(root: PhysicalAddress) -> Self {
         let Some(identity) = frame_identity(root.get()) else {
             panic!("a DMA mapping owner root is not frame aligned");
@@ -38,7 +30,6 @@ impl DmaMappingOwner {
 }
 
 impl DmaSegment {
-    /// Reserve the single mapping lease before its first hardware publication.
     pub(crate) fn begin_mapping(&mut self, owner: DmaMappingOwner) -> bool {
         if self.segment.is_none() || self.mapping_owner.is_some() {
             return false;
@@ -47,12 +38,10 @@ impl DmaSegment {
         true
     }
 
-    /// Whether this exact never-recycled root owns the live mapping lease.
     pub(crate) fn is_mapped_by(&self, owner: DmaMappingOwner) -> bool {
         self.mapping_owner == Some(owner)
     }
 
-    /// End the exact owner's lease after proved rollback or DMA revocation.
     pub(crate) fn release_mapping(&mut self, owner: DmaMappingOwner) -> bool {
         if !self.is_mapped_by(owner) {
             return false;
@@ -61,7 +50,6 @@ impl DmaSegment {
         true
     }
 
-    /// Where the run begins, unless an uncertain device still owns it.
     pub const fn address(&self) -> Option<PhysicalAddress> {
         match &self.segment {
             Some(segment) => Some(segment.address()),
@@ -69,7 +57,6 @@ impl DmaSegment {
         }
     }
 
-    /// Bytes in the run, unless uncertain device ownership retained it.
     #[expect(
         clippy::len_without_is_empty,
         reason = "None means retained by a device, not an empty collection"
@@ -81,12 +68,10 @@ impl DmaSegment {
         }
     }
 
-    /// Whether the run is unavailable because a device may still reach it.
     pub const fn is_retained(&self) -> bool {
         self.segment.is_none()
     }
 
-    /// Fill every available byte with `byte`.
     #[must_use = "a refused DMA-segment fill changed no bytes"]
     pub fn fill(&mut self, byte: u8) -> bool {
         let Some(segment) = self.segment.as_mut() else {
@@ -98,13 +83,11 @@ impl DmaSegment {
         span.fill(byte)
     }
 
-    /// Fill every available byte with zeros.
     #[must_use = "a refused DMA-segment clear changed no bytes"]
     pub fn zero(&mut self) -> bool {
         self.fill(0)
     }
 
-    /// Write `bytes` at `offset` while the run is host-owned.
     #[must_use = "a refused DMA-segment write changed no bytes"]
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
         let Some(segment) = self.segment.as_mut() else {
@@ -116,7 +99,6 @@ impl DmaSegment {
         span.write_at(offset, bytes)
     }
 
-    /// Read bytes while the run is host-owned.
     #[must_use = "a refused DMA-segment read copied no bytes"]
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
         let Some(segment) = self.segment.as_ref() else {
@@ -128,7 +110,6 @@ impl DmaSegment {
         span.read_at(offset, into)
     }
 
-    /// Permanently withhold the run from safe access and recycling, idempotently for a controller.
     pub fn retain(&mut self) {
         if let Some(segment) = self.segment.take() {
             core::mem::forget(segment);
@@ -153,19 +134,13 @@ impl From<Segment> for DmaSegment {
     }
 }
 
-/// How an IOMMU reads the tables the CPU writes for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TableWalks {
-    /// The unit snoops the processor caches, so a volatile write is visible once it lands.
     Coherent,
-    /// The unit reads memory directly, so each written line is flushed before the unit uses it.
     Uncached,
 }
 
-/// Kernel-owned frames an IOMMU walks as a root, context or second-level table.
-///
-/// Never mapped into any device's translation, so no device reaches the structure constraining it.
-/// Unpublished tables free their frames on drop; [`PublishedIommuTable`] retains what a unit saw.
+// Never mapped into any device's translation, so no device reaches the tables over it.
 #[derive(Debug)]
 pub(crate) struct IommuTable {
     frames: Segment,
@@ -173,7 +148,6 @@ pub(crate) struct IommuTable {
 }
 
 impl IommuTable {
-    /// Allocate `frames` contiguous zeroed frames, the zeros visible to a unit that walks `walks`.
     pub(crate) fn new(frames: usize, walks: TableWalks) -> Option<Self> {
         let mut segment = allocate_contiguous(frames, 1)?;
         if !segment.fill(0) {
@@ -192,12 +166,10 @@ impl IommuTable {
         published.then_some(table)
     }
 
-    /// The physical address programmed into the unit or a parent entry.
     pub(crate) const fn address(&self) -> PhysicalAddress {
         self.frames.address()
     }
 
-    /// Overwrite the eight-byte entry at `index`, visibly to the unit.
     #[must_use = "a refused IOMMU-table write changed no bytes"]
     pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
         let walks = self.walks;
@@ -220,7 +192,6 @@ impl IommuTable {
         }
     }
 
-    /// Read the eight-byte entry at `index`.
     pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
         let span = DirectSpan::from_segment(&self.frames)?;
         let mut bytes = [0u8; 8];
@@ -229,31 +200,27 @@ impl IommuTable {
     }
 }
 
-/// A table that a unit may have observed, retained even when its owner drops.
+// A unit may have observed it, so its frames are never freed.
 #[derive(Debug)]
 pub(crate) struct PublishedIommuTable {
     table: ManuallyDrop<IommuTable>,
 }
 
 impl PublishedIommuTable {
-    /// Convert unpublished frames before a unit can first observe them.
     pub(crate) const fn new(table: IommuTable) -> Self {
         Self {
             table: ManuallyDrop::new(table),
         }
     }
 
-    /// The stable physical address programmed into hardware.
     pub(crate) fn address(&self) -> PhysicalAddress {
         self.table.address()
     }
 
-    /// Publish one checked qword through the retained table's original writer.
     pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
         self.table.write_u64(index, value)
     }
 
-    /// Read one checked qword from the retained allocation.
     pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
         self.table.read_u64(index)
     }

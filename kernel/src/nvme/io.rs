@@ -15,17 +15,14 @@ use crate::thread::ThreadContext;
 use crate::{mem, warn};
 
 impl Controller {
-    /// What `CAP` said.
     pub(crate) const fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
 
-    /// Entries in each queue.
     pub(crate) const fn queue_entries(&self) -> u32 {
         self.admin.capacity.entries()
     }
 
-    /// Ask the namespace how large it is and how large its blocks are.
     pub(super) fn identify_namespace(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         let mut buffer =
             DmaSegment::from(mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?);
@@ -45,7 +42,6 @@ impl Controller {
         self.configure_namespace(&identify, capacity)
     }
 
-    /// Validate and commit namespace geometry before I/O queues can exist.
     fn configure_namespace(
         &mut self,
         identify: &[u8; NAMESPACE_IDENTIFY_BYTES],
@@ -58,16 +54,13 @@ impl Controller {
         Ok(())
     }
 
-    /// Build the one I/O queue pair, with its interrupts disabled.
     fn create_io_queues(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         let negotiation =
             Command::number_of_queues(self.take_id(), 1, 1).ok_or(BringUpError::QueueSize)?;
         self.submit_admin(negotiation, None)?;
 
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
-        // Owned before the first fallible domain transition: retirement must see an uncertain
-        // partial map, and keeps device and domain quarantined until the exact queue leaves are
-        // invalidated.
+        // Owned before the first fallible domain transition, so retirement sees a partial map.
         self.io = Some(pair);
         // Reachable before the controller can be told about either queue.
         {
@@ -89,8 +82,7 @@ impl Controller {
             .address()
             .ok_or(BringUpError::NoMemory)?
             .get();
-        // Once either command is published the controller can retain these runs, so cleanup owns
-        // both. Completion first since submission names it; clear `IEN` keeps it polled (`012` §2).
+        // The completion queue first since the submission queue names it; clear `IEN` polls it.
         let completion = Command::create_completion_queue(
             self.take_id(),
             IO_QUEUE,
@@ -115,8 +107,6 @@ impl Controller {
         Ok(())
     }
 
-    /// Read `blocks` logical blocks starting at `lba` into `into`; a request that does not fit
-    /// the command, namespace or DMA extent fails with `InvalidTransfer` before submission.
     pub(crate) fn read_blocks(
         &mut self,
         lba: u64,
@@ -128,7 +118,6 @@ impl Controller {
         self.submit_read(request, into)
     }
 
-    /// Bind raw caller arguments to this namespace before submission.
     fn validate_read(
         &self,
         lba: u64,
@@ -146,7 +135,6 @@ impl Controller {
         .map_err(BringUpError::InvalidTransfer)
     }
 
-    /// Build and publish a read already proved to fit every outer bound.
     fn submit_read(
         &mut self,
         request: ReadTransfer,
@@ -162,14 +150,12 @@ impl Controller {
         self.submit_on(IO_QUEUE, command, Some(into)).map(|_| ())
     }
 
-    /// The next command identifier.
     fn take_id(&mut self) -> u16 {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         id
     }
 
-    /// Run one command on the admin queue.
     fn submit_admin(
         &mut self,
         command: Command,
@@ -178,10 +164,7 @@ impl Controller {
         self.submit_on(0, command, data)
     }
 
-    /// Submit `command` to queue `queue_id` and spin until it is answered.
-    /// Nothing is published without an installed DMA domain; the transfer buffer enters it
-    /// before the doorbell and leaves once the completion proves the device is done with it,
-    /// so the device reaches exactly the published and unretired set.
+    // The buffer enters the domain before the doorbell and leaves once a completion proves it idle.
     fn submit_on(
         &mut self,
         queue_id: u16,
@@ -224,8 +207,7 @@ impl Controller {
             return Err(BringUpError::NotReady);
         }
 
-        // Reserve ownership first: a refused staging cancels it, and only a rung doorbell needs
-        // controller quiescence to recover.
+        // Reserve first: a refused staging cancels it; only a rung doorbell needs quiescence.
         let submission_tail = match self.stage_submission(queue_id, &command) {
             Ok(tail) => tail,
             Err(reason) => {
@@ -270,7 +252,7 @@ impl Controller {
                 if !self.dma.complete() {
                     panic!("a matching completion must finish one published command");
                 }
-                // The completion proves the device is done, so the buffer leaves the domain first.
+                // The buffer leaves the domain before the completion is acknowledged.
                 if !unmap_data(isolation, data.as_deref_mut(), mapping) {
                     return self.fail_controller(BringUpError::Isolation);
                 }
@@ -287,7 +269,6 @@ impl Controller {
         self.fail_submitted(BringUpError::Timeout, data, isolation, mapping)
     }
 
-    /// Write `command` at the tail of queue `queue_id` and return the tail the doorbell publishes.
     fn stage_submission(&mut self, queue_id: u16, command: &Command) -> Result<u32, BringUpError> {
         let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
         let at = queue.tail as usize * nvme::SUBMISSION_ENTRY_BYTES;
@@ -301,7 +282,6 @@ impl Controller {
         Ok(queue.tail)
     }
 
-    /// The entry at the completion head, if its phase tag says it is new (`012` §3).
     fn poll_completion(&mut self, queue_id: u16) -> Result<Option<Completion>, BringUpError> {
         let queue = self.queue_mut(queue_id).ok_or(BringUpError::NotReady)?;
         let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
@@ -318,7 +298,6 @@ impl Controller {
         Ok(Some(Completion::from_bytes(bytes)))
     }
 
-    /// Require `entry` to answer the command just published, then advance both heads.
     fn accept_completion(
         &mut self,
         queue_id: u16,
@@ -349,7 +328,6 @@ impl Controller {
         Ok(())
     }
 
-    /// Ring the completion doorbell with the new head.
     fn acknowledge_completion(&mut self, queue_id: u16) -> Result<(), BringUpError> {
         let doorbell = nvme::doorbell(self.capabilities, queue_id, nvme::Doorbell::Completion)
             .ok_or(BringUpError::NotReady)?;
@@ -363,8 +341,7 @@ impl Controller {
             .and_then(|registers| write(registers, doorbell, head))
     }
 
-    /// Stop uncertain DMA before exposing an error to the caller. A buffer the stop proved
-    /// quiescent leaves the domain; a retained one stays mapped, as the device may still reach it.
+    // A retained buffer stays mapped, as the device may still reach it.
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
@@ -380,14 +357,12 @@ impl Controller {
         Err(error)
     }
 
-    /// Fail closed after a completion made the transfer buffer safe.
     fn fail_controller<T>(&mut self, error: BringUpError) -> Result<T, BringUpError> {
         warn!("nvme: {error}; the controller is stopped for the rest of the boot");
         self.stop_dma(None);
         Err(error)
     }
 
-    /// Disable the controller and verify it idle, or withhold all DMA memory.
     pub(super) fn stop_dma(&mut self, data: Option<&mut DmaSegment>) {
         if !self.dma.is_settled() {
             match stop_controller(self) {
@@ -407,7 +382,7 @@ impl Controller {
         }
     }
 
-    /// Remove every queue from the installed domain before its frames drop.
+    // Every queue leaves the domain before its frames drop.
     fn unmap_queues(&mut self) -> bool {
         let io_mapped = self.io.as_ref().is_some_and(QueuePair::has_mappings);
         if !self.admin.has_mappings() && !io_mapped {
@@ -429,7 +404,6 @@ impl Controller {
         admin && io
     }
 
-    /// Fence DMA, stop the engine, retire every queue and then retire the BAR.
     pub(crate) fn retire(
         mut self,
         device: &mut crate::pci::Device,
@@ -472,7 +446,6 @@ impl Controller {
             && !data.is_retained()
     }
 
-    /// The queue pair with this identifier.
     fn queue_mut(&mut self, queue_id: u16) -> Option<&mut QueuePair> {
         if queue_id == self.admin.id {
             return Some(&mut self.admin);
@@ -481,14 +454,12 @@ impl Controller {
     }
 }
 
-/// Whether a submission put its transfer buffer into the domain.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DataMapping {
     Mapped,
     Unmapped,
 }
 
-/// Take a published buffer out of the domain, or report that it is still in.
 fn unmap_data(isolation: &mut Vtd, data: Option<&mut DmaSegment>, mapping: DataMapping) -> bool {
     mapping == DataMapping::Unmapped
         || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())

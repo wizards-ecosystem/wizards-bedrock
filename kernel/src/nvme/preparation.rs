@@ -16,8 +16,7 @@ pub(crate) fn prepare(context: &mut ThreadContext, mut registers: MappedBar) -> 
             return PrepareOutcome::Failed(PrepareFailure::quarantined(reason, registers));
         }
     };
-    // Disabled before any policy refusal, so even an unsupported controller
-    // can be retired without leaving firmware DMA behind.
+    // Disabled before any policy refusal, so firmware DMA is never left on.
     if let Err(reason) = disable(&mut registers, capabilities) {
         return PrepareOutcome::Failed(PrepareFailure::quarantined(reason, registers));
     }
@@ -113,7 +112,6 @@ fn program_admin_registers(
     Ok(())
 }
 
-/// Return a mapping while the controller is already verified disabled.
 fn retire_disabled(
     context: &mut ThreadContext,
     registers: MappedBar,

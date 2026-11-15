@@ -1,24 +1,3 @@
-//! What is on the bus, and who is allowed to touch it.
-//!
-//! A port claim proves exclusivity, that nobody else drives those ports, and says nothing about
-//! entitlement, whether the claimant is the driver for the thing behind them; the port registry
-//! cannot answer that, because a port range is not a device. So a driver claims a function, a
-//! bus, device and function triple, and the claim carries the windows that function decodes.
-//! Two drivers cannot claim one function, and a bare port claim inside a claimed device's I/O
-//! window is refused because the device already has it.
-//!
-//! Fixed driver claims are permanent, exactly as port claims are and for the same reason: a
-//! driver owns its registers for the kernel's life, and exclusivity rests on no claim ever being
-//! released.
-//! Storage selection additionally has a transient lease: it can advance only after restoring
-//! the command word and returning every dynamic I/O span and registry slot as one retirement.
-//!
-//! Enumeration recurses: VMware places functions behind `pciBridge0` to `pciBridge7` and q35 puts
-//! a DMI-to-PCI bridge at `00:1e.0`, so a controller can sit on a bus that nothing on bus zero
-//! mentions except a bridge (`012` §2). The walk is iterative over a worklist and never
-//! recursive, because kernel stacks are thirty-two kilobytes and a malicious or broken bridge
-//! topology is a cycle.
-
 use core::fmt;
 
 use pci_config::{
@@ -30,48 +9,24 @@ use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
 
-/// Function authorities the platform PCI registry can hold concurrently.
 pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
-/// Buses the walk will visit before giving up.
-///
-/// There are 256 and a correct topology visits each at most once. The bound is
-/// here because a bridge that reports itself as its own secondary bus is a
-/// cycle, and a kernel that trusts the machine's numbering hangs on it.
 const MAX_BUSES: usize = 256;
 
-/// Complete segment-zero function and bridge inventory used by VT-d lookup.
-///
-/// The roughly ten-kibibyte snapshot stays in static storage so proving a
-/// hostile topology never consumes the candidate's fixed boot stack.
+// Static, so a topology proof never consumes the candidate's fixed boot stack.
 static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
 
-/// One function found on the bus.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Function {
-    /// Where it lives.
     pub(crate) at: Address,
-    /// Complete vendor/device dword used by the handoff policy.
     identity: u32,
-    /// What it says it is.
     pub(crate) class: Class,
-    /// Complete class dword, including silicon revision.
     class_bits: u32,
-    /// Command word observed after the entry-time fence.
     command: u16,
-    /// Whether the rest of its header is a bridge's, and whether it has
-    /// siblings.
     pub(crate) header: HeaderType,
 }
 
-/// Walk every bus reachable from bus zero, reporting each function found.
-///
-/// Iterative over a worklist of buses, with each bus queued at most once: a
-/// bridge that names a bus already queued is ignored rather than followed, which
-/// is what keeps a broken topology from being a hang.
-///
-/// Returns what the walk covered, or `None` if configuration space cannot be
-/// reached at all.
+// Each bus is queued once, so a bridge naming a queued bus is ignored, not followed.
 pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     if !pci::is_available() {
         return None;
@@ -88,8 +43,7 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
         for device in 0..pci_config::DEVICES {
             for function in 0..pci_config::FUNCTIONS {
                 let Some(entry) = read_function(bus, device, function) else {
-                    // Function zero absent means the whole device is; the
-                    // specification allows gaps but never a missing first function.
+                    // Function zero absent means the device is; the specification never skips it.
                     if function == 0 {
                         break;
                     }
@@ -102,8 +56,7 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     survey.bridges += 1;
                 }
 
-                // Both tests: the class says what the function is for and the
-                // header type says what its registers mean.
+                // A bridge needs its class and header type: one says what it is, one its layout.
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
@@ -122,7 +75,6 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
     Some(survey)
 }
 
-/// Buses waiting to be walked, each claimed when it is queued.
 #[derive(Debug)]
 struct Worklist {
     claimed: [bool; MAX_BUSES],
@@ -157,24 +109,14 @@ impl Worklist {
     }
 }
 
-/// What one walk of the bus covered.
-///
-/// Buses as well as functions, because a kernel that scans bus zero and stops finds every
-/// function q35 has and reports a plausible number. Only the bus count says whether it went
-/// through the bridge.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub(crate) struct Survey {
-    /// Functions reported.
     pub(crate) functions: usize,
-    /// Buses actually visited.
     pub(crate) buses: usize,
-    /// Bridges seen, whether or not they led anywhere new.
     pub(crate) bridges: usize,
-    /// The highest bus number visited.
     pub(crate) highest_bus: u8,
 }
 
-/// Read one function's identity, or `None` if nothing is there.
 fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     let at = Address::new(bus, device, function, header::VENDOR)?;
     let identity = pci::read(at)?;
@@ -254,15 +196,10 @@ pub(crate) fn snapshot_topology(
     TOPOLOGY.lock_leaf().seal()
 }
 
-/// Whether the complete segment-zero topology passed its rooted-tree proof.
 pub(crate) fn topology_is_sealed() -> bool {
     TOPOLOGY.lock_leaf().is_sealed()
 }
 
-/// Whether the PCI requester inventory is unavailable, empty, or populated.
-///
-/// Security decisions must distinguish an empty sealed inventory from a probe
-/// that observed functions but failed before it could seal their topology.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TopologyPresence {
     Unsealed,
@@ -270,22 +207,18 @@ pub(crate) enum TopologyPresence {
     Present,
 }
 
-/// The sealed bus range behind one exact bridge function.
 pub(crate) fn topology_bridge_range(at: Address) -> Option<pci_config::BridgeRange> {
     TOPOLOGY.lock_leaf().bridge_range(at)
 }
 
-/// Whether one exact function answered the sealed independent probe.
 pub(crate) fn topology_contains_function(at: Address) -> bool {
     TOPOLOGY.lock_leaf().contains_function(at)
 }
 
-/// Whether one exact function is a DMA requester in the sealed snapshot.
 pub(crate) fn topology_contains_requester(at: Address) -> bool {
     topology_contains_function(at) && TOPOLOGY.lock_leaf().contains_requester(at)
 }
 
-/// The first requester in the sealed snapshot, for an interrupt-only boundary.
 pub(crate) fn first_topology_function() -> Option<Address> {
     if !topology_is_sealed() {
         return None;
@@ -303,7 +236,6 @@ pub(crate) fn first_topology_function() -> Option<Address> {
     None
 }
 
-/// Classify the complete segment-zero requester inventory.
 pub(crate) fn topology_presence() -> TopologyPresence {
     if !topology_is_sealed() {
         return TopologyPresence::Unsealed;
@@ -315,59 +247,42 @@ pub(crate) fn topology_presence() -> TopologyPresence {
     }
 }
 
-/// Whether `target` lies below `root` in the sealed parent chain.
 pub(crate) fn topology_hierarchy_contains(root: Address, target: Address) -> bool {
     TOPOLOGY.lock_leaf().hierarchy_contains(root, target)
 }
 
-/// The bus behind a bridge.
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
     Some(pci_config::secondary_bus(pci::read(at)?))
 }
 
-/// A committed controller whose command word no longer matched its lease.
 static RETAINED_COMMAND: SpinLock<Option<Device>> = SpinLock::new(None);
 
-/// An uncertain BAR restoration retained after its bounded retry refused.
 static RETAINED_PROBE: SpinLock<Option<ProbeRecovery>> = SpinLock::new(None);
 
-/// Device leases whose final exact release remained refused.
 static RETAINED_RELEASES: SpinLock<[Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
 
-/// Bare function claims whose final sublease-free release remained refused.
 static RETAINED_FUNCTIONS: SpinLock<[Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
     SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
 
-/// Why a device could not be claimed.
 #[derive(Debug)]
 pub(crate) enum ClaimError {
-    /// Configuration space cannot be reached.
     NoBus,
-    /// Nothing is at that address.
     Absent,
-    /// Another driver holds it, and still does.
     Taken,
-    /// The registry is full, which bounds devices ever claimed.
     NoRoom,
-    /// A BAR consumes another header field or reports an impossible window.
     InvalidWindow,
-    /// BAR or command restoration remains uncertain under its function lease.
     ProbeRestore(ProbeRecovery),
-    /// A restored, otherwise clean function remains quarantined in the registry.
     FunctionRetained,
 }
 
-/// A sibling requester held unable to bus-master for a unit-wide VT-d
-/// transition.
 #[derive(Debug)]
 pub(crate) struct DmaFence {
     function: pci::FunctionClaim,
     command_state: Option<CommandState>,
 }
 
-/// Why a sibling requester could not enter or leave the unit fence.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DmaFenceError {
     Claim(pci::ClaimError),
@@ -391,7 +306,6 @@ impl fmt::Display for DmaFenceError {
 
 impl core::error::Error for DmaFenceError {}
 
-/// The ownership-preserving results of acquiring a sibling DMA fence.
 #[derive(Debug)]
 pub(crate) enum DmaFenceOutcome {
     Fenced(DmaFence),
@@ -402,7 +316,6 @@ pub(crate) enum DmaFenceOutcome {
     },
 }
 
-/// A refused sibling-fence release with its complete retry owner.
 #[derive(Debug)]
 pub(crate) struct DmaFenceRelease {
     pub(crate) reason: DmaFenceError,
@@ -425,7 +338,6 @@ impl DmaFence {
         pci::admit_bridge_bus_master(&self.function, domain, interrupts, state)
     }
 
-    /// Restore the safe command word and return the exact function claim.
     pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
         if let Some(state) = self.command_state.take()
             && let Err(failure) = pci::restore_command(&self.function, state)
@@ -447,11 +359,7 @@ impl DmaFence {
     }
 }
 
-/// Claim one declared sibling requester and verify BME clear.
-///
-/// The one entry-quiesced ISA requester cannot clear BME; it is held instead
-/// by its exclusive claim, its unchanged identity and command, and a fresh
-/// remask of its 8237 controllers with no request pending.
+// The entry-quiesced ISA requester cannot clear BME; its claim and 8237 mask hold it.
 pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
     let function = match pci::claim_function(at) {
         Ok(function) => function,
@@ -522,46 +430,37 @@ fn fence_quiesced_requester(
     }
 }
 
-/// One uncertain BAR restoration and the function authority it still owns.
 #[derive(Debug)]
 pub(crate) struct ProbeRecovery {
     function: pci::FunctionClaim,
     retry: ProbeRetry,
 }
 
-/// A refused recovery with the unchanged function and restoration authority.
 #[derive(Debug)]
 pub(crate) struct ProbeRecoveryFailure {
     reason: ProbeError<()>,
     recovery: ProbeRecovery,
 }
 
-/// Result of retrying an uncertain PCI probe restoration.
 #[derive(Debug)]
 #[must_use = "probe recovery may retain exclusive function authority"]
 pub(crate) enum ProbeRecoveryOutcome {
-    /// Registers were restored and the function claim was returned.
     Recovered,
-    /// Restoration still owns an exact retry.
     Refused(ProbeRecoveryFailure),
-    /// Restoration finished, but the function claim remains quarantined.
     FunctionRetained,
 }
 
 impl ProbeRecoveryFailure {
-    /// Why the restoration remains uncertain.
     pub(crate) const fn reason(&self) -> &ProbeError<()> {
         &self.reason
     }
 
-    /// Recover the complete retry authority.
     pub(crate) fn into_recovery(self) -> ProbeRecovery {
         self.recovery
     }
 }
 
 impl ProbeRecovery {
-    /// Retry exact BAR and command restoration, then release the function.
     pub(crate) fn retry(self) -> ProbeRecoveryOutcome {
         let Self { function, retry } = self;
         if let Err(failure) = pci::retry_probe(&function, retry) {
@@ -605,16 +504,11 @@ impl fmt::Display for ClaimError {
 
 impl core::error::Error for ClaimError {}
 
-/// Why a probed memory BAR could not become page-table authority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BarAdmissionError {
-    /// The requested BAR slot is empty.
     Missing,
-    /// The requested BAR is an I/O window.
     NotMemory,
-    /// CPU width, range arithmetic, or immutable memory-map policy refused it.
     Range(paging::MapError),
-    /// Exact function/BAR binding refused it.
     Bind(pci::BarBindError),
 }
 
@@ -631,41 +525,32 @@ impl fmt::Display for BarAdmissionError {
 
 impl core::error::Error for BarAdmissionError {}
 
-/// A refused memory-decode transition with the inaccessible mapped BAR.
 #[derive(Debug)]
 pub(crate) struct BarDecodeFailure {
     reason: BarEnableError,
     bar: pci::DisabledBar,
 }
 
-/// Result of the function-owned BAR decode transition.
 #[derive(Debug)]
 #[must_use = "decode refusal retains an inaccessible mapping"]
 pub(crate) enum BarDecodeOutcome {
-    /// Memory decode is verified and the mapping is accessible.
     Enabled(pci::MappedBar),
-    /// Decode was refused with the mapping retained for cleanup.
     Refused(BarDecodeFailure),
 }
 
 impl BarDecodeFailure {
-    /// Why the BAR did not become accessible.
     pub(crate) const fn reason(&self) -> BarEnableError {
         self.reason
     }
 
-    /// Recover the mapping for exact retirement.
     pub(crate) fn into_bar(self) -> pci::DisabledBar {
         self.bar
     }
 }
 
-/// Why a transient function lease could not be retired exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ReleaseError {
-    /// A configuration write may have taken effect without verified rollback.
     Command,
-    /// The function registry refused the exact claim after all subleases ended.
     Function,
 }
 
@@ -680,7 +565,6 @@ impl fmt::Display for ReleaseError {
 
 impl core::error::Error for ReleaseError {}
 
-/// Result of retiring a device, retaining the complete lease on refusal.
 #[must_use = "a retained PCI lease must be retried or the kernel must stop"]
 #[derive(Debug)]
 pub(crate) struct ReleaseOutcome {
@@ -698,44 +582,33 @@ impl ReleaseOutcome {
         }
     }
 
-    /// Recover the refusal and unchanged lease for an exact retry.
     pub(crate) fn into_retained(self) -> Option<(ReleaseError, Device)> {
         self.retained
     }
 }
 
-/// A claimed function, and the evidence for touching it.
-///
-/// Not `Clone` and not `Copy`: it *is* the claim, and a copy would be a second
-/// driver for one device with nothing to say so. A fixed claim outlives the
-/// boot; a selection lease has an explicit all-or-stop release.
 #[derive(Debug)]
 pub(crate) struct Device {
     function: pci::FunctionClaim,
     bars: ProbedBars,
-    /// The command word to restore before a transient lease may disappear.
     command_state: Option<CommandState>,
-    /// A failed restoration blocks release until a later restoration or fence proof succeeds.
+    // A failed restoration blocks release until a later restoration or fence proof succeeds.
     uncertain: bool,
 }
 
 impl Device {
-    /// Where it lives.
     pub(crate) const fn at(&self) -> Address {
         self.function.address()
     }
 
-    /// Who made it, and which of theirs it is.
     pub(crate) const fn identity(&self) -> (u16, u16) {
         self.function.identity()
     }
 
-    /// The window base address register `index` decodes, if it decodes one.
     pub(crate) fn window(&self, index: usize) -> Option<Window> {
         self.bars.window(index)
     }
 
-    /// Bind one probed memory BAR to this CPU and immutable boot map.
     pub(crate) fn admit_memory_bar(
         &self,
         index: usize,
@@ -752,11 +625,6 @@ impl Device {
             .map_err(BarAdmissionError::Bind)
     }
 
-    /// Admit bus mastering with fresh proof from this function's mapped BAR,
-    /// behind a DMA domain established for this exact function.
-    ///
-    /// Refuses with [`EnableError`] after an exact rollback, or when rollback could not be
-    /// verified; either way the command restoration authority remains in this device.
     pub(crate) fn admit_bus_master(
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
@@ -774,11 +642,6 @@ impl Device {
         Ok(())
     }
 
-    /// Verify BME off and make that restriction survive transient release.
-    ///
-    /// The exact command/function owner stays in `self` on every refusal, so
-    /// the caller can retry once or quarantine the complete device beside its
-    /// DMA domain.
     pub(crate) fn disable_bus_master_for_retirement(&mut self) -> Result<(), EnableError> {
         let Some(state) = self.command_state.as_mut() else {
             self.uncertain = true;
@@ -796,11 +659,7 @@ impl Device {
         }
     }
 
-    /// Restore the now-safe command word while retaining function authority.
-    ///
-    /// Retirement calls this before a unit-wide VT-d disable. The command
-    /// lease is settled, but the enclosing [`Device`] continues to exclude
-    /// every other configuration writer until the unit transition finishes.
+    // Keep the device until the VT-d transition ends: it excludes every other writer.
     pub(crate) fn settle_bus_master_fence_for_retirement(&mut self) -> Result<(), EnableError> {
         let Some(state) = self.command_state.take() else {
             return if self.uncertain {
@@ -819,8 +678,6 @@ impl Device {
         Ok(())
     }
 
-    /// Freshly prove that this exact command owner still has BME clear before
-    /// a unit-wide VT-d transition.
     pub(crate) fn verify_bus_master_fence(&self) -> Result<(), EnableError> {
         let Some(state) = self.command_state.as_ref() else {
             return Err(EnableError::Stale);
@@ -828,7 +685,6 @@ impl Device {
         pci::verify_bus_master_fence(&self.function, state)
     }
 
-    /// Expose one mapped BAR only after its live identity enables memory decode.
     pub(crate) fn enable_memory_bar(&mut self, bar: pci::DisabledBar) -> BarDecodeOutcome {
         let Some(state) = self.command_state.as_mut() else {
             return BarDecodeOutcome::Refused(BarDecodeFailure {
@@ -847,7 +703,6 @@ impl Device {
         }
     }
 
-    /// Make a successful selection lease permanent.
     pub(crate) fn commit(&mut self) -> Result<(), EnableError> {
         if let Some(state) = self.command_state.take()
             && let Err(failure) = pci::commit_command(&self.function, state)
@@ -861,11 +716,7 @@ impl Device {
         Ok(())
     }
 
-    /// Restore and return every resource held by a transient lease.
-    ///
-    /// Any uncertainty leaves the function recorded and forbids selection from
-    /// advancing. Successful return is the proof that the next candidate may
-    /// be touched.
+    // Selection may touch the next candidate only after this returns released.
     pub(crate) fn release(mut self) -> ReleaseOutcome {
         if let Some(state) = self.command_state.take() {
             if let Err(failure) = pci::restore_command(&self.function, state) {
@@ -893,21 +744,18 @@ impl Device {
     }
 }
 
-/// Keep a command-mismatched device claimed after storage selection stops.
 pub(crate) fn retain_failed_commit(device: Device) {
     let mut retained = RETAINED_COMMAND.lock_leaf();
     assert!(retained.is_none(), "two PCI commit failures were retained");
     *retained = Some(device);
 }
 
-/// Keep an uncertain BAR restoration owned after its bounded retry refused.
 pub(crate) fn retain_failed_probe(recovery: ProbeRecovery) {
     let mut retained = RETAINED_PROBE.lock_leaf();
     assert!(retained.is_none(), "two PCI probe failures were retained");
     *retained = Some(recovery);
 }
 
-/// Keep a device lease reachable after its bounded retirement refuses.
 pub(crate) fn retain_failed_release(device: Device) {
     let mut retained = RETAINED_RELEASES.lock_leaf();
     let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
@@ -924,10 +772,6 @@ fn retain_failed_function(function: pci::FunctionClaim) {
     *slot = Some(function);
 }
 
-/// Lease one function while storage selection determines whether to keep it.
-///
-/// Clean refusals record nothing; an uncertain BAR restore returns its exclusive retry owner
-/// instead of releasing the function.
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     let function = pci::claim_function(at).map_err(|reason| match reason {
         pci::ClaimError::Unavailable => ClaimError::NoBus,

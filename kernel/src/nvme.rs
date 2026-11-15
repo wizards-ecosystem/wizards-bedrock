@@ -1,15 +1,3 @@
-//! A polled NVMe controller: `libs/nvme` owns every number, `wost` the accesses and frames.
-//!
-//! Polled (`IEN = 0`, `012` §2) because this kernel has no interrupt sharing: a read spins
-//! only in the file worker, `RingEnter` only admits it, and replacing it needs a measured load.
-//! Bus master must be on for DMA and its absence reports no error; the PCI lease withholds it
-//! until controller-disable readback is exact. The register window must be mapped uncacheable,
-//! since write-back is a silent bug. `CAP` is read, never assumed: queue size, doorbell stride,
-//! timeout and page-size range come from it, and VMware's values are unmeasured (`012` §11).
-//! Unlike `kernel::queue` there is no completion tail: entries are found by their phase tag,
-//! matched by command identifier and not by slot, and capacity is `size - 1`. The arithmetic is
-//! shared through `libs/nvme`; the structure is not.
-
 use core::fmt;
 
 use nvme::{
@@ -37,20 +25,17 @@ pub(crate) use selftest::{
     unmapped_write_is_fenced_for_test,
 };
 
-/// Entries in each queue: small, since one polled command is outstanding at a time, and
-/// clamped against `CAP.MQES` because a controller may offer fewer.
+// One polled command is outstanding at a time; clamped to `CAP.MQES`, which may be less.
 const WANTED_ENTRIES: u32 = 8;
 
-/// The identifier of the one I/O queue pair.
 const IO_QUEUE: u16 = 1;
 
-/// The namespace this driver reads: the first, and the only one QEMU presents; none is enumerated.
+// The first namespace, the only one QEMU presents; none is enumerated.
 const NAMESPACE: u32 = 1;
 
-/// Completion reads a command may poll before the clock is calibrated, so bring-up stays finite.
+// Completion polls allowed before the clock is calibrated, so bring-up stays finite.
 const POLL_ATTEMPTS: u32 = 5_000_000;
 
-/// Real-time bound for one command once the monotonic clock exists.
 const COMMAND_TIMEOUT_MS: u64 = 5_000;
 
 const MINIMUM_READY_TIMEOUT_MS: u64 = 500;
@@ -59,16 +44,15 @@ const READY_POLLS_PER_MS: u64 = 20_000;
 
 const MAX_READY_POLLS: u64 = 20_000_000;
 
-/// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
 pub(crate) struct Controller {
+    // Must be mapped uncacheable; bus mastering follows only an exact disabled readback.
     registers: Option<MappedBar>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
-    /// The next command identifier; wrapping is safe while one command is outstanding at a time.
+    // Wrapping is safe while one command is outstanding at a time.
     next_id: u16,
-    /// Whether the one outstanding command's memory is host-owned again.
     dma: DmaState,
     #[cfg(feature = "selftest")]
     force_timeout: bool,
@@ -154,7 +138,6 @@ impl DmaState {
     }
 }
 
-/// A mapped controller observed disabled while PCI bus mastering was off.
 #[derive(Debug)]
 pub(crate) struct DisabledController {
     controller: Controller,
@@ -162,39 +145,27 @@ pub(crate) struct DisabledController {
     capacity: Capacity,
 }
 
-/// A disabled controller whose PCI function accepted bus-master admission; only
-/// `admit_bus_master` builds one, so start cannot bypass a refused PCI transition.
 #[derive(Debug)]
 pub(crate) struct BusMasterAdmittedController(DisabledController);
 
-/// The two ownership-preserving results of bus-master admission.
 #[derive(Debug)]
 pub(crate) enum BusMasterAdmission {
-    /// PCI admitted DMA behind the installed domain and minted controller-start authority.
     Admitted(BusMasterAdmittedController),
-    /// PCI refused DMA and returned retirement authority.
     Refused(BusMasterAdmissionFailure),
 }
 
-/// A refused bus-master transition with the unchanged disabled controller.
 #[derive(Debug)]
 pub(crate) struct BusMasterAdmissionFailure {
     reason: BusMasterAdmissionError,
     disabled: DisabledController,
 }
 
-/// Why fresh controller proof or the PCI command transition refused DMA.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BusMasterAdmissionError {
-    /// No DMA-remapping domain is installed for the function.
     Unisolated,
-    /// The admin queues could not be made reachable through the domain.
     QueuesUnreachable,
-    /// The disabled controller no longer retained its mapped register BAR.
     NotMapped,
-    /// BAR identity, register access, or live disabled state was refused.
     Observation(wost::arch::current::pci::NvmeObservationError),
-    /// The exact function's PCI command transition was refused.
     Command(pci_config::EnableError),
 }
 
@@ -215,47 +186,32 @@ impl fmt::Display for BusMasterAdmissionError {
 impl core::error::Error for BusMasterAdmissionError {}
 
 impl BusMasterAdmissionFailure {
-    /// Why PCI refused bus-master admission.
     pub(crate) const fn reason(&self) -> BusMasterAdmissionError {
         self.reason
     }
 
-    /// Recover the disabled controller for exact retirement.
     pub(crate) fn into_disabled(self) -> DisabledController {
         self.disabled
     }
 }
 
-/// Why a controller could not be brought up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BringUpError {
-    /// The register window could not be mapped.
     NotMapped,
-    /// The controller reports no NVM command set, so it has no blocks.
     NoCommandSet,
-    /// The controller cannot work in this kernel's page size.
     PageSize,
-    /// `CAP.MQES` describes a queue that holds nothing.
     QueueSize,
-    /// No memory for the queues.
     NoMemory,
-    /// The controller did not become ready, or gave up.
     NotReady,
-    /// A command was refused, or never answered.
     Command(u16),
     Timeout,
-    /// A completion did not come from the command and queue just published.
     UnexpectedCompletion {
         queue: u16,
         id: u16,
         submission_head: u16,
     },
-    /// A read did not fit its command, namespace or DMA owner.
     InvalidTransfer(TransferError),
-    /// Identify Namespace data did not fit the supported storage contract.
     InvalidNamespace(NamespaceError),
-    /// No DMA domain is installed, or the one installed refused a queue or
-    /// transfer buffer, so nothing may be published.
     Isolation,
 }
 
@@ -292,31 +248,25 @@ impl fmt::Display for BringUpError {
 
 impl core::error::Error for BringUpError {}
 
-/// A bring-up failure paired with its exact cleanup disposition.
 #[derive(Debug)]
 pub(crate) struct StartFailure {
     reason: BringUpError,
     retirement: ControllerRetirement,
 }
 
-/// Exact result of attempting to retire a controller and its mapped BAR.
 #[derive(Debug)]
 #[must_use = "controller retirement may return quarantine ownership"]
 pub(crate) enum ControllerRetirement {
-    /// Controller DMA stopped and its mapped BAR retired exactly.
     Retired,
-    /// Cleanup could not be proven, so the controller remains owned.
     Quarantined(ControllerQuarantine),
 }
 
-/// Proof that an incompletely retired controller remains in kernel quarantine.
 #[derive(Debug)]
 #[must_use = "the controller and PCI lease must remain reachable"]
 pub(crate) struct ControllerQuarantine {
     _private: (),
 }
 
-/// Result of preparing a mapped controller before bus-master admission.
 #[derive(Debug)]
 #[must_use = "controller preparation returns ownership in both outcomes"]
 #[cfg_attr(
@@ -327,23 +277,17 @@ pub(crate) struct ControllerQuarantine {
     )
 )]
 pub(crate) enum PrepareOutcome {
-    /// The controller is verified disabled and ready for DMA admission.
     Prepared(DisabledController),
-    /// Preparation refused with an exact ownership disposition.
     Failed(PrepareFailure),
 }
 
-/// A pre-DMA failure with an exact retirement or quarantine disposition.
 #[derive(Debug)]
 #[must_use = "a preparation failure may retain mapped BAR authority"]
 pub(crate) enum PrepareFailure {
-    /// The disabled controller mapping was retired exactly.
     Retired(BringUpError),
-    /// Controller state stayed uncertain, so its complete ownership is retained.
     Quarantined(PrepareQuarantine),
 }
 
-/// A mapped controller which cannot yet be safely retired.
 #[derive(Debug)]
 #[must_use = "the mapped BAR and PCI lease must remain reachable"]
 pub(crate) struct PrepareQuarantine {
@@ -374,7 +318,6 @@ impl PrepareFailure {
         })
     }
 
-    /// Why preparation failed.
     pub(crate) const fn reason(&self) -> BringUpError {
         match self {
             Self::Retired(reason) => *reason,
@@ -382,7 +325,6 @@ impl PrepareFailure {
         }
     }
 
-    /// Recover ownership which must remain quarantined with its PCI lease.
     pub(crate) fn into_quarantine(self) -> Option<PrepareQuarantine> {
         match self {
             Self::Retired(_) => None,
@@ -392,12 +334,10 @@ impl PrepareFailure {
 }
 
 impl StartFailure {
-    /// Why bring-up failed.
     pub(crate) const fn reason(&self) -> BringUpError {
         self.reason
     }
 
-    /// Recover the exact retirement or quarantine outcome.
     pub(crate) fn into_retirement(self) -> ControllerRetirement {
         self.retirement
     }
@@ -442,9 +382,7 @@ fn disable(
     DisabledRegisters::from_bits(cc, csts).map_err(|_| BringUpError::NotReady)
 }
 
-/// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`; `CSTS.CFS` ends an enable wait.
-/// During disable observed `RDY = 0` wins: fatal status does not mean the controller can still
-/// reach host memory.
+// `CFS` ends only an enable wait; a disable waits for `RDY = 0` whatever `CFS` says.
 fn wait_for_ready(
     registers: &mut MappedBar,
     capabilities: Capabilities,
@@ -471,7 +409,7 @@ fn wait_for_ready(
     Err(BringUpError::NotReady)
 }
 
-/// Register polls a readiness wait may make before the clock is calibrated; the cap fits `u32`.
+// Register polls allowed before the clock is calibrated; the cap keeps the cast exact.
 fn fallback_polls(timeout_ms: u64) -> u32 {
     (timeout_ms.saturating_mul(READY_POLLS_PER_MS)).min(MAX_READY_POLLS) as u32
 }
@@ -501,8 +439,7 @@ fn write_submission(
     write(registers, offset, tail)
 }
 
-/// Bring the controller up and say what it is; a failure carries its retirement, so the selector
-/// may boot without storage but may try a sibling only when teardown was exact.
+// The selector may try a sibling only when the failure's retirement was exact.
 pub(crate) fn start(
     context: &mut ThreadContext,
     device: &mut crate::pci::Device,
@@ -546,9 +483,7 @@ pub(crate) fn start(
 }
 
 impl DisabledController {
-    /// The installed domain reaches the admin queues and mints its proof, then a fresh disabled
-    /// observation reaches PCI. Apart from `admit_bus_master` so each refusal builds only a small
-    /// error: the debug build gives every such temporary its own stack slot.
+    // Separate so each refusal builds a small error: debug builds give temporaries a slot each.
     fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
         let mut installed = crate::iommu::installed();
         let Some(isolation) = installed.as_mut() else {
@@ -577,8 +512,6 @@ impl DisabledController {
             .map_err(BusMasterAdmissionError::Command)
     }
 
-    /// Admit DMA from a fresh observation through the retained mapped BAR,
-    /// behind the installed domain, which must already reach the admin queues.
     pub(crate) fn admit_bus_master(
         mut self,
         device: &mut crate::pci::Device,
@@ -592,7 +525,6 @@ impl DisabledController {
         }
     }
 
-    /// Return the mapping and all unpublished queues while DMA is still off.
     pub(crate) fn retire(
         self,
         device: &mut crate::pci::Device,
@@ -602,11 +534,8 @@ impl DisabledController {
     }
 }
 
-/// The one controller, a `static` because it outlives the function that built it; runtime
-/// reads reach it only through the file worker, where timer and input interrupts may preempt.
 static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
 
-/// A running controller whose PCI command commit was refused: owned for the boot, never served.
 static UNCOMMITTED: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
 
 static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =
@@ -614,8 +543,6 @@ static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Dev
 
 static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLock::new(None);
 
-/// A disabled controller kept with its PCI lease when unit-wide VT-d
-/// ownership becomes uncertain before DMA admission.
 static IOMMU_QUARANTINE: ThreadLock<Option<(DisabledController, crate::pci::Device)>> =
     ThreadLock::new(None);
 
@@ -625,12 +552,10 @@ struct RetainedController {
     device: Option<crate::pci::Device>,
 }
 
-/// Keep a controller and the buffer it reads into.
 pub(crate) fn keep(controller: Controller, buffer: DmaSegment) {
     *CONTROLLER.lock() = Some((controller, buffer));
 }
 
-/// Keep a controller whose PCI command commit was refused, out of reach of every read.
 pub(crate) fn keep_uncommitted(controller: Controller, buffer: DmaSegment) {
     let mut retained = UNCOMMITTED.lock();
     assert!(
@@ -640,7 +565,6 @@ pub(crate) fn keep_uncommitted(controller: Controller, buffer: DmaSegment) {
     *retained = Some((controller, buffer));
 }
 
-/// Keep an uncertain mapping and its inseparable PCI lease reachable.
 pub(crate) fn keep_prepare_quarantine(quarantine: PrepareQuarantine, device: crate::pci::Device) {
     let mut retained = PREPARE_QUARANTINE.lock();
     assert!(
@@ -650,7 +574,6 @@ pub(crate) fn keep_prepare_quarantine(quarantine: PrepareQuarantine, device: cra
     *retained = Some((quarantine, device));
 }
 
-/// Keep an incompletely retired controller and its PCI lease reachable.
 pub(crate) fn keep_controller_quarantine(
     quarantine: ControllerQuarantine,
     device: crate::pci::Device,
@@ -667,8 +590,6 @@ pub(crate) fn keep_controller_quarantine(
     retained.device = Some(device);
 }
 
-/// Keep a prepared controller and its selected-function owner beside an
-/// uncertain unit takeover.
 pub(crate) fn keep_iommu_quarantine(controller: DisabledController, device: crate::pci::Device) {
     let mut retained = IOMMU_QUARANTINE.lock();
     assert!(
@@ -698,7 +619,6 @@ pub(crate) fn namespace_blocks() -> Option<u64> {
         .map(|(controller, _)| controller.blocks)
 }
 
-/// Read one FAT-sized logical block into owned caller bytes.
 pub(crate) fn read_sector(sector: u64, into: &mut [u8; fat32::SECTOR_BYTES]) -> Result<(), ()> {
     let mut held = CONTROLLER.lock();
     let (controller, buffer) = held.as_mut().ok_or(())?;
