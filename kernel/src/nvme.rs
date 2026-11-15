@@ -237,6 +237,7 @@ pub(crate) enum BringUpError {
     NotReady,
     /// A command was refused, or never answered.
     Command(u16),
+    Timeout,
     /// A completion did not come from the command and queue just published.
     UnexpectedCompletion {
         queue: u16,
@@ -262,6 +263,7 @@ impl fmt::Display for BringUpError {
             Self::NoMemory => f.write_str("no memory for the queues"),
             Self::NotReady => f.write_str("the controller never became ready"),
             Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
+            Self::Timeout => write!(f, "a command went unanswered for {COMMAND_TIMEOUT_MS} ms"),
             Self::UnexpectedCompletion {
                 queue,
                 id,

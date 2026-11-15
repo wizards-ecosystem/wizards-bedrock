@@ -283,7 +283,7 @@ impl Controller {
             }
             core::hint::spin_loop();
         }
-        self.fail_submitted(BringUpError::NotReady, data, isolation, mapping)
+        self.fail_submitted(BringUpError::Timeout, data, isolation, mapping)
     }
 
     /// Write `command` at the tail of queue `which` and return the tail the doorbell publishes.
@@ -367,6 +367,7 @@ impl Controller {
         isolation: &mut Vtd,
         mapping: DataMapping,
     ) -> Result<T, BringUpError> {
+        warn!("nvme: {error}; the controller is stopped for the rest of the boot");
         self.stop_dma(data.as_deref_mut());
         if !self.dma.must_retain() && !unmap_data(isolation, data, mapping) {
             warn!("nvme: a quiesced transfer buffer stays mapped in the dma domain");
@@ -376,6 +377,7 @@ impl Controller {
 
     /// Fail closed after a completion made the transfer buffer safe.
     fn fail_controller<T>(&mut self, error: BringUpError) -> Result<T, BringUpError> {
+        warn!("nvme: {error}; the controller is stopped for the rest of the boot");
         self.stop_dma(None);
         Err(error)
     }
@@ -460,7 +462,7 @@ impl Controller {
         let result = self.read_blocks(0, 1, data);
         self.force_timeout = false;
 
-        matches!(result, Err(BringUpError::NotReady))
+        matches!(result, Err(BringUpError::Timeout))
             && self.dma.is_quiesced()
             && !data.is_retained()
     }
