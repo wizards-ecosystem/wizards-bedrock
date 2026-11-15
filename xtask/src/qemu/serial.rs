@@ -247,6 +247,7 @@ fn stack_value(field: &str, name: &str) -> Result<u64> {
 // Guest bytes are untrusted, so terminal controls never reach the operator's console.
 pub(super) fn escaped(line: &[u8]) -> String {
     let visible = line.strip_suffix(b"\n").unwrap_or(line);
+    let visible = visible.strip_suffix(b"\r").unwrap_or(visible);
     let mut escaped = String::with_capacity(visible.len());
     for &byte in visible {
         if (b' '..=b'~').contains(&byte) {
