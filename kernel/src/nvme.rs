@@ -663,6 +663,9 @@ impl DisabledController {
 /// reads reach it only through the file worker, where timer and input interrupts may preempt.
 static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
 
+/// A running controller whose PCI command commit was refused: owned for the boot, never served.
+static UNCOMMITTED: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
+
 static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =
     ThreadLock::new(None);
 
@@ -681,6 +684,16 @@ struct RetainedController {
 /// Keep a controller and the buffer it reads into.
 pub(crate) fn keep(controller: Controller, buffer: DmaSegment) {
     *CONTROLLER.lock() = Some((controller, buffer));
+}
+
+/// Keep a controller whose PCI command commit was refused, out of reach of every read.
+pub(crate) fn keep_uncommitted(controller: Controller, buffer: DmaSegment) {
+    let mut retained = UNCOMMITTED.lock();
+    assert!(
+        retained.is_none(),
+        "two NVMe controllers were retained after refused PCI commits"
+    );
+    *retained = Some((controller, buffer));
 }
 
 /// Keep an uncertain mapping and its inseparable PCI lease reachable.

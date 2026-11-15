@@ -926,7 +926,7 @@ fn start_candidate(
     if let Err(reason) = device.commit() {
         warn!("nvme: pci command commit refused: {reason}");
         pci::retain_failed_commit(device);
-        nvme::keep(controller, buffer);
+        nvme::keep_uncommitted(controller, buffer);
         return CandidateStage::Settled(StorageSelection::Halted);
     }
     nvme::keep(controller, buffer);
