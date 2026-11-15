@@ -176,7 +176,7 @@ pub(crate) const STATUS_NO_ROOM: u32 = 7;
 pub(crate) const STATUS_BAD_BUFFER: u32 = 8;
 /// The path names nothing, or names something of the wrong kind.
 pub(crate) const STATUS_NO_ENTRY: u32 = 9;
-/// The path is absolute or escaping; with no root and no parent, nothing could have been denied.
+/// The path is absolute, escaping or names its starting directory; refused before any lookup.
 pub(crate) const STATUS_BAD_PATH: u32 = 10;
 /// The service this needs is not available on this boot.
 ///

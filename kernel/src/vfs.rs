@@ -122,9 +122,9 @@ pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, VfsError> {
     let mut components = [b"".as_slice(); MAX_DEPTH];
     let depth = path_walk::split(path, &mut components)?;
 
-    // Nothing to walk: `.` and `a/..` name the directory the walk started from.
+    // `.` and `a/..` name the starting directory, which only a rights-checked duplicate may copy.
     if depth == 0 {
-        return Ok(Node::Directory(at));
+        return Err(VfsError::Path(PathError::Empty));
     }
 
     match at {
