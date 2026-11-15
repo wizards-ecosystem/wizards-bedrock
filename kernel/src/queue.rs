@@ -182,6 +182,7 @@ pub(crate) const STATUS_BAD_PATH: u32 = 10;
 ///
 /// Refused at submission: no pending slot is kept and no completion waits on a clock never started.
 pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
+pub(crate) const STATUS_IO: u32 = 12;
 
 /// The peer indices, read once per [`Queue::serve`] and never refreshed.
 ///

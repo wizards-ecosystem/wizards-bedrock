@@ -7,10 +7,11 @@ use wost::sync::SpinLock;
 use super::ring::data_bounds;
 use super::{
     Completion, Pending, PendingKind, Queue, ReadRequest, STATUS_BAD_BUFFER, STATUS_BAD_HANDLE,
-    STATUS_BAD_PATH, STATUS_DENIED, STATUS_NO_ENTRY, STATUS_NO_HANDLE_SLOT, STATUS_NO_ROOM,
-    STATUS_OK, Submission, WorkPhase, refuse,
+    STATUS_BAD_PATH, STATUS_DENIED, STATUS_IO, STATUS_NO_ENTRY, STATUS_NO_HANDLE_SLOT,
+    STATUS_NO_ROOM, STATUS_OK, Submission, WorkPhase, refuse,
 };
 use crate::handle::{HandleTable, SlotReservation};
+use crate::vfs::VfsError;
 use crate::wait::WaitQueue;
 
 /// Global file-work admission: one worker makes controller ownership and completion order
@@ -384,9 +385,6 @@ impl Queue {
             return Some(refuse(token, STATUS_DENIED));
         }
 
-        if !worker_is_ready() {
-            return Some(refuse(token, STATUS_NO_ROOM));
-        }
         let Some((pending, expected)) = self.defer_open_at(token) else {
             return Some(refuse(token, STATUS_NO_ROOM));
         };
@@ -444,9 +442,6 @@ impl Queue {
             at: bounds.0,
             wanted,
         };
-        if !worker_is_ready() {
-            return Some(refuse(token, STATUS_NO_ROOM));
-        }
         let Some((pending, expected)) = self.defer_read(token, request) else {
             return Some(refuse(token, STATUS_NO_ROOM));
         };
@@ -590,12 +585,14 @@ fn service(mut running: RunningWork) {
             let request = running.read_request();
             let mut scratch = [0u8; MAX_READ];
             match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
-                Ok(read) if running.work.ring.write_data(request.at, &scratch[..read]) => {
+                Ok(read) => {
+                    assert!(
+                        running.work.ring.write_data(request.at, &scratch[..read]),
+                        "a read bounded at admission did not fit the data area"
+                    );
                     (STATUS_OK, read as u64)
                 }
-                Ok(_) => (STATUS_BAD_BUFFER, 0),
-                Err(crate::vfs::VfsError::Path(_)) => (STATUS_BAD_PATH, 0),
-                Err(_) => (STATUS_NO_ENTRY, 0),
+                Err(_) => (STATUS_IO, 0),
             }
         }
         WorkTag::OpenAt => {
@@ -610,13 +607,14 @@ fn service(mut running: RunningWork) {
                 .unwrap_or_else(|| panic!("OpenAt file work spent its reservation twice"));
             let node = match crate::vfs::resolve(request.directory, &request.path[..request.len]) {
                 Ok(node) => node,
-                Err(crate::vfs::VfsError::Path(_)) => {
+                Err(error) => {
                     drop(reservation);
-                    return finish_work(running, STATUS_BAD_PATH, 0);
-                }
-                Err(_) => {
-                    drop(reservation);
-                    return finish_work(running, STATUS_NO_ENTRY, 0);
+                    let status = match error {
+                        VfsError::Path(_) => STATUS_BAD_PATH,
+                        VfsError::NotADirectory | VfsError::NotFound => STATUS_NO_ENTRY,
+                        VfsError::Backend(_) | VfsError::NoVolume => STATUS_IO,
+                    };
+                    return finish_work(running, status, 0);
                 }
             };
             let (produced, offered) = match node {
