@@ -385,8 +385,8 @@ objects, spawn-from-image, exit status, `init`, TTY, shell, pipelines, and
 tmpfs mutation. Their order begins with a measured real artifact; none may be
 pulled forward by relabeling it "foundation".
 
-`019-userland.md` designs the userland these items serve and lists further
-post-gate prerequisites with their callers (D-314); it adds no row here.
+D-314 designs the userland these items serve and lists further post-gate
+prerequisites with their callers; it adds no row here.
 
 The current fixed process/stack capacity remains until that measured route
 shows what density is required. Loader relocations, TLS and image extensions
