@@ -28,7 +28,9 @@ use crate::mm::{DmaMappingOwner, DmaSegment, IommuTable, PublishedIommuTable, Ta
 /// The single domain identifier this unit programs.
 const DOMAIN_ID: u16 = 1;
 
-/// How many times a status poll spins before it gives up on the hardware.
+const WAIT_NS: u64 = 1_000_000_000;
+
+// Counts polls only while the clock cannot say how long a wait has run.
 const POLL_LIMIT: u32 = 1_000_000;
 
 /// Four kibibytes: the frame size and second-level page granularity.
@@ -253,6 +255,7 @@ pub struct UnitFacts {
 #[derive(Debug)]
 pub struct Vtd {
     registers: ReleasableDevice,
+    clock: fn() -> Option<u64>,
     function: Option<Address>,
     capability: Capability,
     extended: ExtendedCapability,
@@ -381,6 +384,7 @@ enum Caches {
 impl Vtd {
     pub fn establish_deny_all(
         registers: ReleasableDevice,
+        clock: fn() -> Option<u64>,
         window: u64,
         platform_interrupt_remapping: bool,
     ) -> Establishment {
@@ -417,6 +421,7 @@ impl Vtd {
         }
         let mut unit = Self {
             registers,
+            clock,
             function: None,
             capability: plan.capability,
             extended: plan.extended,
@@ -994,23 +999,26 @@ impl Vtd {
             vtd::register::INVALIDATION_QUEUE_TAIL,
             INVALIDATION_TAIL,
         )?;
-        let mut completed = false;
-        for _ in 0..POLL_LIMIT {
-            if self
+        let completed = self.wait(|unit| {
+            if unit
                 .invalidation_queue
                 .read_u64(INVALIDATION_STATUS_INDEX)
                 .is_some_and(|value| low_u32(value) == INVALIDATION_COMPLETE)
             {
-                completed = true;
-                break;
+                return Ok(true);
             }
-            core::hint::spin_loop();
-        }
+            // The status read also paces the fallback count like every register poll.
+            let status = read_u32(&unit.registers, vtd::register::GLOBAL_STATUS)?;
+            if status & global_status::QIES == 0 {
+                return Err(VtdError::QueuedInvalidationIncomplete);
+            }
+            Ok(false)
+        });
         let disabled = self.switch_queued_invalidation(Switch::Off);
-        if completed {
-            disabled
-        } else {
-            Err(VtdError::QueuedInvalidationIncomplete)
+        match completed {
+            Ok(true) => disabled,
+            Ok(false) => Err(VtdError::QueuedInvalidationIncomplete),
+            Err(reason) => Err(reason),
         }
     }
 
@@ -1141,23 +1149,36 @@ impl Vtd {
     }
 
     fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: VtdError) -> Result<(), VtdError> {
-        for _ in 0..POLL_LIMIT {
-            if ready(read_u32(&self.registers, vtd::register::GLOBAL_STATUS)?) {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(timeout)
+        let register = vtd::register::GLOBAL_STATUS;
+        self.wait(|unit| Ok(ready(read_u32(&unit.registers, register)?)))?
+            .then_some(())
+            .ok_or(timeout)
     }
 
     fn poll_u64(&self, register: u64, done: impl Fn(u64) -> bool) -> Result<(), VtdError> {
-        for _ in 0..POLL_LIMIT {
-            if done(read_u64(&self.registers, register)?) {
-                return Ok(());
+        self.wait(|unit| Ok(done(read_u64(&unit.registers, register)?)))?
+            .then_some(())
+            .ok_or(VtdError::InvalidationTimeout)
+    }
+
+    fn wait(
+        &self,
+        mut done: impl FnMut(&Self) -> Result<bool, VtdError>,
+    ) -> Result<bool, VtdError> {
+        let deadline = (self.clock)().map(|now| now.saturating_add(WAIT_NS));
+        let mut attempts = POLL_LIMIT;
+        loop {
+            if done(self)? {
+                return Ok(true);
+            }
+            match (deadline, (self.clock)()) {
+                (Some(deadline), Some(now)) if now >= deadline => return Ok(false),
+                (Some(_), Some(_)) => {}
+                _ if attempts == 0 => return Ok(false),
+                _ => attempts -= 1,
             }
             core::hint::spin_loop();
         }
-        Err(VtdError::InvalidationTimeout)
     }
 }
 

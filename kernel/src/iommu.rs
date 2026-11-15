@@ -38,7 +38,7 @@ use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
 use crate::mem::{self, DeviceRetirement};
 use crate::thread::ThreadContext;
-use crate::{acpi, info, pci, warn};
+use crate::{acpi, info, nvme, pci, warn};
 
 /// Bytes of register window one remapping unit occupies.
 const REGISTER_WINDOW: u64 = 4096;
@@ -269,7 +269,8 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    let isolation = match Vtd::establish_deny_all(registers, REGISTER_WINDOW, true) {
+    let establishment = Vtd::establish_deny_all(registers, nvme::clock_ns, REGISTER_WINDOW, true);
+    let isolation = match establishment {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
             warn!("iommu: the early default-deny takeover refused: {reason}");

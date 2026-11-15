@@ -463,8 +463,7 @@ fn fallback_polls(timeout_ms: u64) -> u32 {
     (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32
 }
 
-/// Read the monotonic clock only after calibration has made it meaningful.
-fn clock_ns() -> Option<u64> {
+pub(crate) fn clock_ns() -> Option<u64> {
     crate::time::is_calibrated().then(crate::time::now_ns)
 }
 
