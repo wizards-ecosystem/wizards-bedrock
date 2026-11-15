@@ -81,10 +81,6 @@ static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 /// innermost live one by construction.
 static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 
-/// RingEnter calls whose completion wake armed the timer in that trap.
-#[cfg(feature = "selftest")]
-static RING_ENTER_ARMS: AtomicUsize = AtomicUsize::new(0);
-
 /// Whether the one deferred refusal warning has already been emitted.
 static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -130,12 +126,6 @@ pub(crate) fn refusal_report_latch_for_test() -> usize {
     REPORTED.load(Ordering::Acquire)
 }
 
-/// RingEnter completion wakes observed to arm before the handler returned.
-#[cfg(feature = "selftest")]
-pub(crate) fn ring_enter_arms_for_test() -> usize {
-    RING_ENTER_ARMS.load(Ordering::Acquire)
-}
-
 /// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
 
@@ -169,13 +159,7 @@ pub(crate) fn call(frame: &TrapFrame) {
             }
         }
         Call::RingEnter => {
-            #[cfg(feature = "selftest")]
-            let arms = thread::handler_arms();
             let served = serve_ring(slot);
-            #[cfg(feature = "selftest")]
-            if served > 0 && thread::handler_arms() > arms {
-                RING_ENTER_ARMS.fetch_add(1, Ordering::Release);
-            }
             answer_call(frame, served);
         }
         Call::RingWait => {

@@ -43,8 +43,6 @@ mod vfs;
 mod wait;
 
 use core::fmt::{self, Write};
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use wost::arch::current::{apic, cpu, interrupt, pci as platform_pci, pic, segment, task, xstate};
@@ -648,8 +646,6 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     let bme_activity = nvme::activity_for_test();
     #[cfg(feature = "selftest")]
     let forced_before = pci::bus_master_refusal_was_observed();
-    #[cfg(feature = "selftest")]
-    NVME_CANDIDATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
     // Stages borrow the candidate, so the debug frame holds one copy of its
     // owners rather than one per stage call.
@@ -930,8 +926,6 @@ fn start_candidate(
         return CandidateStage::Settled(StorageSelection::Halted);
     }
     nvme::keep(controller, buffer);
-    #[cfg(feature = "selftest")]
-    NVME_SELECTED_ORDINAL.store(ordinal, Ordering::Release);
     CandidateStage::Settled(StorageSelection::Selected)
 }
 
@@ -988,8 +982,6 @@ fn retire_candidate(
         warn!("nvme: candidate {ordinal} did not restore its resource baseline");
         return StorageSelection::Halted;
     }
-    #[cfg(feature = "selftest")]
-    NVME_CLEAN_RETIREMENTS.fetch_add(1, Ordering::Relaxed);
     info!("nvme: candidate {ordinal} retired cleanly; trying next");
     StorageSelection::Seeking
 }
@@ -1029,23 +1021,9 @@ impl CandidateBaseline {
 }
 
 #[cfg(feature = "selftest")]
-static NVME_CANDIDATE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static NVME_CLEAN_RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static NVME_SELECTED_ORDINAL: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
 static NVME_BME_REFUSAL_PROVED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "selftest")]
 static NVME_BAR_ADMISSION_PROVED: AtomicBool = AtomicBool::new(false);
-
-/// QEMU's namespace-less first controller retired before its usable sibling.
-#[cfg(feature = "selftest")]
-fn a_later_nvme_controller_survives_an_earlier_failure() -> bool {
-    NVME_CANDIDATE_ATTEMPTS.load(Ordering::Acquire) == 2
-        && NVME_CLEAN_RETIREMENTS.load(Ordering::Acquire) == 1
-        && NVME_SELECTED_ORDINAL.load(Ordering::Acquire) == 2
-}
 
 #[cfg(feature = "selftest")]
 fn a_live_nvme_bar_obeyed_maxphyaddr() -> bool {

@@ -20,10 +20,7 @@ use super::vector;
 mod selftest;
 
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    an_implausible_version_is_refused_for_test, ignored_writes_are_refused_for_test,
-    typed_route_is_encoded_for_test,
-};
+pub(crate) use selftest::ignored_writes_are_refused_for_test;
 
 /// Offsets into the register window.
 mod window {

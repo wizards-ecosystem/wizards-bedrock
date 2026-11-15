@@ -17,10 +17,7 @@ mod selftest;
 #[cfg(feature = "selftest")]
 use selftest::KEYBOARD_GSI;
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    console_cursor, console_geometry, console_has_complete_back_buffer, console_probe,
-    framebuffer_address, framebuffer_bytes, io_apic_base, keyboard_gsi, routing_of,
-};
+pub(crate) use selftest::console_geometry;
 
 static UART: ThreadLock<Option<Uart>> = ThreadLock::new(None);
 static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);

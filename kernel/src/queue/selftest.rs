@@ -21,16 +21,10 @@ pub(super) static REFUSE_WORKER: Injection = Injection::new();
 pub(super) static WORKER_REAPS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "selftest")]
-pub(super) static WORKER_RETAINED: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "selftest")]
 pub(super) static WORK_PAUSED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "selftest")]
 pub(super) static WORKER_IS_PAUSED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "selftest")]
-pub(super) static WORK_RUNS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "selftest")]
 pub(super) static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
@@ -112,41 +106,6 @@ impl Queue {
             .count()
     }
 
-    #[cfg(feature = "selftest")]
-    pub(crate) fn quiet_completion_is_counted_for_test(&self) -> bool {
-        if !self.is_quiet() {
-            return false;
-        }
-        let before = self.served_count();
-        self.served.fetch_add(1, Ordering::Release);
-        self.is_quiet() && self.served_since(before) == 1
-    }
-
-    /// Wait for this ring's next completion through the production wait queue.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn wait_for_test(
-        &self,
-        context: &mut crate::thread::ThreadContext,
-        cancelled: &AtomicUsize,
-    ) {
-        let before = self.served_count();
-        self.waiters.wait_unless(context, || {
-            self.served_count() != before || cancelled.load(Ordering::Acquire) != 0
-        });
-    }
-
-    /// Whether the production wait queue currently names a waiter.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn has_waiter_for_test(&self) -> bool {
-        !self.waiters.is_idle()
-    }
-
-    /// Release a test waiter when a failed orchestration has no completion.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn release_waiter_for_test(&self) -> usize {
-        self.waiters.wake_all()
-    }
-
     /// How many operations are in flight.
     #[cfg(feature = "selftest")]
     pub(crate) fn in_flight(&self) -> usize {
@@ -209,12 +168,6 @@ impl Queue {
     #[cfg(feature = "selftest")]
     pub(crate) fn publish_tail_for_test(&self, tail: u32) {
         publish_index(&self.ring.lock_leaf().pages, header::SUBMISSION_TAIL, tail);
-    }
-
-    /// Move the completion head as a program that has reaped would.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn publish_completion_head_for_test(&self, head: u32) {
-        publish_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD, head);
     }
 
     /// Read a submission back out of the shared page, so a check can show a hostile rewrite landed.
@@ -317,27 +270,10 @@ pub(crate) fn worker_is_paused_for_test() -> bool {
     WORKER_IS_PAUSED.load(Ordering::Acquire)
 }
 
-/// Work items which still occupy global admission slots.
-#[cfg(feature = "selftest")]
-pub(crate) fn queued_work_for_test() -> usize {
-    FILE_WORK.queued.load(Ordering::Acquire)
-}
-
-/// Reads transferred from the bounded queue to the worker.
-#[cfg(feature = "selftest")]
-pub(crate) fn worker_runs_for_test() -> usize {
-    WORK_RUNS.load(Ordering::Acquire)
-}
-
 /// Programs reclaimed by the service worker.
 #[cfg(feature = "selftest")]
 pub(crate) fn worker_reaps_for_test() -> usize {
     WORKER_REAPS.load(Ordering::Acquire)
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn worker_retained_for_test() -> usize {
-    WORKER_RETAINED.load(Ordering::Acquire)
 }
 
 /// Rings whose storage is still live.

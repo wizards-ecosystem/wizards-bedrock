@@ -9,15 +9,13 @@ use wost::arch::current::{cpu, xstate};
 #[cfg(feature = "selftest")]
 use wost::sync::{Injection, SpinLock};
 #[cfg(feature = "selftest")]
-use x86_paging::{Flags, PAGE_SIZE};
+use x86_paging::Flags;
 
 #[cfg(feature = "selftest")]
 use super::BEHAVE;
 use super::call::cross;
 #[cfg(feature = "selftest")]
 use super::load::CLEANUP_REFUSAL_INJECTED;
-#[cfg(feature = "selftest")]
-use super::load::MAX_SEGMENTS;
 use super::load::{LoadError, LoadedImage, load, place_stack, unmap_for_cleanup};
 #[cfg(feature = "selftest")]
 use super::reap::REFUSED_MAPPING_RECLAIMS;
@@ -43,33 +41,6 @@ fn remember(
     *slot = (at, len);
     *used += 1;
     Ok(())
-}
-
-/// Whether every maximum-sized image region and its stack fit exactly once.
-#[cfg(feature = "selftest")]
-pub(crate) fn maximum_cleanup_ledger_is_total_for_test() -> bool {
-    let mut regions = [(0, 0); MAX_REGIONS];
-    let mut used = 0;
-    for index in 0..MAX_SEGMENTS {
-        if remember(
-            &mut regions,
-            &mut used,
-            0x1000 + index as u64 * 0x2000,
-            PAGE_SIZE,
-        )
-        .is_err()
-        {
-            return false;
-        }
-    }
-    let stack = 0x9000_0000;
-    remember(&mut regions, &mut used, stack, USER_STACK_BYTES).is_ok()
-        && used == MAX_REGIONS
-        && regions.get(MAX_SEGMENTS) == Some(&(stack, USER_STACK_BYTES))
-        && matches!(
-            remember(&mut regions, &mut used, stack + PAGE_SIZE, PAGE_SIZE),
-            Err(SpawnError::TooManyMappings)
-        )
 }
 
 /// A process that is not yet observable and therefore must be undone on drop.

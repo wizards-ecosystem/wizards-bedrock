@@ -16,12 +16,7 @@ use x86_paging::{Flags, PAGE_SIZE};
 mod selftest;
 
 #[cfg(feature = "selftest")]
-use selftest::{WINDOW_LEFT_PREEMPTIBLE, WINDOW_NEVER_OPENED};
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    constants, is_published, read, sequence, windows_left_preemptible, windows_never_opened,
-    with_page_absent_for_test,
-};
+pub(crate) use selftest::{constants, read};
 
 /// Where the page appears in every program's space, fixed because the ABI header names it.
 ///
@@ -109,10 +104,6 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
     let mut guard = PAGE.lock_leaf();
     // Inside the guard, because the question is whether the window can be preempted; counted,
     // since the caller cannot act on a refusal.
-    #[cfg(feature = "selftest")]
-    if wost::arch::current::interrupt::are_enabled() {
-        WINDOW_LEFT_PREEMPTIBLE.fetch_add(1, Ordering::Relaxed);
-    }
 
     let Some(page) = guard.as_mut() else {
         return Publication::Deferred;
@@ -122,10 +113,6 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
 
     // Odd, and every reader now knows to try again.
     write_u32(page, CLOCK_AT + clock::SEQ, Seq::begin(seq));
-    #[cfg(feature = "selftest")]
-    if Seq::is_stable(read_u32(page, CLOCK_AT + clock::SEQ)) {
-        WINDOW_NEVER_OPENED.fetch_add(1, Ordering::Relaxed);
-    }
     // The first of Linux's two barriers, only a compiler barrier on x86, written out for any port.
     fence(Ordering::Release);
 

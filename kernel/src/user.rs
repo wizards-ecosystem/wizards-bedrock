@@ -18,14 +18,12 @@ mod reap;
 mod selftest;
 
 #[cfg(feature = "selftest")]
-pub(crate) use call::{
-    authority_for_test, refusal_report_latch_for_test, refusals, ring_enter_arms_for_test,
-};
+pub(crate) use call::{authority_for_test, refusal_report_latch_for_test, refusals};
 pub(crate) use call::{call, report_execution, report_refusals};
 #[cfg(feature = "selftest")]
 pub(crate) use construction::{
-    SpawnEdge, birth_of, maximum_cleanup_ledger_is_total_for_test, refused_task_retirements,
-    spawn_refusing, spawn_rollbacks, without_extended_state_for_test, without_no_execute_for_test,
+    SpawnEdge, birth_of, refused_task_retirements, spawn_refusing, spawn_rollbacks,
+    without_extended_state_for_test, without_no_execute_for_test,
 };
 pub(crate) use construction::{SpawnError, spawn};
 use load::MAX_SEGMENTS;
@@ -38,7 +36,7 @@ pub(crate) use load::{
 pub(crate) use reap::{CollectOutcome, collect, has_zombies, orphan, zombie_slots_for_spawn};
 #[cfg(feature = "selftest")]
 pub(crate) use reap::{
-    LastRites, collection_is_paused_for_test, collection_is_settling_for_test, last_rites_of,
+    LastRites, collection_is_settling_for_test, last_rites_of,
     pause_collection_after_take_for_test, pause_collection_before_settlement_for_test,
     process_records_for_test, reclaimed, refused_mapping_reclaims, refused_ring_reclaims,
     refused_table_reclaims, zombie_owns_slot_for_test,
@@ -47,7 +45,7 @@ pub(crate) use reap::{
 pub(crate) use selftest::{
     gated_cross_is_waiting, release_gated_cross, run_duplicating, run_faulting, run_for_bootstrap,
     run_gated_for_wake, run_into_the_copy_window, run_measuring, run_probing, run_second,
-    run_waiting, run_with_invalid_return_flags, run_with_invalid_return_stack,
+    run_with_invalid_return_flags, run_with_invalid_return_stack,
 };
 
 /// Where the first user program's page of code goes: the low half, which by definition the kernel

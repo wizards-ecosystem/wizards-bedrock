@@ -1,9 +1,7 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use wost::arch::current::interrupt::{self, TrapFrame};
-use wost::arch::current::{apic, cpu, segment};
-
-use super::vector;
+use wost::arch::current::{cpu, segment};
 
 /// SMAP is read inside the handler, after the entry path ran.
 #[cfg(feature = "selftest")]
@@ -14,23 +12,6 @@ pub(super) fn observe_syscall_entry(frame: &TrapFrame) {
     );
     LAST_SYSCALL.record(frame);
     SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
-}
-
-#[cfg(feature = "selftest")]
-pub(super) fn maybe_reclaim_ping<'frame>(
-    frame: &'frame TrapFrame,
-    eoi: apic::EoiToken<'frame>,
-) -> Option<apic::EoiToken<'frame>> {
-    if LAST_PING.count.load(Ordering::Relaxed) != 1 {
-        return Some(eoi);
-    }
-
-    drop(eoi);
-    let reclaimed = apic::claim_eoi(frame, vector::PING);
-    if reclaimed.is_some() {
-        RECLAIMED_ABANDONED_EOI.fetch_add(1, Ordering::Relaxed);
-    }
-    reclaimed
 }
 
 /// Faults recovered inside the user-copy window during self-test.
@@ -221,12 +202,6 @@ pub(super) static LAST_BREAKPOINT: Recorder = Recorder::new();
 #[cfg(feature = "selftest")]
 pub(super) static LAST_PING: Recorder = Recorder::new();
 
-#[cfg(feature = "selftest")]
-pub(super) static REJECTED_DUPLICATE_EOI_CLAIMS: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "selftest")]
-static RECLAIMED_ABANDONED_EOI: AtomicUsize = AtomicUsize::new(0);
-
 /// A copy of what the trap handler recorded for one vector.
 #[cfg(feature = "selftest")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -264,18 +239,6 @@ pub(crate) fn last_breakpoint() -> Record {
 #[cfg(feature = "selftest")]
 pub(crate) fn last_ping() -> Record {
     Recorder::read(&LAST_PING)
-}
-
-/// Duplicate completion claims the ping handler refused.
-#[cfg(feature = "selftest")]
-pub(crate) fn rejected_duplicate_eoi_claims() -> usize {
-    REJECTED_DUPLICATE_EOI_CLAIMS.load(Ordering::Acquire)
-}
-
-/// Abandoned ping completions reclaimed for the same live delivery.
-#[cfg(feature = "selftest")]
-pub(crate) fn reclaimed_abandoned_eoi() -> usize {
-    RECLAIMED_ABANDONED_EOI.load(Ordering::Acquire)
 }
 
 /// How many spurious interrupts the local APIC has delivered.

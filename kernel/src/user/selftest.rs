@@ -58,12 +58,6 @@ pub(crate) fn run_duplicating() -> Result<Spawned, SpawnError> {
     spawn("user-duplicate", 6, DUPLICATE)
 }
 
-/// An eighth, which defers a timer and blocks in `RingWait` for its result.
-#[cfg(feature = "selftest")]
-pub(crate) fn run_waiting() -> Result<Spawned, SpawnError> {
-    spawn("user-wait", 7, WAIT)
-}
-
 /// An echoing program held just before ring-3 entry for wake orchestration.
 #[cfg(feature = "selftest")]
 pub(crate) fn run_gated_for_wake() -> Result<Spawned, SpawnError> {
@@ -118,10 +112,6 @@ const FAULT: u64 = 1;
 /// The argument that makes it submit Duplicate for its bootstrap handle.
 #[cfg(feature = "selftest")]
 const DUPLICATE: u64 = 3;
-
-/// The argument that makes it submit a Timer and enter `RingWait`.
-#[cfg(feature = "selftest")]
-const WAIT: u64 = 4;
 
 /// The argument that brackets Echo's RingEnter with timestamp reads.
 #[cfg(feature = "selftest")]

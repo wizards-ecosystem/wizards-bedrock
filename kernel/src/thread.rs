@@ -28,15 +28,9 @@ use crate::time::{self, NANOSECONDS_PER_MS};
 mod selftest;
 
 #[cfg(feature = "selftest")]
-use selftest::{
-    BLOCKS, HANDLER_ARMS, IDLE_HALTS, POLICY_FALLBACKS, RETIREMENTS, TRAP_WAITS, WAKES,
-};
+use selftest::{HANDLER_ARMS, IDLE_HALTS, RETIREMENTS};
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    blocks, free_slots, handler_arms, idle_halts, idle_is_started, idle_threads, policy_fallbacks,
-    rearm_current_for_test, restore_idle_retry_for_test, retirements, spawn_in_space_refusing,
-    spawn_weighted_for_test, trap_waits, wakes,
-};
+pub(crate) use selftest::{free_slots, idle_halts, retirements, spawn_in_space_refusing};
 
 /// Threads that can exist at once besides the boot thread, matching the recyclable stack arena's
 /// initial capacity; fixed until a measured caller needs more, since at least four processes must
@@ -338,8 +332,6 @@ impl RunQueue {
         let thread = &mut self.slots[slot];
         thread.entity.place(average, lag, SLICE_NS);
         thread.state = State::Ready;
-        #[cfg(feature = "selftest")]
-        WAKES.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record what a thread about to stop being runnable is owed, so that
@@ -377,14 +369,7 @@ impl RunQueue {
             None if eligibility == CurrentEligibility::Excluded => None,
             // With everyone considered, nobody eligible cannot happen per `eevdf`'s tests;
             // counted, and answered with round-robin.
-            None => {
-                let fallback = core::iter::Iterator::next(&mut candidates());
-                #[cfg(feature = "selftest")]
-                if fallback.is_some() {
-                    POLICY_FALLBACKS.fetch_add(1, Ordering::Relaxed);
-                }
-                fallback
-            }
+            None => core::iter::Iterator::next(&mut candidates()),
         }
     }
 
@@ -813,10 +798,6 @@ fn park(
             Some(next) => {
                 // Counted here, not at the call: a thread with nobody to hand the CPU to never
                 // leaves the run queue.
-                #[cfg(feature = "selftest")]
-                if leaving == State::Blocked {
-                    BLOCKS.fetch_add(1, Ordering::Relaxed);
-                }
                 threads.queue.slots[next].state = State::Running;
                 threads.queue.slots[next].started = now;
                 (Some(next), threads.queue.next_event(next, now))
@@ -1019,10 +1000,6 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
 
         match threads.queue.choose(current, CurrentEligibility::Excluded) {
             Some(next) => {
-                #[cfg(feature = "selftest")]
-                if leaving == State::Blocked {
-                    BLOCKS.fetch_add(1, Ordering::Relaxed);
-                }
                 threads.queue.slots[next].state = State::Running;
                 threads.queue.slots[next].started = now;
                 (Some(next), threads.queue.next_event(next, now))
@@ -1043,8 +1020,6 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
     if let Err(reason) = task::switch_from_trap(next, frame) {
         panic!("trap wait switch to slot {next} refused: {reason}");
     }
-    #[cfg(feature = "selftest")]
-    TRAP_WAITS.fetch_add(1, Ordering::Relaxed);
     true
 }
 

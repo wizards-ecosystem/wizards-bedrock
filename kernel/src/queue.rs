@@ -28,8 +28,7 @@ use selftest::LIVE_QUEUES;
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
     live_for_test, pause_worker_for_test, pending_identity_exhaustion_is_terminal_for_test,
-    queued_work_for_test, without_worker_for_test, worker_is_paused_for_test,
-    worker_reaps_for_test, worker_retained_for_test, worker_runs_for_test,
+    without_worker_for_test, worker_is_paused_for_test, worker_reaps_for_test,
 };
 use work::FILE_WORK;
 pub(crate) use work::{request_reap, start_worker, worker_is_ready};

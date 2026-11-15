@@ -1,33 +1,10 @@
-use core::sync::atomic::{AtomicUsize, Ordering, fence};
+use core::sync::atomic::{Ordering, fence};
 
 use timebase::{Seq, Timebase};
 use wost::mm::SharedBytes;
 
 use super::constants::{self};
-use super::{CLOCK_AT, PAGE, clock, read_u32, restore};
-
-/// Times the sequence counter was left odd with interrupts on.
-///
-/// The measured window itself, whatever the caller's entry state, must exclude preemption so a
-/// writer cannot strand readers on an odd sequence value.
-#[cfg(feature = "selftest")]
-pub(super) static WINDOW_LEFT_PREEMPTIBLE: AtomicUsize = AtomicUsize::new(0);
-
-/// Updates that never marked their window open.
-///
-/// The writer reads its own odd value: interrupt exclusion leaves no concurrent observer on one
-/// CPU, and independent observation requires a second CPU.
-#[cfg(feature = "selftest")]
-pub(super) static WINDOW_NEVER_OPENED: AtomicUsize = AtomicUsize::new(0);
-
-/// Run a check while the page owner is temporarily held outside its lock.
-#[cfg(feature = "selftest")]
-pub(crate) fn with_page_absent_for_test<T>(check: impl FnOnce() -> T) -> Option<T> {
-    let shared = PAGE.lock_leaf().take()?;
-    let result = check();
-    restore(shared);
-    Some(result)
-}
+use super::{CLOCK_AT, PAGE, clock, read_u32};
 
 /// Read the page the way a program does, and say what it found.
 ///
@@ -56,7 +33,6 @@ pub(crate) fn read() -> Option<Reading> {
                 read_u64(page, CLOCK_AT + clock::MULTIPLIER),
                 read_u32(page, CLOCK_AT + clock::SHIFT),
             )?,
-            seq: before,
         };
 
         fence(Ordering::Acquire);
@@ -82,8 +58,6 @@ pub(crate) struct Reading {
     pub(crate) last_ticks: u64,
     /// How counter ticks become nanoseconds.
     pub(crate) conversion: Timebase,
-    /// The sequence counter this read agreed on.
-    pub(crate) seq: u32,
 }
 
 #[cfg(feature = "selftest")]
@@ -108,32 +82,6 @@ pub(crate) fn constants() -> Option<(u32, u32, u64)> {
         read_u32(page, constants::PAGE_BYTES),
         read_u64(page, constants::COUNTER_HZ),
     ))
-}
-
-/// Updates that never marked their window open; see [`WINDOW_NEVER_OPENED`].
-#[cfg(feature = "selftest")]
-pub(crate) fn windows_never_opened() -> usize {
-    WINDOW_NEVER_OPENED.load(Ordering::Relaxed)
-}
-
-/// Updates whose sequence-counter window ran with interrupts on; zero on a correct kernel.
-#[cfg(feature = "selftest")]
-pub(crate) fn windows_left_preemptible() -> usize {
-    WINDOW_LEFT_PREEMPTIBLE.load(Ordering::Relaxed)
-}
-
-/// How many times the clock region has been written, two per publication, so a check can see a
-/// publication even when no value changed.
-#[cfg(feature = "selftest")]
-pub(crate) fn sequence() -> Option<u32> {
-    let guard = PAGE.lock_leaf();
-    Some(read_u32(guard.as_ref()?, CLOCK_AT + clock::SEQ))
-}
-
-/// Whether the page exists at all.
-#[cfg(feature = "selftest")]
-pub(crate) fn is_published() -> bool {
-    PAGE.lock_leaf().is_some()
 }
 
 #[cfg(feature = "selftest")]

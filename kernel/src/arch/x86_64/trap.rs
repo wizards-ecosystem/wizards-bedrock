@@ -24,16 +24,15 @@ mod selftest;
 
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
-    InvalidUserReturnKind, Record, kernel_stack_selector_on_last_syscall, last_breakpoint,
-    last_invalid_user_return, last_ping, last_syscall, last_user_fault, reclaimed_abandoned_eoi,
-    rejected_duplicate_eoi_claims, smap_survived_the_last_syscall, spurious_count,
-    user_copy_recoveries,
+    InvalidUserReturnKind, kernel_stack_selector_on_last_syscall, last_breakpoint,
+    last_invalid_user_return, last_ping, last_syscall, last_user_fault,
+    smap_survived_the_last_syscall, spurious_count, user_copy_recoveries,
 };
 #[cfg(feature = "selftest")]
 use selftest::{
     LAST_BREAKPOINT, LAST_INVALID_USER_RETURN, LAST_INVALID_USER_RETURN_KIND, LAST_PING,
-    LAST_USER_FAULT, REJECTED_DUPLICATE_EOI_CLAIMS, SPURIOUS_OBSERVATIONS, USER_COPY_RECOVERIES,
-    invalid_user_return_kind, maybe_reclaim_ping, observe_syscall_entry,
+    LAST_USER_FAULT, SPURIOUS_OBSERVATIONS, USER_COPY_RECOVERIES, invalid_user_return_kind,
+    observe_syscall_entry,
 };
 
 static HANDLERS: interrupt::Handlers =
@@ -84,16 +83,8 @@ fn on_trap(frame: &TrapFrame) {
             #[cfg(feature = "selftest")]
             {
                 paging::observe_activation_publication_for_test();
-                if apic::claim_eoi(frame, vector::PING).is_none() {
-                    REJECTED_DUPLICATE_EOI_CLAIMS.fetch_add(1, Ordering::Relaxed);
-                }
-                let eoi = maybe_reclaim_ping(frame, eoi);
                 LAST_PING.record(frame);
-                if let Some(eoi) = eoi {
-                    dismiss(eoi);
-                }
             }
-            #[cfg(not(feature = "selftest"))]
             dismiss(eoi);
         }
 

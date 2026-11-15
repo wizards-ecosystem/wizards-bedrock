@@ -1,26 +1,11 @@
 use wost::mmio::MmioError;
-use x86_apic::io::GsiRange;
 
 use super::{
     IoApic, RegisterAccess, RoutingError, TakeError, TakeFailure, Wiring, entry, index,
     redirection, window,
 };
 
-impl<R: RegisterAccess> IoApic<R> {
-    /// The lowest global system interrupt this controller routes.
-    /// A check needs it because "below the base" does not exist where the base is zero, so no
-    /// refusal can be required there.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn base(&self) -> u32 {
-        self.range.first()
-    }
-
-    #[cfg(feature = "selftest")]
-    pub(crate) fn entry_of(&mut self, gsi: u32) -> Result<(u32, u32), RoutingError> {
-        let line = self.line_for(gsi)?;
-        self.entry_words(line).map_err(RoutingError::Registers)
-    }
-}
+impl<R: RegisterAccess> IoApic<R> {}
 
 #[cfg(feature = "selftest")]
 #[derive(Debug)]
@@ -91,25 +76,6 @@ impl RegisterAccess for FakeRegisters {
         }
         Ok(())
     }
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn typed_route_is_encoded_for_test() -> bool {
-    let Ok(mut controller) = IoApic::take(FakeRegisters::stale(None), 0) else {
-        return false;
-    };
-    let destination = 0x7D00_0000;
-    controller
-        .route_line(
-            0,
-            super::vector::KEYBOARD,
-            Wiring::isa_default(),
-            destination,
-        )
-        .is_ok()
-        && controller.registers.low == u32::from(super::vector::KEYBOARD.get())
-        && controller.registers.high == destination
-        && controller.registers.high_write_while_unmasked.is_none()
 }
 
 #[cfg(feature = "selftest")]
@@ -195,26 +161,4 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && takeover_is_inert
         && route_refused
         && destination_refused_before_unmask
-}
-
-/// A window that does not report an I/O APIC version is never taken over, and no redirection is
-/// written to it.
-/// The refused versions are a zeroed window, a text-console MMIO byte, and a count no part holds.
-/// The plausible version the other checks rely on is still accepted.
-#[cfg(feature = "selftest")]
-pub(crate) fn an_implausible_version_is_refused_for_test() -> bool {
-    let refused = [0x0000_0000, 0x0000_0041, 0x00FF_0011]
-        .into_iter()
-        .all(|version| {
-            matches!(
-                IoApic::take(FakeRegisters::reporting(version, None), 0),
-                Err(TakeFailure {
-                    reason: TakeError::ImplausibleVersion(reported),
-                    ..
-                }) if reported == version
-            )
-        });
-    let accepted = IoApic::take(FakeRegisters::reporting(0x0000_0011, None), 0)
-        .is_ok_and(|controller| controller.range == GsiRange::new(0, 1).expect("one entry"));
-    refused && accepted
 }

@@ -42,7 +42,7 @@ use selftest::{
 pub(crate) use selftest::{
     CandidateStackMeasurement, activity_for_test, bus_master_followed_disable_for_test,
     candidate_stack_usage_for_test, command_count_for_test, command_is_held_for_test,
-    controller_facts_hold_for_test, controller_is_unlocked_for_test, controller_window_for_test,
+    controller_facts_hold_for_test, controller_window_for_test,
     domain_proof_follows_translation_for_test, finish_candidate_stack, hold_command_for_test,
     hold_requested_for_test, isolation_is_active_for_test, malformed_namespace_is_bounded_for_test,
     malformed_reads_are_bounded_for_test, measure_buffered_read_for_test, queue_entries_for_test,

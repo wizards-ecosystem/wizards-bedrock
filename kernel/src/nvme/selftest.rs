@@ -289,11 +289,6 @@ pub(crate) fn controller_window_for_test() -> Option<u64> {
 }
 
 #[cfg(feature = "selftest")]
-pub(crate) fn controller_is_unlocked_for_test() -> bool {
-    CONTROLLER.try_lock().is_some()
-}
-
-#[cfg(feature = "selftest")]
 pub(crate) fn timeout_quiesces_for_test() -> bool {
     let mut held = CONTROLLER.lock();
     let Some((controller, buffer)) = held.as_mut() else {

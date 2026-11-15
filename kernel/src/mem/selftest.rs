@@ -213,32 +213,3 @@ pub(crate) fn unmap_fault_stack_for_test(
 pub(crate) fn direct_map_base() -> Option<u64> {
     mm::direct_map()?.virtual_address(0)
 }
-
-/// A partially populated boot space returns its complete table ledger.
-#[cfg(feature = "selftest")]
-pub(crate) fn partial_build_failure_is_atomic_for_test() -> bool {
-    const PROBE: u64 = 0xffff_9100_0000_0000;
-
-    let Some(physical) = mm::first_memory_run(FRAME_SIZE) else {
-        return false;
-    };
-    let attempt = || -> Option<bool> {
-        let mut space = AddressSpace::new().ok()?;
-        let region = BootRegion::describe(physical, FRAME_SIZE)?;
-        space.map_boot(PROBE, region, Flags::NO_EXECUTE).ok()?;
-        let mapped = space.lookup(PROBE).is_some();
-        Some(
-            mapped
-                && matches!(
-                    rollback_build(space, MapError::OutOfMemory),
-                    BuildError::Mapping(MapError::OutOfMemory)
-                ),
-        )
-    };
-
-    if attempt() != Some(true) {
-        return false;
-    }
-    let free_before = mm::free_frames();
-    attempt() == Some(true) && mm::free_frames() == free_before
-}

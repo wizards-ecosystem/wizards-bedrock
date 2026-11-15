@@ -192,8 +192,6 @@ static REFUSED_RING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
 static PAUSE_COLLECTION_AFTER_TAKE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "selftest")]
-static COLLECTION_IS_PAUSED: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "selftest")]
 static PAUSE_COLLECTION_BEFORE_SETTLEMENT: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "selftest")]
 static COLLECTION_IS_SETTLING: AtomicBool = AtomicBool::new(false);
@@ -330,11 +328,9 @@ pub(crate) fn collect() -> CollectOutcome {
     drop(ring);
     #[cfg(feature = "selftest")]
     {
-        COLLECTION_IS_PAUSED.store(true, Ordering::Release);
         while PAUSE_COLLECTION_AFTER_TAKE.load(Ordering::Acquire) {
             crate::thread::yield_now(&mut crate::thread::ThreadContext::require());
         }
-        COLLECTION_IS_PAUSED.store(false, Ordering::Release);
     }
     settle(slot, bootstrap, abandoned)
 }
@@ -469,11 +465,6 @@ fn settle(slot: usize, mut bootstrap: Bootstrap, abandoned: usize) -> CollectOut
 #[cfg(feature = "selftest")]
 pub(crate) fn pause_collection_after_take_for_test(paused: bool) {
     PAUSE_COLLECTION_AFTER_TAKE.store(paused, Ordering::Release);
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn collection_is_paused_for_test() -> bool {
-    COLLECTION_IS_PAUSED.load(Ordering::Acquire)
 }
 
 /// Pause one collector after it owns settlement but before it touches the ring.

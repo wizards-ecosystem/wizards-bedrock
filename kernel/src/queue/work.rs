@@ -6,9 +6,7 @@ use wost::sync::SpinLock;
 
 use super::ring::data_bounds;
 #[cfg(feature = "selftest")]
-use super::selftest::{
-    REFUSE_WORKER, WORK_PAUSED, WORK_RUNS, WORKER_IS_PAUSED, WORKER_REAPS, WORKER_RETAINED,
-};
+use super::selftest::{REFUSE_WORKER, WORK_PAUSED, WORKER_IS_PAUSED, WORKER_REAPS};
 use super::{
     Completion, Pending, PendingKind, Queue, ReadRequest, STATUS_BAD_BUFFER, STATUS_BAD_HANDLE,
     STATUS_BAD_PATH, STATUS_DENIED, STATUS_NO_ENTRY, STATUS_NO_HANDLE_SLOT, STATUS_NO_ROOM,
@@ -672,11 +670,7 @@ pub(crate) fn request_reap() {
 fn collect_requested_reap() -> bool {
     match crate::user::collect() {
         crate::user::CollectOutcome::Empty => false,
-        crate::user::CollectOutcome::Retained => {
-            #[cfg(feature = "selftest")]
-            WORKER_RETAINED.fetch_add(1, Ordering::AcqRel);
-            true
-        }
+        crate::user::CollectOutcome::Retained => true,
         crate::user::CollectOutcome::Reclaimed(_) => {
             #[cfg(feature = "selftest")]
             WORKER_REAPS.fetch_add(1, Ordering::AcqRel);
@@ -723,8 +717,6 @@ fn work_forever() {
 
 /// Execute one file operation outside the syscall handler and every spin lock.
 fn service(mut running: RunningWork) {
-    #[cfg(feature = "selftest")]
-    WORK_RUNS.fetch_add(1, Ordering::AcqRel);
     let (status, value) = match running.work.tag {
         WorkTag::Read => {
             assert!(

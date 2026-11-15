@@ -14,14 +14,7 @@ use wost::arch::current::port::{self, Port};
 mod selftest;
 
 #[cfg(feature = "selftest")]
-use selftest::{
-    CONTROL_COMMAND_REFUSED, REFUSE_CONFIG_WRITE, REFUSE_CONTROL_COMMAND, REFUSE_FLUSH,
-    REFUSE_INTERRUPT_READBACK,
-};
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    Translation, UNTRANSLATED_MF2, a_backlog_of_the_flush_bound_drains_for_test,
-};
+use selftest::REFUSE_INTERRUPT_READBACK;
 
 mod status {
     /// A byte is waiting in the output buffer.
@@ -52,11 +45,6 @@ mod config {
 }
 
 mod device {
-    /// Asked for only by the self-test, the only thing with a reason to prove the keyboard answers.
-    #[cfg(feature = "selftest")]
-    pub(super) const ECHO: u8 = 0xEE;
-    #[cfg(feature = "selftest")]
-    pub(super) const SET_SCANCODE_SET: u8 = 0xF0;
     /// Read at bring-up to learn whether bytes will be translated, and by the self-test to check.
     pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
@@ -69,9 +57,6 @@ mod reply {
     pub(super) const ACK: u8 = 0xFA;
     /// The keyboard's basic assurance test passed, following a reset.
     pub(super) const TEST_PASSED: u8 = 0xAA;
-    /// Answer to the `device::ECHO` command, and so equally the self-test's alone.
-    #[cfg(feature = "selftest")]
-    pub(super) const ECHO: u8 = 0xEE;
 }
 
 /// An MF2 keyboard's identity behind a translating controller; `(0xAB, 0x83)` when unrewritten.
@@ -343,11 +328,6 @@ impl Controller {
     /// Send one unacknowledged command to the controller; one with a reply goes through
     /// `controller_query`.
     fn controller_command(&mut self, command: u8) -> bool {
-        #[cfg(feature = "selftest")]
-        if REFUSE_CONTROL_COMMAND.swap(false, Ordering::Relaxed) {
-            CONTROL_COMMAND_REFUSED.store(true, Ordering::Relaxed);
-            return false;
-        }
         if !self.wait_writable() {
             return false;
         }
@@ -387,10 +367,6 @@ impl Controller {
     }
 
     fn write_config_value(&mut self, value: u8) -> bool {
-        #[cfg(feature = "selftest")]
-        if REFUSE_CONFIG_WRITE.swap(false, Ordering::Relaxed) {
-            return false;
-        }
         if !self.wait_writable() {
             return false;
         }
@@ -407,10 +383,6 @@ impl Controller {
     /// Discard what waits in the output buffer; false if it never drains, which means nothing real
     /// is on the other end of these ports.
     fn flush(&mut self) -> bool {
-        #[cfg(feature = "selftest")]
-        if REFUSE_FLUSH.swap(false, Ordering::Relaxed) {
-            return false;
-        }
         drains(
             FLUSH_LIMIT,
             || Port::read(&mut self.control) & status::OUTPUT_FULL != 0,
@@ -429,8 +401,6 @@ impl Controller {
     }
 
     fn read_reply(&mut self, attempts: u32) -> Option<u8> {
-        #[cfg(feature = "selftest")]
-        CONTROL_COMMAND_REFUSED.store(false, Ordering::Relaxed);
         if self.wait_readable(attempts) {
             Some(Port::read(&mut self.data))
         } else {

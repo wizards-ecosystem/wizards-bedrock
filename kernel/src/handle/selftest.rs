@@ -4,12 +4,6 @@ use super::{ARENA, HandleTable};
 
 #[cfg(feature = "selftest")]
 impl HandleTable {
-    /// Arena commitment and capacity, for the backing invariant check.
-    pub(crate) fn arena_backing_for_test() -> (usize, usize) {
-        let arena = ARENA.lock_leaf();
-        (arena.committed, arena.slots.capacity())
-    }
-
     /// Committed quotas and occupied slots in the shared arena.
     pub(crate) fn arena_usage_for_test() -> (usize, usize) {
         let arena = ARENA.lock_leaf();

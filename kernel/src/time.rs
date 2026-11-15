@@ -25,9 +25,8 @@ use selftest::{
 };
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
-    adjacent_readings_for_test, advance_scheduler_for_test, apic_hz,
-    every_refusal_reads_back_as_itself, expiries, last_watchdog_sample,
-    with_watchdog_disagreement_for_test, without_calibration_for_test,
+    adjacent_readings_for_test, apic_hz, expiries, last_watchdog_sample,
+    without_calibration_for_test,
 };
 
 pub(crate) const NANOSECONDS_PER_MS: u64 = 1_000_000;

@@ -31,14 +31,8 @@ use selftest::{
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
     HUMAN_WAIT_MS, arm_key, armed_key_arrived, assume_wrong_numbering, await_armed_key,
-    configuration_refusal_is_visible, controller_config, decoder_matches_identity,
-    decoder_reads_what_arrives, dropped_events, echo_roundtrips, flush_refusals_are_visible,
-    has_reader, identity, interrupt_count, interrupt_handoff_is_recorded, is_ready,
-    mark_poller_peer_progress_for_test, poller_passes, poller_saw_peer_progress_for_test,
-    poller_started_for_test, producer_order_is_causal, queue_admission_is_exact,
-    queue_key_for_test, refuse_interrupt_readback, rereads_the_stream, scancode_set,
-    set_translation, start_bounded_poller, transport_refusals_are_visible, try_read_key_for_test,
-    watch_order_is_causal,
+    controller_config, enable_translation, is_ready, refuse_interrupt_readback,
+    try_read_key_for_test,
 };
 
 struct Keyboard {
