@@ -490,10 +490,6 @@ pub(crate) fn start_idle() {
 
 fn idle_loop() {
     loop {
-        // Reclaim one process per idle pass, away from its dying stack.
-        if crate::user::collect().is_some() {
-            continue;
-        }
         // Syscall handlers defer reporting because they cannot take the console lock.
         if crate::user::report_execution() || crate::user::report_refusals() {
             continue;
@@ -584,8 +580,8 @@ fn spawn_prepared(
         weight,
         binding,
     } = prepared;
-    // Before looking for a slot: a machine too busy to idle would otherwise never collect, and a
-    // spawn is what most needs a freed slot.
+    // Before looking for a slot: a spawn is what most needs a freed slot, and the worker may be
+    // behind.
     while crate::user::has_zombies() && crate::user::collect().is_some() {}
 
     let slot = match reserve(name, entry, weight) {
