@@ -473,10 +473,13 @@ impl AddressWidth {
         None
     }
 
-    /// The 9-bit index `iova` selects at `level`, where level 0 is the leaf table.
+    /// The 9-bit index `iova` selects at `level`, where level 0 is the leaf; zero past bit 63.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
         let shift = 12 + 9 * (level as u32);
-        ((iova >> shift) & 0x1FF) as u16
+        match iova.checked_shr(shift) {
+            Some(shifted) => (shifted & 0x1FF) as u16,
+            None => 0,
+        }
     }
 }
 
