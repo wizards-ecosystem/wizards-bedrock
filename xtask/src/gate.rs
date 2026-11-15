@@ -31,7 +31,6 @@ impl CargoPass {
             }
         }
     }
-
 }
 
 /// One ordered stage of `cargo xtask ci`.
@@ -110,7 +109,6 @@ impl Registry {
     pub(crate) const fn steps(&self) -> &'static [Step] {
         self.steps
     }
-
 }
 
 const CARGO_PASSES: &[CargoPass] = &[
