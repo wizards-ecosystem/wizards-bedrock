@@ -569,26 +569,20 @@ enum TableRoot {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressSpaceRoots {
     full: PhysicalAddress,
-    /// The user root, its page-aligned low bit marking a pair, so frame zero needs no sentinel.
-    user_tagged: u64,
+    /// The user root, which differs from `full` exactly when this is a pair.
+    user: PhysicalAddress,
 }
 
 impl AddressSpaceRoots {
-    const PAIRED_TAG: u64 = 1;
-
     const fn shared(full: PhysicalAddress) -> Self {
-        Self {
-            full,
-            user_tagged: full.get(),
-        }
+        Self { full, user: full }
     }
 
     fn paired(full: PhysicalAddress, stripped: PhysicalAddress) -> Result<Self, MapError> {
-        let pair =
-            CheckedRootPair::new(full.get(), stripped.get()).map_err(MapError::InvalidRootPair)?;
+        CheckedRootPair::new(full.get(), stripped.get()).map_err(MapError::InvalidRootPair)?;
         Ok(Self {
             full,
-            user_tagged: pair.stripped() | Self::PAIRED_TAG,
+            user: stripped,
         })
     }
 
@@ -599,13 +593,7 @@ impl AddressSpaceRoots {
 
     /// The ring-three root; it equals [`full_root`](Self::full_root) only in admitted shared mode.
     pub const fn user_root(self) -> PhysicalAddress {
-        if !self.is_paired() {
-            return self.full;
-        }
-        match PhysicalAddress::new(self.user_tagged & !Self::PAIRED_TAG) {
-            Some(root) => root,
-            None => panic!("a paired user root lies beyond the physical address limit"),
-        }
+        self.user
     }
 
     /// The distinct stripped root, when this is a KPTI pair.
@@ -619,7 +607,7 @@ impl AddressSpaceRoots {
 
     /// Whether this identity contains a distinct stripped root.
     pub const fn is_paired(self) -> bool {
-        self.user_tagged & Self::PAIRED_TAG != 0
+        self.user.get() != self.full.get()
     }
 
     const fn contains(self, root: PhysicalAddress) -> bool {
