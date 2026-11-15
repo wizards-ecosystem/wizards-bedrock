@@ -7,6 +7,13 @@ name = "acpi-tables"
 version = "0.2.0"
 
 [[package]]
+name = "address"
+version = "0.2.0"
+dependencies = [
+ "x86-paging",
+]
+
+[[package]]
 name = "aligned"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -107,6 +107,7 @@ pub(crate) const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 /// Packages that build and test on the host; `libs/` crates are `no_std` but compile for it.
 pub(crate) const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
+    "address",
     "eevdf",
     "elf64",
     "fat32",

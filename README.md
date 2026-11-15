@@ -93,6 +93,7 @@ handoff/         route-neutral envelope fixtures
 | Crate | What it owns |
 |---|---|
 | `acpi-tables` | RSDP, XSDT, MADT, DMAR, validated before use |
+| `address` | physical addresses below the page-table limit |
 | `eevdf` | virtual-deadline scheduling |
 | `elf64` | ELF64 headers and loadable segments |
 | `fat32` | read-only FAT32 over any sector source |

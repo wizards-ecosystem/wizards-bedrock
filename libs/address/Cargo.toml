@@ -1,0 +1,14 @@
+[package]
+name = "address"
+description = "A physical address that cannot exceed what a page-table entry can name."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+x86-paging.workspace = true

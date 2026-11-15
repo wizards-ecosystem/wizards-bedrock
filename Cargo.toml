@@ -5,6 +5,7 @@ resolver = "3"
 members = [
     "kernel",
     "libs/acpi-tables",
+    "libs/address",
     "libs/eevdf",
     "libs/elf64",
     "libs/fat32",
@@ -40,6 +41,7 @@ members = [
 # .cargo/config.toml, and `cargo xtask ci` runs both (README, Development).
 default-members = [
     "libs/acpi-tables",
+    "libs/address",
     "libs/eevdf",
     "libs/elf64",
     "libs/fat32",
@@ -80,6 +82,7 @@ repository = "https://github.com/wizards-ecosystem/wizards-bedrock"
 [workspace.dependencies]
 # Our own no_std libraries: pure logic, host-testable.
 acpi-tables = { path = "libs/acpi-tables" }
+address = { path = "libs/address" }
 eevdf = { path = "libs/eevdf" }
 elf64 = { path = "libs/elf64" }
 fat32 = { path = "libs/fat32" }
