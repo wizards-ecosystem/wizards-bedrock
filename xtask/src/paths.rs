@@ -229,12 +229,4 @@ impl Paths {
     pub(crate) fn tla_checksums(&self) -> PathBuf {
         self.root.join("tools").join("tla").join("CHECKSUMS")
     }
-
-    /// The independently generated FAT32 corpus's checksum listing.
-    pub(crate) fn fat32_corpus_checksums(&self) -> PathBuf {
-        self.root
-            .join("tools")
-            .join("fat32-corpus")
-            .join("CHECKSUMS")
-    }
 }

@@ -83,7 +83,7 @@ libs/            host-tested no_std arithmetic
 xtask/           build, image, QEMU, VMware, gate, evidence
 boot/            limine.conf and a digest-pinned Limine UEFI binary
 models/          TLA+ ring models and the four mutant configs
-tools/           pinned TLC jar and a digest-checked FAT32 corpus
+tools/           pinned TLC jar
 docs/            design docs, one per subsystem
 supply-chain/    SPDX SBOM, third-party notices, license texts
 fixtures/abi-pressure/   native ABI transcription

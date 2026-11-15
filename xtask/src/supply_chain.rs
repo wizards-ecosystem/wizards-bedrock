@@ -783,11 +783,7 @@ fn resolve_dependency(packages: &[LockedPackage], dependency: &Dependency) -> Re
 }
 
 fn verify_artifacts(paths: &Paths, inventory: &Inventory) -> Result<()> {
-    let listings = [
-        paths.limine_checksums(),
-        paths.fat32_corpus_checksums(),
-        paths.tla_checksums(),
-    ];
+    let listings = [paths.limine_checksums(), paths.tla_checksums()];
     let mut expected = BTreeSet::new();
     for listing in listings {
         let parent = listing

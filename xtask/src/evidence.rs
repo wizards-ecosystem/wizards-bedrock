@@ -18,7 +18,7 @@ use crate::git::is_git_id;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, qemu, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v12";
+const FORMAT: &str = "wizard-evidence-v13";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -650,7 +650,6 @@ fn add_vendor_inputs(record: &mut Record, paths: &Paths) -> Result<()> {
     for (label, listing) in [
         ("limine", paths.limine_checksums()),
         ("tla", paths.tla_checksums()),
-        ("fat32-corpus", paths.fat32_corpus_checksums()),
     ] {
         add_digest_bounded(
             record,

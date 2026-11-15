@@ -130,9 +130,6 @@ libc = "=0.2.189"
 # Windows job objects hold every process a bounded command starts. Its `winapi` backend uses no
 # procedural macros, which the API audit forbids in the active graph; `windows` would pull them in.
 command-group = "=5.0.1"
-# Safe GetFileInformationByHandle access keeps credential identity checks out of
-# xtask's unsafe-forbidden source; its only dependency is already locked.
-winapi-util = "=0.1.11"
 
 # Host-only verification: `proptest` is admitted in the five pure libraries that state measured
 # generated-input reach, and `shuttle` stays confined to `libs/ring-proto`. All are

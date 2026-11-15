@@ -290,11 +290,7 @@ where
 
 /// A vendored directory added and not added here is a directory nothing checks.
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
-    for listing in [
-        paths.limine_checksums(),
-        paths.tla_checksums(),
-        paths.fat32_corpus_checksums(),
-    ] {
+    for listing in [paths.limine_checksums(), paths.tla_checksums()] {
         let count = verify_listing(&listing)?;
         println!(
             "[xtask] {count} vendored file(s) match {}",
