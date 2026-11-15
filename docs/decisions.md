@@ -1,0 +1,479 @@
+# Decisions
+
+`docs/decisions.md` is Bedrock's decision log: every decision that still governs the kernel, one
+entry each, grouped by subsystem. Ids are stable; a gap is a retired decision, kept in git history
+at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here as one entry.
+
+## Language and boundaries
+
+- **D-01** The kernel is Rust on the stable channel with no nightly feature, because the borrow
+  checker removes use-after-free and data races in ring 0.
+- **D-13** All `unsafe` lives in `wost`, the one privileged crate (boot, paging, MMIO, port I/O,
+  DMA, context switch, interrupt entry), and every other crate is safe Rust over its abstractions,
+  so the memory-safety trusted base stays small. `kernel/` carries `deny(unsafe_code)`, not
+  `forbid`, because `wost::entry!` expands `allow(unsafe_code)` boot glue into it; that glue,
+  `linker.ld` and `build.rs` stay in the binary crate because a linker may drop `#[used]` statics in
+  an rlib (D-21).
+- **D-14** Faults are contained by restarting a service under a supervisor, never by unwinding: a
+  kernel panic reports and halts, and address spaces and rings are the isolation boundary for user
+  code.
+- **D-30** Bit layouts and arithmetic with no hardware behind them live in host-tested `libs/`
+  crates and `wost` only loads the result, because a wrong descriptor bit shows up only as a triple
+  fault; `libs/x86-tables` holds the GDT, IDT and TSS encodings.
+- **D-41** `unsafe` enters `wost` for three reasons only: a novel abstraction, a measured
+  performance need, or FFI and the platform; every export is sound against any safe caller. A safe
+  instruction adapter takes the narrowest typed operand that proves its precondition, the raw
+  instruction is visible only to its sibling module, and `wost` has no unrestricted `pub unsafe fn`
+  (D-266). Doctests live only in `libs/` crates, where they run on the host.
+- **D-183** Code that runs in kernel context is Rust, and no language runtime, interpreter or
+  compiler enters the kernel beyond the extension checker `docs/roadmap.md` plans. First-party
+  software that runs on the kernel is Wizzy, with exceptions only for minimal runtime shims, host
+  tooling, third-party ports and foreign runtimes.
+- **D-206** Malformed external input (ring entries, images, firmware tables, filesystem and device
+  data) ends in a typed error, never a panic, and `unwrap` and `expect` are denied in `kernel`,
+  `wost` and the parsing crates. An internal contradiction that breaks ownership or an unsafe
+  precondition fails stopped in every build through `assert!`, `panic!` or `unreachable!`, never
+  `debug_assert!`, and an operation that can refuse is `#[must_use]` (D-249, D-356).
+- **D-248** A mechanism ships only when a current caller uses it, and the shipped `Channel` is one
+  opaque bootstrap identity. Test weights, fault injection, observers and the writes that feed them
+  compile only under the `selftest` feature, so test code never widens the shipped API (D-290).
+- **D-366** Bedrock owns kernel mechanisms, `wost`, hardware drivers, the kernel ABI and diagnostic
+  boot images; Realm owns the operating environment, platform semantics, Linux adapters, Wizzy
+  services, shell, desktop, launch policy and product images; Ink owns the language, compiler and
+  runtime. Each project builds from its own committed inputs, and crate names, `wizard-platform-v1`,
+  `x86_64-unknown-wizard` and wire identifiers change only by an ABI decision.
+
+## Boot
+
+- **D-03** The kernel boots UEFI-only through the vendored Limine in `boot/limine/`, because Limine
+  hands over long mode, the higher-half load, the memory map, the framebuffer and modules
+  identically on QEMU, VMware and hardware. It requests base revision 4, which puts ACPI tables and
+  reserved regions in the direct map, and treats an unknown memory-map kind as reserved (D-42);
+  there is no BIOS path and no bootloader of our own (D-219).
+- **D-92** The boot thread moves to its own guarded stack through `task::continue_on_stack` as soon
+  as the tables are live, and the double-fault handler runs on its own guarded IST1 stack (D-89),
+  because a stack inside the large-page direct map cannot be guarded. Every kernel stack has an
+  unmapped page beneath it, made only by `AddressSpace::map_stack`.
+- **D-224** `libs/memory-map` accepts 1 to 128 regions and refuses a larger map whole, so the
+  allocator and page tables are never built from a truncated map. A query consults every region
+  holding the cursor and refuses wherever an unadmitted kind overlaps, so an overlapping or unsorted
+  firmware map cannot change a verdict by its order (D-241).
+
+## CPU, traps and protections
+
+- **D-12** Protections are on from the first boot: W^X for every mapping, NX, SMEP, SMAP, UMIP and
+  `CR0.WP`, a guard page under every stack and zero-on-allocate, because retrofitted mitigations end
+  up with exceptions. They are enabled after the IDT is installed and read back, so a bad bootloader
+  mapping becomes a reported fault (D-32, D-186), and `map_range`, the path under every dynamic
+  mapping door, refuses a writable executable flag set before it touches a table (D-376).
+- **D-29** Interrupt entry is hand-written assembly in `wost`, generated stubs that normalise the
+  frame and a common tail that calls a Rust dispatcher, not nightly's `abi_x86_interrupt`, so the
+  kernel stays on stable.
+- **D-31** A fault taken in ring 0 is a kernel bug: it panics with the vector, error code and
+  registers and nothing is retried, while a breakpoint records its frame and resumes. A trap handler
+  never logs, because the interrupted code may hold the console lock; it records a number that the
+  idle thread reports (D-122).
+- **D-33** The local APIC runs in x2APIC mode only, through MSRs with no device page. Takeover masks
+  and reads back every LVT entry the version register advertises and refuses a controller
+  advertising more than it can silence (D-375), and the SVR must read back as the typed spurious
+  encoding before readiness is published (D-257).
+- **D-55** `wost` keeps a trap-depth count that follows each thread, and the heap refuses to run
+  while it is non-zero, so nothing allocates in a handler that may have interrupted the allocator.
+- **D-81** Trap entry has FRED's shape without FRED: the kernel dispatches on a `TrapCause` decoded
+  by `libs/trap-cause` and handlers see an opaque frame. Enhanced IBRS is enabled at boot, because
+  the return path is costly to change once mature.
+- **D-82** Extended state is saved eagerly, never lazily, into a per-slot area sized at boot from
+  `CPUID.0DH`, with `XSAVEC` where present and `XSAVE` otherwise, beside `CR3` and `RSP0` on every
+  switch (D-108). `XCR0` must equal the fixed x87, SSE and AVX policy, a fresh slot holds the
+  architectural zero image, and process construction and the final ring-3 crossing ask one live
+  predicate of `CR4.OSXSAVE` and `XCR0` (D-270); the kernel is built `+soft-float`.
+- **D-91** `libs/x86-cpuid` decodes `IA32_ARCH_CAPABILITIES` and decides the speculation posture,
+  and `wost` keeps only the `cpuid` and MSR reads; an absent capability word is never read as
+  immunity.
+- **D-96** Ring 3 enters the kernel through one DPL-3 interrupt gate at vector `0x80`, not
+  `syscall`, which would need `swapgs` and a per-CPU block. `EFER.SCE` and `IA32_SYSENTER_CS` are
+  cleared and `enter_user` refuses while either is set (D-139); `enter_user` walks every
+  precondition and zeroes the general registers on the way out.
+- **D-97** `copy_from_user` and `copy_to_user` are the only code that opens the SMAP window, for one
+  copy. Each walks every page and requires effective `USER` permission before the window opens
+  (D-279), checks ranges by comparison with the user limit, and recovers a fault inside its assembly
+  at a linker fixup carried as an opaque target that only the trap adapter writes (D-120, D-252);
+  every trap entry executes `clac` (D-101).
+- **D-98** The return to ring 3 executes `VERW` unless `IA32_ARCH_CAPABILITIES` reports the
+  processor unaffected, on the first entry and on every return (D-101); an unreadable capability
+  word never counts as unaffected.
+- **D-102** A fault taken from ring 3, judged by the pushed `CS`, retires the faulting thread and
+  the machine continues; a double fault, machine check or NMI stays terminal.
+- **D-193** Ring 3 opens only when NX is enabled and read back, the clock is calibrated, the boot
+  thread runs on a guarded stack, the service worker exists and extended state is isolated. Process
+  construction checks each before allocating and returns a typed refusal, and the boot otherwise
+  continues with diagnostics only (D-201, D-203).
+- **D-205** The MADT inventory keeps at most sixteen I/O APICs and refuses a larger one whole. A
+  window's version register must read 0x11 to 0x20 with at most 240 entries before any write
+  (D-350), an entry is masked by writing and reading back the inert low word before its destination
+  is touched (D-276), and on a PCI boot every line stays masked and the keyboard is polled (D-372).
+- **D-250** Ring 3 runs with the kernel higher half in its tables only for an affirmative `RDCL_NO`
+  or the exact QEMU TCG hypervisor tuple, decided once in `libs/x86-cpuid`. Otherwise it enters only
+  through a KPTI pair: a full root and a stripped root that shares the user subtrees and maps only a
+  linker-bounded entry enclave; entry assembly loads the full root before any Rust, exit assembly
+  loads the stripped root after the last secret access and a stack scrub, PCID stays off, and the
+  pair is one linear ownership unit (D-407).
+- **D-251** Permission that depends on hardware state is a non-`Copy`, non-`Clone` token minted only
+  from a fresh observation of that exact device: `ControllerStopped` after `CC.EN = 0` and `CSTS.RDY
+  = 0`, `ExternalControllersMasked` after the I/O APICs are masked, `EoiToken` after the live ISR
+  bit is latched and `DisarmedTimer` after a zero count (D-267), so a caller cannot restate the
+  conclusion.
+- **D-277** `libs/x86-apic` owns the only assignable-vector type, which excludes vectors 0 to 31 and
+  the remapped 8259 range, and `kernel::arch::vector` holds the only production assignment; IDT,
+  local APIC and I/O APIC programming take those typed values.
+- **D-289** Common trap entry loads `KERNEL_DATA` into `SS` before entering Rust, because a
+  privilege-changing interrupt leaves `SS` null and a context switched to from the trap would
+  inherit it.
+- **D-368** Every return to ring 3 is validated immediately before the common `iretq`: exact user
+  selectors, an executable `RIP` and an `RSP` in the user half, and `RFLAGS` with `NT`, `VM`, `IOPL`
+  and reserved bits clear. A refused return retires that program and is never attempted, because a
+  faulting `iretq` is charged to ring 0.
+- **D-426** Every GDT code and data descriptor is written with its accessed bit set, so the
+  processor never writes a descriptor table that the stripped root maps read-only.
+
+## Memory
+
+- **D-43** The frame allocator splits mechanism from policy: `wost::mm` owns `Frame`, `Segment` and
+  the lock, and `libs/frame-space` owns the bitmap search. Only memory the bootloader marks usable
+  is managed, and releasing a foreign or free frame is a visible refusal.
+- **D-44** Memory that user space, DMA or a device can modify has its own type, `mm::USegment`, that
+  admits only plain-data copies; `map_user` takes only a `USegment` and `map_owned` refuses `USER`
+  (D-107). A `USegment` is zeroed before its frames return on every drop path, a run whose clear
+  refuses is withheld, and a refused `map_user` returns it unchanged (D-331), so ring-3 bytes never
+  reach the free pool.
+- **D-45** `activate` is safe: it walks the candidate tables for its own code, stack and direct map
+  before writing `CR3`, and the kernel keeps the address space so mappings can be added to a live
+  space, where a present entry accepts only an identical rewrite (D-86). The direct map covers
+  memory only, at the bootloader's offset with 2 MiB pages, and the image is mapped by linker-symbol
+  class so no page is writable and executable.
+- **D-47** The kernel heap takes frames from the frame allocator and addresses them through the
+  direct map: a slab allocator in `libs/slab-layout` with eight classes from 16 to 2048 bytes, whole
+  frames above that, and slab frames never returned.
+- **D-64** There is no general safe physical read: `FirmwareMemory` copies only from ACPI
+  reclaimable and NVS regions within a budget, and the ACPI parsers validate length, checksum and
+  the whole entry stream first.
+- **D-83** Page-table bits 62:59 are reserved and unused, and user pointers are range-checked
+  against the user limit, never by shifting, so protection keys, LAM and five-level paging stay
+  open.
+- **D-87** No mapping call takes a bare physical address: `map_owned` consumes allocator frames,
+  `map_boot` takes a `BootRegion` that the boot map covers, and `map_device` takes an admitted
+  device range.
+- **D-88** `unmap` returns a token that owns the frames until the TLB is flushed, so frames cannot
+  return while a stale translation may exist; ownership is PTE software bit 9, ranges are
+  preflighted and large pages are never split.
+- **D-104** A user address space shares the kernel half by copying the top-level entries. Activation
+  reserves the top-level table covering the whole device window and afterwards no new higher-half
+  top-level table is made, so every user root shares one topology; root comparison ignores only
+  `ACCESSED` (D-281).
+- **D-185** `map_shared` keeps the `Shared` allocation alive in the `AddressSpace`, and `map_range`
+  preflights the whole range: all absent is installed, all identical succeeds, and a mixed range is
+  refused before any write.
+- **D-189** The running kernel address space is private to `kernel::mem`, which exports operations
+  and never the `AddressSpace`, so a safe caller cannot reclaim tables the CPU is walking.
+- **D-214** A stack address held by hardware comes from a pinned stack that only the active space
+  maps and `unmap` refuses to overlap. A stack top is never stored as an integer: each TSS or switch
+  write borrows a `KernelStackTop` from its retained identity and re-walks every leaf in the loaded
+  `CR3` just before use (D-253, D-259).
+- **D-243** Releasing an address space takes the linear `Bound` token its binding returned and
+  yields `Released`, and an address space mints one `Binding` for one process lifetime (D-280), so
+  no caller holds a release token beside something that can still install the root. `map_boot`
+  refuses `USER`, because a boot region proves only that firmware described the bytes.
+- **D-245** Cleanup refusals are typed and keep the authority to retry: ledgers never drop an entry,
+  a zombie keeps its token and remaining mappings, `AddressSpace::Drop` never reclaims, a refused
+  device retirement stays a linear owner in a bounded quarantine (D-285), and a `...Failure` wrapper
+  that carries authority is `#[must_use]` (D-323). Kernel stacks are 32 KiB; the storage candidate
+  runs as sibling stages so one stage frame sits on the boot stack at a time with two pages kept
+  free, and a deep path is restructured rather than given a bigger stack (D-359).
+- **D-261** Every page-table entry access goes through one private `EntrySlot`; clearing a possibly
+  cached entry walks the current `CR3` and executes `invlpg` only if the walk reaches that same
+  slot, and `GLOBAL` is never admitted.
+- **D-283** Every RAM mapping keeps the direct map's write-back type: the shared, owned and user
+  doors refuse cache flags and `map_boot` uses the type the direct map gives its range (D-349),
+  because conflicting memory types across aliases are undefined.
+- **D-348** User mappings end at `USER_MAPPING_END`, one page below `USER_END`, in
+  `AddressSpace::may_reach` and the loader, because an instruction on the last canonical page would
+  push a non-canonical return address.
+
+## Scheduling, locks and time
+
+- **D-15** Scheduling is EEVDF-style virtual deadlines with tickless idle: the policy is pure
+  arithmetic in `libs/eevdf` and `kernel/src/thread.rs` is the mechanism (D-53). The idle thread
+  sits outside the policy and runs only when nothing else can (D-60), and if the policy ever returns
+  nobody the kernel falls back to round-robin and counts it.
+- **D-34** Taking a `SpinLock` clears the interrupt flag and the guard restores the flag it found,
+  because a lock shared with a handler otherwise deadlocks on one CPU. Setting the flag or switching
+  threads while a spin lock is held panics (D-66); a forgotten guard is an accepted liveness bug
+  bounded to that lock, and only the panic path force-releases a lock (D-194).
+- **D-36** Clock rates are measured against the 8254 PIT over 20 ms windows on counter 0 and
+  accepted when two windows agree to one part in 64. CPUID leaf 0x15 can supply the TSC rate where
+  it reports a complete ratio, and leaf 0x16 is never a rate. A usable PIT stays claimed as a
+  watchdog, and two conclusive disagreements revoke the public clock while scheduling continues on a
+  private epoch (D-225).
+- **D-51** The context switch is a private naked function in `wost` that saves callee-saved
+  registers and swaps stacks; the kernel names threads by slot and never holds a context value, so
+  every stack pointer the switch loads came from `wost`.
+- **D-52** Kernel thread stacks come from a fixed arena of guarded slots laid out by
+  `libs/stack-layout`, and `task::init` walks every stack in the live tables before accepting the
+  arena.
+- **D-54** Preemption happens at trap exit, after end-of-interrupt, and only when the interrupted
+  frame had interrupts enabled; since every spin lock clears that flag, critical sections need no
+  preempt count.
+- **D-57** The TSC is the clock and the APIC timer is a one-shot alarm armed only for the next slice
+  end or sleeper deadline, so an idle kernel takes no timer interrupts; every wake arms it, trap
+  context included (D-133). Time is nanoseconds through a multiply and shift in `libs/timebase`.
+- **D-61** A `WaitQueue` is a bitmask of thread slots, so a wake from a handler allocates nothing; a
+  waiter registers and rechecks under a clear interrupt flag to close the lost-wakeup race, and a
+  handler that woke a thread requests a reschedule after its end-of-interrupt.
+- **D-62** `ThreadContext` is a zero-sized, non-`Send`, non-`Sync` token that only thread context
+  can mint, and every call that may block takes it, so blocking from a trap handler does not
+  compile.
+- **D-63** `ThreadLock` is the second lock kind, for long work such as console output: it leaves
+  interrupts on and refuses trap context and any held `SpinLock`, because the preempted holder could
+  then never run.
+- **D-70** These rules hold now so that multiprocessor support is a bring-up: no guard lives across
+  a context switch, `Relaxed` needs a written justification, handlers never block, and the
+  lost-wakeup recheck has a full barrier on both sides. The handle table promises no lowest free
+  handle, the ring no FIFO across submitters, and unmap, close and release no global visibility on
+  return.
+- **D-85** `SpinLock::lock` borrows the `ThreadContext` mutably for the guard's life, so no blocking
+  call or second token lock compiles while it is held; `lock_leaf` is for take, mutate and return
+  with no call-out and may nest under a token lock. A leaf-guarded static exposes no closure form
+  and no caller-supplied work runs under a leaf guard (D-121, D-430), and the heap never holds its
+  lock while taking a frame.
+- **D-99** Everything that follows a thread (`RSP0`, the address-space root, extended state,
+  `FS_BASE`) is switched in `task::prepare`, the one function every switch passes through. The root
+  is installed from a `Binding` that `AddressSpace::bind` mints only after comparing the higher half
+  with the live kernel's (D-106), and `set_thread_base` refuses a value outside user space (D-118).
+- **D-152** Monotonic time is a read-only page mapped into every program, with a write-once
+  constants region and a seqlocked clock region whose `mode` word permits its use, so a program
+  converts `rdtsc` without a trap (D-166). It is global until Phase 7 replaces ambient time with
+  per-world clock modes.
+- **D-240** A wait on hardware or a person is bounded by the clock through `timebase::PollLimit`,
+  with a spin count only as the fallback for a stopped clock, because an iteration bound depends on
+  processor speed.
+- **D-293** Every `wost` module that owns a static lock exposes `force_unlock(&PanicToken)` covering
+  each one, and `panic::reclaim` calls every module's door, so the panic reporter never deadlocks on
+  a lock whose holder will not resume.
+
+## Native ABI, handles and rings
+
+- **D-06** Every kernel object is reached through a process-local handle with rights bits, and the
+  data path is shared-memory submission and completion rings beside a small synchronous call set,
+  for batching and structural asynchrony. Ring structures carry versions, there are no privileged
+  opcodes, and everything read from shared memory is validated.
+- **D-78** Handles live in one global arena; a handle value is the slot's generation and index,
+  tagged and mixed with a per-table value and decoded by `libs/handle-space`, and generations refuse
+  stale reuse. A table's identity is a non-wrapping `u64` (D-204), a foreign slot answers `Stale`
+  like an empty one (D-222), and type codes are never renumbered.
+- **D-79** There is one ring mechanism, on kernel-owned pages: every operation posts exactly one
+  terminal completion, completion space is reserved at submission so overflow cannot happen, each
+  entry is copied once and then validated, and cancellation is advisory.
+- **D-80** A signal or other unsolicited notice is a completion-queue entry, never a kernel-built
+  frame on the user stack, so there is one event plane; its record waits for ring version 2.
+- **D-110** A channel carries bytes and handles over bounded inboxes: a full inbox returns `Full`,
+  an orphaned end returns `PeerClosed`, and a dropped end wakes its peer's waiters (D-127). A handle
+  moves as object and rights; the sender needs `TRANSFER` and may only narrow, and asking for more
+  than was offered is refused, never clamped.
+- **D-111** A new program's handle table holds exactly one entry at birth, its bootstrap identity,
+  and every later handle arrives by channel receipt or a handle-authorized ring operation, never by
+  ambient minting.
+- **D-113** Ring pages are allocated and kept by the kernel and mapped into the program without
+  ownership, and `serve` reads them once into a snapshot and acts only on copies.
+- **D-116** The `0x80` gate dispatches on `rax`, an unknown call answers `-ENOSYS`, and only `exit`
+  does not return; completion room is reserved at the doorbell before a submission is accepted.
+- **D-150** Every operation that can wait has a ring form and none is reachable only through a
+  blocking call, because a runtime that multiplexes work onto fewer threads cannot live with a
+  blocking-only door; the synchronous call path in `docs/roadmap.md` sits beside the ring under this
+  rule.
+- **D-151** A submission that can produce a handle reserves a handle slot at admission with its
+  completion slot, so refusal happens at submit. `HandleTable` works through `&self` with held and
+  promised counts in one atomic word and a `SlotReservation` whose `Drop` returns the slot (D-163),
+  and a table commits its quota at construction, outside trap context (D-182).
+- **D-164** An operation that cannot finish at once keeps its admission-time completion slot,
+  `RingWait` returns at once when nothing is in flight, and Cancel posts its own completion while
+  the target still gets exactly one `STATUS_CANCELLED`.
+- **D-173** Read and OpenAt are ring operations on a 32-byte submission with data through a third
+  shared page, so no user pointer is validated; OpenAt derives rights, a file getting `READ` from
+  `TRAVERSE` plus the parent's universal rights.
+- **D-174** Every submission field is a value ring 3 chose, so the kernel narrows it with `try_from`
+  and refuses or saturates; `as` at that boundary only widens.
+- **D-181** The native ABI numbers only the calls, opcodes and rights the kernel decodes; descriptor
+  numbers, cursors and working directories belong to a user-space adapter.
+- **D-192** A pending ring operation stays in its slot, marked settling, until its terminal
+  completion is posted, and a refused post restores it for retry; ring pages are reclaimed only once
+  the queue is quiet.
+- **D-221** Each ring direction is single-producer, single-consumer, and the 32-bit index is the
+  only synchronization edge: write the entry, then release-store the index; acquire-load the index,
+  then copy the entry once. A `Shared` allocation becomes either `SharedBytes` or one `SharedRing`
+  (D-269), and publication words are accessed by one aligned dword `mov` in assembly, never a Rust
+  atomic, because ring 3's plain stores make a Rust atomic over them unsound (D-282).
+
+## Processes
+
+- **D-07** Native process creation is spawn-only with explicit grants and no fork, because fork is
+  an implicit inheritance path beside the grants the kernel audits.
+- **D-100** Until the user-space loader of `docs/roadmap.md` replaces it, the initial program is a
+  Limine module and the loader refuses any segment that is writable and executable, runs past the
+  file, overlaps another or reaches the kernel half; pages are filled before they are mapped
+  read-only or executable.
+- **D-117** A retired program becomes a zombie that the one service worker collects, never the dying
+  thread (D-203). It keeps its ring and everything its in-flight operations can touch until
+  `Queue::abandon` has ended each with a `CANCELLED` completion (D-153, D-167); reclaim then
+  releases the handle table, the ring and the address space, and an exit record is taken at death.
+- **D-191** `ProcessConstruction` owns the new address space and every mapped range until the thread
+  is published, so any refusal in spawn rolls back through one owner, and `load_image` checks that
+  the entry lies in an executable segment before taking a frame.
+
+## Storage
+
+- **D-08** WizFS is copy-on-write, checksummed and snapshotting, designed once behind the VFS with
+  snapshot ids in the key, checksums beside pointers, one ordered journal and designed-in scrub and
+  repair, its format in a host-tested `no_std` crate. It is built on the object store, with crash
+  injection and a repair tool before the format freezes (D-73).
+- **D-169** Storage is one NVMe controller with one I/O queue pair, polled and read-only, because
+  NVMe is the only freely specified controller QEMU and VMware both present; queue size, stride and
+  timeouts come from `CAP`, and every poll is bounded. A namespace must use 512-byte blocks with no
+  metadata (D-196).
+- **D-170** The first filesystem is read-only FAT32 in `libs/fat32`, generic over its `Sectors`
+  trait, allocation-free and 512-byte only. A chain is bounded by the volume's cluster count and a
+  directory walk by the clusters that can hold 65,536 entries with a cycle check, so ring 3's offset
+  cannot choose the kernel's work (D-238, D-352).
+- **D-171** The VFS abstracts directories and dispatches by enum, and `libs/path-walk` resolves `..`
+  lexically and cannot ascend; absolute paths, escapes and over-long names are refused. tmpfs and
+  devfs are the other backends, and a devfs `Device` is a `Node` variant that `vfs::read` cannot
+  take (D-172).
+- **D-188** An NVMe command with an uncertain outcome is resolved by clearing `CC.EN` and observing
+  `CSTS.RDY = 0`, or else every queue and buffer frame is withheld for ever. DMA ownership is one
+  linear `Idle`, `Reserved`, `InFlight` transaction, and ringing the doorbell consumes the borrowed
+  `DmaPublication` (D-339).
+- **D-199** Storage selection holds a function, its windows and its mapping as a lease, committed
+  after a smoke read or retired by exact rollback; the next controller is tried only after complete
+  retirement, and a stop that cannot be verified ends fallback.
+- **D-200** `RingEnter` only validates and admits Read and OpenAt; one kernel worker fed by a fixed
+  eight-slot queue does the VFS and device work, and a full queue answers `STATUS_NO_ROOM`. OpenAt
+  reserves its handle and copies its path at admission and the worker installs through that
+  reservation, because a FAT mount may take a `ThreadLock` that trap context refuses (D-381).
+
+## Devices
+
+- **D-39** A port claim reserves the whole width its accesses drive, claims are permanent and taken
+  all at once through `PortSpace::reserve_all` (D-138), and `wost` exposes one typed claim per fixed
+  device with the port numbers only there (D-351).
+- **D-48** The console keeps a RAM shadow of the framebuffer and scrolls from it, so the device is
+  never read, and maps the framebuffer write-combining through PAT entry 1 with exactly one alias
+  (D-50).
+- **D-49** A device window is mapped by `map_device`, uncached and never executable, into a
+  `DeviceMapping` that is the only way to an `MmioRegion`. ACPI is hostile input parsed by
+  `libs/acpi-tables`, and interrupt routing honours the MADT source overrides.
+- **D-168** A driver claims a PCI function through CF8/CFC configuration access, and the claim mints
+  one non-duplicable authority bound to registry, address and generation that every decode,
+  bus-master, command and BAR transition borrows (D-265). BAR sizing is one restored transaction in
+  `libs/pci-config` (D-187); memory decode follows a `MAXPHYADDR`-checked, page-rounded admitted
+  range and a fresh BAR readback, and bus mastering consumes a fresh disabled-controller observation
+  (D-278).
+- **D-179** `libs/ps2-keys` decodes scancode sets 1 and 2, and the set in use is read off the
+  arriving bytes by `SetProbe` (`F0` means set 2, a non-reply byte above `0x83` means set 1),
+  because both the configuration byte and the identity reply lie on real machines; bytes are held
+  until a decisive one arrives (D-239).
+
+## DMA isolation and PCI
+
+- **D-357** The storage controller runs behind a kernel-owned Intel VT-d domain that identity-maps
+  only frames a live `DmaSegment` owns, and `admit_bus_master` requires that function's `DmaDomain`
+  proof, which the admission spends (D-360). Without a usable unit storage does not start; the unit
+  invalidates through its registers, flushes table lines when it lacks `ECAP.C` and draws its tables
+  from one owned arena (D-358). No firmware RMRR is supported, so firmware bytes never become
+  mapping authority (D-388).
+- **D-367** VT-d mapping takes a `DmaSegment`, and once a translation may exist any failed map,
+  unmap or invalidation retains the segment. Revocation completes a drained global invalidation
+  before frames return (D-383), live entries publish by one qword store and NVMe mappings carry
+  direction (D-387), and published tables and mapped segments keep their frames when dropped
+  (D-433).
+- **D-369** A rejected storage candidate clears and reads back Bus Master Enable before trusting the
+  controller's stop, invalidates every queue segment before a frame drops, and never restores
+  inherited BME. A unit-wide write first fences every requester its DRHD declares, from a bounded
+  inventory, and drains reads and writes (D-370).
+- **D-371** DMAR authority comes from one sealed `PciTopology` probed over every bus, device and
+  function before enumeration: bridges form a single-parent tree with nested intervals, a hierarchy
+  scope covers only proved descendants, and a malformed scope invalidates the whole DMAR.
+- **D-372** Interrupt remapping is mandatory: one DRHD must cover every present function, an empty
+  EIME table denies every device interrupt, and a non-duplicable isolation proof gates bus-master
+  admission and the first `sti`, because a hostile MSI could otherwise inject a privileged vector.
+- **D-389** The sole segment-zero unit is taken over once per boot, before the first topology read,
+  and only when whole-segment coverage is proved statically and no RMRR applies. It starts with an
+  empty root and a deny-all interrupt table, translation is never disabled afterwards, and firmware
+  TE, QIE, IRE or CFI left on refuse the takeover.
+- **D-390** DMA safety is a boot-handoff contract: a checksummed `WZDH` ACPI table, accepted only on
+  the CPU-identified QEMU TCG or VMware platform, attests CF8/CFC reach, static requesters and
+  quiescence, and bare metal refuses. The kernel's first act clears and reads back Bus Master Enable
+  on every function before memory initialization; VMware's 440BX host bridge is kept as a
+  non-requester and its PIIX4 ISA bridge is fenced by masking both 8237 controllers (D-392, D-426).
+
+## Build, gate and release
+
+- **D-16** The build is self-contained: `xtask` writes the MBR, the FAT32 ESP and the VMware
+  descriptors in Rust with no external imaging tool, uses the GNU host toolchain on Windows and runs
+  whole on Linux (D-450), and a new system-level install needs the owner's approval.
+- **D-17** Rust is pinned to an exact version in `rust-toolchain.toml`, because a floating channel
+  lets a new lint turn the gate red without a commit, and nothing host-specific goes there (D-24).
+  `limine` stays at 0.5.0 because 0.6 needs nightly, `fatfs` builds without `chrono`, whose Windows
+  bindings need `dlltool.exe`, and the kernel links with `code-model=kernel` and static relocation.
+- **D-18** QEMU (EDK2, with the machine type named exactly as `pc-q35-9.2`) is the development loop
+  and a VMware Workstation boot is part of every phase's definition of done, so two firmware and
+  device paths are exercised (D-218). A phase that adds a device adds it to the QEMU machine and the
+  VMware template together (D-176).
+- **D-25** Every vendored binary has a SHA-256 in a `CHECKSUMS` file that `cargo xtask
+  verify-vendor` and the gate check, and an unlisted file is refused. Image assembly reads
+  `BOOTX64.EFI` and `limine.conf` once without following links, checks the bootloader buffer against
+  its entry and writes that same buffer (D-379, D-380).
+- **D-26** `cargo xtask ci` on the developer's machine is the gate. The hosted workflow,
+  `.github/workflows/source-preview.yml`, runs a subset of its steps and boots nothing.
+- **D-40** `xtask/src/elf.rs` reads the linked kernel after every build and requires a higher-half
+  entry, every allocated section inside a `PT_LOAD`, no writable executable segment, a `.bss` that
+  costs no file bytes, and `.text` and `.requests` loaded, because a linker script that is
+  incomplete still links.
+- **D-220** Every locked crate has a reviewed license row in `supply-chain/inventory.txt`, and
+  sources are crates.io only.
+- **D-346** Controlled boots drive QEMU through QMP with bounded exchanges.
+- **D-386** Every kernel build passes one exact rustflags list with `--remap-path-prefix` for the
+  source root, the sysroot and the Cargo home, so shipped debug information names no host path;
+  `cargo xtask debug` maps the source root back for GDB.
+
+## Tests
+
+- **D-28** Checks that need a machine run in the kernel under the `selftest` feature, report through
+  QEMU's `isa-debug-exit` port and are driven by `cargo xtask test-boot`, because a `no_std`,
+  `no_main` binary cannot host `cargo test`; the feature never ships in an image.
+- **D-65** The gate boots the self-test kernel in release and in debug, the debug boot being where
+  an arithmetic overflow fails, and boots the shipped image, which must settle with no panic and log
+  `user: ring 3 call observed`, the record the idle thread emits once after a call from CPL 3
+  (D-427).
+- **D-84** The ring protocol has TLA+ models under `models/`, including index publication with
+  terminal ownership (D-229), run by `cargo xtask model-check` with a vendored TLC when a model
+  changes, and `libs/ring-proto` uses proptest for its index arithmetic (D-112).
+- **D-260** A kernel panic is written as an opening record and a completion record with backslash,
+  CR and LF escaped, the UART reports any byte it cannot send, and host readers treat a panic as
+  terminal only at its completion record.
+- **D-454** The suite has six tiers: a boot smoke whose serial scan finds no warning or panic,
+  syscall and ABI behaviour, isolation and security, a few edge tests per hostile-input parser,
+  fixed-bug regressions, and a small tooling smoke set. Source rules are lints, attributes or types,
+  never tests that read source text. A release is `cargo xtask ci` green, a VMware boot of both
+  images read by `cargo xtask qualify-vmware`, and a person reading the release diff; `cargo
+  mutants` and fuzzing are on-demand laptop work that never blocks a commit.
+
+## Conventions
+
+- **D-19** The design lives in `docs/architecture.md`, written before or with the code. The wizard
+  theme stays in product-facing strings, never in identifiers, and code comments never cite a
+  decision.
+- **D-22** One `[workspace.lints]` table governs every crate, `xtask` included: `unsafe_code` is
+  `deny`, lifted once at the root of `wost` and `forbid` in `libs/` and `xtask` (D-67). A
+  suppression is `#[expect(lint, reason = "...")]`, with `#[allow]` only where `expect` cannot
+  reach, and a lint is enabled in the commit that brings its count to zero (D-451).
+- **D-27** The Rust API Guidelines are the house style, with the Rust for Linux coding guidelines
+  taking precedence where they are more specific about kernel work.
