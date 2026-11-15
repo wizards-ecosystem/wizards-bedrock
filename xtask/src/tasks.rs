@@ -9,6 +9,8 @@ use crate::paths::{self, Paths, RunDirectory};
 use crate::{qemu, supply_chain, vendor};
 
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
+// Cargo's `xtask` profile builds the running executable here, and Windows cannot delete it.
+const OWN_PROFILE_DIRECTORY: &str = "xtask";
 // A debug kernel runs several times slower under emulation.
 const DEBUG_SELFTEST_TIMEOUT: Duration = Duration::from_secs(150);
 
@@ -115,7 +117,27 @@ pub(crate) fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
             Err(error) => return Err(error).with_context(|| format!("removing {}", vm.display())),
         }
     }
-    cargo::run(paths, "clean", ["clean"])
+    let target = paths.target_dir();
+    let entries = match std::fs::read_dir(target) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", target.display())),
+    };
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", target.display()))?;
+        if entry.file_name() == OWN_PROFILE_DIRECTORY {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        removed.with_context(|| format!("removing {}", path.display()))?;
+    }
+    println!("[xtask] removed build output under {}", target.display());
+    Ok(())
 }
 
 fn for_each_pass(paths: &Paths, subcommand: &str, extra: &[String]) -> Result<()> {
