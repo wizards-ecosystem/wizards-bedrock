@@ -52,6 +52,8 @@ pub struct FrameSpace<const WORDS: usize> {
     free: [u64; WORDS],
     free_count: usize,
     managed_count: usize,
+    // One past the highest managed frame, so a search never walks the empty top of the domain.
+    limit: usize,
     hint: usize,
 }
 
@@ -64,6 +66,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             free: [0; WORDS],
             free_count: 0,
             managed_count: 0,
+            limit: 0,
             hint: 0,
         }
     }
@@ -102,6 +105,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             }
             self.managed[frame / FRAMES_PER_WORD] |= bit(frame);
             self.managed_count += 1;
+            self.limit = self.limit.max(frame + 1);
             self.release(frame);
         }
         inserted
@@ -112,7 +116,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     }
 
     pub fn allocate_contiguous(&mut self, count: usize, align: usize) -> Option<usize> {
-        if count == 0 || count > Self::FRAME_COUNT {
+        if count == 0 || count > self.limit {
             return None;
         }
         let align = align.max(1).checked_next_power_of_two()?;
@@ -121,9 +125,9 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         let wrap_end = self
             .hint
             .saturating_add(count.saturating_sub(1))
-            .min(Self::FRAME_COUNT);
+            .min(self.limit);
         let found = self
-            .search(self.hint, Self::FRAME_COUNT, count, align)
+            .search(self.hint, self.limit, count, align)
             .or_else(|| self.search(0, wrap_end, count, align))?;
         let end = found.checked_add(count)?;
 
@@ -176,6 +180,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             self.free[frame / FRAMES_PER_WORD] |= bit(frame);
             self.free_count += 1;
         }
+        self.hint = self.hint.min(frame);
     }
 
     fn take(&mut self, frame: usize) {
@@ -185,23 +190,50 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         }
     }
 
+    // Each step moves `start` past a taken frame, so the loop ends within `to` steps.
     fn search(&self, from: usize, to: usize, count: usize, align: usize) -> Option<usize> {
-        let mut start = align_up(from, align)?;
-        for _ in 0..=Self::FRAME_COUNT {
+        let mut start = align_up(self.next_free(from, to)?, align)?;
+        loop {
             let end = start.checked_add(count)?;
             if end > to {
                 return None;
             }
-            match (start..end).find(|&frame| !self.is_free(frame)) {
-                None => return Some(start),
-                Some(blocker) => {
-                    let next = align_up(blocker.checked_add(1)?, align)?;
-                    if next <= blocker {
-                        return None;
-                    }
-                    start = next;
-                }
+            let Some(blocker) = self.first_taken(start, end) else {
+                return Some(start);
+            };
+            start = align_up(self.next_free(blocker.checked_add(1)?, to)?, align)?;
+        }
+    }
+
+    fn next_free(&self, from: usize, to: usize) -> Option<usize> {
+        let mut word = from / FRAMES_PER_WORD;
+        let mut free = self.free.get(word)? & (u64::MAX << (from % FRAMES_PER_WORD));
+        loop {
+            if free != 0 {
+                let frame = word * FRAMES_PER_WORD + free.trailing_zeros() as usize;
+                return (frame < to).then_some(frame);
             }
+            word += 1;
+            if word * FRAMES_PER_WORD >= to {
+                return None;
+            }
+            free = *self.free.get(word)?;
+        }
+    }
+
+    fn first_taken(&self, start: usize, end: usize) -> Option<usize> {
+        let mut frame = start;
+        while frame < end {
+            let offset = frame % FRAMES_PER_WORD;
+            let Some(free) = self.free.get(frame / FRAMES_PER_WORD) else {
+                return Some(frame);
+            };
+            let taken = (!free) >> offset;
+            if taken != 0 {
+                let blocker = frame + taken.trailing_zeros() as usize;
+                return (blocker < end).then_some(blocker);
+            }
+            frame += FRAMES_PER_WORD - offset;
         }
         None
     }
