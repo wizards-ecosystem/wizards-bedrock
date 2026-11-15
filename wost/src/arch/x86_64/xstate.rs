@@ -214,9 +214,8 @@ pub(super) unsafe fn save(area: *mut u8) {
 ///
 /// # Safety
 ///
-/// `area` must satisfy [`save`]'s requirements and hold either a state [`save`] wrote or
-/// [`bytes`] fully zeroed bytes. A zero `XSTATE_BV` and `XCOMP_BV` encode architectural initial
-/// state in standard form; zero reserved header bytes satisfy `XRSTOR`'s format checks.
+/// `area` must satisfy [`save`]'s requirements and hold either a state [`save`] wrote or one
+/// [`write_initial`] wrote.
 ///
 /// # Panics
 ///
@@ -239,6 +238,30 @@ pub(super) unsafe fn restore(area: *const u8) {
             in("edx") u32::MAX,
             options(nostack, preserves_flags),
         );
+    }
+}
+
+/// Fill `area` with the architectural initial state in standard form.
+///
+/// A zero `XSTATE_BV` and `XCOMP_BV` encode initial registers and zero reserved header bytes
+/// satisfy `XRSTOR`'s format checks, but `XRSTOR` loads `MXCSR` from memory, so it is set to the
+/// reset value with every SIMD exception masked.
+///
+/// # Safety
+///
+/// `area` must be writable for [`CEILING`] bytes, with nothing else reading or writing it.
+pub(super) unsafe fn write_initial(area: *mut u8) {
+    /// Byte offset of `MXCSR` in the legacy region.
+    const MXCSR_OFFSET: usize = 24;
+    /// `MXCSR` after reset: all exceptions masked, round to nearest.
+    const MXCSR_RESET: u32 = 0x1F80;
+    // SAFETY: the caller's span covers `CEILING` bytes.
+    unsafe { area.write_bytes(0, CEILING) };
+    // SAFETY: the legacy region lies inside that span, and the write needs no alignment.
+    unsafe {
+        area.wrapping_add(MXCSR_OFFSET)
+            .cast::<u32>()
+            .write_unaligned(MXCSR_RESET);
     }
 }
 

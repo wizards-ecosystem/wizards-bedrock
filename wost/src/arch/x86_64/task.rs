@@ -306,7 +306,7 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
         .wrapping_add(slot * xstate::CEILING);
     // SAFETY: `slot` is in TABLE, so below `MAX_TASKS`; the guard and clear flag exclude the switch
     // path that uses this complete save area, and the slot is not live yet.
-    unsafe { extended.write_bytes(0, xstate::CEILING) };
+    unsafe { xstate::write_initial(extended) };
 
     let Some(stack_index) = table.slots[slot].stack_index else {
         return Err(TaskError::Vacant(slot));
