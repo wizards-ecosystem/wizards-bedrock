@@ -484,7 +484,7 @@ impl InterruptState {
     }
 
     /// Whether the context accepted interrupts before this exclusion.
-    pub(super) fn were_enabled(&self) -> bool {
+    pub fn were_enabled(&self) -> bool {
         self.live
             && self.level == 1
             && EXCLUSIONS[self.owner]

@@ -30,18 +30,6 @@ impl WaitQueue {
         }
     }
 
-    /// Wait until [`wake_all`](Self::wake_all) is called.
-    ///
-    /// A wake may be someone else's, so every caller re-checks in a loop. The [`ThreadContext`] is
-    /// what a handler cannot mint.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `wost` refuses the switch: the two tables disagree.
-    pub(crate) fn wait(&self, context: &mut ThreadContext) {
-        self.wait_unless(context, || false);
-    }
-
     /// Check `ready` under the lock `wake_all` takes, and set this thread's bit only if false.
     ///
     /// The check and the registration both happen with the interrupt flag clear, which on one CPU

@@ -246,6 +246,10 @@ impl Events {
         true
     }
 
+    fn has_any(&self) -> bool {
+        self.ring[self.tail].is_some()
+    }
+
     fn pop(&mut self) -> Option<Keystroke> {
         let keystroke = self.ring[self.tail].take()?;
         self.tail = (self.tail + 1) % QUEUED;
@@ -258,21 +262,14 @@ static EVENTS: SpinLock<Events> = SpinLock::new(Events::new());
 /// Threads waiting for a keystroke.
 static READERS: WaitQueue = WaitQueue::new();
 
-/// Wait for the next key event; nothing is armed and nothing polls until the interrupt wakes it.
-/// The check and the registration happen with the flag clear, together: a wakeup arriving between
-/// "empty" and "waiting" is the classic way to lose one for good.
-/// The queue guard is its own statement: held across the restore, it would leave the queue locked
-/// with interrupts on.
+// The emptiness check sits under the waiters lock a producer's wake takes, so no wake is lost.
 pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
     loop {
-        let saved = interrupt::disable();
         let keystroke = EVENTS.lock(context).pop();
         if let Some(keystroke) = keystroke {
-            saved.restore();
             return keystroke;
         }
-        READERS.wait(context);
-        saved.restore();
+        READERS.wait_unless(context, || EVENTS.lock_leaf().has_any());
     }
 }
 

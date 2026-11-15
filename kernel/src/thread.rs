@@ -741,11 +741,11 @@ fn park(
                 panic!("park of slot {} refused: {reason}", task::current());
             }
         }
-        None => {
-            // Enabling and halting must be one step, or the ending interrupt can land between them
-            // and nothing is left to wake the CPU.
-            saved.wait_for_interrupt();
-        }
+        // Enabling and halting must be one step, or the ending interrupt can land between them
+        // and nothing is left to wake the CPU.
+        None if saved.were_enabled() => saved.wait_for_interrupt(),
+        // A nested or disabled exclusion cannot halt; the caller re-checks as after any wake.
+        None => {}
     }
 }
 
