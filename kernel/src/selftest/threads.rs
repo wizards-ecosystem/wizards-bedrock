@@ -105,7 +105,7 @@ fn clobber_extended_state() {
     let mut context = context();
     thread::yield_now(&mut context);
     let saw_own = xstate::read_probe() == Some(THEIRS);
-    EXTENDED_INTRUDER_SAW_OWN.store(saw_own as usize, Ordering::Release);
+    EXTENDED_INTRUDER_SAW_OWN.store(usize::from(saw_own), Ordering::Release);
     EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
@@ -528,14 +528,14 @@ static REUSED_SLOT_SECRET_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 fn leave_extended_state() {
     let written = xstate::write_probe(REUSED_SLOT_SECRET);
-    REUSED_SLOT_SECRET_WRITTEN.store(written as usize, Ordering::Release);
+    REUSED_SLOT_SECRET_WRITTEN.store(usize::from(written), Ordering::Release);
 }
 
 fn inspect_reused_extended_state() {
     let cleared = xstate::read_probe().is_some_and(|found| {
         found.x87 != REUSED_SLOT_SECRET.x87 && found.xmm == 0 && found.ymm == 0
     });
-    REUSED_SLOT_STATE_CLEARED.store(cleared as usize, Ordering::Release);
+    REUSED_SLOT_STATE_CLEARED.store(usize::from(cleared), Ordering::Release);
 }
 
 pub(super) fn an_exited_slot_is_reused() -> bool {

@@ -371,7 +371,7 @@ impl<'bytes> Elf<'bytes> {
             return Err(ElfError::WrongProgramHeaderSize(entry_size));
         }
 
-        let span = (program_count as u64) * (PROGRAM_HEADER_BYTES as u64);
+        let span = u64::from(program_count) * (PROGRAM_HEADER_BYTES as u64);
         let fits = program_offset
             .checked_add(span)
             .is_some_and(|end| end <= bytes.len() as u64);

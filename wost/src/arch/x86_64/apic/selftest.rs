@@ -1,5 +1,4 @@
 use super::*;
-use super::{InitializationObserver, InitializationRegisters};
 
 #[cfg(feature = "selftest")]
 static INIT_OBSERVATIONS: AtomicU8 = AtomicU8::new(0);

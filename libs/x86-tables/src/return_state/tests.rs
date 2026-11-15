@@ -24,10 +24,10 @@ fn user_flags_are_an_allowlist_with_required_state() {
     ] {
         let candidate = UserReturnState::new(
             0x4000,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             flags,
             0x8000,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         );
         assert_eq!(
             candidate.validate(USER_CODE, USER_DATA, USER_END),
@@ -40,10 +40,10 @@ fn user_flags_are_an_allowlist_with_required_state() {
         let flags = ORDINARY_FLAGS | optional;
         let candidate = UserReturnState::new(
             0x4000,
-            USER_CODE.bits() as u64,
+            u64::from(USER_CODE.bits()),
             flags,
             0x8000,
-            USER_DATA.bits() as u64,
+            u64::from(USER_DATA.bits()),
         );
         assert_eq!(candidate.validate(USER_CODE, USER_DATA, USER_END), Ok(()));
     }

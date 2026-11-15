@@ -3,7 +3,7 @@
 //! The stripped root may map only the ranges [`EntryEnclave`] describes. A published route is
 //! authority only while its complete root pair and guarded entry stacks match this CPU's state.
 
-use core::mem::{offset_of, size_of};
+use core::mem::offset_of;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
