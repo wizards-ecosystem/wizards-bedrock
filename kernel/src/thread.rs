@@ -321,12 +321,12 @@ impl RunQueue {
             if thread.state != State::Sleeping || (clock_live && thread.wake_at > now) {
                 continue;
             }
-            self.make_ready(slot);
+            self.ready(slot);
         }
     }
 
     /// Put a parked thread back on the queue, at the fair-share point offset by its lag.
-    fn make_ready(&mut self, slot: usize) {
+    fn ready(&mut self, slot: usize) {
         let average = self.average().unwrap_or(self.slots[slot].entity.vruntime());
         let lag = self.slots[slot].parked_with_lag;
         let thread = &mut self.slots[slot];
@@ -335,7 +335,7 @@ impl RunQueue {
     }
 
     /// Record what a thread about to stop being runnable is owed, so that
-    /// [`make_ready`](Self::make_ready) can give it back.
+    /// [`ready`](Self::ready) can give it back.
     fn park(&mut self, slot: usize) {
         let average = self.average().unwrap_or(0);
         let thread = &mut self.slots[slot];
@@ -642,7 +642,7 @@ fn spawn_prepared(
         ));
     }
 
-    make_runnable(slot);
+    mark_runnable(slot);
     Ok(slot)
 }
 
@@ -706,7 +706,7 @@ fn bind(slot: usize, binding: Option<Binding>) -> Result<Option<Bound>, Prepared
 
 /// Place a reserved slot at the fair-share point and make it ready, arming even though nothing
 /// switches here: a second runnable thread is when the running slice starts mattering.
-fn make_runnable(slot: usize) {
+fn mark_runnable(slot: usize) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
     let event = {
@@ -901,7 +901,7 @@ pub(crate) fn unblock(slots: u32) -> usize {
             {
                 continue;
             }
-            threads.queue.make_ready(slot);
+            threads.queue.ready(slot);
             woken += 1;
         }
         woken
