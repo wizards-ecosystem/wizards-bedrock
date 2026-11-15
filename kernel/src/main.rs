@@ -94,6 +94,9 @@ fn kernel_main(boot: BootInfo) -> ! {
     segment::init();
     arch::current::trap::init();
     info!("cpu: descriptor tables installed");
+    if let Err(reason) = cpu::establish_control_state() {
+        warn!("cpu: {reason}");
+    }
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
 

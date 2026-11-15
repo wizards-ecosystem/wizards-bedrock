@@ -36,8 +36,26 @@ const SYSENTER_CS: u32 = 0x174;
 /// `EFER` bit: honour the no-execute page bit instead of treating it as reserved.
 const EFER_NO_EXECUTE: u64 = 1 << 11;
 
+const CR0_EM: u64 = 1 << 2;
+
+const CR0_NE: u64 = 1 << 5;
+
 /// `CR0` bit: supervisor writes obey read-only page-table entries.
 const CR0_WRITE_PROTECT: u64 = 1 << 16;
+
+const CR4_TSD: u64 = 1 << 2;
+
+const CR4_DE: u64 = 1 << 3;
+
+const CR4_MCE: u64 = 1 << 6;
+
+const CR4_PCE: u64 = 1 << 8;
+
+const CR4_FSGSBASE: u64 = 1 << 16;
+
+const CR4_CLEARED: u64 = CR4_TSD | CR4_DE | CR4_PCE | CR4_FSGSBASE;
+
+const FLAGS_RESERVED: u64 = 1 << 1;
 
 /// `CR4` bit: user mode instruction prevention.
 const CR4_UMIP: u64 = 1 << 11;
@@ -112,8 +130,8 @@ pub(crate) fn physical_address_width() -> Option<PhysicalAddressWidth> {
 pub fn timestamp() -> u64 {
     let low: u32;
     let high: u32;
-    // SAFETY: `rdtsc` has no ring 0 precondition, since `CR4.TSD` gates ring 3 only and is never
-    // set; the `lfence` before it orders execution and touches no state.
+    // SAFETY: `rdtsc` has no ring 0 precondition, since `CR4.TSD` gates ring 3 only; the `lfence`
+    // before it orders execution and touches no state.
     unsafe {
         asm!(
             "lfence",
@@ -244,18 +262,81 @@ pub(crate) fn extended_state_is_enabled() -> bool {
     read_cr4() & CR4_OSXSAVE != 0
 }
 
-/// Enable extended-state instructions after all layout preflight succeeds.
-///
-/// Restricted to [`xstate::init`](super::xstate::init), because enabling SSE before save and
-/// restore are ready would share register state with ring 3.
+// Restricted to `xstate::init`: enabling SSE before save and restore are ready would share
+// register state with ring 3.
 pub(super) fn enable_extended_state() {
-    /// `CR0.MP`: monitor coprocessor, which the manual pairs with `EM` clear.
-    const CR0_MONITOR: u64 = 1 << 1;
-    /// `CR0.EM`: emulation. Set, every SSE instruction faults.
-    const CR0_EMULATE: u64 = 1 << 2;
+    const CR0_MP: u64 = 1 << 1;
 
-    write_cr0((read_cr0() | CR0_MONITOR) & !CR0_EMULATE);
+    write_cr0((read_cr0() | CR0_MP) & !CR0_EM);
     add_cr4(Cr4Additions::extended_state());
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum ControlStateError {
+    Cr0,
+    Cr4,
+    Flags,
+}
+
+impl fmt::Display for ControlStateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Cr0 => "cr0 did not keep ne set and em clear",
+            Self::Cr4 => "cr4 did not keep mce set and tsd, de, pce and fsgsbase clear",
+            Self::Flags => "rflags did not read back as only its reserved bit",
+        })
+    }
+}
+
+impl core::error::Error for ControlStateError {}
+
+// Every bit not named here stays as the bootloader set it, since paging-class bits are its choice.
+pub fn establish_control_state() -> Result<(), ControlStateError> {
+    assert!(
+        !interrupt::are_enabled(),
+        "control state is established before interrupts are accepted"
+    );
+    write_cr0((read_cr0() | CR0_NE) & !CR0_EM);
+    let machine_check = if has_machine_check() { CR4_MCE } else { 0 };
+    write_cr4((read_cr4() | machine_check) & !CR4_CLEARED);
+    let flags = normalise_flags();
+
+    let cr0 = read_cr0();
+    if cr0 & CR0_NE == 0 || cr0 & CR0_EM != 0 {
+        return Err(ControlStateError::Cr0);
+    }
+    let cr4 = read_cr4();
+    if cr4 & machine_check != machine_check || cr4 & CR4_CLEARED != 0 {
+        return Err(ControlStateError::Cr4);
+    }
+    if flags != FLAGS_RESERVED {
+        return Err(ControlStateError::Flags);
+    }
+    Ok(())
+}
+
+fn has_machine_check() -> bool {
+    const MCE: u32 = 1 << 7;
+
+    cpuid(1, 0).edx & MCE != 0
+}
+
+fn normalise_flags() -> u64 {
+    let flags: u64;
+    // SAFETY: `popfq` loads only the reserved bit, clearing `AC`, `NT`, `IOPL`, `DF` and `TF` with
+    // `IF` already clear; `pushfq` and `pop` then reuse the slot, so `rsp` ends as it started.
+    unsafe {
+        asm!(
+            "push {reserved}",
+            "popfq",
+            "pushfq",
+            "pop {flags}",
+            reserved = const FLAGS_RESERVED,
+            flags = out(reg) flags,
+        );
+    }
+    flags
 }
 
 /// Enable every protection in [`Protections`] this CPU supports, and report what is now on.
@@ -445,8 +526,8 @@ fn read_cr0() -> u64 {
 }
 
 fn write_cr0(value: u64) {
-    // SAFETY: this crate changes only `MP` and `EM`, which govern whether SSE faults, and `WP`,
-    // which makes supervisor writes obey permissions the page tables already state.
+    // SAFETY: callers change only `MP`, `EM` and `NE`, which govern how x87 and SSE fault, and
+    // `WP`, which makes supervisor writes obey permissions the page tables already state.
     unsafe {
         asm!(
             "mov cr0, {value}",
@@ -632,9 +713,13 @@ pub(super) unsafe fn set_page_table_base(address: PhysicalAddress) {
 }
 
 fn add_cr4(additions: Cr4Additions) {
-    let value = additions.apply(read_cr4());
-    // SAFETY: `Cr4Additions` can only add the reviewed extended-state and protection bits; the asm
-    // is a memory barrier because those bits change which accesses and fetches the CPU permits.
+    write_cr4(additions.apply(read_cr4()));
+}
+
+fn write_cr4(value: u64) {
+    // SAFETY: callers add only the reviewed extended-state, protection and supported machine-check
+    // bits, or clear `TSD`, `DE`, `PCE` and `FSGSBASE`, none of which a running kernel depends on;
+    // the asm is a memory barrier because these bits change which accesses the CPU permits.
     unsafe {
         asm!(
             "mov cr4, {value}",
