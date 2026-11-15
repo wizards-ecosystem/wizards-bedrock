@@ -1,6 +1,6 @@
 //! The kernel's own page tables: raw walks and `mov cr3`, over the encoding in `x86_paging`.
 //!
-//! Present entries accept only identical rewrites. A clear invalidates when the current `CR3`
+//! A present entry is never rewritten. A clear invalidates when the current `CR3`
 //! reaches its exact slot; other lower-half slots rely on the no-PCID, non-global root-load flush.
 
 mod activation;
@@ -67,7 +67,7 @@ pub enum MapError {
     OutOfMemory,
     /// A table this mapping needs is outside the direct map, so it cannot be written.
     Unreachable(PhysicalAddress),
-    /// The address range is already mapped by a larger page.
+    /// The address range, or a larger page over it, is already mapped.
     Conflict(u64),
     /// The virtual address is not canonical, so no walk can reach it.
     NonCanonical(u64),
@@ -141,7 +141,7 @@ impl fmt::Display for MapError {
             Self::Unreachable(address) => {
                 write!(f, "page table at {address:#x} is outside the direct map")
             }
-            Self::Conflict(address) => write!(f, "{address:#x} is already mapped by a larger page"),
+            Self::Conflict(address) => write!(f, "{address:#x} is already mapped"),
             Self::NonCanonical(address) => write!(f, "{address:#x} is not a canonical address"),
             Self::Misaligned(address) => write!(f, "{address:#x} is not page-aligned"),
             Self::UnalignedDevice(address) => {

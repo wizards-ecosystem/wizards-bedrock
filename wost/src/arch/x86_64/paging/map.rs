@@ -28,14 +28,7 @@ impl AddressSpace {
             return Err(MapError::Pinned(stack));
         }
 
-        if self.preflight(&range, flags, grain)? == MappingState::Identical {
-            // The caller forgets an owned run on success, which would leak a repeat of its mapping.
-            return if flags.contains(Flags::OWNED) {
-                Err(MapError::Conflict(virtual_base))
-            } else {
-                Ok(())
-            };
-        }
+        self.preflight(&range, flags, grain)?;
 
         let table_mark = self.tables.len();
         let mut offset = 0;
@@ -52,53 +45,39 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Establish that every target is absent or every target is identical.
-    fn preflight(
-        &self,
-        range: &MappingRange,
-        flags: Flags,
-        grain: Grain,
-    ) -> Result<MappingState, MapError> {
-        let mut transaction = None;
+    // Every target must be absent, so rollback owns every leaf the transaction writes.
+    fn preflight(&self, range: &MappingRange, flags: Flags, grain: Grain) -> Result<(), MapError> {
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(range, offset, grain);
             self.verify_shared_lower_link(virtual_address)?;
-            let state = self.mapping_state(virtual_address, physical, flags, level)?;
-            match transaction {
-                None => transaction = Some(state),
-                Some(found) if found == state => {}
-                Some(_) => return Err(MapError::Conflict(virtual_address)),
-            }
+            self.verify_absent(virtual_address, physical, flags, level)?;
             offset += level.span();
         }
-        transaction.ok_or(MapError::Misaligned(range.virtual_base()))
+        Ok(())
     }
 
-    /// The state of one target before a transaction writes anything.
-    fn mapping_state(
+    fn verify_absent(
         &self,
         virtual_address: u64,
         physical: u64,
         flags: Flags,
         target: Level,
-    ) -> Result<MappingState, MapError> {
-        let wanted = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
+    ) -> Result<(), MapError> {
+        Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
         let mut table = self.root();
         for level in Level::WALK {
             let slot = entry_slot(table, level.index(virtual_address))?;
             let current = EntrySlot::read(&slot);
             if level == target {
-                return if !current.is_present() {
-                    Ok(MappingState::Absent)
-                } else if current == wanted {
-                    Ok(MappingState::Identical)
-                } else {
+                return if current.is_present() {
                     Err(MapError::Conflict(virtual_address))
+                } else {
+                    Ok(())
                 };
             }
             if !current.is_present() {
-                return Ok(MappingState::Absent);
+                return Ok(());
             }
             if current.is_huge()
                 || flags.contains(Flags::USER) && !current.flags().contains(Flags::USER)
@@ -465,9 +444,7 @@ impl AddressSpace {
 
             if level == target {
                 let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
-                let current = EntrySlot::read(&slot);
-                // Only an identical rewrite: anything else re-points a mapping a handle proves.
-                if current.is_present() && current != entry {
+                if EntrySlot::read(&slot).is_present() {
                     return Err(MapError::Conflict(virtual_address));
                 }
                 EntrySlot::write(&slot, entry);
@@ -522,15 +499,6 @@ pub(super) enum Grain {
     Largest,
     /// Four kilobytes throughout.
     Pages,
-}
-
-/// Whether every leaf named by one mapping existed before it began.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum MappingState {
-    /// Every target was absent, so rollback owns every leaf it wrote.
-    Absent,
-    /// Every target already contained the exact requested mapping.
-    Identical,
 }
 
 /// Evidence the boot memory map covers one range, the only way into [`AddressSpace::map_boot`].
