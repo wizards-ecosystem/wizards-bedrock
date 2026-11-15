@@ -87,7 +87,7 @@ pub(crate) enum EarlyDmaError {
     UnauthenticatedPlatform,
     BaseRevision,
     MissingEvidence(&'static str),
-    Table(acpi::EarlyTableError),
+    Table(acpi::TableError),
     Contract(DmaHandoffError),
     Segment(u16),
     Configuration(DmaHandoffFenceError),
@@ -197,11 +197,8 @@ static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORIT
 /// A missing or malformed table is logged here and every later candidate is
 /// refused; nothing a candidate does can cure it.
 pub(crate) fn discover(rsdp: u64) {
-    let Some((firmware, root)) = acpi::parse_root(rsdp) else {
-        return;
-    };
-    if let Some(table) = acpi::find_unique_table(firmware, root, Sdt::DMA_COVERAGE) {
-        match DmaCoverage::new(&table) {
+    match acpi::find_unique_table(rsdp, Sdt::DMA_COVERAGE) {
+        Ok(table) => match DmaCoverage::new(&table) {
             Ok(coverage) => {
                 info!(
                     "iommu: platform attests complete segment {} coverage at {:#x}",
@@ -211,11 +208,16 @@ pub(crate) fn discover(rsdp: u64) {
                 *DMA_COVERAGE.lock_leaf() = Some(table.leak());
             }
             Err(reason) => warn!("iommu: DMA coverage attestation refused: {reason}"),
-        }
+        },
+        Err(acpi::TableError::Missing) => {}
+        Err(reason) => warn!("iommu: DMA coverage attestation unreadable: {reason}"),
     }
-    let Some(table) = acpi::find_unique_table(firmware, root, Sdt::DMAR) else {
-        warn!("iommu: firmware lists no dmar table");
-        return;
+    let table = match acpi::find_unique_table(rsdp, Sdt::DMAR) {
+        Ok(table) => table,
+        Err(reason) => {
+            warn!("iommu: no usable dmar table: {reason}");
+            return;
+        }
     };
     let units = match Dmar::new(&table) {
         Ok(dmar) => dmar.unit_count(),

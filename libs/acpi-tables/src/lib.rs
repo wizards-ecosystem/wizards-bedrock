@@ -138,6 +138,8 @@ impl Rsdp {
 
     pub const V2_LEN: usize = 36;
 
+    pub const EXTENDED_REVISION: u8 = 2;
+
     pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
         let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
             needed: Self::V1_LEN,
@@ -145,7 +147,7 @@ impl Rsdp {
         })?;
         let length = match head[15] {
             0 => Self::V1_LEN,
-            2 => {
+            Self::EXTENDED_REVISION.. => {
                 let prefix = bytes.get(..24).ok_or(AcpiError::TooShort {
                     needed: 24,
                     available: bytes.len(),
@@ -209,7 +211,7 @@ impl Rsdp {
 
     // Preferred: RSDT entries cannot name a table above 4 GiB.
     pub const fn xsdt(self) -> Option<u64> {
-        if self.revision >= 2 && self.xsdt != 0 {
+        if self.revision >= Self::EXTENDED_REVISION && self.xsdt != 0 {
             Some(self.xsdt)
         } else {
             None

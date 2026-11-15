@@ -1,17 +1,9 @@
-//! Finding the interrupt controllers ACPI describes, read before the page tables exist.
-//!
-//! Enough of the table tree to find every bounded I/O APIC and learn which global system
-//! interrupt a legacy IRQ arrives on. The bootloader's direct map already covers the tables
-//! then, so reading them adds no mapping dependency. Parsing and inventory are `acpi_tables`,
-//! host-tested; the bytes come through `wost`'s ACPI-only physical reader.
-
 use alloc::vec::Vec;
 use core::fmt;
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
 use wost::boot::{DirectMap, MemoryMap};
-use wost::mm::EarlyFirmwareMemory;
-use wost::mm::{self, FirmwareMemory};
+use wost::mm::{self, EarlyFirmwareMemory};
 
 use crate::{debug, warn};
 
@@ -23,25 +15,28 @@ const MAX_IO_APICS: usize = 16;
 const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
 
 /// Maximum fixed root table extent: its header plus 256 XSDT pointers.
-const EARLY_ROOT_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
+const ROOT_TABLE_BYTES: usize = Sdt::LEN + 256 * size_of::<u64>();
 
-/// Why an allocation-free unique ACPI authority lookup failed.
+const ROOT_POINTER_PREFIX: usize = 24;
+
+const ROOT_POINTER_REVISION: usize = 15;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum EarlyTableError {
+pub(crate) enum TableError {
+    NoReader,
     RootPointer,
     RootTable,
-    RootEntry,
     Candidate,
     Missing,
     Duplicate,
 }
 
-impl fmt::Display for EarlyTableError {
+impl fmt::Display for TableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoReader => f.write_str("no reader for firmware memory"),
             Self::RootPointer => f.write_str("the ACPI root pointer is unreadable"),
             Self::RootTable => f.write_str("the ACPI root table is unreadable"),
-            Self::RootEntry => f.write_str("an ACPI root-table target is unreadable"),
             Self::Candidate => f.write_str("the requested ACPI table is malformed"),
             Self::Missing => f.write_str("the requested ACPI table is missing"),
             Self::Duplicate => f.write_str("the requested ACPI table is duplicated"),
@@ -49,84 +44,132 @@ impl fmt::Display for EarlyTableError {
     }
 }
 
-impl core::error::Error for EarlyTableError {}
+impl core::error::Error for TableError {}
 
-/// Read one unique fixed-size ACPI table without allocator state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Multiplicity {
+    First,
+    Unique,
+}
+
 pub(crate) fn find_unique_early<const N: usize>(
     map: &MemoryMap,
     direct: DirectMap,
     rsdp: u64,
     signature: [u8; 4],
-) -> Result<[u8; N], EarlyTableError> {
+) -> Result<[u8; N], TableError> {
     let firmware = EarlyFirmwareMemory::new(map, direct);
-    let physical = rsdp
+    let rsdp = rsdp
         .checked_sub(direct.offset())
-        .ok_or(EarlyTableError::RootPointer)?;
-    let mut root_pointer = [0u8; Rsdp::V2_LEN];
-    if !firmware.read(physical, &mut root_pointer[..Rsdp::V1_LEN]) {
-        return Err(EarlyTableError::RootPointer);
-    }
-    let prefix = if root_pointer[15] == 2 {
-        if !firmware.read(physical, &mut root_pointer[..24]) {
-            return Err(EarlyTableError::RootPointer);
-        }
-        &root_pointer[..24]
-    } else {
-        &root_pointer[..Rsdp::V1_LEN]
+        .ok_or(TableError::RootPointer)?;
+    find(
+        |address, into| firmware.read(address, into),
+        rsdp,
+        signature,
+        Multiplicity::Unique,
+        |length| (length == N).then_some([0u8; N]),
+    )
+}
+
+pub(crate) fn find_table(rsdp: u64, signature: [u8; 4]) -> Result<Vec<u8>, TableError> {
+    find_table_with_multiplicity(rsdp, signature, Multiplicity::First)
+}
+
+pub(crate) fn find_unique_table(rsdp: u64, signature: [u8; 4]) -> Result<Vec<u8>, TableError> {
+    find_table_with_multiplicity(rsdp, signature, Multiplicity::Unique)
+}
+
+fn find_table_with_multiplicity(
+    rsdp: u64,
+    signature: [u8; 4],
+    multiplicity: Multiplicity,
+) -> Result<Vec<u8>, TableError> {
+    let (Some(firmware), Some(direct)) = (mm::firmware_memory(), mm::direct_map()) else {
+        return Err(TableError::NoReader);
     };
-    let length =
-        Rsdp::parse_length(prefix, Rsdp::V2_LEN).map_err(|_| EarlyTableError::RootPointer)?;
-    if length > 24 && !firmware.read(physical, &mut root_pointer[..length]) {
-        return Err(EarlyTableError::RootPointer);
+    let rsdp = rsdp
+        .checked_sub(direct.offset())
+        .ok_or(TableError::RootPointer)?;
+    find(
+        |address, into| firmware.read(address, into),
+        rsdp,
+        signature,
+        multiplicity,
+        |length| {
+            (length <= MAX_FIRMWARE_TABLE_BYTES)
+                .then(|| zeroed(length))
+                .flatten()
+        },
+    )
+}
+
+// An entry whose header cannot be read, a null one included, is skipped; a matching table must be
+// whole and checksummed or the lookup fails.
+fn find<T: AsMut<[u8]> + AsRef<[u8]>>(
+    read: impl Fn(u64, &mut [u8]) -> bool,
+    rsdp: u64,
+    signature: [u8; 4],
+    multiplicity: Multiplicity,
+    buffer: impl Fn(usize) -> Option<T>,
+) -> Result<T, TableError> {
+    let mut root_pointer = [0u8; Rsdp::V2_LEN];
+    if !read(rsdp, &mut root_pointer[..Rsdp::V1_LEN]) {
+        return Err(TableError::RootPointer);
     }
-    let root = Rsdp::parse(&root_pointer[..length]).map_err(|_| EarlyTableError::RootPointer)?;
+    if root_pointer[ROOT_POINTER_REVISION] >= Rsdp::EXTENDED_REVISION
+        && !read(rsdp, &mut root_pointer[..ROOT_POINTER_PREFIX])
+    {
+        return Err(TableError::RootPointer);
+    }
+    let length =
+        Rsdp::parse_length(&root_pointer, Rsdp::V2_LEN).map_err(|_| TableError::RootPointer)?;
+    if !read(rsdp, &mut root_pointer[..length]) {
+        return Err(TableError::RootPointer);
+    }
+    let root = Rsdp::parse(&root_pointer[..length]).map_err(|_| TableError::RootPointer)?;
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         (Some(xsdt), _) => (xsdt, true),
         (None, Some(rsdt)) => (rsdt, false),
-        (None, None) => return Err(EarlyTableError::RootPointer),
+        (None, None) => return Err(TableError::RootPointer),
     };
 
-    let mut root_header = [0u8; Sdt::LEN];
-    if !firmware.read(address, &mut root_header) {
-        return Err(EarlyTableError::RootTable);
+    let mut root_table = [0u8; ROOT_TABLE_BYTES];
+    if !read(address, &mut root_table[..Sdt::LEN]) {
+        return Err(TableError::RootTable);
     }
-    let root_length = Sdt::parse_length(&root_header, EARLY_ROOT_BYTES)
-        .map_err(|_| EarlyTableError::RootTable)?;
-    let mut root_table = [0u8; EARLY_ROOT_BYTES];
-    if !firmware.read(address, &mut root_table[..root_length]) {
-        return Err(EarlyTableError::RootTable);
+    let root_length =
+        Sdt::parse_length(&root_table, ROOT_TABLE_BYTES).map_err(|_| TableError::RootTable)?;
+    if !read(address, &mut root_table[..root_length]) {
+        return Err(TableError::RootTable);
     }
-    let mut pointers = if extended {
+    let pointers = if extended {
         SdtPointers::xsdt(&root_table[..root_length])
     } else {
         SdtPointers::rsdt(&root_table[..root_length])
     }
-    .map_err(|_| EarlyTableError::RootTable)?;
+    .map_err(|_| TableError::RootTable)?;
 
     let mut found = None;
-    for address in &mut pointers {
+    for address in pointers {
         let mut header = [0u8; Sdt::LEN];
-        if !firmware.read(address, &mut header) {
-            return Err(EarlyTableError::RootEntry);
-        }
-        if header[..4] != signature {
+        if !read(address, &mut header) || header[..4] != signature {
             continue;
         }
-        let length = Sdt::parse_length(&header, N).map_err(|_| EarlyTableError::Candidate)?;
-        if length != N {
-            return Err(EarlyTableError::Candidate);
-        }
-        let mut table = [0u8; N];
-        if !firmware.read(address, &mut table)
-            || !matches!(Sdt::parse(&table), Ok(parsed) if parsed.signature() == signature)
+        let length = Sdt::parse_length(&header, usize::MAX).map_err(|_| TableError::Candidate)?;
+        let mut table = buffer(length).ok_or(TableError::Candidate)?;
+        if !read(address, table.as_mut())
+            || !matches!(Sdt::parse(table.as_ref()), Ok(parsed) if parsed.signature() == signature)
         {
-            return Err(EarlyTableError::Candidate);
+            return Err(TableError::Candidate);
+        }
+        if multiplicity == Multiplicity::First {
+            return Ok(table);
         }
         if found.replace(table).is_some() {
-            return Err(EarlyTableError::Duplicate);
+            return Err(TableError::Duplicate);
         }
     }
-    found.ok_or(EarlyTableError::Missing)
+    found.ok_or(TableError::Missing)
 }
 
 /// What ACPI says about interrupt routing.
@@ -137,12 +180,12 @@ pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 /// `rsdp` is the *virtual* address the bootloader reported, which base
 /// revision 4 guarantees is inside the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
-    // Each refusal says so: a boot that lost its routing to the ACPI-only
-    // reader is otherwise a keyboard that stopped for no stated reason.
-    let (firmware, root) = parse_root(rsdp)?;
-    let Some(madt) = find_table(firmware, root, Sdt::MADT) else {
-        warn!("acpi: no madt among the tables listed");
-        return None;
+    let madt = match find_table(rsdp, Sdt::MADT) {
+        Ok(madt) => madt,
+        Err(reason) => {
+            warn!("acpi: no usable madt: {reason}");
+            return None;
+        }
     };
     let interrupts = match Interrupts::parse(&madt) {
         Ok(interrupts) => interrupts,
@@ -170,146 +213,6 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
         }
     }
     (interrupts.io_apic_count() != 0).then_some(interrupts)
-}
-
-/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a stated reason.
-///
-/// Shared by every table walk.
-pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
-    let Some(firmware) = mm::firmware_memory() else {
-        warn!("acpi: no reader for firmware memory");
-        return None;
-    };
-    let Some(root) = read_root_pointer(firmware, rsdp) else {
-        warn!("acpi: the root pointer at {rsdp:#x} is not readable acpi storage");
-        return None;
-    };
-    match Rsdp::parse(&root) {
-        Ok(root) => Some((firmware, root)),
-        Err(reason) => {
-            warn!("acpi: root pointer unusable: {reason}");
-            None
-        }
-    }
-}
-
-/// The first table with `signature`, found by walking whichever root table the
-/// RSDP offers. The caller names the table it wanted when this returns `None`.
-pub(crate) fn find_table(
-    firmware: FirmwareMemory,
-    root: Rsdp,
-    signature: [u8; 4],
-) -> Option<Vec<u8>> {
-    find_table_with_multiplicity(firmware, root, signature, Multiplicity::First)
-}
-
-/// The only table with `signature`, refusing duplicate authority.
-pub(crate) fn find_unique_table(
-    firmware: FirmwareMemory,
-    root: Rsdp,
-    signature: [u8; 4],
-) -> Option<Vec<u8>> {
-    find_table_with_multiplicity(firmware, root, signature, Multiplicity::Unique)
-}
-
-/// Whether a lookup takes the first matching table or refuses a second one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Multiplicity {
-    First,
-    Unique,
-}
-
-fn find_table_with_multiplicity(
-    firmware: FirmwareMemory,
-    root: Rsdp,
-    signature: [u8; 4],
-    multiplicity: Multiplicity,
-) -> Option<Vec<u8>> {
-    let (address, extended) = match (root.xsdt(), root.rsdt()) {
-        // The XSDT wherever it exists: the RSDT's entries are 32-bit and
-        // cannot name a table above 4 GiB.
-        (Some(xsdt), _) => (xsdt, true),
-        (None, Some(rsdt)) => (rsdt, false),
-        (None, None) => {
-            warn!("acpi: root pointer names neither an xsdt nor an rsdt");
-            return None;
-        }
-    };
-
-    let Some(root_table) = read_table(firmware, address) else {
-        warn!("acpi: the root table at {address:#x} is not readable acpi storage");
-        return None;
-    };
-    let pointers = if extended {
-        SdtPointers::xsdt(&root_table)
-    } else {
-        SdtPointers::rsdt(&root_table)
-    };
-    let pointers = match pointers {
-        Ok(pointers) => pointers,
-        Err(reason) => {
-            warn!("acpi: root table unusable: {reason}");
-            return None;
-        }
-    };
-
-    let mut found = None;
-    let mut pointers = pointers;
-    let mut next_pointer = core::iter::Iterator::next(&mut pointers);
-    while let Some(entry) = next_pointer {
-        next_pointer = core::iter::Iterator::next(&mut pointers);
-        let Some(table) = read_table(firmware, entry) else {
-            continue;
-        };
-        if let Ok(header) = Sdt::parse(&table)
-            && header.signature() == signature
-        {
-            if found.is_some() {
-                warn!("acpi: duplicate {signature:?} tables refuse unique authority");
-                return None;
-            }
-            if multiplicity == Multiplicity::First {
-                return Some(table);
-            }
-            found = Some(table);
-        }
-    }
-    found
-}
-
-/// A whole table at a physical address, read in two steps.
-///
-/// The header must be read first because only its length says how much to read, and reading
-/// the whole table after it is what lets `Sdt::parse` checksum every byte.
-fn read_table(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
-    let mut header = [0; Sdt::LEN];
-    if !FirmwareMemory::read(&firmware, address, &mut header) {
-        return None;
-    }
-    let length = Sdt::parse_length(&header, MAX_FIRMWARE_TABLE_BYTES).ok()?;
-    let mut table = zeroed(length)?;
-    FirmwareMemory::read(&firmware, address, &mut table).then_some(table)
-}
-
-/// Read the variable-length root pointer from its direct-map address.
-fn read_root_pointer(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
-    let offset = mm::direct_map()?.offset();
-    let physical = address.checked_sub(offset)?;
-    let mut original = [0; Rsdp::V1_LEN];
-    if !FirmwareMemory::read(&firmware, physical, &mut original) {
-        return None;
-    }
-    let length = if original[15] == 2 {
-        let mut prefix = [0; 24];
-        if !FirmwareMemory::read(&firmware, physical, &mut prefix) {
-            return None;
-        }
-        Rsdp::parse_length(&prefix, MAX_FIRMWARE_TABLE_BYTES).ok()?
-    } else {
-        Rsdp::parse_length(&original, MAX_FIRMWARE_TABLE_BYTES).ok()?
-    };
-    let mut bytes = zeroed(length)?;
-    FirmwareMemory::read(&firmware, physical, &mut bytes).then_some(bytes)
 }
 
 /// Allocate a zeroed firmware buffer without invoking the allocation handler.
