@@ -49,7 +49,7 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
     let source = {
         let mut installed = crate::iommu::installed();
         let isolation = installed.as_mut()?;
-        isolation.drain_faults();
+        isolation.drain_faults(|_| {});
         let function = isolation.function()?;
         (u16::from(function.bus()) << 8)
             | (u16::from(function.device()) << 3)
@@ -69,10 +69,9 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
         return None;
     }
     let mut faulted = false;
-    let mut installed = crate::iommu::installed();
-    while let Some(fault) = installed.as_mut()?.take_fault() {
+    crate::iommu::installed().as_mut()?.drain_faults(|fault| {
         faulted |= fault.source == source && fault.address == page && fault.write;
-    }
+    });
     Some(FenceWitness {
         completed: matches!(result, Ok(()) | Err(BringUpError::Command(_))),
         unchanged: bytes.iter().all(|byte| *byte == PATTERN),

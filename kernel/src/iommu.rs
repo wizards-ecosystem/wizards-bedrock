@@ -731,7 +731,7 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
         Retargeting::Retargeted => {
             owner.fences = fences;
             owner.targeted = true;
-            let stray = owner.isolation.drain_faults();
+            let stray = owner.isolation.drain_faults(|_| {});
             if stray != 0 {
                 warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
             }
@@ -872,7 +872,7 @@ pub(crate) fn report_faults() {
         let Some(isolation) = installed.as_mut() else {
             return;
         };
-        isolation.drain_faults()
+        isolation.drain_faults(|_| {})
     };
     if drained != 0 {
         warn!("iommu: cleared a bounded batch of {drained} translation fault(s)");

@@ -746,28 +746,35 @@ impl Vtd {
         true
     }
 
-    /// Read and clear the first recorded translation fault, if any.
-    ///
-    /// An overflow is acknowledged first, since the unit records nothing new while it stands.
-    #[must_use]
-    pub fn take_fault(&mut self) -> Option<Fault> {
-        let status =
-            FaultStatus::from_bits(read_u32(&self.registers, vtd::register::FAULT_STATUS).ok()?);
+    // FRI is latched only when PPF rises, so the walk starts there and wraps until a clear record.
+    pub fn drain_faults(&mut self, mut observe: impl FnMut(Fault)) -> usize {
+        let Ok(bits) = read_u32(&self.registers, vtd::register::FAULT_STATUS) else {
+            return 0;
+        };
+        let status = FaultStatus::from_bits(bits);
+        let mut drained = 0;
+        let mut index = u16::from(status.fault_record_index());
+        if status.primary_pending() && index < self.fault_registers {
+            while drained < usize::from(self.fault_registers) {
+                let Some(fault) = self.take_fault(index) else {
+                    break;
+                };
+                observe(fault);
+                drained += 1;
+                index = (index + 1) % self.fault_registers;
+            }
+        }
         if status.overflow() {
-            write_u32(
+            let _ = write_u32(
                 &mut self.registers,
                 vtd::register::FAULT_STATUS,
                 FaultStatus::acknowledge_overflow(),
-            )
-            .ok()?;
+            );
         }
-        if !status.primary_pending() {
-            return None;
-        }
-        let index = u16::from(status.fault_record_index());
-        if index >= self.fault_registers {
-            return None;
-        }
+        drained
+    }
+
+    fn take_fault(&mut self, index: u16) -> Option<Fault> {
         let base = self.fault_offset + u64::from(index) * ENTRY_BYTES;
         let record = FaultRecording {
             lo: read_u64(&self.registers, base).ok()?,
@@ -783,15 +790,6 @@ impl Vtd {
             address: record.fault_address(),
             write: !record.is_read_request(),
         })
-    }
-
-    /// Clear every recorded fault, returning how many there were.
-    pub fn drain_faults(&mut self) -> usize {
-        let mut drained = 0;
-        while drained < usize::from(self.fault_registers) && self.take_fault().is_some() {
-            drained += 1;
-        }
-        drained
     }
 
     /// Revoke the selected context while keeping translation default-deny.
