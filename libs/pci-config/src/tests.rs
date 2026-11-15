@@ -105,3 +105,41 @@ fn an_address_that_cannot_be_encoded_is_refused() {
     assert_eq!(at.at(0x10).expect("valid").bits() as u16 & 0xFF, 0x10);
     assert_eq!(at.at(0x10).expect("valid").device(), 1, "the rest is kept");
 }
+
+#[test]
+fn a_fence_that_cannot_verify_its_restore_never_revives_bus_master() {
+    let mut functions = FunctionClaims::<1>::new();
+    let at = Address::new(0, 1, 0, 0).expect("valid");
+    let authority = functions
+        .claim(at, HeaderType::from_bits(0))
+        .expect("claimed");
+    let original = command::MEMORY_SPACE | command::BUS_MASTER;
+    let mut reads = 0;
+    let failure = fence_bus_master(&mut functions, &authority, |_, access| match access {
+        CommandAccess::Read => {
+            reads += 1;
+            Some(u32::from(if reads == 1 { original } else { 0x0100 }))
+        }
+        CommandAccess::Write(_) => Some(0),
+    })
+    .expect_err("the restore cannot be verified");
+    assert_eq!(failure.reason(), EnableError::Restore);
+
+    let state = failure.into_state().expect("restore authority");
+    let mut revived = false;
+    let settled = original & !command::BUS_MASTER;
+    let restored = restore_command(
+        &mut functions,
+        &authority,
+        state,
+        |_, access| match access {
+            CommandAccess::Read => Some(u32::from(settled)),
+            CommandAccess::Write(word) => {
+                revived |= word & command::BUS_MASTER != 0;
+                Some(0)
+            }
+        },
+    );
+    assert!(restored.is_ok());
+    assert!(!revived);
+}

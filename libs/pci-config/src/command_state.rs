@@ -229,15 +229,21 @@ pub fn fence_bus_master<const N: usize>(
     if !functions.holds(authority) {
         return Err(EnableFailure::from(EnableError::Stale));
     }
-    let mut state = begin_command(
+    let mut fenced = begin_command(
         &mut functions.commands,
         authority,
         0,
         command::BUS_MASTER,
         access,
-    )?;
-    state.before &= !command::BUS_MASTER;
-    Ok(state)
+    );
+    match &mut fenced {
+        Ok(state) => state.before &= !command::BUS_MASTER,
+        Err(EnableFailure {
+            state: Some(state), ..
+        }) => state.before &= !command::BUS_MASTER,
+        Err(_) => {}
+    }
+    fenced
 }
 
 /// Freshly verify that one live command owner still has BME clear.
