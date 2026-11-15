@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::cargo::Profile;
 use crate::image::Kernel;
 use crate::paths::{self, Paths};
 use crate::qemu::{SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
@@ -204,10 +205,12 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
     let vm_dir = vm_directory(paths, kernel);
     require_safe_vm_root(paths)?;
     require_safe_existing_vm_directory(paths, kernel)?;
+    let rebuilt = crate::image::build_for_run(paths, Profile::Release, kernel)
+        .context("rebuilding the boot image to compare")?;
     for (generated, current, label) in [
         (
             vm_dir.join(FLAT_NAME),
-            paths.image(),
+            rebuilt.path().to_path_buf(),
             "VMware boot image differs from the current generated input",
         ),
         (
