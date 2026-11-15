@@ -1,5 +1,3 @@
-//! Source-defined ACPI authority shared by the qualified machine generators.
-
 use acpi_tables::{DmaHandoff, Sdt};
 
 pub(crate) const DMA_HANDOFF_FILE: &str = "dma-handoff.bin";

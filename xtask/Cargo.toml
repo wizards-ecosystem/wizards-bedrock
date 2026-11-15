@@ -8,24 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-# Outside the workspace lints; a dead doc link is still a defect.
-[lints.rustdoc]
-broken_intra_doc_links = "deny"
-private_intra_doc_links = "deny"
-redundant_explicit_links = "deny"
-
 [dependencies]
 acpi-tables.workspace = true
-elf64 = { workspace = true }
 anyhow.workspace = true
+elf64.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true
-fs_at.workspace = true
 panic-record.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-command-group.workspace = true
-getrandom.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true

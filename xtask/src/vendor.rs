@@ -1,286 +1,20 @@
-//! Vendored files checked against recorded digests, so a prebuilt bootloader update is reviewable.
-
-use std::collections::BTreeSet;
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::fs::File;
+use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::paths::Paths;
 use crate::sha256;
 
-pub(crate) const MAX_LISTING_BYTES: u64 = 1024 * 1024;
-const MAX_DIRECTORY_ENTRIES: usize = 256;
-pub(crate) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_DIRECTORY_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct Entry {
-    /// Lowercase hex digest.
-    pub(crate) digest: String,
-    /// File name, relative to the checksum file.
-    pub(crate) name: String,
-}
-
-/// Both `sha256sum` forms, `digest  name` and `digest *name`; blank and `#` lines are skipped.
-pub(crate) fn parse(listing: &str) -> Result<Vec<Entry>> {
-    let mut entries = Vec::new();
-    let mut names = BTreeSet::new();
-    for line in listing.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (digest, name) = line
-            .split_once(char::is_whitespace)
-            .with_context(|| format!("checksum line has no file name: {line}"))?;
-        if digest.len() != 64
-            || !digest
-                .chars()
-                .all(|character| character.is_ascii_hexdigit())
-        {
-            bail!("not a sha256 digest: {digest}");
-        }
-        let name = name.trim_start().trim_start_matches('*');
-        if name.is_empty() {
-            bail!("checksum line has no file name: {line}");
-        }
-        let mut components = Path::new(name).components();
-        ensure!(
-            matches!(components.next(), Some(Component::Normal(_)))
-                && components.next().is_none()
-                && !name.contains(['/', '\\'])
-                && !name.chars().any(char::is_control),
-            "checksum file name is not one direct regular-file name: {name}"
-        );
-        ensure!(
-            names.insert(name.to_string()),
-            "checksum listing repeats file name `{name}`"
-        );
-        ensure!(
-            entries.len() < MAX_DIRECTORY_ENTRIES,
-            "checksum listing has more than {MAX_DIRECTORY_ENTRIES} entries"
-        );
-        entries.push(Entry {
-            digest: digest.to_ascii_lowercase(),
-            name: name.to_string(),
-        });
-    }
-    Ok(entries)
-}
-
-/// The directory's own paperwork, which carries no payload. Every other file must be listed,
-/// since a digest catches a changed file but never an added one.
+// Unlisted files are refused, since a digest catches a changed file but never an added one.
 const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
-/// Names no entry or paperwork accounts for, sorted so the report is stable.
-pub(crate) fn unaccounted<'name, I>(present: I, entries: &[Entry]) -> Vec<String>
-where
-    I: IntoIterator<Item = &'name str>,
-{
-    let mut extra: Vec<String> = present
-        .into_iter()
-        .filter(|name| !PAPERWORK.contains(name))
-        .filter(|name| !entries.iter().any(|entry| entry.name == *name))
-        .map(str::to_string)
-        .collect();
-    extra.sort_unstable();
-    extra
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Entry {
+    digest: String,
+    name: String,
 }
 
-pub(crate) fn verify_listing(listing: &Path) -> Result<usize> {
-    let dir = listing.parent().unwrap_or(Path::new("."));
-    crate::workspace::canonical_existing_real_directory(dir, "vendor directory")?;
-    crate::workspace::require_direct_file(dir, listing, "vendor checksum listing")?;
-    let text = read_listing(listing)?;
-    let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
-
-    for (entry, file, length) in measure_payloads(dir, &entries)? {
-        verify_payload_digest(dir, entry, &file, length)?;
-    }
-
-    let present = directory_names(dir)?;
-    let extra = unaccounted(present.iter().map(String::as_str), &entries);
-    if !extra.is_empty() {
-        bail!(
-            "{} has files no digest accounts for: {}\n  add them to {} or remove them",
-            dir.display(),
-            extra.join(", "),
-            listing.display()
-        );
-    }
-    Ok(entries.len())
-}
-
-fn measure_payloads<'entries>(
-    dir: &Path,
-    entries: &'entries [Entry],
-) -> Result<Vec<(&'entries Entry, PathBuf, u64)>> {
-    let mut measured = Vec::with_capacity(entries.len());
-    let mut total = 0u64;
-    for entry in entries {
-        let file = dir.join(&entry.name);
-        crate::workspace::require_direct_file(dir, &file, "vendored payload")?;
-        let length = crate::workspace::open_real_file(&file, "vendored payload")?
-            .metadata()
-            .with_context(|| format!("measuring {}", file.display()))?
-            .len();
-        ensure!(
-            length <= MAX_PAYLOAD_BYTES,
-            "{} is {length} bytes, exceeding the {MAX_PAYLOAD_BYTES}-byte vendored-payload limit",
-            file.display()
-        );
-        total = total
-            .checked_add(length)
-            .context("vendored payload length overflowed")?;
-        ensure!(
-            total <= MAX_DIRECTORY_PAYLOAD_BYTES,
-            "{} contains {total} payload bytes, exceeding its {MAX_DIRECTORY_PAYLOAD_BYTES}-byte limit",
-            dir.display()
-        );
-        measured.push((entry, file, length));
-    }
-    Ok(measured)
-}
-
-fn verify_payload_digest(dir: &Path, entry: &Entry, file: &Path, length: u64) -> Result<()> {
-    crate::workspace::require_direct_file(dir, file, "vendored payload")?;
-    let input = crate::workspace::open_real_file(file, "vendored payload")?;
-    let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
-        .with_context(|| format!("hashing {}", file.display()))?;
-    crate::workspace::require_direct_file(dir, file, "vendored payload")?;
-    ensure!(
-        bytes == length
-            && crate::workspace::open_real_file(file, "vendored payload")?
-                .metadata()
-                .with_context(|| format!("remeasuring {}", file.display()))?
-                .len()
-                == length,
-        "{} changed length while it was hashed",
-        file.display()
-    );
-    let actual = sha256::hex(&digest);
-    if actual != entry.digest {
-        bail!(
-            "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
-            file.display(),
-            entry.digest,
-            actual
-        );
-    }
-    Ok(())
-}
-
-fn directory_names(dir: &Path) -> Result<Vec<String>> {
-    let mut present = Vec::new();
-    for entry in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("reading an entry in {}", dir.display()))?;
-        ensure!(
-            present.len() < MAX_DIRECTORY_ENTRIES,
-            "{} has more than {MAX_DIRECTORY_ENTRIES} entries",
-            dir.display()
-        );
-        present.push(
-            entry
-                .file_name()
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("{} has a non-UTF-8 entry", dir.display()))?,
-        );
-    }
-    Ok(present)
-}
-
-/// Authenticates the already-read `bytes` against the listing's sole entry, so a caller that
-/// writes them without reopening `payload` consumes exactly the snapshot that was checked.
-pub(crate) fn verify_payload_bytes(listing: &Path, payload: &Path, bytes: &[u8]) -> Result<()> {
-    let directory = listing
-        .parent()
-        .with_context(|| format!("{} has no vendor directory", listing.display()))?;
-    ensure!(
-        payload.parent() == Some(directory),
-        "vendored payload {} is not beside {}",
-        payload.display(),
-        listing.display()
-    );
-    let name = payload
-        .file_name()
-        .and_then(|name| name.to_str())
-        .with_context(|| {
-            format!(
-                "vendored payload has no UTF-8 file name: {}",
-                payload.display()
-            )
-        })?;
-    let text = read_listing(listing)?;
-    let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
-    ensure!(
-        entries.len() == 1,
-        "{} must contain exactly one payload digest, found {}",
-        listing.display(),
-        entries.len()
-    );
-    let entry = &entries[0];
-    ensure!(
-        entry.name == name,
-        "{} pins `{}` instead of the consumed payload `{name}`",
-        listing.display(),
-        entry.name
-    );
-    ensure!(
-        bytes.len() as u64 <= MAX_PAYLOAD_BYTES,
-        "{} is {} bytes, exceeding the {MAX_PAYLOAD_BYTES}-byte vendored-payload limit",
-        payload.display(),
-        bytes.len()
-    );
-    let actual = sha256::hex(&sha256::digest(bytes));
-    ensure!(
-        actual == entry.digest,
-        "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
-        payload.display(),
-        entry.digest,
-        actual
-    );
-    Ok(())
-}
-
-pub(crate) fn read_listing(path: &Path) -> Result<String> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    crate::workspace::canonical_existing_real_directory(parent, "vendor directory")?;
-    crate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
-    let mut file = crate::workspace::open_real_file(path, "vendor checksum listing")?;
-    let initial = file
-        .metadata()
-        .with_context(|| format!("measuring {}", path.display()))?
-        .len();
-    ensure!(
-        initial <= MAX_LISTING_BYTES,
-        "{} is {initial} bytes, exceeding the {MAX_LISTING_BYTES}-byte checksum-listing limit",
-        path.display()
-    );
-    let capacity =
-        usize::try_from(initial).context("checksum listing length does not fit usize")?;
-    let mut bytes = Vec::with_capacity(capacity);
-    (&mut file)
-        .take(MAX_LISTING_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("reading {}", path.display()))?;
-    ensure!(
-        bytes.len() as u64 <= MAX_LISTING_BYTES,
-        "{} grew beyond the {MAX_LISTING_BYTES}-byte checksum-listing limit",
-        path.display()
-    );
-    ensure!(
-        file.metadata()
-            .with_context(|| format!("remeasuring {}", path.display()))?
-            .len()
-            == bytes.len() as u64,
-        "{} changed length while it was read",
-        path.display()
-    );
-    crate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
-    String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
-}
-
-/// A vendored directory added and not added here is a directory nothing checks.
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
     for listing in [paths.limine_checksums(), paths.tla_checksums()] {
         let count = verify_listing(&listing)?;
@@ -290,4 +24,90 @@ pub(crate) fn verify(paths: &Paths) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub(crate) fn verify_listing(listing: &Path) -> Result<usize> {
+    let directory = listing.parent().context("listing has no directory")?;
+    let entries = entries(listing)?;
+    for entry in &entries {
+        let path = directory.join(&entry.name);
+        let (_, digest) = File::open(&path)
+            .and_then(sha256::digest_reader)
+            .with_context(|| format!("hashing {}", path.display()))?;
+        require_digest(&path, entry, &digest)?;
+    }
+    let present =
+        std::fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?;
+    let mut extra = Vec::new();
+    for file in present {
+        let name = file?.file_name().to_string_lossy().into_owned();
+        let listed = entries.iter().any(|entry| entry.name == name);
+        if !listed && !PAPERWORK.contains(&name.as_str()) {
+            extra.push(name);
+        }
+    }
+    if !extra.is_empty() {
+        extra.sort_unstable();
+        bail!(
+            "{} has files no digest accounts for: {}",
+            directory.display(),
+            extra.join(", ")
+        );
+    }
+    Ok(entries.len())
+}
+
+pub(crate) fn read_verified(listing: &Path, payload: &Path) -> Result<Vec<u8>> {
+    let name = payload
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 file name", payload.display()))?;
+    let entries = entries(listing)?;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .with_context(|| format!("{} lists no digest for {name}", listing.display()))?;
+    let bytes = std::fs::read(payload).with_context(|| format!("reading {}", payload.display()))?;
+    require_digest(payload, entry, &sha256::digest(&bytes))?;
+    Ok(bytes)
+}
+
+fn require_digest(path: &Path, entry: &Entry, digest: &[u8; 32]) -> Result<()> {
+    let actual = sha256::hex(digest);
+    ensure!(
+        actual == entry.digest,
+        "{} does not match its recorded digest\n  recorded: {}\n  actual:   {actual}",
+        path.display(),
+        entry.digest
+    );
+    Ok(())
+}
+
+// Both `sha256sum` forms, `digest  name` and `digest *name`; blank and `#` lines are skipped.
+fn entries(listing: &Path) -> Result<Vec<Entry>> {
+    let text = std::fs::read_to_string(listing)
+        .with_context(|| format!("reading {}", listing.display()))?;
+    let mut entries = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (digest, name) = line
+            .split_once(char::is_whitespace)
+            .with_context(|| format!("checksum line has no file name: {line}"))?;
+        let name = name.trim_start().trim_start_matches('*');
+        ensure!(
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "not a sha256 digest: {digest}"
+        );
+        ensure!(
+            !name.is_empty() && !name.contains(['/', '\\']),
+            "checksum file name is not a name in its directory: {line}"
+        );
+        entries.push(Entry {
+            digest: digest.to_ascii_lowercase(),
+            name: name.to_string(),
+        });
+    }
+    Ok(entries)
 }

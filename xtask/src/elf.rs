@@ -1,220 +1,14 @@
-//! The linked kernel read back and checked against what `kernel/linker.ld` is written to produce.
-
-use std::fmt;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-
 use anyhow::{Context, Result, bail, ensure};
 
 const SHT_NOBITS: u32 = 8;
-
-const SHF_ALLOC: u64 = 1 << 1;
 const SHF_WRITE: u64 = 1;
+const SHF_ALLOC: u64 = 1 << 1;
 const SHF_EXECUTE: u64 = 1 << 2;
-
 const PAGE_BYTES: u64 = 4096;
-
 const SECTION_HEADER_BYTES: usize = 64;
-
-/// Largest linked kernel artifact the host verifier and image builder admit.
-pub(crate) const MAX_KERNEL_ELF_BYTES: u64 = 64 * 1024 * 1024;
-/// A kernel needs tens of sections; this leaves generous diagnostic headroom.
-const MAX_SECTION_COUNT: usize = 4096;
-/// Aggregate owned section-name bytes, independent of repeated name offsets.
-const MAX_SECTION_NAME_BYTES: usize = 1024 * 1024;
-
-/// The base `kernel/linker.ld` links at, and the range the kernel code model can address.
 const HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
 
-const fn ranges_overlap(left: u64, left_size: u64, right: u64, right_size: u64) -> bool {
-    if left_size == 0 || right_size == 0 {
-        return false;
-    }
-    match (left.checked_add(left_size), right.checked_add(right_size)) {
-        (Some(left_end), Some(right_end)) => left < right_end && right < left_end,
-        _ => true,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Segment {
-    /// `p_type`.
-    pub(crate) kind: u32,
-    /// `p_flags`.
-    pub(crate) flags: u32,
-    /// `p_vaddr`.
-    pub(crate) vaddr: u64,
-    /// `p_filesz`.
-    pub(crate) file_size: u64,
-    /// `p_memsz`.
-    pub(crate) memory_size: u64,
-}
-
-impl Segment {
-    pub(crate) const fn is_loadable(self) -> bool {
-        self.kind == elf64::SegmentKind::Load.bits()
-    }
-
-    pub(crate) const fn covers(self, vaddr: u64, size: u64) -> bool {
-        match (
-            self.vaddr.checked_add(self.memory_size),
-            vaddr.checked_add(size),
-        ) {
-            (Some(segment_end), Some(end)) => vaddr >= self.vaddr && end <= segment_end,
-            _ => false,
-        }
-    }
-
-    /// Whether this segment intersects any byte of another non-empty range.
-    pub(crate) const fn overlaps(self, vaddr: u64, size: u64) -> bool {
-        if self.memory_size == 0 || size == 0 {
-            return false;
-        }
-        match (
-            self.vaddr.checked_add(self.memory_size),
-            vaddr.checked_add(size),
-        ) {
-            (Some(segment_end), Some(end)) => self.vaddr < end && vaddr < segment_end,
-            _ => true,
-        }
-    }
-
-    pub(crate) const fn is_writable_and_executable(self) -> bool {
-        self.flags & elf64::Segment::WRITE != 0 && self.flags & elf64::Segment::EXECUTE != 0
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct Section {
-    pub(crate) name: String,
-    /// `sh_type`.
-    pub(crate) kind: u32,
-    /// `sh_flags`.
-    pub(crate) flags: u64,
-    /// `sh_addr`.
-    pub(crate) addr: u64,
-    /// `sh_size`.
-    pub(crate) size: u64,
-}
-
-impl Section {
-    pub(crate) const fn is_allocated(&self) -> bool {
-        self.flags & SHF_ALLOC != 0
-    }
-
-    pub(crate) const fn is_nobits(&self) -> bool {
-        self.kind == SHT_NOBITS
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) struct Image {
-    pub(crate) entry: u64,
-    /// Every program header, in order.
-    pub(crate) segments: Vec<Segment>,
-    /// Every section header, in order.
-    pub(crate) sections: Vec<Section>,
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub(crate) enum ImageError {
-    EntryOutsideHigherHalf {
-        entry: u64,
-    },
-    /// An allocated section no loadable segment wholly covers, as an orphan placed badly by the
-    /// heuristic is.
-    SectionNotLoaded {
-        name: String,
-        addr: u64,
-    },
-    WritableAndExecutable {
-        vaddr: u64,
-    },
-    /// A no-file-space section with file bytes in it, as one followed by something loadable is.
-    NobitsInFile {
-        name: String,
-        wasted: u64,
-    },
-    /// A section the boot protocol needs is absent or not loaded.
-    MissingSection {
-        name: &'static str,
-    },
-    /// An entry-enclave section that is not page-exact or has the wrong permissions.
-    InvalidEnclaveSection {
-        name: String,
-    },
-    /// An entry-enclave segment holding unrelated bytes or with the wrong permissions.
-    InvalidEnclaveSegment {
-        name: &'static str,
-    },
-    /// An allocated `.kpti.*` section outside the closed set.
-    UnexpectedEnclaveSection {
-        name: String,
-    },
-    /// More file bytes than memory bytes, or bytes past the end of the address space.
-    ImpossibleSegment {
-        vaddr: u64,
-        file_size: u64,
-        memory_size: u64,
-    },
-}
-
-impl fmt::Display for ImageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ImpossibleSegment {
-                vaddr,
-                file_size,
-                memory_size,
-            } => write!(
-                f,
-                "the segment at {vaddr:#018x} claims {file_size:#x} file bytes for {memory_size:#x} memory bytes"
-            ),
-            Self::EntryOutsideHigherHalf { entry } => write!(
-                f,
-                "entry point {entry:#018x} is below the higher half at {HIGHER_HALF:#018x}"
-            ),
-            Self::SectionNotLoaded { name, addr } => write!(
-                f,
-                "{name} at {addr:#018x} is in no loadable segment — name it in linker.ld \
-                 rather than leaving it an orphan"
-            ),
-            Self::WritableAndExecutable { vaddr } => {
-                write!(
-                    f,
-                    "the segment at {vaddr:#018x} is both writable and executable"
-                )
-            }
-            Self::NobitsInFile { name, wasted } => write!(
-                f,
-                "{name} occupies no memory of its own but is costing {wasted} bytes of image — \
-                 something loadable was placed after it"
-            ),
-            Self::MissingSection { name } => {
-                write!(f, "{name} is missing from the loaded image")
-            }
-            Self::InvalidEnclaveSection { name } => {
-                write!(f, "{name} is not one complete page-exact enclave range")
-            }
-            Self::InvalidEnclaveSegment { name } => {
-                write!(f, "the load segment for {name} is not dedicated and exact")
-            }
-            Self::UnexpectedEnclaveSection { name } => {
-                write!(
-                    f,
-                    "unrecognised entry-enclave section {name} escaped the closed set"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ImageError {}
-
-/// Sections the image cannot boot without; `.requests` holds `wost::entry!`'s Limine request
-/// block, and without it no response is filled in.
+// `.requests` holds the Limine request block; without it no response is filled in.
 const REQUIRED: &[&str] = &[
     ".text",
     ".requests",
@@ -224,354 +18,88 @@ const REQUIRED: &[&str] = &[
     ".kpti.data",
 ];
 
-const KPTI_SECTIONS: &[(&str, bool, bool)] = &[
-    (".kpti.text", false, true),
-    (".kpti.rodata", false, false),
-    (".kpti.tables", true, false),
-    (".kpti.data", true, false),
+const ENCLAVE_SECTIONS: &[(&str, Access)] = &[
+    (".kpti.text", Access::Execute),
+    (".kpti.rodata", Access::Read),
+    (".kpti.tables", Access::Write),
+    (".kpti.data", Access::Write),
 ];
 
-impl Image {
-    /// Every fault, not the first: a linker-script change that breaks one usually breaks several.
-    pub(crate) fn verify(&self) -> Vec<ImageError> {
-        let mut faults = Vec::new();
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Access {
+    Read,
+    Write,
+    Execute,
+}
 
-        if self.entry < HIGHER_HALF {
-            faults.push(ImageError::EntryOutsideHigherHalf { entry: self.entry });
-        }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Segment {
+    flags: u32,
+    vaddr: u64,
+    file_size: u64,
+    memory_size: u64,
+}
 
-        for segment in self.segments.iter().filter(|segment| segment.is_loadable()) {
-            if segment.is_writable_and_executable() {
-                faults.push(ImageError::WritableAndExecutable {
-                    vaddr: segment.vaddr,
-                });
-            }
-            // Reported, not saturated: `covers` checks only `vaddr + memory_size`, not `p_filesz`.
-            if segment.file_size > segment.memory_size
-                || segment.vaddr.checked_add(segment.file_size).is_none()
-            {
-                faults.push(ImageError::ImpossibleSegment {
-                    vaddr: segment.vaddr,
-                    file_size: segment.file_size,
-                    memory_size: segment.memory_size,
-                });
-            }
-        }
-
-        for section in self
-            .sections
-            .iter()
-            .filter(|section| section.is_allocated())
-        {
-            let Some(segment) = self.segment_for(section) else {
-                faults.push(ImageError::SectionNotLoaded {
-                    name: section.name.clone(),
-                    addr: section.addr,
-                });
-                continue;
-            };
-            // Any file-backed byte past the section's start puts it in the file.
-            // Saturating, since `p_filesz = u64::MAX` must not panic the verifier.
-            let file_end = segment.vaddr.saturating_add(segment.file_size);
-            if section.is_nobits() && section.addr < file_end {
-                faults.push(ImageError::NobitsInFile {
-                    name: section.name.clone(),
-                    wasted: (file_end - section.addr).min(section.size),
-                });
-            }
-        }
-
-        for name in REQUIRED {
-            if self.allocated_section(name).is_none() {
-                faults.push(ImageError::MissingSection { name });
-            }
-        }
-
-        self.verify_entry_enclave(&mut faults);
-
-        faults
-    }
-
-    fn verify_entry_enclave(&self, faults: &mut Vec<ImageError>) {
-        self.verify_enclave_closed_set(faults);
-        self.verify_enclave_sections(faults);
-        self.verify_enclave_code_segments(faults);
-        self.verify_enclave_data_segment(faults);
-    }
-
-    fn verify_enclave_closed_set(&self, faults: &mut Vec<ImageError>) {
-        for section in self
-            .sections
-            .iter()
-            .filter(|section| section.is_allocated() && section.name.starts_with(".kpti."))
-        {
-            if !KPTI_SECTIONS
-                .iter()
-                .any(|(name, _, _)| section.name == *name)
-            {
-                faults.push(ImageError::UnexpectedEnclaveSection {
-                    name: section.name.clone(),
-                });
-            }
+impl Segment {
+    fn covers(self, addr: u64, size: u64) -> bool {
+        match (
+            self.vaddr.checked_add(self.memory_size),
+            addr.checked_add(size),
+        ) {
+            (Some(segment_end), Some(end)) => addr >= self.vaddr && end <= segment_end,
+            _ => false,
         }
     }
 
-    fn verify_enclave_sections(&self, faults: &mut Vec<ImageError>) {
-        for &(name, writable, executable) in KPTI_SECTIONS {
-            let Some(section) = self.allocated_section(name) else {
-                continue;
-            };
-            let page_exact = section.addr.is_multiple_of(PAGE_BYTES)
-                && section.size != 0
-                && section.size.is_multiple_of(PAGE_BYTES);
-            let permissions = (section.flags & SHF_WRITE != 0) == writable
-                && (section.flags & SHF_EXECUTE != 0) == executable;
-            let exclusive = !self.sections.iter().any(|other| {
-                other.is_allocated()
-                    && other.name != section.name
-                    && ranges_overlap(section.addr, section.size, other.addr, other.size)
-            });
-            if !page_exact || !permissions || !exclusive {
-                faults.push(ImageError::InvalidEnclaveSection {
-                    name: section.name.clone(),
-                });
-            }
+    fn overlaps(self, addr: u64, size: u64) -> bool {
+        ranges_overlap(self.vaddr, self.memory_size, addr, size)
+    }
+
+    fn has(self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
+}
+
+fn ranges_overlap(left: u64, left_size: u64, right: u64, right_size: u64) -> bool {
+    if left_size == 0 || right_size == 0 {
+        return false;
+    }
+    match (left.checked_add(left_size), right.checked_add(right_size)) {
+        (Some(left_end), Some(right_end)) => left < right_end && right < left_end,
+        _ => true,
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Section {
+    name: String,
+    kind: u32,
+    flags: u64,
+    addr: u64,
+    size: u64,
+}
+
+impl Section {
+    fn access(&self) -> Access {
+        if self.flags & SHF_EXECUTE != 0 {
+            Access::Execute
+        } else if self.flags & SHF_WRITE != 0 {
+            Access::Write
+        } else {
+            Access::Read
         }
     }
-
-    fn verify_enclave_code_segments(&self, faults: &mut Vec<ImageError>) {
-        for (name, expected_flags) in [
-            (".kpti.text", elf64::Segment::READ | elf64::Segment::EXECUTE),
-            (".kpti.rodata", elf64::Segment::READ),
-        ] {
-            let Some(section) = self.allocated_section(name) else {
-                continue;
-            };
-            let mut intersecting = self.loaded_segments_overlapping(section);
-            let Some(segment) = intersecting.next() else {
-                continue;
-            };
-            if !segment.covers(section.addr, section.size)
-                || segment.vaddr != section.addr
-                || segment.memory_size != section.size
-                || segment.flags != expected_flags
-                || intersecting.next().is_some()
-            {
-                faults.push(ImageError::InvalidEnclaveSegment { name });
-            }
-        }
-    }
-
-    fn verify_enclave_data_segment(&self, faults: &mut Vec<ImageError>) {
-        let (Some(tables), Some(data)) = (
-            self.allocated_section(".kpti.tables"),
-            self.allocated_section(".kpti.data"),
-        ) else {
-            return;
-        };
-        let table_segments = self.loaded_segments_overlapping(tables).collect::<Vec<_>>();
-        let data_segments = self.loaded_segments_overlapping(data).collect::<Vec<_>>();
-        let segment = table_segments.first().copied();
-        let same = table_segments.len() == 1
-            && data_segments.len() == 1
-            && segment == data_segments.first().copied();
-        let exact = segment.is_some_and(|segment| {
-            tables.addr.checked_add(tables.size) == Some(data.addr)
-                && data.addr.checked_add(data.size)
-                    == segment.vaddr.checked_add(segment.memory_size)
-                && segment.vaddr == tables.addr
-                && segment.flags == (elf64::Segment::READ | elf64::Segment::WRITE)
-        });
-        if !same || !exact {
-            faults.push(ImageError::InvalidEnclaveSegment {
-                name: ".kpti.tables/.kpti.data",
-            });
-        }
-    }
-
-    fn allocated_section(&self, name: &str) -> Option<&Section> {
-        self.sections
-            .iter()
-            .find(|section| section.name == name && section.is_allocated())
-    }
-
-    fn loaded_segments_overlapping(&self, section: &Section) -> impl Iterator<Item = Segment> {
-        let (addr, size) = (section.addr, section.size);
-        self.segments
-            .iter()
-            .copied()
-            .filter(move |segment| segment.is_loadable() && segment.overlaps(addr, size))
-    }
-
-    fn segment_for(&self, section: &Section) -> Option<Segment> {
-        self.segments
-            .iter()
-            .copied()
-            .filter(|segment| segment.is_loadable())
-            .find(|segment| segment.covers(section.addr, section.size))
-    }
 }
 
-/// The bytes are hostile: a malformed file is an error, never a panic or out-of-bounds read.
-/// File and program headers come from `libs/elf64`, the crate the kernel loads programs with,
-/// so the verifier and the loader agree.
-/// The section-table walk stays here because a loader never needs it.
-pub(crate) fn parse(bytes: &[u8]) -> Result<Image> {
-    ensure!(
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
-        "kernel ELF exceeds the {}-byte limit",
-        MAX_KERNEL_ELF_BYTES
-    );
-    let image = elf64::Elf::parse(bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
-    let segments = image
-        .segments()
-        .map(|segment| Segment {
-            kind: segment.kind().bits(),
-            flags: segment.flags(),
-            vaddr: segment.address(),
-            file_size: segment.file_size(),
-            memory_size: segment.memory_size(),
-        })
-        .collect();
-    let sections = parse_sections(bytes, image.section_table())?;
-    Ok(Image {
-        entry: image.entry(),
-        segments,
-        sections,
-    })
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Image {
+    entry: u64,
+    segments: Vec<Segment>,
+    sections: Vec<Section>,
 }
 
-/// Every operand is a header field the file chooses, so overflow is refused rather than wrapped.
-fn entry_at(table: usize, index: usize, stride: usize) -> Result<usize> {
-    index
-        .checked_mul(stride)
-        .and_then(|skip| table.checked_add(skip))
-        .context("the header table runs off the end of the address space")
-}
-
-/// A field `offset` bytes into a header entry, refused rather than wrapped.
-fn field(at: usize, offset: usize) -> Result<usize> {
-    at.checked_add(offset)
-        .context("a header field runs off the end of the address space")
-}
-
-fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Section>> {
-    let table = usize::try_from(header.offset()).context("section table offset is too large")?;
-    let stride = usize::from(header.entry_size());
-    let count = usize::from(header.count());
-    let names_index = usize::from(header.names_index());
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    ensure!(
-        count <= MAX_SECTION_COUNT,
-        "kernel ELF has {count} sections; at most {MAX_SECTION_COUNT} are admitted"
-    );
-    if stride != SECTION_HEADER_BYTES {
-        bail!("section headers of {stride} bytes are not ELF64 section headers");
-    }
-    if names_index >= count {
-        bail!("the section name table index is outside the section table");
-    }
-    let names_header = entry_at(table, names_index, stride)?;
-    let names_at = usize::try_from(read_u64(bytes, field(names_header, 0x18)?)?)
-        .context("section name table offset is too large")?;
-    let names_len = usize::try_from(read_u64(bytes, field(names_header, 0x20)?)?)
-        .context("section name table length is too large")?;
-    let names_end = names_at
-        .checked_add(names_len)
-        .context("section name table extent overflowed")?;
-    let names = bytes
-        .get(names_at..names_end)
-        .context("section name table runs past the end of the file")?;
-
-    let mut total_name_bytes = 0usize;
-    let mut sections = Vec::with_capacity(count);
-    for index in 0..count {
-        let at = entry_at(table, index, stride)?;
-        let name = read_name(names, read_u32(bytes, at)? as usize)?;
-        total_name_bytes = checked_name_budget(total_name_bytes, name.len())?;
-        sections.push(Section {
-            name: name.to_owned(),
-            // Each field offset is checked itself, never left to an earlier read to refuse.
-            kind: read_u32(bytes, field(at, 0x04)?)?,
-            flags: read_u64(bytes, field(at, 0x08)?)?,
-            addr: read_u64(bytes, field(at, 0x10)?)?,
-            size: read_u64(bytes, field(at, 0x20)?)?,
-        });
-    }
-    Ok(sections)
-}
-
-fn checked_name_budget(total: usize, additional: usize) -> Result<usize> {
-    let total = total
-        .checked_add(additional)
-        .context("aggregate section-name length overflowed")?;
-    ensure!(
-        total <= MAX_SECTION_NAME_BYTES,
-        "kernel ELF section names exceed the {MAX_SECTION_NAME_BYTES}-byte aggregate limit"
-    );
-    Ok(total)
-}
-
-fn read_name(bytes: &[u8], at: usize) -> Result<&str> {
-    let rest = bytes
-        .get(at..)
-        .with_context(|| format!("section name at {at:#x} is past the end of the file"))?;
-    let end = rest
-        .iter()
-        .position(|&byte| byte == 0)
-        .with_context(|| format!("unterminated section name at {at:#x}"))?;
-    core::str::from_utf8(&rest[..end]).context("a section name is not valid UTF-8")
-}
-
-fn read_bytes<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N]> {
-    let slice = bytes
-        .get(at..)
-        .and_then(|rest| rest.get(..N))
-        .with_context(|| format!("{N} bytes at {at:#x} are past the end of the file"))?;
-    let mut value = [0u8; N];
-    value.copy_from_slice(slice);
-    Ok(value)
-}
-
-fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
-    read_bytes(bytes, at).map(u32::from_le_bytes)
-}
-
-fn read_u64(bytes: &[u8], at: usize) -> Result<u64> {
-    read_bytes(bytes, at).map(u64::from_le_bytes)
-}
-
-/// The kernel bytes, bounded even if the file grows between measurement and read.
-pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let length = file
-        .metadata()
-        .with_context(|| format!("measuring {}", path.display()))?
-        .len();
-    ensure!(
-        length <= MAX_KERNEL_ELF_BYTES,
-        "{} is {length} bytes; kernel ELF limit is {MAX_KERNEL_ELF_BYTES}",
-        path.display()
-    );
-    let mut bytes = Vec::with_capacity(usize::try_from(length).context("kernel ELF is too large")?);
-    file.take(MAX_KERNEL_ELF_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("reading {}", path.display()))?;
-    ensure!(
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
-        "{} grew beyond the {MAX_KERNEL_ELF_BYTES}-byte kernel ELF limit while being read",
-        path.display()
-    );
-    Ok(bytes)
-}
-
-pub(crate) fn verify_file(path: &Path) -> Result<()> {
-    let bytes = read_file(path)?;
-    let image = parse(&bytes).with_context(|| format!("parsing {}", path.display()))?;
-
-    let faults = image.verify();
+pub(crate) fn verify(bytes: &[u8]) -> Result<()> {
+    let faults = parse(bytes)?.faults();
     if faults.is_empty() {
         return Ok(());
     }
@@ -579,5 +107,252 @@ pub(crate) fn verify_file(path: &Path) -> Result<()> {
         .iter()
         .map(|fault| format!("\n  {fault}"))
         .collect::<String>();
-    bail!("{} is not a bootable image:{report}", path.display());
+    bail!("the linked kernel breaks its layout contract:{report}")
+}
+
+impl Image {
+    fn faults(&self) -> Vec<String> {
+        let mut faults = Vec::new();
+        self.segment_faults(&mut faults);
+        let entry_executable = self
+            .segments
+            .iter()
+            .any(|segment| segment.has(elf64::Segment::EXECUTE) && segment.covers(self.entry, 1));
+        if !entry_executable {
+            faults.push(format!(
+                "entry point {:#018x} lies in no executable load segment",
+                self.entry
+            ));
+        }
+        for section in self.allocated() {
+            let Some(segment) = self
+                .segments
+                .iter()
+                .find(|segment| segment.covers(section.addr, section.size))
+            else {
+                continue;
+            };
+            let file_end = segment.vaddr.saturating_add(segment.file_size);
+            if section.kind == SHT_NOBITS && section.addr < file_end {
+                faults.push(format!(
+                    "{} occupies no memory of its own but costs {} bytes of image: something \
+                     loadable was placed after it",
+                    section.name,
+                    (file_end - section.addr).min(section.size)
+                ));
+            }
+        }
+        for name in REQUIRED {
+            if self.section(name).is_none() {
+                faults.push(format!("{name} is missing from the loaded image"));
+            }
+        }
+        self.enclave_faults(&mut faults);
+        faults
+    }
+
+    fn segment_faults(&self, faults: &mut Vec<String>) {
+        for (index, segment) in self.segments.iter().enumerate() {
+            let vaddr = segment.vaddr;
+            if segment.has(elf64::Segment::WRITE) && segment.has(elf64::Segment::EXECUTE) {
+                faults.push(format!(
+                    "the segment at {vaddr:#018x} is writable and executable"
+                ));
+            }
+            if segment.file_size > segment.memory_size
+                || vaddr.checked_add(segment.memory_size).is_none()
+            {
+                faults.push(format!(
+                    "the segment at {vaddr:#018x} claims {:#x} file bytes for {:#x} memory bytes",
+                    segment.file_size, segment.memory_size
+                ));
+            }
+            if vaddr < HIGHER_HALF {
+                faults.push(format!(
+                    "the segment at {vaddr:#018x} is below the higher half at {HIGHER_HALF:#018x}"
+                ));
+            }
+            if !vaddr.is_multiple_of(PAGE_BYTES) {
+                faults.push(format!("the segment at {vaddr:#018x} is not page-aligned"));
+            }
+            for other in &self.segments[index + 1..] {
+                if segment.overlaps(other.vaddr, other.memory_size) {
+                    faults.push(format!(
+                        "the segments at {vaddr:#018x} and {:#018x} overlap",
+                        other.vaddr
+                    ));
+                }
+            }
+        }
+    }
+
+    fn enclave_faults(&self, faults: &mut Vec<String>) {
+        for section in self.allocated() {
+            let known = ENCLAVE_SECTIONS
+                .iter()
+                .any(|(name, _)| section.name == *name);
+            if section.name.starts_with(".kpti.") && !known {
+                faults.push(format!(
+                    "unrecognised entry-enclave section {}",
+                    section.name
+                ));
+            }
+        }
+        for &(name, access) in ENCLAVE_SECTIONS {
+            let Some(section) = self.section(name) else {
+                continue;
+            };
+            let page_exact = section.addr.is_multiple_of(PAGE_BYTES)
+                && section.size != 0
+                && section.size.is_multiple_of(PAGE_BYTES);
+            let exclusive = !self.allocated().any(|other| {
+                other.name != section.name
+                    && ranges_overlap(section.addr, section.size, other.addr, other.size)
+            });
+            if !page_exact || section.access() != access || !exclusive {
+                faults.push(format!(
+                    "{name} is not one complete page-exact enclave range"
+                ));
+            }
+        }
+        for (name, flags) in [
+            (".kpti.text", elf64::Segment::READ | elf64::Segment::EXECUTE),
+            (".kpti.rodata", elf64::Segment::READ),
+        ] {
+            let Some(section) = self.section(name) else {
+                continue;
+            };
+            let exact = match self.segments_overlapping(section).as_slice() {
+                [segment] => {
+                    segment.vaddr == section.addr
+                        && segment.memory_size == section.size
+                        && segment.flags == flags
+                }
+                _ => false,
+            };
+            if !exact {
+                faults.push(format!(
+                    "the load segment for {name} is not dedicated and exact"
+                ));
+            }
+        }
+        let (Some(tables), Some(data)) = (self.section(".kpti.tables"), self.section(".kpti.data"))
+        else {
+            return;
+        };
+        let table_segments = self.segments_overlapping(tables);
+        let exact = table_segments == self.segments_overlapping(data)
+            && match table_segments.as_slice() {
+                [segment] => {
+                    segment.vaddr == tables.addr
+                        && tables.addr.checked_add(tables.size) == Some(data.addr)
+                        && data.addr.checked_add(data.size)
+                            == segment.vaddr.checked_add(segment.memory_size)
+                        && segment.flags == (elf64::Segment::READ | elf64::Segment::WRITE)
+                }
+                _ => false,
+            };
+        if !exact {
+            faults.push(
+                "the load segment for .kpti.tables and .kpti.data is not dedicated and exact"
+                    .to_string(),
+            );
+        }
+    }
+
+    fn allocated(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|section| section.flags & SHF_ALLOC != 0)
+    }
+
+    fn section(&self, name: &str) -> Option<&Section> {
+        self.allocated().find(|section| section.name == name)
+    }
+
+    fn segments_overlapping(&self, section: &Section) -> Vec<Segment> {
+        self.segments
+            .iter()
+            .copied()
+            .filter(|segment| segment.overlaps(section.addr, section.size))
+            .collect()
+    }
+}
+
+fn parse(bytes: &[u8]) -> Result<Image> {
+    let elf = elf64::Elf::parse(bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let segments = elf
+        .segments()
+        .filter(|segment| segment.kind() == elf64::SegmentKind::Load)
+        .map(|segment| Segment {
+            flags: segment.flags(),
+            vaddr: segment.address(),
+            file_size: segment.file_size(),
+            memory_size: segment.memory_size(),
+        })
+        .collect();
+    Ok(Image {
+        entry: elf.entry(),
+        segments,
+        sections: parse_sections(bytes, elf.section_table())?,
+    })
+}
+
+fn parse_sections(bytes: &[u8], table: elf64::SectionTable) -> Result<Vec<Section>> {
+    let count = usize::from(table.count());
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    ensure!(
+        usize::from(table.entry_size()) == SECTION_HEADER_BYTES,
+        "section headers are not ELF64 section headers"
+    );
+    let offset = usize::try_from(table.offset()).context("section table offset is too large")?;
+    let header = |index: usize| {
+        index
+            .checked_mul(SECTION_HEADER_BYTES)
+            .and_then(|skip| skip.checked_add(offset))
+            .and_then(|start| bytes.get(start..)?.get(..SECTION_HEADER_BYTES))
+            .context("a section header runs past the end of the file")
+    };
+    let names = header(usize::from(table.names_index()))?;
+    let names_at = usize::try_from(u64_at(names, 0x18)?).context("name table is too far")?;
+    let names_len = usize::try_from(u64_at(names, 0x20)?).context("name table is too long")?;
+    let names = bytes
+        .get(names_at..)
+        .and_then(|rest| rest.get(..names_len))
+        .context("the section name table runs past the end of the file")?;
+    (0..count)
+        .map(|index| {
+            let header = header(index)?;
+            let name_at = usize::try_from(u32_at(header, 0)?).context("name is too far")?;
+            let name = names
+                .get(name_at..)
+                .and_then(|rest| rest.split(|&byte| byte == 0).next())
+                .context("a section name is past the end of the name table")?;
+            Ok(Section {
+                name: String::from_utf8_lossy(name).into_owned(),
+                kind: u32_at(header, 0x04)?,
+                flags: u64_at(header, 0x08)?,
+                addr: u64_at(header, 0x10)?,
+                size: u64_at(header, 0x20)?,
+            })
+        })
+        .collect()
+}
+
+fn u32_at(header: &[u8], at: usize) -> Result<u32> {
+    header
+        .get(at..at + 4)
+        .and_then(|field| field.try_into().ok())
+        .map(u32::from_le_bytes)
+        .context("a section header field is truncated")
+}
+
+fn u64_at(header: &[u8], at: usize) -> Result<u64> {
+    header
+        .get(at..at + 8)
+        .and_then(|field| field.try_into().ok())
+        .map(u64::from_le_bytes)
+        .context("a section header field is truncated")
 }

@@ -1,4 +1,4 @@
-//! SHA-256 from FIPS 180-4, so vendored binaries are checksum-pinned without a dependency.
+// SHA-256 from FIPS 180-4, hand-rolled to avoid a dependency.
 
 const ROUND_CONSTANTS: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -17,7 +17,6 @@ const INITIAL_STATE: [u32; 8] = [
 
 const BLOCK_SIZE: usize = 64;
 
-/// The digest of `data`; panics if it exceeds SHA-256's 64-bit length field.
 pub(crate) fn digest(data: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new();
     let byte_length = data.len() as u128;
@@ -123,7 +122,6 @@ fn input_too_large() -> std::io::Error {
     )
 }
 
-/// Lowercase hex, the form `sha256sum` prints.
 pub(crate) fn hex(digest: &[u8; 32]) -> String {
     digest
         .iter()
@@ -175,7 +173,6 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_SIZE]) {
     }
 }
 
-/// The two rotations and a shift that make up SHA-256's small sigma functions.
 fn rotate(word: u32, first: u32, second: u32, shift: u32) -> u32 {
     word.rotate_right(first) ^ word.rotate_right(second) ^ (word >> shift)
 }

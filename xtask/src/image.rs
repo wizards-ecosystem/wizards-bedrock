@@ -1,26 +1,26 @@
-//! The boot disk, built in-process: an MBR holding one FAT32 EFI system partition.
-
 pub(crate) mod corpus;
-pub mod esp;
+mod esp;
 mod mbr;
 mod program;
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use fatfs::{FatType, FileSystem, FsOptions, ReadWriteSeek};
 use fscommon::{BufStream, StreamSlice};
 
 use crate::cargo::{self, Profile};
 use crate::paths::{self, Paths};
 
+// Shared with kernel/src/selftest.rs; it stays contiguous because the optimiser may split a
+// formatted literal, and only a self-test kernel prints it.
+const SELFTEST_IMAGE_MARKER: &str = "selftest: image marker v1";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kernel {
     Shipped,
-    /// The kernel with its boot-time checks and verdict device compiled in.
     SelfTest,
 }
 
@@ -33,18 +33,15 @@ impl Kernel {
     }
 
     fn identify(bytes: &[u8]) -> Self {
-        let signature = crate::qemu::SELFTEST_IMAGE_MARKER.as_bytes();
-        if bytes
-            .windows(signature.len())
-            .any(|window| window == signature)
-        {
+        let marker = SELFTEST_IMAGE_MARKER.as_bytes();
+        if bytes.windows(marker.len()).any(|window| window == marker) {
             Self::SelfTest
         } else {
             Self::Shipped
         }
     }
 
-    const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Shipped => "shipped",
             Self::SelfTest => "self-test",
@@ -52,219 +49,38 @@ impl Kernel {
     }
 }
 
-pub(crate) fn build(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<PathBuf> {
-    build_with_features(paths, profile, kernel, kernel.features())
-}
-
-#[derive(Debug)]
-pub(crate) struct RunImage {
-    path: PathBuf,
-}
-
-impl RunImage {
-    fn reserve(target: &Path) -> Result<(Self, File)> {
-        let directory = qemu_run_directory(target)?;
-
-        for _ in 0..1024 {
-            let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);
-            let path = directory.join(format!("bedrock-{}-{sequence}.img", std::process::id()));
-            match create_new_image(&path) {
-                Ok(file) => return Ok((Self { path }, file)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| format!("creating {}", path.display()));
-                }
-            }
-        }
-        bail!("could not reserve a private QEMU boot image")
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for RunImage {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-static NEXT_RUN_IMAGE: AtomicU64 = AtomicU64::new(0);
-static NEXT_IMAGE_STAGE: AtomicU64 = AtomicU64::new(0);
-
-fn create_new_image(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    OpenOptions::read(&mut options, true);
-    OpenOptions::write(&mut options, true);
-    OpenOptions::create_new(&mut options, true);
-    OpenOptions::open(&options, path)
-}
-
-pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
-    crate::workspace::prepare_real_directory_tree(
-        &target.join(paths::QEMU_RUN_DIRECTORY),
-        "QEMU private run directory",
-    )
-}
-
-pub(crate) fn build_for_run(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<RunImage> {
-    build_for_run_with_features(paths, profile, kernel, kernel.features())
-}
-
-pub(crate) fn build_degraded_for_run(paths: &Paths, profile: Profile) -> Result<RunImage> {
-    build_for_run_with_features(
-        paths,
-        profile,
-        Kernel::Shipped,
-        &[paths::REFUSE_PCI_FEATURE],
-    )
-}
-
-fn build_with_features(
+pub(crate) fn build(
     paths: &Paths,
     profile: Profile,
-    wanted: Kernel,
-    features: &[&str],
-) -> Result<PathBuf> {
-    let kernel = kernel_bytes(paths, profile, wanted, features)?;
-    let image = paths.image();
-
-    println!("[xtask] creating disk image {}", image.display());
-    publish_image(paths.target_dir(), &image, |staging, disk| {
-        assemble(paths, wanted, &kernel, staging, disk)
-    })?;
-    Ok(image)
-}
-
-fn publish_image(
-    parent: &Path,
+    kernel: Kernel,
     destination: &Path,
-    build: impl FnOnce(&Path, &mut File) -> Result<()>,
 ) -> Result<()> {
-    ensure!(
-        destination == parent.join(paths::IMAGE_NAME),
-        "boot image is not the exact configured target child"
-    );
-    let canonical_parent =
-        crate::workspace::prepare_real_directory_tree(parent, "boot-image target directory")?;
-    let published_path = canonical_parent.join(paths::IMAGE_NAME);
-    crate::workspace::require_direct_file_if_present(
-        &canonical_parent,
-        &published_path,
-        "existing boot image",
-    )?;
-
-    let sequence = NEXT_IMAGE_STAGE.fetch_add(1, Ordering::Relaxed);
-    let staging = canonical_parent.join(format!(
-        ".{}-{}-{sequence}.incomplete",
-        paths::IMAGE_NAME,
-        std::process::id()
-    ));
-    let publication = write_image_stage(&staging, build).and_then(|()| {
-        crate::workspace::require_direct_file(&canonical_parent, &staging, "boot-image stage")?;
-        ensure!(
-            crate::workspace::canonical_existing_real_directory(
-                parent,
-                "boot-image target directory",
-            )? == canonical_parent,
-            "boot-image target directory changed before publication"
-        );
-        let staged = crate::sha256::digest_reader(crate::workspace::open_real_file(
-            &staging,
-            "boot-image stage",
-        )?)
-        .with_context(|| format!("hashing boot-image stage {}", staging.display()))?;
-
-        crate::workspace::publish_staged_file(
-            &canonical_parent,
-            &staging,
-            &published_path,
-            "boot image",
-            |published| {
-                let digest = crate::sha256::digest_reader(crate::workspace::open_real_file(
-                    published,
-                    "boot image",
-                )?)
-                .with_context(|| format!("hashing boot image {}", destination.display()))?;
-                ensure!(
-                    digest == staged,
-                    "published boot image differs from its complete stage"
-                );
-                Ok(())
-            },
-        )?;
-        Ok(())
-    });
-    crate::workspace::finish_staged_operation(
-        &canonical_parent,
-        &staging,
-        "boot-image stage",
-        publication,
-    )
+    let bytes = cargo::build_kernel(paths, profile, kernel.features())?;
+    println!("[xtask] creating disk image {}", destination.display());
+    let partial = destination.with_extension("partial");
+    let assembled = crate::paths::create_read_write(&partial)
+        .with_context(|| format!("creating {}", partial.display()))
+        .and_then(|mut disk| {
+            assemble(paths, kernel, &bytes, &mut disk)?;
+            disk.sync_all()
+                .with_context(|| format!("syncing {}", partial.display()))
+        });
+    if let Err(error) = assembled {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    std::fs::rename(&partial, destination)
+        .with_context(|| format!("publishing {}", destination.display()))
 }
 
-fn write_image_stage(
-    staging: &Path,
-    build: impl FnOnce(&Path, &mut File) -> Result<()>,
-) -> Result<()> {
-    let mut disk = create_new_image(staging)
-        .with_context(|| format!("creating boot-image stage {}", staging.display()))?;
-    build(staging, &mut disk)?;
-    disk.sync_all()
-        .with_context(|| format!("syncing boot-image stage {}", staging.display()))
-}
-
-fn build_for_run_with_features(
-    paths: &Paths,
-    profile: Profile,
-    wanted: Kernel,
-    features: &[&str],
-) -> Result<RunImage> {
-    let kernel = kernel_bytes(paths, profile, wanted, features)?;
-    let (image, mut disk) = RunImage::reserve(paths.target_dir())?;
-    println!(
-        "[xtask] creating private disk image {}",
-        image.path.display()
-    );
-    let assembled = assemble(paths, wanted, &kernel, image.path(), &mut disk);
-    drop(disk);
-    assembled?;
-    Ok(image)
-}
-
-fn kernel_bytes(
-    paths: &Paths,
-    profile: Profile,
-    wanted: Kernel,
-    features: &[&str],
-) -> Result<Vec<u8>> {
-    let kernel = cargo::build_kernel(paths, profile, features)?;
-    crate::elf::read_file(&kernel)
-        .with_context(|| format!("reading {} kernel artifact", wanted.label()))
-}
-
-fn assemble(
-    paths: &Paths,
-    wanted: Kernel,
-    kernel: &[u8],
-    image: &Path,
-    disk: &mut File,
-) -> Result<()> {
+fn assemble(paths: &Paths, wanted: Kernel, kernel: &[u8], disk: &mut File) -> Result<()> {
     let bytes = paths::DISK_MIB * 1024 * 1024;
-    let total_sectors = bytes / paths::SECTOR_SIZE;
-    disk.set_len(bytes)
-        .with_context(|| format!("sizing {} to {bytes} bytes", image.display()))?;
-
-    let partition = mbr::PartitionEntry::efi_system(paths::PART_START_LBA, total_sectors)?;
+    disk.set_len(bytes).context("sizing the disk image")?;
+    let partition =
+        mbr::PartitionEntry::efi_system(paths::PART_START_LBA, bytes / paths::SECTOR_SIZE)?;
     mbr::write(&mut *disk, &mbr::record(&[partition]))?;
 
-    let start = u64::from(partition.start_lba) * paths::SECTOR_SIZE;
-    let end = start + u64::from(partition.sectors) * paths::SECTOR_SIZE;
-    let slice = StreamSlice::new(&mut *disk, start, end)
-        .context("addressing the EFI system partition within the image")?;
-    let mut volume = BufStream::new(slice);
-
+    let mut volume = esp_volume(&mut *disk, partition)?;
     esp::format(&mut volume, FatType::Fat32)?;
     let filesystem =
         FileSystem::new(volume, FsOptions::new()).context("mounting the EFI system partition")?;
@@ -275,11 +91,7 @@ fn assemble(
 
     let carried = read_kernel(&mut *disk, partition)?;
     if carried != kernel {
-        bail!(
-            "the kernel read back from {} differs from the verified {} artifact",
-            image.display(),
-            wanted.label()
-        );
+        bail!("the kernel read back from the image differs from the verified artifact");
     }
     let found = Kernel::identify(&carried);
     if found != wanted {
@@ -289,32 +101,31 @@ fn assemble(
             found.label()
         );
     }
-
     println!("[xtask] image ready ({} kernel read back)", found.label());
     Ok(())
 }
 
-fn read_kernel<D: ReadWriteSeek>(disk: &mut D, partition: mbr::PartitionEntry) -> Result<Vec<u8>> {
+fn esp_volume<D: ReadWriteSeek>(
+    disk: D,
+    partition: mbr::PartitionEntry,
+) -> Result<BufStream<StreamSlice<D>>> {
     let start = u64::from(partition.start_lba) * paths::SECTOR_SIZE;
     let end = start + u64::from(partition.sectors) * paths::SECTOR_SIZE;
     let slice = StreamSlice::new(disk, start, end)
-        .context("addressing the EFI system partition while reading it back")?;
-    let volume = BufStream::new(slice);
-    let filesystem = FileSystem::new(volume, FsOptions::new())
-        .context("mounting the EFI system partition while reading it back")?;
+        .context("addressing the EFI system partition within the image")?;
+    Ok(BufStream::new(slice))
+}
+
+fn read_kernel<D: ReadWriteSeek>(disk: D, partition: mbr::PartitionEntry) -> Result<Vec<u8>> {
+    let filesystem = FileSystem::new(esp_volume(disk, partition)?, FsOptions::new())
+        .context("mounting the EFI system partition to read it back")?;
     let mut bytes = Vec::new();
-    {
-        let root = filesystem.root_dir();
-        let boot = root
-            .open_dir("boot")
-            .context("opening /boot while reading the image back")?;
-        let mut kernel = boot
-            .open_file(paths::KERNEL_ON_ESP)
-            .context("opening the kernel while reading the image back")?;
-        kernel
-            .read_to_end(&mut bytes)
-            .context("reading the kernel back from the image")?;
-    }
+    filesystem
+        .root_dir()
+        .open_dir("boot")
+        .and_then(|boot| boot.open_file(paths::KERNEL_ON_ESP))
+        .and_then(|mut kernel| kernel.read_to_end(&mut bytes))
+        .context("reading the kernel back from the image")?;
     filesystem
         .unmount()
         .context("unmounting the read-back EFI system partition")?;

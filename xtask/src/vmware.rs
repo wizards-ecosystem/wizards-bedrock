@@ -1,138 +1,90 @@
-//! A VMware VM directory: a flat VMDK plus a VMX.
-//! The raw image is copied in beside the descriptors, so the folder can be moved or archived alone.
-
-mod config;
-
-use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use panic_record::OPEN_PREFIX;
 
 use crate::cargo::Profile;
-use crate::image::Kernel;
-use crate::paths::{self, Paths};
-use crate::qemu::{EXPECTED_SELFTEST_CHECKS, SHIPPED_USER_EXECUTION_MARKER, canonical_decimal};
+use crate::image::{self, Kernel};
+use crate::paths::{self, Paths, RunDirectory};
+use crate::qemu::Verdict;
+use crate::qemu::storage::{NAMESPACE_BYTES, write_namespace};
 use crate::sha256;
 
 const VMDK_TEMPLATE: &str = include_str!("../templates/bedrock.vmdk.in");
 const VMX_TEMPLATE: &str = include_str!("../templates/bedrock.vmx.in");
-
 const FLAT_NAME: &str = "bedrock-flat.img";
 const VMDK_NAME: &str = "bedrock.vmdk";
 const NVME_VMDK_NAME: &str = "wizard-nvm.vmdk";
 const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
 const VMX_NAME: &str = "bedrock.vmx";
 const DISPLAY_NAME: &str = "The Wizard's Bedrock";
-const VMWARE_ISOLATION_PREFIX: &str = "cpu: user isolation";
-const VMWARE_PAIRED_ISOLATION_MARKER: &str =
-    "cpu: user isolation paired roots: selected; shared mappings refused";
-const VMWARE_SELFTEST_SHARED_ISOLATION_MARKER: &str =
-    "cpu: user isolation paired roots: forced for self-test; shared proof retained: rdcl_no";
-const VMWARE_SHIPPED_SHARED_ISOLATION_MARKER: &str =
-    "cpu: user isolation shared kernel mappings: rdcl_no";
-const SELFTEST_ISOLATION_MARKERS: &[&str] = &[
-    VMWARE_PAIRED_ISOLATION_MARKER,
-    VMWARE_SELFTEST_SHARED_ISOLATION_MARKER,
-];
-const SHIPPED_ISOLATION_MARKERS: &[&str] = &[
-    VMWARE_PAIRED_ISOLATION_MARKER,
-    VMWARE_SHIPPED_SHARED_ISOLATION_MARKER,
-];
-const VMWARE_DMA_HANDOFF_MARKER: &str =
-    "iommu: entry DMA fence retained VMware 440BX 00:00.0 as the qualified non-requester";
-const VMWARE_ISA_DMA_MARKER: &str = "iommu: entry DMA fence quiesced VMware PIIX4 00:07.0 at its masked 8237 controllers; it remains a requester";
-const SELFTEST_DELAYED_READ_MARKER: &str = "selftest: delayed read evidence deferred=true device=true retained=true polled=true completed=true exact=true";
-const MAX_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_RUNTIME_VMX_BYTES: u64 = 1024 * 1024;
 const SERIAL_PREFIX: &str = "serial-";
 const SERIAL_SUFFIX: &str = ".log";
-
-/// The heads per cylinder and sectors per track that VMware expects.
+const SETTLED: &str = "[info ] kernel: reading the keyboard, uptime ";
+const USER_CALL: &str = "[info ] user: ring 3 call observed";
 const HEADS: u64 = 255;
 const SECTORS_PER_TRACK: u64 = 63;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Geometry {
-    pub(crate) cylinders: u64,
-    pub(crate) heads: u64,
-    pub(crate) sectors_per_track: u64,
-}
-
-/// Cylinders round up, since truncating would declare less than the extent it describes.
-pub(crate) fn geometry(sectors: u64) -> Geometry {
-    Geometry {
-        cylinders: sectors.div_ceil(HEADS * SECTORS_PER_TRACK),
-        heads: HEADS,
-        sectors_per_track: SECTORS_PER_TRACK,
+pub(crate) fn generate(paths: &Paths, kernel: Kernel) -> Result<()> {
+    let directory = vm_directory(paths, kernel);
+    if directory.exists() {
+        std::fs::remove_dir_all(&directory)
+            .with_context(|| format!("resetting {}", directory.display()))?;
     }
-}
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("creating {}", directory.display()))?;
 
-/// Substituted text is never rescanned, so a value holding a placeholder is emitted literally.
-/// An unrecognised key is an error rather than a silently empty field.
-pub(crate) fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
-    const OPEN: &str = "{{";
-    const CLOSE: &str = "}}";
+    let flat = directory.join(FLAT_NAME);
+    image::build(paths, Profile::Release, kernel, &flat)?;
+    let (bytes, digest) = digest(&flat)?;
+    write_descriptor(&directory.join(VMDK_NAME), FLAT_NAME, bytes)?;
+    write_namespace(&directory.join(NVME_FLAT_NAME))?;
+    write_descriptor(
+        &directory.join(NVME_VMDK_NAME),
+        NVME_FLAT_NAME,
+        NAMESPACE_BYTES,
+    )?;
+    write(
+        &directory.join(crate::platform_acpi::DMA_HANDOFF_FILE),
+        &crate::platform_acpi::dma_handoff_table(),
+    )?;
 
-    let mut rendered = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(start) = rest.find(OPEN) {
-        rendered.push_str(&rest[..start]);
-        let after = &rest[start + OPEN.len()..];
-        let Some(end) = after.find(CLOSE) else {
-            bail!("unterminated placeholder in template");
-        };
-        let key = &after[..end];
-        let value = values
-            .iter()
-            .find(|(name, _)| *name == key)
-            .map(|(_, value)| value)
-            .with_context(|| format!("template names an unknown placeholder: {key}"))?;
-        rendered.push_str(value);
-        rest = &after[end + CLOSE.len()..];
-    }
-    rendered.push_str(rest);
-    Ok(rendered)
-}
-
-pub(crate) fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
-    let vm_dir = vm_directory(paths, kernel);
-    reset_vm_directory(paths, kernel)?;
-
-    let flat = vm_dir.join(FLAT_NAME);
-    let bytes = copy_new(image, &flat)?;
-    let (digested_bytes, digest) = sha256::digest_reader(
-        File::open(&flat).with_context(|| format!("opening {}", flat.display()))?,
-    )
-    .with_context(|| format!("hashing {}", flat.display()))?;
-    ensure!(
-        digested_bytes == bytes,
-        "{} changed while its digest was recorded",
-        flat.display()
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("the host clock predates the Unix epoch")?;
+    let serial = format!(
+        "{SERIAL_PREFIX}{:x}-{}{SERIAL_SUFFIX}",
+        elapsed.as_nanos(),
+        std::process::id()
     );
-    let digest = sha256::hex(&digest);
-    write_descriptor(&vm_dir.join(VMDK_NAME), FLAT_NAME, bytes)?;
-
-    // Both machine gates share the namespace builder, so they boot identical bytes.
-    let namespace = crate::qemu::nvme_image(paths.root())?;
-    let nvme_flat = vm_dir.join(NVME_FLAT_NAME);
-    let nvme_bytes = copy_new(&namespace, &nvme_flat)?;
-    write_descriptor(&vm_dir.join(NVME_VMDK_NAME), NVME_FLAT_NAME, nvme_bytes)?;
-
-    let handoff = vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE);
-    write_new(&handoff, &crate::platform_acpi::dma_handoff_table())?;
-
-    let serial_name = fresh_serial_name()?;
-    let vmx = generation_vmx(kernel, &serial_name)?;
-    let vmx_path = vm_dir.join(VMX_NAME);
-    write_new(&vmx_path, vmx.as_bytes())?;
-    let serial_log = vm_dir.join(&serial_name);
-    write_new(&serial_log, &[])?;
+    let display_name = match kernel {
+        Kernel::SelfTest => DISPLAY_NAME.to_string(),
+        Kernel::Shipped => format!("{DISPLAY_NAME} (shipped)"),
+    };
+    let vmx = render(
+        VMX_TEMPLATE,
+        &[
+            ("DISPLAY_NAME", display_name),
+            ("VMDK_NAME", VMDK_NAME.to_string()),
+            ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
+            (
+                "DMA_HANDOFF_FILE",
+                crate::platform_acpi::DMA_HANDOFF_FILE.to_string(),
+            ),
+            ("SERIAL_LOG", serial.clone()),
+        ],
+    )?;
+    let vmx_path = directory.join(VMX_NAME);
+    write(&vmx_path, vmx.as_bytes())?;
+    let serial_log = directory.join(&serial);
+    write(&serial_log, &[])?;
 
     println!("[xtask] VMware VM ready: {}", vmx_path.display());
     println!(
-        "[xtask] VMware {} image: {bytes} bytes, sha256 {digest}",
-        image_label(kernel)
+        "[xtask] VMware {} image: {bytes} bytes, sha256 {}",
+        kernel.label(),
+        sha256::hex(&digest)
     );
     println!("[xtask] open it in VMware Workstation");
     println!(
@@ -143,20 +95,97 @@ pub(crate) fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()
     Ok(())
 }
 
+pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
+    let directory = vm_directory(paths, kernel);
+    let run = RunDirectory::create(paths)?;
+    image::build(paths, Profile::Release, kernel, &run.image())?;
+    ensure!(
+        digest(&directory.join(FLAT_NAME))? == digest(&run.image())?,
+        "the VMware boot image differs from a fresh build"
+    );
+    let transcript = transcript_path(&directory)?;
+    let text = std::fs::read_to_string(&transcript)
+        .with_context(|| format!("reading {}", transcript.display()))?
+        .replace("\r\n", "\n");
+    ensure!(
+        !text.contains(OPEN_PREFIX),
+        "the VMware transcript contains a kernel panic"
+    );
+    match kernel {
+        Kernel::SelfTest => {
+            let verdicts = text
+                .lines()
+                .filter_map(Verdict::parse)
+                .collect::<Result<Vec<_>>>()?;
+            let [verdict] = verdicts.as_slice() else {
+                bail!(
+                    "the VMware transcript has {} self-test verdicts",
+                    verdicts.len()
+                );
+            };
+            ensure!(
+                verdict.is_clean_pass(),
+                "the VMware self-test verdict passed {} of {} checks with {} failures",
+                verdict.passed,
+                verdict.expected,
+                verdict.failed
+            );
+        }
+        Kernel::Shipped => {
+            for record in [SETTLED, USER_CALL] {
+                ensure!(
+                    text.lines().any(|line| line.starts_with(record)),
+                    "the VMware transcript never reports {record:?}"
+                );
+            }
+        }
+    }
+    println!(
+        "[xtask] VMware {} transcript {} verifies",
+        kernel.label(),
+        transcript.display()
+    );
+    Ok(())
+}
+
+// Substituted text is never rescanned, and an unknown placeholder is an error.
+fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        rendered.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let end = after
+            .find("}}")
+            .context("unterminated placeholder in template")?;
+        let key = &after[..end];
+        let value = values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value)
+            .with_context(|| format!("template names an unknown placeholder: {key}"))?;
+        rendered.push_str(value);
+        rest = &after[end + 2..];
+    }
+    rendered.push_str(rest);
+    Ok(rendered)
+}
+
+// Cylinders round up, since truncating would declare less than the extent it describes.
 fn write_descriptor(path: &Path, flat_name: &str, bytes: u64) -> Result<()> {
     let sectors = bytes / paths::SECTOR_SIZE;
-    let geometry = geometry(sectors);
+    let cylinders = sectors.div_ceil(HEADS * SECTORS_PER_TRACK);
     let vmdk = render(
         VMDK_TEMPLATE,
         &[
             ("SECTORS", sectors.to_string()),
             ("FLAT_NAME", flat_name.to_string()),
-            ("CYLINDERS", geometry.cylinders.to_string()),
-            ("HEADS", geometry.heads.to_string()),
-            ("SECTORS_PER_TRACK", geometry.sectors_per_track.to_string()),
+            ("CYLINDERS", cylinders.to_string()),
+            ("HEADS", HEADS.to_string()),
+            ("SECTORS_PER_TRACK", SECTORS_PER_TRACK.to_string()),
         ],
     )?;
-    write_new(path, vmdk.as_bytes())
+    write(path, vmdk.as_bytes())
 }
 
 fn print_checklist(kernel: Kernel) {
@@ -180,506 +209,26 @@ fn print_checklist(kernel: Kernel) {
     }
 }
 
-pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
-    render(
-        VMX_TEMPLATE,
-        &[
-            ("DISPLAY_NAME", display_name(kernel)),
-            ("VMDK_NAME", VMDK_NAME.to_string()),
-            ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
-            (
-                "DMA_HANDOFF_FILE",
-                crate::platform_acpi::DMA_HANDOFF_FILE.to_string(),
-            ),
-            ("SERIAL_LOG", serial.to_string()),
-        ],
-    )
-}
-
-pub(crate) fn verify_runtime_vmx(generated: &[u8], runtime: &[u8]) -> Result<()> {
-    config::verify(generated, runtime)
-}
-
-pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
-    let vm_dir = vm_directory(paths, kernel);
-    require_safe_vm_root(paths)?;
-    require_safe_existing_vm_directory(paths, kernel)?;
-    let rebuilt = crate::image::build_for_run(paths, Profile::Release, kernel)
-        .context("rebuilding the boot image to compare")?;
-    for (generated, current, label) in [
-        (
-            vm_dir.join(FLAT_NAME),
-            rebuilt.path().to_path_buf(),
-            "VMware boot image differs from the current generated input",
-        ),
-        (
-            vm_dir.join(NVME_FLAT_NAME),
-            crate::qemu::nvme_path(paths.root()),
-            "VMware storage namespace differs from the current generated input",
-        ),
-    ] {
-        ensure!(
-            file_digest(&generated)? == file_digest(&current)?,
-            "{label}"
-        );
-    }
-    let transcript = generated_transcript_path(&vm_dir)?;
-    let name = transcript
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("VMware transcript name is not UTF-8")?;
-    let runtime = crate::files::read_bounded_file(
-        &vm_dir.join(VMX_NAME),
-        MAX_RUNTIME_VMX_BYTES,
-        "runtime VMX",
-    )?;
-    verify_runtime_vmx(generation_vmx(kernel, name)?.as_bytes(), &runtime)?;
-    let handoff = crate::files::read_bounded_file(
-        &vm_dir.join(crate::platform_acpi::DMA_HANDOFF_FILE),
-        acpi_tables::DmaHandoff::LEN as u64,
-        "DMA handoff authority",
-    )?;
-    ensure!(
-        handoff == crate::platform_acpi::dma_handoff_table(),
-        "VMware DMA handoff authority differs from the source-defined contract"
-    );
-    let bytes =
-        crate::files::read_bounded_file(&transcript, MAX_TRANSCRIPT_BYTES, "VMware transcript")?;
-    verify_transcript(kernel, &bytes)?;
-    println!(
-        "[xtask] VMware {} transcript {} verifies",
-        image_label(kernel),
-        transcript.display()
-    );
-    Ok(())
-}
-
-fn file_digest(path: &Path) -> Result<(u64, [u8; 32])> {
-    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    sha256::digest_reader(file).with_context(|| format!("hashing {}", path.display()))
-}
-
-fn fresh_serial_name() -> Result<String> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .context("the host clock predates the Unix epoch")?;
-    Ok(format!(
-        "{SERIAL_PREFIX}{:x}-{}{SERIAL_SUFFIX}",
-        elapsed.as_nanos(),
-        std::process::id()
-    ))
-}
-
-fn generated_transcript_path(vm_dir: &Path) -> Result<PathBuf> {
+fn transcript_path(directory: &Path) -> Result<PathBuf> {
+    let entries =
+        std::fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?;
     let mut found = Vec::new();
-    for entry in
-        std::fs::read_dir(vm_dir).with_context(|| format!("listing {}", vm_dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("reading {}", vm_dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with(SERIAL_PREFIX) && name.ends_with(SERIAL_SUFFIX) {
             found.push(entry.path());
         }
     }
-    ensure!(
-        found.len() == 1,
-        "{} holds {} generated serial logs, expected one",
-        vm_dir.display(),
-        found.len()
-    );
-    Ok(found.remove(0))
-}
-
-pub(crate) fn verify_transcript(kernel: Kernel, bytes: &[u8]) -> Result<()> {
-    let text = std::str::from_utf8(bytes).context("VMware transcript is not UTF-8")?;
-    ensure!(
-        !text.contains('\0'),
-        "VMware transcript contains a NUL byte"
-    );
-    let normalized = text.replace("\r\n", "\n");
-    let text = normalized.as_str();
-    ensure!(
-        text.ends_with('\n')
-            && text
-                .chars()
-                .all(|character| matches!(character, '\n' | '\t') || !character.is_control()),
-        "VMware transcript is not complete canonical text"
-    );
-    ensure!(
-        !text.contains("KERNEL PANIC"),
-        "VMware transcript contains a kernel panic"
-    );
-    require_translation_before_storage(text)?;
-    match kernel {
-        Kernel::SelfTest => verify_selftest_transcript(text),
-        Kernel::Shipped => verify_shipped_transcript(text),
+    match found.as_slice() {
+        [transcript] => Ok(transcript.clone()),
+        _ => bail!(
+            "{} holds {} generated serial logs, expected one",
+            directory.display(),
+            found.len()
+        ),
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum TranscriptMarker {
-    Exact(&'static str),
-    Isolation(Kernel),
-    ExtendedState,
-    LocalApic,
-    Nvme,
-    Fat32,
-    Tmpfs,
-    UserSlot,
-    KeyboardUptime,
-}
-
-impl TranscriptMarker {
-    const fn example(self) -> &'static str {
-        match self {
-            Self::Exact(message) => message,
-            Self::Isolation(_) => VMWARE_PAIRED_ISOLATION_MARKER,
-            Self::ExtendedState => "cpu: extended state 832 bytes, xcr0 0x7, compacted",
-            Self::LocalApic => "apic: x2apic id 0 version 0x14 (bootstrap)",
-            Self::Nvme => {
-                "nvme: up \u{2014} 8 entries a queue, 4096 blocks of 512 bytes, doorbells 4 apart"
-            }
-            Self::Fat32 => "fat32: mounted \u{2014} 129046 clusters of 512 bytes",
-            Self::Tmpfs => "tmpfs: 1 file(s) and 1 directory(ies) at the root",
-            Self::UserSlot => "user: program running in slot 0",
-            Self::KeyboardUptime => "kernel: reading the keyboard, uptime 1 ms",
-        }
-    }
-
-    fn matches(self, message: &str) -> bool {
-        match self {
-            Self::Exact(expected) => message == expected,
-            Self::Isolation(kernel) => isolation_markers(kernel).contains(&message),
-            Self::ExtendedState => extended_state_record(message),
-            Self::LocalApic => local_apic_record(message),
-            Self::Nvme => nvme_record(message),
-            Self::Fat32 => fat32_record(message),
-            Self::Tmpfs => tmpfs_record(message),
-            Self::UserSlot => message
-                .strip_prefix("user: program running in slot ")
-                .and_then(canonical_decimal)
-                .is_some(),
-            Self::KeyboardUptime => message
-                .strip_prefix("kernel: reading the keyboard, uptime ")
-                .and_then(|value| value.strip_suffix(" ms"))
-                .and_then(canonical_decimal)
-                .is_some(),
-        }
-    }
-}
-
-const SELFTEST_MARKERS: &[TranscriptMarker] = &[
-    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
-    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),
-    TranscriptMarker::Exact("cpu: protections wp smep smap umip nx"),
-    TranscriptMarker::ExtendedState,
-    TranscriptMarker::Isolation(Kernel::SelfTest),
-    TranscriptMarker::LocalApic,
-    TranscriptMarker::Exact("selftest: a thread crosses into ring three and calls back"),
-    TranscriptMarker::Exact("selftest: awaiting storage-delay keystroke"),
-    TranscriptMarker::Exact(SELFTEST_DELAYED_READ_MARKER),
-    TranscriptMarker::Exact("selftest: the kernel reads the file the host wrote"),
-    TranscriptMarker::Exact("selftest: both calibrated rates are believable"),
-    TranscriptMarker::Exact("selftest: awaiting injected keystroke"),
-    TranscriptMarker::Exact("selftest: an injected keystroke arrives, and its release follows"),
-    TranscriptMarker::Exact("selftest: awaiting translated keystroke"),
-    TranscriptMarker::Exact("selftest: a translated keystroke decodes to the same key"),
-];
-
-const SHIPPED_MARKERS: &[TranscriptMarker] = &[
-    TranscriptMarker::Exact(VMWARE_DMA_HANDOFF_MARKER),
-    TranscriptMarker::Exact(VMWARE_ISA_DMA_MARKER),
-    TranscriptMarker::Nvme,
-    TranscriptMarker::Fat32,
-    TranscriptMarker::Tmpfs,
-    TranscriptMarker::Exact("devfs: storage is a block device"),
-    TranscriptMarker::Exact("devfs: console is a character device"),
-    TranscriptMarker::Isolation(Kernel::Shipped),
-    TranscriptMarker::UserSlot,
-    TranscriptMarker::KeyboardUptime,
-];
-
-const fn isolation_markers(kernel: Kernel) -> &'static [&'static str] {
-    match kernel {
-        Kernel::SelfTest => SELFTEST_ISOLATION_MARKERS,
-        Kernel::Shipped => SHIPPED_ISOLATION_MARKERS,
-    }
-}
-
-fn positive_decimal(text: &str) -> bool {
-    canonical_decimal(text).is_some_and(|value| value != 0)
-}
-
-fn positive_hexadecimal(text: &str) -> bool {
-    !text.is_empty()
-        && (text.len() == 1 || !text.starts_with('0'))
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && u64::from_str_radix(text, 16).is_ok_and(|value| value != 0)
-}
-
-fn extended_state_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("cpu: extended state ") else {
-        return false;
-    };
-    let Some((bytes, xcr0)) = body.split_once(" bytes, xcr0 0x") else {
-        return false;
-    };
-    let Some(xcr0) = xcr0.strip_suffix(", compacted") else {
-        return false;
-    };
-    positive_decimal(bytes) && positive_hexadecimal(xcr0)
-}
-
-fn local_apic_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("apic: x2apic id ") else {
-        return false;
-    };
-    let Some((id, version)) = body.split_once(" version 0x") else {
-        return false;
-    };
-    let Some(version) = version.strip_suffix(" (bootstrap)") else {
-        return false;
-    };
-    canonical_decimal(id).is_some() && positive_hexadecimal(version)
-}
-
-fn translation_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("iommu: translation on for ") else {
-        return false;
-    };
-    let Some((address, body)) = body.split_once(" through the unit at 0x") else {
-        return false;
-    };
-    let Some((unit, _)) = body.split_once(": ") else {
-        return false;
-    };
-    let Some((bus, address)) = address.split_once(':') else {
-        return false;
-    };
-    let Some((device, function)) = address.split_once('.') else {
-        return false;
-    };
-    let hex_byte = |text: &str| {
-        text.len() == 2
-            && text
-                .bytes()
-                .all(|digit| digit.is_ascii_digit() || (b'a'..=b'f').contains(&digit))
-    };
-    hex_byte(bus)
-        && hex_byte(device)
-        && matches!(function.as_bytes(), [b'0'..=b'7'])
-        && positive_hexadecimal(unit)
-}
-
-fn nvme_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("nvme: up \u{2014} ") else {
-        return false;
-    };
-    let Some((entries, body)) = body.split_once(" entries a queue, ") else {
-        return false;
-    };
-    let Some((blocks, body)) = body.split_once(" blocks of ") else {
-        return false;
-    };
-    let Some((bytes, doorbells)) = body.split_once(" bytes, doorbells ") else {
-        return false;
-    };
-    let Some(doorbells) = doorbells.strip_suffix(" apart") else {
-        return false;
-    };
-    [entries, blocks, bytes, doorbells]
-        .into_iter()
-        .all(positive_decimal)
-}
-
-fn fat32_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("fat32: mounted \u{2014} ") else {
-        return false;
-    };
-    let Some((clusters, bytes)) = body.split_once(" clusters of ") else {
-        return false;
-    };
-    let Some(bytes) = bytes.strip_suffix(" bytes") else {
-        return false;
-    };
-    positive_decimal(clusters) && positive_decimal(bytes)
-}
-
-fn tmpfs_record(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("tmpfs: ") else {
-        return false;
-    };
-    let Some((files, directories)) = body.split_once(" file(s) and ") else {
-        return false;
-    };
-    let Some(directories) = directories.strip_suffix(" directory(ies) at the root") else {
-        return false;
-    };
-    positive_decimal(files) && positive_decimal(directories)
-}
-
-fn info_records(text: &str) -> impl Iterator<Item = (usize, &str)> {
-    let mut offset = 0;
-    text.split_inclusive('\n').filter_map(move |record| {
-        let at = offset;
-        offset += record.len();
-        let line = record.strip_suffix('\n')?;
-        let message = line.strip_prefix("[info ] ")?;
-        Some((at, message))
-    })
-}
-
-fn verify_selftest_transcript(text: &str) -> Result<()> {
-    ensure!(
-        !text.lines().any(|line| {
-            line.contains("selftest: ")
-                && (line.trim_end().ends_with(" FAILED")
-                    || line.contains("selftest: verdict v1 FAIL"))
-        }),
-        "VMware self-test transcript contains a failed check"
-    );
-    let evidence_end = require_once_in_order(text, SELFTEST_MARKERS)?;
-
-    let verdicts: Vec<(usize, &str)> = info_records(text)
-        .filter(|(_, message)| message.starts_with(crate::qemu::SELFTEST_VERDICT_PREFIX))
-        .collect();
-    ensure!(
-        verdicts.len() == 1,
-        "VMware transcript has {} self-test verdicts",
-        verdicts.len()
-    );
-    ensure!(
-        verdicts[0].0 >= evidence_end,
-        "VMware self-test verdict precedes required execution evidence"
-    );
-    let expected = EXPECTED_SELFTEST_CHECKS;
-    let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split(' ');
-    ensure!(fields.next() == Some("v1"), "unsupported self-test verdict");
-    ensure!(
-        fields.next() == Some("PASS"),
-        "self-test verdict did not pass"
-    );
-    let passed = verdict_count(fields.next(), "passed=")?;
-    let failed = verdict_count(fields.next(), "failed=")?;
-    let reported = verdict_count(fields.next(), "expected=")?;
-    ensure!(
-        fields.next().is_none(),
-        "self-test verdict has trailing fields"
-    );
-    ensure!(
-        expected != 0 && passed == expected && failed == 0 && reported == expected,
-        "self-test verdict does not match the current {expected}-check image"
-    );
-    Ok(())
-}
-
-fn verify_shipped_transcript(text: &str) -> Result<()> {
-    ensure!(
-        !text.contains("selftest: verdict"),
-        "the shipped VMware transcript came from a self-test image"
-    );
-    ensure!(
-        !text.contains("user: no program"),
-        "the shipped VMware image did not launch its program"
-    );
-    require_once_in_order(text, SHIPPED_MARKERS)?;
-    require_once_in_order(
-        text,
-        &[TranscriptMarker::Exact(SHIPPED_USER_EXECUTION_MARKER)],
-    )?;
-    Ok(())
-}
-
-// Each storage candidate logs its own translation record and a retired one's comes first,
-// so the last record is the kept controller's.
-fn require_translation_before_storage(text: &str) -> Result<()> {
-    let translation = info_records(text)
-        .filter(|(_, message)| translation_record(message))
-        .map(|(at, _)| at)
-        .last()
-        .context("VMware transcript has no canonical `iommu: translation on` record")?;
-    let storage = info_records(text)
-        .filter(|(_, message)| nvme_record(message))
-        .map(|(at, _)| at)
-        .collect::<Vec<_>>();
-    let [up] = storage.as_slice() else {
-        bail!(
-            "VMware transcript contains canonical `{}` {} times",
-            TranscriptMarker::Nvme.example(),
-            storage.len()
-        );
-    };
-    ensure!(
-        translation < *up,
-        "VMware transcript turns translation on after `nvme: up`"
-    );
-    Ok(())
-}
-
-fn isolation_occurrence(text: &str, kernel: Kernel) -> Result<(usize, &str)> {
-    let mut offset = 0;
-    let records = text
-        .split_inclusive('\n')
-        .filter_map(|record| {
-            let at = offset;
-            offset += record.len();
-            let line = record.strip_suffix('\n')?;
-            line.contains(VMWARE_ISOLATION_PREFIX).then_some((at, line))
-        })
-        .collect::<Vec<_>>();
-    ensure!(
-        records.len() == 1,
-        "VMware transcript contains {} user-isolation records",
-        records.len()
-    );
-    let (at, record) = records[0];
-    let message = record
-        .strip_prefix("[info ] ")
-        .context("VMware user-isolation record is not canonically info-framed")?;
-    ensure!(
-        isolation_markers(kernel).contains(&message),
-        "VMware transcript contains a user-isolation record not allowed for the selected image"
-    );
-    Ok((at, message))
-}
-
-fn require_once_in_order(text: &str, markers: &[TranscriptMarker]) -> Result<usize> {
-    let mut end = 0;
-    for marker in markers {
-        let occurrences: Vec<(usize, &str)> = match *marker {
-            TranscriptMarker::Isolation(kernel) => vec![isolation_occurrence(text, kernel)?],
-            _ => info_records(text)
-                .filter(|(_, message)| marker.matches(message))
-                .collect(),
-        };
-        ensure!(
-            occurrences.len() == 1,
-            "VMware transcript contains canonical `{}` {} times",
-            marker.example(),
-            occurrences.len()
-        );
-        let (at, message) = occurrences[0];
-        ensure!(
-            at >= end,
-            "VMware transcript marker `{}` is out of order",
-            marker.example()
-        );
-        end = at + "[info ] ".len() + message.len() + 1;
-    }
-    Ok(end)
-}
-
-fn verdict_count(field: Option<&str>, prefix: &str) -> Result<usize> {
-    let value = field
-        .and_then(|field| field.strip_prefix(prefix))
-        .context("self-test verdict is missing a count")?;
-    usize::try_from(
-        canonical_decimal(value).context("self-test verdict contains a noncanonical count")?,
-    )
-    .context("self-test verdict count does not fit usize")
 }
 
 fn vm_directory(paths: &Paths, kernel: Kernel) -> PathBuf {
@@ -689,133 +238,12 @@ fn vm_directory(paths: &Paths, kernel: Kernel) -> PathBuf {
     }
 }
 
-pub(crate) fn reset_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
-    let root = paths.vm_dir();
-    require_safe_vm_root(paths)?;
-    ensure!(
-        root == paths.root().join("vm") && root.parent() == Some(paths.root()),
-        "VMware root escaped the workspace"
-    );
-    crate::workspace::prepare_real_directory_tree(&root, "VMware root")?;
-    require_canonical_child(paths.root(), &root, "VMware root")?;
-
-    let directory = vm_directory(paths, kernel);
-    ensure!(
-        directory.parent() == Some(root.as_path()),
-        "VMware selector directory escaped its root"
-    );
-    match std::fs::symlink_metadata(&directory) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            require_canonical_child(&root, &directory, "VMware selector directory")?;
-            std::fs::remove_dir_all(&directory)
-                .with_context(|| format!("resetting {}", directory.display()))?;
-        }
-        Ok(_) => std::fs::remove_file(&directory)
-            .with_context(|| format!("removing unexpected {}", directory.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("inspecting {}", directory.display()));
-        }
-    }
-    std::fs::create_dir(&directory)
-        .with_context(|| format!("creating fresh VMware directory {}", directory.display()))
+fn digest(path: &Path) -> Result<(u64, [u8; 32])> {
+    File::open(path)
+        .and_then(sha256::digest_reader)
+        .with_context(|| format!("hashing {}", path.display()))
 }
 
-fn require_safe_vm_root(paths: &Paths) -> Result<()> {
-    let root = paths.vm_dir();
-    ensure!(
-        root == paths.root().join("vm") && root.parent() == Some(paths.root()),
-        "VMware root escaped the workspace"
-    );
-    match std::fs::symlink_metadata(&root) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-                "VMware root is not a real directory"
-            );
-            require_canonical_child(paths.root(), &root, "VMware root")?;
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("inspecting {}", root.display())),
-    }
-}
-
-fn require_safe_existing_vm_directory(paths: &Paths, kernel: Kernel) -> Result<()> {
-    let root = paths.vm_dir();
-    let directory = vm_directory(paths, kernel);
-    ensure!(
-        directory.parent() == Some(root.as_path()),
-        "VMware selector directory escaped its root"
-    );
-    match std::fs::symlink_metadata(&directory) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            require_canonical_child(&root, &directory, "VMware selector directory")?;
-            Ok(())
-        }
-        Ok(_) => bail!("VMware selector is not a real directory"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("inspecting {}", directory.display())),
-    }
-}
-
-fn require_canonical_child(parent: &Path, child: &Path, label: &str) -> Result<()> {
-    let canonical_parent = crate::workspace::canonical_existing_real_directory(parent, label)?;
-    let canonical_child = crate::workspace::canonical_existing_real_directory(child, label)?;
-    ensure!(
-        canonical_child.parent() == Some(canonical_parent.as_path()),
-        "{label} escaped its canonical parent"
-    );
-    Ok(())
-}
-
-fn image_label(kernel: Kernel) -> &'static str {
-    match kernel {
-        Kernel::SelfTest => "self-test",
-        Kernel::Shipped => "shipped",
-    }
-}
-
-fn display_name(kernel: Kernel) -> String {
-    match kernel {
-        Kernel::SelfTest => DISPLAY_NAME.to_string(),
-        Kernel::Shipped => format!("{DISPLAY_NAME} (shipped)"),
-    }
-}
-
-fn copy_new(source: &Path, destination: &Path) -> Result<u64> {
-    let mut input = File::open(source)
-        .with_context(|| format!("opening generated input {}", source.display()))?;
-    let mut output = open_new_output(destination)?;
-    let copied = std::io::copy(&mut input, &mut output).with_context(|| {
-        format!(
-            "copying {} to new VMware output {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    output
-        .sync_all()
-        .with_context(|| format!("syncing VMware output {}", destination.display()))?;
-    Ok(copied)
-}
-
-fn write_new(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = open_new_output(path)?;
-    file.write_all(contents)
-        .with_context(|| format!("writing new VMware output {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("syncing VMware output {}", path.display()))
-}
-
-fn open_new_output(path: &Path) -> Result<File> {
-    let parent = path.parent().context("VMware output has no parent")?;
-    crate::workspace::canonical_existing_real_directory(parent, "VMware output parent")?;
-    let mut options = OpenOptions::new();
-    OpenOptions::create_new(&mut options, true);
-    OpenOptions::write(&mut options, true);
-    let file = OpenOptions::open(&options, path)
-        .with_context(|| format!("creating new VMware output {}", path.display()))?;
-    crate::workspace::require_direct_file(parent, path, "VMware output")?;
-    Ok(file)
+fn write(path: &Path, contents: &[u8]) -> Result<()> {
+    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }

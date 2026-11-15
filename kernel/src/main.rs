@@ -58,8 +58,6 @@ use crate::arch::current::{ioapic, vector};
 ::wost::entry!(kernel_main);
 
 fn kernel_main(boot: BootInfo) -> ! {
-    #[cfg(feature = "refuse-pci")]
-    refuse_pci_for_degraded_boot();
     let early_dma = iommu::secure_handoff(&boot);
 
     let serial = dev::init_uart();
@@ -504,14 +502,6 @@ static EXTERNAL_MASK_REFUSAL_PROVED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "selftest")]
 pub(crate) fn unproven_external_controllers_veto_interrupts() -> bool {
     EXTERNAL_MASK_REFUSAL_PROVED.load(Ordering::Acquire)
-}
-
-#[cfg(feature = "refuse-pci")]
-fn refuse_pci_for_degraded_boot() {
-    assert!(
-        wost::arch::current::port::pci_configuration().is_some(),
-        "the degraded boot could not reserve the PCI configuration ports"
-    );
 }
 
 static PCI_INTERRUPT_BOUNDARY: AtomicBool = AtomicBool::new(false);

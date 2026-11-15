@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
 use slab_layout::AllocatorOwnership;
@@ -1577,45 +1577,14 @@ pub(super) fn a_ring_enter_round_trip_is_measurable() -> bool {
         && rites.completed.status == queue::STATUS_OK
         && rites.completed.value == rites.submitted.argument
         && trap::last_user_fault().count == faults_before;
-    if complete && ticks > 0 {
-        RING_ENTER_TICKS.store(ticks, Ordering::Relaxed);
-        true
-    } else {
-        false
-    }
+    complete && ticks > 0
 }
-
-static RING_ENTER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn a_full_buffer_nvme_read_is_measurable() -> bool {
     let Some((bytes, ticks)) = nvme::measure_buffered_read_for_test() else {
         return false;
     };
-    STORAGE_BYTES.store(bytes, Ordering::Relaxed);
-    STORAGE_TICKS.store(ticks, Ordering::Relaxed);
     bytes == PAGE_SIZE && ticks > 0
-}
-
-static STORAGE_BYTES: AtomicU64 = AtomicU64::new(0);
-static STORAGE_TICKS: AtomicU64 = AtomicU64::new(0);
-pub(super) static SELFTEST_STARTED_NS: AtomicU64 = AtomicU64::new(0);
-
-pub(super) fn report_baseline() {
-    let resources = spawn_resources();
-    info!(
-        "selftest: baseline v1 boot_ns={} frames_free={} heap_slab={} heap_large={} heap_live={} handles_committed={} handles_live={} trap_ticks={} storage_bytes={} storage_ticks={} counter_hz={}",
-        SELFTEST_STARTED_NS.load(Ordering::Relaxed),
-        resources.frames,
-        resources.heap.slab_frames,
-        resources.heap.large_frames,
-        resources.heap.live,
-        resources.arena.0,
-        resources.arena.1,
-        RING_ENTER_TICKS.load(Ordering::Relaxed),
-        STORAGE_BYTES.load(Ordering::Relaxed),
-        STORAGE_TICKS.load(Ordering::Relaxed),
-        time::counter_hz()
-    );
 }
 
 // The program began with one handle, so the nonzero handle ring 3 supplied can only be the

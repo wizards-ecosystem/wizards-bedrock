@@ -1,23 +1,23 @@
-use std::path::Path;
+use std::io::Write;
 
 use anyhow::{Context, Result};
 use fatfs::{Dir, FatType, FileSystem, FormatVolumeOptions, ReadWriteSeek};
 
 use crate::paths::{self, Paths};
 
-const MAX_LIMINE_CONFIG_BYTES: u64 = 64 * 1024;
-
-pub fn format<D: ReadWriteSeek>(volume: &mut D, fat_type: FatType) -> Result<()> {
+pub(crate) fn format<D: ReadWriteSeek>(volume: &mut D, fat_type: FatType) -> Result<()> {
     let options = FormatVolumeOptions::new()
         .fat_type(fat_type)
         .volume_label(paths::ESP_LABEL);
-    fatfs::format_volume(volume, options).context("formatting the EFI system partition")
+    fatfs::format_volume(volume, options).context("formatting a FAT volume")
 }
 
-pub fn write_file<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, data: &[u8]) -> Result<()> {
-    use std::io::Write;
-
-    let mut file = dir
+pub(crate) fn write_file<D: ReadWriteSeek>(
+    directory: &Dir<'_, D>,
+    name: &str,
+    data: &[u8],
+) -> Result<()> {
+    let mut file = directory
         .create_file(name)
         .with_context(|| format!("creating {name}"))?;
     file.truncate()
@@ -26,60 +26,28 @@ pub fn write_file<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, data: &[u8]) -
         .with_context(|| format!("writing {name}"))
 }
 
-fn read_source(source: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
-    crate::files::read_bounded_file(source, maximum, label)
-        .with_context(|| format!("reading {label} {}", source.display()))
-}
-
-fn copy_into<D: ReadWriteSeek>(
-    dir: &Dir<'_, D>,
-    name: &str,
-    source: &Path,
-    maximum: u64,
-    label: &str,
-) -> Result<()> {
-    let data = read_source(source, maximum, label)?;
-    write_file(dir, name, &data)
-}
-
-fn copy_limine_efi<D: ReadWriteSeek>(dir: &Dir<'_, D>, paths: &Paths) -> Result<()> {
-    let source = paths.limine_efi();
-    let data = read_source(
-        &source,
-        crate::vendor::MAX_PAYLOAD_BYTES,
-        "Limine EFI image",
-    )?;
-    crate::vendor::verify_payload_bytes(&paths.limine_checksums(), &source, &data)?;
-    write_file(dir, "BOOTX64.EFI", &data)
-}
-
-/// The boot tree the firmware and Limine expect.
-/// The program sits in /boot beside the kernel: Limine's `module_path` is volume-relative.
+// The program sits in /boot beside the kernel because Limine's `module_path` is volume-relative.
 pub(crate) fn populate<D: ReadWriteSeek>(
     filesystem: &FileSystem<D>,
     paths: &Paths,
     kernel: &[u8],
 ) -> Result<()> {
     let root = filesystem.root_dir();
-
     let efi_boot = root
         .create_dir("EFI")
         .and_then(|efi| efi.create_dir("BOOT"))
         .context("creating /EFI/BOOT")?;
-    copy_limine_efi(&efi_boot, paths)?;
+    let limine = crate::vendor::read_verified(&paths.limine_checksums(), &paths.limine_efi())?;
+    write_file(&efi_boot, "BOOTX64.EFI", &limine)?;
 
     let boot = root.create_dir("boot").context("creating /boot")?;
     write_file(&boot, paths::KERNEL_ON_ESP, kernel)?;
-
     let program = super::program::build().context("building the fixed ring-3 witness")?;
     write_file(&boot, paths::PROGRAM_ON_ESP, &program)?;
 
+    let configuration = paths.limine_conf();
+    let configuration = std::fs::read(&configuration)
+        .with_context(|| format!("reading {}", configuration.display()))?;
     let limine = boot.create_dir("limine").context("creating /boot/limine")?;
-    copy_into(
-        &limine,
-        "limine.conf",
-        &paths.limine_conf(),
-        MAX_LIMINE_CONFIG_BYTES,
-        "Limine configuration",
-    )
+    write_file(&limine, "limine.conf", &configuration)
 }

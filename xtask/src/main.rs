@@ -13,7 +13,7 @@ fn main() -> ExitCode {
             }
         },
         Err(error) => {
-            eprintln!("error: {error}\n\n{}", xtask::cli::help());
+            eprintln!("error: {error}\n\n{}", xtask::cli::HELP);
             ExitCode::from(2)
         }
     }

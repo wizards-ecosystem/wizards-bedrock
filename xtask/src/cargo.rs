@@ -1,35 +1,31 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
-use crate::gate::Packages;
 use crate::paths::{self, Paths};
 
 pub(crate) const VIRTUAL_SOURCE_ROOT: &str = "/wizard/source";
 const VIRTUAL_TOOLCHAIN_ROOT: &str = "/wizard/toolchain";
 const VIRTUAL_CARGO_ROOT: &str = "/wizard/cargo";
-const ENCODED_FLAG_SEPARATOR: char = '\u{1f}';
-const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Profile {
     Dev,
-    /// The profile a real image ships.
     #[default]
     Release,
 }
 
 impl Profile {
-    pub fn directory(self) -> &'static str {
+    pub(crate) fn directory(self) -> &'static str {
         match self {
             Self::Dev => "debug",
             Self::Release => "release",
         }
     }
 
-    pub fn flags(self) -> &'static [&'static str] {
+    fn flags(self) -> &'static [&'static str] {
         match self {
             Self::Dev => &[],
             Self::Release => &["--release"],
@@ -42,237 +38,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let status = run_status(paths, description, args)?;
-    if !status.success() {
-        bail!("{description} failed ({status})");
-    }
-    Ok(())
-}
-
-pub(crate) fn run_status<I, S>(paths: &Paths, description: &str, args: I) -> Result<ExitStatus>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    command(paths)
+    let status = command(paths)
         .args(args)
         .status()
-        .with_context(|| format!("could not spawn cargo to {description}"))
+        .with_context(|| format!("could not spawn cargo to {description}"))?;
+    ensure!(status.success(), "{description} failed ({status})");
+    Ok(())
 }
 
 fn command(paths: &Paths) -> Command {
     let mut command = Command::new(env!("CARGO"));
     command
         .current_dir(paths.root())
-        .env("CARGO_TARGET_DIR", child_process_path(paths.target_dir()));
+        .env("CARGO_TARGET_DIR", paths.target_dir());
     command
-}
-
-fn kernel_command(paths: &Paths) -> Result<Command> {
-    kernel_command_with_roots(paths, active_kernel_remap_roots(paths)?)
-}
-
-fn kernel_command_with_roots(paths: &Paths, roots: [PathBuf; 3]) -> Result<Command> {
-    let [source_root, toolchain_root, cargo_root] = roots;
-    let tool_bin = toolchain_root.join("bin");
-    let executable = |name: &str| {
-        tool_bin.join(if cfg!(windows) {
-            format!("{name}.exe")
-        } else {
-            name.to_string()
-        })
-    };
-    for compiler in ["rustc", "rustdoc"] {
-        let path = executable(compiler);
-        ensure!(
-            path.is_file(),
-            "the pinned toolchain has no {compiler} at {}; install the toolchain \
-             rust-toolchain.toml names",
-            path.display()
-        );
-    }
-    let inherited = std::env::var_os("PATH").context("PATH is unavailable")?;
-    let path = std::env::join_paths(
-        std::iter::once(tool_bin.clone()).chain(std::env::split_paths(&inherited)),
-    )
-    .context("constructing pinned kernel compiler PATH")?;
-    let mut command = command(paths);
-    command
-        .env(
-            "CARGO_ENCODED_RUSTFLAGS",
-            kernel_encoded_rustflags(&source_root, &toolchain_root, &cargo_root)?,
-        )
-        .env("RUSTC", executable("rustc"))
-        .env("RUSTDOC", executable("rustdoc"))
-        .env("RUSTC_WRAPPER", "")
-        .env("RUSTC_WORKSPACE_WRAPPER", "")
-        .env("PATH", path);
-    Ok(command)
-}
-
-pub(crate) fn active_kernel_remap_roots(paths: &Paths) -> Result<[PathBuf; 3]> {
-    Ok([
-        crate::workspace::canonical_existing_real_directory(paths.root(), "kernel source root")?,
-        active_toolchain_root()?,
-        active_cargo_home()?,
-    ])
-}
-
-fn configured_kernel_rustflags(source_root: &Path) -> Result<Vec<String>> {
-    let path = source_root.join(".cargo").join("config.toml");
-    let text = crate::files::read_bounded_text(&path, MAX_CONFIG_BYTES, "cargo config")?;
-    let mut flags = Vec::new();
-    let (mut in_target, mut in_flags) = (false, false);
-    for line in text.lines().map(paths::without_toml_comment).map(str::trim) {
-        if in_flags {
-            if line.starts_with(']') {
-                ensure!(
-                    !flags.is_empty(),
-                    "{} lists no kernel rustflags",
-                    path.display()
-                );
-                return Ok(flags);
-            }
-            flags.extend(
-                line.split(',')
-                    .filter_map(|item| item.trim().strip_prefix('"')?.strip_suffix('"'))
-                    .map(str::to_string),
-            );
-        } else if line.starts_with('[') {
-            in_target = line == format!("[target.{}]", paths::KERNEL_TARGET);
-        } else if in_target && line.starts_with("rustflags") && line.ends_with('[') {
-            in_flags = true;
-        }
-    }
-    bail!(
-        "{} sets no rustflags for {}",
-        path.display(),
-        paths::KERNEL_TARGET
-    )
-}
-
-pub(crate) fn kernel_encoded_rustflags(
-    source_root: &Path,
-    toolchain_root: &Path,
-    cargo_root: &Path,
-) -> Result<OsString> {
-    let mappings = [
-        (source_root, VIRTUAL_SOURCE_ROOT),
-        (toolchain_root, VIRTUAL_TOOLCHAIN_ROOT),
-        (cargo_root, VIRTUAL_CARGO_ROOT),
-    ];
-    let mut distinct = std::collections::BTreeSet::new();
-    let mut flags = configured_kernel_rustflags(source_root)?;
-    for (root, virtual_root) in mappings {
-        let root = child_process_path(root);
-        let root = root
-            .to_str()
-            .with_context(|| format!("kernel remap root is not UTF-8: {}", root.display()))?;
-        ensure!(
-            !root.is_empty()
-                && !root.contains('=')
-                && !root.contains(ENCODED_FLAG_SEPARATOR)
-                && !root.chars().any(char::is_control),
-            "kernel remap root cannot be encoded safely: {root:?}"
-        );
-        let folded = if cfg!(windows) {
-            root.to_ascii_lowercase()
-        } else {
-            root.to_string()
-        };
-        ensure!(
-            distinct.insert(folded),
-            "kernel remap roots must be distinct"
-        );
-        flags.push("--remap-path-prefix".to_string());
-        flags.push(format!("{root}={virtual_root}"));
-    }
-    Ok(OsString::from(
-        flags.join(&ENCODED_FLAG_SEPARATOR.to_string()),
-    ))
-}
-
-fn active_toolchain_root() -> Result<PathBuf> {
-    let cargo = std::fs::canonicalize(env!("CARGO"))
-        .with_context(|| format!("canonicalizing Cargo executable {}", env!("CARGO")))?;
-    let root = cargo
-        .parent()
-        .and_then(Path::parent)
-        .context("Cargo executable is outside a toolchain root")?;
-    crate::workspace::canonical_existing_real_directory(root, "kernel compiler toolchain root")
-}
-
-fn active_cargo_home() -> Result<PathBuf> {
-    let configured = std::env::var_os("CARGO_HOME").filter(|value| !value.is_empty());
-    let home = match configured {
-        Some(home) => PathBuf::from(home),
-        None => platform_home()?.join(".cargo"),
-    };
-    crate::workspace::canonical_existing_real_directory(&home, "kernel Cargo home")
-}
-
-#[cfg(windows)]
-fn platform_home() -> Result<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .context("USERPROFILE is unavailable")
-}
-
-#[cfg(not(windows))]
-fn platform_home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .context("HOME is unavailable")
-}
-
-/// An equivalent path that command-line toolchains can consume.
-pub(crate) fn child_process_path(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        use std::ffi::OsString;
-        use std::path::{Component, Prefix};
-
-        let mut components = path.components();
-        let Some(Component::Prefix(prefix)) = components.next() else {
-            return path.to_path_buf();
-        };
-        let mut ordinary = match prefix.kind() {
-            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
-            Prefix::VerbatimUNC(server, share) => {
-                let mut root = OsString::from(r"\\");
-                root.push(server);
-                root.push(r"\");
-                root.push(share);
-                PathBuf::from(root)
-            }
-            _ => return path.to_path_buf(),
-        };
-        for component in components {
-            if !matches!(component, Component::RootDir) {
-                ordinary.push(component.as_os_str());
-            }
-        }
-        ordinary
-    }
-    #[cfg(not(windows))]
-    {
-        path.to_path_buf()
-    }
-}
-
-pub(crate) fn package_selection(packages: Packages) -> Vec<String> {
-    match packages {
-        Packages::Host => {
-            let mut args = vec!["--workspace".to_string()];
-            for name in paths::KERNEL_PACKAGES {
-                args.extend(["--exclude".to_string(), (*name).to_string()]);
-            }
-            args
-        }
-        Packages::Only(names) => package_args(names),
-    }
 }
 
 pub(crate) fn package_args(packages: &[&str]) -> Vec<String> {
@@ -282,31 +61,8 @@ pub(crate) fn package_args(packages: &[&str]) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
+pub(crate) fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<Vec<u8>> {
     println!("[xtask] building kernel ({})", profile.directory());
-
-    let args = kernel_build_args(profile, features);
-    let status = kernel_command(paths)?
-        .args(&args)
-        .status()
-        .context("could not spawn cargo to kernel build")?;
-    if !status.success() {
-        bail!("kernel build failed ({status})");
-    }
-
-    let elf = paths.kernel_elf(profile);
-    if !elf.exists() {
-        bail!(
-            "kernel build reported success but produced no {}",
-            elf.display()
-        );
-    }
-    // A linker script places an unnamed section rather than refusing it, so its output is checked.
-    crate::elf::verify_file(&elf)?;
-    Ok(elf)
-}
-
-fn kernel_build_args(profile: Profile, features: &[&str]) -> Vec<String> {
     let mut args = vec!["build".to_string(), "--locked".to_string()];
     args.extend(package_args(&[paths::KERNEL_PACKAGE]));
     args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
@@ -314,8 +70,55 @@ fn kernel_build_args(profile: Profile, features: &[&str]) -> Vec<String> {
     if !features.is_empty() {
         args.extend(["--features".to_string(), features.join(",")]);
     }
-    args
+    args.extend(["--config".to_string(), remap_config(paths)?]);
+    run(paths, "kernel build", &args)?;
+
+    let elf = paths.kernel_elf(profile);
+    let bytes = std::fs::read(&elf).with_context(|| format!("reading {}", elf.display()))?;
+    crate::elf::verify(&bytes)
+        .with_context(|| format!("{} is not a bootable kernel", elf.display()))?;
+    Ok(bytes)
 }
 
-#[cfg(test)]
-mod tests;
+// `--config` appends to the rustflags array in .cargo/config.toml; RUSTFLAGS would replace it.
+fn remap_config(paths: &Paths) -> Result<String> {
+    let mut flags = Vec::new();
+    for (root, virtual_root) in [
+        (paths.root().to_path_buf(), VIRTUAL_SOURCE_ROOT),
+        (toolchain_root()?, VIRTUAL_TOOLCHAIN_ROOT),
+        (cargo_home()?, VIRTUAL_CARGO_ROOT),
+    ] {
+        let root = root
+            .to_str()
+            .with_context(|| format!("remap root is not UTF-8: {}", root.display()))?;
+        flags.push(toml_string("--remap-path-prefix"));
+        flags.push(toml_string(&format!("{root}={virtual_root}")));
+    }
+    Ok(format!(
+        "target.{}.rustflags=[{}]",
+        paths::KERNEL_TARGET,
+        flags.join(", ")
+    ))
+}
+
+fn toml_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn toolchain_root() -> Result<PathBuf> {
+    Path::new(env!("CARGO"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .context("the cargo executable is outside a toolchain root")
+}
+
+fn cargo_home() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CARGO_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(home)
+        .map(|directory| PathBuf::from(directory).join(".cargo"))
+        .with_context(|| format!("{home} is unset, so the Cargo home is unknown"))
+}

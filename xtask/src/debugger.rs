@@ -1,275 +1,45 @@
-//! The pinned native-Windows kernel debugger workflow.
-
 use std::ffi::OsString;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::Duration;
+use std::net::TcpListener;
+use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
-use crate::cargo::Profile;
-use crate::cli::DebugMode;
-use crate::image::Kernel;
-use crate::paths::Paths;
-use crate::{image, qemu};
+use crate::cargo::{Profile, VIRTUAL_SOURCE_ROOT};
+use crate::image::{self, Kernel};
+use crate::paths::{Paths, RunDirectory};
 
-const GDB_IDENTITY: &str = "GNU gdb (GDB for MinGW-W64 x86_64, built by Brecht Sanders, r4) 17.2";
-const WINGET_PACKAGE_PREFIX: &str = "BrechtSanders.WinLibs.POSIX.UCRT_";
 const ENTRY_SYMBOL: &str = "kmain";
-const PROOF_MARKER: &str = "wizard-debug: kernel-entry-hit";
-const IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
-const PROOF_TIMEOUT: Duration = Duration::from_secs(45);
 
-pub(crate) fn run(paths: &Paths, mode: DebugMode) -> Result<()> {
-    let gdb = Debugger::locate()?;
-    println!("[xtask] debugger: {}", gdb.identity);
-    println!("[xtask] executable: {}", gdb.executable.display());
-
-    let image = image::build_for_run(paths, Profile::Dev, Kernel::Shipped)?;
-    let elf = paths.kernel_elf(Profile::Dev);
-    let mut machine = qemu::DebugMachine::start(paths, image.path())?;
-    println!(
-        "[xtask] paused private QEMU machine; GDB endpoint {}",
-        machine.endpoint()
-    );
-
-    let session = match mode {
-        DebugMode::Interactive => gdb.interactive(&elf, machine.endpoint(), paths.root()),
-        DebugMode::Check => gdb.check(&elf, machine.endpoint(), paths.root()),
-    };
-    let cleanup = machine.stop();
-    combine_with_cleanup(session, cleanup)
-}
-
-fn combine_with_cleanup(session: Result<()>, cleanup: Result<()>) -> Result<()> {
-    match (session, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(cleanup)) => Err(cleanup.context("stopping the debugger's QEMU machine")),
-        (Err(error), Err(cleanup)) => {
-            Err(anyhow!("{error:#}; QEMU cleanup also failed: {cleanup:#}"))
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Debugger {
-    executable: PathBuf,
-    identity: String,
-}
-
-impl Debugger {
-    fn locate() -> Result<Self> {
-        if let Some(executable) = std::env::var_os("GDB").map(PathBuf::from) {
-            return Self::at(executable).context("validating GDB");
-        }
-
-        let executable_name = qemu::exe_name("gdb");
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        if let Some(executable) = qemu::which_in(std::env::split_paths(&path), &executable_name) {
-            return Self::at(executable).context("validating GDB found on PATH");
-        }
-
-        for executable in winget_candidates()? {
-            if let Ok(debugger) = Self::at(executable) {
-                return Ok(debugger);
-            }
-        }
-
-        bail!(
-            "the pinned native GDB `{GDB_IDENTITY}` is unavailable; install it with `winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact`, open a fresh terminal, or set GDB to that executable; another gdb is refused"
-        )
-    }
-
-    fn at(executable: PathBuf) -> Result<Self> {
-        if !executable.is_file() {
-            bail!("{} is not a file", executable.display());
-        }
-        let mut command = Command::new(&executable);
-        command.arg("--version");
-        let output = bounded_identity_output(command, IDENTITY_TIMEOUT)
-            .with_context(|| format!("running {} --version", executable.display()))?;
-        if !output.status.success() {
-            bail!(
-                "{} --version failed ({})",
-                executable.display(),
-                output.status
-            );
-        }
-        let stdout = String::from_utf8(output.stdout).context("reading GDB's version as UTF-8")?;
-        let identity = require_identity(&stdout)?.to_string();
-        Ok(Self {
-            executable,
-            identity,
-        })
-    }
-
-    fn interactive(&self, elf: &Path, endpoint: &str, source_root: &Path) -> Result<()> {
-        println!("[xtask] GDB will stop at {ENTRY_SYMBOL}; use `quit` to end the VM");
-        let status = Command::new(&self.executable)
-            .args(gdb_arguments(
-                elf,
-                endpoint,
-                source_root,
-                DebugMode::Interactive,
-            )?)
-            .status()
-            .with_context(|| format!("launching {}", self.executable.display()))?;
-        if !status.success() {
-            bail!("GDB exited unsuccessfully ({status})");
-        }
-        Ok(())
-    }
-
-    fn check(&self, elf: &Path, endpoint: &str, source_root: &Path) -> Result<()> {
-        let mut command = Command::new(&self.executable);
-        command.args(gdb_arguments(elf, endpoint, source_root, DebugMode::Check)?);
-        let output = bounded_output(command, PROOF_TIMEOUT)?;
-        std::io::stdout()
-            .write_all(&output.stdout)
-            .context("forwarding GDB's proof output")?;
-        std::io::stderr()
-            .write_all(&output.stderr)
-            .context("forwarding GDB's proof diagnostics")?;
-        if !output.status.success() {
-            bail!("GDB proof failed ({})", output.status);
-        }
-
-        let mut transcript =
-            String::from_utf8(output.stdout).context("reading GDB's proof output as UTF-8")?;
-        transcript.push_str(
-            &String::from_utf8(output.stderr)
-                .context("reading GDB's proof diagnostics as UTF-8")?,
-        );
-        require_proof(&transcript)?;
-        println!("[xtask] debugger proof passed");
-        Ok(())
-    }
-}
-
-fn require_identity(stdout: &str) -> Result<&str> {
-    let identity = stdout.lines().next().context("GDB printed no identity")?;
-    if identity != GDB_IDENTITY {
-        bail!("unsupported GDB identity `{identity}`; expected `{GDB_IDENTITY}`");
-    }
-    Ok(identity)
-}
-
-fn winget_candidates() -> Result<Vec<PathBuf>> {
-    let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return Ok(Vec::new());
-    };
-    let packages = local.join("Microsoft").join("WinGet").join("Packages");
-    if !packages.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut candidates = Vec::new();
-    for entry in
-        std::fs::read_dir(&packages).with_context(|| format!("reading {}", packages.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("reading an entry under {}", packages.display()))?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(WINGET_PACKAGE_PREFIX)
-        {
-            let candidate = entry
-                .path()
-                .join("mingw64")
-                .join("bin")
-                .join(qemu::exe_name("gdb"));
-            if candidate.is_file() {
-                candidates.push(candidate);
-            }
-        }
-    }
-    candidates.sort();
-    candidates.reverse();
-    Ok(candidates)
-}
-
-fn gdb_arguments(
-    elf: &Path,
-    endpoint: &str,
-    source_root: &Path,
-    mode: DebugMode,
-) -> Result<Vec<OsString>> {
-    let mut arguments = ["--quiet", "--nx", "--nh"]
-        .into_iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
-    if mode == DebugMode::Check {
-        arguments.push(OsString::from("--batch"));
-    }
-    arguments.extend([OsString::from("--se"), elf.as_os_str().to_owned()]);
+pub(crate) fn run(paths: &Paths) -> Result<()> {
+    let gdb = std::env::var_os("GDB").unwrap_or_else(|| OsString::from("gdb"));
+    let run = RunDirectory::create(paths)?;
+    image::build(paths, Profile::Dev, Kernel::Shipped, &run.image())?;
+    let port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .context("choosing a GDB port")?
+        .port();
+    let mut machine = crate::qemu::debug(&run, port)?;
+    println!("[xtask] paused QEMU; GDB will stop at {ENTRY_SYMBOL}, `quit` ends the VM");
+    let source = paths.root().to_string_lossy().replace('\\', "/");
+    let mut commands = Vec::new();
     for command in [
         "set pagination off".to_string(),
         "set confirm off".to_string(),
-        source_substitution(source_root)?,
-        format!("target remote {endpoint}"),
+        format!("set substitute-path {VIRTUAL_SOURCE_ROOT} \"{source}\""),
+        format!("target remote 127.0.0.1:{port}"),
         format!("hbreak {ENTRY_SYMBOL}"),
         "continue".to_string(),
     ] {
-        arguments.extend([OsString::from("--ex"), OsString::from(command)]);
+        commands.extend(["--ex".to_string(), command]);
     }
-    if mode == DebugMode::Check {
-        for command in [
-            format!("printf \"{PROOF_MARKER}\\n\""),
-            "backtrace".to_string(),
-            "detach".to_string(),
-            "quit".to_string(),
-        ] {
-            arguments.extend([OsString::from("--ex"), OsString::from(command)]);
-        }
-    }
-    Ok(arguments)
-}
-
-fn source_substitution(source_root: &Path) -> Result<String> {
-    let source_root = crate::cargo::child_process_path(source_root);
-    let source_root = source_root
-        .to_str()
-        .with_context(|| {
-            format!(
-                "debugger source root is not UTF-8: {}",
-                source_root.display()
-            )
-        })?
-        .replace('\\', "/");
-    ensure!(
-        !source_root.is_empty()
-            && !source_root.contains('"')
-            && !source_root.chars().any(char::is_control),
-        "debugger source root cannot be quoted safely: {source_root:?}"
-    );
-    Ok(format!(
-        "set substitute-path {} \"{source_root}\"",
-        crate::cargo::VIRTUAL_SOURCE_ROOT
-    ))
-}
-
-fn bounded_output(command: Command, timeout: Duration) -> Result<Output> {
-    crate::bounded_process::output(command, timeout, "GDB proof")
-}
-
-fn bounded_identity_output(command: Command, timeout: Duration) -> Result<Output> {
-    crate::bounded_process::output(command, timeout, "GDB identity probe")
-}
-
-fn require_proof(transcript: &str) -> Result<()> {
-    if transcript.matches(PROOF_MARKER).count() != 1 {
-        bail!("GDB did not emit exactly one kernel-entry marker");
-    }
-    let normalized = transcript.replace('\\', "/");
-    let frame = normalized
-        .lines()
-        .find(|line| line.trim_start().starts_with("#0"))
-        .context("GDB produced no frame zero")?;
-    if !frame.contains("wizard_kernel::kmain") || !frame.contains("wost/src/boot.rs") {
-        bail!("GDB frame zero was not the symbolized kernel entry: {frame}");
-    }
+    let status = Command::new(&gdb)
+        .args(["--quiet", "--nx", "--nh", "--se"])
+        .arg(paths.kernel_elf(Profile::Dev))
+        .args(&commands)
+        .status();
+    let _ = machine.kill();
+    let _ = machine.wait();
+    let status = status.with_context(|| format!("could not run {}", gdb.to_string_lossy()))?;
+    ensure!(status.success(), "GDB exited unsuccessfully ({status})");
     Ok(())
 }

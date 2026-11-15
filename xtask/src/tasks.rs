@@ -1,426 +1,151 @@
-//! Cargo-driven tasks run over every graph in `crate::gate::REGISTRY`, so they match the full gate.
-
-use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
-use crate::gate::{self, Packages};
-use crate::paths::Paths;
-use crate::{image, qemu, supply_chain, vendor};
+use crate::image::{self, Kernel};
+use crate::paths::{self, Paths, RunDirectory};
+use crate::{qemu, supply_chain, vendor};
+
+const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
+// A debug kernel runs several times slower under emulation.
+const DEBUG_SELFTEST_TIMEOUT: Duration = Duration::from_secs(150);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Scope {
-    /// Everything a package builds, test code included.
-    AllTargets,
-    /// What the subcommand builds by default; `cargo doc` rejects `--all-targets`.
-    Default,
+enum Packages {
+    Host,
+    Kernel,
 }
 
-/// Type-check every crate.
-pub(crate) fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
-    let extra: Vec<String> = message_format
-        .map(|format| vec![format!("--message-format={format}")])
-        .unwrap_or_default();
-    for_each_pass(paths, "check", "check", Scope::AllTargets, &extra, &[])
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct CargoPass {
+    name: &'static str,
+    packages: Packages,
+    features: Option<&'static str>,
 }
 
-/// Lint every crate, treating warnings as errors.
-///
-/// `-D warnings` goes after `--`: `RUSTFLAGS` would replace the target rustflags in
-/// `.cargo/config.toml` and silently build a kernel without `code-model=kernel`.
-pub(crate) fn clippy(paths: &Paths) -> Result<()> {
-    for_each_pass(
-        paths,
-        "clippy",
-        "clippy",
-        Scope::AllTargets,
-        &[],
-        &["-D".to_string(), "warnings".to_string()],
-    )
-}
+const CARGO_PASSES: &[CargoPass] = &[
+    CargoPass {
+        name: "host",
+        packages: Packages::Host,
+        features: None,
+    },
+    CargoPass {
+        name: "kernel shipped",
+        packages: Packages::Kernel,
+        features: None,
+    },
+    CargoPass {
+        name: "kernel self-test",
+        packages: Packages::Kernel,
+        features: Some(paths::SELFTEST_FEATURE_SPEC),
+    },
+];
 
-/// Build the documentation so the doc-link lints fire.
-pub(crate) fn doc(paths: &Paths) -> Result<()> {
-    for_each_pass(
-        paths,
-        "docs",
-        "doc",
-        Scope::Default,
-        &["--no-deps".to_string()],
-        &[],
-    )
-}
-
-/// Format the workspace, or report what is unformatted.
-pub(crate) fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
-    let mut args = vec!["fmt".to_string(), "--all".to_string()];
-    if mode == FmtMode::Check {
-        args.extend(["--".to_string(), "--check".to_string()]);
-    }
-    cargo::run(paths, "formatting", &args)
-}
-
-/// Run the host test suite; the kernel crates have no host tests (`docs/005-code-conventions.md`).
-pub(crate) fn test(paths: &Paths) -> Result<()> {
-    let mut args = vec!["test".to_string(), "--locked".to_string()];
-    args.extend(cargo::package_selection(Packages::Host));
-    cargo::run(paths, "tests", &args)
-}
-
-/// Boot a self-test kernel under QEMU and require its verdict.
-pub(crate) fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
-    qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
-}
-
-/// A debug kernel runs several times slower under emulation, so the release budget would
-/// report load as a hang.
-const fn selftest_timeout(profile: Profile) -> Duration {
-    match profile {
-        Profile::Release => SELFTEST_TIMEOUT,
-        Profile::Dev => Duration::from_secs(150),
-    }
-}
-
-/// Generous for a cold QEMU start on a loaded machine, short enough to report a hung kernel.
-const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Boot the shipped kernel, the image that goes on the disk, and require its steady state.
-pub(crate) fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
-    boot_shipped_image(paths, image.path())
-}
-
-pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Result<()> {
-    qemu::run_boot_check(paths, image, BOOT_SETTLE)
-}
-
-/// Boot without PCI configuration or x2APIC and require both refusals, then without a
-/// remapping unit and require storage to refuse rather than run unisolated.
-pub(crate) fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
-    match observe_degraded_boot(paths, profile)? {
-        qemu::DegradedOutcome::Panicked {
-            transcript,
-            no_x2apic_diagnosed,
-        } if transcript.contains(qemu::NO_PCI_HANDOFF_PANIC) && !no_x2apic_diagnosed => {
-            println!(
-                "[xtask] degraded kernel refuses an unprovable DMA handoff before memory initialization"
-            );
-        }
-        qemu::DegradedOutcome::Panicked { transcript, .. } => anyhow::bail!(
-            "the degraded kernel reported the wrong terminal handoff refusal: {transcript}"
-        ),
-        qemu::DegradedOutcome::Settled => anyhow::bail!(
-            "the degraded kernel settled without reporting {:?}",
-            qemu::NO_PCI_HANDOFF_PANIC
-        ),
-    }
-    match observe_no_x2apic_boot(paths, profile)? {
-        qemu::DegradedOutcome::Settled => {
-            println!("[xtask] optional CPU protection fallback remains diagnostic-only");
-        }
-        qemu::DegradedOutcome::Panicked { transcript, .. } => {
-            anyhow::bail!("the no-x2APIC kernel panicked during the settle window: {transcript}")
-        }
-    }
-    match observe_unisolated_boot(paths, profile)? {
-        qemu::DegradedOutcome::Settled => {
-            println!("[xtask] unisolated kernel refuses storage and settles");
-            Ok(())
-        }
-        qemu::DegradedOutcome::Panicked { transcript, .. } => {
-            anyhow::bail!("the unisolated kernel panicked during the settle window: {transcript}")
-        }
-    }
-}
-
-pub(crate) fn observe_degraded_boot(
-    paths: &Paths,
-    profile: Profile,
-) -> Result<qemu::DegradedOutcome> {
-    let image = image::build_degraded_for_run(paths, profile)?;
-    qemu::observe_degraded(paths, image.path(), BOOT_SETTLE)
-}
-
-pub(crate) fn observe_unisolated_boot(
-    paths: &Paths,
-    profile: Profile,
-) -> Result<qemu::DegradedOutcome> {
-    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
-    qemu::observe_unisolated(paths, image.path(), BOOT_SETTLE)
-}
-
-pub(crate) fn observe_no_x2apic_boot(
-    paths: &Paths,
-    profile: Profile,
-) -> Result<qemu::DegradedOutcome> {
-    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
-    qemu::observe_no_x2apic(paths, image.path(), BOOT_SETTLE)
-}
-
-/// Running time after the kernel says it has settled, so one dying on its first interrupt shows.
-const BOOT_SETTLE: Duration = Duration::from_secs(5);
-
-/// Everything the gate runs, in the order that fails fastest.
 pub(crate) fn ci(paths: &Paths) -> Result<()> {
-    for &step in gate::REGISTRY.steps() {
-        run_ci_step(paths, step)?;
-    }
+    fmt(paths, FmtMode::Check)?;
+    clippy(paths)?;
+    test(paths)?;
+    supply_chain::verify(paths)?;
+    vendor::verify(paths)?;
+    test_boot(paths, Profile::Release)?;
+    test_boot(paths, Profile::Dev)?;
+    boot_check(paths, Profile::Release)?;
+    degraded_check(paths, Profile::Release)?;
     println!("[xtask] ci passed");
     Ok(())
 }
 
-fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
-    match step {
-        gate::Step::Format => fmt(paths, FmtMode::Check),
-        gate::Step::Clippy => clippy(paths),
-        gate::Step::Documentation => doc(paths),
-        gate::Step::HostTests => test(paths),
-        gate::Step::SupplyChain => supply_chain::verify(paths),
-        gate::Step::Vendor => vendor::verify(paths),
-        gate::Step::SelfTest(profile) => test_boot(paths, profile),
-        gate::Step::ShippedBoot => boot_check(paths, Profile::Release),
-        gate::Step::DegradedBoot => degraded_check(paths, Profile::Release),
-    }
+pub(crate) fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
+    let extra: Vec<String> = message_format
+        .map(|format| format!("--message-format={format}"))
+        .into_iter()
+        .collect();
+    for_each_pass(paths, "check", &extra)
 }
 
-/// Remove build output.
+// `-D warnings` goes after `--`: RUSTFLAGS would replace the kernel target's rustflags.
+pub(crate) fn clippy(paths: &Paths) -> Result<()> {
+    for_each_pass(paths, "clippy", &["--", "-D", "warnings"].map(String::from))
+}
+
+pub(crate) fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
+    let mut args = vec!["fmt", "--all"];
+    if mode == FmtMode::Check {
+        args.extend(["--", "--check"]);
+    }
+    cargo::run(paths, "formatting", args)
+}
+
+pub(crate) fn test(paths: &Paths) -> Result<()> {
+    let mut args = vec!["test".to_string(), "--locked".to_string()];
+    args.extend(package_selection(Packages::Host));
+    cargo::run(paths, "tests", &args)
+}
+
+pub(crate) fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
+    let run = RunDirectory::create(paths)?;
+    image::build(paths, profile, Kernel::SelfTest, &run.image())?;
+    let timeout = match profile {
+        Profile::Release => SELFTEST_TIMEOUT,
+        Profile::Dev => DEBUG_SELFTEST_TIMEOUT,
+    };
+    qemu::run_selftest(&run, timeout)
+}
+
+pub(crate) fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
+    let run = RunDirectory::create(paths)?;
+    image::build(paths, profile, Kernel::Shipped, &run.image())?;
+    qemu::boot_check(&run)
+}
+
+pub(crate) fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
+    let run = RunDirectory::create(paths)?;
+    image::build(paths, profile, Kernel::Shipped, &run.image())?;
+    qemu::degraded_check(&run)
+}
+
 pub(crate) fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
-    let status = cargo::run_status(paths, "clean", ["clean"])?;
-    let retained_runner = if status.success() {
-        finish_cargo_clean(true, paths.target_dir(), None)?
-    } else {
-        let current = std::env::current_exe().context("resolving the running clean executable")?;
-        finish_cargo_clean(false, paths.target_dir(), Some(&current))
-            .with_context(|| format!("clean failed ({status})"))?
-    };
-    if retained_runner {
-        println!(
-            "[xtask] Cargo retained only the running clean executable; every other target artifact was removed"
-        );
-    }
     if scope == CleanScope::Everything {
-        let vm_dir = paths.vm_dir();
-        if remove_vm_directory(paths.root(), &vm_dir)? {
-            println!("[xtask] emptied {}", vm_dir.display());
+        let vm = paths.vm_dir();
+        match std::fs::remove_dir_all(&vm) {
+            Ok(()) => println!("[xtask] removed {}", vm.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("removing {}", vm.display())),
         }
+    }
+    cargo::run(paths, "clean", ["clean"])
+}
+
+fn for_each_pass(paths: &Paths, subcommand: &str, extra: &[String]) -> Result<()> {
+    for pass in CARGO_PASSES {
+        let mut args = vec![subcommand.to_string(), "--locked".to_string()];
+        args.extend(package_selection(pass.packages));
+        // `--all-targets` on the host pass only: the kernel crates have no test targets.
+        if pass.packages == Packages::Host {
+            args.push("--all-targets".to_string());
+        } else {
+            args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
+        }
+        if let Some(features) = pass.features {
+            args.extend(["--features".to_string(), features.to_string()]);
+        }
+        args.extend_from_slice(extra);
+        cargo::run(paths, &format!("{subcommand} ({})", pass.name), &args)?;
     }
     Ok(())
 }
 
-fn finish_cargo_clean(
-    succeeded: bool,
-    target: &Path,
-    current_executable: Option<&Path>,
-) -> Result<bool> {
-    if succeeded {
-        return Ok(false);
-    }
-    let current_executable =
-        current_executable.context("failed clean has no running executable")?;
-    let target = crate::workspace::canonical_existing_real_directory(target, "Cargo clean target")?;
-    let profile = target.join("xtask");
-    let executable = profile.join(format!("xtask{}", std::env::consts::EXE_SUFFIX));
-
-    let mut target_entries = std::fs::read_dir(&target)
-        .with_context(|| format!("listing Cargo clean target {}", target.display()))?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    target_entries.sort_by_key(std::fs::DirEntry::file_name);
-    ensure!(
-        target_entries.len() == 1,
-        "failed Cargo clean left an unexpected target-root entry"
-    );
-    ensure!(
-        target_entries[0].path() == profile,
-        "failed Cargo clean left an unexpected target-root name"
-    );
-    let profile_metadata = std::fs::symlink_metadata(&profile)
-        .context("inspecting retained xtask profile directory")?;
-    ensure!(
-        crate::workspace::metadata_is_real_directory(&profile_metadata)
-            && std::fs::canonicalize(&profile)
-                .context("canonicalizing retained xtask profile directory")?
-                == profile,
-        "failed Cargo clean retained a redirected xtask profile directory"
-    );
-
-    let mut profile_entries = std::fs::read_dir(&profile)
-        .context("listing retained xtask profile directory")?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    profile_entries.sort_by_key(std::fs::DirEntry::file_name);
-    ensure!(
-        profile_entries.len() == 1,
-        "failed Cargo clean left an unexpected xtask-profile entry"
-    );
-    ensure!(
-        profile_entries[0].path() == executable,
-        "failed Cargo clean left an unexpected xtask-profile name"
-    );
-    let _running =
-        crate::workspace::open_real_file(&executable, "retained running clean executable")?;
-    let current_executable = std::fs::canonicalize(current_executable)
-        .context("canonicalizing the running clean executable")?;
-    ensure!(
-        std::fs::canonicalize(&executable)
-            .context("canonicalizing the retained running clean executable")?
-            == current_executable,
-        "failed Cargo clean retained an executable other than its running image"
-    );
-    Ok(true)
-}
-
-fn remove_vm_directory(root: &std::path::Path, directory: &std::path::Path) -> Result<bool> {
-    ensure!(
-        directory == root.join("vm"),
-        "VMware cleanup target is not the exact allowlisted repository child"
-    );
-    let repository = crate::workspace::open_real_directory(root, "VMware cleanup repository root")?;
-    let mut options = fs_at::OpenOptions::default();
-    options.read(true).follow(false);
-    let mut directory_handle = match options.open_dir_at(&repository, "vm") {
-        Ok(directory_handle) => directory_handle,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("opening VMware cleanup directory {}", directory.display())
-            });
-        }
-    };
-    let mut remaining = MAX_VM_CLEANUP_ENTRIES;
-    empty_open_directory(&mut directory_handle, directory, 0, &mut remaining)?;
-    Ok(true)
-}
-
-const MAX_VM_CLEANUP_ENTRIES: usize = 100_000;
-const MAX_VM_CLEANUP_DEPTH: usize = 256;
-
-fn empty_open_directory(
-    directory: &mut std::fs::File,
-    display_path: &std::path::Path,
-    depth: usize,
-    remaining: &mut usize,
-) -> Result<()> {
-    ensure!(
-        depth <= MAX_VM_CLEANUP_DEPTH,
-        "VMware cleanup exceeded its {MAX_VM_CLEANUP_DEPTH}-directory depth limit below {}",
-        display_path.display()
-    );
-    let mut options = fs_at::OpenOptions::default();
-    options.read(true).follow(false);
-    while let Some(name) = next_directory_entry(directory, display_path)? {
-        ensure!(
-            *remaining != 0,
-            "VMware cleanup exceeded its {MAX_VM_CLEANUP_ENTRIES}-entry limit below {}",
-            display_path.display()
-        );
-        *remaining -= 1;
-        let child_path = display_path.join(&name);
-        match options.open_dir_at(directory, &name) {
-            Ok(mut child) => {
-                let metadata = child
-                    .metadata()
-                    .with_context(|| format!("inspecting opened {}", child_path.display()))?;
-                if crate::workspace::metadata_is_real_directory(&metadata) {
-                    empty_open_directory(&mut child, &child_path, depth + 1, remaining)?;
-                    drop(child);
-                    match options.rmdir_at(directory, &name) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => {
-                            return Err(error)
-                                .with_context(|| format!("removing {}", child_path.display()));
-                        }
-                    }
-                } else {
-                    drop(child);
-                    unlink_directory_entry(&options, directory, &name, &child_path, None)?;
-                }
+fn package_selection(packages: Packages) -> Vec<String> {
+    match packages {
+        Packages::Host => {
+            let mut args = vec!["--workspace".to_string()];
+            for name in paths::KERNEL_PACKAGES {
+                args.extend(["--exclude".to_string(), (*name).to_string()]);
             }
-            Err(open_error) => {
-                unlink_directory_entry(&options, directory, &name, &child_path, Some(&open_error))?
-            }
+            args
         }
+        Packages::Kernel => cargo::package_args(paths::KERNEL_PACKAGES),
     }
-    Ok(())
-}
-
-fn unlink_directory_entry(
-    options: &fs_at::OpenOptions,
-    directory: &std::fs::File,
-    name: &std::ffi::OsStr,
-    child_path: &std::path::Path,
-    open_error: Option<&std::io::Error>,
-) -> Result<()> {
-    match options.unlink_at(directory, name) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(unlink_error) => Err(unlink_error).with_context(|| match open_error {
-            Some(error) => format!(
-                "removing non-directory {} after directory open failed: {error}",
-                child_path.display()
-            ),
-            None => format!("removing non-directory {}", child_path.display()),
-        }),
-    }
-}
-
-fn next_directory_entry(
-    directory: &mut std::fs::File,
-    display_path: &std::path::Path,
-) -> Result<Option<std::ffi::OsString>> {
-    let entries = fs_at::read_dir(directory)
-        .with_context(|| format!("reading {}", display_path.display()))?;
-    for entry in entries {
-        let entry = entry.with_context(|| format!("reading {}", display_path.display()))?;
-        if entry.name() != "." && entry.name() != ".." {
-            return Ok(Some(entry.name().to_os_string()));
-        }
-    }
-    Ok(None)
-}
-
-fn for_each_pass(
-    paths: &Paths,
-    description: &str,
-    subcommand: &str,
-    scope: Scope,
-    extra: &[String],
-    after_dashes: &[String],
-) -> Result<()> {
-    for pass in gate::REGISTRY.cargo_passes() {
-        let args = pass_args(subcommand, *pass, scope, extra, after_dashes);
-        let label = pass.label();
-        cargo::run(paths, &format!("{description} ({label})"), &args)?;
-    }
-    Ok(())
-}
-
-/// `--all-targets` goes to the host half only, and only for a subcommand that takes it; without
-/// it neither `check` nor `clippy` sees the host crates' test code.
-fn pass_args(
-    subcommand: &str,
-    pass: gate::CargoPass,
-    scope: Scope,
-    extra: &[String],
-    after_dashes: &[String],
-) -> Vec<String> {
-    let mut args = vec![subcommand.to_string(), "--locked".to_string()];
-    args.extend(cargo::package_selection(pass.packages));
-    match pass.target {
-        Some(target) => args.extend(["--target".to_string(), target.to_string()]),
-        None if scope == Scope::AllTargets => args.push("--all-targets".to_string()),
-        None => {}
-    }
-    if let Some(features) = pass.features {
-        args.extend(["--features".to_string(), features.to_string()]);
-    }
-    args.extend_from_slice(extra);
-    if !after_dashes.is_empty() {
-        args.push("--".to_string());
-        args.extend_from_slice(after_dashes);
-    }
-    args
 }

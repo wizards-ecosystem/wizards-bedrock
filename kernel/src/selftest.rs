@@ -5,7 +5,6 @@
 //! assertions are not repeated because a panic is a missing verdict, not a red check.
 
 use core::hint::spin_loop;
-use core::sync::atomic::Ordering;
 
 use wost::arch::current::cpu::Protections;
 use wost::arch::current::paging;
@@ -113,7 +112,7 @@ use memory::{
     uncertain_dma_memory_is_never_recycled,
 };
 use processes::{
-    SELFTEST_STARTED_NS, a_dead_program_gives_its_memory_back, a_faulting_program_dies_alone,
+    a_dead_program_gives_its_memory_back, a_faulting_program_dies_alone,
     a_faulting_user_copy_resumes_and_reports, a_full_buffer_nvme_read_is_measurable,
     a_meaningless_right_is_refused, a_noncanonical_user_return_stack_retires_only_its_program,
     a_program_cannot_aim_at_the_copy_window, a_program_cannot_bring_smap_down_with_it,
@@ -128,7 +127,7 @@ use processes::{
     every_refused_spawn_returns_every_resource, guard_rollback_refusal_retains_the_stack,
     missing_extended_state_closes_the_user_boundary,
     no_execute_protection_closes_the_user_boundary, one_zombie_has_one_settlement_collector,
-    partial_stack_rollback_is_retryable, report_baseline,
+    partial_stack_rollback_is_retryable,
     shared_kernel_mappings_without_proof_close_the_user_boundary,
     the_loader_refuses_what_it_may_not_map, the_return_to_ring_three_clears_buffers,
     unadmitted_interrupts_close_the_user_boundary,
@@ -249,7 +248,6 @@ impl Report {
 /// Run every check and hand the verdict to the harness.
 pub(crate) fn run(serial: Result<(), UartError>) {
     info!("selftest: image marker v1");
-    SELFTEST_STARTED_NS.store(time::now_ns(), Ordering::Relaxed);
     let mut report = Report::new();
     let geometry = dev::console_geometry();
 
@@ -1143,8 +1141,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "paging activation publishes its root before readiness",
         activation.root_precedes_ready(),
     );
-
-    report_baseline();
 
     let checked = report.passed + report.failed;
     let passed = report.failed == 0 && checked == EXPECTED_CHECKS && EXPECTED_CHECKS > 0;

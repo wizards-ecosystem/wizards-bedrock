@@ -1,5 +1,3 @@
-//! Strict JSON parsing for caller-bounded host-tool output.
-
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};

@@ -1,24 +1,16 @@
-//! The master boot record: UEFI firmware boots a single 0xEF MBR partition directly.
+// UEFI firmware boots a single 0xEF MBR partition directly.
 
 use std::io::{Seek, SeekFrom, Write};
 
 use anyhow::{Context, Result, bail};
 
-pub(crate) const RECORD_SIZE: usize = 512;
-
+const RECORD_SIZE: usize = 512;
 const PARTITION_TABLE: usize = 446;
-
 const ENTRY_SIZE: usize = 16;
-
 const ENTRY_COUNT: usize = 4;
-
 const SIGNATURE_AT: usize = 510;
-
 const SIGNATURE: [u8; 2] = [0x55, 0xAA];
-
 const TYPE_EFI_SYSTEM: u8 = 0xEF;
-
-/// UEFI ignores the active flag; BIOS-era tools still look for it.
 const FLAG_BOOTABLE: u8 = 0x80;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -30,7 +22,6 @@ pub(crate) struct PartitionEntry {
 }
 
 impl PartitionEntry {
-    /// An EFI system partition from `start_lba` to the end of a `total_sectors` disk.
     pub(crate) fn efi_system(start_lba: u64, total_sectors: u64) -> Result<Self> {
         if start_lba >= total_sectors {
             bail!("partition starts at LBA {start_lba} on a disk of only {total_sectors} sectors");
@@ -46,7 +37,6 @@ impl PartitionEntry {
         })
     }
 
-    /// The CHS bytes 1..4 and 5..8 stay zero: every reader of this record uses the LBA fields.
     fn to_bytes(self) -> [u8; ENTRY_SIZE] {
         let mut bytes = [0u8; ENTRY_SIZE];
         bytes[0] = if self.bootable { FLAG_BOOTABLE } else { 0 };
@@ -57,7 +47,6 @@ impl PartitionEntry {
     }
 }
 
-/// A record holding `partitions`; panics past the four the table has room for.
 pub(crate) fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     assert!(
         partitions.len() <= ENTRY_COUNT,
@@ -73,8 +62,9 @@ pub(crate) fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     record
 }
 
-/// Sector zero only; everything after it is left alone.
 pub(crate) fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Result<()> {
-    Seek::seek(disk, SeekFrom::Start(0)).context("seeking to the master boot record")?;
-    Write::write_all(disk, record).context("writing the master boot record")
+    disk.seek(SeekFrom::Start(0))
+        .context("seeking to the master boot record")?;
+    disk.write_all(record)
+        .context("writing the master boot record")
 }

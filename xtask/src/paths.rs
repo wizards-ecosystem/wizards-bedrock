@@ -1,64 +1,28 @@
-//! Where everything lives: every path the build touches derives from the constants here.
-
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 
 use crate::cargo::Profile;
 
-/// Cargo package producing the kernel binary.
 pub(crate) const KERNEL_PACKAGE: &str = "wizard-kernel";
-
-/// Packages that only ever build for the kernel target.
 pub(crate) const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
-
-pub(crate) fn without_toml_comment(line: &str) -> &str {
-    line.split_once('#').map_or(line, |(code, _)| code)
-}
-
-/// Triple the kernel is cross-compiled for.
 pub(crate) const KERNEL_TARGET: &str = "x86_64-unknown-none";
-
-/// Cargo feature that compiles the kernel's boot-time self-checks in.
 pub(crate) const SELFTEST_FEATURE: &str = "selftest";
-
-/// The same feature spelled the way a workspace-scoped `--features` wants it.
-///
-/// Written out because a `const` cannot be formatted.
 pub(crate) const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
-
-/// Cargo feature which makes the production PCI configuration claim refuse.
-pub(crate) const REFUSE_PCI_FEATURE: &str = "refuse-pci";
-
-/// Workspace-scoped spelling of [`REFUSE_PCI_FEATURE`].
-pub(crate) const REFUSE_PCI_FEATURE_SPEC: &str = "wizard-kernel/refuse-pci";
-
-/// Name the kernel takes on the EFI system partition. Must match the `path:`
-/// line in `boot/limine.conf`.
+// Must match the `path:` line in boot/limine.conf.
 pub(crate) const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
-
-/// The user program, alongside the kernel, handed over as a Limine module.
 pub(crate) const PROGRAM_ON_ESP: &str = "hello.elf";
-
-/// File name of the bootable disk image.
 pub(crate) const IMAGE_NAME: &str = "bedrock.img";
-
-/// Per-run QEMU state whose lifetime is shorter than a build artifact.
-pub(crate) const QEMU_RUN_DIRECTORY: &str = "qemu runs,private";
-
-/// Size of that image, in MiB.
+pub(crate) const NVME_IMAGE_NAME: &str = "nvme.img";
 pub(crate) const DISK_MIB: u64 = 64;
-
-/// Bytes per logical sector.
 pub(crate) const SECTOR_SIZE: u64 = 512;
-
-/// First partition begins 1 MiB in, the conventional alignment.
 pub(crate) const PART_START_LBA: u64 = 2048;
-
-/// FAT volume label: exactly eleven bytes, space padded.
 pub(crate) const ESP_LABEL: [u8; 11] = *b"WIZARD-ESP ";
+const QEMU_RUNS: &str = "qemu-runs";
+const VM_DIRECTORY: &str = "vm";
 
-/// Resolved locations for one checkout.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Paths {
     root: PathBuf,
@@ -66,41 +30,28 @@ pub(crate) struct Paths {
 }
 
 impl Paths {
-    /// Derive every path from an explicit root, touching no environment, so tests can drive it.
-    pub(crate) fn new(root: PathBuf, target_dir_override: Option<&Path>) -> Self {
-        let target_dir = match target_dir_override {
-            Some(dir) if dir.is_absolute() => dir.to_path_buf(),
-            Some(dir) => root.join(dir),
-            None => root.join("target"),
-        };
-        Self { root, target_dir }
-    }
-
-    /// Locate the workspace from cargo's environment.
-    ///
-    /// `build.target-dir` in a cargo config is not honoured: reading it would mean parsing
-    /// `cargo metadata`. Set `CARGO_TARGET_DIR` instead (`docs/005-code-conventions.md`).
+    // `build.target-dir` in a cargo config is not honoured; set CARGO_TARGET_DIR instead.
     pub(crate) fn discover() -> Result<Self> {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir
             .parent()
             .with_context(|| format!("no workspace above {}", manifest_dir.display()))?
             .to_path_buf();
-        let override_dir = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
-        Ok(Self::new(root, override_dir.as_deref()))
+        let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(directory) => root.join(directory),
+            None => root.join("target"),
+        };
+        Ok(Self { root, target_dir })
     }
 
-    /// Workspace root.
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Directory cargo writes build artifacts to.
     pub(crate) fn target_dir(&self) -> &Path {
         &self.target_dir
     }
 
-    /// The compiled kernel ELF for `profile`.
     pub(crate) fn kernel_elf(&self, profile: Profile) -> PathBuf {
         self.target_dir
             .join(KERNEL_TARGET)
@@ -108,33 +59,77 @@ impl Paths {
             .join(KERNEL_PACKAGE)
     }
 
-    /// The bootable disk image.
     pub(crate) fn image(&self) -> PathBuf {
         self.target_dir.join(IMAGE_NAME)
     }
 
-    /// Generated VMware VM directory.
     pub(crate) fn vm_dir(&self) -> PathBuf {
-        self.root.join("vm")
+        self.root.join(VM_DIRECTORY)
     }
 
-    /// Vendored Limine UEFI executable.
     pub(crate) fn limine_efi(&self) -> PathBuf {
         self.root.join("boot").join("limine").join("BOOTX64.EFI")
     }
 
-    /// Limine's boot menu configuration.
     pub(crate) fn limine_conf(&self) -> PathBuf {
         self.root.join("boot").join("limine.conf")
     }
 
-    /// Recorded digests of everything vendored under `boot/`.
     pub(crate) fn limine_checksums(&self) -> PathBuf {
         self.root.join("boot").join("limine").join("CHECKSUMS")
     }
 
-    /// The TLA+ tools' checksum listing.
     pub(crate) fn tla_checksums(&self) -> PathBuf {
         self.root.join("tools").join("tla").join("CHECKSUMS")
+    }
+
+    pub(crate) fn tla_jar(&self) -> PathBuf {
+        self.root.join("tools").join("tla").join("tla2tools.jar")
+    }
+}
+
+pub(crate) fn create_read_write(path: &Path) -> std::io::Result<File> {
+    File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+}
+
+static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+pub(crate) struct RunDirectory {
+    path: PathBuf,
+}
+
+impl RunDirectory {
+    pub(crate) fn create(paths: &Paths) -> Result<Self> {
+        let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+        let path = paths
+            .target_dir
+            .join(QEMU_RUNS)
+            .join(format!("{}-{sequence}", std::process::id()));
+        if path.exists() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("removing stale {}", path.display()))?;
+        }
+        std::fs::create_dir_all(&path).with_context(|| format!("creating {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn image(&self) -> PathBuf {
+        self.path.join(IMAGE_NAME)
+    }
+}
+
+impl Drop for RunDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }

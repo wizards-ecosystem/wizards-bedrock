@@ -1,5 +1,3 @@
-//! Deterministic FAT32 corpus that `fatfs` and `libs/fat32` read independently.
-
 use std::io::{Read, Seek, Write};
 
 use anyhow::{Context, Result};
@@ -7,31 +5,19 @@ use fatfs::{FatType, FileSystem, FsOptions};
 
 use super::esp;
 
-/// Below 65525 clusters `fatfs` silently formats FAT16, which `libs/fat32` refuses.
+// Below 65,525 clusters `fatfs` formats FAT16, which `libs/fat32` refuses.
 pub(crate) const VOLUME_BYTES: usize = 64 * 1024 * 1024;
 
-/// A file small enough to sit in one cluster.
-pub(crate) const SMALL_NAME: &str = "HELLO.TXT";
+const SMALL_NAME: &str = "HELLO.TXT";
+const LARGE_NAME: &str = "BIG.BIN";
+const LARGE_BYTES: usize = 40 * 1024;
+const DELETED_NAME: &str = "GONE.TXT";
+const DIRECTORY_NAME: &str = "DATA";
+const NESTED_NAME: &str = "NESTED.TXT";
+const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
+const NESTED_CONTENT: &[u8] = b"one directory down\n";
 
-/// Larger than one cluster at every size `fatfs` chooses here, so reading it walks the chain.
-pub(crate) const LARGE_NAME: &str = "BIG.BIN";
-
-pub(crate) const LARGE_BYTES: usize = 40 * 1024;
-
-/// Deleted after later live entries exist; its `0xE5` slot tells deleted from end of directory.
-pub(crate) const DELETED_NAME: &str = "GONE.TXT";
-
-/// A directory, so the walk has somewhere to descend.
-pub(crate) const DIRECTORY_NAME: &str = "DATA";
-
-pub(crate) const NESTED_NAME: &str = "NESTED.TXT";
-
-pub(crate) const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
-
-pub(crate) const NESTED_CONTENT: &[u8] = b"one directory down\n";
-
-/// Byte `index` of [`LARGE_NAME`]; position-dependent, so a read from the wrong cluster shows.
-pub(crate) const fn large_byte(index: usize) -> u8 {
+const fn large_byte(index: usize) -> u8 {
     ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
 
