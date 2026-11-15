@@ -233,7 +233,7 @@ impl IommuTable {
     pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
         let span = DirectSpan::from_segment(&self.frames)?;
         let mut bytes = [0u8; 8];
-        span.read_at(index * 8, &mut bytes)
+        span.read_at(index.checked_mul(8)?, &mut bytes)
             .then(|| u64::from_le_bytes(bytes))
     }
 }
