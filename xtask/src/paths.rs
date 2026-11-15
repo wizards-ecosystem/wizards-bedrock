@@ -116,7 +116,7 @@ pub(crate) const SELFTEST_FEATURE: &str = "selftest";
 
 /// The same feature spelled the way a workspace-scoped `--features` wants it.
 ///
-/// Written out because a `const` cannot be formatted; a test asserts it against its two parts.
+/// Written out because a `const` cannot be formatted.
 pub(crate) const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
 /// Cargo feature which makes the production PCI configuration claim refuse.

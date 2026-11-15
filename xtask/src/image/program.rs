@@ -1,7 +1,6 @@
 //! Builds the fixed ELF64 ring-3 boundary witness.
 //!
-//! Qualification decodes the emitted instructions independently, and the
-//! kernel's ELF parser checks the container (D-100).
+//! The kernel's ELF parser checks the container (D-100).
 
 use anyhow::{Context, Result};
 use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
