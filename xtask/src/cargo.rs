@@ -11,6 +11,7 @@ pub(crate) const VIRTUAL_SOURCE_ROOT: &str = "/wizard/source";
 const VIRTUAL_TOOLCHAIN_ROOT: &str = "/wizard/toolchain";
 const VIRTUAL_CARGO_ROOT: &str = "/wizard/cargo";
 const ENCODED_FLAG_SEPARATOR: char = '\u{1f}';
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Profile {
@@ -117,6 +118,39 @@ pub(crate) fn active_kernel_remap_roots(paths: &Paths) -> Result<[PathBuf; 3]> {
     ])
 }
 
+fn configured_kernel_rustflags(source_root: &Path) -> Result<Vec<String>> {
+    let path = source_root.join(".cargo").join("config.toml");
+    let text = crate::files::read_bounded_text(&path, MAX_CONFIG_BYTES, "cargo config")?;
+    let mut flags = Vec::new();
+    let (mut in_target, mut in_flags) = (false, false);
+    for line in text.lines().map(paths::without_toml_comment).map(str::trim) {
+        if in_flags {
+            if line.starts_with(']') {
+                ensure!(
+                    !flags.is_empty(),
+                    "{} lists no kernel rustflags",
+                    path.display()
+                );
+                return Ok(flags);
+            }
+            flags.extend(
+                line.split(',')
+                    .filter_map(|item| item.trim().strip_prefix('"')?.strip_suffix('"'))
+                    .map(str::to_string),
+            );
+        } else if line.starts_with('[') {
+            in_target = line == format!("[target.{}]", paths::KERNEL_TARGET);
+        } else if in_target && line.starts_with("rustflags") && line.ends_with('[') {
+            in_flags = true;
+        }
+    }
+    bail!(
+        "{} sets no rustflags for {}",
+        path.display(),
+        paths::KERNEL_TARGET
+    )
+}
+
 pub(crate) fn kernel_encoded_rustflags(
     source_root: &Path,
     toolchain_root: &Path,
@@ -128,12 +162,7 @@ pub(crate) fn kernel_encoded_rustflags(
         (cargo_root, VIRTUAL_CARGO_ROOT),
     ];
     let mut distinct = std::collections::BTreeSet::new();
-    let mut flags = vec![
-        "-C".to_string(),
-        "code-model=kernel".to_string(),
-        "-C".to_string(),
-        "relocation-model=static".to_string(),
-    ];
+    let mut flags = configured_kernel_rustflags(source_root)?;
     for (root, virtual_root) in mappings {
         let root = child_process_path(root);
         let root = root
