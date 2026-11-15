@@ -116,12 +116,6 @@ fn kernel_main(boot: BootInfo) -> ! {
         None => warn!("cpu: extended state unavailable; ring 3 stays closed"),
     }
 
-    // Before ring 3 exists: `AC` survives interrupt delivery and is writable
-    // at CPL 3, so a trap could otherwise arrive with SMAP off.
-    if protections.smap {
-        interrupt::arm_access_clear();
-    }
-
     let dma_non_requester = early_dma.take_non_requester();
     let dma_quiesced = early_dma.take_quiesced_requester();
 

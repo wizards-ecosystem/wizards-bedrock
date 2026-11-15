@@ -359,6 +359,10 @@ pub fn enable_protections() -> Protections {
         additions = additions.with_umip();
     }
     add_cr4(additions);
+    // `AC` survives interrupt delivery and ring 3 may set it, so every SMAP entry must clear it.
+    if Protections::enabled().smap {
+        interrupt::arm_access_clear();
+    }
 
     if supported.nx {
         // SAFETY: the only register named is `EFER`, and the only bit added to what it held is the

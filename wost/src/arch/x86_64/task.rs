@@ -805,6 +805,7 @@ pub enum UserError {
     FastSyscallOpen,
     /// The processor is not enforcing non-executable page mappings.
     NoExecuteProtection,
+    AccessClearUnarmed,
     /// Thread switches are not saving and restoring user FP/SIMD state.
     NoExtendedState,
     /// Actual CPU evidence does not permit shared higher-half mappings.
@@ -836,6 +837,7 @@ impl fmt::Display for UserError {
             Self::NoExecuteProtection => {
                 core::fmt::Write::write_str(f, "no-execute protection is not active")
             }
+            Self::AccessClearUnarmed => f.write_str("smap is on but trap entry does not clear ac"),
             Self::NoExtendedState => {
                 core::fmt::Write::write_str(f, "extended user state is not isolated")
             }
@@ -886,8 +888,12 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !cpu::fast_syscall_doors_are_shut() {
         return Err(UserError::FastSyscallOpen);
     }
-    if !cpu::Protections::enabled().nx {
+    let protections = cpu::Protections::enabled();
+    if !protections.nx {
         return Err(UserError::NoExecuteProtection);
+    }
+    if protections.smap && !interrupt::access_clear_is_armed() {
+        return Err(UserError::AccessClearUnarmed);
     }
     if !xstate::user_state_is_isolated() {
         return Err(UserError::NoExtendedState);

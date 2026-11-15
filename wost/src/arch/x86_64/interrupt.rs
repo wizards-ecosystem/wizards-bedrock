@@ -7,7 +7,7 @@
 
 use core::arch::asm;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use x86_apic::vector::InterruptVector;
 use x86_paging::Flags;
@@ -336,35 +336,27 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     }
 }
 
-/// Whether `clac` may be executed on the way in.
-///
-/// The entry stub needs one immutable byte; `clac` would fault without SMAP.
+// The entry stub reads this byte directly; `clac` would fault without SMAP.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".kpti.state.route")]
-static mut SMAP_ARMED: u8 = 0;
+static SMAP_ARMED: AtomicU8 = AtomicU8::new(0);
 
-/// Let the entry path clear `AC` on the way in; called once, before ring 3 exists.
-///
-/// # Panics
-///
-/// If SMAP is not enabled: `clac` would fault in the entry stub and re-enter the same path
-/// indefinitely, so the safe API checks this itself.
-pub fn arm_access_clear() {
+pub(super) fn arm_access_clear() {
     assert!(
         cpu::Protections::enabled().smap,
         "arming the access clear without smap would fault on every trap"
     );
-    // SAFETY: written once during boot, before any trap can be taken from ring 3, on the one CPU
-    // there is.
-    unsafe { SMAP_ARMED = 1 };
+    SMAP_ARMED.store(1, Ordering::Release);
 }
 
-/// Whether the return path should flush before entering ring 3.
-///
-/// The entry stub reads this immutable byte directly.
+pub(super) fn access_clear_is_armed() -> bool {
+    SMAP_ARMED.load(Ordering::Acquire) != 0
+}
+
+// The return stub reads this byte directly.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".kpti.state.route")]
-static mut MDS_CLEAR: u8 = 0;
+static MDS_CLEAR: AtomicU8 = AtomicU8::new(0);
 
 /// Public, immutable selector consumed by the post-CR3 `VERW` boundary.
 ///
@@ -375,13 +367,8 @@ static mut MDS_CLEAR: u8 = 0;
 static KPTI_VERW_SELECTOR: u16 = segment::KERNEL_DATA_BITS;
 
 /// Turn on the buffer flush that precedes every return to ring 3.
-///
-/// Idempotent, and meant to be called once before any user code exists. Where the processor
-/// reports `MDS_NO` this is never called and the return path skips the instruction entirely.
 pub fn enable_buffer_clear() {
-    // SAFETY: written once during boot, before ring 3 exists and so before any return path can
-    // read it, on the one CPU there is.
-    unsafe { MDS_CLEAR = 1 };
+    MDS_CLEAR.store(1, Ordering::Release);
 }
 
 fn idt_is_loaded() -> bool {
