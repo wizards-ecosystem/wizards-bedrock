@@ -393,7 +393,7 @@ fn describe(map: &MemoryMap) {
         debug!(
             "memory: {:#016x}..{:#016x} {}",
             region.base,
-            region.base + region.len,
+            region.base.saturating_add(region.len),
             region.kind
         );
     }
