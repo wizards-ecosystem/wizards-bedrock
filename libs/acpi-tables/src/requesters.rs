@@ -348,7 +348,9 @@ impl<'table> Dmar<'table> {
                         else {
                             return Err(RequesterInventoryError::UnresolvedScope);
                         };
-                        inventory.push(endpoint)?;
+                        if present(endpoint) {
+                            inventory.push(endpoint)?;
+                        }
                     }
                     DeviceScopeKind::PciSubHierarchy => {
                         let Some(Named::Hierarchy(scope_hierarchy)) =
