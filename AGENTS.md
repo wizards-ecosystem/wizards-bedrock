@@ -12,18 +12,18 @@ D-183 fixes the language boundary: in-kernel code stays Rust, and every
 feasible first-party target-side program, service, library, tool and application
 is Wizzy. Realm owns the canonical compiler-readiness gate and product plan under D-366.
 `docs/015-wizzy-userland.md` owns the kernel handoff and records Bedrock's
-last admitted compiler evidence as **CLOSED**. While closed, do not start Phase 7 product work or
-build a Rust fallback userland. Work is in scope only when it is kernel
-correctness, a language-neutral prerequisite with a concrete future Wizzy
-caller, or specification and validation of the versioned compiler handoff.
+last admitted compiler evidence as **CLOSED**. While closed, do not start product work or
+build a Rust fallback userland. D-452 and `docs/021-roadmap.md` order kernel work from
+the foundation close: a kernel mechanism no longer waits for a Wizzy caller, and each
+phase ships Rust witness programs, which are checks and not a userland.
 Realm owns all target-side product implementation. Consumer scaffolding remains stopped until PW-601 has both a pinned draft
 artifact and a runtime seam; WZ-001 through WZ-004 are externally owned
 `wizards-ink` blockers, not Bedrock implementation work.
 
 D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
-the authoritative finite kernel foundation register. Every new item needs
-the defect, invariant, proof gap, handoff consumer or trigger the register
-requires; `TRIGGER` and post-gate rows are stopped work, not invitations.
+the finite kernel foundation register. It records the foundation close and
+no longer admits or refuses new mechanisms; D-452 made its `TRIGGER` rows rows
+of `021`'s phases.
 
 **Read [docs/005-code-conventions.md](docs/005-code-conventions.md) before
 writing code.** It is the authority on crate boundaries, naming, error
@@ -36,7 +36,7 @@ to get wrong:
   There are exactly three valid reasons to write `unsafe` (D-41): a
   novel abstraction, a measured performance need, or FFI/the platform.
 - **Few comments.** Comments explain *why*, never *what*. The mandatory prose
-  is `// SAFETY:` on unsafe operations and `///` on public items; the lints
+  is `// SAFETY:` on unsafe operations and `# Safety` on `pub unsafe fn`; the lints
   enforce both. One unsafe operation per block.
 - **Pure arithmetic goes to a `libs/` crate**, where `cargo test` can reach it
   on the host. If a bound needs arithmetic to check, the arithmetic moves and
@@ -73,7 +73,7 @@ read-only hosted Source preview checks; those do not replace local CI.
 Outside contributors use [CONTRIBUTING.md](CONTRIBUTING.md), including forks
 and PRs; the direct-to-main rule above is the owner's workflow.
 
-`cargo xtask help` lists every task. The README's [Development](README.md#development)
+`cargo xtask help` lists every task. The README's [Building & running](README.md#building--running)
 section covers the two
 non-obvious rules (`cargo build --workspace` cannot work here; never set
 `RUSTFLAGS`). Read it before reaching for a bare cargo command.

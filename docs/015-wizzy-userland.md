@@ -1,10 +1,10 @@
 # 015 - Bedrock's versioned userland handoff
 
-D-366 transfers compiler readiness and the Phase 7 product plan to
+D-366 transfers compiler readiness and the product plan (old Phase 7) to
 [Realm](https://github.com/wizards-ecosystem/wizards-realm/blob/main/docs/003-compiler-readiness.md).
 D-183 keeps the kernel Rust and first-party target-side applications Wizzy.
 D-184's [016-pre-wizzy-foundation.md](016-pre-wizzy-foundation.md) is the
-authoritative finite kernel foundation record. This document owns Bedrock's
+finite kernel foundation record; `021-roadmap.md` orders kernel work after it (D-452). This document owns Bedrock's
 kernel integration requirements, not Realm's application semantics or Ink's
 language semantics.
 
@@ -16,7 +16,7 @@ language semantics.
 | Compiler-readiness gate | **CLOSED** |
 
 The table records the last admitted compiler-readiness evidence for Bedrock,
-not a second authority that can open Realm's gate. Phase 7 product implementation is stopped
+not a second authority that can open Realm's gate. Product implementation is stopped
 and belongs to Realm. Opening Realm's gate does not alone admit an artifact to
 Bedrock. A kernel integration ADR must pin the reachable Realm decision and
 Ink compiler/runtime/artifact revisions and digests, close the relevant kernel

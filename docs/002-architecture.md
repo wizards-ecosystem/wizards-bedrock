@@ -63,9 +63,9 @@ for evidence and citations behind the choices marked [cited].
    executable authority authorizes the launch and both returned capabilities,
    while the kernel starts the child with exactly one channel endpoint.
    Arguments and grants are bootstrap messages (D-111, D-151, D-180). No
-   native `fork()` (*"A fork() in the road"*, HotOS '19; Fuchsia). The POSIX
-   layer emulates fork for ports that cannot live without it once Phase 9
-   builds a gated compatibility clone; no such kernel primitive exists yet.
+   native `fork()` (*"A fork() in the road"*, HotOS '19; Fuchsia). The bounded
+   Linux system call runner never offers it (D-452); no such kernel primitive
+   exists.
 
 4. **Lightweight everywhere.** Tickless kernel (no idle timer ticks),
    EEVDF-inspired virtual-deadline scheduler, small static binaries,
@@ -108,7 +108,7 @@ for evidence and citations behind the choices marked [cited].
 | `Event` / `EventPair` | signaling, lifecycle notification |
 | `Queue` | a submission/completion ring bound to the kernel |
 | `File` / `Dir` | VFS objects (WizFS behind them) |
-| `Socket` | network endpoints (smoltcp behind them) |
+| `Socket` | network endpoints (a stack service behind them, D-452) |
 
 This is a target model, not an implementation inventory. The current
 handle-object tags are Channel, File and Directory; `Channel` is only an
@@ -184,7 +184,8 @@ when old Phase 13 starts it; that crate is intentionally absent today.
 - **ELF64** native containers. First-party system and application source is
   Wizzy under D-183; a narrow Rust runtime/ABI witness or a later Wizzy AOT
   image may each be ELF. A witness is not a fallback native userland. Ported C
-  reaches the native ABI through mlibc rather than defining it.
+  reaches the native ABI through a translation layer rather than defining it
+  (D-452).
 - **Core WebAssembly + `wasip1`** as a first-class citizen: WASI's authority
   model aligns with handle grants, while a WASI descriptor adapter owns
   numbering, preopens and cursor state over the cursorless native operations
@@ -235,11 +236,13 @@ application/compatibility case.
 
 ### POSIX translation layer (the ports gateway)
 
-Phase 9's target is mlibc sysdeps over the native ABI in a userspace library:
-POSIX descriptors own compatibility state over handles, blocking calls wrap
-queue submissions and waits, and a future fork shim uses a gated compat clone.
-That is the gateway intended to run CPython, links and NetSurf; none runs here
-yet, and native software will not touch the layer.
+Old Phase 9's target was mlibc sysdeps over the native ABI in a userspace
+library: POSIX descriptors own compatibility state over handles and blocking
+calls wrap queue submissions and waits. That was the gateway intended to run
+CPython, links and NetSurf; none runs here. D-452 replaced the phase: Linux
+runs as a guest in a world, and a bounded runner for static Linux binaries,
+with fork never offered, waits for evidence (`021` section 7). Native software
+will not touch a translation layer.
 
 **It was shaped early; its first real port waits for its compatibility phase**
 (D-74, D-114, D-180). The stub-heavy sysdep was written as soon as Phase 5
@@ -253,15 +256,16 @@ worked around: the sysdeps are analysed, not compiled, and
 unrecorded upstream snapshot, mlibc exposed 296 sysdep tags, called sixteen
 mandatory and described those as enough for a basic static hello world; the
 real ports inspected implemented 147 to 202. D-181 forbids treating those
-unversioned figures as a current API. A real Phase 9 port pins a release before
+unversioned figures as a current API. A real port pins a release before
 adopting its `abis/linux` userspace-visible ABI.
 
 Two things this layer must answer that the native ABI would otherwise never
 raise, and both were cheaper to expose before Phase 5 froze the queue. D-80
 settled that signals share the completion plane and do not push kernel frames;
 the versioned event record, dispatch/correlation and interruptible libc wait
-remain Phase 9 work (D-181). Whether userland is static-only or gets a dynamic
-linker is also open there (CPython needs `dlopen` and `-export-dynamic`). POSIX
+remained old Phase 9 work (D-181); `021` decides ring version 2 records at its
+Phase 17. Whether userland is static-only or gets a dynamic linker was also
+open there (CPython needs `dlopen` and `-export-dynamic`). POSIX
 uid/gid, umask, controlling-TTY, hard-link and signal-mask conventions require
 explicit compatibility state, routing or policy rather than ambient native
 defaults. Plan 9's APE and Fuchsia POSIX Lite show their cost, not a proof that
@@ -274,14 +278,14 @@ model, our protocol). Rendering is GPU-first (wgpu/vello-style compute 2D)
 targeting virtio-gpu in VMs, with a dumb-framebuffer fallback.
 
 The shell model, the compositor-drawn chrome and the toolkit's token contract
-are fixed in D-318 and D-321; the CPU rendering fallback covers the toolkit as well as the framebuffer.
+are fixed in D-318 and D-321; the CPU rendering fallback covers the toolkit as
+well as the framebuffer.
 
 ## Open questions (future docs)
 
 Still open:
 
 - **WizFS on-disk format specifics** (before its own phase, D-73)
-- **Compat-fork mechanics for mlibc** (before Phase 9)
 - **How a program receives its first directory handle.** Phase 6 built
   `OpenAt` and a program cannot reach it: `spawn` gives exactly one handle
   (the opaque bootstrap-channel identity, D-111 and D-248), and no ring-3
@@ -318,7 +322,8 @@ Closed since this list was written:
 - *Which plane carries a signal*, answered by **D-80**: it must share the
   completion plane, with no kernel-written signal frame. D-181 records the
   unfinished half: version 1 has no unsolicited-event record, so dispatch,
-  correlation and interruptible libc-wait semantics remain Phase 9 work.
+  correlation and interruptible libc-wait semantics were old Phase 9 work;
+  `021` decides them at its Phase 17.
 - *Kernel-memory accounting, untyped-retype or not*, answered by **D-44**:
   rejected as an accounting mechanism, adopted as a type discipline.
 - *CHERI/CET/PKS hardware security pass*: closed by `008` section 6, and updated by

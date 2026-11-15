@@ -225,7 +225,7 @@ Translation is kernel-owned before PCI discovery, and accepted DMAR and `WZDM`
 addresses are trusted platform authority (D-389, Codex Security occurrence
 `occ_9a4891f61ef72658a0f921ef`). Admission spends a non-`Clone`, non-`Copy`
 `DmaDomain` proof for the exact function, minted only while translation is on
-and the root and context entries name the kernel's own tables (D-360), and
+and the root and context entries name the kernel's own tables (D-358, D-360), and
 borrows the exact unit so its owner cannot be destroyed or reused first
 (D-433). Without a usable unit the boot says `storage: no DMA isolation` and
 starts no storage, which `cargo xtask degraded-check` requires on a machine

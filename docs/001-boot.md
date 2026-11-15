@@ -181,7 +181,8 @@ which did not happen (D-249).
 
 This began as the Phase-1 close-out snapshot. Struck entries were retired by
 later phases; unstruck entries describe current facts, not automatically live
-work. `016-pre-wizzy-foundation.md` is the sole current backlog.
+work. `016-pre-wizzy-foundation.md` records the foundation close and
+`021-roadmap.md` orders the work after it.
 
 - ~~**`wost::sync::SpinLock` does not touch the interrupt flag.**~~ Fixed in
   Phase 2 slice 2, in `SpinLock` rather than at the call sites, as this entry
@@ -199,7 +200,7 @@ work. `016-pre-wizzy-foundation.md` is the sole current backlog.
   per-module controls until a concrete configuration source exists.
 - **The kernel image is not relocatable.** `linker.ld` hardcodes
   `0xffffffff80000000`, which is what blocks turning on `kaslr: yes` in
-  `boot/limine.conf`. KASLR remains later Phase-12 work, not a pre-Wizzy
+  `boot/limine.conf`. KASLR remains later work (old Phase 12), not a pre-Wizzy
   foundation item (`002-architecture.md`, security baseline).
 
 ## Resolved and trigger-only items

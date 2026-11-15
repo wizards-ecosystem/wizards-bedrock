@@ -37,9 +37,9 @@ The inherited system destination, now owned jointly with Realm, is an OS that ca
 | First-party target userland | Every feasible non-kernel component is Wizzy once the compiler-readiness gate opens; product work waits there. Narrow runtime shims, host tooling, and third-party libraries, ports and compatibility are exceptions (D-183) |
 | Architecture | x86_64 first; `arch/` modules in both `wost` and `kernel`, reached through `arch::current`, isolate arch code for future ports |
 | Boot | UEFI + Limine (vendored); an own bootloader is not planned without a concrete unmet handoff requirement (D-219) |
-| Kernel shape | Monolithic, modular |
-| ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports; see `002-architecture.md` |
-| Process model | `spawn()` only, with no native `fork()` (compat-fork gated for the POSIX layer) |
+| Kernel shape | A framekernel with driver processes (D-452) |
+| ABI | **Capability handles + async submission/completion queues** (native); Linux software runs as guests inside worlds, with a bounded system call runner for static binaries waiting for evidence (D-452); see `002-architecture.md` |
+| Process model | `spawn()` only, with no native `fork()`; the bounded Linux runner never offers it (D-452) |
 | Filesystem | VFS first, then a read-only third-party format, then a content-addressed object store on raw NVMe (D-452); WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
 | App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item. An artifact format does not choose the first-party source language (D-72, D-183) |
 | Security | W^X, NX, SMEP/SMAP/UMIP live; **every stack guarded**: thread (D-52), double-fault (D-89) and boot (D-92); KASLR deferred to old Phase 12 with its cost named (D-46) |

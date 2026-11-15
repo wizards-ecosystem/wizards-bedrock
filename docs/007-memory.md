@@ -135,7 +135,7 @@ in Phase 5.
 - `kernel/src/console.rs` — `Console::scroll`'s read-back is the
   back-buffer's motivation (`001-boot.md`).
 - `libs/` — the new page-table crate joins `members`, `default-members`,
-  `[workspace.dependencies]`, and `HOST_PACKAGES` in `xtask/src/paths.rs`,
+  and `[workspace.dependencies]`,
   like `x86-pit`, `ps2-keys` and `port-space` before it.
 - `kernel/linker.ld` and `xtask/src/elf.rs` — the script now names its own
   orphans and the build checks the result (D-40). Phase 3's W^X work has a
@@ -167,7 +167,7 @@ them, because the map lives in bootloader-reclaimable memory and a kernel that
 means to reclaim that memory cannot also hold a reference into it. Region types
 are translated in `limine_glue` against the crate's own constants, so a value
 moving underneath us is a compile error; anything unrecognised becomes
-`Unknown(n)` and is reported, which is how base revision 4's new type would
+`Other(n)` and is reported, which is how base revision 4's new type would
 announce itself. On QEMU with OVMF it has not appeared — every region so far
 is one of the eight the pinned crate names.
 
@@ -320,7 +320,7 @@ intact and its precondition now satisfied.
 
 ## Slice 5 — the wall comes down (2026-08-22)
 
-D-33 called the unmappable device hole "the wall itself". It is down: the I/O
+The debt table above called the unmappable device hole "the wall itself" (D-33). It is down: the I/O
 APIC is mapped, IRQ 1 is routed, and the keyboard interrupts rather than being
 polled from the tick. D-37 is retired.
 
@@ -397,7 +397,7 @@ higher-half leaf refuses the pair before publication.
 Pair construction and destruction extend the existing frame discipline. The
 two top-level roots, stripped hierarchy and one shared set of user tables enter
 one rollback ledger. Neither root is published alone. Unmap changes the shared
-user leaves once, pays D-88's translation debt under the current no-PCID
+user leaves once, pays D-88's translation debt under D-104's no-PCID
 contract, and frame return waits until task release proves that neither member
 can be installed. A failed allocation, mapping, binding, revalidation or
 reclaim returns the entire unpublished ledger or retains the entire published

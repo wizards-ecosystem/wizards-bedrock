@@ -47,8 +47,9 @@ and teardown history.
 | Every new hardcoded window is interest on the KASLR debt | D-46 | Slice 2's time page; slice 4 needed none: the NVMe window is discovered, not fixed |
 
 Not this phase's debt, recorded so nobody mistakes it: KASLR and SMP bring-up
-wait for Phase 12 (D-46, D-154); the finite register owns their exact triggers.
-Compat-fork waits for Phase 9; WizFS waits for Phase 13 (D-73).
+wait for old Phase 12 (D-46, D-154; D-452 moved SMP to `021`'s Phase 8); the
+finite register owns their exact triggers. Compat-fork waits for old Phase 9
+(D-452 never offers fork); WizFS waits for old Phase 13, `021`'s Phase 20 (D-73).
 
 ---
 
@@ -121,7 +122,7 @@ reach the code it is about (D-165): *a refused handle operation returns its
 promise* first ran against a table with room for one handle, so no promise was
 ever made and deleting the destructor left it green.
 
-At this slice `Pending` was a timer and nothing else (D-41 forbade the
+At this slice `Pending` was a timer and nothing else (`005`'s no-speculative-API rule forbade the
 abstraction with one implementation); D-200 later added queued and running Read
 kinds when deferred device service arrived. `Queue`'s `WaitQueue` is unused by
 ring 3 because it takes a `ThreadContext`: it is what a *kernel* thread waits
@@ -214,10 +215,10 @@ fail to run on this machine and the reference read-only ext2 crate shells out
 to `mkfs.ext2`, which D-16 forbids.
 
 - **The oracle is `fatfs` on the host.** `xtask` builds one corpus with `fatfs`
-  and it goes onto the NVMe namespace at sector 2048 and into a host test that
-  reads it with **both** `fatfs` and `libs/fat32`. The disagreement is the
-  failure, which beats depending on the mature one, because a dependency cannot
-  disagree with itself.
+  and it goes onto the NVMe namespace at sector 2048. It also went into a host
+  test that read it with **both** `fatfs` and `libs/fat32`, where the
+  disagreement was the failure, which beats depending on the mature one,
+  because a dependency cannot disagree with itself. D-454 removed that test.
 - **The block layer is a trait, and it belongs to the reader.** `libs/fat32`
   defines `Sectors` because that is the parameter it needs; the host backs it
   with a byte slice, the kernel with the controller, and the same reader runs
@@ -226,7 +227,7 @@ to `mkfs.ext2`, which D-16 forbids.
   `lfn` feature, so the boot ESP is 8.3.
 - **Synthesise inode numbers from directory-entry location**, which is what
   GRUB and Linux's `fs/fat` both do. FAT has no POSIX metadata and the VFS must
-  not be shaped by its absence: WizFS arrives in Phase 13 and the VFS is
+  not be shaped by its absence: WizFS arrives in `021`'s Phase 20 and the VFS is
   designed against *its* semantics.
 - 512-byte sectors only, refused rather than misread: that is what lets every
   buffer be a fixed array.
@@ -235,10 +236,10 @@ Do not implement exFAT. It is the one variant with live patents; FAT32
 including long names is unencumbered, and Microsoft's licensing page no longer
 lists a FAT programme.
 
-**The formerly budgeted one-writer weakness is closed.** D-207 pins a volume
+**The formerly budgeted one-writer weakness was closed.** D-207 pinned a volume
 formatted and populated by `dosfstools`/`mtools`, with adversarial valid layouts
-which both host readers must interpret identically. The local `fatfs` corpus
-remains the one the kernel boots.
+which both host readers had to interpret identically. No such fixture remains
+in the tree; the local `fatfs` corpus is the one the kernel boots.
 
 ### The device: PCI and NVMe, polled (`012` section 2; slices 4 and 5, D-168, D-169)
 
@@ -576,7 +577,7 @@ that does not exist is a defect (D-124).
 A ring operation resolves a path from a directory handle, gets back a file
 handle carrying derived, non-escalating authority, and reads bytes through the
 NVMe device interface into a page it shares with the caller. QEMU and VMware
-exercise virtual controllers; real hardware remains Phase 12. Every part of that
+exercise virtual controllers; real hardware remains `021`'s Phase 19. Every part of that
 sentence was built by a different slice, and the order was forced: the ABI
 first, because a caller freezes the interface it uses.
 

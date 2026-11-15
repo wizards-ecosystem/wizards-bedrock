@@ -168,7 +168,7 @@ Set `GDB` if that `gdb.exe` is not on `PATH`.
 | `cargo kclippy` | the same for clippy |
 | `cargo kbuild` | a release kernel build |
 
-`cargo xtask` runs the orchestrator under the optimized `xtask` profile. Audited graphs and host tests keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
+`cargo xtask` runs the orchestrator under the optimized `xtask` profile. The gate's Cargo graphs and host tests keep the plain `dev` profile. `.vscode/settings.json` points rust-analyzer at `cargo xtask check`.
 
 Release builds use `panic = "abort"`, LTO, and debug info that costs no loaded bytes.
 
@@ -222,6 +222,6 @@ See [docs/002-architecture.md](docs/002-architecture.md). Subsystem docs, writte
 - [Storage](docs/014-storage.md)
 - [Code conventions](docs/005-code-conventions.md)
 
-The language boundary is [docs/015-wizzy-userland.md](docs/015-wizzy-userland.md) (D-183). The kernel register is [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md) (D-184).
+The language boundary is [docs/015-wizzy-userland.md](docs/015-wizzy-userland.md) (D-183). The record of the foundation close is [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md) (D-184), and [docs/021-roadmap.md](docs/021-roadmap.md) orders the work after it (D-452).
 
 Outside contributions arrive through forks and pull requests. [CONTRIBUTING.md](CONTRIBUTING.md) covers scope and which checks a change needs. Report vulnerabilities through [SECURITY.md](SECURITY.md).

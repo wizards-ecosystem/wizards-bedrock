@@ -41,10 +41,11 @@ until a concrete post-gate caller fixes their contracts. The queue's direct
 `Duplicate` operation and `WaitQueue::wait_unless` lost-wakeup proof remain.
 
 The debts Phase 5 opened with, and what became of each, are the table at the
-close of this file. Not this phase's debt: KASLR waits for Phase 12 (D-46), SMP
-bring-up waits for Phase 12 (D-70), the device-entitlement half of D-77 waits
-for Phase 6's PCI discovery, and compat-fork mechanics wait for Phase 9 (D-07,
-D-74).
+close of this file. Not this phase's debt: KASLR waits for old Phase 12 (D-46), SMP
+bring-up waits for old Phase 12 (D-70; D-452 moved it to `021`'s Phase 8), the
+device-entitlement half of D-77 waits for Phase 6's PCI discovery, and
+compat-fork mechanics wait for old Phase 9 (D-07, D-74; D-452 never offers
+fork).
 
 ## Slices
 
@@ -205,12 +206,12 @@ in-kernel signal frame, kernel signal mask or restart-after-interrupt semantic.
 D-181 later made the boundary explicit: version 1 has no unsolicited-event
 record, so no signal wire format or interruptible libc dispatch exists yet.
 
-What this costs, recorded now so Phase 9 is not surprised: mlibc's `Sigaction`
+What this costs, recorded now so old Phase 9 is not surprised: mlibc's `Sigaction`
 needs a userspace dispatch loop over CQ entries. POSIX behaviours that assume
 a kernel-delivered signal interrupting an arbitrary instruction — `EINTR` on
 a blocking call, signal-safe reentrancy, resumable `SIGSEGV` handlers — need
 explicit libc/runtime support or remain unsupported. Plan 9's APE and Fuchsia
-POSIX Lite show the cost; Phase 9 decides which behavior is worth emulating.
+POSIX Lite show the cost; old Phase 9 decides which behavior is worth emulating.
 
 ## The lock order
 
@@ -567,7 +568,7 @@ text, data, direct map, task stack or device window is present there.
 
 D-106's task binding becomes authority over both roots: a context switch
 installs the destination's full root, and only the final exit tail can install
-its stripped mate. D-88's no-PCID flush and release evidence cover the shared
+its stripped mate. D-88's flush and release evidence, under D-104's no-PCID contract, cover the shared
 lower tables and both root frames, and cleanup retains the complete pair on any
 refusal. The host contracts were removed by D-454 on 2026-11-14. Forced-paired
 debug and optimized QEMU both passed, and PW-580 and PW-706 closed at the

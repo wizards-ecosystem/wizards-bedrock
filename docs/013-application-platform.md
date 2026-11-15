@@ -35,13 +35,12 @@ format; Linux's vDSO `clock_gettime`.
 
 D-183 gives this language-neutral work its target consumer. The Rust kernel
 provides handles, queues and lifecycle; every feasible first-party program over
-them is Wizzy. Until `015-wizzy-userland.md`'s compiler-readiness gate opens,
-new platform work must name a concrete future Wizzy caller rather than grow a
-parallel Rust userland.
+them is Wizzy. D-452 ended the rule that new platform work must name a
+concrete future Wizzy caller: a mechanism ships with Rust witness programs
+instead, which are checks and not a parallel userland (`021`).
 
-D-184 and `016-pre-wizzy-foundation.md` hold the finite closed-gate work
-register. A `TRIGGER` or post-gate row there remains stopped even when this
-historical charter describes the eventual platform need.
+D-184 and `016-pre-wizzy-foundation.md` hold the register of the foundation
+close; D-452 made its `TRIGGER` rows rows of `021`'s phases.
 
 ## What earlier phases left owing
 
@@ -145,8 +144,8 @@ which io_uring had to retrofit as `IORING_OP_ASYNC_CANCEL`.
 
 ## The reservation
 
-`libs/elf64` already parses `PT_NOTE`, and the loader ignores every segment
-that is not `PT_LOAD`, so a vendor note namespace costs no code. It was
+`libs/elf64` already parses `PT_NOTE`, and the kernel loader ignores every segment
+that is not `PT_LOAD` (D-452 moves loading to user space), so a vendor note namespace costs no code. It was
 reserved for what a program *requires*, so a spawner can decide and enqueue a
 grant message before the first instruction rather than discovering
 requirements through a handshake. The program is still born with one endpoint
@@ -188,7 +187,7 @@ The constraints are checked through their consequences.
   `READ` derivation never restores a universal right the directory lacked.
 - **W-2**: the page is mapped user-readable and nonwritable, and the
   kernel-side reader advances and agrees with the kernel clock. Compiled ring-3
-  reader evidence remains old Phase 7 work under D-181.
+  reader evidence remains work for `021`'s Phase 7 under D-181.
 - **W-3**: a program retires with operations outstanding; each receives its
   terminal completion before ring reclamation, and the frame count stays steady
   across the collection D-117 built.
@@ -206,7 +205,7 @@ The constraints are checked through their consequences.
 - **Zircon's vDSO enforcement is not adopted.** W-2 maps a page; it does not
   make that page the only legal syscall path. The hardening is real and the
   mechanism to enforce it is not free, so it waits for old Phase 12 with the other
-  security work.
+  security work. `021` Phase 7 adds a trap on direct clock reads.
 
 ## Decisions this phase had to make, taken 2026-08-25
 

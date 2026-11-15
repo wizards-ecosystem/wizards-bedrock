@@ -9,9 +9,9 @@ Read the relevant [design document](docs/), [code conventions](docs/005-code-con
 and [finite foundation register](docs/016-pre-wizzy-foundation.md) first.
 Explain the defect or improvement and cite a PW row where relevant. Discuss
 architecture changes before implementation; decisions belong in files indexed
-by the [decision log](docs/004-decision-log.md). Preserve open rows and stopped triggers.
-Bedrock owns the Rust kernel; Realm owns target-side products, and Ink owns
-the closed compiler gate. Neither sibling checkout is needed to contribute.
+by the [decision log](docs/004-decision-log.md). Preserve open rows and triggers.
+Bedrock owns the Rust kernel; Realm owns target-side products and the
+compiler-readiness gate. Neither sibling checkout is needed to contribute.
 
 Use the [Windows GNU setup](README.md#building--running) and pinned toolchain.
 Documentation and pure-library work needs no VMware, private scanner or sibling

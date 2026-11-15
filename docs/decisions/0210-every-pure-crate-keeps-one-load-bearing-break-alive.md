@@ -1,6 +1,6 @@
 # D-210 Every pure crate keeps one load-bearing break alive
 
-Status: Accepted, 2026-08-28. Amends D-28 and D-189; closes PW-503.
+Status: Accepted, 2026-08-28. Amends D-28 and D-187; closes PW-503.
 
 **Decision.** Every current `libs/` package carries at least one persistent
 mutation of production source, caught by one exact test in that same package.

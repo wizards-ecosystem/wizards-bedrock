@@ -609,7 +609,7 @@ required **passed `shuttle`** (2,000 iterations): it checks interleavings and
 does not model weak memory. **Loom, on the same shape, reports
 `FAILED — stale payload observed`.**
 So **shuttle for interleavings and deadlock, loom for memory ordering**.
-Loom's blind spots belong in the ADR, because D-28's argument cuts both ways:
+Loom's blind spots belong in the ADR, because D-28's rule that a check is broken once cuts both ways:
 a check that cannot fail is also a claim.
 
 | Break | loom |
@@ -858,7 +858,7 @@ Proposals, not decisions, as in `008`; ordered by when the door closes.
 **The verification tooling is staged by judgement.** `proptest` works today
 with a `getrandom` pin and has callers (`libs/eevdf`, `libs/timebase`,
 `libs/frame-space`, `libs/port-space`), so it is adopted first. The rest wait
-for their first real use, per D-41's rule that an API is written alongside its
+for their first real use, per `005`'s rule that an API is written alongside its
 first caller: **the vendored binutils and loom when Phase 5 has a ring protocol
 to check, TLA+ at the start of Phase 5 to model that protocol before it is
 written, and the Verus spike when there is a bound worth proving.** Adopting

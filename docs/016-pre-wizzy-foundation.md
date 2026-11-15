@@ -1,10 +1,12 @@
 # 016 - The finite pre-Wizzy kernel foundation register
 
-This is the handoff and the only current backlog for work in the Bedrock kernel
-repository while the Wizzy compiler-readiness gate is closed. D-183 remains
-the language and sequencing authority. D-184 makes this register finite and
-prevents "kernel polish" from becoming an excuse to design the userland before
-its real compiler artifact exists.
+This is the handoff and the record of the foundation close for the Bedrock
+kernel repository. D-183 remains the language and sequencing authority. D-184
+made this register finite so that "kernel polish" could not become an excuse to
+design the userland before its real compiler artifact exists. D-452 ended its
+role as the gate on new kernel mechanisms: `021-roadmap.md` orders that work,
+the `TRIGGER` rows became rows of its phases, and PW-006 and PW-010 stay live
+here.
 
 The inventory was made on 2026-08-26 from `main` at `853f967`, after the Phase
 6 slices had landed. It includes live-code inspection, every explicit "left
@@ -63,14 +65,15 @@ below are dated history. What remains, and how to run it:
 2. **The `xtask` grade.** Retired by D-454 with D-425's continuous campaigns.
    No grade campaign completed (PW-025); its tooling stays in git history.
 3. **VMware.** PW-003, PW-004, PW-201, PW-301, PW-305 and the hardware half of
-   PW-534 need Isaac's boots: `cargo xtask vmware` and `cargo xtask vmware
-   --shipped`, then each fresh serial log is read through `cargo xtask
+   PW-534 were closed by the v0.2.0 qualification (D-449). A release needs a
+   fresh boot of both images by Isaac: `cargo xtask vmware` and `cargo xtask
+   vmware --shipped`, then each fresh serial log is read through `cargo xtask
    qualify-vmware`.
 4. **Evidence and release.** With CI green and a VMware boot of the exact
    commit, run `cargo xtask evidence` and `cargo xtask verify-evidence` on that
    same commit and tag it directly (D-425, D-454). The commit after the tag
-   closes PW-009, the bundle clause of PW-028 and every other row the gate
-   proved, and lists the remaining live rows as known open items. The owned
+   closes every row the gate proved and lists the remaining live rows as known
+   open items. The owned
    deep security scan (D-406, D-416 through D-424) never produced a
    qualification and is retired by D-454. PW-010 is the census synchronization
    that the phase-close ADR binds.
@@ -241,7 +244,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-507 | DONE | P2 | Documentation checks missed links, CLI claims and current counts | D-215 checks Markdown targets, parses every xtask command and derives current counts | 2026-08-28 each break reddened only its proof |
 | PW-508 | DONE | P2 | A release had no reproducible manifest of source, tools and booted bytes | D-216 binds the gate, two locked builds and the booted artifact into an offline-verifiable manifest | 2026-08-28 commit `b88e752` verified offline |
 | PW-509 | DONE | P2 | Machine, tool and evidence schemas can drift under a qualification | D-218 pins the machine ABI; later decisions advance the formats to qualification v6 and evidence v11 | Mutations retained D-425's checks, and source emitted `wizard-qualification-v6` and `wizard-evidence-v11` (both formats retired by D-454 on 2026-11-14) |
-| PW-510 | DONE | P2 | D-16 deferred advisory, license and SBOM policy | D-220 defines the lock-bound inventory, SPDX SBOM, paperwork and offline-build contract | 2026-08-29 every digest matched and SPDX regenerated identically; PW-028 owns the advisory result |
+| PW-510 | DONE | P2 | D-16, D-25 and D-26 set no advisory, license or SBOM policy | D-220 defines the lock-bound inventory, SPDX SBOM, paperwork and offline-build contract | 2026-08-29 every digest matched and SPDX regenerated identically; PW-028 owns the advisory result |
 | PW-511 | DONE | P2 | No resource baseline caught a correct change that regressed the foundation | D-230 adds a bounded three-release and three-debug fixed-QEMU baseline | 2026-08-29 six boots held every band |
 | PW-512 | DONE | P2 | QMP and shared VM state raced under concurrent runners | D-227 gives every VM private firmware, image and port state | 2026-08-29 parallel boots passed |
 | PW-513 | DONE | P2 | There was no supported Windows debugger task | D-231 pins WinLibs GDB 17.2 behind one private paused QEMU run | 2026-08-29 `cargo xtask debug --check` hit `wizard_kernel::kmain` |
@@ -395,14 +398,14 @@ is decided with that runtime, not for an imagined one.
 
 ## Later roadmap and deliberately absent work
 
-| Phase/standing | Work that does not move into this register |
+| Old phase/standing (D-452 replaced the phases with `021-roadmap.md`) | Work that does not move into this register |
 |---|---|
-| Phase 8 | randomness and networking; kernel pieces remain Rust, first-party target services are Wizzy |
-| Phase 9 | POSIX/mlibc completion, signals, compat-fork, dynamic linking and compatibility ports/runtimes |
-| Phase 10 | GPU, compositor, toolkit and graphical terminal |
-| Phase 11 | NetSurf document-web integration |
-| Phase 12 | SMP and its stress work, GS/swapgs, KASLR, CET/IBT/XFD callers, signed/measured boot, USB, sound and real hardware qualification |
-| Phase 13 | writable persistent WizFS, crash consistency, repair and administration tools |
+| Old Phase 8 | randomness and networking; kernel pieces remain Rust, first-party target services are Wizzy |
+| Old Phase 9 | POSIX/mlibc completion, signals, compat-fork, dynamic linking and compatibility ports/runtimes |
+| Old Phase 10 | GPU, compositor, toolkit and graphical terminal |
+| Old Phase 11 | NetSurf document-web integration |
+| Old Phase 12 | SMP and its stress work, GS/swapgs, KASLR, CET/IBT/XFD callers, signed/measured boot, USB, sound and real hardware qualification |
+| Old Phase 13 | writable persistent WizFS, crash consistency, repair and administration tools |
 | Deliberately absent | xAPIC fallback for out-of-scope old CPUs, kernel Wizzy runtime/compiler, Rust fallback userland, speculative multi-queue waiting or POSIX/native ABI growth without a concrete caller, full functional verification, and FRED implementation without a hardware/toolchain caller |
 
 The missing dated Phase 3 VMware result cannot be reconstructed. Phase 0-5
@@ -444,13 +447,13 @@ review limit states exactly what automation still cannot decide.
 | D-126 | CLOSED | D-154 supplied the per-CPU counter seam. |
 | D-127 | SUPERSEDED | D-248 removed the speculative Event, peer, transport, wait and close surface. |
 | D-128 | CLOSED / REVIEW LIMIT | D-182 replaced on-demand arena growth with pre-admission capacity; runtime detection still covers only walked paths. |
-| D-129 | TRIGGER | The remaining two-caller PIC race waits for Phase 12 SMP; D-138 paid atomic pair acquisition. |
+| D-129 | TRIGGER | The remaining two-caller PIC race waits for SMP, `021`'s Phase 8; D-138 paid atomic pair acquisition. |
 | D-130 | SUPERSEDED | D-131/D-132 corrected lint limits and D-248 removed the speculative dead-code surface. |
 | D-131 | CLOSED | The remaining unsafe allowances are permissions, not claims that can be falsified by a mutation. |
 | D-132 | CLOSED | D-213 replaced text reachability with stable-rustc semantic caller evidence. |
 | D-133 | CLOSED | D-223 built the missing production RingEnter wake witness. |
 | D-134 | CLOSED / REVIEW LIMIT | D-209 binds a green baseline and exact red verdict; causal intent beyond that transition remains review work. |
-| D-135 | CLOSED | D-211 typed the image selector and D-240 bounded the human round; current execution evidence remains PW-003. |
+| D-135 | CLOSED | D-211 typed the image selector and D-240 bounded the human round; current execution evidence was PW-003, closed by D-449. |
 | D-136 | CLOSED | D-328 closes the last two exact compiler reintroductions in PW-519 and PW-523; PW-212, PW-309, PW-518, PW-520, PW-521, PW-524 and PW-526 record the other resolved findings. |
 | D-137 | CLOSED | D-138 supplied atomic multi-range acquisition; citation meaning remains D-124's review limit. |
 | D-138 | CLOSED | Pairwise atomic claims exist; no current caller needs a larger-span generalization. |
@@ -458,7 +461,7 @@ review limit states exactly what automation still cannot decide.
 | D-140 | CLOSED / REVIEW LIMIT | Safety prose is inventoried, but its truth still requires reading the implementation and caller. |
 | D-141 | CLOSED | D-255 and PW-027 prove the fired condition through the indivisible production claim and its retained install-removal mutation. |
 | D-142 | CLOSED | PW-128 and PW-201 closed with v0.2.0 (D-449). |
-| D-143 | TRIGGER | Per-CPU/ring detector work waits for Phase 12 SMP. |
+| D-143 | TRIGGER | Per-CPU/ring detector work waits for SMP, `021`'s Phase 8. |
 | D-144 | CLOSED | D-228 observes x87, SSE and AVX independently; PW-305 still verifies compacted XSAVEC hardware. |
 | D-145 | SUPERSEDED | D-248 removed the receive transport; a future post-Wizzy protocol is a new design, not this debt. |
 | D-146 | CLOSED | D-215 checks operational Markdown and current numeric authority. |
@@ -469,7 +472,7 @@ review limit states exactly what automation still cannot decide.
 | D-151 | CLOSED | D-163 made reservations destructor-backed and D-167 settled retired-program work. |
 | D-152 | CLOSED | D-166 supplied the versioned time page and exact cross-check. |
 | D-153 | CLOSED | D-164 added cancellation and D-167 quietens a retired ring before release. |
-| D-154 | TRIGGER | The per-CPU seam exists; stress and flake policy wait for Phase 12 SMP. |
+| D-154 | TRIGGER | The per-CPU seam exists; stress and flake policy wait for SMP, `021`'s Phase 8. |
 | D-155 | CLOSED | D-156 paid the final scancode-table item. |
 | D-156 | CLOSED | D-162 independently anchored the set-2 backslash code. |
 
