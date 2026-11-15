@@ -39,7 +39,10 @@ pub const fn watchdog_verdict(
     let latest_unambiguous = expected + LATE_TICKS;
     let maximum_tsc_ticks =
         expected_tsc_hz as u128 * latest_unambiguous as u128 / CRYSTAL_HZ as u128;
-    if tsc_ticks as u128 > maximum_tsc_ticks || pit_ticks > expected + tolerance {
+    if latest_unambiguous > u16::MAX as u64
+        || tsc_ticks as u128 > maximum_tsc_ticks
+        || pit_ticks > expected + tolerance
+    {
         return WatchdogVerdict::Inconclusive;
     }
     if pit_ticks < expected.saturating_sub(tolerance) {

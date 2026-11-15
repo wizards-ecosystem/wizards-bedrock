@@ -42,4 +42,9 @@ fn the_watchdog_distinguishes_disagreement_from_delay() {
         WatchdogVerdict::Inconclusive,
         "a pending older interrupt does not belong to the newly armed timer"
     );
+    assert_eq!(
+        watchdog_verdict(0, 0, 100, 60_000, tsc_hz),
+        WatchdogVerdict::Inconclusive,
+        "a window whose late bound passes the 16-bit span can have folded"
+    );
 }
