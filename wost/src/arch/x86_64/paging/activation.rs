@@ -85,6 +85,14 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
     space
         .reserve_shared_kernel_topology()
         .map_err(ActivateError::SharedTopology)?;
+    // User roots copy these entries, so a `USER` one would share ring-3 pages across processes.
+    for index in ENTRIES / 2..ENTRIES {
+        let slot = entry_slot(space.root(), index).map_err(ActivateError::SharedTopology)?;
+        let entry = EntrySlot::read(&slot);
+        if entry.is_present() && entry.flags().contains(Flags::USER) {
+            return Err(ActivateError::UserKernelEntry(index));
+        }
+    }
     let activation = Activation::begin()?;
     let root = space.root();
     let current_root = cpu::page_table_base();

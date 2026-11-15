@@ -383,6 +383,7 @@ pub enum ActivateError {
     /// The device window's shared top-level table could not be reserved before topology froze.
     SharedTopology(MapError),
     NoExecuteDisabled,
+    UserKernelEntry(usize),
 }
 
 impl fmt::Display for ActivateError {
@@ -431,6 +432,12 @@ impl fmt::Display for ActivateError {
             }
             Self::NoExecuteDisabled => {
                 f.write_str("EFER.NXE is clear, so the tables' no-execute bits are reserved")
+            }
+            Self::UserKernelEntry(index) => {
+                write!(
+                    f,
+                    "top-level slot {index} of the higher half is user-accessible"
+                )
             }
         }
     }

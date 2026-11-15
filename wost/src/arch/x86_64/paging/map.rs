@@ -291,6 +291,12 @@ impl AddressSpace {
         run: USegment,
         flags: Flags,
     ) -> Result<(), UserMapError> {
+        if !user_mapping_fits(virtual_base, run.len()) {
+            return Err(UserMapError::Mapping {
+                reason: MapError::NotYours(virtual_base),
+                run,
+            });
+        }
         match self.map_run_geometry(virtual_base, &run, flags.union(Flags::USER)) {
             Ok(owned_pages) => {
                 run.commit_mapping();
@@ -346,6 +352,9 @@ impl AddressSpace {
         keepalive: SharedKeepalive,
         flags: Flags,
     ) -> Result<(), MapError> {
+        if !user_mapping_fits(virtual_base, len) {
+            return Err(MapError::NotYours(virtual_base));
+        }
         self.may_reach(virtual_base, len)?;
         if flags.contains(Flags::WRITABLE) && !flags.contains(Flags::NO_EXECUTE) {
             return Err(MapError::WriteExecute(virtual_base));
