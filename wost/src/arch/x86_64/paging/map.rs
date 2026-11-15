@@ -29,7 +29,12 @@ impl AddressSpace {
         }
 
         if self.preflight(&range, flags, grain)? == MappingState::Identical {
-            return Ok(());
+            // The caller forgets an owned run on success, which would leak a repeat of its mapping.
+            return if flags.contains(Flags::OWNED) {
+                Err(MapError::Conflict(virtual_base))
+            } else {
+                Ok(())
+            };
         }
 
         let table_mark = self.tables.len();
