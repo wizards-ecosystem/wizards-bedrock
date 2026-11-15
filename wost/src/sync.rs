@@ -13,11 +13,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::arch::current::interrupt::{self, InterruptState};
 // Lock state is CPU-local so processors cannot share nesting evidence.
 use crate::arch::current::percpu;
-#[cfg(feature = "selftest")]
-use crate::arch::current::percpu::LockKind;
 use crate::panic::PanicToken;
 #[cfg(feature = "selftest")]
-pub use selftest::{ForgottenSpinLockGuard, Injection, taken_under_a_leaf, the_leaf_it_was_under};
+pub use selftest::Injection;
 
 /// How many spin locks this CPU holds, the runtime backstop for paths type borrows cannot see.
 ///
@@ -84,8 +82,6 @@ impl Default for Once {
 /// Long holders delay interrupts and belong behind [`ThreadLock`].
 pub struct SpinLock<T> {
     locked: AtomicBool,
-    #[cfg(feature = "selftest")]
-    forgotten_for_test: AtomicBool,
     value: UnsafeCell<T>,
 }
 
@@ -107,8 +103,6 @@ impl<T> SpinLock<T> {
     pub const fn new(value: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
-            #[cfg(feature = "selftest")]
-            forgotten_for_test: AtomicBool::new(false),
             value: UnsafeCell::new(value),
         }
     }
@@ -119,10 +113,7 @@ impl<T> SpinLock<T> {
     pub fn lock<'lock>(&'lock self, context: &'lock mut ThreadContext) -> SpinLockGuard<'lock, T> {
         let _ = context;
         loop {
-            if let Some(guard) = self.acquire(
-                #[cfg(feature = "selftest")]
-                LockKind::Ordered,
-            ) {
+            if let Some(guard) = self.acquire() {
                 return guard;
             }
             while self.is_locked() {
@@ -137,23 +128,16 @@ impl<T> SpinLock<T> {
         context: &'lock mut ThreadContext,
     ) -> Option<SpinLockGuard<'lock, T>> {
         let _ = context;
-        self.acquire(
-            #[cfg(feature = "selftest")]
-            LockKind::Ordered,
-        )
+        self.acquire()
     }
 
     /// Acquire the lock for an operation that is over before it returns.
     ///
     /// Its guard may enclose only take-mutate-return work, never a call or a block.
     /// Needing no context makes it usable from `Drop` and lets a leaf nest under a token lock.
-    #[cfg_attr(feature = "selftest", track_caller)]
     pub fn lock_leaf(&self) -> SpinLockGuard<'_, T> {
         loop {
-            if let Some(guard) = self.acquire(
-                #[cfg(feature = "selftest")]
-                LockKind::Leaf,
-            ) {
+            if let Some(guard) = self.acquire() {
                 return guard;
             }
             while self.is_locked() {
@@ -163,17 +147,12 @@ impl<T> SpinLock<T> {
     }
 
     /// Acquire a leaf lock if it is free, without spinning.
-    #[cfg_attr(feature = "selftest", track_caller)]
     pub fn try_lock_leaf(&self) -> Option<SpinLockGuard<'_, T>> {
-        self.acquire(
-            #[cfg(feature = "selftest")]
-            LockKind::Leaf,
-        )
+        self.acquire()
     }
 
     /// The acquisition itself, with no discipline attached.
-    #[cfg_attr(feature = "selftest", track_caller)]
-    fn acquire(&self, #[cfg(feature = "selftest")] kind: LockKind) -> Option<SpinLockGuard<'_, T>> {
+    fn acquire(&self) -> Option<SpinLockGuard<'_, T>> {
         // Disable first, or an interrupt after the exchange finds the lock held with interrupts on.
         let interrupts = interrupt::disable();
         match self
@@ -182,16 +161,9 @@ impl<T> SpinLock<T> {
         {
             Ok(_) => {
                 // One call, since a split read and write would have to order the state it reports.
-                percpu::current().took_lock(
-                    #[cfg(feature = "selftest")]
-                    kind,
-                    #[cfg(feature = "selftest")]
-                    core::panic::Location::caller(),
-                );
+                percpu::current().took_lock();
                 Some(SpinLockGuard {
                     lock: self,
-                    #[cfg(feature = "selftest")]
-                    kind,
                     interrupts,
                 })
             }
@@ -232,8 +204,6 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
 /// Not `Send`, by [`InterruptState`]: the flag it restores belongs to the CPU that cleared it.
 pub struct SpinLockGuard<'lock, T> {
     lock: &'lock SpinLock<T>,
-    #[cfg(feature = "selftest")]
-    kind: LockKind,
     interrupts: InterruptState,
 }
 
@@ -264,10 +234,7 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 impl<T> Drop for SpinLockGuard<'_, T> {
     /// Release, then restore; the other order lets an interrupt reach code still holding the lock.
     fn drop(&mut self) {
-        percpu::current().released_lock(
-            #[cfg(feature = "selftest")]
-            self.kind,
-        );
+        percpu::current().released_lock();
         self.lock.locked.store(false, Ordering::Release);
         self.interrupts.restore_in_place();
     }
