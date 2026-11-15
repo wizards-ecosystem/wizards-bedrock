@@ -166,7 +166,7 @@ const BOOT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Everything the gate runs, in the order that fails fastest.
 pub(crate) fn ci(paths: &Paths) -> Result<()> {
-    for &step in gate::REGISTRY.verified_steps(paths.root())? {
+    for &step in gate::REGISTRY.steps() {
         run_ci_step(paths, step)?;
     }
     println!("[xtask] ci passed");

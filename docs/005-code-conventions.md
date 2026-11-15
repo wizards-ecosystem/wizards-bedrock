@@ -271,7 +271,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   not fire in the other. `cargo xtask ci` covers the host packages plus the
   shipped, self-test and `refuse-pci` kernel graphs; adding a build-only feature
   means adding a graph to `xtask/src/gate.rs`, whose registry also drives
-  the help text and the README table (D-212).
+  the help text (D-212).
 - Anything the linker produces is checked rather than trusted:
   `xtask/src/elf.rs` reads the linked kernel back after every build and
   requires the properties `kernel/linker.ld` is written to produce (D-40).

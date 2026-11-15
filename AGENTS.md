@@ -96,23 +96,27 @@ A release (D-454) is `cargo xtask ci` green, `cargo xtask evidence` and
 and a person reading the release diff. `cargo mutants` over changed library code
 and fuzzing are laptop work that never blocks a commit.
 
-## Testing, and the rule that matters most
+## Tests
 
-The suite is small on purpose (D-454). It has six tiers: one boot smoke that
-also scans the serial log; syscall and ABI behaviour; isolation and security;
-a few edge tests per hostile-input parser; a regression for each fixed bug; and
-about ten tooling smoke tests. Hardware-free logic goes to a `libs/` crate and
-runs under `cargo test`; anything needing a real machine goes to
-`kernel/src/selftest.rs` and runs under `cargo xtask test-boot`.
+- The suite is minimal. Keep a test only if it pins a contract a user could hit or a fixed real bug with non-trivial logic.
+- A change adds at most one focused test, and only when it fixes a real bug. Prefer extending an existing test to adding a file.
+- Never test prose, constants, tables, layouts, wiring or source text; what must hold of the source is a lint, a deny or a type.
+- A flaky or slow check is deleted, not fixed.
+- Builds and test tiers run on the laptop, never on the desktop.
 
-Do not add a test that restates the code, asserts a constant, a table or a
-layout, or reads source text: a source rule is a lint, a `deny` or `forbid`
-attribute, or a type. A change adds at most one focused test, and only for a
-real bug. A check that cannot fail is worth less than no check, so write each
-one from the claim it makes. `cargo mutants` runs on the laptop on demand;
-nothing requires or records it.
+Bedrock's tiers (D-454): one boot smoke that also scans the serial log; syscall and ABI
+behaviour; isolation and security, which a hostile program can hit; a few edge tests per
+hostile-input parser; a regression for each fixed bug; and about ten tooling smoke tests.
+Hardware-free logic goes to a `libs/` crate and runs under `cargo test`; anything needing a
+real machine goes to `kernel/src/selftest.rs` and runs under `cargo xtask test-boot`.
+`cargo mutants` runs on the laptop on demand; nothing requires or records it.
 
 Doctests run in `libs/` crates and nowhere else (D-41): those carry
 `#![cfg_attr(not(test), no_std)]` and build for the host, so examples there are
 executable checks. `wost` and `kernel` are cross-compiled, so examples in them
 would rot unrun: leave them out.
+
+## Docs
+
+- Docs never fail a build: no test, script or CI step checks prose against code.
+- Update the docs a change makes false in the same change; at a release, read the docs against the code and fix what drifted.

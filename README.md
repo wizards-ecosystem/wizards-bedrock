@@ -180,7 +180,6 @@ cargo xtask ci
 
 `ci` is the local source gate. Its stages are rendered from the same registry the tool executes:
 
-<!-- CI-REGISTRY:START -->
 Cargo graphs used by each Cargo-driven gate stage:
 
 | Graph | Target | Features |
@@ -204,7 +203,6 @@ Ordered `cargo xtask ci` stages:
 | 8 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
 | 9 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
 | 10 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
-<!-- CI-REGISTRY:END -->
 
 `boot-check` boots the shipped image, requires the keyboard prompt and requires the kernel to log that it consumed an injected key. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `doc` exists so rustdoc's link lints run.
 

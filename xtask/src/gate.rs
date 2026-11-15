@@ -1,16 +1,9 @@
 //! The complete composition of the self-contained local gate.
 
 use std::fmt::Write;
-use std::path::Path;
-
-use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
 use crate::paths;
-
-const README_BYTES: u64 = 64 * 1024;
-const REGISTRY_START: &str = "<!-- CI-REGISTRY:START -->";
-const REGISTRY_END: &str = "<!-- CI-REGISTRY:END -->";
 
 /// The crates a pass selects: the workspace less the kernel crates, or a fixed set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,13 +32,6 @@ impl CargoPass {
         }
     }
 
-    fn documented_target(self) -> &'static str {
-        self.target.unwrap_or("host")
-    }
-
-    fn documented_features(self) -> &'static str {
-        self.features.unwrap_or("none")
-    }
 }
 
 /// One ordered stage of `cargo xtask ci`.
@@ -125,10 +111,6 @@ impl Registry {
         self.steps
     }
 
-    pub(crate) fn verified_steps(&self, root: &Path) -> Result<&'static [Step]> {
-        verify_documentation(root)?;
-        Ok(self.steps)
-    }
 }
 
 const CARGO_PASSES: &[CargoPass] = &[
@@ -192,56 +174,3 @@ pub(crate) fn help_section() -> String {
     }
     rendered
 }
-
-fn markdown() -> String {
-    let mut rendered = String::from(
-        "Cargo graphs used by each Cargo-driven gate stage:\n\n\
-         | Graph | Target | Features |\n\
-         |---|---|---|\n",
-    );
-    for pass in REGISTRY.cargo_passes() {
-        let _ = writeln!(
-            rendered,
-            "| {} | `{}` | `{}` |",
-            pass.name,
-            pass.documented_target(),
-            pass.documented_features()
-        );
-    }
-    rendered.push_str(
-        "\nOrdered `cargo xtask ci` stages:\n\n\
-         | Order | Invocation | Purpose |\n\
-         |---:|---|---|\n",
-    );
-    for (index, step) in REGISTRY.steps().iter().enumerate() {
-        let _ = writeln!(
-            rendered,
-            "| {} | `cargo xtask {}` | {} |",
-            index + 1,
-            step.invocation(),
-            step.purpose()
-        );
-    }
-    rendered
-}
-
-pub(crate) fn verify_documentation(root: &Path) -> Result<()> {
-    let readme_path = root.join("README.md");
-    let readme = crate::files::read_bounded_text(&readme_path, README_BYTES, "CI README")?;
-    let documented = readme
-        .split_once(REGISTRY_START)
-        .context("README has no CI registry start marker")?
-        .1
-        .split_once(REGISTRY_END)
-        .context("README has no CI registry end marker")?
-        .0
-        .trim();
-    ensure!(
-        documented == markdown().trim(),
-        "README's CI registry rendering differs from the executable registry"
-    );
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests;
