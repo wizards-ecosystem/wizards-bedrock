@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "acpi-tables"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "address"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "x86-paging",
 ]
@@ -131,15 +131,15 @@ dependencies = [
 
 [[package]]
 name = "eevdf"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "elf64"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fat32"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "fatfs"
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "frame-space"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.1",
  "proptest",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "handle-space"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "hex"
@@ -245,7 +245,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "memory-map"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.1",
  "proptest",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "mmio-range"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "nix"
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "nvme"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "timebase",
 ]
@@ -314,11 +314,11 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "panic-record"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "path-walk"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.1",
  "proptest",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "pci-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "register-bits",
 ]
@@ -339,11 +339,11 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pixel"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "port-space"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ppv-lite86"
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "ps2-keys"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "quote"
@@ -482,11 +482,11 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "register-bits"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ring-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.1",
  "proptest",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "slab-layout"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "smallvec"
@@ -592,7 +592,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-layout"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "syn"
@@ -613,7 +613,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "timebase"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "tracing"
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "trap-cause"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "x86-tables",
 ]
@@ -655,7 +655,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
 name = "vtd"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "wasi"
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "wizard-kernel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "acpi-tables",
  "eevdf",
@@ -814,11 +814,11 @@ dependencies = [
 
 [[package]]
 name = "wizzy-handoff"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "wost"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "address",
  "frame-space",
@@ -852,33 +852,33 @@ dependencies = [
 
 [[package]]
 name = "x86-apic"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "register-bits",
 ]
 
 [[package]]
 name = "x86-cpuid"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "x86-paging"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "x86-cpuid",
 ]
 
 [[package]]
 name = "x86-pit"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "x86-tables"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "acpi-tables",
  "anyhow",

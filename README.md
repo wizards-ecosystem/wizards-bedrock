@@ -7,7 +7,7 @@
 
 Bedrock is a from-scratch **Rust kernel** for x86_64 and UEFI. [Limine](https://github.com/limine-bootloader/limine) enters it in long mode at `0xffffffff80000000`. From that handoff the kernel installs its own descriptor tables and page tables, turns on the CPU's supervisor protections, schedules threads, fences PCI DMA with VT-d, reads an NVMe disk, and runs a ring-3 program whose external authority is a handle table.
 
-The workspace version is 0.2.0. The qualified boot image for that version is recorded in [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md). This repository is the kernel: hardware, memory, scheduling, storage, and the capability ABI. A shell, desktop, and network stack live outside it. Phases 0 to 6 are in [docs/000-vision.md](docs/000-vision.md); from Phase 7 on, [docs/021-roadmap.md](docs/021-roadmap.md) holds the order (D-452).
+The workspace version is 0.3.0. Each release is recorded in [docs/releases/](docs/releases/). This repository is the kernel: hardware, memory, scheduling, storage, and the capability ABI. A shell, desktop, and network stack live outside it. Phases 0 to 6 are in [docs/000-vision.md](docs/000-vision.md); from Phase 7 on, [docs/021-roadmap.md](docs/021-roadmap.md) holds the order (D-452).
 
 ## What a boot does
 
@@ -178,7 +178,7 @@ Release builds use `panic = "abort"`, LTO, and debug info that costs no loaded b
 cargo xtask ci
 ```
 
-`ci` is the local source gate. Its stages are rendered from the same registry the tool executes:
+`ci` is the local source gate (`cargo xtask help` prints the same list):
 
 Cargo graphs used by each Cargo-driven gate stage:
 
