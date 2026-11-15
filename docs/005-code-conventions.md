@@ -275,8 +275,8 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   `xtask/src/elf.rs` reads the linked kernel back after every build and
   requires the properties `kernel/linker.ld` is written to produce (D-40).
   A linker script fails loudly when malformed and quietly when incomplete.
-- A `libs/` crate goes in `default-members` so a bare `cargo test` covers it,
-  and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
+- A `libs/` crate goes in `default-members` so a bare `cargo test` covers it;
+  `cargo xtask ci` covers every workspace member except `wost` and the kernel.
 - `xtask` logic is unit-tested directly, in-module. Anything touching the
   filesystem is driven through a `Cursor` rather than a real file.
 - Constructors that read the environment are split from pure ones:
