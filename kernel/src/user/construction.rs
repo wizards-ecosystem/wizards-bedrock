@@ -9,8 +9,8 @@ use super::call::cross;
 use super::load::{LoadError, load, place_stack};
 use super::reap::slot_has_zombie;
 use super::{
-    APART, BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, Spawned,
-    USER_STACK_BYTES,
+    APART, BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, STACK_BYTES,
+    Spawned,
 };
 use crate::handle::{HandleError, HandleTable};
 use crate::{object, queue, thread};
@@ -150,37 +150,43 @@ pub(crate) enum SpawnError {
     /// Its bootstrap channel could not be put in its table.
     NoBootstrap(HandleError),
     /// The time page could not be shown to it.
-    NoTimePage(crate::timepage::TimePageError),
+    NoTimePage(crate::timepage::Error),
     /// No memory for its ring.
     NoRing,
 }
 
 impl fmt::Display for SpawnError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoInterruptAdmission => {
-                f.write_str("maskable interrupts are not admitted; ring 3 is closed")
+                formatter.write_str("maskable interrupts are not admitted; ring 3 is closed")
             }
             Self::NoUserIsolation => {
-                f.write_str("no admitted user isolation mode; ring 3 is closed")
+                formatter.write_str("no admitted user isolation mode; ring 3 is closed")
             }
-            Self::NoExecuteProtection => f.write_str("no execute protection; ring 3 is closed"),
-            Self::NoExtendedState => f.write_str("no isolated extended state; ring 3 is closed"),
-            Self::NoClock => f.write_str("no calibrated clock; ring 3 is closed"),
-            Self::NoServiceWorker => f.write_str("no service worker; ring 3 is closed"),
+            Self::NoExecuteProtection => {
+                formatter.write_str("no execute protection; ring 3 is closed")
+            }
+            Self::NoExtendedState => {
+                formatter.write_str("no isolated extended state; ring 3 is closed")
+            }
+            Self::NoClock => formatter.write_str("no calibrated clock; ring 3 is closed"),
+            Self::NoServiceWorker => formatter.write_str("no service worker; ring 3 is closed"),
             Self::UnguardedBootStack => {
-                f.write_str("the boot thread has no guarded stack; ring 3 is closed")
+                formatter.write_str("the boot thread has no guarded stack; ring 3 is closed")
             }
-            Self::NoSpace(reason) => write!(f, "no address space: {reason}"),
-            Self::Load(reason) => write!(f, "{reason}"),
-            Self::NoStack => f.write_str("no memory for a stack"),
-            Self::NotBindable(reason) => write!(f, "the space cannot be installed: {reason}"),
-            Self::NoThread(reason) => write!(f, "no thread: {reason}"),
-            Self::Incomplete => f.write_str("the process construction is incomplete"),
-            Self::TooManyMappings => f.write_str("the process has too many owned mappings"),
-            Self::NoBootstrap(reason) => write!(f, "no bootstrap channel: {reason}"),
-            Self::NoTimePage(reason) => write!(f, "the time page: {reason}"),
-            Self::NoRing => f.write_str("no memory for a ring"),
+            Self::NoSpace(reason) => write!(formatter, "no address space: {reason}"),
+            Self::Load(reason) => write!(formatter, "{reason}"),
+            Self::NoStack => formatter.write_str("no memory for a stack"),
+            Self::NotBindable(reason) => {
+                write!(formatter, "the space cannot be installed: {reason}")
+            }
+            Self::NoThread(reason) => write!(formatter, "no thread: {reason}"),
+            Self::Incomplete => formatter.write_str("the process construction is incomplete"),
+            Self::TooManyMappings => formatter.write_str("the process has too many owned mappings"),
+            Self::NoBootstrap(reason) => write!(formatter, "no bootstrap channel: {reason}"),
+            Self::NoTimePage(reason) => write!(formatter, "the time page: {reason}"),
+            Self::NoRing => formatter.write_str("no memory for a ring"),
         }
     }
 }
@@ -295,7 +301,7 @@ fn map_program(
     construction.regions = image.regions;
 
     let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
-    construction.remember(stack, USER_STACK_BYTES)?;
+    construction.remember(stack, STACK_BYTES)?;
     Ok((image.entry, stack))
 }
 

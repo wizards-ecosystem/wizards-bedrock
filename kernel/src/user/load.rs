@@ -5,14 +5,14 @@ use wost::mm;
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
-use super::{APART, Regions, STACK, USER_STACK_BYTES};
+use super::{APART, Regions, STACK, STACK_BYTES};
 use crate::{info, warn};
 
 /// Map program `which`'s stack, writable and never executable: W^X is not relaxed for user
 /// memory, because it is the reason user memory exists.
 pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
-    let mut stack = mm::allocate_contiguous((USER_STACK_BYTES / PAGE_SIZE) as usize, 1)?;
+    let mut stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     if !stack.zero() {
         return None;
     }
@@ -84,40 +84,48 @@ pub(crate) enum LoadError {
 }
 
 impl core::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            Self::Missing => f.write_str("no initrd"),
-            Self::NotAnElf(reason) => write!(f, "{reason}"),
-            Self::Malformed(at) => write!(f, "the segment at {at:#x} claims more file than memory"),
-            Self::Truncated(at) => write!(f, "the segment at {at:#x} runs past the image"),
-            Self::Overlapping(at) => write!(f, "the segment at {at:#x} overlaps another"),
-            Self::Unaligned(at) => write!(f, "the segment at {at:#x} is not page-aligned"),
+            Self::Missing => formatter.write_str("no initrd"),
+            Self::NotAnElf(reason) => write!(formatter, "{reason}"),
+            Self::Malformed(at) => write!(
+                formatter,
+                "the segment at {at:#x} claims more file than memory"
+            ),
+            Self::Truncated(at) => write!(formatter, "the segment at {at:#x} runs past the image"),
+            Self::Overlapping(at) => write!(formatter, "the segment at {at:#x} overlaps another"),
+            Self::Unaligned(at) => write!(formatter, "the segment at {at:#x} is not page-aligned"),
             Self::InvalidAlignment { at, alignment } => write!(
-                f,
+                formatter,
                 "the segment at {at:#x} has invalid alignment {alignment:#x}"
             ),
             Self::TooManySegments => {
-                f.write_str("the image has more segments than the loader places")
+                formatter.write_str("the image has more segments than the loader places")
             }
             Self::WriteExecute(at) => {
                 write!(
-                    f,
+                    formatter,
                     "the segment at {at:#x} asks to be writable and executable"
                 )
             }
-            Self::NotUserMemory(at) => write!(f, "the segment at {at:#x} is not user memory"),
-            Self::OutOfMemory => f.write_str("no memory for the program"),
-            Self::NotMapped(reason) => write!(f, "{reason}"),
+            Self::NotUserMemory(at) => {
+                write!(formatter, "the segment at {at:#x} is not user memory")
+            }
+            Self::OutOfMemory => formatter.write_str("no memory for the program"),
+            Self::NotMapped(reason) => write!(formatter, "{reason}"),
             Self::Rollback { reason, pages } => {
-                write!(f, "loader rollback refused after {pages} page(s): {reason}")
+                write!(
+                    formatter,
+                    "loader rollback refused after {pages} page(s): {reason}"
+                )
             }
             Self::InvalidEntry(at) => {
                 write!(
-                    f,
+                    formatter,
                     "the entry point at {at:#x} is not executable program memory"
                 )
             }
-            Self::Empty => f.write_str("the program has nothing to load"),
+            Self::Empty => formatter.write_str("the program has nothing to load"),
         }
     }
 }
@@ -161,8 +169,8 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
 }
 
 /// Whether two validated placements want any page in common.
-fn overlaps(a: &Placement, b: &Placement) -> bool {
-    a.at < b.mapped_end && b.at < a.mapped_end
+fn overlaps(first: &Placement, second: &Placement) -> bool {
+    first.at < second.mapped_end && second.at < first.mapped_end
 }
 
 /// The most segments this loader will place: a fixed bound because validation holds every

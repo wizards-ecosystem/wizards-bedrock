@@ -52,7 +52,7 @@ const APART: u64 = 0x1_0000;
 
 /// Bytes of the *program*'s stack, one page because it makes one call and never returns; named
 /// apart from `thread::STACK_BYTES`, a *kernel* thread's 32 KiB, so two sizes never share a name.
-const USER_STACK_BYTES: u64 = PAGE_SIZE;
+const STACK_BYTES: u64 = PAGE_SIZE;
 
 /// What a thread finds when it wakes in a space of its own, arranged by [`spawn`] while the slot
 /// is still `Reserved` so it is there before the thread's first instruction.

@@ -11,7 +11,7 @@ use super::{
     STATUS_NO_ROOM, STATUS_OK, Submission, WorkPhase, refuse,
 };
 use crate::handle::{HandleTable, SlotReservation};
-use crate::vfs::VfsError;
+use crate::vfs;
 use crate::wait::WaitQueue;
 
 /// Global file-work admission: one worker makes controller ownership and completion order
@@ -31,7 +31,7 @@ pub(super) struct Work {
 
 #[derive(Debug)]
 struct OpenRequest {
-    directory: crate::vfs::Directory,
+    directory: vfs::Directory,
     held: Rights,
     path: [u8; MAX_PATH],
     len: usize,
@@ -562,7 +562,7 @@ fn service(mut running: RunningWork) {
             );
             let request = running.read_request();
             let mut scratch = [0u8; MAX_READ];
-            match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
+            match vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
                 Ok(read) => {
                     assert!(
                         running.work.ring.write_data(request.at, &scratch[..read]),
@@ -585,27 +585,25 @@ fn service(mut running: RunningWork) {
                 .open_at
                 .take()
                 .unwrap_or_else(|| panic!("OpenAt file work lost its request"));
-            let node = match crate::vfs::resolve(directory, &path[..len]) {
+            let node = match vfs::resolve(directory, &path[..len]) {
                 Ok(node) => node,
                 Err(error) => {
                     drop(reservation);
                     let status = match error {
-                        VfsError::Path(_) => STATUS_BAD_PATH,
-                        VfsError::NotADirectory | VfsError::NotFound => STATUS_NO_ENTRY,
-                        VfsError::Backend(_) | VfsError::NoVolume => STATUS_IO,
+                        vfs::Error::Path(_) => STATUS_BAD_PATH,
+                        vfs::Error::NotADirectory | vfs::Error::NotFound => STATUS_NO_ENTRY,
+                        vfs::Error::Backend(_) | vfs::Error::NoVolume => STATUS_IO,
                     };
                     return running.finish(status, 0);
                 }
             };
             let (produced, offered) = match node {
-                crate::vfs::Node::File(file) => (
+                vfs::Node::File(file) => (
                     crate::object::file(file),
                     held.intersection(Rights::UNIVERSAL).union(Rights::READ),
                 ),
-                crate::vfs::Node::Directory(directory) => {
-                    (crate::object::directory(directory), held)
-                }
-                crate::vfs::Node::Device(_) => {
+                vfs::Node::Directory(directory) => (crate::object::directory(directory), held),
+                vfs::Node::Device(_) => {
                     drop(reservation);
                     return running.finish(STATUS_DENIED, 0);
                 }

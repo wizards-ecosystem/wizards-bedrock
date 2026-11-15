@@ -50,8 +50,8 @@ pub(crate) enum HandleError {
 }
 
 impl core::fmt::Display for HandleError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match *self {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match *self {
             Self::Malformed => "not a handle",
             Self::Stale => "handle names nothing live in this table",
             Self::Denied => "handle does not carry the right",

@@ -5,7 +5,7 @@ use wost::arch::current::task;
 use wost::arch::current::{cpu, usercopy};
 
 use super::reap::orphan;
-use super::{BOOTSTRAPS, LAUNCHES, USER_STACK_BYTES};
+use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
 use crate::handle::HandleTable;
 use crate::{info, queue, thread, warn};
 
@@ -232,7 +232,7 @@ pub(super) fn cross() {
 
     // Version, argument and bootstrap handle, written with the checked copy; the tail keeps the
     // initial pointer aligned.
-    let top = launch.stack + USER_STACK_BYTES - ENTRY_STACK_BYTES;
+    let top = launch.stack + STACK_BYTES - ENTRY_STACK_BYTES;
     if usercopy::copy_to_user(top + entry::VERSION as u64, &ENTRY_VERSION.to_le_bytes()).is_err()
         || usercopy::copy_to_user(top + entry::ARGUMENT as u64, &launch.argument.to_le_bytes())
             .is_err()

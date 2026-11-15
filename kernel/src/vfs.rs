@@ -64,7 +64,7 @@ pub(crate) enum Node {
 
 /// Why a path did not resolve.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum VfsError {
+pub(crate) enum Error {
     /// The path itself is not one this kernel can resolve, and which mistake it makes.
     Path(PathError),
     /// The backend refused.
@@ -77,13 +77,13 @@ pub(crate) enum VfsError {
     NotFound,
 }
 
-impl From<PathError> for VfsError {
+impl From<PathError> for Error {
     fn from(error: PathError) -> Self {
         Self::Path(error)
     }
 }
 
-impl From<FatError> for VfsError {
+impl From<FatError> for Error {
     fn from(error: FatError) -> Self {
         match error {
             FatError::NotFound => Self::NotFound,
@@ -113,13 +113,13 @@ pub(crate) const fn tmp_root() -> Directory {
 /// Resolve `path` from `at` inside one mount. Each step uses the node it judged and never
 /// re-derives one from a name, so nothing is looked up twice (`openat2`'s gap).
 /// Absolute and escaping paths are malformed `Path` arguments, since no root or parent exists.
-pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, VfsError> {
+pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, Error> {
     let mut components = [b"".as_slice(); MAX_DEPTH];
     let depth = path_walk::split(path, &mut components)?;
 
     // `.` and `a/..` name the starting directory, which only a rights-checked duplicate may copy.
     if depth == 0 {
-        return Err(VfsError::Path(PathError::Empty));
+        return Err(Error::Path(PathError::Empty));
     }
 
     match at {
@@ -130,11 +130,11 @@ pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, VfsError> {
 }
 
 /// Walk `components` from a directory in memory.
-fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, VfsError> {
+fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, Error> {
     let mut directory = from;
 
     for (index, name) in components.iter().enumerate() {
-        let found = crate::tmpfs::lookup(directory, name).ok_or(VfsError::NotFound)?;
+        let found = crate::tmpfs::lookup(directory, name).ok_or(Error::NotFound)?;
         let is_last = index + 1 == components.len();
 
         match found {
@@ -147,34 +147,34 @@ fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, VfsError> {
             crate::tmpfs::Found::File { at, len } => {
                 if !is_last {
                     // A file walked through would be answered from whatever its bytes say.
-                    return Err(VfsError::NotADirectory);
+                    return Err(Error::NotADirectory);
                 }
                 return Ok(Node::File(File::Tmp { at, len }));
             }
         }
     }
 
-    Err(VfsError::NotFound)
+    Err(Error::NotFound)
 }
 
 /// Resolve a name among the devices: one component only, so `storage/anything` is refused as a
 /// file walked through, the same as in every backend.
-fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, VfsError> {
-    let (first, rest) = components.split_first().ok_or(VfsError::NotFound)?;
-    let device = crate::devfs::lookup(first).ok_or(VfsError::NotFound)?;
+fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, Error> {
+    let (first, rest) = components.split_first().ok_or(Error::NotFound)?;
+    let device = crate::devfs::lookup(first).ok_or(Error::NotFound)?;
     if rest.is_empty() {
         Ok(Node::Device(device))
     } else {
-        Err(VfsError::NotADirectory)
+        Err(Error::NotADirectory)
     }
 }
 
 /// Walk `components` from a FAT32 directory.
-fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, VfsError> {
+fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, Error> {
     let mut volume = crate::fs::mount()
-        .ok_or(VfsError::NoVolume)?
-        .map_err(VfsError::from)?;
-    let entry = volume.resolve(from, components).map_err(VfsError::from)?;
+        .ok_or(Error::NoVolume)?
+        .map_err(Error::from)?;
+    let entry = volume.resolve(from, components).map_err(Error::from)?;
     Ok(if entry.is_directory() {
         Node::Directory(Directory::Fat {
             cluster: entry.cluster,
@@ -190,13 +190,13 @@ fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, VfsError> {
 /// Read `into.len()` bytes of `file` from `offset`; offsets are per operation (`012` §6).
 /// No object has a seek, tell or cursor: a shared cursor would be a hot-path lock and the only
 /// coupling two handles to one file could have, and userspace builds one from these offsets.
-pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, VfsError> {
+pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Error> {
     match file {
         File::Fat { cluster, size } => crate::fs::mount()
-            .ok_or(VfsError::NoVolume)?
-            .map_err(VfsError::from)?
+            .ok_or(Error::NoVolume)?
+            .map_err(Error::from)?
             .read_file(cluster, size, offset, into)
-            .map_err(VfsError::from),
+            .map_err(Error::from),
         File::Tmp { at, len } => Ok(crate::tmpfs::read(at, len, offset as usize, into)),
     }
 }
@@ -205,17 +205,15 @@ pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Vf
 pub(crate) fn enumerate(
     directory: Directory,
     mut found: impl FnMut(&[u8], bool) -> bool,
-) -> Result<(), VfsError> {
+) -> Result<(), Error> {
     match directory {
         Directory::Fat { cluster } => {
             let mut volume = crate::fs::mount()
-                .ok_or(VfsError::NoVolume)?
-                .map_err(VfsError::from)?;
+                .ok_or(Error::NoVolume)?
+                .map_err(Error::from)?;
             let mut cursor = fat32::DirectoryCursor::new(cluster);
             loop {
-                let chunk = volume
-                    .directory_chunk(&mut cursor)
-                    .map_err(VfsError::from)?;
+                let chunk = volume.directory_chunk(&mut cursor).map_err(Error::from)?;
                 for entry in chunk.entries() {
                     if !found(entry.name(), entry.is_directory()) {
                         return Ok(());
@@ -227,7 +225,7 @@ pub(crate) fn enumerate(
             }
         }
         Directory::Tmp { index } => {
-            let listing = crate::tmpfs::list(index).ok_or(VfsError::NotFound)?;
+            let listing = crate::tmpfs::list(index).ok_or(Error::NotFound)?;
             for entry in listing.entries() {
                 if !found(entry.name(), entry.is_directory()) {
                     break;

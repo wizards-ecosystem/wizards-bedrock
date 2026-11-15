@@ -548,7 +548,7 @@ fn spawn_prepared(
     } = prepared;
     // Before looking for a slot: a spawn is what most needs a freed slot, and the worker may be
     // behind.
-    while crate::user::has_zombies() && crate::user::collect().is_some() {}
+    while crate::user::has_zombies() && crate::user::collect().is_reclaimed() {}
 
     let slot = match reserve(name, entry, weight) {
         Ok(slot) => slot,

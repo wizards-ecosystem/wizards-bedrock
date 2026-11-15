@@ -138,19 +138,19 @@ fn write_clock(page: &mut SharedBytes, mode: u32, origin: u64, conversion: Timeb
 ///
 /// # Errors
 ///
-/// [`TimePageError::Absent`] if the page could not be built at boot, otherwise whatever
+/// [`Error::Absent`] if the page could not be built at boot, otherwise whatever
 /// [`AddressSpace::map_shared`] refused.
-pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
+pub(crate) fn install(space: &mut AddressSpace) -> Result<(), Error> {
     // Shared rather than held, because mapping may allocate, which no leaf guard may span.
     let shared = PAGE.lock_leaf().as_ref().map(Arc::clone);
     let Some(shared) = shared else {
-        return Err(TimePageError::Absent);
+        return Err(Error::Absent);
     };
 
     let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE);
     drop(shared);
     apply_deferred_revocation();
-    result.map_err(TimePageError::Map)
+    result.map_err(Error::Map)
 }
 
 // The mode is read under the guard, so a revocation either sees this share gone or is seen here.
@@ -166,23 +166,23 @@ fn apply_deferred_revocation() {
 
 /// Why a program could not be shown the time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum TimePageError {
+pub(crate) enum Error {
     /// No frame could be spared at boot; refused, since the ABI promises the page at [`TIME`].
     Absent,
     /// The mapping itself was refused.
     Map(MapError),
 }
 
-impl core::fmt::Display for TimePageError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Absent => core::fmt::Write::write_str(f, "no time page was built"),
-            Self::Map(error) => write!(f, "{error}"),
+            Self::Absent => formatter.write_str("no time page was built"),
+            Self::Map(error) => write!(formatter, "{error}"),
         }
     }
 }
 
-impl core::error::Error for TimePageError {}
+impl core::error::Error for Error {}
 
 fn write_u32(page: &mut SharedBytes, at: usize, value: u32) {
     assert!(

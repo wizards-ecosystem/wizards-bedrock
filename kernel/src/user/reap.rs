@@ -58,7 +58,7 @@ pub(crate) enum CollectOutcome {
 }
 
 impl CollectOutcome {
-    pub(crate) const fn is_some(self) -> bool {
+    pub(crate) const fn is_reclaimed(self) -> bool {
         matches!(self, Self::Reclaimed)
     }
 }
