@@ -566,6 +566,11 @@ fn work_forever() {
             service(work);
             continue;
         }
+        // Queued work that `take` refused is being settled by a context this worker preempted.
+        if FILE_WORK.queued.load(Ordering::Acquire) > 0 {
+            crate::thread::yield_now(&mut context);
+            continue;
+        }
         FILE_WORK.waiters.wait_unless(&mut context, || {
             retry_reap
                 || FILE_WORK.queued.load(Ordering::Acquire) > 0
