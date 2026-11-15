@@ -3,7 +3,7 @@ use super::*;
 /// The self-test build exits at the debug-exit device, so only this boot covers what the
 /// shipped kernel does afterwards: it must settle, call from ring 3, print every required
 /// platform record and never panic.
-pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
+pub(crate) fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
     let coverage = RunDmaCoverage::create(paths.target_dir(), Remapping::Present)?;
@@ -175,17 +175,25 @@ const UNISOLATED_PROFILE: DegradedProfile = DegradedProfile {
 
 /// The other boots keep PCI configuration, and a precondition only ever met is
 /// indistinguishable from one never checked; this one keeps its exact terminal panic.
-pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
+pub(crate) fn observe_degraded(
+    paths: &Paths,
+    image: &Path,
+    settle: Duration,
+) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_PCI_PROFILE)
 }
 
 /// PCI configuration stays live here, so the DMA handoff can still be fenced.
-pub fn observe_no_x2apic(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
+pub(crate) fn observe_no_x2apic(
+    paths: &Paths,
+    image: &Path,
+    settle: Duration,
+) -> Result<DegradedOutcome> {
     observe_profile(paths, image, settle, NO_X2APIC_PROFILE)
 }
 
 /// With no remapping unit, storage must refuse every candidate instead of running unisolated.
-pub fn observe_unisolated(
+pub(crate) fn observe_unisolated(
     paths: &Paths,
     image: &Path,
     settle: Duration,

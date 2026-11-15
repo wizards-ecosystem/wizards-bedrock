@@ -8,30 +8,30 @@ use fatfs::{FatType, FileSystem, FsOptions};
 use super::esp;
 
 /// Below 65525 clusters `fatfs` silently formats FAT16, which `libs/fat32` refuses.
-pub const VOLUME_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const VOLUME_BYTES: usize = 64 * 1024 * 1024;
 
 /// A file small enough to sit in one cluster.
-pub const SMALL_NAME: &str = "HELLO.TXT";
+pub(crate) const SMALL_NAME: &str = "HELLO.TXT";
 
 /// Larger than one cluster at every size `fatfs` chooses here, so reading it walks the chain.
-pub const LARGE_NAME: &str = "BIG.BIN";
+pub(crate) const LARGE_NAME: &str = "BIG.BIN";
 
-pub const LARGE_BYTES: usize = 40 * 1024;
+pub(crate) const LARGE_BYTES: usize = 40 * 1024;
 
 /// Deleted after later live entries exist; its `0xE5` slot tells deleted from end of directory.
-pub const DELETED_NAME: &str = "GONE.TXT";
+pub(crate) const DELETED_NAME: &str = "GONE.TXT";
 
 /// A directory, so the walk has somewhere to descend.
-pub const DIRECTORY_NAME: &str = "DATA";
+pub(crate) const DIRECTORY_NAME: &str = "DATA";
 
-pub const NESTED_NAME: &str = "NESTED.TXT";
+pub(crate) const NESTED_NAME: &str = "NESTED.TXT";
 
-pub const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
+pub(crate) const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
 
-pub const NESTED_CONTENT: &[u8] = b"one directory down\n";
+pub(crate) const NESTED_CONTENT: &[u8] = b"one directory down\n";
 
 /// Byte `index` of [`LARGE_NAME`]; position-dependent, so a read from the wrong cluster shows.
-pub const fn large_byte(index: usize) -> u8 {
+pub(crate) const fn large_byte(index: usize) -> u8 {
     ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
 

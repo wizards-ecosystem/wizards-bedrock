@@ -55,7 +55,7 @@ fn copy_limine_efi<D: ReadWriteSeek>(dir: &Dir<'_, D>, paths: &Paths) -> Result<
 
 /// The boot tree the firmware and Limine expect.
 /// The program sits in /boot beside the kernel: Limine's `module_path` is volume-relative.
-pub fn populate<D: ReadWriteSeek>(
+pub(crate) fn populate<D: ReadWriteSeek>(
     filesystem: &FileSystem<D>,
     paths: &Paths,
     kernel: &[u8],

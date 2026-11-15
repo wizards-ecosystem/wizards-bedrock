@@ -6,7 +6,7 @@ pub(super) const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
 pub(super) const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A kernel that neither passes nor fails within `timeout` has hung, and its emulator is killed.
-pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
+pub(crate) fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
     let (outcome, _) = observe_selftest_run(paths, image, timeout, true)?;
     require_selftest(outcome)
 }

@@ -38,25 +38,25 @@ const fn ranges_overlap(left: u64, left_size: u64, right: u64, right_size: u64) 
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Segment {
+pub(crate) struct Segment {
     /// `p_type`.
-    pub kind: u32,
+    pub(crate) kind: u32,
     /// `p_flags`.
-    pub flags: u32,
+    pub(crate) flags: u32,
     /// `p_vaddr`.
-    pub vaddr: u64,
+    pub(crate) vaddr: u64,
     /// `p_filesz`.
-    pub file_size: u64,
+    pub(crate) file_size: u64,
     /// `p_memsz`.
-    pub memory_size: u64,
+    pub(crate) memory_size: u64,
 }
 
 impl Segment {
-    pub const fn is_loadable(self) -> bool {
+    pub(crate) const fn is_loadable(self) -> bool {
         self.kind == elf64::SegmentKind::Load.bits()
     }
 
-    pub const fn covers(self, vaddr: u64, size: u64) -> bool {
+    pub(crate) const fn covers(self, vaddr: u64, size: u64) -> bool {
         match (
             self.vaddr.checked_add(self.memory_size),
             vaddr.checked_add(size),
@@ -67,7 +67,7 @@ impl Segment {
     }
 
     /// Whether this segment intersects any byte of another non-empty range.
-    pub const fn overlaps(self, vaddr: u64, size: u64) -> bool {
+    pub(crate) const fn overlaps(self, vaddr: u64, size: u64) -> bool {
         if self.memory_size == 0 || size == 0 {
             return false;
         }
@@ -80,46 +80,46 @@ impl Segment {
         }
     }
 
-    pub const fn is_writable_and_executable(self) -> bool {
+    pub(crate) const fn is_writable_and_executable(self) -> bool {
         self.flags & elf64::Segment::WRITE != 0 && self.flags & elf64::Segment::EXECUTE != 0
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Section {
-    pub name: String,
+pub(crate) struct Section {
+    pub(crate) name: String,
     /// `sh_type`.
-    pub kind: u32,
+    pub(crate) kind: u32,
     /// `sh_flags`.
-    pub flags: u64,
+    pub(crate) flags: u64,
     /// `sh_addr`.
-    pub addr: u64,
+    pub(crate) addr: u64,
     /// `sh_size`.
-    pub size: u64,
+    pub(crate) size: u64,
 }
 
 impl Section {
-    pub const fn is_allocated(&self) -> bool {
+    pub(crate) const fn is_allocated(&self) -> bool {
         self.flags & SHF_ALLOC != 0
     }
 
-    pub const fn is_nobits(&self) -> bool {
+    pub(crate) const fn is_nobits(&self) -> bool {
         self.kind == SHT_NOBITS
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Image {
-    pub entry: u64,
+pub(crate) struct Image {
+    pub(crate) entry: u64,
     /// Every program header, in order.
-    pub segments: Vec<Segment>,
+    pub(crate) segments: Vec<Segment>,
     /// Every section header, in order.
-    pub sections: Vec<Section>,
+    pub(crate) sections: Vec<Section>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
-pub enum ImageError {
+pub(crate) enum ImageError {
     EntryOutsideHigherHalf {
         entry: u64,
     },
@@ -233,7 +233,7 @@ const KPTI_SECTIONS: &[(&str, bool, bool)] = &[
 
 impl Image {
     /// Every fault, not the first: a linker-script change that breaks one usually breaks several.
-    pub fn verify(&self) -> Vec<ImageError> {
+    pub(crate) fn verify(&self) -> Vec<ImageError> {
         let mut faults = Vec::new();
 
         if self.entry < HIGHER_HALF {
@@ -416,7 +416,7 @@ impl Image {
 /// File and program headers come from `libs/elf64`, the crate the kernel loads programs with,
 /// so the verifier and the loader agree.
 /// The section-table walk stays here because a loader never needs it.
-pub fn parse(bytes: &[u8]) -> Result<Image> {
+pub(crate) fn parse(bytes: &[u8]) -> Result<Image> {
     ensure!(
         u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
         "kernel ELF exceeds the {}-byte limit",
@@ -567,7 +567,7 @@ pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn verify_file(path: &Path) -> Result<()> {
+pub(crate) fn verify_file(path: &Path) -> Result<()> {
     let bytes = read_file(path)?;
     let image = parse(&bytes).with_context(|| format!("parsing {}", path.display()))?;
 

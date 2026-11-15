@@ -18,7 +18,7 @@ const INITIAL_STATE: [u32; 8] = [
 const BLOCK_SIZE: usize = 64;
 
 /// The digest of `data`; panics if it exceeds SHA-256's 64-bit length field.
-pub fn digest(data: &[u8]) -> [u8; 32] {
+pub(crate) fn digest(data: &[u8]) -> [u8; 32] {
     let mut hasher = Hasher::new();
     let byte_length = data.len() as u128;
     assert!(
@@ -124,7 +124,7 @@ fn input_too_large() -> std::io::Error {
 }
 
 /// Lowercase hex, the form `sha256sum` prints.
-pub fn hex(digest: &[u8; 32]) -> String {
+pub(crate) fn hex(digest: &[u8; 32]) -> String {
     digest
         .iter()
         .fold(String::with_capacity(64), |mut text, byte| {

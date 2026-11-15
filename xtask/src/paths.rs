@@ -99,13 +99,13 @@ pub(crate) fn directory_entries(directory: &Path) -> Result<Vec<DirectoryEntry>>
 }
 
 /// Cargo package producing the kernel binary.
-pub const KERNEL_PACKAGE: &str = "wizard-kernel";
+pub(crate) const KERNEL_PACKAGE: &str = "wizard-kernel";
 
 /// Packages that only ever build for the kernel target.
-pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
+pub(crate) const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 
 /// Packages that build and test on the host; `libs/` crates are `no_std` but compile for it.
-pub const HOST_PACKAGES: &[&str] = &[
+pub(crate) const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
     "elf64",
@@ -137,81 +137,62 @@ pub const HOST_PACKAGES: &[&str] = &[
     "xtask",
 ];
 
-/// The `default-members` entries of a workspace manifest, as package names (the last path segment).
-///
-/// The list exists twice, here as [`HOST_PACKAGES`] and in the manifest, so a test requires the
-/// two to agree. Hand-rolled rather than a TOML dependency: one array, one call site.
-pub fn default_members(manifest: &str) -> Vec<String> {
-    manifest
-        .split_once("default-members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .map(|(list, _)| {
-            list.lines()
-                .map(without_toml_comment)
-                .filter_map(|line| line.split('"').nth(1))
-                .filter_map(|path| path.rsplit('/').next())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 pub(crate) fn without_toml_comment(line: &str) -> &str {
     line.split_once('#').map_or(line, |(code, _)| code)
 }
 
 /// Triple the kernel is cross-compiled for.
-pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
+pub(crate) const KERNEL_TARGET: &str = "x86_64-unknown-none";
 
 /// Cargo feature that compiles the kernel's boot-time self-checks in.
-pub const SELFTEST_FEATURE: &str = "selftest";
+pub(crate) const SELFTEST_FEATURE: &str = "selftest";
 
 /// The same feature spelled the way a workspace-scoped `--features` wants it.
 ///
 /// Written out because a `const` cannot be formatted; a test asserts it against its two parts.
-pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
+pub(crate) const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
 /// Cargo feature which makes the production PCI configuration claim refuse.
-pub const REFUSE_PCI_FEATURE: &str = "refuse-pci";
+pub(crate) const REFUSE_PCI_FEATURE: &str = "refuse-pci";
 
 /// Workspace-scoped spelling of [`REFUSE_PCI_FEATURE`].
-pub const REFUSE_PCI_FEATURE_SPEC: &str = "wizard-kernel/refuse-pci";
+pub(crate) const REFUSE_PCI_FEATURE_SPEC: &str = "wizard-kernel/refuse-pci";
 
 /// Name the kernel takes on the EFI system partition. Must match the `path:`
 /// line in `boot/limine.conf`.
-pub const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
+pub(crate) const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
 
 /// The user program, alongside the kernel, handed over as a Limine module.
-pub const PROGRAM_ON_ESP: &str = "hello.elf";
+pub(crate) const PROGRAM_ON_ESP: &str = "hello.elf";
 
 /// File name of the bootable disk image.
-pub const IMAGE_NAME: &str = "bedrock.img";
+pub(crate) const IMAGE_NAME: &str = "bedrock.img";
 
 /// Per-run QEMU state whose lifetime is shorter than a build artifact.
 pub(crate) const QEMU_RUN_DIRECTORY: &str = "qemu runs,private";
 
 /// Size of that image, in MiB.
-pub const DISK_MIB: u64 = 64;
+pub(crate) const DISK_MIB: u64 = 64;
 
 /// Bytes per logical sector.
-pub const SECTOR_SIZE: u64 = 512;
+pub(crate) const SECTOR_SIZE: u64 = 512;
 
 /// First partition begins 1 MiB in, the conventional alignment.
-pub const PART_START_LBA: u64 = 2048;
+pub(crate) const PART_START_LBA: u64 = 2048;
 
 /// FAT volume label: exactly eleven bytes, space padded.
-pub const ESP_LABEL: [u8; 11] = *b"WIZARD-ESP ";
+pub(crate) const ESP_LABEL: [u8; 11] = *b"WIZARD-ESP ";
 
 /// Resolved locations for one checkout.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Paths {
+pub(crate) struct Paths {
     root: PathBuf,
     target_dir: PathBuf,
 }
 
 impl Paths {
     /// Derive every path from an explicit root, touching no environment, so tests can drive it.
-    pub fn new(root: PathBuf, target_dir_override: Option<&Path>) -> Self {
+    pub(crate) fn new(root: PathBuf, target_dir_override: Option<&Path>) -> Self {
         let target_dir = match target_dir_override {
             Some(dir) if dir.is_absolute() => dir.to_path_buf(),
             Some(dir) => root.join(dir),
@@ -224,7 +205,7 @@ impl Paths {
     ///
     /// `build.target-dir` in a cargo config is not honoured: reading it would mean parsing
     /// `cargo metadata`. Set `CARGO_TARGET_DIR` instead (`docs/005-code-conventions.md`).
-    pub fn discover() -> Result<Self> {
+    pub(crate) fn discover() -> Result<Self> {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = manifest_dir
             .parent()
@@ -235,17 +216,17 @@ impl Paths {
     }
 
     /// Workspace root.
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
     /// Directory cargo writes build artifacts to.
-    pub fn target_dir(&self) -> &Path {
+    pub(crate) fn target_dir(&self) -> &Path {
         &self.target_dir
     }
 
     /// The compiled kernel ELF for `profile`.
-    pub fn kernel_elf(&self, profile: Profile) -> PathBuf {
+    pub(crate) fn kernel_elf(&self, profile: Profile) -> PathBuf {
         self.target_dir
             .join(KERNEL_TARGET)
             .join(profile.directory())
@@ -253,37 +234,37 @@ impl Paths {
     }
 
     /// The bootable disk image.
-    pub fn image(&self) -> PathBuf {
+    pub(crate) fn image(&self) -> PathBuf {
         self.target_dir.join(IMAGE_NAME)
     }
 
     /// Generated VMware VM directory.
-    pub fn vm_dir(&self) -> PathBuf {
+    pub(crate) fn vm_dir(&self) -> PathBuf {
         self.root.join("vm")
     }
 
     /// Vendored Limine UEFI executable.
-    pub fn limine_efi(&self) -> PathBuf {
+    pub(crate) fn limine_efi(&self) -> PathBuf {
         self.root.join("boot").join("limine").join("BOOTX64.EFI")
     }
 
     /// Limine's boot menu configuration.
-    pub fn limine_conf(&self) -> PathBuf {
+    pub(crate) fn limine_conf(&self) -> PathBuf {
         self.root.join("boot").join("limine.conf")
     }
 
     /// Recorded digests of everything vendored under `boot/`.
-    pub fn limine_checksums(&self) -> PathBuf {
+    pub(crate) fn limine_checksums(&self) -> PathBuf {
         self.root.join("boot").join("limine").join("CHECKSUMS")
     }
 
     /// The TLA+ tools' checksum listing.
-    pub fn tla_checksums(&self) -> PathBuf {
+    pub(crate) fn tla_checksums(&self) -> PathBuf {
         self.root.join("tools").join("tla").join("CHECKSUMS")
     }
 
     /// The independently generated FAT32 corpus's checksum listing.
-    pub fn fat32_corpus_checksums(&self) -> PathBuf {
+    pub(crate) fn fat32_corpus_checksums(&self) -> PathBuf {
         self.root
             .join("tools")
             .join("fat32-corpus")

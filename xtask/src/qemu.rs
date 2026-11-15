@@ -23,22 +23,20 @@ use panic_record::{COMPLETE_MARKER, OPEN_PREFIX};
 use crate::paths::Paths;
 use crate::qmp::{NOT_CANCELLED, Qmp};
 
-pub use self::boot_check::{
+pub(crate) use self::boot_check::{
     observe_degraded, observe_no_x2apic, observe_unisolated, run_boot_check,
 };
 pub(crate) use self::debug::DebugMachine;
 use self::run_files::*;
 pub(crate) use self::selftest::measure_performance;
-pub use self::selftest::run_selftest;
+pub(crate) use self::selftest::run_selftest;
 use self::selftest::*;
-pub use self::serial::DegradedOutcome;
+pub(crate) use self::serial::DegradedOutcome;
 pub(crate) use self::serial::PerformanceSample;
 use self::serial::*;
 pub(crate) use self::storage::nvme_path;
 use self::storage::*;
-pub use self::storage::{
-    NVME_BLOCK_BYTES, NVME_SIGNED_BLOCKS, NVME_VOLUME_SECTOR, nvme_image, nvme_signature,
-};
+pub(crate) use self::storage::{NVME_BLOCK_BYTES, NVME_VOLUME_SECTOR, nvme_image};
 
 /// Default install location, checked before `PATH`; only Windows has one.
 const DEFAULT_INSTALLATION: Option<&str> = if cfg!(windows) {
@@ -133,11 +131,11 @@ pub(crate) struct Installation {
     pub(crate) vars_firmware: PathBuf,
 }
 
-pub fn exe_name(stem: &str) -> String {
+pub(crate) fn exe_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
 }
 
-pub fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<PathBuf> {
+pub(crate) fn which_in<I: IntoIterator<Item = PathBuf>>(dirs: I, exe: &str) -> Option<PathBuf> {
     dirs.into_iter()
         .map(|dir| dir.join(exe))
         .find(|candidate| candidate.is_file())
@@ -246,7 +244,7 @@ fn installation_with(
 }
 
 /// QEMU's status is printed only: a non-zero one usually means the user closed the window.
-pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
+pub(crate) fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     validate_run_arguments(extra)?;
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -317,7 +315,7 @@ const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 /// Evidence emitted only after the shipped program calls from saved CPL 3.
 pub(crate) const SHIPPED_USER_EXECUTION_MARKER: &str = "user: ring 3 call observed";
 
-pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
+pub(crate) const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
@@ -336,8 +334,8 @@ const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
 /// Watched for rather than inferred from an exit code: a panicking kernel halts, not exits.
-pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
-pub const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
+pub(crate) const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
+pub(crate) const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 
 pub(crate) fn canonical_decimal(text: &str) -> Option<u64> {
     if text.is_empty()
@@ -355,10 +353,11 @@ const NO_X2APIC_DIAGNOSIS: &str = "local apic: this processor has no x2apic mode
 const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC_DIAGNOSIS);
 
 /// The entry boundary must stop before memory initialization when any requester cannot be fenced.
-pub const NO_PCI_HANDOFF_PANIC: &str =
+pub(crate) const NO_PCI_HANDOFF_PANIC: &str =
     "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable";
 
-pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
+pub(crate) const DEGRADED_FILESYSTEM_MARKER: &str =
+    "tmpfs: 1 file(s) and 1 directory(ies) at the root";
 
 /// Both device names must resolve through devfs without a bus.
 const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is a block device";
@@ -367,10 +366,11 @@ const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is a character device";
 /// Optional hardening is absent, while mandatory WP and NX remain active.
 const DEGRADED_PROTECTIONS_MARKER: &str = "cpu: protections wp nx";
 
-pub const DEGRADED_XSTATE_MARKER: &str = "cpu: extended state unavailable; ring 3 stays closed";
+pub(crate) const DEGRADED_XSTATE_MARKER: &str =
+    "cpu: extended state unavailable; ring 3 stays closed";
 
 /// Missing x2APIC leaves interrupts unadmitted, the first user-launch veto.
-pub const DEGRADED_USER_MARKER: &str =
+pub(crate) const DEGRADED_USER_MARKER: &str =
     "user: no program: maskable interrupts are not admitted; ring 3 is closed";
 
 const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
@@ -385,9 +385,9 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::warning(DEGRADED_USER_MARKER),
 ];
 
-pub const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
+pub(crate) const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
 
-pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
+pub(crate) const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 
 /// The unisolated boot must refuse every candidate and still settle; the first candidate's clean
 /// retirement proves the refusal path returns the lease exactly.

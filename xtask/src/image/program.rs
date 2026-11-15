@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 
 /// Where the program is linked, and where the kernel maps it.
-pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
+pub(crate) const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
 /// Build the ring-3 witness used by the boot checks.
 ///
@@ -344,7 +344,7 @@ const PF_READ_EXECUTE: u32 = 0b101;
 /// # Errors
 ///
 /// Returns an error if the fixed program's branch layout exceeds `rel8`.
-pub fn build() -> Result<Vec<u8>> {
+pub(crate) fn build() -> Result<Vec<u8>> {
     let code = code()?;
     let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES + code.len()];
 

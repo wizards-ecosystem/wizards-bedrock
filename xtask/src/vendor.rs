@@ -15,15 +15,15 @@ pub(crate) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DIRECTORY_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Entry {
+pub(crate) struct Entry {
     /// Lowercase hex digest.
-    pub digest: String,
+    pub(crate) digest: String,
     /// File name, relative to the checksum file.
-    pub name: String,
+    pub(crate) name: String,
 }
 
 /// Both `sha256sum` forms, `digest  name` and `digest *name`; blank and `#` lines are skipped.
-pub fn parse(listing: &str) -> Result<Vec<Entry>> {
+pub(crate) fn parse(listing: &str) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     let mut names = BTreeSet::new();
     for line in listing.lines().map(str::trim) {
@@ -73,7 +73,7 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
 const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
 
 /// Names no entry or paperwork accounts for, sorted so the report is stable.
-pub fn unaccounted<'name, I>(present: I, entries: &[Entry]) -> Vec<String>
+pub(crate) fn unaccounted<'name, I>(present: I, entries: &[Entry]) -> Vec<String>
 where
     I: IntoIterator<Item = &'name str>,
 {
@@ -87,7 +87,7 @@ where
     extra
 }
 
-pub fn verify_listing(listing: &Path) -> Result<usize> {
+pub(crate) fn verify_listing(listing: &Path) -> Result<usize> {
     let dir = listing.parent().unwrap_or(Path::new("."));
     crate::workspace::canonical_existing_real_directory(dir, "vendor directory")?;
     crate::workspace::require_direct_file(dir, listing, "vendor checksum listing")?;
@@ -289,7 +289,7 @@ where
 }
 
 /// A vendored directory added and not added here is a directory nothing checks.
-pub fn verify(paths: &Paths) -> Result<()> {
+pub(crate) fn verify(paths: &Paths) -> Result<()> {
     for listing in [
         paths.limine_checksums(),
         paths.tla_checksums(),

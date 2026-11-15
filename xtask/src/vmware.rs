@@ -53,14 +53,14 @@ const HEADS: u64 = 255;
 const SECTORS_PER_TRACK: u64 = 63;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Geometry {
-    pub cylinders: u64,
-    pub heads: u64,
-    pub sectors_per_track: u64,
+pub(crate) struct Geometry {
+    pub(crate) cylinders: u64,
+    pub(crate) heads: u64,
+    pub(crate) sectors_per_track: u64,
 }
 
 /// Cylinders round up, since truncating would declare less than the extent it describes.
-pub fn geometry(sectors: u64) -> Geometry {
+pub(crate) fn geometry(sectors: u64) -> Geometry {
     Geometry {
         cylinders: sectors.div_ceil(HEADS * SECTORS_PER_TRACK),
         heads: HEADS,
@@ -70,7 +70,7 @@ pub fn geometry(sectors: u64) -> Geometry {
 
 /// Substituted text is never rescanned, so a value holding a placeholder is emitted literally.
 /// An unrecognised key is an error rather than a silently empty field.
-pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
+pub(crate) fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
     const OPEN: &str = "{{";
     const CLOSE: &str = "}}";
 
@@ -95,7 +95,7 @@ pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
     Ok(rendered)
 }
 
-pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
+pub(crate) fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     let vm_dir = vm_directory(paths, kernel);
     reset_vm_directory(paths, kernel)?;
 

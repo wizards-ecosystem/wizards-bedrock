@@ -19,7 +19,7 @@ enum Scope {
 }
 
 /// Type-check every crate.
-pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
+pub(crate) fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
     let extra: Vec<String> = message_format
         .map(|format| vec![format!("--message-format={format}")])
         .unwrap_or_default();
@@ -30,7 +30,7 @@ pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
 ///
 /// `-D warnings` goes after `--`: `RUSTFLAGS` would replace the target rustflags in
 /// `.cargo/config.toml` and silently build a kernel without `code-model=kernel`.
-pub fn clippy(paths: &Paths) -> Result<()> {
+pub(crate) fn clippy(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
         "clippy",
@@ -42,7 +42,7 @@ pub fn clippy(paths: &Paths) -> Result<()> {
 }
 
 /// Build the documentation so the doc-link lints fire.
-pub fn doc(paths: &Paths) -> Result<()> {
+pub(crate) fn doc(paths: &Paths) -> Result<()> {
     for_each_pass(
         paths,
         "docs",
@@ -54,7 +54,7 @@ pub fn doc(paths: &Paths) -> Result<()> {
 }
 
 /// Format the workspace, or report what is unformatted.
-pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
+pub(crate) fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
     let mut args = vec!["fmt".to_string(), "--all".to_string()];
     if mode == FmtMode::Check {
         args.extend(["--".to_string(), "--check".to_string()]);
@@ -63,14 +63,14 @@ pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
 }
 
 /// Run the host test suite; the kernel crates have no host tests (`docs/005-code-conventions.md`).
-pub fn test(paths: &Paths) -> Result<()> {
+pub(crate) fn test(paths: &Paths) -> Result<()> {
     let mut args = vec!["test".to_string()];
     args.extend(cargo::package_args(paths::HOST_PACKAGES));
     cargo::run(paths, "tests", &args)
 }
 
 /// Boot a self-test kernel under QEMU and require its verdict.
-pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
+pub(crate) fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
     qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
 }
@@ -88,7 +88,7 @@ const fn selftest_timeout(profile: Profile) -> Duration {
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Boot the shipped kernel, the image that goes on the disk, and require its steady state.
-pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
+pub(crate) fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
     boot_shipped_image(paths, image.path())
 }
@@ -99,7 +99,7 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
 
 /// Boot without PCI configuration or x2APIC and require both refusals, then without a
 /// remapping unit and require storage to refuse rather than run unisolated.
-pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
+pub(crate) fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     match observe_degraded_boot(paths, profile)? {
         qemu::DegradedOutcome::Panicked {
             transcript,
@@ -164,7 +164,7 @@ pub(crate) fn observe_no_x2apic_boot(
 const BOOT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Everything the gate runs, in the order that fails fastest.
-pub fn ci(paths: &Paths) -> Result<()> {
+pub(crate) fn ci(paths: &Paths) -> Result<()> {
     for &step in gate::REGISTRY.verified_steps(paths.root())? {
         run_ci_step(paths, step)?;
     }
@@ -187,7 +187,7 @@ fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
 }
 
 /// Remove build output.
-pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
+pub(crate) fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     let status = cargo::run_status(paths, "clean", ["clean"])?;
     let retained_runner = if status.success() {
         finish_cargo_clean(true, paths.target_dir(), None)?

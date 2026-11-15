@@ -4,7 +4,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use anyhow::{Context, Result, bail};
 
-pub const RECORD_SIZE: usize = 512;
+pub(crate) const RECORD_SIZE: usize = 512;
 
 const PARTITION_TABLE: usize = 446;
 
@@ -22,16 +22,16 @@ const TYPE_EFI_SYSTEM: u8 = 0xEF;
 const FLAG_BOOTABLE: u8 = 0x80;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct PartitionEntry {
-    pub bootable: bool,
-    pub kind: u8,
-    pub start_lba: u32,
-    pub sectors: u32,
+pub(crate) struct PartitionEntry {
+    pub(crate) bootable: bool,
+    pub(crate) kind: u8,
+    pub(crate) start_lba: u32,
+    pub(crate) sectors: u32,
 }
 
 impl PartitionEntry {
     /// An EFI system partition from `start_lba` to the end of a `total_sectors` disk.
-    pub fn efi_system(start_lba: u64, total_sectors: u64) -> Result<Self> {
+    pub(crate) fn efi_system(start_lba: u64, total_sectors: u64) -> Result<Self> {
         if start_lba >= total_sectors {
             bail!("partition starts at LBA {start_lba} on a disk of only {total_sectors} sectors");
         }
@@ -58,7 +58,7 @@ impl PartitionEntry {
 }
 
 /// A record holding `partitions`; panics past the four the table has room for.
-pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
+pub(crate) fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
     assert!(
         partitions.len() <= ENTRY_COUNT,
         "an MBR holds at most {ENTRY_COUNT} partitions"
@@ -74,7 +74,7 @@ pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
 }
 
 /// Sector zero only; everything after it is left alone.
-pub fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Result<()> {
+pub(crate) fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Result<()> {
     Seek::seek(disk, SeekFrom::Start(0)).context("seeking to the master boot record")?;
     Write::write_all(disk, record).context("writing the master boot record")
 }

@@ -4,19 +4,19 @@ use super::*;
 
 /// The kernel reads the block size from `Identify`; the content below is written in blocks
 /// and must agree with QEMU's 512-byte format.
-pub const NVME_BLOCK_BYTES: usize = 512;
+pub(crate) const NVME_BLOCK_BYTES: usize = 512;
 
-pub const NVME_SIGNED_BLOCKS: u64 = 8;
+pub(crate) const NVME_SIGNED_BLOCKS: u64 = 8;
 
 /// The first eight bytes of block `lba`, distinct in every block so a driver that skipped the
 /// read or ignored the logical block address would fail.
-pub const fn nvme_signature(lba: u64) -> u64 {
+pub(crate) const fn nvme_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
 
 /// The FAT32 volume starts a megabyte in, where a partition table would put it, so the reader
 /// must take a base sector.
-pub const NVME_VOLUME_SECTOR: u64 = 2048;
+pub(crate) const NVME_VOLUME_SECTOR: u64 = 2048;
 
 /// Distinct blocks for the block-layer checks fill the first megabyte and the FAT32 corpus
 /// follows on the same namespace, as on a real disk.
@@ -24,7 +24,7 @@ pub(super) const NVME_BYTES: u64 =
     NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64 + crate::image::corpus::VOLUME_BYTES as u64;
 
 /// The namespace the QEMU and VMware runners share, machine state apart from the boot image.
-pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
+pub(crate) fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     let (parent, backing) = storage_paths(root)?;
     publish_namespace(&parent, &backing, write_nvme_namespace)?;
     Ok(backing)

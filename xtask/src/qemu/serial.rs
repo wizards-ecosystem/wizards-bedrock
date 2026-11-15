@@ -20,7 +20,7 @@ pub(super) enum SelftestOutcome {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum DegradedOutcome {
+pub(crate) enum DegradedOutcome {
     /// Every required refusal and fallback record preceded a settled boot.
     Settled,
     /// The exact single-line panic body, and whether the no-x2APIC refusal came first.

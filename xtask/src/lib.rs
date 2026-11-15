@@ -3,31 +3,30 @@
 // In-source because xtask takes no workspace lints, so unsafe code is still forbidden here.
 #![forbid(unsafe_code)]
 
-pub mod baseline;
+mod baseline;
 mod bounded_process;
 pub mod cargo;
 pub mod cli;
 mod debugger;
-pub mod elf;
+mod elf;
 mod evidence;
 mod files;
 mod gate;
 mod git;
 pub mod image;
 mod json;
-pub mod machine;
-pub mod model;
-pub mod paths;
+mod model;
+mod paths;
 mod platform_acpi;
-pub mod qemu;
-pub mod qmp;
-pub mod sha256;
-pub mod supply_chain;
-pub mod tasks;
+mod qemu;
+mod qmp;
+mod sha256;
+mod supply_chain;
+mod tasks;
 #[cfg(test)]
 mod test_support;
-pub mod vendor;
-pub mod vmware;
+mod vendor;
+mod vmware;
 mod workspace;
 
 use anyhow::Result;

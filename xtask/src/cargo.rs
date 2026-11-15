@@ -35,7 +35,7 @@ impl Profile {
     }
 }
 
-pub fn run<I, S>(paths: &Paths, description: &str, args: I) -> Result<()>
+pub(crate) fn run<I, S>(paths: &Paths, description: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -232,14 +232,14 @@ pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     }
 }
 
-pub fn package_args(packages: &[&str]) -> Vec<String> {
+pub(crate) fn package_args(packages: &[&str]) -> Vec<String> {
     packages
         .iter()
         .flat_map(|name| ["--package".to_string(), (*name).to_string()])
         .collect()
 }
 
-pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
+pub(crate) fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
     println!("[xtask] building kernel ({})", profile.directory());
 
     let args = kernel_build_args(profile, features);

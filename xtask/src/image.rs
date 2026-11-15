@@ -1,9 +1,9 @@
 //! The boot disk, built in-process: an MBR holding one FAT32 EFI system partition.
 
-pub mod corpus;
+pub(crate) mod corpus;
 pub mod esp;
-pub mod mbr;
-pub mod program;
+mod mbr;
+mod program;
 
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -52,7 +52,7 @@ impl Kernel {
     }
 }
 
-pub fn build(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<PathBuf> {
+pub(crate) fn build(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<PathBuf> {
     build_with_features(paths, profile, kernel, kernel.features())
 }
 

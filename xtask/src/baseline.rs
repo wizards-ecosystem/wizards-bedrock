@@ -95,7 +95,7 @@ struct Derived {
 }
 
 /// Repeat both self-test profiles and enforce their reviewed bands.
-pub fn check(paths: &Paths) -> Result<()> {
+pub(crate) fn check(paths: &Paths) -> Result<()> {
     run_profile(paths, Profile::Release, RELEASE, Duration::from_secs(60))?;
     run_profile(paths, Profile::Dev, DEBUG, Duration::from_secs(150))?;
     println!("[xtask] foundation baseline passed across {RUNS} release and {RUNS} debug boots");

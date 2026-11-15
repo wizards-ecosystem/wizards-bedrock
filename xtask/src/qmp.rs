@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::json::{JsonValue, json_string, parse_json};
 
 /// The longest message QEMU may send; `info registers` is about 1.3 KiB.
-pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// One command is outstanding at a time, so a well-formed peer never queues more than two.
 const PENDING_MESSAGES: usize = 4;
@@ -30,7 +30,7 @@ const PENDING_WRITE_ACKS: usize = 1;
 /// How often a waiting command rechecks its deadline and cancellation.
 const POLL: Duration = Duration::from_millis(20);
 
-pub static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
+pub(crate) static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
@@ -49,7 +49,7 @@ enum Message {
 
 /// An incomplete exchange permanently refuses reuse of the session.
 #[derive(Debug)]
-pub struct Qmp {
+pub(crate) struct Qmp {
     writer: CommandWriter,
     messages: Receiver<Result<Message, String>>,
     failed: bool,
@@ -58,7 +58,7 @@ pub struct Qmp {
 impl Qmp {
     /// The pump thread drains `output` until QEMU closes it, even after a protocol failure,
     /// so a refused session never blocks QEMU.
-    pub fn negotiate(
+    pub(crate) fn negotiate(
         input: impl Write + Send + 'static,
         output: impl Read + Send + 'static,
         deadline: Instant,
@@ -83,7 +83,7 @@ impl Qmp {
         Ok(qmp)
     }
 
-    pub fn inject_key(
+    pub(crate) fn inject_key(
         &mut self,
         qcode: &str,
         deadline: Instant,
@@ -103,7 +103,7 @@ impl Qmp {
         .map(drop)
     }
 
-    pub fn human(
+    pub(crate) fn human(
         &mut self,
         command_line: &str,
         deadline: Instant,

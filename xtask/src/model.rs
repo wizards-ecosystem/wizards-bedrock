@@ -10,10 +10,11 @@ use crate::paths::Paths;
 use crate::sha256;
 
 /// The pinned TLA+ tools jar, relative to the workspace root.
-pub const JAR: &str = "tools/tla/tla2tools.jar";
+pub(crate) const JAR: &str = "tools/tla/tla2tools.jar";
 
 /// Its SHA-256, pinned like `boot/limine`'s binaries: a silently swapped TLC is a swapped answer.
-pub const JAR_DIGEST: &str = "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a";
+pub(crate) const JAR_DIGEST: &str =
+    "eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a";
 
 const MODEL_DIR: &str = "models";
 
@@ -74,7 +75,7 @@ enum Verdict {
 }
 
 /// Check both models and require every deliberate mutation to fail exactly.
-pub fn check(paths: &Paths) -> Result<()> {
+pub(crate) fn check(paths: &Paths) -> Result<()> {
     let jar = paths.root().join(JAR);
     verify_jar(&jar)?;
     let java = java()?;
