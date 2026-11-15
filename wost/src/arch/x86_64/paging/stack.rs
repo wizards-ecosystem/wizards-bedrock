@@ -7,7 +7,8 @@ use x86_paging::{Flags, PAGE_SIZE, page_identity_matches};
 use super::DeviceMapping;
 use super::{
     AddressSpace, AddressSpaceRoots, MapError, PERMANENT_STACKS, StackCleanup, StackMapError,
-    StackRollback, TASK_STACK_PIN, cpu, current_mapping_root, is_active, translate_in, walk,
+    StackRollback, TASK_STACK_PIN, active_root, cpu, current_mapping_root, is_active, kpti,
+    translate_in, walk,
 };
 use crate::mm::{self, PhysicalAddress};
 
@@ -248,7 +249,22 @@ pub(super) fn protected_stack_overlap(
     base: u64,
     len: u64,
 ) -> Option<u64> {
-    permanent_stack_overlap(roots, base, len).or_else(|| task_stack_overlap(roots, base, len))
+    permanent_stack_overlap(roots, base, len)
+        .or_else(|| task_stack_overlap(roots, base, len))
+        .or_else(|| enclave_guard_overlap(roots, base, len))
+}
+
+// Activation proved both enclave guards absent from the kernel's root; from then on they stay so.
+fn enclave_guard_overlap(roots: AddressSpaceRoots, base: u64, len: u64) -> Option<u64> {
+    if !is_active() || !roots.contains(active_root()) {
+        return None;
+    }
+    let Some(enclave) = kpti::entry_enclave() else {
+        return Some(base);
+    };
+    enclave.guards().into_iter().find_map(|guard| {
+        ranges_overlap(guard.start, guard.mapped_len(), base, len).then_some(guard.start)
+    })
 }
 
 /// The stacks [`AddressSpace::map_stacks`] committed, as linear evidence that lets
