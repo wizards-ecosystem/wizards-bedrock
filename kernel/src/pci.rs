@@ -791,7 +791,7 @@ pub(crate) struct Device {
     lifetime: ClaimLifetime,
     /// The command word to restore before a transient lease may disappear.
     command_state: Option<CommandState>,
-    /// A failed restoration makes reuse unsafe even if later reads look sane.
+    /// A failed restoration blocks release until a later restoration or fence proof succeeds.
     uncertain: bool,
 }
 
