@@ -73,7 +73,7 @@ pub(super) fn a_program_cannot_bring_smap_down_with_it() -> bool {
 // Retirement is the exact incarnation's last rites, never a global tally.
 pub(super) fn a_faulting_program_dies_alone() -> bool {
     let before = trap::last_user_fault();
-    let Ok(spawned) = user::run_faulting() else {
+    let Ok(spawned) = user::spawn_faulting() else {
         return false;
     };
 
@@ -99,7 +99,7 @@ pub(super) fn a_faulting_program_dies_alone() -> bool {
 pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
     let (before, _) = trap::last_invalid_user_return();
     let expiries = time::expiries();
-    let Ok(spawned) = user::run_with_invalid_return_stack() else {
+    let Ok(spawned) = user::spawn_with_invalid_return_stack() else {
         return false;
     };
 
@@ -116,7 +116,7 @@ pub(super) fn a_noncanonical_user_return_stack_retires_only_its_program() -> boo
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
     let calls = trap::last_syscall();
-    let Ok(successor) = user::run_for_bootstrap() else {
+    let Ok(successor) = user::spawn_for_bootstrap() else {
         return false;
     };
     let successor_retired = last_rites_for(&successor, 2_000).is_some();
@@ -131,7 +131,7 @@ pub(super) fn unsafe_user_return_flags_retire_only_their_program() -> bool {
 
     let (before, _) = trap::last_invalid_user_return();
     let expiries = time::expiries();
-    let Ok(spawned) = user::run_with_invalid_return_flags() else {
+    let Ok(spawned) = user::spawn_with_invalid_return_flags() else {
         return false;
     };
 
@@ -148,7 +148,7 @@ pub(super) fn unsafe_user_return_flags_retire_only_their_program() -> bool {
     let retired = last_rites_for(&spawned, 2_000).is_some();
 
     let calls = trap::last_syscall();
-    let Ok(successor) = user::run_for_bootstrap() else {
+    let Ok(successor) = user::spawn_for_bootstrap() else {
         return false;
     };
     let successor_retired = last_rites_for(&successor, 2_000).is_some();
@@ -166,7 +166,7 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let recoveries_before = trap::user_copy_recoveries();
     let before = trap::last_user_fault();
 
-    let Ok(spawned) = user::run_into_the_copy_window() else {
+    let Ok(spawned) = user::spawn_into_the_copy_window() else {
         return false;
     };
     if !runs_until(2000, || {
@@ -383,7 +383,7 @@ pub(super) fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     }
     let first_landing = first.frame_address;
 
-    if user::run_second().is_err() {
+    if user::spawn_second().is_err() {
         return false;
     }
     if !runs_until(2000, || trap::last_syscall().count > first.count) {
@@ -1009,7 +1009,7 @@ pub(super) fn unadmitted_interrupts_close_the_user_boundary() -> bool {
         return false;
     }
 
-    let Ok(spawned) = user::run_gated_for_wake() else {
+    let Ok(spawned) = user::spawn_gated_for_wake() else {
         return false;
     };
     let slot = spawned.slot;
@@ -1201,7 +1201,7 @@ fn a_refused_release_retains_its_zombie(
     baseline: &SpawnResources,
     reclaimed_before: (usize, usize),
 ) -> bool {
-    let Ok(spawned) = user::run_for_bootstrap() else {
+    let Ok(spawned) = user::spawn_for_bootstrap() else {
         return false;
     };
     if !wait_for_exact_zombie(&spawned) {
@@ -1218,7 +1218,7 @@ fn a_refused_release_retains_its_zombie(
         && trap::last_syscall().count == crossings
         && user::reclaimed() == reclaimed_before;
 
-    let Ok(probe) = user::run_for_bootstrap() else {
+    let Ok(probe) = user::spawn_for_bootstrap() else {
         return false;
     };
     let admission_closed = probe.slot != spawned.slot && exact_zombie(&spawned);
@@ -1353,7 +1353,7 @@ pub(super) fn one_zombie_has_one_settlement_collector() -> bool {
         }) {
             return None;
         }
-        let spawned = user::run_for_bootstrap().ok()?;
+        let spawned = user::spawn_for_bootstrap().ok()?;
         let slot = spawned.slot;
         if !runs_until(2_000, || {
             thread::retirements() > retirements && user::zombie_owns_slot_for_test(slot)
@@ -1400,7 +1400,7 @@ pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
     let (pages_before, tables_before) = user::reclaimed();
     let retirements_before = thread::retirements();
 
-    if user::run_for_bootstrap().is_err() {
+    if user::spawn_for_bootstrap().is_err() {
         return false;
     }
     if !runs_until(2000, || thread::retirements() > retirements_before) {
@@ -1423,7 +1423,7 @@ pub(super) fn a_dead_program_gives_its_memory_back() -> bool {
     let mut ran = 0;
     for _ in 0..40 {
         let retirements = thread::retirements();
-        if user::run_for_bootstrap().is_err() {
+        if user::spawn_for_bootstrap().is_err() {
             break;
         }
         if !runs_until(2000, || thread::retirements() > retirements) {
@@ -1465,7 +1465,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
             let (refused_before, _, _) = user::refusals();
             let faults_before = trap::last_user_fault().count;
 
-            let Ok(first) = user::run_probing() else {
+            let Ok(first) = user::spawn_probing() else {
                 return false;
             };
             if last_rites_for(&first, 2_000).is_none() {
@@ -1478,7 +1478,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
             let exited = trap::last_user_fault().count == faults_before;
 
             let _first_observer_may_already_have_reported = user::report_refusals();
-            let Ok(second) = user::run_probing() else {
+            let Ok(second) = user::spawn_probing() else {
                 return false;
             };
             let second_finished = last_rites_for(&second, 2_000).is_some();
@@ -1513,7 +1513,7 @@ pub(super) fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool
 // Release follows every successful spawn, even when the observations fail, so the witness cannot
 // strand the process it uses.
 fn a_gated_process_holds_spawn_ownership(before: &SpawnResources) -> bool {
-    let Ok(spawned) = user::run_gated_for_wake() else {
+    let Ok(spawned) = user::spawn_gated_for_wake() else {
         return false;
     };
     let waiting = runs_until(500, user::gated_cross_is_waiting);
@@ -1543,7 +1543,7 @@ pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::L
 pub(super) fn a_program_drives_its_own_ring() -> bool {
     let faults_before = trap::last_user_fault().count;
 
-    let Ok(spawned) = user::run_for_bootstrap() else {
+    let Ok(spawned) = user::spawn_for_bootstrap() else {
         return false;
     };
 
@@ -1564,7 +1564,7 @@ pub(super) fn a_program_drives_its_own_ring() -> bool {
 
 pub(super) fn a_ring_enter_round_trip_is_measurable() -> bool {
     let faults_before = trap::last_user_fault().count;
-    let Ok(spawned) = user::run_measuring() else {
+    let Ok(spawned) = user::spawn_measuring() else {
         return false;
     };
     let Some(rites) = last_rites_for(&spawned, 2_000) else {
@@ -1625,7 +1625,7 @@ pub(super) fn report_baseline() {
 pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let faults_before = trap::last_user_fault().count;
 
-    let Ok(spawned) = user::run_duplicating() else {
+    let Ok(spawned) = user::spawn_duplicating() else {
         return false;
     };
     let Some(rites) = last_rites_for(&spawned, 2_000) else {
@@ -1659,7 +1659,7 @@ pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
 // kernel's record and never from the rewritable header.
 // It is waited for, because retiring during a later check would move the free-slot count under it.
 pub(super) fn a_spawned_program_holds_exactly_one_handle() -> bool {
-    let Ok(spawned) = user::run_for_bootstrap() else {
+    let Ok(spawned) = user::spawn_for_bootstrap() else {
         return false;
     };
     let Some(birth) = user::birth_of(&spawned) else {

@@ -43,9 +43,9 @@ pub(crate) use reap::{
 };
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
-    gated_cross_is_waiting, release_gated_cross, run_duplicating, run_faulting, run_for_bootstrap,
-    run_gated_for_wake, run_into_the_copy_window, run_measuring, run_probing, run_second,
-    run_with_invalid_return_flags, run_with_invalid_return_stack,
+    gated_cross_is_waiting, release_gated_cross, spawn_duplicating, spawn_faulting,
+    spawn_for_bootstrap, spawn_gated_for_wake, spawn_into_the_copy_window, spawn_measuring,
+    spawn_probing, spawn_second, spawn_with_invalid_return_flags, spawn_with_invalid_return_stack,
 };
 
 /// Where the first user program's page of code goes: the low half, which by definition the kernel

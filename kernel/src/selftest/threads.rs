@@ -636,7 +636,7 @@ pub(super) fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
     STOP_SPINNING.store(0, Ordering::Release);
     LIGHT_SPINS.store(0, Ordering::Release);
     let busy = thread::spawn("reap-pressure", light_spinner).is_ok();
-    let Ok(spawned) = user::run_for_bootstrap() else {
+    let Ok(spawned) = user::spawn_for_bootstrap() else {
         return false;
     };
 

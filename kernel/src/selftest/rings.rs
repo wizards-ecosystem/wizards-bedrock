@@ -638,7 +638,7 @@ pub(super) fn a_refused_settlement_retains_every_owner() -> bool {
     while user::collect().is_some() {}
     let refusals_before = user::refused_ring_reclaims();
     let retirements_before = thread::retirements();
-    let Ok(spawned) = user::run_faulting() else {
+    let Ok(spawned) = user::spawn_faulting() else {
         return false;
     };
     let Some((ring, table)) = user::authority_for_test(spawned.slot) else {
