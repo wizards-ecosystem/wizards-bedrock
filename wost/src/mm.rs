@@ -199,8 +199,8 @@ fn firmware_contains(map: &MemoryMap, address: u64, len: usize) -> bool {
 fn read_firmware_bytes(base: *const u8, into: &mut [u8]) {
     for (index, slot) in into.iter_mut().enumerate() {
         let byte = base.wrapping_add(index);
-        // SAFETY: the only callers first proved every byte immutable ACPI
-        // storage and proved the direct-map address range cannot overflow.
+        // SAFETY: the callers proved every byte immutable ACPI storage at a non-overflowing
+        // direct-map address, which the bootloader's root maps and activation verified ours does.
         *slot = unsafe { byte.read_volatile() };
     }
 }

@@ -56,7 +56,7 @@ use roots::{enclave_access_policy, paired_flush_premise};
 use stack::{StackIdentity, protected_stack_overlap};
 use walk::{
     EntrySlot, clear_mapping_slot, current_mapping_root, direct_map_gap, entry_slot,
-    kernel_image_gap, leaf_in, slot_in, translate_in, visit_present_leaves, walk,
+    handed_out_gap, kernel_image_gap, leaf_in, slot_in, translate_in, visit_present_leaves, walk,
 };
 
 /// Why a mapping could not be made.
@@ -384,6 +384,7 @@ pub enum ActivateError {
     SharedTopology(MapError),
     NoExecuteDisabled,
     UserKernelEntry(usize),
+    HandoffUnmapped(u64),
 }
 
 impl fmt::Display for ActivateError {
@@ -439,6 +440,10 @@ impl fmt::Display for ActivateError {
                     "top-level slot {index} of the higher half is user-accessible"
                 )
             }
+            Self::HandoffUnmapped(address) => write!(
+                f,
+                "the framebuffer or firmware tables at {address:#x} are not direct-mapped"
+            ),
         }
     }
 }

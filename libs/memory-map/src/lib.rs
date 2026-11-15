@@ -46,6 +46,14 @@ impl MemoryKind {
     const fn permits_device_mapping(self) -> bool {
         matches!(self, Self::Reserved | Self::Other(_))
     }
+
+    // Handed out by the byte, so the direct map reaches the whole pages these bytes sit in.
+    const fn is_byte_granular(self) -> bool {
+        matches!(
+            self,
+            Self::Framebuffer | Self::AcpiReclaimable | Self::AcpiNvs
+        )
+    }
 }
 
 impl fmt::Display for MemoryKind {
@@ -75,6 +83,23 @@ impl MemoryRegion {
     const fn end(self) -> u64 {
         self.base + self.len
     }
+
+    const fn extent(self, coverage: Coverage) -> (u64, u64) {
+        let end = self.end();
+        if matches!(coverage, Coverage::Bytes) || self.len == 0 || !self.kind.is_byte_granular() {
+            return (self.base, end);
+        }
+        match end.checked_next_multiple_of(PAGE_SIZE) {
+            Some(page_end) => (self.base - self.base % PAGE_SIZE, page_end),
+            None => (self.base, end),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Coverage {
+    Bytes,
+    Pages,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -177,11 +202,11 @@ impl MemoryMap {
     }
 
     pub fn covers(&self, start: u64, end: u64) -> bool {
-        self.covered_by(start, end, |_| true)
+        self.covered_by(start, end, |_| true, Coverage::Bytes)
     }
 
     fn covers_memory(&self, start: u64, end: u64) -> bool {
-        self.covered_by(start, end, MemoryKind::is_direct_mapped)
+        self.covered_by(start, end, MemoryKind::is_direct_mapped, Coverage::Pages)
     }
 
     pub fn direct_map_cache(&self, start: u64, end: u64) -> Option<DirectMapCache> {
@@ -197,8 +222,13 @@ impl MemoryMap {
         if !touches_framebuffer {
             return Some(DirectMapCache::Normal);
         }
-        self.covered_by(start, end, |kind| kind == MemoryKind::Framebuffer)
-            .then_some(DirectMapCache::Framebuffer)
+        self.covered_by(
+            start,
+            end,
+            |kind| kind == MemoryKind::Framebuffer,
+            Coverage::Pages,
+        )
+        .then_some(DirectMapCache::Framebuffer)
     }
 
     pub fn allows_device_mapping(&self, start: u64, end: u64) -> bool {
@@ -231,7 +261,13 @@ impl MemoryMap {
     }
 
     // A long admitted span can jump a nested claim, so intersecting regions are arbitrated first.
-    fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
+    fn covered_by(
+        &self,
+        start: u64,
+        end: u64,
+        allowed: impl Fn(MemoryKind) -> bool,
+        coverage: Coverage,
+    ) -> bool {
         if start > end {
             return false;
         }
@@ -253,8 +289,9 @@ impl MemoryMap {
             }
             let Some(reach) = self
                 .regions()
-                .filter(|region| region.base <= cursor && cursor < region.end())
-                .map(MemoryRegion::end)
+                .map(|region| region.extent(coverage))
+                .filter(|&(base, end)| base <= cursor && cursor < end)
+                .map(|(_, end)| end)
                 .max()
             else {
                 return false;
@@ -268,7 +305,7 @@ impl MemoryMap {
     }
 
     fn page_policy(&self, start: u64, end: u64) -> Option<(DirectMapCache, bool)> {
-        if !self.covered_by(start, end, MemoryKind::is_direct_mapped) {
+        if !self.covers_memory(start, end) {
             return None;
         }
         let mut framebuffer = false;
@@ -285,7 +322,7 @@ impl MemoryMap {
         };
         Some((
             cache,
-            self.covered_by(start, end, MemoryKind::is_allocatable),
+            self.covered_by(start, end, MemoryKind::is_allocatable, Coverage::Bytes),
         ))
     }
 

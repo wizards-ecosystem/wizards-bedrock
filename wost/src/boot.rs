@@ -3,6 +3,7 @@
 mod limine_glue;
 
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 pub use limine_glue::enter;
 pub use memory_map::{DirectMapCache, MemoryKind, MemoryMap, MemoryMapError, MemoryRegion};
@@ -13,6 +14,22 @@ use crate::mmio::{MmioError, MmioRegion};
 
 /// Bytes in one framebuffer word, the only access width the region supports.
 const WORD: usize = size_of::<u32>();
+
+static FRAMEBUFFER_START: AtomicU64 = AtomicU64::new(0);
+static FRAMEBUFFER_LEN: AtomicU64 = AtomicU64::new(0);
+
+fn record_framebuffer(start: u64, len: u64) {
+    FRAMEBUFFER_START.store(start, Ordering::Relaxed);
+    FRAMEBUFFER_LEN.store(len, Ordering::Release);
+}
+
+// Activation refuses a root that does not map these bytes where the handoff put them.
+pub(crate) fn framebuffer_extent() -> Option<(u64, u64)> {
+    match FRAMEBUFFER_LEN.load(Ordering::Acquire) {
+        0 => None,
+        len => Some((FRAMEBUFFER_START.load(Ordering::Relaxed), len)),
+    }
+}
 
 fn framebuffer_access<T>(result: Result<T, MmioError>) -> T {
     match result {

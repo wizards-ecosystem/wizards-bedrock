@@ -12,7 +12,7 @@ use pixel::{Channel, FramebufferLayout, PixelFormat};
 
 use crate::boot::{
     BootInfo, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError,
-    ImageAddress, MemoryKind, MemoryMap, MemoryRegion,
+    ImageAddress, MemoryKind, MemoryMap, MemoryRegion, record_framebuffer,
 };
 use crate::mmio::MmioRegion;
 
@@ -175,8 +175,9 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
         format,
     };
 
+    record_framebuffer(fb.addr().addr() as u64, layout.span() as u64);
     // SAFETY: the live mapping has no other owner after handoff; `layout` checked span and align;
-    // activation verifies this direct-map extent first; user roots share the frozen higher half.
+    // activation verifies this recorded extent first; user roots share the frozen higher half.
     let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };
 
     Ok(Framebuffer::new(region, info, layout))

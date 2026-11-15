@@ -140,9 +140,13 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
         return Err(ActivateError::DirectMapGap(gap));
     }
 
+    if let Some(gap) = handed_out_gap(root) {
+        return Err(ActivateError::HandoffUnmapped(gap));
+    }
+
     // SAFETY: NXE is set, so no leaf holds a reserved bit; the walks prove this code executable,
-    // its stack writable, the direct map whole and unmoved; the device table exists, higher-half
-    // topology froze, active roots are not reclaimed.
+    // its stack writable, the direct map whole and unmoved with every framebuffer and firmware
+    // byte; the device table exists, higher-half topology froze, active roots are not reclaimed.
     unsafe { cpu::set_page_table_base(root) };
     activation.commit(root);
     Ok(())

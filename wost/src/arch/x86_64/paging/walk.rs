@@ -267,6 +267,53 @@ pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddres
     None
 }
 
+// The first framebuffer or firmware-table byte the handoff exposed that `root` does not direct-map.
+pub(super) fn handed_out_gap(root: PhysicalAddress) -> Option<u64> {
+    let Some(direct) = mm::direct_map() else {
+        return Some(0);
+    };
+    let offset = direct.offset();
+    if let Some((start, len)) = crate::boot::framebuffer_extent() {
+        let Some(physical) = start.checked_sub(offset) else {
+            return Some(start);
+        };
+        if let Some(gap) = direct_extent_gap(root, offset, physical, len) {
+            return Some(gap);
+        }
+    }
+    let Some(map) = mm::memory_map_snapshot() else {
+        return Some(offset);
+    };
+    map.regions()
+        .filter(|region| region.len != 0 && region.kind.is_firmware_table())
+        .find_map(|region| direct_extent_gap(root, offset, region.base, region.len))
+}
+
+fn direct_extent_gap(root: PhysicalAddress, offset: u64, physical: u64, len: u64) -> Option<u64> {
+    let Some(end) = physical.checked_add(len) else {
+        return Some(physical);
+    };
+    let mut page = physical - physical % PAGE_SIZE;
+    while page < end {
+        let Some(virtual_address) = offset.checked_add(page) else {
+            return Some(page);
+        };
+        match translate_in(root, virtual_address) {
+            Some((mapped, flags))
+                if mapped.get() == page
+                    && !flags.contains(Flags::USER)
+                    && flags.contains(Flags::WRITABLE)
+                    && flags.contains(Flags::NO_EXECUTE) => {}
+            _ => return Some(virtual_address),
+        }
+        let Some(next) = page.checked_add(PAGE_SIZE) else {
+            return Some(virtual_address);
+        };
+        page = next;
+    }
+    None
+}
+
 /// What the table in `CR3`, never a remembered root, maps `virtual_address` to.
 pub fn translate(virtual_address: u64) -> Option<(PhysicalAddress, Flags)> {
     translate_in(cpu::page_table_base(), virtual_address)
