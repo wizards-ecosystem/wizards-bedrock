@@ -299,6 +299,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
                 isolation,
                 fences: UnitFences::empty(),
                 state: InstalledState::Quarantined,
+                targeted: false,
             });
             return false;
         }
@@ -310,6 +311,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             isolation,
             fences: UnitFences::empty(),
             state: InstalledState::Quarantined,
+            targeted: false,
         });
         return false;
     }
@@ -323,6 +325,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
         isolation,
         fences: UnitFences::empty(),
         state: InstalledState::Ready,
+        targeted: false,
     });
     true
 }
@@ -428,6 +431,7 @@ pub(crate) struct InstalledUnit {
     isolation: Vtd,
     fences: UnitFences,
     state: InstalledState,
+    targeted: bool,
 }
 
 impl Deref for InstalledUnit {
@@ -738,6 +742,7 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
     match owner.isolation.retarget(at) {
         Retargeting::Retargeted => {
             owner.fences = fences;
+            owner.targeted = true;
             let stray = owner.isolation.drain_faults();
             if stray != 0 {
                 warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
@@ -853,10 +858,13 @@ pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
         if unit.state != InstalledState::Ready {
             return false;
         }
-        if let Err(reason) = unit.isolation.park() {
-            warn!("iommu: translation state is uncertain; unit retained: {reason}");
-            unit.state = InstalledState::Quarantined;
-            return false;
+        if unit.targeted {
+            if let Err(reason) = unit.isolation.park() {
+                warn!("iommu: translation state is uncertain; unit retained: {reason}");
+                unit.state = InstalledState::Quarantined;
+                return false;
+            }
+            unit.targeted = false;
         }
         core::mem::replace(&mut unit.fences, UnitFences::empty())
     };
