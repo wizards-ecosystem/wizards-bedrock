@@ -773,7 +773,6 @@ fn act_on_watchdog(verdict: WatchdogVerdict) {
                 revoke(Revocation::WatchdogDisagreed);
             }
         }
-        _ => WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release),
     }
 }
 

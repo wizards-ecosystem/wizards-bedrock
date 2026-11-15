@@ -1,7 +1,6 @@
 //! The physical keys of a US 104-key board.
 
 /// One physical key, named for its US-layout legend; layout modules map it to text.
-#[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     A,
