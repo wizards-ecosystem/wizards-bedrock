@@ -322,6 +322,7 @@ fn echo_keystrokes() -> ! {
     let mut context = thread::ThreadContext::require();
     loop {
         let keystroke = input::read_key(&mut context);
+        info!("input: key consumed");
         debug!("key: {:?} {:?}", keystroke.event.key, keystroke.event.state);
         if let Some(character) = keystroke.character {
             dev::with_console(|console| {

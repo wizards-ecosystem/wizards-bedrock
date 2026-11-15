@@ -317,6 +317,9 @@ pub(crate) const SHIPPED_USER_EXECUTION_MARKER: &str = "user: ring 3 call observ
 
 pub(crate) const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
+/// One record per key the shipped kernel reads; kept in step with `kernel/src/main.rs`.
+const KEY_CONSUMED_MARKER: &str = "input: key consumed";
+
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(STRICT_DMA_HANDOFF_MARKER),
     RequiredLogRecord::info(SHIPPED_QEMU_TCG_ISOLATION_MARKER),
@@ -326,6 +329,7 @@ const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     ),
     RequiredLogRecord::info("keyboard: polled every 10 ms"),
     RequiredLogRecord::info(SHIPPED_USER_EXECUTION_MARKER),
+    RequiredLogRecord::info(KEY_CONSUMED_MARKER),
 ];
 
 /// A shipped kernel must accept this input without unmasking legacy IRQ1.

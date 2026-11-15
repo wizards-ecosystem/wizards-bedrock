@@ -206,7 +206,7 @@ Ordered `cargo xtask ci` stages:
 | 10 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
 <!-- CI-REGISTRY:END -->
 
-`boot-check` boots the shipped image and requires the keyboard prompt. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `doc` exists so rustdoc's link lints run.
+`boot-check` boots the shipped image, requires the keyboard prompt and requires the kernel to log that it consumed an injected key. `degraded-check` requires the kernel to refuse a machine with no PCI configuration and a machine with no x2APIC, to bring up tmpfs and devfs with no hardware behind them, and to leave storage unmounted when no remapping unit exists. `test-boot` boots the `selftest` kernel headless and reads the verdict from QEMU's exit code. `doc` exists so rustdoc's link lints run.
 
 These tasks stay outside `ci` because they need a tool, a person, or a long run: `debug`, `baseline` (six QEMU boots), `model-check`, and `vmware`. After a human boots a generated VMware machine, `cargo xtask qualify-vmware` checks the self-test transcript and `cargo xtask qualify-vmware --shipped` checks the shipped one. `cargo xtask evidence` runs the gate, reproduces the shipped image twice, and writes a bundle that `cargo xtask verify-evidence` rechecks offline. A release is the gate, that evidence, a VMware boot and a person reading the diff (D-454).
 
