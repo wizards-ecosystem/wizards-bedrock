@@ -494,22 +494,21 @@ impl Queue {
             .map(|_| deadline_ns)
     }
 
-    /// Mark one matching operation as settling; it keeps its slot until its post succeeds.
+    /// Mark the oldest matching operation as settling; it keeps its slot until its post succeeds.
     ///
     /// Other terminal paths skip a settling entry, so a refusal can restore the live state without
     /// racing a second completion.
     fn begin_settlement(&self, wanted: impl Fn(Pending) -> bool) -> Option<(usize, Pending)> {
         let mut pending = self.pending.lock_leaf();
-        for (index, slot) in pending.slots.iter_mut().enumerate() {
-            let Some(entry) = slot.as_mut() else {
-                continue;
-            };
-            if !entry.settling && wanted(*entry) {
-                entry.settling = true;
-                return Some((index, *entry));
-            }
-        }
-        None
+        let (index, entry) = pending
+            .slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, slot)| Some((index, slot.as_mut()?)))
+            .filter(|(_, entry)| !entry.settling && wanted(**entry))
+            .min_by_key(|(_, entry)| entry.id)?;
+        entry.settling = true;
+        Some((index, *entry))
     }
 
     /// Post one pending operation's terminal record, or leave it live.
