@@ -829,11 +829,13 @@ fn park(
 pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     let now = time::scheduler_now_ns();
     let current = task::current();
+    // A zombie: this thread stands on the stack and tables it would have to free, so it
+    // cannot be the one to free them. Recorded before the slot is freed, so a reused slot never
+    // orphans twice.
+    crate::user::orphan(current);
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
-        threads.queue.charge(current, now);
         threads.queue.wake_due(now);
-        threads.queue.park(current);
         // The switch below leaves this stack permanently, so the scheduler slot can represent
         // another live program.
         threads.identities[current] = Identity::FREE;
@@ -851,9 +853,6 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     reschedule_timer(event);
     match next {
         Some(next) => {
-            // A zombie: this thread stands on the stack and tables it would have to free, so it
-            // cannot be the one to free them.
-            crate::user::orphan(current);
             // Published after `orphan` records the last rites, so an acquiring observer of the new
             // generation can read them.
             #[cfg(feature = "selftest")]
