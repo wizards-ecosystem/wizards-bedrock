@@ -4,22 +4,16 @@ virtualHW.version = "19"
 displayName = "{{DISPLAY_NAME}}"
 guestOS = "other-64"
 firmware = "efi"
-# Storage fails closed without a DMA-remapping unit (D-357): this is VMware's
-# virtual VT-d unit, as `-device intel-iommu` is QEMU's (D-358).
+# Storage fails closed without a DMA-remapping unit; this is VMware's virtual VT-d unit.
 vvtd.enable = "TRUE"
-# D-390: VMware's CPU-resident hypervisor identity authenticates this structured
-# contract that every requester stayed quiescent until the entry-time fence.
+# The CPU-resident hypervisor identity authenticates this DMA handoff table.
 acpi.addtable.filename = "{{DMA_HANDOFF_FILE}}"
 memsize = "512"
 numvcpus = "2"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
 sata0:0.fileName = "{{VMDK_NAME}}"
-# PCIe root ports. `other-64` gets a bare PCI topology, and VMware's NVMe
-# controller is PCIe-only — with no ports declared there is not one slot to put
-# it in. These are also what `012` §11 predicted the enumeration would have to
-# walk, so the driver's bridge recursion is now reached rather than argued
-# (D-176).
+# PCIe root ports: `other-64` gets a bare PCI topology, and VMware NVMe is PCIe-only.
 pciBridge0.present = "TRUE"
 pciBridge4.present = "TRUE"
 pciBridge4.virtualDev = "pcieRootPort"
@@ -33,16 +27,7 @@ pciBridge6.functions = "8"
 pciBridge7.present = "TRUE"
 pciBridge7.virtualDev = "pcieRootPort"
 pciBridge7.functions = "8"
-# The storage controller Phase 6 drives. `012` §2 chose NVMe because it is the
-# one controller with a published specification that this project's two boot
-# targets share — and a VM without one tests half of that, which is what the
-# first VMware boot to run the checks discovered (D-176).
-#
-# Two of them, and the first deliberately namespace-less, because `a later nvme
-# controller survives an earlier failure` asks whether discovery retires a
-# useless candidate and goes on to its sibling. QEMU has been shaped this way
-# since D-199; this machine was not, so the one check that needs a second
-# controller could never pass here however the human answered (D-240).
+# Two NVMe controllers, the first namespace-less, so discovery must retire it for its sibling.
 nvme0.present = "TRUE"
 nvme1.present = "TRUE"
 nvme1:0.present = "TRUE"

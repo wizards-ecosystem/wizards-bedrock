@@ -10,7 +10,6 @@ use super::serial::{
 use super::{Control, Event, Installation, Machine, Remapping};
 use crate::paths::RunDirectory;
 
-// Bounds the boot to its settled record; the self-test build never gets that far.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 // Running time after the kernel settles, so one dying on its first interrupt shows.
 const SETTLE: Duration = Duration::from_secs(5);

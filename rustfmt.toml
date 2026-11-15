@@ -1,10 +1,7 @@
-# Stable-only options, so `cargo fmt` agrees on Windows and Linux CI: nothing here may be
-# nightly-gated. Import grouping is a convention (docs/005-code-conventions.md): stable rustfmt
-# silently ignores `group_imports` and `imports_granularity`.
+# Stable options only, so `cargo fmt` agrees on every host.
 style_edition = "2024"
 max_width = 100
-# Not "Auto": it infers from each file's first line, so a stray CRLF file would format to CRLF
-# on Windows and fail `cargo fmt --check` on Linux CI.
+# Not "Auto", which would format a stray CRLF file back to CRLF.
 newline_style = "Unix"
 use_field_init_shorthand = true
 use_try_shorthand = true

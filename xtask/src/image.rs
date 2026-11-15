@@ -14,8 +14,7 @@ use fscommon::{BufStream, StreamSlice};
 use crate::cargo::{self, Profile};
 use crate::paths::{self, Paths};
 
-// Shared with kernel/src/selftest.rs; it stays contiguous because the optimiser may split a
-// formatted literal, and only a self-test kernel prints it.
+// Only a self-test kernel prints it, as one literal that the optimiser cannot split.
 const SELFTEST_IMAGE_MARKER: &str = "selftest: image marker v1";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

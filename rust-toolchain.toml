@@ -1,10 +1,7 @@
 [toolchain]
-# Pinned exactly: clippy gains lints every six weeks, and a floating channel lets CI go red from
-# a toolchain release rather than a commit. Bump deliberately; host-specific settings never go
-# in this file.
+# Pinned exactly, so a toolchain release cannot turn the gate red; bump deliberately.
 channel = "1.97.1"
 profile = "minimal"
-# rust-mingw is absent on purpose: it does not exist for other hosts and naming it breaks Linux
-# CI; rustup installs it with the windows-gnu host toolchain regardless.
+# No rust-mingw: it exists for Windows hosts only, and rustup adds it there regardless.
 components = ["rustfmt", "clippy"]
 targets = ["x86_64-unknown-none"]
