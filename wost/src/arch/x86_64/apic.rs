@@ -440,11 +440,7 @@ fn init_stages(
     }
 
     initialization.enter(InitStage::ConfigureSources)?;
-    registers.write(register::LVT_ERROR, sources.error.bits().into());
-    // The error register latches on write, so this discards what accrued under the firmware.
-    registers.write(register::ERROR_STATUS, 0);
-    let _ = registers.read(register::ERROR_STATUS);
-
+    // A software-disabled APIC holds every LVT mask bit set, so it is enabled before any unmask.
     registers.write(
         register::SPURIOUS_INTERRUPT_VECTOR,
         sources.spurious.bits().into(),
@@ -452,6 +448,14 @@ fn init_stages(
     if registers.read(register::SPURIOUS_INTERRUPT_VECTOR) != u64::from(sources.spurious.bits()) {
         return Err(ApicError::NotResponding);
     }
+
+    registers.write(register::LVT_ERROR, sources.error.bits().into());
+    if Entry::from_bits(low_u32(registers.read(register::LVT_ERROR))).is_masked() {
+        return Err(ApicError::NotResponding);
+    }
+    // The error register latches on write, so this discards what accrued under the firmware.
+    registers.write(register::ERROR_STATUS, 0);
+    let _ = registers.read(register::ERROR_STATUS);
 
     initialization
         .controller
@@ -477,7 +481,8 @@ fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
     if maximum < usize::from(LAST_REQUIRED_LVT_ENTRY) {
         return None;
     }
-    register::LOCAL_VECTOR_TABLE.get(..=maximum)
+    let known = register::LOCAL_VECTOR_TABLE.len();
+    register::LOCAL_VECTOR_TABLE.get(..maximum.saturating_add(1).min(known))
 }
 
 /// Claim the exact APIC dismissal owned by the innermost live trap.
