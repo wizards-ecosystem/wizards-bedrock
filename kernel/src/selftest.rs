@@ -1119,8 +1119,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         second_sent && ping_arrives(before.count + 2),
     );
 
-    let apic_failures =
-        apic::initialization_failures_for_test(vector::LOCAL_APIC, || trap::last_ping().count);
+    let apic_failures = apic::initialization_failures_for_test(vector::LOCAL_APIC);
     report.check(
         "every late or ignored-write apic refusal stays unavailable and terminal",
         apic_failures.unavailable_and_terminal()

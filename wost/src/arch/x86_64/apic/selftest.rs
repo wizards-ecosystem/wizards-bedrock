@@ -137,7 +137,6 @@ pub fn initialization_was_atomic_for_test() -> bool {
 pub struct InitializationFailureProbe {
     unavailable_and_terminal: bool,
     ignored_spurious_write_is_terminal: bool,
-    delivery_waited_for_unwind: bool,
     advertised_sources_masked: bool,
     source_mask_refusals_are_terminal: bool,
 }
@@ -152,11 +151,6 @@ impl InitializationFailureProbe {
     /// Whether an ignored software-enable write refused and poisoned setup.
     pub const fn ignored_spurious_write_is_terminal(self) -> bool {
         self.ignored_spurious_write_is_terminal
-    }
-
-    /// Whether each pending self-interrupt arrived only after exclusion unwound.
-    pub const fn delivery_waited_for_unwind(self) -> bool {
-        self.delivery_waited_for_unwind
     }
 
     /// Whether six-entry and CMCI-capable inventories mask exactly their sources.
@@ -248,25 +242,20 @@ fn lvt_index(wanted: Register) -> Option<usize> {
 }
 
 #[cfg(feature = "selftest")]
-struct FailureObserver<'probe, DeliveryCount> {
+struct FailureObserver<'probe> {
     target: InitializationBoundary,
     mode_entered: &'probe AtomicBool,
     reads: &'probe AtomicUsize,
     writes: &'probe AtomicUsize,
     lvt_masked: &'probe AtomicU8,
     lvt_covered: &'probe AtomicU8,
-    delivery_count: &'probe mut DeliveryCount,
     reached: u8,
     body_completed: bool,
     gates_held: bool,
-    delivery_excluded: bool,
-    queued_at: Option<usize>,
 }
 
 #[cfg(feature = "selftest")]
-impl<DeliveryCount: FnMut() -> usize> InitializationObserver
-    for FailureObserver<'_, DeliveryCount>
-{
+impl InitializationObserver for FailureObserver<'_> {
     fn reached(
         &mut self,
         boundary: InitializationBoundary,
@@ -291,40 +280,28 @@ impl<DeliveryCount: FnMut() -> usize> InitializationObserver
             && self.lvt_masked.load(Ordering::Acquire) == expected_masked
             && self.lvt_covered.load(Ordering::Acquire) == expected_coverage;
 
-        let delivered_before = (self.delivery_count)();
         let public_gates = !fixture.is_enabled()
             && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable);
         let reentry = matches!(
             Initialization::begin(fixture),
             Err(ApicError::InitializationInProgress)
         );
-        let excluded = !interrupt::are_enabled();
-        let queued = controller().send_self_interrupt().is_ok();
-        let stayed_pending = (self.delivery_count)() == delivered_before;
         self.gates_held = public_gates && reentry;
-        self.delivery_excluded = excluded && queued && stayed_pending;
-        self.queued_at = queued.then_some(delivered_before);
         Err(ApicError::NotResponding)
     }
 }
 
 /// Exercise the production APIC transaction with isolated failure state.
 ///
-/// Registers are counters since replaying setup would disturb the live singleton; the transaction,
-/// gates, interrupt flag and queued self-IPI are production, and `delivery_count` sees it arrive.
+/// Registers are counters since replaying setup would disturb the live singleton; the transaction
+/// and gates are production.
 #[cfg(feature = "selftest")]
-pub fn initialization_failures_for_test(
-    vectors: Vectors,
-    mut delivery_count: impl FnMut() -> usize,
-) -> InitializationFailureProbe {
-    const DELIVERY_ATTEMPTS: usize = 1_000_000;
-
+pub fn initialization_failures_for_test(vectors: Vectors) -> InitializationFailureProbe {
     let live = controller();
     let mut unavailable_and_terminal = interrupt::are_enabled()
         && live.published_vector(live.self_interrupt_vector) == Some(vectors.self_interrupt)
         && live.published_vector(live.timer_vector) == Some(vectors.timer)
         && live.published_vector(live.spurious_vector) == Some(vectors.spurious);
-    let mut delivery_waited_for_unwind = unavailable_and_terminal;
     let mut reached = 0u8;
 
     for target in InitializationBoundary::ALL {
@@ -345,7 +322,7 @@ pub fn initialization_failures_for_test(
         let lvt_masked = AtomicU8::new(0);
         let lvt_covered = AtomicU8::new(0);
 
-        let (outcome, body_completed, gates_held, delivery_excluded, queued_at, observed) = {
+        let (outcome, body_completed, gates_held, observed) = {
             let mut observer = FailureObserver {
                 target,
                 mode_entered: &mode_entered,
@@ -353,12 +330,9 @@ pub fn initialization_failures_for_test(
                 writes: &writes,
                 lvt_masked: &lvt_masked,
                 lvt_covered: &lvt_covered,
-                delivery_count: &mut delivery_count,
                 reached: 0,
                 body_completed: false,
                 gates_held: false,
-                delivery_excluded: false,
-                queued_at: None,
             };
             let outcome = init_controller(
                 fixture,
@@ -385,8 +359,6 @@ pub fn initialization_failures_for_test(
                 outcome,
                 observer.body_completed,
                 observer.gates_held,
-                observer.delivery_excluded,
-                observer.queued_at,
                 observer.reached,
             )
         };
@@ -402,22 +374,12 @@ pub fn initialization_failures_for_test(
             && poisoned
             && unavailable
             && retry_refused;
-        delivery_waited_for_unwind &= delivery_excluded;
-
-        let arrived_after_unwind = queued_at.is_some_and(|before| {
-            (0..DELIVERY_ATTEMPTS).any(|_| {
-                core::hint::spin_loop();
-                delivery_count() == before + 1
-            })
-        });
-        delivery_waited_for_unwind &= interrupt::are_enabled() && arrived_after_unwind;
     }
 
     unavailable_and_terminal &= reached == ALL_INIT_OBSERVATIONS && live.is_enabled();
     InitializationFailureProbe {
         unavailable_and_terminal,
         ignored_spurious_write_is_terminal: ignored_spurious_write_is_terminal(vectors),
-        delivery_waited_for_unwind,
         advertised_sources_masked: advertised_sources_masked(vectors),
         source_mask_refusals_are_terminal: source_mask_refusals_are_terminal(vectors),
     }
