@@ -253,6 +253,10 @@ impl PciTopology {
         let primary = primary_bus(bits);
         let secondary = secondary_bus(bits);
         let subordinate = subordinate_bus(bits);
+        // Firmware left this bridge unconfigured, so nothing behind it is reachable.
+        if secondary == 0 {
+            return Ok(());
+        }
         if primary != at.bus() || secondary <= at.bus() || secondary > subordinate {
             return Err(TopologyError::InvalidRange {
                 at,

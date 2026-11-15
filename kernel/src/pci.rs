@@ -120,8 +120,7 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     worklist.push(behind);
                 }
 
-                // A single-function device answers every function with its own
-                // header; bit 7 of the header type says how many there are.
+                // A single-function device may answer every function with its own header.
                 if function == 0 && !entry.header.is_multifunction() {
                     break;
                 }
@@ -210,12 +209,7 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     })
 }
 
-/// Probe every function number and seal one rooted, immutable PCI topology.
-///
-/// Unlike ordinary enumeration, this proof never trusts multifunction hints
-/// and probes buses which a malformed bridge may have made unreachable. It
-/// refuses with [`TopologyError`] when bridge identity or routing cannot form
-/// one unambiguous tree rooted at bus zero.
+// Probes buses a malformed bridge may have made unreachable, so a hidden requester is still seen.
 pub(crate) fn snapshot_topology(
     mut non_requester: Option<QualifiedNonRequester>,
     mut quiesced: Option<QuiescedIsaRequester>,
@@ -265,6 +259,9 @@ pub(crate) fn snapshot_topology(
                     )?;
                 } else {
                     topology.observe(entry.at, entry.class, entry.header, bus_numbers)?;
+                }
+                if function == 0 && !entry.header.is_multifunction() {
+                    break;
                 }
             }
         }
