@@ -13,8 +13,8 @@
 use core::fmt;
 
 use nvme::{
-    Capabilities, Capacity, ControllerPreparation, DisabledRegisters, DmaPublication,
-    DmaState as DmaFlightState, NamespaceError, PollLimit, TransferError, register, status,
+    Capabilities, Capacity, DisabledRegisters, DmaPublication, DmaState as DmaFlightState,
+    NamespaceError, PollLimit, TransferError, register, status,
 };
 use wost::arch::current::pci::MappedBar;
 use wost::mm::DmaSegment;
@@ -308,6 +308,13 @@ pub(crate) struct ControllerQuarantine {
 /// Result of preparing a mapped controller before bus-master admission.
 #[derive(Debug)]
 #[must_use = "controller preparation returns ownership in both outcomes"]
+#[cfg_attr(
+    feature = "selftest",
+    expect(
+        clippy::large_enum_variant,
+        reason = "the self-test hooks widen the controller, which moves by value without a heap"
+    )
+)]
 pub(crate) enum PrepareOutcome {
     /// The controller is verified disabled and ready for DMA admission.
     Prepared(DisabledController),
@@ -335,29 +342,15 @@ pub(crate) struct PrepareQuarantine {
 
 #[derive(Debug)]
 enum QuarantinedRegisters {
-    Unverified {
-        _preparation: ControllerPreparation<MappedBar>,
-    },
-    Disabled {
-        _registers: MappedBar,
-    },
+    Mapped { _registers: MappedBar },
     MemoryQuarantine,
 }
 
 impl PrepareFailure {
-    fn quarantined(reason: BringUpError, preparation: ControllerPreparation<MappedBar>) -> Self {
+    fn quarantined(reason: BringUpError, registers: MappedBar) -> Self {
         Self::Quarantined(PrepareQuarantine {
             reason,
-            _registers: QuarantinedRegisters::Unverified {
-                _preparation: preparation,
-            },
-        })
-    }
-
-    fn disabled_quarantine(reason: BringUpError, registers: MappedBar) -> Self {
-        Self::Quarantined(PrepareQuarantine {
-            reason,
-            _registers: QuarantinedRegisters::Disabled {
+            _registers: QuarantinedRegisters::Mapped {
                 _registers: registers,
             },
         })
@@ -419,16 +412,23 @@ fn stop_controller(controller: &mut Controller) -> Result<ControllerStopped<'_>,
         ..
     } = controller;
     let registers = registers.as_mut().ok_or(BringUpError::NotMapped)?;
-    write(registers, register::CC, 0)?;
-    wait_for_ready(registers, *capabilities, Readiness::NotReady)?;
-    let cc = read(registers, register::CC)?;
-    let csts = read(registers, register::CSTS)?;
-    let observed = DisabledRegisters::from_bits(cc, csts).map_err(|_| BringUpError::NotReady)?;
+    let observed = disable(registers, *capabilities)?;
     Ok(ControllerStopped {
         _registers: registers,
         _observed: observed,
         dma,
     })
+}
+
+fn disable(
+    registers: &mut MappedBar,
+    capabilities: Capabilities,
+) -> Result<DisabledRegisters, BringUpError> {
+    write(registers, register::CC, 0)?;
+    wait_for_ready(registers, capabilities, Readiness::NotReady)?;
+    let cc = read(registers, register::CC)?;
+    let csts = read(registers, register::CSTS)?;
+    DisabledRegisters::from_bits(cc, csts).map_err(|_| BringUpError::NotReady)
 }
 
 /// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`; `CSTS.CFS` ends an enable wait.
