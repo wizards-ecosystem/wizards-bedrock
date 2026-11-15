@@ -39,8 +39,8 @@ impl EntryKind {
     }
 }
 
-const fn repository_entry_is_supported(kind: EntryKind, is_reparse_point: bool) -> bool {
-    matches!(kind, EntryKind::Directory | EntryKind::File) && !is_reparse_point
+const fn repository_entry_is_supported(kind: EntryKind, reparse_point: bool) -> bool {
+    matches!(kind, EntryKind::Directory | EntryKind::File) && !reparse_point
 }
 
 fn metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
@@ -69,7 +69,7 @@ impl DirectoryEntry {
     }
 }
 
-fn classify_directory_entry(entry: std::fs::DirEntry) -> Result<DirectoryEntry> {
+fn read_directory_entry(entry: std::fs::DirEntry) -> Result<DirectoryEntry> {
     let path = entry.path();
     let metadata = std::fs::symlink_metadata(&path)
         .with_context(|| format!("classifying {}", path.display()))?;
@@ -95,7 +95,7 @@ pub(crate) fn directory_entries(directory: &Path) -> Result<Vec<DirectoryEntry>>
         std::fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?;
     let entries = collect_directory_entries(entries)
         .with_context(|| format!("reading every entry in {}", directory.display()))?;
-    collect_classified_entries(entries.into_iter().map(classify_directory_entry))
+    collect_classified_entries(entries.into_iter().map(read_directory_entry))
 }
 
 /// Cargo package producing the kernel binary.

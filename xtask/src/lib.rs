@@ -64,7 +64,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::DegradedCheck(profile) => tasks::degraded_check(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
         Task::SupplyChain => supply_chain::verify(&paths),
-        Task::UpdateSbom => supply_chain::update_spdx(&paths),
+        Task::UpdateSbom => supply_chain::publish_spdx(&paths),
         Task::ModelCheck => model::check(&paths),
         Task::Baseline => baseline::check(&paths),
         Task::Debug(mode) => debugger::run(&paths, mode),

@@ -180,7 +180,7 @@ fn bounded_output(command: Command, timeout: Duration, label: &str) -> Result<Ou
 }
 
 fn require_expected(expected: Expected, success: bool, stdout: &str, stderr: &str) -> Result<()> {
-    let observed = classify(stdout, stderr)?;
+    let observed = read_verdict(stdout, stderr)?;
     match (expected, observed) {
         (Expected::Clean, Verdict::Clean) if success => Ok(()),
         (Expected::Violates(expected), Verdict::Violated(actual))
@@ -204,7 +204,7 @@ fn require_expected(expected: Expected, success: bool, stdout: &str, stderr: &st
     }
 }
 
-fn classify(stdout: &str, stderr: &str) -> Result<Verdict> {
+fn read_verdict(stdout: &str, stderr: &str) -> Result<Verdict> {
     ensure!(
         stderr.trim().is_empty(),
         "TLC wrote diagnostic output beside its verdict"
