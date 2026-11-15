@@ -64,7 +64,7 @@ pub(crate) fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
 
 /// Run the host test suite; the kernel crates have no host tests (`docs/005-code-conventions.md`).
 pub(crate) fn test(paths: &Paths) -> Result<()> {
-    let mut args = vec!["test".to_string()];
+    let mut args = vec!["test".to_string(), "--locked".to_string()];
     args.extend(cargo::package_args(paths::HOST_PACKAGES));
     cargo::run(paths, "tests", &args)
 }
@@ -415,7 +415,7 @@ fn pass_args(
     extra: &[String],
     after_dashes: &[String],
 ) -> Vec<String> {
-    let mut args = vec![subcommand.to_string()];
+    let mut args = vec![subcommand.to_string(), "--locked".to_string()];
     args.extend(cargo::package_args(pass.packages));
     match pass.target {
         Some(target) => args.extend(["--target".to_string(), target.to_string()]),
