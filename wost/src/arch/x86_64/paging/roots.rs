@@ -11,40 +11,24 @@ impl AddressSpace {
             return Err(MapError::InvalidEntryEnclave(address));
         }
 
-        let mark = self.tables.len();
-        let mut written = 0usize;
-        for page in &expected_stripped {
-            let flags = enclave_flags(page.permission());
-            if let Err(reason) = self.set_in(
-                TableRoot::Stripped,
-                page.virtual_address(),
-                page.physical_address(),
-                flags,
-                Level::Pt,
-            ) {
-                self.rollback_stripped_enclave(&expected_stripped, written, mark);
-                return Err(reason);
-            }
-            written += 1;
-        }
-
         let stripped = self
             .roots()
             .stripped_root()
             .ok_or(MapError::InvalidEntryEnclave(self.root().get()))?;
+        for page in &expected_stripped {
+            self.set_in(
+                TableRoot::Stripped,
+                page.virtual_address(),
+                page.physical_address(),
+                enclave_flags(page.permission()),
+                Level::Pt,
+            )?;
+        }
         if let Some(address) = mapped_guard(stripped, enclave)? {
-            self.rollback_stripped_enclave(&expected_stripped, written, mark);
             return Err(MapError::InvalidEntryEnclave(address));
         }
-        let observed = match observe_stripped_higher_half(stripped, pages) {
-            Ok(observed) => observed,
-            Err(reason) => {
-                self.rollback_stripped_enclave(&expected_stripped, written, mark);
-                return Err(reason);
-            }
-        };
+        let observed = observe_stripped_higher_half(stripped, pages)?;
         if !enclave_matches(&expected_stripped, &observed) {
-            self.rollback_stripped_enclave(&expected_stripped, written, mark);
             return Err(MapError::InvalidEntryEnclave(
                 expected_stripped
                     .first()
@@ -105,25 +89,6 @@ impl AddressSpace {
             ));
         }
         Ok(expected_stripped)
-    }
-
-    fn rollback_stripped_enclave(
-        &mut self,
-        expected: &[EnclavePage],
-        written: usize,
-        table_mark: usize,
-    ) {
-        let stripped = self
-            .roots()
-            .stripped_root()
-            .unwrap_or_else(|| panic!("paired enclave rollback lost its stripped root"));
-        for page in &expected[..written] {
-            let slot = leaf_in(stripped, page.virtual_address()).unwrap_or_else(|reason| {
-                panic!("paired enclave rollback lost a written leaf: {reason}")
-            });
-            EntrySlot::write(&slot, Entry::ABSENT);
-        }
-        self.rollback_tables(table_mark);
     }
 
     /// Reserve the top-level table every later device mapping will share.
