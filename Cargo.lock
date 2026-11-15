@@ -433,7 +433,6 @@ dependencies = [
  "pci-config",
  "ps2-keys",
  "ring-proto",
- "slab-layout",
  "stack-layout",
  "timebase",
  "trap-cause",

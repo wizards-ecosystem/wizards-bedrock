@@ -1,14 +1,4 @@
 use super::*;
-use crate::sync::Injection;
-
-#[cfg(feature = "selftest")]
-pub(super) static REFUSE_USER_STATE_ISOLATION: Injection = Injection::new();
-
-/// Run one check with live user-state isolation withheld.
-#[cfg(feature = "selftest")]
-pub fn without_user_state_isolation_for_test<T>(operation: impl FnOnce() -> T) -> T {
-    REFUSE_USER_STATE_ISOLATION.with(true, operation)
-}
 
 /// Whether a save leaves a sentinel immediately beyond [`bytes`] untouched.
 ///

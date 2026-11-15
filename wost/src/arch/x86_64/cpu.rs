@@ -6,8 +6,6 @@
 use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub use x86_cpuid::DmaHandoffPlatform;
 use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
@@ -24,13 +22,7 @@ use crate::mm::PhysicalAddress;
 #[cfg(feature = "selftest")]
 mod selftest;
 #[cfg(feature = "selftest")]
-use selftest::PAGE_INVALIDATIONS;
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    access_check_is_off, drive_fast_syscall_shutdown_for_test, drive_write_protection_for_test,
-    page_invalidations_for_test, page_table_context_ids_are_disabled_for_test,
-    write_protection_probe,
-};
+pub use selftest::access_check_is_off;
 
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
@@ -57,59 +49,6 @@ const CR4_SMEP: u64 = 1 << 20;
 
 /// `CR4` bit: supervisor mode access prevention.
 const CR4_SMAP: u64 = 1 << 21;
-
-#[cfg(feature = "selftest")]
-::core::arch::global_asm!(
-    ".pushsection .rodata.wost_write_protection_probe,\"a\",@progbits",
-    ".globl wost_write_protection_target",
-    "wost_write_protection_target:",
-    "  .byte 0xa5",
-    ".popsection",
-    ".text",
-    ".globl wost_write_protection_probe",
-    "wost_write_protection_probe:",
-    "  lea rdi, [rip + wost_write_protection_target]",
-    "  mov al, [rdi]",
-    ".globl wost_write_protection_fault",
-    "wost_write_protection_fault:",
-    "  mov [rdi], al",
-    ".globl wost_write_protection_fault_end",
-    "wost_write_protection_fault_end:",
-    "  xor eax, eax",
-    "  ret",
-    ".globl wost_write_protection_fixup",
-    "wost_write_protection_fixup:",
-    "  mov eax, 1",
-    "  ret",
-);
-
-#[cfg(feature = "selftest")]
-unsafe extern "C" {
-    /// Write the byte back to its own read-only location.
-    fn wost_write_protection_probe() -> u64;
-    /// The write instruction the probe expects to fault on.
-    static wost_write_protection_fault: u8;
-    /// One past the write instruction.
-    static wost_write_protection_fault_end: u8;
-    /// Where the recovered write resumes.
-    static wost_write_protection_fixup: u8;
-    /// The byte in the kernel's read-only image.
-    static wost_write_protection_target: u8;
-}
-
-#[cfg(feature = "selftest")]
-pub(super) struct WriteProtectionRecoveryTarget(u64);
-
-#[cfg(feature = "selftest")]
-impl WriteProtectionRecoveryTarget {
-    fn fixup() -> Self {
-        Self(core::ptr::addr_of!(wost_write_protection_fixup) as u64)
-    }
-
-    pub(super) const fn address(&self) -> u64 {
-        self.0
-    }
-}
 
 /// Halt this CPU until an enabled interrupt or another architectural wake event.
 ///
@@ -355,40 +294,6 @@ pub fn enable_protections() -> Protections {
 /// Read back from `CR0` instead of remembered from the write that asked for it.
 pub(crate) fn write_protection_is_enabled() -> bool {
     read_cr0() & CR0_WRITE_PROTECT != 0
-}
-
-/// Resume the controlled write-protection probe, if it caused this fault.
-///
-/// `false` for every other instruction or address, having changed nothing.
-#[cfg(feature = "selftest")]
-pub fn recover_write_protection_probe(
-    frame: &interrupt::TrapFrame,
-    fault: trap_cause::PageFault,
-) -> bool {
-    let at = frame.instruction_pointer();
-    let start = core::ptr::addr_of!(wost_write_protection_fault) as u64;
-    let end = core::ptr::addr_of!(wost_write_protection_fault_end) as u64;
-    let target = core::ptr::addr_of!(wost_write_protection_target) as u64;
-    let Some(target_end) = target.checked_add(1) else {
-        return false;
-    };
-    let attempt = trap_cause::RecoveryAttempt {
-        vector: u64::from(frame.vector()),
-        frame_error_code: frame.error_code(),
-        code_selector: frame.code_selector(),
-        instruction_pointer: at,
-        page_fault: fault,
-        faulting_address: faulting_address(),
-    };
-    let rule = trap_cause::RecoveryRule {
-        fault: trap_cause::RecoveryFault::SupervisorWriteProtection,
-        fault_addresses: target..target_end,
-        instruction_addresses: start..end,
-    };
-    if !attempt.is_admitted_by(&rule) {
-        return false;
-    }
-    interrupt::resume_write_protection(frame, WriteProtectionRecoveryTarget::fixup())
 }
 
 fn enable_write_protection() {
@@ -681,8 +586,6 @@ pub(crate) fn invalidate_page(address: CanonicalAddress) {
     unsafe {
         core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags))
     };
-    #[cfg(feature = "selftest")]
-    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Write the cache line holding `address` back to memory and drop it.

@@ -28,9 +28,9 @@ use crate::time::{self, NANOSECONDS_PER_MS};
 mod selftest;
 
 #[cfg(feature = "selftest")]
-use selftest::{HANDLER_ARMS, IDLE_HALTS, RETIREMENTS};
+use selftest::RETIREMENTS;
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{free_slots, idle_halts, retirements, spawn_in_space_refusing};
+pub(crate) use selftest::{free_slots, retirements};
 
 /// Threads that can exist at once besides the boot thread, matching the recyclable stack arena's
 /// initial capacity; fixed until a measured caller needs more, since at least four processes must
@@ -83,13 +83,6 @@ pub(crate) enum SpawnError {
     Task(TaskError),
     /// The caller could not publish the state the new thread needs.
     Arrangement,
-    /// The first task-table retirement refused before an exact retry succeeded.
-    Retirement {
-        /// Slot withheld until the retry completed.
-        slot: usize,
-        /// Why the first retirement attempt refused.
-        reason: TaskError,
-    },
 }
 
 /// A refused user-space spawn with any returned address-space authority.
@@ -145,28 +138,11 @@ impl fmt::Display for SpawnError {
             Self::Full => write!(f, "all {STACK_SLOTS} thread slots are live"),
             Self::Task(reason) => write!(f, "{reason}"),
             Self::Arrangement => f.write_str("the thread's launch state could not be arranged"),
-            Self::Retirement { slot, reason } => {
-                write!(
-                    f,
-                    "slot {slot} retirement first refused with {reason}; retry completed"
-                )
-            }
         }
     }
 }
 
 impl core::error::Error for SpawnError {}
-
-/// A completed thread-construction step at which a check may force refusal.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SpawnPoint {
-    /// The scheduler slot is reserved, but no task exists.
-    Reserved,
-    /// The task exists, but has no user address space.
-    Fabricated,
-    /// The task names the user address space, but is not runnable.
-    Bound,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -479,7 +455,6 @@ pub(crate) fn start_idle() {
             THREADS.lock_leaf().queue.slots[slot].class = Class::Idle;
             Ok(())
         },
-        |_| false,
     );
     if spawned.is_err() {
         IDLE_STATE.store(IDLE_UNSTARTED, Ordering::Release);
@@ -494,8 +469,6 @@ fn idle_loop() {
         if crate::user::report_execution() || crate::user::report_refusals() {
             continue;
         }
-        #[cfg(feature = "selftest")]
-        IDLE_HALTS.fetch_add(1, Ordering::Relaxed);
         cpu::halt();
     }
 }
@@ -512,7 +485,6 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
         |_, bound| {
             if bound.is_none() { Ok(()) } else { Err(bound) }
         },
-        |_| false,
     )
     .map_err(|failure| failure.reason)
 }
@@ -540,7 +512,6 @@ pub(crate) fn spawn_in_space(
             };
             arrange(slot, bound).map_err(Some)
         },
-        |_| false,
     )
     .map_err(|failure| SpaceSpawnError {
         reason: failure.reason,
@@ -548,16 +519,12 @@ pub(crate) fn spawn_in_space(
     })
 }
 
-fn retire_prepared(slot: usize) -> Result<(), TaskError> {
-    task::retire(slot)?;
-    THREADS.lock_leaf().release(slot);
-    Ok(())
-}
-
-fn finish_refused_retirement(slot: usize, first: TaskError) {
-    if let Err(second) = retire_prepared(slot) {
-        panic!("slot {slot} retirement refused twice: {first}; {second}");
+// Every refusal `task::retire` can give repeats on a retry, so the first one is terminal.
+fn retire_prepared(slot: usize) {
+    if let Err(reason) = task::retire(slot) {
+        panic!("slot {slot} retirement refused: {reason}");
     }
+    THREADS.lock_leaf().release(slot);
 }
 
 /// What a thread is spawned from: its identity, its weight, and any user address space.
@@ -572,7 +539,6 @@ struct Prepared {
 fn spawn_prepared(
     prepared: Prepared,
     arrange: impl FnOnce(usize, Option<Bound>) -> Result<(), Option<Bound>>,
-    mut refuse: impl FnMut(SpawnPoint) -> bool,
 ) -> Result<usize, PreparedFailure> {
     let Prepared {
         name,
@@ -588,10 +554,6 @@ fn spawn_prepared(
         Ok(slot) => slot,
         Err(reason) => return Err(PreparedFailure::before_binding(reason, binding)),
     };
-    if refuse(SpawnPoint::Reserved) {
-        THREADS.lock_leaf().release(slot);
-        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-    }
 
     // Outside the leaf: `fabricate` takes `wost`'s own lock, and the reserved slot cannot be
     // chosen by another spawn or an expiry.
@@ -602,36 +564,10 @@ fn spawn_prepared(
             binding,
         ));
     }
-    if refuse(SpawnPoint::Fabricated) {
-        if let Err(reason) = retire_prepared(slot) {
-            finish_refused_retirement(slot, reason);
-            return Err(PreparedFailure::before_binding(
-                SpawnError::Retirement { slot, reason },
-                binding,
-            ));
-        }
-        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));
-    }
 
     let bound = bind(slot, binding)?;
-    if refuse(SpawnPoint::Bound) {
-        if let Err(reason) = retire_prepared(slot) {
-            finish_refused_retirement(slot, reason);
-            return Err(PreparedFailure::after_retirement(
-                SpawnError::Retirement { slot, reason },
-                bound,
-            ));
-        }
-        return Err(PreparedFailure::after_retirement(SpawnError::Full, bound));
-    }
     if let Err(bound) = arrange(slot, bound) {
-        if let Err(reason) = retire_prepared(slot) {
-            finish_refused_retirement(slot, reason);
-            return Err(PreparedFailure::after_retirement(
-                SpawnError::Retirement { slot, reason },
-                bound,
-            ));
-        }
+        retire_prepared(slot);
         return Err(PreparedFailure::after_retirement(
             SpawnError::Arrangement,
             bound,
@@ -682,16 +618,7 @@ fn bind(slot: usize, binding: Option<Binding>) -> Result<Option<Bound>, Prepared
     match task::bind_address_space(slot, binding) {
         Ok(bound) => Ok(Some(bound)),
         Err((reason, binding)) => {
-            if let Err(retirement) = retire_prepared(slot) {
-                finish_refused_retirement(slot, retirement);
-                return Err(PreparedFailure::before_binding(
-                    SpawnError::Retirement {
-                        slot,
-                        reason: retirement,
-                    },
-                    Some(binding),
-                ));
-            }
+            retire_prepared(slot);
             Err(PreparedFailure::before_binding(
                 SpawnError::Task(reason),
                 Some(binding),
@@ -905,10 +832,6 @@ pub(crate) fn unblock(slots: u32) -> usize {
     // Arm unconditionally: the syscall path returns straight to ring 3 and would otherwise strand
     // the woken thread on a tickless machine.
     if woken > 0 {
-        #[cfg(feature = "selftest")]
-        if interrupt::in_trap() {
-            HANDLER_ARMS.fetch_add(1, Ordering::Relaxed);
-        }
         reschedule_timer(Some(time::scheduler_now_ns()));
     }
     woken

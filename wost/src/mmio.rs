@@ -66,12 +66,6 @@ impl MmioRegion {
         Self { base, len }
     }
 
-    /// The address the region begins at, for the framebuffer's remap under another memory type.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn base_address(&self) -> *mut u8 {
-        self.base
-    }
-
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::once(value))

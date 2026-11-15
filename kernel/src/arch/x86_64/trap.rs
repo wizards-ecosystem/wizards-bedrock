@@ -14,25 +14,19 @@ use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::usercopy;
 
-#[cfg(feature = "selftest")]
-use wost::arch::current::paging;
-
 use super::vector;
 
 #[cfg(feature = "selftest")]
 mod selftest;
 
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    InvalidUserReturnKind, kernel_stack_selector_on_last_syscall, last_breakpoint,
-    last_invalid_user_return, last_ping, last_syscall, last_user_fault,
-    smap_survived_the_last_syscall, spurious_count, user_copy_recoveries,
+use selftest::{
+    LAST_INVALID_USER_RETURN, LAST_USER_FAULT, USER_COPY_RECOVERIES, observe_syscall_entry,
 };
 #[cfg(feature = "selftest")]
-use selftest::{
-    LAST_BREAKPOINT, LAST_INVALID_USER_RETURN, LAST_INVALID_USER_RETURN_KIND, LAST_PING,
-    LAST_USER_FAULT, SPURIOUS_OBSERVATIONS, USER_COPY_RECOVERIES, invalid_user_return_kind,
-    observe_syscall_entry,
+pub(crate) use selftest::{
+    Record, last_invalid_user_return, last_syscall, last_user_fault,
+    smap_survived_the_last_syscall, user_copy_recoveries,
 };
 
 static HANDLERS: interrupt::Handlers =
@@ -45,10 +39,7 @@ pub(crate) fn init() {
 
 fn refuse_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnError) -> ! {
     #[cfg(feature = "selftest")]
-    {
-        LAST_INVALID_USER_RETURN_KIND.store(invalid_user_return_kind(error), Ordering::Relaxed);
-        LAST_INVALID_USER_RETURN.record(frame);
-    }
+    LAST_INVALID_USER_RETURN.record(frame);
     if crate::thread::retire_from_trap(frame) {
         unreachable!("retiring an invalid user return resumed its context");
     }
@@ -65,28 +56,13 @@ fn refuse_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnErr
 /// The saved privilege decides: a kernel-context `int 0x80` must not be served as a ring-3 call.
 /// A spurious interrupt is not dismissed: it sets no in-service bit, so an EOI here would retire
 /// a real interrupt underneath it.
-/// The controlled ring-0 write-protection probe has an exact error code and private recovery
-/// interval; ordinary kernel faults remain fatal.
 /// Only a ring-0 fault inside the user-copy interval recovers; a ring-3 fault at the same address
 /// is the program's.
 /// Other survivable ring-3 faults retire the program, not the machine.
 fn on_trap(frame: &TrapFrame) {
     let cause = TrapCause::decode(frame.vector(), frame.error_code());
     match cause {
-        TrapCause::Fault(trap_cause::Fault::Breakpoint) => {
-            #[cfg(feature = "selftest")]
-            LAST_BREAKPOINT.record(frame);
-        }
-
-        TrapCause::Interrupt(raw) if raw == vector::PING.get() => {
-            let eoi = claim_eoi(frame, vector::PING);
-            #[cfg(feature = "selftest")]
-            {
-                paging::observe_activation_publication_for_test();
-                LAST_PING.record(frame);
-            }
-            dismiss(eoi);
-        }
+        TrapCause::Fault(trap_cause::Fault::Breakpoint) => {}
 
         TrapCause::Interrupt(raw) if raw == vector::TIMER.get() => {
             let eoi = claim_eoi(frame, vector::TIMER);
@@ -112,20 +88,13 @@ fn on_trap(frame: &TrapFrame) {
             crate::user::call(frame);
         }
 
-        TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {
-            #[cfg(feature = "selftest")]
-            SPURIOUS_OBSERVATIONS.fetch_add(1, Ordering::Relaxed);
-        }
+        TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {}
 
         TrapCause::Interrupt(raw) if raw == vector::ERROR.get() => panic!(
             "local apic error {:#x} at {:#018x}",
             apic::error_status(),
             frame.instruction_pointer()
         ),
-
-        #[cfg(feature = "selftest")]
-        TrapCause::Fault(trap_cause::Fault::PageFault(fault))
-            if cpu::recover_write_protection_probe(frame, fault) => {}
 
         TrapCause::Fault(trap_cause::Fault::PageFault(fault))
             if usercopy::recover(frame, fault) =>

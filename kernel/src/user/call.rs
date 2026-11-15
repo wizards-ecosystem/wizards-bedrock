@@ -7,8 +7,6 @@ use wost::arch::current::{cpu, usercopy};
 use super::reap::orphan;
 use super::{BOOTSTRAPS, LAUNCHES, USER_STACK_BYTES};
 use crate::handle::HandleTable;
-#[cfg(feature = "selftest")]
-use crate::wait::WaitQueue;
 use crate::{info, queue, thread, warn};
 
 /// Version of the words placed at a program's initial stack pointer.
@@ -29,17 +27,6 @@ mod entry {
 
 /// Stack tail occupied so the initial pointer remains sixteen-byte aligned.
 const ENTRY_STACK_BYTES: u64 = (ENTRY_BYTES as u64 + 15) & !15;
-
-/// A program's ring and authority table, for lifecycle checks.
-#[cfg(feature = "selftest")]
-pub(crate) fn authority_for_test(
-    slot: usize,
-) -> Option<(
-    alloc::sync::Arc<queue::Queue>,
-    alloc::sync::Arc<HandleTable>,
-)> {
-    authority_of(slot)
-}
 
 /// What a program asked for, in `rax`: the synchronous plane (`002` pillar 2), where Enter and
 /// Wait serve work already posted to the ring and data never moves in the trap.
@@ -77,10 +64,6 @@ static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// The last such number, so a report can say *what* was asked for.
 static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 
-/// Call answers that could not be written back; stays zero because a handler's own frame is the
-/// innermost live one by construction.
-static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
-
 /// Whether the one deferred refusal warning has already been emitted.
 static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -109,21 +92,12 @@ pub(crate) fn report_refusals() -> bool {
     true
 }
 
-/// Calls refused and the last number asked for, read outside trap context: the handler cannot
-/// take the console's lock, so it leaves a number for something that can.
 #[cfg(feature = "selftest")]
-pub(crate) fn refusals() -> (usize, usize, usize) {
+pub(crate) fn refusals() -> (usize, usize) {
     (
         REFUSED_CALLS.load(Ordering::Acquire),
         LAST_REFUSED.load(Ordering::Acquire),
-        UNANSWERED.load(Ordering::Acquire),
     )
-}
-
-/// Raw one-shot refusal-warning latch for the machine witness.
-#[cfg(feature = "selftest")]
-pub(crate) fn refusal_report_latch_for_test() -> usize {
-    REPORTED.load(Ordering::Acquire)
 }
 
 /// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
@@ -133,11 +107,10 @@ const ENOSYS: u64 = (-38i64) as u64;
 const EINVAL: u64 = (-22i64) as u64;
 
 fn answer_call(frame: &TrapFrame, value: u64) {
-    let answered = interrupt::answer(frame, value);
-    if !answered {
-        UNANSWERED.fetch_add(1, Ordering::Relaxed);
-    }
-    assert!(answered, "the live syscall frame could not be answered");
+    assert!(
+        interrupt::answer(frame, value),
+        "the live syscall frame could not be answered"
+    );
 }
 
 /// Serve one call from ring 3.
@@ -252,12 +225,6 @@ pub(super) fn cross() {
     };
     let which = launch.which;
 
-    #[cfg(feature = "selftest")]
-    if GATE_NEXT_CROSS.swap(false, Ordering::AcqRel) {
-        let mut context = thread::ThreadContext::require();
-        CROSS_GATE.wait_unless(&mut context, || CROSS_MAY_ENTER.load(Ordering::Acquire));
-    }
-
     // Checked, not assumed: a missed switch would put one program's argument on another's stack.
     if cpu::page_table_base() != launch.root {
         warn!("user {which}: running on tables that are not its own");
@@ -298,15 +265,3 @@ fn refuse_cross(slot: usize) -> ! {
     orphan(slot);
     thread::exit()
 }
-
-/// The next child reaching [`cross`] must wait for the machine check.
-#[cfg(feature = "selftest")]
-pub(super) static GATE_NEXT_CROSS: AtomicBool = AtomicBool::new(false);
-
-/// The condition paired with [`CROSS_GATE`].
-#[cfg(feature = "selftest")]
-pub(super) static CROSS_MAY_ENTER: AtomicBool = AtomicBool::new(true);
-
-/// Stops one real child before its first user instruction.
-#[cfg(feature = "selftest")]
-pub(super) static CROSS_GATE: WaitQueue = WaitQueue::new();

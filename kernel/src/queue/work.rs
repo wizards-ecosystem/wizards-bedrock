@@ -5,8 +5,6 @@ use handle_space::Rights;
 use wost::sync::SpinLock;
 
 use super::ring::data_bounds;
-#[cfg(feature = "selftest")]
-use super::selftest::{REFUSE_WORKER, WORK_PAUSED, WORKER_IS_PAUSED, WORKER_REAPS};
 use super::{
     Completion, Pending, PendingKind, Queue, ReadRequest, STATUS_BAD_BUFFER, STATUS_BAD_HANDLE,
     STATUS_BAD_PATH, STATUS_DENIED, STATUS_NO_ENTRY, STATUS_NO_HANDLE_SLOT, STATUS_NO_ROOM,
@@ -107,21 +105,6 @@ impl WorkState {
         self.len += 1;
         self.assert_invariants();
         None
-    }
-
-    #[cfg(feature = "selftest")]
-    fn pop(&mut self) -> Option<Work> {
-        self.assert_invariants();
-        if self.len == 0 {
-            return None;
-        }
-        let Some(work) = self.slots[self.head].take() else {
-            panic!("file work head points at an empty slot");
-        };
-        self.head = (self.head + 1) % WORK_DEPTH;
-        self.len -= 1;
-        self.assert_invariants();
-        Some(work)
     }
 
     fn front(&self) -> Option<&Work> {
@@ -529,113 +512,6 @@ impl Queue {
         WorkClaim::Claimed(*entry)
     }
 }
-#[cfg(feature = "selftest")]
-pub(super) fn work_state_round_trip_is_exact_for_test() -> bool {
-    let Some(ring) = Queue::new() else {
-        return false;
-    };
-    let work = |id| {
-        Work::read(
-            Arc::clone(&ring),
-            0,
-            Pending {
-                id,
-                token: 0,
-                kind: PendingKind::Read {
-                    request: ReadRequest {
-                        file: crate::vfs::File::Tmp { at: 0, len: 0 },
-                        offset: 0,
-                        at: 0,
-                        wanted: 0,
-                    },
-                    phase: WorkPhase::Queued,
-                },
-                settling: false,
-            },
-        )
-    };
-    let mut state = WorkState::new();
-
-    for id in 1..=WORK_DEPTH as u64 {
-        if state.push(work(id)).is_some() {
-            return false;
-        }
-    }
-    let refused = state
-        .push(work(WORK_DEPTH as u64 + 1))
-        .is_some_and(|work| work.expected.id == WORK_DEPTH as u64 + 1);
-    for id in 1..=WORK_DEPTH as u64 / 2 {
-        if state.pop().is_none_or(|work| work.expected.id != id) {
-            return false;
-        }
-    }
-    for id in WORK_DEPTH as u64 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2 {
-        if state.push(work(id)).is_some() {
-            return false;
-        }
-    }
-    let exact = (WORK_DEPTH as u64 / 2 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2)
-        .all(|id| state.pop().is_some_and(|work| work.expected.id == id));
-
-    let empty = state.pop().is_none() && state.is_consistent();
-    // Keep the empty ring's modulo relation valid so only the exclusive head bound rejects this.
-    state.head = WORK_DEPTH;
-    state.tail = 0;
-    let bad_head = !state.is_consistent();
-    state.head = 0;
-    state.tail = WORK_DEPTH;
-    let bad_tail = !state.is_consistent();
-    state.tail = 0;
-    state.len = WORK_DEPTH + 1;
-    let bad_length = !state.is_consistent();
-    state.len = 1;
-    state.tail = 1;
-    let bad_window = !state.is_consistent();
-    state.len = 0;
-    state.tail = 0;
-
-    let removal_ready = (1..=3).all(|id| state.push(work(id)).is_none());
-    let middle_removed = state
-        .remove(|candidate| candidate.expected.id == 2)
-        .is_some_and(|removed| removed.expected.id == 2);
-    let removal_exact = state
-        .pop()
-        .is_some_and(|retained| retained.expected.id == 1)
-        && state
-            .pop()
-            .is_some_and(|retained| retained.expected.id == 3)
-        && state.pop().is_none()
-        && state.is_consistent();
-
-    refused
-        && exact
-        && empty
-        && removal_ready
-        && middle_removed
-        && removal_exact
-        && bad_head
-        && bad_tail
-        && bad_length
-        && bad_window
-}
-
-#[cfg(feature = "selftest")]
-pub(super) fn reap_request_accounting_is_exact_for_test() -> bool {
-    let requests = AtomicUsize::new(0);
-    let added = add_reap_request(&requests)
-        && add_reap_request(&requests)
-        && requests.load(Ordering::Acquire) == 2;
-    let drained = take_reap_request(&requests)
-        && requests.load(Ordering::Acquire) == 1
-        && take_reap_request(&requests)
-        && requests.load(Ordering::Acquire) == 0
-        && !take_reap_request(&requests);
-
-    let exhausted = AtomicUsize::new(usize::MAX);
-    let stopped = !add_reap_request(&exhausted) && exhausted.load(Ordering::Acquire) == usize::MAX;
-
-    added && drained && stopped
-}
 
 /// Give deferred file service and process reclamation one runtime owner.
 pub(crate) fn start_worker() {
@@ -652,10 +528,7 @@ pub(crate) fn start_worker() {
 
 /// Whether deferred service and process reclamation can make progress.
 pub(crate) fn worker_is_ready() -> bool {
-    let ready = WORKER_READY.load(Ordering::Acquire);
-    #[cfg(feature = "selftest")]
-    let ready = ready && !REFUSE_WORKER.armed();
-    ready
+    WORKER_READY.load(Ordering::Acquire)
 }
 
 /// Wake the service worker after ownership reaches the zombie table.
@@ -668,15 +541,10 @@ pub(crate) fn request_reap() {
 }
 
 fn collect_requested_reap() -> bool {
-    match crate::user::collect() {
-        crate::user::CollectOutcome::Empty => false,
-        crate::user::CollectOutcome::Retained => true,
-        crate::user::CollectOutcome::Reclaimed(_) => {
-            #[cfg(feature = "selftest")]
-            WORKER_REAPS.fetch_add(1, Ordering::AcqRel);
-            false
-        }
-    }
+    matches!(
+        crate::user::collect(),
+        crate::user::CollectOutcome::Retained
+    )
 }
 
 /// Drain bounded work, sleeping without a tick while nothing is queued.
@@ -684,15 +552,6 @@ fn work_forever() {
     let mut context = crate::thread::ThreadContext::require();
     let mut retry_reap = false;
     loop {
-        #[cfg(feature = "selftest")]
-        if WORK_PAUSED.load(Ordering::Acquire) {
-            WORKER_IS_PAUSED.store(true, Ordering::Release);
-            crate::thread::yield_now(&mut context);
-            continue;
-        }
-        #[cfg(feature = "selftest")]
-        WORKER_IS_PAUSED.store(false, Ordering::Release);
-
         if retry_reap {
             if crate::time::is_calibrated() {
                 crate::thread::sleep_ms(&mut context, 1);
@@ -782,8 +641,7 @@ fn service(mut running: RunningWork) {
 }
 
 fn finish_work(mut running: RunningWork, status: u32, value: u64) {
-    // Admission reserved the completion; the only refusal is the transient self-test injection,
-    // so keep ownership until it posts.
+    // Admission reserved the completion, so a refusal is transient: keep ownership until it posts.
     loop {
         match running.finish(status, value) {
             None => break,

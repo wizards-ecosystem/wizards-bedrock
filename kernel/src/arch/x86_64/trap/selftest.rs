@@ -1,248 +1,97 @@
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use wost::arch::current::interrupt::{self, TrapFrame};
-use wost::arch::current::{cpu, segment};
+use wost::arch::current::cpu;
+use wost::arch::current::interrupt::TrapFrame;
 
-/// SMAP is read inside the handler, after the entry path ran.
-#[cfg(feature = "selftest")]
+// SMAP is read inside the handler, after the entry path ran.
 pub(super) fn observe_syscall_entry(frame: &TrapFrame) {
-    KERNEL_STACK_SELECTOR_ON_ENTRY.store(
-        u64::from(segment::stack_selector().bits()),
-        Ordering::Release,
-    );
     LAST_SYSCALL.record(frame);
-    SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
+    SMAP_ON_ENTRY.store(!cpu::access_check_is_off(), Ordering::Release);
 }
 
-/// Faults recovered inside the user-copy window during self-test.
-#[cfg(feature = "selftest")]
 pub(super) static USER_COPY_RECOVERIES: AtomicUsize = AtomicUsize::new(0);
 
-/// How many user copies have been resumed at their fixup.
-#[cfg(feature = "selftest")]
 pub(crate) fn user_copy_recoveries() -> usize {
     USER_COPY_RECOVERIES.load(Ordering::Acquire)
 }
 
-/// How many spurious interrupts have been delivered; it should stay at zero.
-/// A climbing count means a wrong dismissal or a vector reprogrammed in flight, which nothing
-/// else shows.
-#[cfg(feature = "selftest")]
-pub(super) static SPURIOUS_OBSERVATIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// What the last fault from ring 3 looked like.
-#[cfg(feature = "selftest")]
 pub(super) static LAST_USER_FAULT: Recorder = Recorder::new();
 
-/// The frame of the last fault a program caused.
-#[cfg(feature = "selftest")]
 pub(crate) fn last_user_fault() -> Record {
-    Recorder::read(&LAST_USER_FAULT)
+    LAST_USER_FAULT.read()
 }
 
-/// What the last outer-privilege frame refusal looked like.
-#[cfg(feature = "selftest")]
 pub(super) static LAST_INVALID_USER_RETURN: Recorder = Recorder::new();
 
-#[cfg(feature = "selftest")]
-pub(super) static LAST_INVALID_USER_RETURN_KIND: AtomicUsize = AtomicUsize::new(0);
-
-/// Which part of an outer-privilege frame was refused.
-#[cfg(feature = "selftest")]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum InvalidUserReturnKind {
-    /// No refusal has been recorded.
-    None,
-    /// The user code selector differed from the installed selector.
-    CodeSelector,
-    /// The user stack selector differed from the installed selector.
-    StackSelector,
-    /// The instruction pointer was not admitted user state.
-    InstructionPointer,
-    /// The instruction pointer was not executable in the live space.
-    InstructionNotExecutable,
-    /// The stack pointer was not admitted user state.
-    StackPointer,
-    /// The saved flags were unsafe for `iretq`.
-    Flags,
+pub(crate) fn last_invalid_user_return() -> Record {
+    LAST_INVALID_USER_RETURN.read()
 }
 
-#[cfg(feature = "selftest")]
-pub(super) fn invalid_user_return_kind(error: interrupt::UserReturnError) -> usize {
-    match error {
-        interrupt::UserReturnError::CodeSelector(_) => 1,
-        interrupt::UserReturnError::StackSelector(_) => 2,
-        interrupt::UserReturnError::InstructionPointer(_) => 3,
-        interrupt::UserReturnError::InstructionNotExecutable(_) => 4,
-        interrupt::UserReturnError::StackPointer(_) => 5,
-        interrupt::UserReturnError::Flags(_) => 6,
-        _ => 0,
-    }
-}
+static SMAP_ON_ENTRY: AtomicBool = AtomicBool::new(false);
 
-/// The most recent refused user return and its reason.
-#[cfg(feature = "selftest")]
-pub(crate) fn last_invalid_user_return() -> (Record, InvalidUserReturnKind) {
-    let frame = Recorder::read(&LAST_INVALID_USER_RETURN);
-    let kind = match LAST_INVALID_USER_RETURN_KIND.load(Ordering::Relaxed) {
-        1 => InvalidUserReturnKind::CodeSelector,
-        2 => InvalidUserReturnKind::StackSelector,
-        3 => InvalidUserReturnKind::InstructionPointer,
-        4 => InvalidUserReturnKind::InstructionNotExecutable,
-        5 => InvalidUserReturnKind::StackPointer,
-        6 => InvalidUserReturnKind::Flags,
-        _ => InvalidUserReturnKind::None,
-    };
-    (frame, kind)
-}
-
-/// One if SMAP was still on when the last ring-3 call reached the handler.
-#[cfg(feature = "selftest")]
-static SMAP_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(feature = "selftest")]
-static KERNEL_STACK_SELECTOR_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
-
-/// The live stack selector observed on the most recent call from ring 3.
-#[cfg(feature = "selftest")]
-pub(crate) fn kernel_stack_selector_on_last_syscall() -> u64 {
-    KERNEL_STACK_SELECTOR_ON_ENTRY.load(Ordering::Acquire)
-}
-
-/// Whether the last call from ring 3 arrived with SMAP still on.
-#[cfg(feature = "selftest")]
 pub(crate) fn smap_survived_the_last_syscall() -> bool {
-    SMAP_ON_ENTRY.load(Ordering::Acquire) == 1
+    SMAP_ON_ENTRY.load(Ordering::Acquire)
 }
 
-/// What the last call from ring 3 looked like.
-#[cfg(feature = "selftest")]
 static LAST_SYSCALL: Recorder = Recorder::new();
 
-/// The frame of the last call from ring 3.
-#[cfg(feature = "selftest")]
 pub(crate) fn last_syscall() -> Record {
-    Recorder::read(&LAST_SYSCALL)
+    LAST_SYSCALL.read()
 }
 
-/// What the last vector of one kind saw, so the resuming breakpoint and ping can be observed.
-/// Atomics, not a lock, because this is written from trap context.
-#[cfg(feature = "selftest")]
+// Atomics, not a lock, because this is written from trap context.
 pub(super) struct Recorder {
     count: AtomicUsize,
     slot: AtomicUsize,
     rax: AtomicU64,
-    frame_address: AtomicU64,
     vector: AtomicU64,
-    error_code: AtomicU64,
-    code_selector: AtomicU64,
     flags: AtomicU64,
     stack_pointer: AtomicU64,
-    stack_selector: AtomicU64,
 }
 
-#[cfg(feature = "selftest")]
 impl Recorder {
     const fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
             slot: AtomicUsize::new(0),
             rax: AtomicU64::new(0),
-            frame_address: AtomicU64::new(0),
             vector: AtomicU64::new(0),
-            error_code: AtomicU64::new(0),
-            code_selector: AtomicU64::new(0),
             flags: AtomicU64::new(0),
             stack_pointer: AtomicU64::new(0),
-            stack_selector: AtomicU64::new(0),
         }
     }
 
-    /// Record `frame`, publishing the count last so a reader that sees it sees the rest.
+    // The count is published last, so a reader that sees it sees the rest.
     pub(super) fn record(&self, frame: &TrapFrame) {
         self.slot
             .store(wost::arch::current::task::current(), Ordering::Relaxed);
         self.rax.store(frame.rax(), Ordering::Relaxed);
-        self.frame_address
-            .store(interrupt::live_frame_address(), Ordering::Relaxed);
         self.vector
             .store(u64::from(frame.vector()), Ordering::Relaxed);
-        self.error_code.store(frame.error_code(), Ordering::Relaxed);
-        self.code_selector
-            .store(frame.code_selector(), Ordering::Relaxed);
         self.flags.store(frame.flags(), Ordering::Relaxed);
         self.stack_pointer
             .store(frame.stack_pointer(), Ordering::Relaxed);
-        self.stack_selector
-            .store(frame.stack_selector(), Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Release);
     }
 
-    /// A consistent copy of what was last recorded.
-    #[cfg(feature = "selftest")]
     fn read(&self) -> Record {
         Record {
             count: self.count.load(Ordering::Acquire),
             slot: self.slot.load(Ordering::Relaxed),
             rax: self.rax.load(Ordering::Relaxed),
-            frame_address: self.frame_address.load(Ordering::Relaxed),
             vector: self.vector.load(Ordering::Relaxed),
-            error_code: self.error_code.load(Ordering::Relaxed),
-            code_selector: self.code_selector.load(Ordering::Relaxed),
             flags: self.flags.load(Ordering::Relaxed),
             stack_pointer: self.stack_pointer.load(Ordering::Relaxed),
-            stack_selector: self.stack_selector.load(Ordering::Relaxed),
         }
     }
 }
 
-#[cfg(feature = "selftest")]
-pub(super) static LAST_BREAKPOINT: Recorder = Recorder::new();
-
-#[cfg(feature = "selftest")]
-pub(super) static LAST_PING: Recorder = Recorder::new();
-
-/// A copy of what the trap handler recorded for one vector.
-#[cfg(feature = "selftest")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Record {
-    /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
-    /// The thread slot that took it.
-    /// Slots identify callers even when sequential threads correctly reuse a stack.
     pub(crate) slot: usize,
-    /// The general register loaded with the interrupted stack pointer.
     pub(crate) rax: u64,
-    /// Where the entry path's own frame begins on the interrupted stack.
-    pub(crate) frame_address: u64,
-    /// The vector the handler was entered with.
     pub(crate) vector: u64,
-    /// The error code slot, which neither of these vectors fills.
-    pub(crate) error_code: u64,
-    /// The code selector at the point of the trap.
-    pub(crate) code_selector: u64,
-    /// The flags register at the point of the trap.
     pub(crate) flags: u64,
-    /// The stack pointer at the point of the trap.
     pub(crate) stack_pointer: u64,
-    /// The stack selector at the point of the trap.
-    pub(crate) stack_selector: u64,
-}
-
-/// What the trap handler recorded for the most recent breakpoint.
-#[cfg(feature = "selftest")]
-pub(crate) fn last_breakpoint() -> Record {
-    Recorder::read(&LAST_BREAKPOINT)
-}
-
-/// What the trap handler recorded for the most recent ping.
-#[cfg(feature = "selftest")]
-pub(crate) fn last_ping() -> Record {
-    Recorder::read(&LAST_PING)
-}
-
-/// How many spurious interrupts the local APIC has delivered.
-#[cfg(feature = "selftest")]
-pub(crate) fn spurious_count() -> usize {
-    SPURIOUS_OBSERVATIONS.load(Ordering::Acquire)
 }

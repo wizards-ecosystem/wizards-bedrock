@@ -17,12 +17,10 @@
 //! domain exists to prevent.
 //!
 //! Nothing here allocates on the heap inside a candidate: a slab the heap grows into never
-//! returns its frame, and the candidate baseline counts frames.
+//! returns its frame.
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use acpi_tables::{
@@ -41,16 +39,6 @@ use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 use crate::mem::{self, DeviceRetirement};
 use crate::thread::ThreadContext;
 use crate::{acpi, info, pci, warn};
-
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-use selftest::{INSTALLED_REQUESTERS, SUCCESSFUL_RETARGETS};
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    interrupt_boundary_is_deny_all_for_test, requester_fences_cover_shared_unit_for_test,
-    reserved_regions_are_supported_for_test,
-};
 
 /// Bytes of register window one remapping unit occupies.
 const REGISTER_WINDOW: u64 = 4096;
@@ -757,11 +745,6 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
                 facts.capability,
                 facts.extended
             );
-            #[cfg(feature = "selftest")]
-            {
-                INSTALLED_REQUESTERS.store(requesters.len(), Ordering::Release);
-                SUCCESSFUL_RETARGETS.fetch_add(1, Ordering::AcqRel);
-            }
             EstablishOutcome::Established
         }
         Retargeting::Refused(reason) => {

@@ -1,8 +1,5 @@
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
 use elf64::{Elf, ElfError, SegmentKind};
-use wost::arch::current::paging::{AddressSpace, MapError, Unmapped};
+use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::boot::HandoffError;
 use wost::mm;
 use wost::sync::SpinLock;
@@ -30,7 +27,6 @@ pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
 /// Where the boot handoff left the program, kept for the loader.
 static IMAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
-/// The initrd's bytes, for the checks that doctor a copy of them.
 #[cfg(feature = "selftest")]
 pub(crate) fn image() -> Option<&'static [u8]> {
     *IMAGE.lock_leaf()
@@ -184,64 +180,21 @@ struct UnmapRefusal {
     reason: MapError,
 }
 
-#[cfg(feature = "selftest")]
-const CLEANUP_REFUSAL_DISABLED: usize = usize::MAX;
-#[cfg(feature = "selftest")]
-static CLEANUP_UNMAPS_BEFORE_REFUSAL: AtomicUsize = AtomicUsize::new(CLEANUP_REFUSAL_DISABLED);
-#[cfg(feature = "selftest")]
-pub(super) static CLEANUP_REFUSAL_INJECTED: AtomicBool = AtomicBool::new(false);
-
-pub(super) fn unmap_for_cleanup(
-    space: &mut AddressSpace,
-    at: u64,
-    len: u64,
-) -> Result<Unmapped, MapError> {
-    #[cfg(feature = "selftest")]
-    if matches!(
-        CLEANUP_UNMAPS_BEFORE_REFUSAL.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |remaining| match remaining {
-                CLEANUP_REFUSAL_DISABLED => None,
-                0 => Some(CLEANUP_REFUSAL_DISABLED),
-                count => Some(count - 1),
-            },
-        ),
-        Ok(0)
-    ) {
-        CLEANUP_REFUSAL_INJECTED.store(true, Ordering::Release);
-        return Err(MapError::Pinned(at));
-    }
-    space.unmap(at, len)
-}
-
 fn unmap_regions(
     space: &mut AddressSpace,
     regions: impl IntoIterator<Item = (u64, u64)>,
 ) -> Result<usize, UnmapRefusal> {
     let mut pages = 0;
     for (at, len) in regions {
-        let returned =
-            unmap_for_cleanup(space, at, len).map_err(|reason| UnmapRefusal { pages, reason })?;
+        let returned = space
+            .unmap(at, len)
+            .map_err(|reason| UnmapRefusal { pages, reason })?;
         pages = pages
             .checked_add(returned.pages() as usize)
             .unwrap_or_else(|| panic!("mapping cleanup page accounting overflowed"));
         drop(returned);
     }
     Ok(pages)
-}
-
-/// Refuse cleanup after `successes` owned regions have been unmapped.
-#[cfg(feature = "selftest")]
-pub(crate) fn refuse_cleanup_unmap_after_for_test(successes: usize) {
-    CLEANUP_UNMAPS_BEFORE_REFUSAL.store(successes, Ordering::Release);
-}
-
-/// Clear an unused cleanup refusal after a test setup failed early.
-#[cfg(feature = "selftest")]
-pub(crate) fn restore_cleanup_unmap_for_test() {
-    CLEANUP_UNMAPS_BEFORE_REFUSAL.store(CLEANUP_REFUSAL_DISABLED, Ordering::Release);
-    CLEANUP_REFUSAL_INJECTED.store(false, Ordering::Release);
 }
 
 fn undo(space: &mut AddressSpace, done: &[Option<Placement>]) -> Result<usize, UnmapRefusal> {

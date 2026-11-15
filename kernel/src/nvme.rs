@@ -11,8 +11,6 @@
 //! shared through `libs/nvme`; the structure is not.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::Ordering;
 
 use nvme::{
     Capabilities, Capacity, ControllerPreparation, DisabledRegisters, DmaPublication,
@@ -34,20 +32,8 @@ mod selftest;
 pub(crate) use preparation::prepare;
 use queues::QueuePair;
 #[cfg(feature = "selftest")]
-use selftest::{
-    BME_PRECEDING_CC, BME_PRECEDING_CSTS, REFUSED_BME_PRECEDING_CC, REFUSED_BME_PRECEDING_CSTS,
-    START_ATTEMPTS, SUBMISSION_DOORBELLS, count, observe_candidate_stack,
-};
-#[cfg(feature = "selftest")]
 pub(crate) use selftest::{
-    CandidateStackMeasurement, activity_for_test, bus_master_followed_disable_for_test,
-    candidate_stack_usage_for_test, command_count_for_test, command_is_held_for_test,
-    controller_facts_hold_for_test, controller_window_for_test,
-    domain_proof_follows_translation_for_test, finish_candidate_stack, hold_command_for_test,
-    hold_requested_for_test, isolation_is_active_for_test, malformed_namespace_is_bounded_for_test,
-    malformed_reads_are_bounded_for_test, measure_buffered_read_for_test, queue_entries_for_test,
-    reachable_frames_for_test, read_block_probe_for_test,
-    refused_bus_master_followed_disable_for_test, timeout_quiesces_for_test,
+    queue_entries_for_test, read_block_probe_for_test, timeout_quiesces_for_test,
     unmapped_write_is_fenced_for_test,
 };
 
@@ -70,42 +56,20 @@ const COMMAND_TIMEOUT_MS: u64 = 5_000;
 /// A controller brought up and ready to be asked for blocks.
 #[derive(Debug)]
 pub(crate) struct Controller {
-    /// Where the registers are readable, so a check can prove them uncacheable; on an emulator a
-    /// write-back mapping changes nothing the driver can see.
-    #[cfg(feature = "selftest")]
-    observed_window: u64,
     registers: Option<MappedBar>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
     /// The next command identifier; wrapping is safe while one command is outstanding at a time.
     next_id: u16,
-    #[cfg(feature = "selftest")]
-    published_commands: u32,
     /// Whether the one outstanding command's memory is host-owned again.
     dma: DmaState,
-    /// Makes the production timeout arm deterministic for its machine proof.
     #[cfg(feature = "selftest")]
     force_timeout: bool,
-    /// Stop a validated read at the last seam before command construction.
-    #[cfg(feature = "selftest")]
-    intercept_read_submission: bool,
-    /// Invalid requests which crossed validation during the current witness.
-    #[cfg(feature = "selftest")]
-    intercepted_read_submissions: u32,
-    /// Stop I/O queue creation before allocation or device publication.
-    #[cfg(feature = "selftest")]
-    intercept_io_queue_creation: bool,
-    /// Queue creations which crossed namespace validation during the witness.
-    #[cfg(feature = "selftest")]
-    intercepted_io_queue_creations: u32,
-    /// Publish the next transfer buffer unmapped, so a check can see the domain refuse the device.
     #[cfg(feature = "selftest")]
     leave_data_unmapped: bool,
-    /// What `Identify` said, kept so a check can ask rather than infer.
-    pub(crate) blocks: u64,
-    /// Bytes in one logical block.
-    pub(crate) block_bytes: u32,
+    blocks: u64,
+    block_bytes: u32,
 }
 
 #[derive(Debug)]
@@ -177,11 +141,6 @@ impl DmaState {
 
     const fn is_quiesced(&self) -> bool {
         matches!(&self.disposition, DmaDisposition::Quiesced)
-    }
-
-    #[cfg(feature = "selftest")]
-    const fn is_in_flight(&self) -> bool {
-        self.flight.is_in_flight()
     }
 
     const fn must_retain(&self) -> bool {
@@ -345,13 +304,6 @@ pub(crate) struct ControllerQuarantine {
 }
 
 /// Result of preparing a mapped controller before bus-master admission.
-#[cfg_attr(
-    feature = "selftest",
-    expect(
-        clippy::large_enum_variant,
-        reason = "self-test observations enlarge the inline owner; candidate stack use is machine-checked (D-287)"
-    )
-)]
 #[derive(Debug)]
 #[must_use = "controller preparation returns ownership in both outcomes"]
 pub(crate) enum PrepareOutcome {
@@ -517,14 +469,10 @@ fn clock_ns() -> Option<u64> {
 }
 
 fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {
-    #[cfg(feature = "selftest")]
-    observe_candidate_stack();
     MappedBar::read_u32(registers, offset).map_err(|_| BringUpError::NotMapped)
 }
 
 fn write(registers: &mut MappedBar, offset: usize, value: u32) -> Result<(), BringUpError> {
-    #[cfg(feature = "selftest")]
-    observe_candidate_stack();
     MappedBar::write_u32(registers, offset, value).map_err(|_| BringUpError::NotMapped)
 }
 
@@ -535,12 +483,7 @@ fn write_submission(
     tail: u32,
 ) -> Result<(), BringUpError> {
     DmaSegment::publish_to_device();
-    let result = write(registers, offset, tail);
-    #[cfg(feature = "selftest")]
-    if result.is_ok() {
-        count(&SUBMISSION_DOORBELLS);
-    }
-    result
+    write(registers, offset, tail)
 }
 
 /// Bring the controller up and say what it is; a failure carries its retirement, so the selector
@@ -550,8 +493,6 @@ pub(crate) fn start(
     device: &mut crate::pci::Device,
     prepared: BusMasterAdmittedController,
 ) -> Result<Controller, StartFailure> {
-    #[cfg(feature = "selftest")]
-    count(&START_ATTEMPTS);
     let BusMasterAdmittedController(DisabledController {
         mut controller,
         configuration,
@@ -614,24 +555,9 @@ impl DisabledController {
             Ok(authority) => authority,
             Err(reason) => return Err(BusMasterAdmissionError::Observation(reason)),
         };
-        #[cfg(feature = "selftest")]
-        let observed = authority.observation_for_test();
-        #[cfg(feature = "selftest")]
-        {
-            BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
-            BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
-        }
-        match device.admit_bus_master(authority, domain, interrupts) {
-            Ok(()) => Ok(()),
-            Err(reason) => {
-                #[cfg(feature = "selftest")]
-                {
-                    REFUSED_BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
-                    REFUSED_BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
-                }
-                Err(BusMasterAdmissionError::Command(reason))
-            }
-        }
+        device
+            .admit_bus_master(authority, domain, interrupts)
+            .map_err(BusMasterAdmissionError::Command)
     }
 
     /// Admit DMA from a fresh observation through the retained mapped BAR,

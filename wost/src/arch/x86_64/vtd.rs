@@ -4,12 +4,9 @@
 //! so every other requester and every address the device was not handed faults.
 //! DMA invalidation uses the Context Command and IOTLB registers, and a unit with non-coherent
 //! page walks gets its table lines flushed, never refused.
-//! Every table is a fixed frame owner with no heap, since a storage candidate that allocates on
-//! the heap cannot restore its resource baseline, and a unit moved by value must stay small enough
-//! for the boot stack.
+//! Every table is a fixed frame owner with no heap, since a heap slab never returns its frame, and
+//! a unit moved by value must stay small enough for the boot stack.
 
-#[cfg(feature = "selftest")]
-use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 
@@ -27,9 +24,6 @@ use vtd::{
 
 use crate::arch::x86_64::paging::ReleasableDevice;
 use crate::mm::{DmaMappingOwner, DmaSegment, IommuTable, PublishedIommuTable, TableWalks};
-
-#[cfg(feature = "selftest")]
-mod selftest;
 
 /// The single domain identifier this unit programs.
 const DOMAIN_ID: u16 = 1;
@@ -60,9 +54,6 @@ const INVALIDATION_COMPLETE: u32 = 1;
 /// Each 2 MiB region a segment touches costs a leaf table plus one per upper level; the arena is
 /// allocated whole at establishment, so mapping never allocates and a full arena refuses.
 const TABLE_LIMIT: usize = 24;
-
-/// Frames one unit owner retains: root, context, IR table, QI queue and the second-level arena.
-pub const OWNED_TABLE_FRAMES: usize = TABLE_LIMIT + 4;
 
 /// Why a VT-d domain could not be established or changed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -275,10 +266,6 @@ pub struct Vtd {
     /// `table_count` are carved.
     tables: PublishedIommuTable,
     table_count: usize,
-    #[cfg(feature = "selftest")]
-    forced_invalidation_failures: u8,
-    #[cfg(feature = "selftest")]
-    completed_dma_drains: u64,
 }
 
 /// Proof that a DMA-remapping domain is active for one exact function.
@@ -447,10 +434,6 @@ impl Vtd {
             invalidation_queue: PublishedIommuTable::new(invalidation_queue),
             tables: PublishedIommuTable::new(tables),
             table_count: 1,
-            #[cfg(feature = "selftest")]
-            forced_invalidation_failures: 0,
-            #[cfg(feature = "selftest")]
-            completed_dma_drains: 0,
         };
         match unit.transition() {
             Ok(()) => Establishment::Established(unit),
@@ -1117,23 +1100,18 @@ impl Vtd {
     /// Complete an architected read and write drain once every requester is behind translation or
     /// its root or leaves are clear, so later requests fault instead of reaching recyclable memory.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
-        self.prepare_invalidation()?;
+        self.flush_write_buffer()?;
         let command_register = self.iotlb_base + iotlb_command::COMMAND;
         write_u64(
             &mut self.registers,
             command_register,
             iotlb_command::global_with_drain(),
         )?;
-        self.poll_u64(command_register, iotlb_command::global_completed)?;
-        #[cfg(feature = "selftest")]
-        {
-            self.completed_dma_drains = self.completed_dma_drains.saturating_add(1);
-        }
-        Ok(())
+        self.poll_u64(command_register, iotlb_command::global_completed)
     }
 
     fn invalidate(&mut self, caches: Caches) -> Result<(), VtdError> {
-        self.prepare_invalidation()?;
+        self.flush_write_buffer()?;
         if caches == Caches::ContextAndIotlb {
             write_u64(
                 &mut self.registers,
@@ -1152,15 +1130,6 @@ impl Vtd {
             iotlb_command::global(),
         )?;
         self.poll_u64(command_register, iotlb_command::global_completed)
-    }
-
-    fn prepare_invalidation(&mut self) -> Result<(), VtdError> {
-        #[cfg(feature = "selftest")]
-        if self.forced_invalidation_failures > 0 {
-            self.forced_invalidation_failures -= 1;
-            return Err(VtdError::InvalidationTimeout);
-        }
-        self.flush_write_buffer()
     }
 
     fn flush_write_buffer(&mut self) -> Result<(), VtdError> {

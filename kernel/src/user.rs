@@ -18,34 +18,20 @@ mod reap;
 mod selftest;
 
 #[cfg(feature = "selftest")]
-pub(crate) use call::{authority_for_test, refusal_report_latch_for_test, refusals};
+pub(crate) use call::refusals;
 pub(crate) use call::{call, report_execution, report_refusals};
-#[cfg(feature = "selftest")]
-pub(crate) use construction::{
-    SpawnEdge, birth_of, refused_task_retirements, spawn_refusing, spawn_rollbacks,
-    without_extended_state_for_test, without_no_execute_for_test,
-};
 pub(crate) use construction::{SpawnError, spawn};
 use load::MAX_SEGMENTS;
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
-pub(crate) use load::{
-    LoadError, image, load_image, refuse_cleanup_unmap_after_for_test,
-    restore_cleanup_unmap_for_test,
-};
+pub(crate) use load::{LoadError, image, load_image};
 pub(crate) use reap::{CollectOutcome, collect, has_zombies, orphan, zombie_slots_for_spawn};
 #[cfg(feature = "selftest")]
-pub(crate) use reap::{
-    LastRites, collection_is_settling_for_test, last_rites_of,
-    pause_collection_after_take_for_test, pause_collection_before_settlement_for_test,
-    process_records_for_test, reclaimed, refused_mapping_reclaims, refused_ring_reclaims,
-    refused_table_reclaims, zombie_owns_slot_for_test,
-};
+pub(crate) use reap::{LastRites, last_rites_of};
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
-    gated_cross_is_waiting, release_gated_cross, spawn_duplicating, spawn_faulting,
-    spawn_for_bootstrap, spawn_gated_for_wake, spawn_into_the_copy_window, spawn_measuring,
-    spawn_probing, spawn_second, spawn_with_invalid_return_flags, spawn_with_invalid_return_stack,
+    spawn_duplicating, spawn_faulting, spawn_for_bootstrap, spawn_into_the_copy_window,
+    spawn_probing, spawn_with_invalid_return_flags, spawn_with_invalid_return_stack,
 };
 
 /// Where the first user program's page of code goes: the low half, which by definition the kernel
@@ -67,11 +53,6 @@ const APART: u64 = 0x1_0000;
 /// Bytes of the *program*'s stack, one page because it makes one call and never returns; named
 /// apart from `thread::STACK_BYTES`, a *kernel* thread's 32 KiB, so two sizes never share a name.
 const USER_STACK_BYTES: u64 = PAGE_SIZE;
-
-/// The program's first four bytes: `pop rcx` and the start of the entry version check it makes
-/// before either payload word. `xtask` writes them, so reading them back is about the initrd.
-#[cfg(feature = "selftest")]
-pub(crate) const PROGRAM: [u8; 4] = [0x59, 0x48, 0x83, 0xF9];
 
 /// What a thread finds when it wakes in a space of its own, arranged by [`spawn`] while the slot
 /// is still `Reserved` so it is there before the thread's first instruction.
@@ -100,18 +81,13 @@ struct Bootstrap {
     /// What was mapped into them, so the same is unmapped.
     regions: [(u64, u64); MAX_REGIONS],
     mapped: usize,
-    returned_pages: usize,
-    abandoned: usize,
-    /// Its handle table, behind an `Arc` like [`Bootstrap::ring`]: `kind_of` takes the global
-    /// arena's lock, which `lock_leaf` forbids under this table's leaf guard.
+    /// Its handle table, behind an `Arc` like [`Bootstrap::ring`]: handle operations take the
+    /// global arena's lock, which `lock_leaf` forbids under this table's leaf guard.
     table: alloc::sync::Arc<HandleTable>,
     /// Its ring, held because the kernel's shared pages must outlive the mapping showing them to
     /// the program; an `Arc` so serving drops `BOOTSTRAPS`' guard before reading user memory,
     /// taking other locks and waking threads.
     ring: alloc::sync::Arc<queue::Queue>,
-    /// The birth handle retained for lifecycle checks.
-    #[cfg(feature = "selftest")]
-    observed_birth_handle: u32,
 }
 
 #[derive(Debug)]

@@ -37,16 +37,6 @@ impl Mounted {
         )
     }
 
-    /// Whether the mounted layout retains the FAT32 bounds proved at parse time.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn layout_is_fat32(&self) -> bool {
-        let bpb = self.volume.bpb();
-        bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER
-            && bpb.clusters() >= 65_525
-            && bpb.cluster_bytes() >= fat32::SECTOR_BYTES as u32
-            && bpb.first_data_sector() > 0
-    }
-
     /// Root directory cluster.
     pub(crate) const fn root_cluster(&self) -> u32 {
         self.volume.bpb().root_cluster()

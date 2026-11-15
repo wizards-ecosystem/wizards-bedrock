@@ -9,8 +9,6 @@ use super::{
     AddressSpace, AddressSpaceRoots, MapError, PERMANENT_STACKS, StackCleanup, StackMapError,
     StackRollback, TASK_STACK_PIN, cpu, current_mapping_root, is_active, translate_in, walk,
 };
-#[cfg(feature = "selftest")]
-use super::{STACK_MAPPINGS_BEFORE_REFUSAL, STACK_ROLLBACKS_BEFORE_REFUSAL, stack_refusal};
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
@@ -19,10 +17,6 @@ impl AddressSpace {
     /// The [`MappedStack`] proves zeroed writable, never-executable pages and an absent guard
     /// before [`task::continue_on_stack`](super::task::continue_on_stack) uses it.
     pub fn map_stack(&mut self, slot: &Slot) -> Result<MappedStack, StackMapError> {
-        #[cfg(feature = "selftest")]
-        if stack_refusal(&STACK_MAPPINGS_BEFORE_REFUSAL) {
-            return Err(StackMapError::Mapping(MapError::OutOfMemory));
-        }
         let pages = slot.stack_len().div_ceil(PAGE_SIZE) as usize;
         let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         if !run.zero() {
@@ -57,15 +51,6 @@ impl AddressSpace {
         slot: &Slot,
         returned_pages: usize,
     ) -> Result<usize, StackRollback> {
-        #[cfg(feature = "selftest")]
-        if stack_refusal(&STACK_ROLLBACKS_BEFORE_REFUSAL) {
-            return Err(StackRollback {
-                reason: MapError::Pinned(slot.stack_base()),
-                returned_pages,
-                roots: self.roots(),
-                pending: StackCleanup::One(*slot),
-            });
-        }
         let returned = self
             .unmap(slot.stack_base(), slot.stack_len())
             .map_err(|reason| StackRollback {
@@ -94,18 +79,6 @@ impl AddressSpace {
             let Some(slot) = layout.slot(index) else {
                 panic!("stack rollback lost a checked layout slot");
             };
-            #[cfg(feature = "selftest")]
-            if stack_refusal(&STACK_ROLLBACKS_BEFORE_REFUSAL) {
-                return Err(StackRollback {
-                    reason: MapError::Pinned(slot.stack_base()),
-                    returned_pages,
-                    roots: self.roots(),
-                    pending: StackCleanup::Prefix {
-                        layout: *layout,
-                        remaining,
-                    },
-                });
-            }
             let returned = self
                 .unmap(slot.stack_base(), slot.stack_len())
                 .map_err(|reason| StackRollback {

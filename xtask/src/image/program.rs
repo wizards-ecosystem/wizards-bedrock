@@ -14,9 +14,7 @@ fn code() -> Result<Vec<u8>> {
     const COMPLETION_TAIL_AT: u8 = 28;
     const ECHO: u32 = 1;
     const DUPLICATE: u32 = 3;
-    const TIMER: u32 = 4;
     const RING_ENTER: u32 = 1;
-    const RING_WAIT: u32 = 3;
 
     let mut code = Vec::new();
 
@@ -69,13 +67,16 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0xB8]);
     code.extend_from_slice(&UNSERVED_CALL.to_le_bytes());
     code.extend_from_slice(&[0xCD, 0x80]);
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, ENOSYS]);
+    let unanswered = branch(&mut code, 0x75);
     code.extend_from_slice(&[0x31, 0xC0]);
     code.extend_from_slice(&[0xCD, 0x80]);
+    let refused_wrongly = code.len();
+    patch(&mut code, unanswered, refused_wrongly)?;
     code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]);
 
     let choose_ring_kind = code.len();
     patch(&mut code, not_probing, choose_ring_kind)?;
-    code.extend_from_slice(&[0x45, 0x31, 0xC0]);
     code.extend_from_slice(&[0x48, 0x85, 0xC0]);
     let not_echoing = branch(&mut code, 0x75);
     code.extend_from_slice(&[0x31, 0xFF]);
@@ -84,26 +85,10 @@ fn code() -> Result<Vec<u8>> {
     let choose_non_echo = code.len();
     patch(&mut code, not_echoing, choose_non_echo)?;
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x03]);
-    let not_duplicating = branch(&mut code, 0x75);
+    let unknown_behaviour = branch(&mut code, 0x75);
     code.extend_from_slice(&[0xBF]);
     code.extend_from_slice(&1u32.to_le_bytes());
     let duplicating = branch(&mut code, 0xEB);
-
-    let choose_timer = code.len();
-    patch(&mut code, not_duplicating, choose_timer)?;
-    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x04]);
-    let not_waiting = branch(&mut code, 0x75);
-    code.extend_from_slice(&[0xBF]);
-    code.extend_from_slice(&2u32.to_le_bytes());
-    let waiting = branch(&mut code, 0xEB);
-
-    let choose_benchmark = code.len();
-    patch(&mut code, not_waiting, choose_benchmark)?;
-    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x05]);
-    let unknown_behaviour = branch(&mut code, 0x75);
-    code.extend_from_slice(&[0x31, 0xFF]);
-    code.extend_from_slice(&[0x41, 0xB8, 1, 0, 0, 0]);
-    let benchmarking = branch(&mut code, 0xEB);
 
     let early_die = code.len();
     patch(&mut code, unknown_behaviour, early_die)?;
@@ -113,8 +98,6 @@ fn code() -> Result<Vec<u8>> {
     let ring = code.len();
     patch(&mut code, echoing, ring)?;
     patch(&mut code, duplicating, ring)?;
-    patch(&mut code, waiting, ring)?;
-    patch(&mut code, benchmarking, ring)?;
     code.extend_from_slice(&[0x9C]);
     code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
     code.extend_from_slice(&[0x9D]);
@@ -127,7 +110,7 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&PROGRAM_TAG.to_le_bytes());
 
     code.extend_from_slice(&[0x85, 0xFF]);
-    let non_echo_submission = branch(&mut code, 0x75);
+    let duplicate_submission = branch(&mut code, 0x75);
 
     code.extend_from_slice(&[0xC7, 0x83]);
     code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
@@ -137,12 +120,9 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
     let echo_ready = branch(&mut code, 0xEB);
 
-    let choose_submission = code.len();
-    patch(&mut code, non_echo_submission, choose_submission)?;
-    code.extend_from_slice(&[0x83, 0xFF, 0x01]);
-    let timer_submission = branch(&mut code, 0x75);
-
     // The entry block, not the image, supplies bootstrap authority.
+    let duplicate = code.len();
+    patch(&mut code, duplicate_submission, duplicate)?;
     code.extend_from_slice(&[0xC7, 0x83]);
     code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
     code.extend_from_slice(&DUPLICATE.to_le_bytes());
@@ -151,60 +131,20 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0x48, 0xC7, 0x83]);
     code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
     code.extend_from_slice(&DUPLICATE_RIGHTS.to_le_bytes());
-    let duplicate_ready = branch(&mut code, 0xEB);
-
-    // Long enough for two slow KPTI crossings under debug TCG, short enough to force RingWait.
-    let timer = code.len();
-    patch(&mut code, timer_submission, timer)?;
-    code.extend_from_slice(&[0xC7, 0x83]);
-    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
-    code.extend_from_slice(&TIMER.to_le_bytes());
-    code.extend_from_slice(&[0x48, 0xC7, 0x83]);
-    code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
-    code.extend_from_slice(&250_000_000u32.to_le_bytes());
 
     let publish = code.len();
     patch(&mut code, echo_ready, publish)?;
-    patch(&mut code, duplicate_ready, publish)?;
     code.extend_from_slice(&[0xC7, 0x43, SUBMISSION_TAIL_AT]);
     code.extend_from_slice(&1u32.to_le_bytes());
 
-    // A 32-bit delta tolerates one low-half TSC wrap during the short trip.
-    code.extend_from_slice(&[0x45, 0x85, 0xC0]);
-    let ordinary_ring_enter = branch(&mut code, 0x74);
-    code.extend_from_slice(&[0x0F, 0xAE, 0xE8, 0x0F, 0x31]);
-    code.extend_from_slice(&[0x41, 0x89, 0xC2]);
-
-    let ring_enter = code.len();
-    patch(&mut code, ordinary_ring_enter, ring_enter)?;
     code.extend_from_slice(&[0xB8]);
     code.extend_from_slice(&RING_ENTER.to_le_bytes());
     code.extend_from_slice(&[0xCD, 0x80]);
 
-    // Timer admission completes nothing, so only RingWait may report it.
-    code.extend_from_slice(&[0x83, 0xFF, 0x02]);
-    let immediate = branch(&mut code, 0x75);
-    code.extend_from_slice(&[0x48, 0x85, 0xC0]);
-    let completed_early = branch(&mut code, 0x75);
-    code.extend_from_slice(&[0xB8]);
-    code.extend_from_slice(&RING_WAIT.to_le_bytes());
-    code.extend_from_slice(&[0xCD, 0x80]);
-
-    let expect_one = code.len();
-    patch(&mut code, immediate, expect_one)?;
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]);
     let served = branch(&mut code, 0x75);
 
-    code.extend_from_slice(&[0x45, 0x85, 0xC0]);
-    let not_benchmarking = branch(&mut code, 0x74);
-    code.extend_from_slice(&[0x0F, 0xAE, 0xE8, 0x0F, 0x31]);
-    code.extend_from_slice(&[0x44, 0x29, 0xD0]);
-    code.extend_from_slice(&[0x89, 0x83]);
-    code.extend_from_slice(&(SUBMISSIONS_AT + 16).to_le_bytes());
-
     // Aligned x86 `mov` supplies the ABI's acquire edge here.
-    let acquire_completion = code.len();
-    patch(&mut code, not_benchmarking, acquire_completion)?;
     code.extend_from_slice(&[0x8B, 0x43, COMPLETION_TAIL_AT]);
     code.extend_from_slice(&[0x83, 0xF8, 0x01]);
     let completion_published = branch(&mut code, 0x75);
@@ -217,31 +157,22 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0x48, 0x8B, 0x8B]);
     code.extend_from_slice(&(COMPLETIONS_AT + 8).to_le_bytes());
     code.extend_from_slice(&[0x85, 0xFF]);
-    let non_echo_answer = branch(&mut code, 0x75);
+    let duplicate_answer = branch(&mut code, 0x75);
     code.extend_from_slice(&[0x48, 0xC7, 0xC2]);
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
     code.extend_from_slice(&[0x48, 0x39, 0xD1]);
     let echoed = branch(&mut code, 0x75);
     let answered = branch(&mut code, 0xEB);
 
-    let choose_answer = code.len();
-    patch(&mut code, non_echo_answer, choose_answer)?;
-    code.extend_from_slice(&[0x83, 0xFF, 0x02]);
-    let timer_answer = branch(&mut code, 0x74);
+    let duplicated = code.len();
+    patch(&mut code, duplicate_answer, duplicated)?;
     code.extend_from_slice(&[0x48, 0x85, 0xC9]);
     let empty_handle = branch(&mut code, 0x74);
     code.extend_from_slice(&[0x39, 0xF1]);
     let repeated_handle = branch(&mut code, 0x74);
-    let duplicated = branch(&mut code, 0xEB);
-
-    let timer_value = code.len();
-    patch(&mut code, timer_answer, timer_value)?;
-    code.extend_from_slice(&[0x48, 0x85, 0xC9]);
-    let empty_deadline = branch(&mut code, 0x74);
 
     let exit = code.len();
     patch(&mut code, answered, exit)?;
-    patch(&mut code, duplicated, exit)?;
     // The aligned store releases the consumed slot after its payload read.
     code.extend_from_slice(&[0xC7, 0x43, COMPLETION_HEAD_AT]);
     code.extend_from_slice(&1u32.to_le_bytes());
@@ -253,14 +184,12 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0xEB, 0xFE]);
 
     for site in [
-        completed_early,
         served,
         completion_published,
         clean,
         echoed,
         empty_handle,
         repeated_handle,
-        empty_deadline,
     ] {
         patch(&mut code, site, die)?;
     }
@@ -273,6 +202,9 @@ const PROGRAM_ARGUMENT: u32 = 0x00C0_FFEE;
 
 // Rights the ring-3 Duplicate asks to retain: universal INSPECT only.
 const DUPLICATE_RIGHTS: u32 = 1 << 3;
+
+// `-ENOSYS` as the sign-extended immediate of `cmp rax, imm8`.
+const ENOSYS: u8 = (-38i8) as u8;
 
 // Far above any call the kernel serves, so adding a call cannot make this one real.
 const UNSERVED_CALL: u32 = 0x0BAD_0BAD;

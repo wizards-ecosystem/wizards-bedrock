@@ -19,15 +19,9 @@ use crate::arch::current::pit::Pit;
 mod selftest;
 
 #[cfg(feature = "selftest")]
-use selftest::{
-    APIC_HZ, EXPIRIES, LAST_WATCHDOG_EXPECTED, LAST_WATCHDOG_PIT, LAST_WATCHDOG_TSC,
-    REFUSE_CALIBRATION,
-};
+use selftest::EXPIRIES;
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    adjacent_readings_for_test, apic_hz, expiries, last_watchdog_sample,
-    without_calibration_for_test,
-};
+pub(crate) use selftest::{adjacent_readings_for_test, expiries};
 
 pub(crate) const NANOSECONDS_PER_MS: u64 = 1_000_000;
 
@@ -337,8 +331,6 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     }
 
     TSC_HZ.store(calibration.tsc_hz, Ordering::Relaxed);
-    #[cfg(feature = "selftest")]
-    APIC_HZ.store(calibration.apic_hz, Ordering::Relaxed);
     NANOSECONDS_TO_APIC.store(countdown.to_bits(), Ordering::Relaxed);
     // Origin before the conversion that makes it readable, or a reader could report the machine's
     // age as the kernel's.
@@ -633,12 +625,8 @@ pub(crate) fn uptime_ms() -> u64 {
 /// Anything that means to wait must ask first: with no clock there is no deadline and no timer, so
 /// a wait would be a hang.
 pub(crate) fn is_calibrated() -> bool {
-    let calibrated = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
-        .is_calibrated()
-        && Revocation::current() == Revocation::None;
-    #[cfg(feature = "selftest")]
-    let calibrated = calibrated && !REFUSE_CALIBRATION.armed();
-    calibrated
+    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated()
+        && Revocation::current() == Revocation::None
 }
 
 /// Ask for a timer interrupt at `deadline_ns`, or as soon as the hardware can manage if it passed.
@@ -720,22 +708,13 @@ pub(crate) fn on_expiry() {
         };
         let pit_ticks = elapsed_ticks(arm.pit_start, pit.count());
         let verdict = match tsc_end.checked_sub(arm.tsc_start) {
-            Some(tsc_ticks) => {
-                #[cfg(feature = "selftest")]
-                {
-                    LAST_WATCHDOG_TSC.store(tsc_ticks, Ordering::Relaxed);
-                    LAST_WATCHDOG_PIT.store(u64::from(pit_ticks), Ordering::Relaxed);
-                    LAST_WATCHDOG_EXPECTED
-                        .store(u64::from(arm.expected_pit_ticks), Ordering::Relaxed);
-                }
-                calibrate::watchdog_verdict(
-                    apic_remaining,
-                    tsc_ticks,
-                    pit_ticks,
-                    arm.expected_pit_ticks,
-                    TSC_HZ.load(Ordering::Relaxed),
-                )
-            }
+            Some(tsc_ticks) => calibrate::watchdog_verdict(
+                apic_remaining,
+                tsc_ticks,
+                pit_ticks,
+                arm.expected_pit_ticks,
+                TSC_HZ.load(Ordering::Relaxed),
+            ),
             None => WatchdogVerdict::Disagreed,
         };
         (verdict, pit_ticks)

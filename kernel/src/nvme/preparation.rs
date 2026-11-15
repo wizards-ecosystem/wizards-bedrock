@@ -15,9 +15,6 @@ use crate::thread::ThreadContext;
 /// Bring a controller up on its mapped register window: the specification's initialisation
 /// sequence in order, with both waits bounded by `CAP.TO`.
 pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
-    #[cfg(feature = "selftest")]
-    let observed_window = registers.address();
-
     let (preparation, capabilities) = match read_capabilities(registers) {
         CapabilityRead::Read(preparation, capabilities) => (preparation, capabilities),
         CapabilityRead::Failed(failure) => return PrepareOutcome::Failed(failure),
@@ -26,13 +23,7 @@ pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> Prep
         DisableOutcome::Disabled(disabled) => disabled,
         DisableOutcome::Failed(failure) => return PrepareOutcome::Failed(failure),
     };
-    let admin = match allocate_admin(
-        context,
-        disabled,
-        capabilities,
-        #[cfg(feature = "selftest")]
-        observed_window,
-    ) {
+    let admin = match allocate_admin(context, disabled, capabilities) {
         AdminAllocation::Allocated(admin) => admin,
         AdminAllocation::Failed(failure) => return PrepareOutcome::Failed(failure),
     };
@@ -46,8 +37,6 @@ struct AdminPreparation {
     capacity: Capacity,
     submission: u64,
     completion: u64,
-    #[cfg(feature = "selftest")]
-    observed_window: u64,
 }
 
 enum CapabilityRead {
@@ -137,7 +126,6 @@ fn allocate_admin(
     context: &mut ThreadContext,
     disabled: DisabledPreparation<MappedBar>,
     capabilities: Capabilities,
-    #[cfg(feature = "selftest")] observed_window: u64,
 ) -> AdminAllocation {
     if !capabilities.supports_nvm_command_set() {
         return AdminAllocation::Failed(retire_disabled(
@@ -180,8 +168,6 @@ fn allocate_admin(
         capacity,
         submission: submission.get(),
         completion: completion.get(),
-        #[cfg(feature = "selftest")]
-        observed_window,
     })
 }
 
@@ -196,8 +182,6 @@ fn program_admin_registers(
         capacity,
         submission,
         completion,
-        #[cfg(feature = "selftest")]
-        observed_window,
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
     // The controller latches ASQ and ACQ when their high half is written.
@@ -216,14 +200,7 @@ fn program_admin_registers(
             }
         };
     }
-    finish_preparation(
-        disabled.into_owner(),
-        capabilities,
-        admin,
-        capacity,
-        #[cfg(feature = "selftest")]
-        observed_window,
-    )
+    finish_preparation(disabled.into_owner(), capabilities, admin, capacity)
 }
 
 fn write_disabled_register(
@@ -242,7 +219,6 @@ fn finish_preparation(
     capabilities: Capabilities,
     admin: QueuePair,
     capacity: Capacity,
-    #[cfg(feature = "selftest")] observed_window: u64,
 ) -> PrepareOutcome {
     // `MPS` is the host page size as `log2 - 12`; the entry sizes are fixed logarithms.
     let page_shift = PAGE_SIZE.trailing_zeros() - 12;
@@ -253,26 +229,14 @@ fn finish_preparation(
 
     // Cleanup owns every published queue address before the enable write.
     let controller = Controller {
-        #[cfg(feature = "selftest")]
-        observed_window,
         registers: Some(registers),
         capabilities,
         admin,
         io: None,
         next_id: 1,
-        #[cfg(feature = "selftest")]
-        published_commands: 0,
         dma: DmaState::idle(),
         #[cfg(feature = "selftest")]
         force_timeout: false,
-        #[cfg(feature = "selftest")]
-        intercept_read_submission: false,
-        #[cfg(feature = "selftest")]
-        intercepted_read_submissions: 0,
-        #[cfg(feature = "selftest")]
-        intercept_io_queue_creation: false,
-        #[cfg(feature = "selftest")]
-        intercepted_io_queue_creations: 0,
         #[cfg(feature = "selftest")]
         leave_data_unmapped: false,
         blocks: 0,

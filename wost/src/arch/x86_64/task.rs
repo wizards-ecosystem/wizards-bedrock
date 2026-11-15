@@ -21,19 +21,6 @@ use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-use selftest::{FORCED_USER_BOUNDARY_REFUSAL, REFUSE_NEXT_RETIREMENT, REFUSE_RELEASES};
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    final_extended_state_refusal_for_test, final_interrupt_admission_refusal_for_test,
-    final_no_execute_refusal_for_test, final_shared_mapping_refusal_for_test,
-    pinned_stack_refuses_lower_leaf_substitution_for_test, refuse_next_retirement_for_test,
-    refuse_releases_for_test, restore_release_for_test, restore_retirement_for_test,
-    slot_is_live_for_test, validate_arena_for_test,
-};
-
 /// Slots the table holds, the boot thread's among them.
 ///
 /// A cap on the arena: [`init`] accepts any arena of fewer stacks, and the kernel's own constant
@@ -641,10 +628,6 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskE
 /// [`TaskError::OutOfRange`] past the table, [`TaskError::Current`] for the running slot, which
 /// cannot retire itself this way, and [`TaskError::Vacant`] for one nothing fabricated.
 pub fn retire(slot: usize) -> Result<(), TaskError> {
-    #[cfg(feature = "selftest")]
-    if REFUSE_NEXT_RETIREMENT.swap(0, Ordering::AcqRel) != 0 {
-        return Err(TaskError::Current(slot));
-    }
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
     let outcome = if slot >= table.count {
@@ -719,10 +702,6 @@ pub fn release_uninstalled(binding: Binding) -> Released {
 /// [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs. Returns the token
 /// unchanged if a live slot still names it.
 pub fn release_address_space(bound: Bound) -> Result<Released, Bound> {
-    #[cfg(feature = "selftest")]
-    if REFUSE_RELEASES.load(Ordering::Acquire) != 0 {
-        return Err(bound);
-    }
     let roots = bound.roots();
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
@@ -907,10 +886,10 @@ fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !cpu::fast_syscall_doors_are_shut() {
         return Err(UserError::FastSyscallOpen);
     }
-    if !final_no_execute_is_active() {
+    if !cpu::Protections::enabled().nx {
         return Err(UserError::NoExecuteProtection);
     }
-    if !final_extended_state_is_isolated() {
+    if !xstate::user_state_is_isolated() {
         return Err(UserError::NoExtendedState);
     }
     let table = TABLE.lock_leaf();
@@ -956,7 +935,7 @@ fn paired_isolation(
     let Some(stack) = mine else {
         return Err(UserError::NoPairedKernelIsolation);
     };
-    if cpu::page_table_base() == roots.full_root() && final_paired_mappings_are_safe(roots, stack) {
+    if cpu::page_table_base() == roots.full_root() && kpti::entry_is_ready_for(roots, stack) {
         Ok(())
     } else {
         Err(UserError::NoPairedKernelIsolation)
@@ -964,7 +943,7 @@ fn paired_isolation(
 }
 
 fn shared_isolation(mine: Option<KernelStackTop<'_>>) -> Result<(), UserError> {
-    if !final_shared_mappings_are_safe() {
+    if !cpu::shared_kernel_mappings_are_safe() {
         return Err(UserError::NoSharedKernelIsolation);
     }
     let Some(stack) = mine else {
@@ -975,31 +954,6 @@ fn shared_isolation(mine: Option<KernelStackTop<'_>>) -> Result<(), UserError> {
     } else {
         Err(UserError::NoKernelStack)
     }
-}
-
-fn final_no_execute_is_active() -> bool {
-    let enabled = cpu::Protections::enabled().nx;
-    #[cfg(feature = "selftest")]
-    let enabled = enabled && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 1;
-    enabled
-}
-
-fn final_extended_state_is_isolated() -> bool {
-    xstate::user_state_is_isolated()
-}
-
-fn final_shared_mappings_are_safe() -> bool {
-    let safe = cpu::shared_kernel_mappings_are_safe();
-    #[cfg(feature = "selftest")]
-    let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
-    safe
-}
-
-fn final_paired_mappings_are_safe(roots: AddressSpaceRoots, stack: KernelStackTop<'_>) -> bool {
-    let safe = kpti::entry_is_ready_for(roots, stack);
-    #[cfg(feature = "selftest")]
-    let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
-    safe
 }
 
 /// Abandon the current stack and continue on `stack`, never returning.

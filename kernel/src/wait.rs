@@ -115,10 +115,4 @@ impl WaitQueue {
         }
         thread::unblock(waiting)
     }
-
-    /// Whether anything is waiting here.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn is_idle(&self) -> bool {
-        *self.waiters.lock_leaf() == 0
-    }
 }

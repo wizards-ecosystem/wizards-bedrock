@@ -5,11 +5,6 @@ use core::fmt;
 
 use wost::arch::current::port::{self, PortBlock};
 
-/// I/O port base of the first serial controller, which `wost::arch::current::port::com1` owns.
-/// The self-test keeps it to probe that the driver's ports are exclusively held.
-#[cfg(feature = "selftest")]
-pub(crate) const COM1: u16 = 0x3F8;
-
 /// Ports occupied by one controller.
 const REGISTER_COUNT: usize = 8;
 

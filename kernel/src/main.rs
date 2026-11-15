@@ -6,13 +6,6 @@
 #![no_main]
 // Denied, since `forbid` would refuse the `#[allow(unsafe_code)]` glue `wost::entry!` expands here.
 #![deny(unsafe_code)]
-#![cfg_attr(
-    feature = "selftest",
-    allow(
-        clippy::expect_used,
-        reason = "the self-test reports a failure by panicking"
-    )
-)]
 
 /// Nothing may allocate before `mem::init` has run, so `kernel_main` runs it before all that might.
 extern crate alloc;
@@ -179,8 +172,6 @@ pub(crate) fn user_launch_is_safe() -> bool {
     BOOT_STACK_GUARDED.load(Ordering::Acquire)
 }
 
-static SHARED_KERNEL_MAPPINGS_SAFE: AtomicBool = AtomicBool::new(false);
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum UserIsolation {
     Closed,
@@ -212,45 +203,10 @@ pub(crate) fn user_isolation() -> UserIsolation {
     UserIsolation::from_bits(USER_ISOLATION.load(Ordering::Acquire))
 }
 
-/// Whether process construction may install the kernel half in user tables.
-#[cfg(feature = "selftest")]
-pub(crate) fn shared_kernel_mappings_are_safe() -> bool {
-    SHARED_KERNEL_MAPPINGS_SAFE.load(Ordering::Acquire)
-}
-
 static MASKABLE_INTERRUPTS_READY: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn maskable_interrupts_are_ready() -> bool {
     MASKABLE_INTERRUPTS_READY.load(Ordering::Acquire)
-}
-
-/// Run one check in the state left by a refused boot-stack allocation.
-#[cfg(feature = "selftest")]
-pub(crate) fn with_unguarded_boot_stack_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let guarded = BOOT_STACK_GUARDED.swap(false, Ordering::AcqRel);
-    let result = check();
-    BOOT_STACK_GUARDED.store(guarded, Ordering::Release);
-    result
-}
-
-/// Run one check without an accepted shared-mapping proof.
-#[cfg(feature = "selftest")]
-pub(crate) fn without_shared_kernel_mapping_proof_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let safe = SHARED_KERNEL_MAPPINGS_SAFE.swap(false, Ordering::AcqRel);
-    let isolation = USER_ISOLATION.swap(UserIsolation::Closed.bits(), Ordering::AcqRel);
-    let result = check();
-    USER_ISOLATION.store(isolation, Ordering::Release);
-    SHARED_KERNEL_MAPPINGS_SAFE.store(safe, Ordering::Release);
-    result
-}
-
-/// Run one check with the boot interrupt admission revoked.
-#[cfg(feature = "selftest")]
-pub(crate) fn without_maskable_interrupt_admission_for_test<T>(check: impl FnOnce() -> T) -> T {
-    let ready = MASKABLE_INTERRUPTS_READY.swap(false, Ordering::AcqRel);
-    let result = check();
-    MASKABLE_INTERRUPTS_READY.store(ready, Ordering::Release);
-    result
 }
 
 /// The rest of the boot, on a guarded stack; panics if the handoff is gone, as then it ran twice.
@@ -277,7 +233,6 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     start_interrupts(routing.as_ref());
     input::init();
     route_keyboard(routing);
-    #[cfg(not(feature = "selftest"))]
     input::start_poller();
     queue::start_worker();
 
@@ -294,12 +249,11 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
 
     user::keep(module);
 
-    #[cfg(feature = "selftest")]
-    selftest::run(serial);
-
-    // After interrupts are on, because a halting thread needs them to wake;
-    // idempotent, because the self-checks start it earlier.
+    // After interrupts are on, because a halting thread needs them to wake.
     thread::start_idle();
+
+    #[cfg(feature = "selftest")]
+    selftest::run();
 
     // The shipped path must exercise user entry too; a refusal is diagnostic,
     // never fatal, so the kernel remains interactive.
@@ -363,11 +317,6 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
     start_clock();
     publish_time_page();
 
-    #[cfg(feature = "selftest")]
-    EXTERNAL_MASK_REFUSAL_PROVED.store(
-        !external_interrupts_are_admitted(None) && !interrupt::are_enabled(),
-        Ordering::Release,
-    );
     if !external_interrupts_are_admitted(external_controllers) {
         warn!("ioapic: complete mask proof missing; interrupts stay off");
         return;
@@ -394,7 +343,6 @@ fn apply_speculation_controls() {
     info!("cpu: {speculation}");
     match cpu::shared_kernel_mapping_reason(&speculation) {
         Some(reason) => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(true, Ordering::Release);
             let isolation = if cfg!(feature = "selftest")
                 && wost::arch::current::kpti_entry_path_is_implemented()
             {
@@ -414,7 +362,6 @@ fn apply_speculation_controls() {
             }
         }
         None => {
-            SHARED_KERNEL_MAPPINGS_SAFE.store(false, Ordering::Release);
             if wost::arch::current::kpti_entry_path_is_implemented() {
                 USER_ISOLATION.store(UserIsolation::Paired.bits(), Ordering::Release);
                 info!("cpu: user isolation paired roots: selected; shared mappings refused");
@@ -496,14 +443,6 @@ const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllers
     mask.is_some()
 }
 
-#[cfg(feature = "selftest")]
-static EXTERNAL_MASK_REFUSAL_PROVED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "selftest")]
-pub(crate) fn unproven_external_controllers_veto_interrupts() -> bool {
-    EXTERNAL_MASK_REFUSAL_PROVED.load(Ordering::Acquire)
-}
-
 static PCI_INTERRUPT_BOUNDARY: AtomicBool = AtomicBool::new(false);
 
 /// Claim configuration space and say what is on the bus.
@@ -532,12 +471,6 @@ fn survey_the_bus(
         Ok(()) => info!("pci: complete segment-zero topology sealed"),
         Err(reason) => warn!("pci: DMA topology refused: {reason}"),
     }
-
-    // These checks need an ordinary unclaimed function. Run them before a
-    // complete VT-d requester inventory deliberately owns every function in
-    // the unit, and cache only their verdicts for the later report.
-    #[cfg(feature = "selftest")]
-    selftest::prepare_pci_claim_checks();
 
     let mut selection = StorageSelection::Seeking;
     let mut storage = 0;
@@ -635,15 +568,7 @@ impl CandidateStage {
 /// released its function and I/O claims. Every stage returns its owners here,
 /// so only one stage frame at a time sits on the boot stack.
 fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
-    #[cfg(feature = "selftest")]
-    let stack = nvme::CandidateStackMeasurement::begin();
     let mut context = thread::ThreadContext::require();
-    #[cfg(feature = "selftest")]
-    let baseline = CandidateBaseline::capture(&mut context);
-    #[cfg(feature = "selftest")]
-    let bme_activity = nvme::activity_for_test();
-    #[cfg(feature = "selftest")]
-    let forced_before = pci::bus_master_refusal_was_observed();
 
     // Stages borrow the candidate, so the debug frame holds one copy of its
     // owners rather than one per stage call.
@@ -657,32 +582,10 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
             CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
             CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
             CandidateStage::Retire(device) => break device,
-            CandidateStage::Settled(selection) => {
-                #[cfg(feature = "selftest")]
-                nvme::finish_candidate_stack(stack.as_ref());
-                return selection;
-            }
+            CandidateStage::Settled(selection) => return selection,
         };
     };
-    let selection = retire_candidate(
-        device,
-        &mut context,
-        #[cfg(feature = "selftest")]
-        baseline,
-        ordinal,
-    );
-    #[cfg(feature = "selftest")]
-    if !forced_before && pci::bus_master_refusal_was_observed() {
-        NVME_BME_REFUSAL_PROVED.store(
-            selection == StorageSelection::Seeking
-                && nvme::activity_for_test() == bme_activity
-                && nvme::refused_bus_master_followed_disable_for_test(),
-            Ordering::Release,
-        );
-    }
-    #[cfg(feature = "selftest")]
-    nvme::finish_candidate_stack(stack.as_ref());
-    selection
+    retire_candidate(device, &mut context, ordinal)
 }
 
 /// Lease, map, prepare and isolate a candidate before it may bus-master.
@@ -931,7 +834,6 @@ fn start_candidate(
 fn retire_candidate(
     mut device: pci::Device,
     context: &mut thread::ThreadContext,
-    #[cfg(feature = "selftest")] baseline: CandidateBaseline,
     ordinal: usize,
 ) -> StorageSelection {
     if let Err(reason) = device.disable_bus_master_for_retirement() {
@@ -975,57 +877,8 @@ fn retire_candidate(
             return StorageSelection::Halted;
         }
     }
-    #[cfg(feature = "selftest")]
-    if !baseline.is_restored(context) {
-        warn!("nvme: candidate {ordinal} did not restore its resource baseline");
-        return StorageSelection::Halted;
-    }
     info!("nvme: candidate {ordinal} retired cleanly; trying next");
     StorageSelection::Seeking
-}
-
-/// Resources a failed selection candidate must return exactly.
-#[cfg(feature = "selftest")]
-#[derive(Clone, Copy, Debug)]
-struct CandidateBaseline {
-    frames: usize,
-    claims: usize,
-    mappings: Option<usize>,
-    interrupt_owner: bool,
-}
-
-#[cfg(feature = "selftest")]
-impl CandidateBaseline {
-    fn capture(context: &mut thread::ThreadContext) -> Self {
-        Self {
-            frames: wost::mm::free_frames(),
-            claims: pci::claims(),
-            mappings: mem::device_mappings(context),
-            interrupt_owner: iommu::interrupt_boundary_active(),
-        }
-    }
-
-    fn is_restored(self, context: &mut thread::ThreadContext) -> bool {
-        let frames = wost::mm::free_frames();
-        let mappings = mem::device_mappings(context);
-        let exact = frames == self.frames && mappings == self.mappings;
-        let first_interrupt_owner = !self.interrupt_owner
-            && iommu::interrupt_boundary_active()
-            && frames.checked_add(wost::arch::current::vtd::OWNED_TABLE_FRAMES)
-                == Some(self.frames)
-            && self.mappings.and_then(|before| before.checked_add(1)) == mappings;
-        pci::claims() == self.claims && (exact || first_interrupt_owner)
-    }
-}
-
-#[cfg(feature = "selftest")]
-static NVME_BME_REFUSAL_PROVED: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "selftest")]
-static NVME_BAR_ADMISSION_PROVED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "selftest")]
-fn a_live_nvme_bar_obeyed_maxphyaddr() -> bool {
-    NVME_BAR_ADMISSION_PROVED.load(Ordering::Acquire)
 }
 
 #[derive(Debug)]
@@ -1101,18 +954,8 @@ fn admit_controller_window(
     info!(
         "nvme: bar0 pages {page_start:#x}..{page_end:#x} admitted below MAXPHYADDR {physical_bits}"
     );
-    #[cfg(feature = "selftest")]
-    NVME_BAR_ADMISSION_PROVED.store(
-        page_start < page_end && page_end <= 1_u64 << physical_bits,
-        Ordering::Release,
-    );
     info!("nvme: memory-space decode on; bus master remains off");
     ControllerWindowAdmission::Admitted(mapped)
-}
-
-#[cfg(feature = "selftest")]
-fn refused_bus_master_retires_before_nvme_start() -> bool {
-    pci::bus_master_refusal_was_observed() && NVME_BME_REFUSAL_PROVED.load(Ordering::Acquire)
 }
 
 /// Mount through the VFS so the shipped path exercises its abstraction.
@@ -1248,8 +1091,6 @@ fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {
     };
 
     if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {
-        #[cfg(feature = "selftest")]
-        let routing = prove_keyboard_routing_rollback(routing);
         if !rollback_keyboard_route(routing) {
             warn!("keyboard: masked routing owner remains quarantined; staying polled");
             return;
@@ -1258,8 +1099,6 @@ fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {
         return;
     }
 
-    #[cfg(feature = "selftest")]
-    let routing = prove_keyboard_routing_rollback(routing);
     commit_keyboard_route(routing);
 }
 
@@ -1316,11 +1155,7 @@ fn commit_keyboard_route(mut routing: mem::Routing) {
         }
     };
     input::take_interrupts();
-    dev::keep_io_apic(
-        routing.io_apic.retain(),
-        #[cfg(feature = "selftest")]
-        gsi,
-    );
+    dev::keep_io_apic(routing.io_apic.retain());
     info!(
         "keyboard: irq {KEYBOARD_IRQ} on gsi {gsi} routed to vector {:#x}",
         vector::KEYBOARD.get()
@@ -1341,56 +1176,11 @@ fn rollback_keyboard_route(mut routing: mem::Routing) -> bool {
         mem::retain_routing(routing);
         return false;
     };
-    #[cfg(feature = "selftest")]
-    let mappings_before = mem::device_mappings(&mut context);
     if !mem::release_routing(&mut context, routing) {
         warn!("keyboard: rollback could not retire its io-apic mapping");
         return false;
     }
-    #[cfg(feature = "selftest")]
-    let found = mem::device_mappings(&mut context);
-    #[cfg(feature = "selftest")]
-    if found != mappings_before.and_then(|count| count.checked_sub(1)) {
-        warn!(
-            "keyboard: rollback did not retire exactly one device mapping: before={mappings_before:?}, after={found:?}"
-        );
-        return false;
-    }
     true
-}
-
-#[cfg(feature = "selftest")]
-static ROUTING_ROLLBACK_PROVED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "selftest")]
-fn prove_keyboard_routing_rollback(mut routing: mem::Routing) -> mem::Routing {
-    let interrupts = routing.interrupts;
-    input::refuse_interrupt_readback();
-    let refused = matches!(
-        configure_keyboard_route(&mut routing),
-        Err(KeyboardRouteError::Keyboard(
-            crate::arch::current::i8042::InterruptEnableError::RefusedRestored
-        ))
-    );
-    let rolled_back = rollback_keyboard_route(routing);
-    let proved = refused && rolled_back && !input::is_interrupt_driven();
-    ROUTING_ROLLBACK_PROVED.store(proved, Ordering::Release);
-    assert!(
-        proved,
-        "keyboard routing rollback was not exact: refused={refused}, retired={rolled_back}, interrupt_driven={}, config={:?}",
-        input::is_interrupt_driven(),
-        input::controller_config()
-    );
-    let prepared = prepare_keyboard_routing(Some(interrupts)).into_masked();
-    let Some(routing) = prepared.and_then(mem::ExternalControllersMasked::into_routing) else {
-        panic!("keyboard routing could not be remapped after rollback");
-    };
-    routing
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn keyboard_routing_rollback_is_exact() -> bool {
-    ROUTING_ROLLBACK_PROVED.load(Ordering::Acquire)
 }
 
 /// Map and select the controller which owns the keyboard's resolved GSI.

@@ -143,7 +143,7 @@ fn mapped_guard(
     Ok(None)
 }
 
-pub(super) const fn enclave_permission(access: super::kpti::Access) -> EnclavePermission {
+const fn enclave_permission(access: super::kpti::Access) -> EnclavePermission {
     match access {
         super::kpti::Access::Executable => EnclavePermission::Executable,
         super::kpti::Access::ReadOnly => EnclavePermission::ReadOnly,
@@ -169,7 +169,7 @@ const fn enclave_flags(permission: EnclavePermission) -> Flags {
     }
 }
 
-pub(super) fn observe_stripped_higher_half(
+fn observe_stripped_higher_half(
     root: PhysicalAddress,
     expected_pages: usize,
 ) -> Result<Vec<ObservedPage>, MapError> {

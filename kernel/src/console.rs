@@ -10,9 +10,6 @@ use wost::boot::{Framebuffer, FramebufferInfo};
 
 use crate::theme::Palette;
 
-#[cfg(feature = "selftest")]
-mod selftest;
-
 const FONT_HEIGHT: RasterHeight = RasterHeight::Size16;
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 

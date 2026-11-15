@@ -17,8 +17,6 @@ use handle_space::{Mixer, Quota, Rights, SLOTS, Slot};
 use wost::sync::SpinLock;
 
 use crate::object::ObjectRef;
-#[cfg(feature = "selftest")]
-use crate::object::ObjectType;
 
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -348,28 +346,6 @@ impl HandleTable {
             return Err(HandleError::Stale);
         }
         Ok((entry.object.clone(), entry.rights))
-    }
-
-    /// Resolve, and require `wanted` as well.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn resolve_with(
-        &self,
-        handle: u32,
-        wanted: Rights,
-    ) -> Result<ObjectRef, HandleError> {
-        let (object, rights) = self.resolve(handle)?;
-        if !rights.contains(wanted) {
-            return Err(HandleError::Denied);
-        }
-        Ok(object)
-    }
-
-    /// What kind of thing `handle` names, without taking a reference to it; needs `INSPECT`,
-    /// because "what is this" is a distinction the kernel makes about the object, so a right.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn kind_of(&self, handle: u32) -> Result<ObjectType, HandleError> {
-        self.resolve_with(handle, Rights::INSPECT)
-            .map(|object| object.kind())
     }
 }
 

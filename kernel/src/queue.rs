@@ -2,8 +2,6 @@
 
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
@@ -23,13 +21,6 @@ mod selftest;
 mod work;
 
 use ring::write_u32;
-#[cfg(feature = "selftest")]
-use selftest::LIVE_QUEUES;
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    live_for_test, pause_worker_for_test, pending_identity_exhaustion_is_terminal_for_test,
-    without_worker_for_test, worker_is_paused_for_test, worker_reaps_for_test,
-};
 use work::FILE_WORK;
 pub(crate) use work::{request_reap, start_worker, worker_is_ready};
 
@@ -323,12 +314,6 @@ pub(crate) struct Queue {
     /// Completion generation sampled by waiters; kernel-owned, so ring 3 cannot forge the edge that
     /// closes the wait queue's check-before-sleep window.
     served: AtomicUsize,
-    /// Terminal completions refused before changing accounting.
-    #[cfg(feature = "selftest")]
-    settlement_refusals: AtomicUsize,
-    /// Make one terminal post see the missing-reservation path.
-    #[cfg(feature = "selftest")]
-    refuse_next_post: AtomicBool,
 }
 
 impl Queue {
@@ -362,8 +347,6 @@ impl Queue {
         let completion = Capacity::new(COMPLETIONS).ok()?;
         let state = Queues::new(submission, completion).ok()?;
 
-        #[cfg(feature = "selftest")]
-        LIVE_QUEUES.fetch_add(1, Ordering::AcqRel);
         Some(Arc::new(Self {
             ring: SpinLock::new(SharedQueue {
                 pages: shared,
@@ -372,10 +355,6 @@ impl Queue {
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
-            #[cfg(feature = "selftest")]
-            settlement_refusals: AtomicUsize::new(0),
-            #[cfg(feature = "selftest")]
-            refuse_next_post: AtomicBool::new(false),
         }))
     }
 
@@ -555,8 +534,6 @@ impl Queue {
                 settling: false,
                 ..entry
             });
-            #[cfg(feature = "selftest")]
-            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);
         }
         posted
     }
@@ -681,13 +658,6 @@ impl Queue {
 
     fn served_since(&self, before: usize) -> usize {
         self.served_count().wrapping_sub(before)
-    }
-}
-
-#[cfg(feature = "selftest")]
-impl Drop for Queue {
-    fn drop(&mut self) {
-        LIVE_QUEUES.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

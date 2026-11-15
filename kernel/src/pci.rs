@@ -20,8 +20,6 @@
 //! topology is a cycle.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, FunctionObservation,
@@ -33,16 +31,6 @@ use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
 
 use crate::thread::ThreadContext;
-
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-use selftest::{FORCED_BUS_MASTER_REFUSALS, OBSERVED_BUS_MASTER_REFUSAL, REFUSE_CLEAN_PREPARATION};
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    bus_master_refusal_was_observed, claims, is_claimed, refuse_clean_preparation_for_test,
-    repeated_secondaries_do_not_hide_a_later_bus_for_test,
-};
 
 /// Base address registers a type 0 header has.
 pub(crate) const BARS: usize = pci_config::BARS;
@@ -845,19 +833,6 @@ impl Device {
         domain: DmaDomain<'_>,
         interrupts: InterruptIsolation<'_>,
     ) -> Result<(), EnableError> {
-        #[cfg(feature = "selftest")]
-        {
-            if FORCED_BUS_MASTER_REFUSALS
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                    remaining.checked_sub(1)
-                })
-                .is_ok()
-            {
-                OBSERVED_BUS_MASTER_REFUSAL.store(true, Ordering::Release);
-                return Err(EnableError::Refused(0));
-            }
-        }
-
         let Some(state) = self.command_state.as_mut() else {
             return Err(EnableError::Stale);
         };
@@ -1088,15 +1063,6 @@ fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> 
         }
     };
     let (bars, command_state) = staged.into_parts();
-
-    #[cfg(feature = "selftest")]
-    if REFUSE_CLEAN_PREPARATION.swap(false, Ordering::Relaxed) {
-        return Err(restore_staged_function(
-            function,
-            command_state,
-            ClaimError::WindowTaken,
-        ));
-    }
 
     let ports = match claim_windows(&bars) {
         Ok(ports) => ports,

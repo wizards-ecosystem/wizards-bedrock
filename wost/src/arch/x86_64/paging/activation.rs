@@ -6,46 +6,27 @@ static ACTIVE_STATE: AtomicU8 = AtomicU8::new(ActivationState::Cold.bits());
 /// The root published before activation becomes ready.
 static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
 
-pub(super) struct Activation {
-    state: &'static AtomicU8,
-    root: &'static AtomicU64,
+struct Activation {
     interrupts: Option<interrupt::InterruptState>,
     committed: bool,
 }
 
 impl Activation {
-    pub(super) fn begin(
-        state: &'static AtomicU8,
-        root: &'static AtomicU64,
-    ) -> Result<Self, ActivateError> {
-        Self::begin_with(state, root, || {})
-    }
-
-    pub(super) fn begin_with(
-        state: &'static AtomicU8,
-        root: &'static AtomicU64,
-        after_initializing: impl FnOnce(),
-    ) -> Result<Self, ActivateError> {
+    fn begin() -> Result<Self, ActivateError> {
         let Some(initializing) = ActivationState::Cold.begin() else {
             panic!("cold paging activation cannot begin");
         };
         let interrupts = Some(interrupt::disable());
-        match state.compare_exchange(
+        match ACTIVE_STATE.compare_exchange(
             ActivationState::Cold.bits(),
             initializing.bits(),
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => {
-                let activation = Self {
-                    state,
-                    root,
-                    interrupts,
-                    committed: false,
-                };
-                after_initializing();
-                Ok(activation)
-            }
+            Ok(_) => Ok(Self {
+                interrupts,
+                committed: false,
+            }),
             Err(found) => {
                 if let Some(interrupts) = interrupts {
                     interrupts.restore();
@@ -62,20 +43,14 @@ impl Activation {
         }
     }
 
-    pub(super) fn commit(self, root: PhysicalAddress) {
-        self.commit_with(root, || {});
-    }
-
-    pub(super) fn commit_with(self, root: PhysicalAddress, after_root: impl FnOnce()) {
-        let mut this = self;
-        this.root.store(root.get(), Ordering::Release);
-        after_root();
+    fn commit(mut self, root: PhysicalAddress) {
+        ACTIVE_ROOT.store(root.get(), Ordering::Release);
         let Some(ready) = ActivationState::Initializing.complete() else {
             panic!("paging initialization cannot complete");
         };
-        this.committed = true;
-        this.state.store(ready.bits(), Ordering::Release);
-        if let Some(interrupts) = this.interrupts.take() {
+        self.committed = true;
+        ACTIVE_STATE.store(ready.bits(), Ordering::Release);
+        if let Some(interrupts) = self.interrupts.take() {
             interrupts.restore();
         }
     }
@@ -87,20 +62,12 @@ impl Drop for Activation {
             let Some(cold) = ActivationState::Initializing.abort() else {
                 panic!("paging initialization cannot abort");
             };
-            self.state.store(cold.bits(), Ordering::Release);
+            ACTIVE_STATE.store(cold.bits(), Ordering::Release);
         }
         if let Some(interrupts) = self.interrupts.take() {
             interrupts.restore();
         }
     }
-}
-
-pub(super) fn activation_state(state: &AtomicU8) -> ActivationState {
-    let bits = state.load(Ordering::Acquire);
-    let Some(state) = ActivationState::from_bits(bits) else {
-        panic!("paging activation state is corrupt");
-    };
-    state
 }
 
 /// Switch this CPU to `space` for the kernel's life, after walking it for this code and stack.
@@ -111,15 +78,13 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
     const STACK_HEADROOM: u64 = PAGE_SIZE;
 
     if space.is_reclaimed() {
-        #[cfg(feature = "selftest")]
-        RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
         return Err(ActivateError::Reclaimed);
     }
 
     space
         .reserve_shared_kernel_topology()
         .map_err(ActivateError::SharedTopology)?;
-    let activation = Activation::begin(&ACTIVE_STATE, &ACTIVE_ROOT)?;
+    let activation = Activation::begin()?;
     let root = space.root();
     let current_root = cpu::page_table_base();
     let code = activate as *const () as u64;
@@ -177,7 +142,10 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
 
 /// Whether the kernel is running on tables it built itself.
 pub fn is_active() -> bool {
-    activation_state(&ACTIVE_STATE) == ActivationState::Ready
+    let Some(state) = ActivationState::from_bits(ACTIVE_STATE.load(Ordering::Acquire)) else {
+        panic!("paging activation state is corrupt");
+    };
+    state == ActivationState::Ready
 }
 
 /// The root this kernel installed, to compare with [`cpu::page_table_base`] after the switch.

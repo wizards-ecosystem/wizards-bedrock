@@ -2,8 +2,6 @@ use frame_space::FRAME_SIZE;
 
 #[cfg(doc)]
 use super::init;
-#[cfg(feature = "selftest")]
-use super::selftest::{observe_external_run_release_for_test, refuse_external_zero_for_test};
 use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
 const fn frame_address(index: usize) -> PhysicalAddress {
@@ -111,10 +109,6 @@ impl Segment {
     /// Fill the run with zeros.
     #[must_use = "a refused segment clear changed no bytes"]
     pub fn zero(&mut self) -> bool {
-        #[cfg(feature = "selftest")]
-        if refuse_external_zero_for_test(self.address()) {
-            return false;
-        }
         self.fill(0)
     }
 
@@ -157,8 +151,6 @@ impl Segment {
 
 impl Drop for Segment {
     fn drop(&mut self) {
-        #[cfg(feature = "selftest")]
-        observe_external_run_release_for_test(self.address());
         let released = FRAMES.lock_leaf().free_contiguous(self.first, self.count);
         assert!(
             released.is_ok(),

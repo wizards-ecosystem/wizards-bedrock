@@ -119,17 +119,6 @@ impl QueuePair {
         }
         !self.has_mappings()
     }
-
-    /// Every frame of both queues, for a check that reads the domain back.
-    #[cfg(feature = "selftest")]
-    pub(super) fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
-        for queue in [&self.submission, &self.completion] {
-            let (address, len) = queue.address().zip(queue.len())?;
-            let address = address.get();
-            into.extend((address..address + len).step_by(PAGE_SIZE as usize));
-        }
-        Some(())
-    }
 }
 
 impl Drop for QueuePair {

@@ -4,8 +4,6 @@
 //! authority only while its complete root pair and guarded entry stacks match this CPU's state.
 
 use core::mem::offset_of;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::cpu;
@@ -14,19 +12,6 @@ use super::paging::{AddressSpaceRoots, KernelStackTop};
 use super::segment;
 use crate::boot::{self, Section};
 use crate::cell::HardwareCell;
-
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-use super::paging;
-#[cfg(feature = "selftest")]
-use selftest::record_complete_pair_switch;
-#[cfg(feature = "selftest")]
-pub(super) use selftest::{
-    context_switch_moved_complete_root_pairs, entry_stacks_are_guarded_and_scrubbed,
-    every_user_entry_reached_rust_on_full_root, every_user_return_installed_the_stripped_root,
-    record_rust_entry,
-};
 
 const PAGE_BYTES: u64 = 4096;
 pub(super) const STACK_BYTES: usize = 16 * 1024;
@@ -185,8 +170,6 @@ struct RoutingPage {
     enclave_text_start: AtomicU64,
     enclave_text_end: AtomicU64,
     abi_version: AtomicU64,
-    stripped_entries: AtomicU64,
-    prepared_returns: AtomicU64,
 }
 
 impl RoutingPage {
@@ -201,8 +184,6 @@ impl RoutingPage {
             enclave_text_start: AtomicU64::new(0),
             enclave_text_end: AtomicU64::new(0),
             abi_version: AtomicU64::new(1),
-            stripped_entries: AtomicU64::new(0),
-            prepared_returns: AtomicU64::new(0),
         }
     }
 }
@@ -217,9 +198,7 @@ const _: () = {
     assert!(offset_of!(RoutingPage, enclave_text_start) == 48);
     assert!(offset_of!(RoutingPage, enclave_text_end) == 56);
     assert!(offset_of!(RoutingPage, abi_version) == 64);
-    assert!(offset_of!(RoutingPage, stripped_entries) == 72);
-    assert!(offset_of!(RoutingPage, prepared_returns) == 80);
-    assert!(size_of::<RoutingPage>() == 88);
+    assert!(size_of::<RoutingPage>() == 72);
 };
 
 /// Byte offsets of the routing page's fields, as the entry assembly addresses them.
@@ -237,13 +216,7 @@ pub(super) mod route {
         offset_of!(RoutingPage, transition_stack_top);
     pub(in crate::arch::x86_64) const INTERRUPT_STACK_TOP: usize =
         offset_of!(RoutingPage, interrupt_stack_top);
-    pub(in crate::arch::x86_64) const STRIPPED_ENTRIES: usize =
-        offset_of!(RoutingPage, stripped_entries);
-    pub(in crate::arch::x86_64) const PREPARED_RETURNS: usize =
-        offset_of!(RoutingPage, prepared_returns);
 }
-
-pub(super) const RECORD_TRANSITION_EVIDENCE: bool = cfg!(feature = "selftest");
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".kpti.state.route")]
@@ -390,8 +363,6 @@ pub(super) fn finish_route_update(roots: AddressSpaceRoots) -> bool {
     WOST_KPTI_ROUTE
         .state
         .store(ROUTE_PUBLISHED, Ordering::Release);
-    #[cfg(feature = "selftest")]
-    record_complete_pair_switch(roots);
     true
 }
 

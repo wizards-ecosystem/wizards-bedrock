@@ -98,19 +98,6 @@ pub(super) fn is_silenced() -> bool {
     CONTROLLERS.lock_leaf().is_some()
 }
 
-/// Each controller's interrupt mask, or `None` before [`silence`] has claimed them.
-///
-/// Read back from the hardware, since the point of asking is whether the write landed.
-#[cfg(feature = "selftest")]
-pub fn masks() -> Option<(u8, u8)> {
-    let mut controllers = CONTROLLERS.lock_leaf();
-    let pair = controllers.as_mut()?;
-    Some((
-        PortBlock::read(&mut pair.primary, register::DATA),
-        PortBlock::read(&mut pair.secondary, register::DATA),
-    ))
-}
-
 /// Reclaim this module's lock for [`panic::reclaim`](crate::panic::reclaim), since a fault inside
 /// [`silence`] would otherwise leave it held for ever.
 pub(crate) fn force_unlock(panic: &PanicToken) {

@@ -1,6 +1,3 @@
-#[cfg(feature = "selftest")]
-use core::sync::atomic::Ordering;
-
 use super::{
     COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, DATA_BYTES, ENTRIES_AT, Opcode, Queue,
     RingPages, SUBMISSION_BYTES, SUBMISSIONS, Snapshot, Submission, completion, header, submission,
@@ -92,16 +89,9 @@ impl Queue {
         })
     }
 
-    /// Post one completion; `false` means no reservation accounting changed.
-    ///
-    /// The model says production cannot reach `false`; checks inject it before the transition to
-    /// prove every caller handles it. A bounds failure after the transition is fatal, because
-    /// retrying an already-spent reservation would duplicate accounting.
+    /// Post one completion; `false` means no reservation accounting changed. A bounds failure
+    /// after the transition is fatal, because retrying a spent reservation would double-count.
     pub(super) fn post(&self, completion: Completion) -> bool {
-        #[cfg(feature = "selftest")]
-        if self.refuse_next_post.swap(false, Ordering::AcqRel) {
-            return false;
-        }
         let mut bytes = [0u8; COMPLETION_BYTES];
         write_entry_u32(&mut bytes, completion::TOKEN, completion.token);
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);

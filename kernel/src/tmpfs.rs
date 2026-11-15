@@ -269,10 +269,3 @@ pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usi
     into[..wanted].copy_from_slice(&arena.bytes[from..end]);
     wanted
 }
-
-/// Check that fabricated file metadata cannot expose unwritten arena bytes.
-#[cfg(feature = "selftest")]
-pub(crate) fn unwritten_bytes_are_refused_for_test() -> bool {
-    let mut byte = [0xA5];
-    read(MAX_BYTES - 1, 1, 0, &mut byte) == 0 && byte == [0xA5]
-}

@@ -137,17 +137,6 @@ impl<'authority> DirectSpan<'authority> {
             .offsets()
             .all(|offset| self.read_byte(offset) == Some(byte))
     }
-
-    #[cfg(feature = "selftest")]
-    pub(super) fn starts_with(&self, expected: &[u8]) -> bool {
-        let Ok(range) = AccessRange::repeated(0, expected.len(), 1, self.len) else {
-            return false;
-        };
-        range
-            .offsets()
-            .zip(expected)
-            .all(|(offset, wanted)| self.read_byte(offset) == Some(*wanted))
-    }
 }
 
 /// Bytes in the `clflush` line every x86-64 processor reports; a smaller line is still covered.

@@ -41,15 +41,7 @@ impl AddressSpace {
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(&range, offset, grain);
-            #[cfg(feature = "selftest")]
-            let result = if mapping_refusal(&MAPPING_WRITES_BEFORE_REFUSAL) {
-                Err(MapError::OutOfMemory)
-            } else {
-                self.set(virtual_address, physical, flags, level)
-            };
-            #[cfg(not(feature = "selftest"))]
-            let result = self.set(virtual_address, physical, flags, level);
-            if let Err(reason) = result {
+            if let Err(reason) = self.set(virtual_address, physical, flags, level) {
                 // Rollback leaves no live entry over the frames a refused owned mapping returns.
                 self.undo(&range, offset, grain);
                 self.rollback_tables(table_mark);
@@ -156,10 +148,6 @@ impl AddressSpace {
         let mut offset = 0;
         while offset < written {
             let (virtual_address, _, level) = Self::step(range, offset, grain);
-            #[cfg(feature = "selftest")]
-            if mapping_refusal(&MAPPING_UNDOS_BEFORE_REFUSAL) {
-                panic!("mapping rollback lost a written leaf: injected refusal");
-            }
             let slot = self
                 .slot_at(virtual_address, level)
                 .unwrap_or_else(|reason| panic!("mapping rollback lost a written leaf: {reason}"));

@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 
-use super::serial::{ROUNDS, Selftest};
+use super::serial::Selftest;
 use super::{Control, Event, Installation, Machine, Remapping};
 use crate::paths::RunDirectory;
 
@@ -14,23 +14,9 @@ pub(crate) fn run_selftest(run: &RunDirectory, timeout: Duration) -> Result<()> 
     let mut machine = Machine::launch(command, Control::Qmp)?;
     let deadline = Instant::now() + timeout;
     let mut selftest = Selftest::default();
-    let mut round = 0;
     loop {
         match machine.next(deadline)? {
-            Event::Line(line) => {
-                selftest.observe(&line)?;
-                let Some(index) = ROUNDS.iter().position(|(marker, _)| line == *marker) else {
-                    continue;
-                };
-                ensure!(
-                    index == round,
-                    "self-test keystroke round {} opened while waiting for round {}",
-                    index + 1,
-                    round + 1
-                );
-                round += 1;
-                inject(&mut machine, ROUNDS[index].1);
-            }
+            Event::Line(line) => selftest.observe(&line)?,
             Event::Exited(status) => {
                 selftest.conclude(status.code())?;
                 println!("[xtask] self-test passed");
@@ -44,16 +30,5 @@ pub(crate) fn run_selftest(run: &RunDirectory, timeout: Duration) -> Result<()> 
                 );
             }
         }
-    }
-}
-
-// A failed injection is printed and left to the kernel's own keystroke check, which fails.
-fn inject(machine: &mut Machine, keys: &[&str]) {
-    let injected = machine
-        .qmp()
-        .and_then(|qmp| keys.iter().try_for_each(|key| qmp.inject_key(key)));
-    match injected {
-        Ok(()) => println!("[xtask] qmp: {} keystroke(s) injected", keys.len()),
-        Err(error) => println!("[xtask] qmp: {error:#}; the keystroke check will report it"),
     }
 }

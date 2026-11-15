@@ -3,14 +3,12 @@ use core::sync::atomic::{Ordering, fence};
 use timebase::{Seq, Timebase};
 use wost::mm::SharedBytes;
 
-use super::constants::{self};
 use super::{CLOCK_AT, PAGE, clock, read_u32};
 
 /// Read the page the way a program does, and say what it found.
 ///
 /// Bounded, because a writer that never finishes is a broken kernel, and spinning on it would
 /// forgive exactly the failure worth reporting.
-#[cfg(feature = "selftest")]
 pub(crate) fn read() -> Option<Reading> {
     const ATTEMPTS: usize = 64;
 
@@ -45,7 +43,6 @@ pub(crate) fn read() -> Option<Reading> {
 }
 
 /// What one read of the clock region found.
-#[cfg(feature = "selftest")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Reading {
     /// Whether the page may be used at all.
@@ -60,7 +57,6 @@ pub(crate) struct Reading {
     pub(crate) conversion: Timebase,
 }
 
-#[cfg(feature = "selftest")]
 impl Reading {
     /// What this page says the time is, given a counter reading.
     pub(crate) fn at(self, ticks: u64) -> u64 {
@@ -72,19 +68,6 @@ impl Reading {
     }
 }
 
-/// The constants region, which needs no protocol to read.
-#[cfg(feature = "selftest")]
-pub(crate) fn constants() -> Option<(u32, u32, u64)> {
-    let guard = PAGE.lock_leaf();
-    let page = guard.as_ref()?;
-    Some((
-        read_u32(page, constants::VERSION),
-        read_u32(page, constants::PAGE_BYTES),
-        read_u64(page, constants::COUNTER_HZ),
-    ))
-}
-
-#[cfg(feature = "selftest")]
 fn read_u64(page: &SharedBytes, at: usize) -> u64 {
     let mut bytes = [0u8; 8];
     if !page.read_at(at, &mut bytes) {

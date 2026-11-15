@@ -60,8 +60,6 @@ impl AddressSpace {
                 self.pair_authority.is_none(),
                 "a reclaimed space retained paired frame authority"
             );
-            #[cfg(feature = "selftest")]
-            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
             return Err(ReclaimFailure {
                 reason: ReclaimError::Reclaimed,
                 released,

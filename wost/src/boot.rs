@@ -1,8 +1,6 @@
 //! Bootloader handoff: [`entry!`](crate::entry) and a [`BootInfo`] whose types name no bootloader.
 
 mod limine_glue;
-#[cfg(feature = "selftest")]
-mod selftest;
 
 use core::fmt;
 

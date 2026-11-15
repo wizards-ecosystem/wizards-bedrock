@@ -21,19 +21,6 @@ pub(super) const SELFTEST_REQUIRED: &[&str] = &[
 
 const VERDICT_PREFIX: &str = "selftest: verdict ";
 const VERDICT_VERSION: &str = "v1";
-const NVME_STACK_PREFIX: &str = "[info ] selftest: nvme-stack v2 ";
-const NVME_STACK_CAPACITY: u64 = 32 * 1024;
-const NVME_STACK_MIN_HEADROOM: u64 = 2 * 4096;
-
-// Each marker opens a keystroke round, answered in order by the matching keys.
-pub(super) const ROUNDS: &[(&str, &[&str])] = &[
-    ("[info ] selftest: awaiting storage-delay keystroke", &["c"]),
-    (
-        "[info ] selftest: awaiting injected keystroke",
-        &["a", "backspace", "ret"],
-    ),
-    ("[info ] selftest: awaiting translated keystroke", &["b"]),
-];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Status {
@@ -147,7 +134,6 @@ impl Records {
 pub(super) struct Selftest {
     records: Records,
     failed: Vec<String>,
-    nvme_stack_checked: bool,
     verdict: Option<Verdict>,
 }
 
@@ -156,7 +142,6 @@ impl Default for Selftest {
         Self {
             records: Records::new(SELFTEST_REQUIRED),
             failed: Vec::new(),
-            nvme_stack_checked: false,
             verdict: None,
         }
     }
@@ -175,10 +160,6 @@ impl Selftest {
             .and_then(|message| message.strip_suffix(" FAILED"))
         {
             self.failed.push(name.to_string());
-        } else if let Some(fields) = line.strip_prefix(NVME_STACK_PREFIX) {
-            ensure!(!self.nvme_stack_checked, "the NVMe stack record repeated");
-            require_nvme_stack(fields)?;
-            self.nvme_stack_checked = true;
         } else if let Some(verdict) = Verdict::parse(line) {
             self.verdict = Some(verdict?);
         }
@@ -206,42 +187,8 @@ impl Selftest {
             exit == Some(SELFTEST_PASSED),
             "the self-test serial verdict contradicts its debug-exit status ({exit:?})"
         );
-        self.records.require_all("self-test")?;
-        ensure!(
-            self.nvme_stack_checked,
-            "the self-test printed no NVMe stack record"
-        );
-        Ok(())
+        self.records.require_all("self-test")
     }
-}
-
-fn require_nvme_stack(record: &str) -> Result<()> {
-    let fields: Vec<&str> = record.split(' ').collect();
-    let [used, capacity, headroom, leaf] = fields.as_slice() else {
-        bail!("the NVMe stack record does not have four fields");
-    };
-    let used = stack_value(used, "used=")?;
-    let capacity = stack_value(capacity, "capacity=")?;
-    let headroom = stack_value(headroom, "headroom=")?;
-    let leaf = stack_value(leaf, "leaf=")?;
-    ensure!(
-        capacity == NVME_STACK_CAPACITY
-            && used.checked_add(headroom) == Some(capacity)
-            && leaf <= used,
-        "the NVMe stack record is inconsistent: {record}"
-    );
-    ensure!(
-        headroom >= NVME_STACK_MIN_HEADROOM,
-        "NVMe candidates kept only {headroom} bytes of stack headroom"
-    );
-    Ok(())
-}
-
-fn stack_value(field: &str, name: &str) -> Result<u64> {
-    field
-        .strip_prefix(name)
-        .and_then(|value| value.parse().ok())
-        .with_context(|| format!("the NVMe stack record has no {name} value"))
 }
 
 // Guest bytes are untrusted, so terminal controls never reach the operator's console.

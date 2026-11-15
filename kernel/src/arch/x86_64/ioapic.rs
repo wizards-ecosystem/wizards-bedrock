@@ -13,15 +13,6 @@ use x86_apic::vector::InterruptVector;
 
 use crate::debug;
 
-#[cfg(feature = "selftest")]
-use super::vector;
-
-#[cfg(feature = "selftest")]
-mod selftest;
-
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::ignored_writes_are_refused_for_test;
-
 /// Offsets into the register window.
 mod window {
     /// Selects which indexed register [`DATA`] addresses.

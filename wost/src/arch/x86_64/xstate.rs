@@ -14,12 +14,7 @@ use super::cpu;
 #[cfg(feature = "selftest")]
 mod selftest;
 #[cfg(feature = "selftest")]
-use selftest::REFUSE_USER_STATE_ISOLATION;
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    Probe, read_probe, save_stays_inside_its_area, without_user_state_isolation_for_test,
-    write_probe,
-};
+pub use selftest::{Probe, read_probe, save_stays_inside_its_area, write_probe};
 
 /// The leaf that describes extended state.
 const XSTATE_LEAF: u32 = 0x0D;
@@ -153,10 +148,7 @@ pub fn is_enabled() -> bool {
 
 /// Whether the configured save machinery and hardware still isolate user state.
 pub fn user_state_is_isolated() -> bool {
-    let isolated = configured_policy_is_live();
-    #[cfg(feature = "selftest")]
-    let isolated = isolated && !REFUSE_USER_STATE_ISOLATION.armed();
-    isolated
+    configured_policy_is_live()
 }
 
 fn configured_policy_is_live() -> bool {

@@ -16,7 +16,7 @@ use x86_paging::{Flags, PAGE_SIZE};
 mod selftest;
 
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{constants, read};
+pub(crate) use selftest::read;
 
 /// Where the page appears in every program's space, fixed because the ABI header names it.
 ///

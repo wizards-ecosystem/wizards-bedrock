@@ -191,13 +191,8 @@ fn write_descriptor(path: &Path, flat_name: &str, bytes: u64) -> Result<()> {
 fn print_checklist(kernel: Kernel) {
     match kernel {
         Kernel::SelfTest => {
-            println!("[xtask] this is the self-test kernel, four things to do:");
-            println!("        1. press `c` at `selftest: awaiting storage-delay keystroke`");
-            println!(
-                "        2. press `a`, Backspace, Enter at `selftest: awaiting injected keystroke`"
-            );
-            println!("        3. press `b` at `selftest: awaiting translated keystroke`");
-            println!("        4. look for `selftest: verdict` in the fresh serial log");
+            println!("[xtask] this is the self-test kernel; it needs no input:");
+            println!("        look for `selftest: verdict` in the fresh serial log");
         }
         Kernel::Shipped => {
             println!("[xtask] this is the shipped kernel, verify its fresh serial log:");

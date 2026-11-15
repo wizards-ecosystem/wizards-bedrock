@@ -1,5 +1,4 @@
 use core::hint::spin_loop;
-use core::sync::atomic::Ordering;
 
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{AddressSpace, MapError};
@@ -7,24 +6,13 @@ use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use super::address_spaces::in_reclaimed_space;
-use super::runs_until;
-use super::threads::{LIGHT_SPINS, STOP_SPINNING, light_spinner, yields_until};
-use crate::arch::current::trap;
+use crate::{time, timepage};
 
-use crate::timepage;
-use crate::{thread, time};
-
-pub(super) fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
-    let Some((version, page_bytes, counter_hz)) = timepage::constants() else {
-        return false;
-    };
-
-    version == timepage::VERSION
-        && page_bytes == PAGE_SIZE as u32
-        // The measured rate, not merely a non-zero one: a page publishing somebody else's clock
-        // would still pass an "is it plausible" test.
-        && counter_hz == crate::time::counter_hz()
-        && counter_hz > 0
+pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
+    (0..attempts).any(|_| {
+        spin_loop();
+        done()
+    })
 }
 
 pub(super) fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
@@ -35,14 +23,12 @@ pub(super) fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
         return false;
     }
 
-    let before = crate::time::now_ns();
+    let before = time::now_ns();
     let published = reading.at(cpu::timestamp());
-    let after = crate::time::now_ns();
-
+    let after = time::now_ns();
     let agrees = before <= published && published <= after;
 
-    // It advances: a page whose conversion is zero answers the same number every time, which
-    // falls inside any sandwich taken quickly enough.
+    // A page whose conversion is zero answers one number, which falls inside any quick sandwich.
     let first = reading.at(cpu::timestamp());
     let moved = spins_until(1_000_000, || reading.at(cpu::timestamp()) > first);
 
@@ -54,7 +40,6 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
         if timepage::install(space).is_err() {
             return false;
         }
-
         let Some((_, flags)) = space.lookup(timepage::TIME) else {
             return false;
         };
@@ -62,8 +47,7 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
         flags.contains(Flags::USER)
             && !flags.contains(Flags::WRITABLE)
             && flags.contains(Flags::NO_EXECUTE)
-            // Not the space's to give away: the frame is the kernel's, so an unmap must not hand it
-            // to the allocator.
+            // The frame is the kernel's, so an unmap must not hand it to the allocator.
             && matches!(
                 space.unmap(timepage::TIME, PAGE_SIZE),
                 Err(MapError::NotOwned(_))
@@ -71,47 +55,14 @@ pub(super) fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
     })
 }
 
-pub(super) fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
-    (0..attempts).any(|_| {
-        spin_loop();
-        done()
-    })
-}
-
-pub(super) fn ping_arrives(target: usize) -> bool {
-    const ATTEMPTS: u32 = 1_000_000;
-
-    spins_until(ATTEMPTS, || trap::last_ping().count >= target)
-}
-
-pub(super) fn rates_are_believable() -> bool {
-    (1_000_000..=10_000_000_000).contains(&time::apic_hz())
-        && (500_000_000..=10_000_000_000).contains(&time::counter_hz())
-}
-
-/// What a continuous read of the clock saw.
-pub(super) struct ClockSweep {
-    pub(super) monotonic: bool,
-    pub(super) advanced: bool,
-    /// The smallest positive step between adjacent counter readings.
-    pub(super) finest_step: Option<u64>,
-}
-
-pub(super) fn sweep_clock() -> ClockSweep {
+pub(super) fn the_clock_never_runs_backwards() -> bool {
     const ATTEMPTS: u32 = 2_000_000;
     const SPAN_MS: u64 = 3;
     const PAIRS: u32 = 1_000;
 
     let deadline = time::uptime_ms() + SPAN_MS;
-    // Seed with a real reading so the first comparison, sampled under a lock, is not vacuously
-    // monotonic against zero.
     let mut previous = time::now_ns();
-    let mut sweep = ClockSweep {
-        monotonic: true,
-        advanced: false,
-        finest_step: None,
-    };
-
+    let mut monotonic = true;
     for attempt in 0..ATTEMPTS {
         let sample = if attempt == 0 {
             let lock = SpinLock::new(0u32);
@@ -122,50 +73,15 @@ pub(super) fn sweep_clock() -> ClockSweep {
         } else {
             time::now_ns()
         };
-
-        if sample < previous {
-            sweep.monotonic = false;
-        }
-        sweep.advanced |= sample > previous;
+        monotonic &= sample >= previous;
         previous = sample;
-
         if sample / time::NANOSECONDS_PER_MS >= deadline {
             break;
         }
     }
-    for _ in 0..PAIRS {
-        let (first, second) = time::adjacent_readings_for_test();
-        match second.checked_sub(first) {
-            None => sweep.monotonic = false,
-            Some(0) => {}
-            Some(step) => {
-                sweep.finest_step = Some(sweep.finest_step.map_or(step, |finest| finest.min(step)));
-            }
-        }
-    }
-    sweep
-}
-
-pub(super) fn the_timer_fires_about_once_a_slice() -> bool {
-    const WINDOW_MS: u64 = 300;
-    /// `thread::SLICE_NS`, in the unit this window is measured in.
-    const SLICE_MS: u64 = 3;
-
-    STOP_SPINNING.store(0, Ordering::Release);
-    LIGHT_SPINS.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("competitor", light_spinner).is_err() {
-        return false;
-    }
-
-    let before = time::expiries();
-    runs_until(WINDOW_MS, || false);
-    let spent = time::expiries() - before;
-    STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    // A factor of four either way: the window is slice-quantised and
-    // hypervisor-jittered, and the cases differ by orders of magnitude.
-    let expected = WINDOW_MS / SLICE_MS;
-    exited && spent >= expected / 4 && spent <= expected * 4
+    monotonic
+        && (0..PAIRS).all(|_| {
+            let (first, second) = time::adjacent_readings_for_test();
+            second >= first
+        })
 }

@@ -8,8 +8,6 @@ mod device;
 mod map;
 mod reclaim;
 mod roots;
-#[cfg(feature = "selftest")]
-mod selftest;
 mod stack;
 mod walk;
 
@@ -19,16 +17,6 @@ pub use device::{
     DeviceUnmapFailure, ReleasableDevice, admit_device_range,
 };
 pub use map::BootRegion;
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    ActivationPublicationProbe, PaintedStack, activation_publication_for_test, cleared_on_drop,
-    observe_activation_publication_for_test, observe_owned_byte_for_test,
-    paint_current_permanent_stack_for_test,
-    permanent_stack_refuses_lower_leaf_substitution_for_test, reclaimed_refusals,
-    refuse_device_unmap_for_test, refuse_mapping_after_for_test,
-    refuse_stack_mapping_after_for_test, refuse_stack_rollback_after_for_test,
-    restore_mapping_refusals_for_test, restore_stack_refusals_for_test,
-};
 pub(crate) use stack::{KernelStackTop, TaskStackPin};
 pub use stack::{MappedStack, PinnedStack, StackArena};
 pub use walk::translate;
@@ -37,9 +25,6 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize};
 
 use mmio_range::{AddressRange, first_fit_by};
 use stack_layout::{Slot, StackLayout};
@@ -55,8 +40,6 @@ use x86_paging::{
     MappingRangeError, PAGE_SIZE, TablePrivilege, page_identity_matches, user_mapping_fits,
 };
 
-#[cfg(feature = "selftest")]
-use super::apic;
 use super::kpti;
 #[cfg(doc)]
 use super::task;
@@ -70,12 +53,6 @@ use crate::sync::SpinLock;
 use device::{DEVICE_WINDOW_END, DEVICE_WINDOW_START, DeviceExtent};
 use map::Grain;
 use roots::{enclave_access_policy, paired_flush_premise};
-#[cfg(feature = "selftest")]
-use selftest::{
-    CLEARED_ON_DROP, DEVICE_UNMAPS_BEFORE_REFUSAL, MAPPING_UNDOS_BEFORE_REFUSAL,
-    MAPPING_WRITES_BEFORE_REFUSAL, RECLAIMED_REFUSALS, STACK_MAPPINGS_BEFORE_REFUSAL,
-    STACK_ROLLBACKS_BEFORE_REFUSAL, mapping_refusal, one_shot_mapping_refusal, stack_refusal,
-};
 use stack::{StackIdentity, protected_stack_overlap};
 use walk::{
     EntrySlot, clear_mapping_slot, current_mapping_root, direct_map_gap, entry_slot,
@@ -699,8 +676,6 @@ impl AddressSpace {
     pub fn lookup(&self, virtual_address: u64) -> Option<(PhysicalAddress, Flags)> {
         // Reclaim removes the root owner; no later read may walk its recycled frame.
         if self.is_reclaimed() {
-            #[cfg(feature = "selftest")]
-            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         translate_in(self.root(), virtual_address)
@@ -814,8 +789,6 @@ impl AddressSpace {
         }
         // A reclaimed space's root would read as frame zero and then be installed.
         if self.is_reclaimed() {
-            #[cfg(feature = "selftest")]
-            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
             return Err(ActivateError::Reclaimed);
         }
         if self.reach != Reach::UserHalfOnly {
@@ -983,13 +956,9 @@ impl Drop for Unmapped {
     fn drop(&mut self) {
         if self.was_user
             && let Some(frames) = self.frames.as_mut()
+            && !frames.zero()
         {
-            if frames.zero() {
-                #[cfg(feature = "selftest")]
-                CLEARED_ON_DROP.fetch_add(frames.frames(), Ordering::Relaxed);
-            } else {
-                core::mem::forget(self.frames.take());
-            }
+            core::mem::forget(self.frames.take());
         }
     }
 }

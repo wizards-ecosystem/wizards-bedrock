@@ -21,11 +21,6 @@ use crate::sync::SpinLock;
 
 use super::port::{self, Port, PortBlock};
 
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-pub use selftest::{claims, is_claimed};
-
 const FUNCTION_CLAIMS: usize = pci_config::FUNCTION_AUTHORITY_LIMIT;
 
 struct Configuration {
@@ -314,11 +309,6 @@ impl DisabledBar {
 }
 
 impl MappedBar {
-    /// Where the registers are mapped in the running address space.
-    pub const fn address(&self) -> u64 {
-        self.region.address()
-    }
-
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         ReleasableDevice::read_u32(&self.region, offset)
     }

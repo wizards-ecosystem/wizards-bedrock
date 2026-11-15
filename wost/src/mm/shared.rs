@@ -4,14 +4,12 @@ use ring_proto::SharedLayout;
 
 use super::direct::DirectSpan;
 use super::frame::Segment;
-#[cfg(feature = "selftest")]
-use super::selftest::observe_external_run_withheld_for_test;
 use super::{PhysicalAddress, direct_pointer};
 use crate::arch::current::shared_memory;
 
 /// A run of frames whose bytes are ring 3's, outside kernel control and never trusted data.
 ///
-/// It returns to kernel ownership only through [`reclaim`](Self::reclaim), which clears every byte.
+/// Dropping it clears every byte before the frames return to the allocator, or leaks them.
 #[derive(PartialEq, Eq, Debug)]
 pub struct USegment {
     segment: Option<Segment>,
@@ -48,19 +46,6 @@ impl USegment {
         Shared(Arc::new(SharedAllocation(self)))
     }
 
-    /// Take the run back for the kernel with every byte cleared, or `None` withholding it.
-    pub fn reclaim(mut self) -> Option<Segment> {
-        let Some(mut segment) = self.segment.take() else {
-            panic!("an external segment no longer owns its frames");
-        };
-        if segment.zero() {
-            return Some(segment);
-        }
-        // Never return a failed clear: the next handle would expose the external owner's bytes.
-        core::mem::forget(segment);
-        None
-    }
-
     /// Commit this run to page-table ownership after the mapping exists.
     pub(crate) fn commit_mapping(mut self) {
         let Some(segment) = self.segment.take() else {
@@ -76,11 +61,7 @@ impl Drop for USegment {
             return;
         };
         if !segment.zero() {
-            #[cfg(feature = "selftest")]
-            let address = segment.address();
             core::mem::forget(segment);
-            #[cfg(feature = "selftest")]
-            observe_external_run_withheld_for_test(address);
         }
     }
 }

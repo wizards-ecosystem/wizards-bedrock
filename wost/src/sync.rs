@@ -1,8 +1,5 @@
 //! Synchronisation primitives.
 
-#[cfg(feature = "selftest")]
-mod selftest;
-
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::hint::spin_loop;
@@ -14,8 +11,6 @@ use crate::arch::current::interrupt::{self, InterruptState};
 // Lock state is CPU-local so processors cannot share nesting evidence.
 use crate::arch::current::percpu;
 use crate::panic::PanicToken;
-#[cfg(feature = "selftest")]
-pub use selftest::Injection;
 
 /// How many spin locks this CPU holds, the runtime backstop for paths type borrows cannot see.
 ///

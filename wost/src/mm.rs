@@ -19,12 +19,7 @@ pub(crate) use dma::{DmaMappingOwner, IommuTable, PublishedIommuTable};
 pub use dma::{DmaSegment, TableWalks};
 pub use frame::{Frame, Segment, allocate, allocate_contiguous, allocate_zeroed};
 #[cfg(feature = "selftest")]
-pub use selftest::{
-    dma_mapping_owner_drop_retains_for_test, first_memory_run, free_frames,
-    freed_external_run_is_zero_for_test, memory_map_for_test,
-    overlapping_allocator_claims_are_arbitrated_for_test,
-    published_iommu_table_drop_retains_for_test, refused_external_clear_withholds_for_test,
-};
+pub use selftest::{free_frames, freed_external_run_is_zero_for_test};
 pub(crate) use shared::SharedKeepalive;
 pub use shared::{Shared, SharedBytes, SharedRing, USegment};
 
@@ -102,7 +97,7 @@ pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
     Report { managed, ignored }
 }
 
-fn seed_frames<const WORDS: usize>(frames: &mut FrameSpace<WORDS>, map: &MemoryMap) -> usize {
+fn seed_frames(frames: &mut Frames, map: &MemoryMap) -> usize {
     let mut ignored = 0;
     for run in map.allocatable_runs() {
         ignored += frames.insert(run.base(), run.bytes()).ignored;

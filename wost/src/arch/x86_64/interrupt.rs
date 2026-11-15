@@ -23,14 +23,6 @@ use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
 
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    access_clear_is_armed, breakpoint, buffer_clear_is_armed, buffer_clears, gate_privilege,
-    live_frame_address, table_is_loaded,
-};
-
 const CONTEXTS: usize = 32;
 const MAX_EXCLUSIONS: usize = usize::BITS as usize;
 
@@ -65,8 +57,7 @@ const STUB_BYTES: usize = 16;
 
 /// The registers the entry path leaves on the stack.
 ///
-/// Field order mirrors the entry pushes exactly, lowest address first; the selftest checks they
-/// still agree on a live machine, because nothing else can.
+/// Field order mirrors the entry pushes exactly, lowest address first.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 struct RawTrapFrame {
@@ -242,23 +233,6 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
     true
 }
 
-/// Resume the controlled write-protection probe at its private fixup target.
-#[cfg(feature = "selftest")]
-#[must_use = "a refused resume changed no trap frame"]
-pub(super) fn resume_write_protection(
-    frame: &TrapFrame,
-    target: super::cpu::WriteProtectionRecoveryTarget,
-) -> bool {
-    if !is_live_frame(frame) {
-        return false;
-    }
-    // SAFETY: `origin` is the innermost assembly frame and remains live.
-    let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).instruction_pointer) };
-    // SAFETY: only the write-protection probe can construct this in-crate label.
-    unsafe { core::ptr::write(slot, target.address()) };
-    true
-}
-
 /// Set the `rax` the interrupted context will resume with.
 ///
 /// Only the ABI return register is mutable; the rest of the interrupted state stays a read-only
@@ -390,9 +364,7 @@ pub fn arm_access_clear() {
 /// The entry stub reads this immutable byte directly.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".kpti.state.route")]
-pub(super) static mut MDS_CLEAR: u8 = 0;
-
-pub(super) const RECORD_BUFFER_CLEARS: usize = cfg!(feature = "selftest") as usize;
+static mut MDS_CLEAR: u8 = 0;
 
 /// Public, immutable selector consumed by the post-CR3 `VERW` boundary.
 ///
@@ -726,8 +698,6 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     // SAFETY: entry passes an aligned, fully initialised block with the exact `RawTrapFrame`
     // layout, and copying it leaves the assembly-owned frame untouched for `iretq`.
     let saved = unsafe { core::ptr::read(raw) };
-    #[cfg(feature = "selftest")]
-    super::kpti::record_rust_entry(saved.code_selector);
     let frame = TrapFrame {
         raw: saved,
         origin: raw,
@@ -904,9 +874,6 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     // It restores the full root above, then stops without reaching Rust.
     "test byte ptr [rsp + {frame_cs}], 3",
     "jz wost_kpti_stop",
-    ".if {record_transition_evidence}",
-    "lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped_entries}]",
-    ".endif",
     // Transfer the complete architectural frame before scrubbing both enclave
     // stacks hardware can have selected while the stripped root was active.
     "mov rsi, rsp",
@@ -973,26 +940,9 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     ".globl wost_kpti_exit_last_secret_access",
     "wost_kpti_exit_last_secret_access:",
     "rep movsq",
-    // The first flush supplies the existing executable machine witness while
-    // the writable counter is reachable. The second remains after CR3, at the
-    // architectural boundary it protects.
-    "cmp byte ptr [rip + {clear}], 0",
-    "je 8f",
-    "mov word ptr [rbx - 8], {kernel_data}",
-    "verw word ptr [rbx - 8]",
-    ".if {record_clears}",
-    "jnz 9f",
-    "inc qword ptr [rip + BUFFER_CLEARS]",
-    "9:",
-    ".endif",
-    "mov word ptr [rbx - 8], 0",
-    "8:",
     "mov rsp, rbx",
     ".globl wost_kpti_exit_load_stripped_root",
     "wost_kpti_exit_load_stripped_root:",
-    ".if {record_transition_evidence}",
-    "lock inc qword ptr [rip + WOST_KPTI_ROUTE + {route_prepared_returns}]",
-    ".endif",
     "mov cr3, r10",
     "pop r15",
     "pop r14",
@@ -1047,11 +997,6 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     "sub rsp, 8",
     "mov word ptr [rsp], {kernel_data}",
     "verw word ptr [rsp]",
-    ".if {record_clears}",
-    "jnz 3f",
-    "inc qword ptr [rip + BUFFER_CLEARS]",
-    "3:",
-    ".endif",
     "add rsp, 8",
     "2:",
     "iretq",
@@ -1102,12 +1047,8 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     route_task_stack = const super::kpti::route::TASK_STACK_TOP,
     route_transition_stack = const super::kpti::route::TRANSITION_STACK_TOP,
     route_interrupt_stack = const super::kpti::route::INTERRUPT_STACK_TOP,
-    route_stripped_entries = const super::kpti::route::STRIPPED_ENTRIES,
-    route_prepared_returns = const super::kpti::route::PREPARED_RETURNS,
-    record_transition_evidence = const (super::kpti::RECORD_TRANSITION_EVIDENCE as usize),
     clear = sym MDS_CLEAR,
     verw_selector = sym KPTI_VERW_SELECTOR,
-    record_clears = const RECORD_BUFFER_CLEARS,
     smap = sym SMAP_ARMED,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,

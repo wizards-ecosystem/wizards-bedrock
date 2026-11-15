@@ -1,13 +1,8 @@
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
 use wost::arch::current::paging::{MapError, ReclaimError};
 use wost::arch::current::task;
 use wost::sync::SpinLock;
 
 use super::{BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES};
-#[cfg(feature = "selftest")]
-use crate::object::ObjectType;
 use crate::{queue, thread, warn};
 
 #[derive(Debug)]
@@ -17,28 +12,7 @@ enum ReclaimRefusal {
     Tables(ReclaimError),
 }
 
-#[derive(Debug)]
-struct ReclaimRetention {
-    refusal: ReclaimRefusal,
-    #[cfg(feature = "selftest")]
-    observed_returned_pages: usize,
-}
-
-#[derive(Debug)]
-struct ReclaimSuccess {
-    reclaimed: Reclaimed,
-    #[cfg(feature = "selftest")]
-    observed_returned_pages: usize,
-}
-
-fn reclaim(
-    bootstrap: &mut Bootstrap,
-    abandoned: usize,
-) -> Result<ReclaimSuccess, ReclaimRetention> {
-    bootstrap.abandoned = bootstrap
-        .abandoned
-        .checked_add(abandoned)
-        .unwrap_or_else(|| panic!("zombie abandonment accounting overflowed"));
+fn reclaim(bootstrap: &mut Bootstrap) -> Result<(), ReclaimRefusal> {
     let Some(authority) = bootstrap.authority.take() else {
         panic!("a zombie always owns address-space authority");
     };
@@ -48,88 +22,34 @@ fn reclaim(
             Ok(released) => Some(BootstrapAuthority::Released(released)),
             Err(bound) => {
                 bootstrap.authority = Some(BootstrapAuthority::Bound(bound));
-                return Err(ReclaimRetention {
-                    refusal: ReclaimRefusal::TaskRelease,
-                    #[cfg(feature = "selftest")]
-                    observed_returned_pages: 0,
-                });
+                return Err(ReclaimRefusal::TaskRelease);
             }
         },
     };
 
-    #[cfg(feature = "selftest")]
-    let mut observed_returned_pages = 0usize;
     while bootstrap.mapped != 0 {
         let index = bootstrap.mapped - 1;
         let (at, len) = bootstrap.regions[index];
-        match bootstrap.space.unmap(at, len) {
-            Ok(returned) => {
-                let pages = returned.pages() as usize;
-                drop(returned);
-                bootstrap.mapped = index;
-                bootstrap.returned_pages = bootstrap
-                    .returned_pages
-                    .checked_add(pages)
-                    .unwrap_or_else(|| panic!("zombie returned-page accounting overflowed"));
-                #[cfg(feature = "selftest")]
-                {
-                    observed_returned_pages = observed_returned_pages
-                        .checked_add(pages)
-                        .unwrap_or_else(|| {
-                            panic!("one reclaim's returned-page accounting overflowed")
-                        });
-                }
-            }
-            Err(reason) => {
-                return Err(ReclaimRetention {
-                    refusal: ReclaimRefusal::Mapping(reason),
-                    #[cfg(feature = "selftest")]
-                    observed_returned_pages,
-                });
-            }
-        }
+        let returned = bootstrap
+            .space
+            .unmap(at, len)
+            .map_err(ReclaimRefusal::Mapping)?;
+        drop(returned);
+        bootstrap.mapped = index;
     }
 
     let Some(BootstrapAuthority::Released(released)) = bootstrap.authority.take() else {
         unreachable!("task release was established above");
     };
-    let tables = match bootstrap.space.reclaim(Some(released)) {
-        Ok(tables) => tables,
-        Err(failure) => {
-            let reason = failure.reason;
-            let Some(released) = failure.released else {
-                panic!("zombie cleanup lost its retry authority: {reason}");
-            };
-            bootstrap.authority = Some(BootstrapAuthority::Released(released));
-            return Err(ReclaimRetention {
-                refusal: ReclaimRefusal::Tables(reason),
-                #[cfg(feature = "selftest")]
-                observed_returned_pages,
-            });
-        }
-    };
-
-    let reclaimed = Reclaimed {
-        pages: bootstrap.returned_pages,
-        tables,
-        abandoned: bootstrap.abandoned,
-    };
-    Ok(ReclaimSuccess {
-        reclaimed,
-        #[cfg(feature = "selftest")]
-        observed_returned_pages,
-    })
-}
-
-/// What one reclaim gave back.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub(crate) struct Reclaimed {
-    /// Frames the program's own mappings held.
-    pub(crate) pages: usize,
-    /// Frames its page tables were built from.
-    pub(crate) tables: usize,
-    /// Operations that were still in flight and were ended.
-    pub(crate) abandoned: usize,
+    if let Err(failure) = bootstrap.space.reclaim(Some(released)) {
+        let reason = failure.reason;
+        let Some(released) = failure.released else {
+            panic!("zombie cleanup lost its retry authority: {reason}");
+        };
+        bootstrap.authority = Some(BootstrapAuthority::Released(released));
+        return Err(ReclaimRefusal::Tables(reason));
+    }
+    Ok(())
 }
 
 /// What one bounded collection attempt observed.
@@ -140,20 +60,12 @@ pub(crate) enum CollectOutcome {
     /// A zombie remains owned and needs a later retry.
     Retained,
     /// One zombie was reclaimed completely.
-    Reclaimed(Reclaimed),
+    Reclaimed,
 }
 
 impl CollectOutcome {
     pub(crate) const fn is_some(self) -> bool {
-        matches!(self, Self::Reclaimed(_))
-    }
-
-    #[cfg(feature = "selftest")]
-    pub(crate) fn is_some_and(self, check: impl FnOnce(Reclaimed) -> bool) -> bool {
-        match self {
-            Self::Reclaimed(reclaimed) => check(reclaimed),
-            Self::Empty | Self::Retained => false,
-        }
+        matches!(self, Self::Reclaimed)
     }
 }
 
@@ -177,47 +89,18 @@ impl ZombieTable {
 /// Programs whose threads are gone and whose resources are not.
 static ZOMBIES: SpinLock<ZombieTable> = SpinLock::new(ZombieTable::new());
 
-/// What every reclaim so far gave back.
-#[cfg(feature = "selftest")]
-static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-pub(super) static REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static REFUSED_TABLE_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(feature = "selftest")]
-static REFUSED_RING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "selftest")]
-static PAUSE_COLLECTION_AFTER_TAKE: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "selftest")]
-static PAUSE_COLLECTION_BEFORE_SETTLEMENT: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "selftest")]
-static COLLECTION_IS_SETTLING: AtomicBool = AtomicBool::new(false);
-
-/// What a program held when it died, for machine checks.
 #[cfg(feature = "selftest")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LastRites {
-    /// The non-repeating table identity of the program that left this record.
     pub(crate) table: u64,
-    /// Handles in its table at the end.
     pub(crate) handles: usize,
-    /// What its one bootstrap handle named.
-    pub(crate) bootstrap: Option<ObjectType>,
-    /// Completions its ring posted.
     pub(crate) served: usize,
-    /// The first submission it wrote, and the completion that answered it.
-    pub(crate) submitted: queue::Submission,
-    pub(crate) completed: queue::Completion,
 }
 
 #[cfg(feature = "selftest")]
 static RITES: SpinLock<[Option<LastRites>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
 
-/// What the program that last held `slot` left behind.
 #[cfg(feature = "selftest")]
 pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
     RITES.lock_leaf().get(slot).copied().flatten()
@@ -236,13 +119,7 @@ pub(crate) fn orphan(slot: usize) {
             let rites = LastRites {
                 table: bootstrap.table.identity_for_test(),
                 handles: bootstrap.table.live(),
-                bootstrap: bootstrap
-                    .table
-                    .kind_of(bootstrap.observed_birth_handle)
-                    .ok(),
                 served: bootstrap.ring.served_count(),
-                submitted: bootstrap.ring.read_submission(0),
-                completed: bootstrap.ring.read_completion(0),
             };
             let mut rites_table = RITES.lock_leaf();
             let Some(room) = rites_table.get_mut(slot) else {
@@ -306,73 +183,45 @@ pub(crate) fn collect() -> CollectOutcome {
         };
     };
 
-    #[cfg(feature = "selftest")]
-    {
-        COLLECTION_IS_SETTLING.store(true, Ordering::Release);
-        while PAUSE_COLLECTION_BEFORE_SETTLEMENT.load(Ordering::Acquire) {
-            crate::thread::yield_now(&mut crate::thread::ThreadContext::require());
-        }
-        COLLECTION_IS_SETTLING.store(false, Ordering::Release);
-    }
-
     // Before the ring's pages go anywhere, every outstanding operation gets its terminal
     // completion while the zombie still owns them.
-    let abandoned = ring.abandon();
+    ring.abandon();
     if !ring.is_quiet() {
-        return retain_unsettled(slot, &ring, abandoned);
+        return retain_unsettled(slot, &ring);
     }
     let bootstrap = match take_settled(slot, &ring) {
         Ok(bootstrap) => bootstrap,
         Err(outcome) => return outcome,
     };
     drop(ring);
-    #[cfg(feature = "selftest")]
-    {
-        while PAUSE_COLLECTION_AFTER_TAKE.load(Ordering::Acquire) {
-            crate::thread::yield_now(&mut crate::thread::ThreadContext::require());
-        }
-    }
-    settle(slot, bootstrap, abandoned)
+    settle(slot, bootstrap)
 }
 
-/// Record what an unquiet ring abandoned and leave its zombie owned for a later retry.
-fn retain_unsettled(
-    slot: usize,
-    ring: &alloc::sync::Arc<queue::Queue>,
-    abandoned: usize,
-) -> CollectOutcome {
-    let recorded = {
+/// Leave an unquiet ring's zombie owned for a later retry.
+fn retain_unsettled(slot: usize, ring: &alloc::sync::Arc<queue::Queue>) -> CollectOutcome {
+    let broken = {
         let mut zombies = ZOMBIES.lock_leaf();
         let settling = zombies.settling.get(slot).copied().unwrap_or(false);
         let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
-        let recorded = match zombies.owners.get_mut(slot).and_then(Option::as_mut) {
-            None => 0,
-            Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, ring) => 1,
-            Some(_) if !settling || collecting => 2,
-            Some(bootstrap) => match bootstrap.abandoned.checked_add(abandoned) {
-                Some(total) => {
-                    bootstrap.abandoned = total;
-                    4
-                }
-                None => 3,
-            },
+        let broken = match zombies.owners.get(slot).and_then(Option::as_ref) {
+            None => Some("the unsettled zombie left its slot"),
+            Some(bootstrap) if !alloc::sync::Arc::ptr_eq(&bootstrap.ring, ring) => {
+                Some("a zombie changed owners during settlement")
+            }
+            Some(_) if !settling || collecting => {
+                Some("a zombie lost exclusive settlement ownership")
+            }
+            Some(_) => None,
         };
-        if recorded == 4 {
+        if broken.is_none() {
             zombies.settling[slot] = false;
         }
-        recorded
+        broken
     };
-    match recorded {
-        4 => {}
-        0 => panic!("the unsettled zombie left its slot"),
-        1 => panic!("a zombie changed owners during settlement"),
-        2 => panic!("a zombie lost exclusive settlement ownership"),
-        3 => panic!("zombie abandonment accounting overflowed"),
-        _ => unreachable!(),
+    if let Some(broken) = broken {
+        panic!("{broken}");
     }
     warn!("user: ring cleanup refused; the zombie remains owned");
-    #[cfg(feature = "selftest")]
-    REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
     CollectOutcome::Retained
 }
 
@@ -409,74 +258,44 @@ fn take_settled(
 }
 
 /// Reclaim a taken zombie, or put it back owned when any cleanup step refuses.
-fn settle(slot: usize, mut bootstrap: Bootstrap, abandoned: usize) -> CollectOutcome {
-    match reclaim(&mut bootstrap, abandoned) {
-        Ok(success) => {
+fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
+    let retained = match reclaim(&mut bootstrap) {
+        Ok(()) => {
             drop(bootstrap);
-            #[cfg(feature = "selftest")]
-            RECLAIMED_PAGES.fetch_add(success.observed_returned_pages, Ordering::AcqRel);
-            #[cfg(feature = "selftest")]
-            RECLAIMED_TABLES.fetch_add(success.reclaimed.tables, Ordering::AcqRel);
-            let mut zombies = ZOMBIES.lock_leaf();
-            let Some(room) = zombies.owners.get_mut(slot) else {
-                panic!("a collected zombie's slot remains in range");
-            };
-            assert!(
-                room.is_none() && zombies.collecting[slot],
-                "a collecting zombie cannot change owners"
-            );
-            zombies.collecting[slot] = false;
-            CollectOutcome::Reclaimed(success.reclaimed)
+            None
         }
-        Err(retention) => {
-            #[cfg(feature = "selftest")]
-            RECLAIMED_PAGES.fetch_add(retention.observed_returned_pages, Ordering::AcqRel);
-            match retention.refusal {
+        Err(refusal) => {
+            match refusal {
                 ReclaimRefusal::TaskRelease => {
                     warn!("user: task release refused; the zombie remains owned");
                 }
                 ReclaimRefusal::Mapping(reason) => {
-                    #[cfg(feature = "selftest")]
-                    REFUSED_MAPPING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
                     warn!("user: mapping cleanup refused: {reason}; the zombie remains owned");
                 }
                 ReclaimRefusal::Tables(reason) => {
-                    #[cfg(feature = "selftest")]
-                    REFUSED_TABLE_RECLAIMS.fetch_add(1, Ordering::AcqRel);
                     warn!("user: table cleanup refused: {reason}; the zombie remains owned");
                 }
             }
-            let mut zombies = ZOMBIES.lock_leaf();
-            let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
-            let Some(room) = zombies.owners.get_mut(slot) else {
-                panic!("a collected zombie's slot remains in range");
-            };
-            assert!(
-                room.is_none() && collecting,
-                "a collecting zombie cannot change owners"
-            );
-            *room = Some(bootstrap);
-            zombies.collecting[slot] = false;
-            CollectOutcome::Retained
+            Some(bootstrap)
         }
-    }
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn pause_collection_after_take_for_test(paused: bool) {
-    PAUSE_COLLECTION_AFTER_TAKE.store(paused, Ordering::Release);
-}
-
-/// Pause one collector after it owns settlement but before it touches the ring.
-#[cfg(feature = "selftest")]
-pub(crate) fn pause_collection_before_settlement_for_test(paused: bool) {
-    PAUSE_COLLECTION_BEFORE_SETTLEMENT.store(paused, Ordering::Release);
-}
-
-/// Whether one collector exclusively owns a zombie's settlement pass.
-#[cfg(feature = "selftest")]
-pub(crate) fn collection_is_settling_for_test() -> bool {
-    COLLECTION_IS_SETTLING.load(Ordering::Acquire)
+    };
+    let outcome = if retained.is_some() {
+        CollectOutcome::Retained
+    } else {
+        CollectOutcome::Reclaimed
+    };
+    let mut zombies = ZOMBIES.lock_leaf();
+    let collecting = zombies.collecting.get(slot).copied().unwrap_or(false);
+    let Some(room) = zombies.owners.get_mut(slot) else {
+        panic!("a collected zombie's slot remains in range");
+    };
+    assert!(
+        room.is_none() && collecting,
+        "a collecting zombie cannot change owners"
+    );
+    *room = retained;
+    zombies.collecting[slot] = false;
+    outcome
 }
 
 /// Whether any program is waiting to be collected.
@@ -500,48 +319,4 @@ pub(super) fn slot_has_zombie(slot: usize) -> bool {
     zombies.owners.get(slot).is_some_and(Option::is_some)
         || zombies.settling.get(slot).is_some_and(|owned| *owned)
         || zombies.collecting.get(slot).is_some_and(|owned| *owned)
-}
-
-/// Whether a process owner still excludes this scheduler slot.
-#[cfg(feature = "selftest")]
-pub(crate) fn zombie_owns_slot_for_test(slot: usize) -> bool {
-    slot_has_zombie(slot)
-}
-
-/// Frames given back by every collection so far.
-#[cfg(feature = "selftest")]
-pub(crate) fn reclaimed() -> (usize, usize) {
-    (
-        RECLAIMED_PAGES.load(Ordering::Acquire),
-        RECLAIMED_TABLES.load(Ordering::Acquire),
-    )
-}
-
-/// Address-space table cleanups refused so far.
-#[cfg(feature = "selftest")]
-pub(crate) fn refused_table_reclaims() -> usize {
-    REFUSED_TABLE_RECLAIMS.load(Ordering::Acquire)
-}
-
-/// Owned-mapping cleanups refused so far.
-#[cfg(feature = "selftest")]
-pub(crate) fn refused_mapping_reclaims() -> usize {
-    REFUSED_MAPPING_RECLAIMS.load(Ordering::Acquire)
-}
-
-/// Zombie collections retained because terminal ring work could not settle.
-#[cfg(feature = "selftest")]
-pub(crate) fn refused_ring_reclaims() -> usize {
-    REFUSED_RING_RECLAIMS.load(Ordering::Acquire)
-}
-
-/// Launch, process and zombie records currently occupied.
-#[cfg(feature = "selftest")]
-pub(crate) fn process_records_for_test() -> (usize, usize, usize) {
-    let launches = LAUNCHES.lock_leaf().iter().flatten().count();
-    let bootstraps = BOOTSTRAPS.lock_leaf().iter().flatten().count();
-    let zombies = ZOMBIES.lock_leaf();
-    let zombies = zombies.owners.iter().flatten().count()
-        + zombies.collecting.iter().filter(|owned| **owned).count();
-    (launches, bootstraps, zombies)
 }

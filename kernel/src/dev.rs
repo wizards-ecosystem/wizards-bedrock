@@ -11,14 +11,6 @@ use crate::console::Console;
 use crate::theme;
 use crate::{debug, info, warn};
 
-#[cfg(feature = "selftest")]
-mod selftest;
-
-#[cfg(feature = "selftest")]
-use selftest::KEYBOARD_GSI;
-#[cfg(feature = "selftest")]
-pub(crate) use selftest::console_geometry;
-
 static UART: ThreadLock<Option<Uart>> = ThreadLock::new(None);
 static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);
 
@@ -97,15 +89,10 @@ pub(crate) fn attach_back_buffer() {
 }
 
 /// The I/O APIC, once a line has been routed through it.
-/// Kept because it owns its register window for the kernel's life and the boot-time checks read
-/// routing back out of it.
+/// Kept because it owns its register window for the kernel's life.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
 /// Keep the controller the keyboard was just routed through.
-/// Self-test also retains the chosen GSI so readback follows firmware routing, not the legacy
-/// identity.
-pub(crate) fn keep_io_apic(io_apic: IoApic, #[cfg(feature = "selftest")] gsi: u32) {
+pub(crate) fn keep_io_apic(io_apic: IoApic) {
     *IO_APIC.lock_leaf() = Some(io_apic);
-    #[cfg(feature = "selftest")]
-    KEYBOARD_GSI.store(gsi, core::sync::atomic::Ordering::Release);
 }

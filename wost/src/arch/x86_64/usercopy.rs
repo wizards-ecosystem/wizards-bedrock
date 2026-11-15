@@ -237,31 +237,6 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     Ok(())
 }
 
-/// Drive one fixed user-copy fault through the private recovery window.
-///
-/// `true` means the full probe remained and its private destination did not
-/// change.
-#[cfg(feature = "selftest")]
-pub fn drive_fault_recovery_for_test() -> bool {
-    const HOLE: u64 = 0x0000_6000_0000_0000;
-    const UNCHANGED: [u8; 8] = [0xa5; 8];
-
-    let disabled = interrupt::disable();
-    if paging::translate(HOLE).is_some() {
-        disabled.restore();
-        return false;
-    }
-    let mut scratch = UNCHANGED;
-    let window = Window::open();
-    // SAFETY: `HOLE` is a canonical user address just seen unmapped under interrupt exclusion, a
-    // fault in the exact interval resumes at the fixup, and `scratch` is a live disjoint target.
-    let left = unsafe { wost_copy_across(scratch.as_mut_ptr(), HOLE as *const u8, scratch.len()) };
-    drop(window);
-    let exact = left == scratch.len() && scratch == UNCHANGED;
-    disabled.restore();
-    exact
-}
-
 /// Copy `from` into user memory at `onto`.
 ///
 /// # Errors

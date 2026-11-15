@@ -3,13 +3,10 @@
 //! Initialization freezes each local source's vector, and EOI needs authority read from live ISR.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use register_bits::low_u32;
 use x86_apic::Register;
 use x86_apic::base::{self, Base};
-use x86_apic::command::Command;
 use x86_apic::in_service::{DismissalOwnership, FrameLiveness};
 use x86_apic::lifecycle::{
     BeginError, InitStage, InitTransaction, Interrupts, Lifecycle, ProgressError,
@@ -25,22 +22,8 @@ use super::cpu;
 use super::interrupt::{self, TrapFrame};
 use super::msr;
 
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-pub use selftest::{
-    InitializationFailureProbe, initialization_failures_for_test,
-    initialization_was_atomic_for_test, is_enabled,
-    pending_audit_refuses_queued_self_interrupt_for_test,
-};
-#[cfg(feature = "selftest")]
-use selftest::{record_publication_observation, record_stage_observation};
-
 /// The initialization state published by this CPU's controller.
 static APIC_STATE: AtomicU8 = AtomicU8::new(Lifecycle::Cold.bits());
-
-/// The vector assigned to the self-directed fixed-delivery source.
-static SELF_INTERRUPT_VECTOR: AtomicU8 = AtomicU8::new(0);
 
 /// The vector assigned to the local one-shot timer.
 static TIMER_VECTOR: AtomicU8 = AtomicU8::new(0);
@@ -51,7 +34,6 @@ static SPURIOUS_VECTOR: AtomicU8 = AtomicU8::new(0);
 #[derive(Clone, Copy, Debug)]
 struct Controller<'state> {
     state: &'state AtomicU8,
-    self_interrupt_vector: &'state AtomicU8,
     timer_vector: &'state AtomicU8,
     spurious_vector: &'state AtomicU8,
 }
@@ -93,27 +75,11 @@ impl Controller<'_> {
         }
         InterruptVector::new(source.load(Ordering::Relaxed))
     }
-
-    fn send_self_interrupt(self) -> Result<(), DeliveryError> {
-        let Some(vector) = self.published_vector(self.self_interrupt_vector) else {
-            return Err(DeliveryError::Unavailable);
-        };
-        let Some(spurious) = self.published_vector(self.spurious_vector) else {
-            return Err(DeliveryError::Unavailable);
-        };
-        let Some(vector) = DeliverableVector::configured(vector, spurious) else {
-            return Err(DeliveryError::InvalidConfiguration);
-        };
-        let command = Command::self_interrupt(vector);
-        Controller::write(self, register::COMMAND, command.bits().into());
-        Ok(())
-    }
 }
 
 fn controller() -> Controller<'static> {
     Controller {
         state: &APIC_STATE,
-        self_interrupt_vector: &SELF_INTERRUPT_VECTOR,
         timer_vector: &TIMER_VECTOR,
         spurious_vector: &SPURIOUS_VECTOR,
     }
@@ -211,34 +177,9 @@ pub struct Vectors {
     pub spurious: InterruptVector,
     /// Delivered when the APIC records an error.
     pub error: InterruptVector,
-    /// Delivered by a fixed self-directed interrupt command.
-    pub self_interrupt: InterruptVector,
     /// Delivered when the local one-shot timer expires.
     pub timer: InterruptVector,
 }
-
-/// Why a configured APIC source could not deliver.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub enum DeliveryError {
-    /// The local APIC has no completed source configuration.
-    Unavailable,
-    /// The source assignment is not a distinct deliverable vector.
-    InvalidConfiguration,
-}
-
-impl fmt::Display for DeliveryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unavailable => f.write_str("the local apic source is unavailable"),
-            Self::InvalidConfiguration => {
-                f.write_str("the local apic source configuration is invalid")
-            }
-        }
-    }
-}
-
-impl core::error::Error for DeliveryError {}
 
 /// Why the local timer could not change state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -306,38 +247,6 @@ pub struct Local {
     pub bootstrap: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum InitializationBoundary {
-    Stage(InitStage),
-    Publication,
-}
-
-trait InitializationObserver {
-    fn reached(
-        &mut self,
-        boundary: InitializationBoundary,
-        controller: Controller<'_>,
-    ) -> Result<(), ApicError>;
-}
-
-#[derive(Debug)]
-struct Unobserved;
-
-impl InitializationObserver for Unobserved {
-    fn reached(
-        &mut self,
-        _boundary: InitializationBoundary,
-        _controller: Controller<'_>,
-    ) -> Result<(), ApicError> {
-        Ok(())
-    }
-}
-
-trait InitializationRegisters {
-    fn read(&self, register: Register) -> u64;
-    fn write(&self, register: Register, value: u64);
-}
-
 struct Initialization<'state> {
     controller: Controller<'state>,
     transaction: InitTransaction,
@@ -374,10 +283,6 @@ impl<'state> Initialization<'state> {
         self.transaction
             .enter(stage, interrupt_state())
             .map_err(progress_error)?;
-        #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
-            record_stage_observation(stage, &self.transaction);
-        }
         Ok(())
     }
 
@@ -386,10 +291,6 @@ impl<'state> Initialization<'state> {
             .transaction
             .complete(interrupt_state())
             .map_err(progress_error)?;
-        #[cfg(feature = "selftest")]
-        if core::ptr::eq(self.controller.state, &APIC_STATE) {
-            record_publication_observation(&self.transaction);
-        }
         self.controller.state.store(ready.bits(), Ordering::Release);
         if let Some(interrupts) = self.interrupts.take() {
             interrupts.restore();
@@ -470,8 +371,9 @@ pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
     if !cpu::has_x2apic() {
         return Err(ApicError::NoExtendedMode);
     }
-    let mut observer = Unobserved;
-    init_controller(controller, sources, enter_extended_mode, &mut observer)
+    let mut initialization = Initialization::begin(controller)?;
+    let configured = init_stages(&mut initialization, sources)?;
+    initialization.commit(configured)
 }
 
 /// Audit every local-APIC IRR bank and perform the first `sti` as one door.
@@ -498,99 +400,59 @@ pub fn enable_after_pending_audit() -> Result<(), PendingInterruptError> {
     Ok(())
 }
 
-fn pending_vector(access: &impl InitializationRegisters) -> Option<u8> {
+fn pending_vector(access: &Registers) -> Option<u8> {
     let requests = pending_requests(access);
     x86_apic::pending::highest(&requests)
 }
 
-fn pending_requests(access: &impl InitializationRegisters) -> [u32; 8] {
+fn pending_requests(access: &Registers) -> [u32; 8] {
     let mut requests = [0u32; 8];
     for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {
-        *bits = low_u32(InitializationRegisters::read(access, register));
+        *bits = low_u32(access.read(register));
     }
     requests
 }
 
-fn init_controller<R: InitializationRegisters>(
-    controller: Controller<'_>,
-    sources: Sources,
-    enter_mode: impl FnOnce() -> Result<(Base, R), ApicError>,
-    observer: &mut impl InitializationObserver,
-) -> Result<Local, ApicError> {
-    let mut initialization = Initialization::begin(controller)?;
-    let configured = init_stages(&mut initialization, sources, enter_mode, observer)?;
-    InitializationObserver::reached(observer, InitializationBoundary::Publication, controller)?;
-    initialization.commit(configured)
-}
-
-fn init_stages<R: InitializationRegisters>(
+fn init_stages(
     initialization: &mut Initialization<'_>,
     sources: Sources,
-    enter_mode: impl FnOnce() -> Result<(Base, R), ApicError>,
-    observer: &mut impl InitializationObserver,
 ) -> Result<Configured, ApicError> {
     initialization.enter(InitStage::Mode)?;
-    let (base, registers) = enter_mode()?;
-    InitializationObserver::reached(
-        observer,
-        InitializationBoundary::Stage(InitStage::Mode),
-        initialization.controller,
-    )?;
+    let (base, registers) = enter_extended_mode()?;
 
     initialization.enter(InitStage::Version)?;
-    let version = Version::from_bits(low_u32(InitializationRegisters::read(
-        &registers,
-        register::VERSION,
-    )));
+    let version = Version::from_bits(low_u32(registers.read(register::VERSION)));
     if !version.is_integrated() {
         return Err(ApicError::NotResponding);
     }
     let Some(local_sources) = advertised_local_sources(version) else {
         return Err(ApicError::NotResponding);
     };
-    InitializationObserver::reached(
-        observer,
-        InitializationBoundary::Stage(InitStage::Version),
-        initialization.controller,
-    )?;
 
     initialization.enter(InitStage::MaskSources)?;
-    InitializationRegisters::write(&registers, register::TASK_PRIORITY, ACCEPT_EVERYTHING);
+    registers.write(register::TASK_PRIORITY, ACCEPT_EVERYTHING);
 
     for &entry in local_sources {
-        InitializationRegisters::write(&registers, entry, Entry::MASKED.bits().into());
-        if !Entry::from_bits(low_u32(InitializationRegisters::read(&registers, entry))).is_masked()
-        {
+        registers.write(entry, Entry::MASKED.bits().into());
+        if !Entry::from_bits(low_u32(registers.read(entry))).is_masked() {
             return Err(ApicError::NotResponding);
         }
     }
-    InitializationObserver::reached(
-        observer,
-        InitializationBoundary::Stage(InitStage::MaskSources),
-        initialization.controller,
-    )?;
 
     initialization.enter(InitStage::ConfigureSources)?;
-    InitializationRegisters::write(&registers, register::LVT_ERROR, sources.error.bits().into());
+    registers.write(register::LVT_ERROR, sources.error.bits().into());
     // The error register latches on write, so this discards what accrued under the firmware.
-    InitializationRegisters::write(&registers, register::ERROR_STATUS, 0);
-    let _ = InitializationRegisters::read(&registers, register::ERROR_STATUS);
+    registers.write(register::ERROR_STATUS, 0);
+    let _ = registers.read(register::ERROR_STATUS);
 
-    InitializationRegisters::write(
-        &registers,
+    registers.write(
         register::SPURIOUS_INTERRUPT_VECTOR,
         sources.spurious.bits().into(),
     );
-    if InitializationRegisters::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR)
-        != u64::from(sources.spurious.bits())
-    {
+    if registers.read(register::SPURIOUS_INTERRUPT_VECTOR) != u64::from(sources.spurious.bits()) {
         return Err(ApicError::NotResponding);
     }
 
-    initialization
-        .controller
-        .self_interrupt_vector
-        .store(sources.vectors.self_interrupt.get(), Ordering::Relaxed);
     initialization
         .controller
         .timer_vector
@@ -599,26 +461,15 @@ fn init_stages<R: InitializationRegisters>(
         .controller
         .spurious_vector
         .store(sources.vectors.spurious.get(), Ordering::Relaxed);
-    InitializationObserver::reached(
-        observer,
-        InitializationBoundary::Stage(InitStage::ConfigureSources),
-        initialization.controller,
-    )?;
 
     initialization.enter(InitStage::Identity)?;
-    let configured = Configured {
+    Ok(Configured {
         local: Local {
-            id: low_u32(InitializationRegisters::read(&registers, register::ID)),
+            id: low_u32(registers.read(register::ID)),
             version: version.number(),
             bootstrap: base.is_bootstrap(),
         },
-    };
-    InitializationObserver::reached(
-        observer,
-        InitializationBoundary::Stage(InitStage::Identity),
-        initialization.controller,
-    )?;
-    Ok(configured)
+    })
 }
 
 fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
@@ -672,18 +523,6 @@ pub fn end_of_interrupt(token: EoiToken<'_>) -> Result<(), EoiToken<'_>> {
     }
     write(register::END_OF_INTERRUPT, 0);
     Ok(())
-}
-
-/// Deliver the configured self-interrupt source to this CPU, pending until `sti` while IF is clear.
-///
-/// The vector is frozen by [`init`] so callers cannot select another local source.
-///
-/// # Errors
-///
-/// [`DeliveryError::Unavailable`] before a complete initialization, or
-/// [`DeliveryError::InvalidConfiguration`] if the frozen assignment cannot encode a delivery.
-pub fn send_self_interrupt() -> Result<(), DeliveryError> {
-    controller().send_self_interrupt()
 }
 
 /// Set how the bus clock is divided before it drives the timer's countdown.
@@ -840,16 +679,6 @@ fn initialization_conflict(bits: u8) -> ApicError {
 /// Access to registers after x2APIC mode has been read back.
 #[derive(Debug)]
 struct Registers;
-
-impl InitializationRegisters for Registers {
-    fn write(&self, register: Register, value: u64) {
-        Registers::write(self, register, value);
-    }
-
-    fn read(&self, register: Register) -> u64 {
-        Registers::read(self, register)
-    }
-}
 
 impl Registers {
     fn write(&self, register: Register, value: u64) {

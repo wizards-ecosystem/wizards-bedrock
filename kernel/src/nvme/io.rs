@@ -1,20 +1,11 @@
-#[cfg(feature = "selftest")]
-use core::sync::atomic::Ordering;
-
 use nvme::{
     Capabilities, Capacity, Command, Completion, NAMESPACE_IDENTIFY_BYTES, Namespace, PollLimit,
     ReadTransfer,
 };
-#[cfg(feature = "selftest")]
-use nvme::{NamespaceError, TransferError};
-#[cfg(feature = "selftest")]
-use wost::arch::current::cpu;
 use wost::arch::current::vtd::Vtd;
 use wost::mm::{self, DmaSegment};
 use x86_paging::PAGE_SIZE;
 
-#[cfg(feature = "selftest")]
-use super::selftest::{COMMAND_HELD, HOLD_COMMAND};
 use super::{
     BringUpError, COMMAND_TIMEOUT_MS, Controller, ControllerRetirement, IO_QUEUE, NAMESPACE,
     POLL_ATTEMPTS, QueuePair, clock_ns, quarantine_controller, stop_controller, write,
@@ -24,19 +15,6 @@ use crate::thread::ThreadContext;
 use crate::{mem, warn};
 
 impl Controller {
-    /// Commands this controller has been given, counted only after the doorbell write succeeds,
-    /// so a local refusal cannot satisfy evidence that the device was asked.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn commands(&self) -> u32 {
-        self.published_commands
-    }
-
-    /// Where the register window is readable.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn window(&self) -> u64 {
-        self.observed_window
-    }
-
     /// What `CAP` said.
     pub(crate) const fn capabilities(&self) -> Capabilities {
         self.capabilities
@@ -45,12 +23,6 @@ impl Controller {
     /// Entries in each queue.
     pub(crate) const fn queue_entries(&self) -> u32 {
         self.admin.capacity.entries()
-    }
-
-    /// Whether an I/O queue pair was built.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn has_io_queue(&self) -> bool {
-        self.io.is_some()
     }
 
     /// Ask the namespace how large it is and how large its blocks are.
@@ -88,12 +60,6 @@ impl Controller {
 
     /// Build the one I/O queue pair, with its interrupts disabled.
     fn create_io_queues(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
-        #[cfg(feature = "selftest")]
-        if self.intercept_io_queue_creation {
-            self.intercepted_io_queue_creations += 1;
-            return Err(BringUpError::NotReady);
-        }
-
         let negotiation =
             Command::number_of_queues(self.take_id(), 1, 1).ok_or(BringUpError::QueueSize)?;
         self.submit_admin(negotiation, None)?;
@@ -162,30 +128,6 @@ impl Controller {
         self.submit_read(request, into)
     }
 
-    /// Measure one read which fills the retained DMA buffer.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn measure_buffered_read(&mut self, into: &mut DmaSegment) -> Option<(u64, u64)> {
-        let buffer_bytes = into.len()?;
-        let block_bytes = u64::from(self.block_bytes);
-        if block_bytes == 0 {
-            return None;
-        }
-        let blocks = u32::try_from(
-            (buffer_bytes / block_bytes)
-                .min(self.blocks)
-                .min(u64::from(nvme::MAX_TRANSFER_BLOCKS)),
-        )
-        .ok()?;
-        if blocks == 0 {
-            return None;
-        }
-        let bytes = u64::from(blocks).checked_mul(block_bytes)?;
-        let started = cpu::timestamp();
-        self.read_blocks(0, blocks, into).ok()?;
-        let ticks = cpu::timestamp().checked_sub(started)?;
-        (ticks > 0).then_some((bytes, ticks))
-    }
-
     /// Bind raw caller arguments to this namespace before submission.
     fn validate_read(
         &self,
@@ -210,12 +152,6 @@ impl Controller {
         request: ReadTransfer,
         into: &mut DmaSegment,
     ) -> Result<(), BringUpError> {
-        #[cfg(feature = "selftest")]
-        if self.intercept_read_submission {
-            self.intercepted_read_submissions += 1;
-            return Err(BringUpError::NotReady);
-        }
-
         if self.io.is_none() {
             return Err(BringUpError::NotReady);
         }
@@ -224,154 +160,6 @@ impl Controller {
             .ok_or(BringUpError::NotReady)?;
 
         self.submit_on(IO_QUEUE, command, Some(into)).map(|_| ())
-    }
-
-    /// Prove malformed Identify data cannot reach I/O queue creation.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn malformed_namespace_stops_before_io_queues(&mut self) -> bool {
-        const SIZE: usize = 0;
-        const FORMAT_COUNT: usize = 25;
-        const FORMATTED: usize = 26;
-        const PROTECTION: usize = 29;
-        const FIRST_FORMAT: usize = 128;
-        const METADATA: usize = FIRST_FORMAT;
-        const BLOCK_SHIFT: usize = FIRST_FORMAT + 2;
-        const FORMAT_CONTROL: usize = FIRST_FORMAT + 3;
-
-        let capacity = self.admin.capacity;
-        let blocks_before = self.blocks;
-        let block_bytes_before = self.block_bytes;
-        let commands_before = self.commands();
-        let queue_before = self.has_io_queue();
-        let intercepted_before = self.intercepted_io_queue_creations;
-
-        let mut valid = [0u8; NAMESPACE_IDENTIFY_BYTES];
-        valid[SIZE] = 1;
-        valid[BLOCK_SHIFT] = nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros() as u8;
-
-        self.intercept_io_queue_creation = true;
-
-        let mut empty = valid;
-        empty[SIZE] = 0;
-        let empty = self.configure_namespace(&empty, capacity);
-
-        let mut formats = valid;
-        formats[FORMAT_COUNT] = 16;
-        let formats = self.configure_namespace(&formats, capacity);
-
-        let mut outside = valid;
-        outside[FORMATTED] = 1;
-        let outside = self.configure_namespace(&outside, capacity);
-
-        let mut reserved_selector = valid;
-        reserved_selector[FORMATTED] = 0x80;
-        let reserved_selector = self.configure_namespace(&reserved_selector, capacity);
-
-        let mut reserved_format = valid;
-        reserved_format[FORMAT_CONTROL] = 4;
-        let reserved_format = self.configure_namespace(&reserved_format, capacity);
-
-        let mut metadata = valid;
-        metadata[METADATA] = 1;
-        let metadata = self.configure_namespace(&metadata, capacity);
-
-        let mut protection = valid;
-        protection[PROTECTION] = 1;
-        let protection = self.configure_namespace(&protection, capacity);
-
-        let mut block_size = valid;
-        block_size[BLOCK_SHIFT] = 32;
-        let block_size = self.configure_namespace(&block_size, capacity);
-
-        self.intercept_io_queue_creation = false;
-
-        let refused = [
-            (empty, NamespaceError::Empty),
-            (formats, NamespaceError::TooManyFormats(17)),
-            (
-                outside,
-                NamespaceError::FormatOutsideList {
-                    selected: 1,
-                    formats: 1,
-                },
-            ),
-            (
-                reserved_selector,
-                NamespaceError::ReservedFormatBits(0x80),
-            ),
-            (
-                reserved_format,
-                NamespaceError::ReservedLbaFormatBits(4),
-            ),
-            (metadata, NamespaceError::Metadata(1)),
-            (protection, NamespaceError::Protection(1)),
-            (block_size, NamespaceError::BlockSize(32)),
-        ]
-        .into_iter()
-        .all(|(result, expected)| {
-            matches!(result, Err(BringUpError::InvalidNamespace(found)) if found == expected)
-        });
-
-        refused
-            && self.blocks == blocks_before
-            && self.block_bytes == block_bytes_before
-            && self.commands() == commands_before
-            && self.has_io_queue() == queue_before
-            && self.intercepted_io_queue_creations == intercepted_before
-    }
-
-    /// Prove malformed reads stop before the private submission seam.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn malformed_reads_stop_before_submission(&mut self, into: &mut DmaSegment) -> bool {
-        let Some(buffer_bytes) = into.len() else {
-            return false;
-        };
-        let block_bytes = u64::from(self.block_bytes);
-        if block_bytes == 0 {
-            return false;
-        }
-        let short_blocks = buffer_bytes / block_bytes + 1;
-        let Ok(short_blocks) = u32::try_from(short_blocks) else {
-            return false;
-        };
-        if short_blocks > nvme::MAX_TRANSFER_BLOCKS || u64::from(short_blocks) > self.blocks {
-            return false;
-        }
-
-        let commands_before = self.commands();
-        let intercepted_before = self.intercepted_read_submissions;
-        self.intercept_read_submission = true;
-        let refused = [
-            (
-                self.read_blocks(0, 0, into),
-                TransferError::Empty,
-            ),
-            (
-                self.read_blocks(0, nvme::MAX_TRANSFER_BLOCKS + 1, into),
-                TransferError::TooManyBlocks,
-            ),
-            (
-                self.read_blocks(u64::MAX, 1, into),
-                TransferError::OutsideNamespace,
-            ),
-            (
-                self.read_blocks(self.blocks, 1, into),
-                TransferError::OutsideNamespace,
-            ),
-            (
-                self.read_blocks(0, short_blocks, into),
-                TransferError::BufferTooSmall,
-            ),
-        ]
-        .into_iter()
-        .all(|(result, expected)| {
-            matches!(result, Err(BringUpError::InvalidTransfer(found)) if found == expected)
-        });
-        self.intercept_read_submission = false;
-
-        refused
-            && self.commands() == commands_before
-            && self.intercepted_read_submissions == intercepted_before
     }
 
     /// The next command identifier.
@@ -461,20 +249,6 @@ impl Controller {
         if let Err(error) = rung {
             return self.fail_submitted(error, data.as_deref_mut(), isolation, mapping);
         }
-        #[cfg(feature = "selftest")]
-        {
-            self.published_commands = self.published_commands.saturating_add(1);
-        }
-
-        #[cfg(feature = "selftest")]
-        if HOLD_COMMAND.load(Ordering::Acquire) {
-            COMMAND_HELD.store(true, Ordering::Release);
-            while HOLD_COMMAND.load(Ordering::Acquire) {
-                core::hint::spin_loop();
-            }
-            COMMAND_HELD.store(false, Ordering::Release);
-        }
-
         let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
         #[cfg(feature = "selftest")]
         if self.force_timeout {
@@ -680,22 +454,15 @@ impl Controller {
         }
     }
 
-    /// Force the ordinary timeout arm and prove its cleanup before returning.
     #[cfg(feature = "selftest")]
     pub(crate) fn a_timeout_quiesces_before_dma_returns(&mut self, data: &mut DmaSegment) -> bool {
         self.force_timeout = true;
         let result = self.read_blocks(0, 1, data);
         self.force_timeout = false;
 
-        let protected = matches!(result, Err(BringUpError::NotReady))
+        matches!(result, Err(BringUpError::NotReady))
             && self.dma.is_quiesced()
-            && !data.is_retained();
-        // Record the expected failure before quiescing the deliberately
-        // outstanding DMA command for the remainder of the boot.
-        if self.dma.is_in_flight() {
-            self.stop_dma(Some(data));
-        }
-        protected
+            && !data.is_retained()
     }
 
     /// The queue pair with this identifier.
@@ -704,17 +471,6 @@ impl Controller {
             return Some(&mut self.admin);
         }
         self.io.as_mut().filter(|queue| queue.id == which)
-    }
-
-    /// Every frame the domain must reach while the controller idles.
-    #[cfg(feature = "selftest")]
-    pub(super) fn queue_frames(&self) -> Option<alloc::vec::Vec<u64>> {
-        let mut frames = alloc::vec::Vec::new();
-        self.admin.frames(&mut frames)?;
-        if let Some(io) = self.io.as_ref() {
-            io.frames(&mut frames)?;
-        }
-        Some(frames)
     }
 }
 

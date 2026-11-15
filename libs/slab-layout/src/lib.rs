@@ -20,12 +20,6 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-#[cfg(any(test, feature = "selftest"))]
-mod ownership;
-
-#[cfg(any(test, feature = "selftest"))]
-pub use ownership::AllocatorOwnership;
-
 use core::fmt;
 
 /// Bytes in a page frame, the unit a slab is carved from.

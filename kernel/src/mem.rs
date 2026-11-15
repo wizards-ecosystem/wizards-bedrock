@@ -33,13 +33,7 @@ use crate::{debug, info, thread, warn};
 #[cfg(feature = "selftest")]
 mod selftest;
 #[cfg(feature = "selftest")]
-pub(crate) use selftest::{
-    active_kernel_topology_is_frozen, active_space_reclaim_is_guarded, device_mappings,
-    direct_map_base, invalid_unmaps_are_refused, map_owned_for_test,
-    map_reclaimable_stack_for_test, map_stack_arena_for_test, map_user_for_test,
-    map_user_page_for_test, pinned_stack_refuses_map_for_test, split_mapping_for_test,
-    unmap_fault_stack_for_test, unmap_for_test,
-};
+pub(crate) use selftest::{map_user_page_for_test, unmap_for_test};
 
 /// Bring the frame allocator up over the bootloader's memory map.
 ///

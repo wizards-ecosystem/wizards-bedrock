@@ -3,10 +3,6 @@
 //! Message transport waits for a concrete Wizzy caller.
 
 use alloc::sync::Arc;
-#[cfg(feature = "selftest")]
-use alloc::sync::Weak;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
 
@@ -89,40 +85,13 @@ impl ObjectRef {
             Self::Channel(_) | Self::File(_) => None,
         }
     }
-
-    /// A weak reference for lifetime checks on counted objects.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn downgrade_for_test(&self) -> Option<Weak<Channel>> {
-        match self {
-            Self::Channel(channel) => Some(Arc::downgrade(channel)),
-            Self::File(_) | Self::Directory(_) => None,
-        }
-    }
 }
 
 /// The opaque identity passed to a new program.
 #[derive(Debug)]
 pub(crate) struct Channel;
 
-#[cfg(feature = "selftest")]
-static LIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "selftest")]
-impl Drop for Channel {
-    fn drop(&mut self) {
-        LIVE_CHANNELS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-/// Number of live channel identities, for resource-ledger checks.
-#[cfg(feature = "selftest")]
-pub(crate) fn live_channels_for_test() -> usize {
-    LIVE_CHANNELS.load(Ordering::Acquire)
-}
-
 /// Make an opaque bootstrap identity.
 pub(crate) fn bootstrap_identity() -> ObjectRef {
-    #[cfg(feature = "selftest")]
-    LIVE_CHANNELS.fetch_add(1, Ordering::AcqRel);
     ObjectRef::Channel(Arc::new(Channel))
 }

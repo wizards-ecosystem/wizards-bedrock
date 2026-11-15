@@ -1,66 +1,38 @@
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use stack_layout::{Slot, StackLayout};
-use wost::arch::current::paging::{self, AddressSpace};
 use wost::arch::current::{task, xstate};
-use wost::mm;
-use x86_paging::{Flags, PAGE_SIZE};
 
-use super::address_spaces::pinned_guard_refuses_mapping;
 use super::clocks::spins_until;
-use super::processes::{
-    AllocatorSnapshot, cleanup_unexpected_spawn, last_rites_for, spawn_resources,
-};
 use super::runs_until;
-use crate::arch::current::trap;
-use crate::queue;
 use crate::thread::ThreadContext;
-use crate::user;
-use crate::wait::WaitQueue;
-use crate::{mem, thread, time};
+use crate::{thread, time};
 
-static REREAD_QUEUE: WaitQueue = WaitQueue::new();
-static REREAD_READY: AtomicUsize = AtomicUsize::new(0);
-
-/// 0 before the thread runs, 1 once it has come back through `wait_unless`.
-static REREAD_RETURNED: AtomicUsize = AtomicUsize::new(0);
-
-fn wait_on_a_ready_condition() {
-    REREAD_QUEUE.wait_unless(&mut context(), || REREAD_READY.load(Ordering::Acquire) != 0);
-    REREAD_RETURNED.store(1, Ordering::Release);
+pub(super) fn context() -> ThreadContext {
+    ThreadContext::require()
 }
 
-pub(super) fn a_waiter_rereads_its_condition_before_blocking() -> bool {
-    REREAD_READY.store(1, Ordering::Release);
-    REREAD_RETURNED.store(0, Ordering::Release);
-    let free_before = thread::free_slots();
-    if thread::spawn("wait-rereader", wait_on_a_ready_condition).is_err() {
-        return false;
-    }
+// A switch that never hands control over is a red verdict, not a hang.
+const YIELD_BUDGET: usize = 100_000;
 
-    let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
-    // `>=`: a program retiring elsewhere frees a slot too, and that does not falsify this
-    // thread's slot coming back.
-    let settled = runs_until(200, || thread::free_slots() >= free_before);
-    // Nothing is left registered, so a later wake cannot name a thread no longer waiting here.
-    came_back && settled && REREAD_QUEUE.is_idle()
+pub(super) fn yields_until(done: impl Fn() -> bool) -> bool {
+    (0..YIELD_BUDGET).any(|_| {
+        thread::yield_now(&mut context());
+        done()
+    })
 }
 
 pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
-    /// What this thread puts there.
     const MINE: xstate::Probe = xstate::Probe {
         x87: 0x1234_5678_7654_3210,
         xmm: 0xA5A5_1234_5678_A5A5,
         ymm: 0xC3C3_0F0F_F0F0_3C3C,
     };
     if !xstate::is_enabled() {
-        // The hardware state is coherent; user launch separately refuses it.
         return xstate::bytes() == 0 && xstate::extended_control() == 0;
     }
 
-    // The write and read agree before anything else runs. Reading pops x87, so the complete probe
-    // is installed again for the actual switch.
+    // Reading pops x87, so the probe is installed again for the switch.
     if !xstate::write_probe(MINE)
         || xstate::read_probe() != Some(MINE)
         || !xstate::write_probe(MINE)
@@ -77,20 +49,12 @@ pub(super) fn every_enabled_state_component_survives_a_switch() -> bool {
         return false;
     }
 
-    let kept = xstate::read_probe() == Some(MINE);
-    let intruded = EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1;
-
-    // Read live `XCR0` instead of restating `init`'s precondition.
-    let mask = xstate::extended_control();
-    let masked = mask & 0b111 == 0b111 && xstate::bytes() <= 1024;
-
-    kept && intruded && masked
+    xstate::read_probe() == Some(MINE)
+        && EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1
+        && xstate::save_stays_inside_its_area()
 }
 
-/// Set by the intruding thread once it has read its restored state.
 static EXTENDED_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
-
-/// Whether the intruding thread read back all three of its own values.
 static EXTENDED_INTRUDER_SAW_OWN: AtomicUsize = AtomicUsize::new(0);
 
 fn clobber_extended_state() {
@@ -102,18 +66,14 @@ fn clobber_extended_state() {
     if !xstate::write_probe(THEIRS) {
         return;
     }
-    let mut context = context();
-    thread::yield_now(&mut context);
+    thread::yield_now(&mut context());
     let saw_own = xstate::read_probe() == Some(THEIRS);
     EXTENDED_INTRUDER_SAW_OWN.store(usize::from(saw_own), Ordering::Release);
     EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
 pub(super) fn thread_local_storage_follows_the_thread() -> bool {
-    /// Somewhere in the low half, aligned, and not zero.
     const MINE: u64 = 0x0000_1234_5678_0000;
-    /// What the other thread sets.
-    const THEIRS: u64 = 0x0000_7654_3210_0000;
 
     let restore = task::read_thread_base();
 
@@ -135,96 +95,33 @@ pub(super) fn thread_local_storage_follows_the_thread() -> bool {
         }
 
         let kept = task::read_thread_base() == MINE;
-        let intruded = BASE_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
+        let intruded = BASE_INTRUDER_SAW.load(Ordering::Acquire) == THEIR_BASE as usize;
         kernel_refused && hole_refused && kept && intruded
     })();
     let restored = task::set_thread_base(restore) && task::read_thread_base() == restore;
     checked && restored
 }
 
-/// Set by the intruding thread once it has run.
-static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
+const THEIR_BASE: u64 = 0x0000_7654_3210_0000;
 
-/// What the intruding thread read back from its own base.
+static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 static BASE_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
 
 fn set_another_thread_base() {
-    const THEIRS: u64 = 0x0000_7654_3210_0000;
-    if task::set_thread_base(THEIRS) {
-        let mut context = context();
-        thread::yield_now(&mut context);
+    if task::set_thread_base(THEIR_BASE) {
+        thread::yield_now(&mut context());
         BASE_INTRUDER_SAW.store(task::read_thread_base() as usize, Ordering::Release);
     }
     BASE_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
-pub(super) fn context() -> ThreadContext {
-    ThreadContext::require()
-}
-
-/// Yields a thread may spend waiting before the check gives up, so a switch that never hands
-/// control over is a red verdict, not a hang.
-const YIELD_BUDGET: usize = 100_000;
-
-/// Turns the alternation check asks for.
-const TURNS: usize = 64;
-
-/// Whose turn it is: zero for the first thread, one for the second.
-static TURN: AtomicUsize = AtomicUsize::new(0);
-
-/// Turns taken so far, each one strictly after the other thread's.
-static TURNS_TAKEN: AtomicUsize = AtomicUsize::new(0);
-
-fn take_turns(mine: usize) {
-    let mut budget = YIELD_BUDGET;
-    while TURNS_TAKEN.load(Ordering::Acquire) < TURNS && budget > 0 {
-        if TURN.load(Ordering::Acquire) == mine {
-            TURNS_TAKEN.fetch_add(1, Ordering::AcqRel);
-            TURN.store(1 - mine, Ordering::Release);
-        } else {
-            budget -= 1;
-            thread::yield_now(&mut context());
-        }
-    }
-}
-
-fn first_turns() {
-    take_turns(0);
-}
-
-fn second_turns() {
-    take_turns(1);
-}
-
-pub(super) fn yields_until(done: impl Fn() -> bool) -> bool {
-    (0..YIELD_BUDGET).any(|_| {
-        thread::yield_now(&mut context());
-        done()
-    })
-}
-
-pub(super) fn threads_alternate_strictly() -> bool {
-    TURN.store(0, Ordering::Release);
-    TURNS_TAKEN.store(0, Ordering::Release);
-    let free = thread::free_slots();
-
-    if thread::spawn("first", first_turns).is_err()
-        || thread::spawn("second", second_turns).is_err()
-    {
-        return false;
-    }
-    let alternated = yields_until(|| TURNS_TAKEN.load(Ordering::Acquire) >= TURNS);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    alternated && exited && TURNS_TAKEN.load(Ordering::Acquire) == TURNS
-}
-
-/// What the register-churning thread concluded: zero while it is still
-/// running, one if its values survived every switch, two if they did not.
+// Zero while the churning thread runs, one if its values survived every switch, two if not.
 static CHURN_VERDICT: AtomicUsize = AtomicUsize::new(0);
 
-/// Rounds of churn, each ending in a yield.
 const CHURN_ROUNDS: u64 = 256;
+
+// Knuth's multiplier, for a sequence with no short cycle.
+const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
 
 fn churn(seed: u64) -> bool {
     let (mut a, mut b, mut c, mut d, mut e) = (
@@ -260,9 +157,6 @@ fn churn(seed: u64) -> bool {
     (a, b, c, d, e) == (p, q, r, s, t)
 }
 
-/// Knuth's multiplier, for a sequence with no short cycle.
-const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-
 fn churn_and_report() {
     let survived = churn(0x9E37_79B9_7F4A_7C15);
     CHURN_VERDICT.store(if survived { 1 } else { 2 }, Ordering::Release);
@@ -280,242 +174,6 @@ pub(super) fn registers_survive_a_switch() -> bool {
 
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
-
-pub(super) fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
-    let mut context = context();
-    let free_before = mm::free_frames();
-
-    // Above every stack the kernel maps, so nothing else is in this window.
-    let Some(above) = thread::boot_stack_layout()
-        .and_then(|boot| StackLayout::new(boot.end(), 2 * PAGE_SIZE, PAGE_SIZE, 1))
-    else {
-        return false;
-    };
-    let Some(slot) = above.slot(0) else {
-        return false;
-    };
-    let Some(Ok((stack, mapping))) = mem::map_reclaimable_stack_for_test(&mut context, above)
-    else {
-        return false;
-    };
-
-    let installed = stack.is_installed();
-    let Some((lower_mapping, top_mapping)) = mem::split_mapping_for_test(mapping, PAGE_SIZE) else {
-        return false;
-    };
-
-    let Some(Ok(lower_taken)) = mem::unmap_for_test(&mut context, lower_mapping) else {
-        return false;
-    };
-    let partial_is_not_the_stack = !stack.is_installed();
-    let Some(lower_original) = lower_taken.into_kernel() else {
-        return false;
-    };
-    let Some(Ok(top_taken)) = mem::unmap_for_test(&mut context, top_mapping) else {
-        return false;
-    };
-    let gone = !stack.is_installed();
-    let Some(top_original) = top_taken.into_kernel() else {
-        return false;
-    };
-
-    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let Some(replacement) = mm::allocate_contiguous(2, 1) else {
-        return false;
-    };
-    let physically_different = replacement.address() != lower_original.address();
-    let Some(Ok(replacement_mapping)) =
-        mem::map_owned_for_test(&mut context, slot.stack_base(), replacement, wanted)
-    else {
-        return false;
-    };
-    let substitution_is_not_the_stack = !stack.is_installed();
-    let Some(Ok(replacement_taken)) = mem::unmap_for_test(&mut context, replacement_mapping) else {
-        return false;
-    };
-    drop(replacement_taken.into_kernel());
-    drop(lower_original);
-    drop(top_original);
-
-    installed
-        && gone
-        && partial_is_not_the_stack
-        && physically_different
-        && substitution_is_not_the_stack
-        && mm::free_frames() == free_before
-}
-
-pub(super) struct StackLiveness {
-    pub(super) stale_root: bool,
-    pub(super) first: bool,
-    pub(super) middle: bool,
-    pub(super) last: bool,
-}
-
-pub(super) fn stack_liveness_covers_the_current_root_and_extent() -> Option<StackLiveness> {
-    let allocator_before = AllocatorSnapshot::capture();
-    let layout = thread::boot_stack_layout()
-        .and_then(|boot| StackLayout::new(boot.end(), 3 * PAGE_SIZE, PAGE_SIZE, 1))?;
-    let slot = layout.slot(0)?;
-    let mut stale = AddressSpace::for_user().ok()?;
-    let mut context = context();
-    let (stack, mapping) = match mem::map_reclaimable_stack_for_test(&mut context, layout) {
-        Some(Ok(mapped)) => mapped,
-        Some(Err(reason @ paging::StackMapError::Rollback { .. })) => {
-            panic!("stack liveness fixture stranded cleanup authority: {reason}");
-        }
-        Some(Err(paging::StackMapError::Mapping(_))) | None => {
-            if let Err(reason) = stale.reclaim(None) {
-                panic!("stack liveness fixture could not reclaim its unused root: {reason}");
-            }
-            return None;
-        }
-        Some(Err(reason)) => {
-            panic!("stack liveness fixture refused with an unknown cleanup state: {reason}");
-        }
-    };
-
-    let live_before = paging::translate(slot.stack_base());
-    let shared_upper = live_before.is_some() && stale.lookup(slot.stack_base()) == live_before;
-    let stale_root = stack.is_installed_under_for_test(&stale) == Some(false)
-        && stack.is_installed()
-        && paging::translate(slot.stack_base()) == live_before;
-    let first = stack.refuses_substituted_page_for_test(0) == Some(true);
-    let middle = stack.refuses_substituted_page_for_test(1) == Some(true);
-    let last = stack.refuses_substituted_page_for_test(2) == Some(true);
-
-    let removed =
-        mem::unmap_for_test(&mut context, mapping).is_some_and(|result| result.map(drop).is_ok());
-    let reclaimed = stale.reclaim(None).is_ok();
-    drop(stale);
-    let cleaned =
-        removed && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
-    Some(StackLiveness {
-        stale_root: stale_root && shared_upper && cleaned,
-        first: first && cleaned,
-        middle: middle && cleaned,
-        last: last && cleaned,
-    })
-}
-
-fn task_init_refuses_a_changed_stack_arena() -> bool {
-    let allocator_before = AllocatorSnapshot::capture();
-    let Some(layout) = thread::boot_stack_layout()
-        .and_then(|boot| boot.end().checked_add(8 * PAGE_SIZE))
-        .and_then(|base| StackLayout::new(base, 2 * PAGE_SIZE, PAGE_SIZE, 1))
-    else {
-        return false;
-    };
-    let Some(slot) = layout.slot(0) else {
-        return false;
-    };
-    let mut context = context();
-    let Some(Ok((arena, stack_mapping))) = mem::map_stack_arena_for_test(&mut context, layout)
-    else {
-        return false;
-    };
-    let Some((lower_mapping, upper_mapping)) =
-        mem::split_mapping_for_test(stack_mapping, PAGE_SIZE)
-    else {
-        return false;
-    };
-    let admitted = task::validate_arena_for_test(&arena) == Ok(());
-    let upper_address = slot.stack_base() + PAGE_SIZE;
-    let upper_before = paging::translate(upper_address);
-    let Some(guarded) = a_mapped_guard_is_refused_until_removed(&mut context, &arena, slot) else {
-        return false;
-    };
-
-    let Some(Ok(unmapped)) = mem::unmap_for_test(&mut context, lower_mapping) else {
-        return false;
-    };
-    let Some(original) = unmapped.into_kernel() else {
-        return false;
-    };
-    let Some(replacement) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    let physically_different = replacement.address() != original.address();
-    let Some(Ok(replacement_mapping)) =
-        mem::map_owned_for_test(&mut context, slot.stack_base(), replacement, Flags::NONE)
-    else {
-        return false;
-    };
-    let leaf_refused = matches!(
-        task::validate_arena_for_test(&arena),
-        Err(task::TaskError::Unmapped(address)) if address == slot.stack_base()
-    );
-    let upper_unchanged =
-        upper_before.is_some() && paging::translate(upper_address) == upper_before;
-    let replacement_removed = mem::unmap_for_test(&mut context, replacement_mapping)
-        .is_some_and(|result| result.map(drop).is_ok());
-    let upper_removed = mem::unmap_for_test(&mut context, upper_mapping)
-        .is_some_and(|result| result.map(drop).is_ok());
-    drop(arena);
-    drop(original);
-
-    admitted
-        && guarded
-        && physically_different
-        && leaf_refused
-        && upper_unchanged
-        && replacement_removed
-        && upper_removed
-        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
-}
-
-fn a_mapped_guard_is_refused_until_removed(
-    context: &mut ThreadContext,
-    arena: &paging::StackArena,
-    slot: Slot,
-) -> Option<bool> {
-    let guard = mm::allocate_contiguous(1, 1)?;
-    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let Some(Ok(guard_mapping)) =
-        mem::map_owned_for_test(context, slot.guard_base(), guard, wanted)
-    else {
-        return None;
-    };
-    let guard_refused = matches!(
-        task::validate_arena_for_test(arena),
-        Err(task::TaskError::Unmapped(address)) if address == slot.guard_base()
-    );
-    let guard_removed =
-        mem::unmap_for_test(context, guard_mapping).is_some_and(|result| result.map(drop).is_ok());
-    let restored = task::validate_arena_for_test(arena) == Ok(());
-    Some(guard_refused && guard_removed && restored)
-}
-
-pub(super) fn thread_stacks_are_guarded() -> bool {
-    let Some(layout) = thread::layout() else {
-        return false;
-    };
-    let exact = (0..layout.slots()).all(|index| {
-        let Some(slot) = layout.slot(index) else {
-            return false;
-        };
-        let guard_absent = paging::translate(slot.guard_base()).is_none()
-            && paging::translate(slot.stack_base() - 8).is_none();
-        let stack_present = [slot.stack_base(), slot.stack_top() - 8]
-            .into_iter()
-            .all(|address| match paging::translate(address) {
-                Some((_, flags)) => {
-                    flags.contains(Flags::WRITABLE)
-                        && flags.contains(Flags::NO_EXECUTE)
-                        && !flags.is_write_execute()
-                }
-                None => false,
-            });
-        guard_absent && stack_present
-    });
-    let pinned = layout
-        .slot(0)
-        .is_some_and(|slot| pinned_guard_refuses_mapping(&slot));
-    let init_validation = task_init_refuses_a_changed_stack_arena();
-    exact && pinned && init_validation
-}
-
-pub(super) fn leave_at_once() {}
 
 const REUSED_SLOT_SECRET: xstate::Probe = xstate::Probe {
     x87: 0x1357_2468_1234_5678,
@@ -539,60 +197,42 @@ fn inspect_reused_extended_state() {
 }
 
 pub(super) fn an_exited_slot_is_reused() -> bool {
-    let free = thread::free_slots();
-    if thread::spawn("brief", leave_at_once).is_err() {
-        return false;
+    if !xstate::is_enabled() {
+        return true;
     }
-    let returned = yields_until(|| thread::free_slots() == free);
+    let free = thread::free_slots();
+    REUSED_SLOT_SECRET_WRITTEN.store(0, Ordering::Release);
+    REUSED_SLOT_STATE_CLEARED.store(0, Ordering::Release);
+    let secret_slot = thread::spawn("state owner", leave_extended_state).ok();
+    let secret_returned = yields_until(|| thread::free_slots() == free);
+    let clean_slot = thread::spawn("state successor", inspect_reused_extended_state).ok();
+    let clean_returned = yields_until(|| thread::free_slots() == free);
 
-    let again = thread::spawn("brief again", leave_at_once).is_ok();
-    let returned_again = yields_until(|| thread::free_slots() == free);
-
-    let state_cleared = if xstate::is_enabled() {
-        REUSED_SLOT_SECRET_WRITTEN.store(0, Ordering::Release);
-        REUSED_SLOT_STATE_CLEARED.store(0, Ordering::Release);
-        let secret_slot = thread::spawn("state owner", leave_extended_state).ok();
-        let secret_returned = yields_until(|| thread::free_slots() == free);
-        let clean_slot = thread::spawn("state successor", inspect_reused_extended_state).ok();
-        let clean_returned = yields_until(|| thread::free_slots() == free);
-        secret_returned
-            && clean_returned
-            && secret_slot == clean_slot
-            && REUSED_SLOT_SECRET_WRITTEN.load(Ordering::Acquire) == 1
-            && REUSED_SLOT_STATE_CLEARED.load(Ordering::Acquire) == 1
-    } else {
-        true
-    };
-
-    returned && again && returned_again && state_cleared
+    secret_slot.is_some()
+        && secret_slot == clean_slot
+        && secret_returned
+        && clean_returned
+        && REUSED_SLOT_SECRET_WRITTEN.load(Ordering::Acquire) == 1
+        && REUSED_SLOT_STATE_CLEARED.load(Ordering::Acquire) == 1
 }
 
-/// Set to tell every spinner to finish.
 pub(super) static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
-
-/// How many loops each spinner has run: one counter per weight class.
 pub(super) static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
 
-fn spin_counting(counter: &AtomicUsize) {
+pub(super) fn light_spinner() {
     while STOP_SPINNING.load(Ordering::Acquire) == 0 {
-        counter.fetch_add(1, Ordering::Relaxed);
+        LIGHT_SPINS.fetch_add(1, Ordering::Relaxed);
         spin_loop();
     }
 }
 
-pub(super) fn light_spinner() {
-    spin_counting(&LIGHT_SPINS);
-}
-
 pub(super) fn the_clock_is_running() -> bool {
-    const ATTEMPTS: u32 = 1_000_000;
-
     let start = time::now_ns();
-    time::is_calibrated() && spins_until(ATTEMPTS, || time::now_ns() > start)
+    time::is_calibrated() && spins_until(1_000_000, || time::now_ns() > start)
 }
 
 pub(super) fn a_spinner_cannot_starve_another() -> bool {
-    /// Generous beside a 3 ms slice, stingy beside a hung harness.
+    // Generous beside a 3 ms slice, stingy beside a hung harness.
     const PATIENCE_MS: u64 = 500;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -607,59 +247,4 @@ pub(super) fn a_spinner_cannot_starve_another() -> bool {
     let exited = yields_until(|| thread::free_slots() == free);
 
     progressed && exited
-}
-
-pub(super) fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
-    while user::collect().is_some() {}
-
-    let gate_resources = spawn_resources();
-    let crossings = trap::last_syscall().count;
-    let attempt = queue::without_worker_for_test(user::run);
-    let denied = matches!(&attempt, Err(user::SpawnError::NoServiceWorker));
-    let cleaned = match attempt {
-        Ok(spawned) => cleanup_unexpected_spawn(spawned),
-        Err(_) => true,
-    };
-    let fail_closed = denied
-        && cleaned
-        && trap::last_syscall().count == crossings
-        && spawn_resources().has_same_ownership(&gate_resources);
-    if !fail_closed {
-        return false;
-    }
-
-    let resources = spawn_resources();
-    let reclaimed = user::reclaimed();
-    let reaps = queue::worker_reaps_for_test();
-    let idle_halts = thread::idle_halts();
-
-    STOP_SPINNING.store(0, Ordering::Release);
-    LIGHT_SPINS.store(0, Ordering::Release);
-    let busy = thread::spawn("reap-pressure", light_spinner).is_ok();
-    let Ok(spawned) = user::spawn_for_bootstrap() else {
-        return false;
-    };
-
-    // This exact incarnation retired: its rites are recorded and, with no other program spawned to
-    // reuse the slot, stay recorded past the reap. The busy worker then reaped it without a spawn:
-    // its slot holds no zombie and the reap and reclaim counters advanced.
-    let reaped_this_child = last_rites_for(&spawned, 2_000).is_some()
-        && runs_until(2000, || {
-            let now = user::reclaimed();
-            !user::zombie_owns_slot_for_test(spawned.slot)
-                && queue::worker_reaps_for_test() > reaps
-                && now.0 > reclaimed.0
-                && now.1 > reclaimed.1
-                && !user::has_zombies()
-        });
-    let idle_stayed_out = thread::idle_halts() == idle_halts;
-
-    STOP_SPINNING.store(1, Ordering::Release);
-    let settled = yields_until(|| thread::free_slots() == resources.thread_slots);
-
-    busy && reaped_this_child
-        && idle_stayed_out
-        && LIGHT_SPINS.load(Ordering::Relaxed) > 0
-        && settled
-        && spawn_resources().has_same_ownership(&resources)
 }

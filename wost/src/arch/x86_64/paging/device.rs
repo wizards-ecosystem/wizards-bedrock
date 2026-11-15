@@ -231,10 +231,6 @@ impl AddressSpace {
     }
 
     fn verify_device_unmap(&self, region: &ReleasableDevice) -> Result<(), MapError> {
-        #[cfg(feature = "selftest")]
-        if one_shot_mapping_refusal(&DEVICE_UNMAPS_BEFORE_REFUSAL) {
-            return Err(MapError::OutOfMemory);
-        }
         let mapping = &region.mapping;
         if self.roots != Some(mapping.roots) {
             return Err(MapError::NotYours(mapping.address));
@@ -370,10 +366,6 @@ impl fmt::Display for DeviceUnmapFailure {
 impl core::error::Error for DeviceUnmapFailure {}
 
 impl ReleasableDevice {
-    pub(crate) const fn address(&self) -> u64 {
-        self.mapping.address
-    }
-
     /// Read one register word.
     pub fn read_u32(&self, offset: usize) -> Result<u32, crate::mmio::MmioError> {
         MmioRegion::read_u32(&self.registers, offset)

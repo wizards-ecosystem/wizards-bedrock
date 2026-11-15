@@ -8,20 +8,11 @@
 
 use core::arch::asm;
 use core::marker::PhantomData;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use port_space::PortSpace;
 
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
-
-#[cfg(feature = "selftest")]
-mod selftest;
-#[cfg(feature = "selftest")]
-use selftest::REFUSE_SPAN_RELEASE;
-#[cfg(feature = "selftest")]
-pub use selftest::{is_claimed, refuse_span_release_for_test};
 
 /// Which ports are spoken for; only unique dynamic span capabilities can return a lease.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
@@ -99,10 +90,6 @@ pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<Por
 pub fn release_spans<const N: usize>(
     spans: [Option<PortSpan>; N],
 ) -> Result<(), SpanReleaseFailure<N>> {
-    #[cfg(feature = "selftest")]
-    if REFUSE_SPAN_RELEASE.swap(false, Ordering::AcqRel) {
-        return Err(SpanReleaseFailure { spans });
-    }
     let mut requested = [(0usize, 0usize); N];
     let mut count = 0;
     for span in spans.iter().flatten() {

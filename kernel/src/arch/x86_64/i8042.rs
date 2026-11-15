@@ -5,16 +5,7 @@
 //! hang.
 
 use core::fmt;
-#[cfg(feature = "selftest")]
-use core::sync::atomic::Ordering;
-
 use wost::arch::current::port::{self, Port};
-
-#[cfg(feature = "selftest")]
-mod selftest;
-
-#[cfg(feature = "selftest")]
-use selftest::REFUSE_INTERRUPT_READBACK;
 
 mod status {
     /// A byte is waiting in the output buffer.
@@ -45,7 +36,7 @@ mod config {
 }
 
 mod device {
-    /// Read at bring-up to learn whether bytes will be translated, and by the self-test to check.
+    /// Read at bring-up to learn whether bytes will be translated.
     pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
     pub(super) const RESET: u8 = 0xFF;
@@ -268,15 +259,7 @@ impl Controller {
         if !self.write_config_value(wanted) {
             return Err(InterruptEnableError::Unavailable);
         }
-        #[cfg(feature = "selftest")]
-        let observed = if REFUSE_INTERRUPT_READBACK.swap(false, Ordering::Relaxed) {
-            None
-        } else {
-            self.read_config()
-        };
-        #[cfg(not(feature = "selftest"))]
-        let observed = self.read_config();
-        if observed == Some(wanted) {
+        if self.read_config() == Some(wanted) {
             return Ok(());
         }
         if self.write_config(current) {
