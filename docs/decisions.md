@@ -2,7 +2,8 @@
 
 `docs/decisions.md` is Bedrock's decision log: every decision that still governs the kernel, one
 entry each, grouped by subsystem. Ids are stable; a gap is a retired decision, kept in git history
-at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here as one entry.
+at tag `v0.3.0`. A new decision takes the next free
+number and is added here, as one entry or as an amending id on the entry it changes.
 
 ## Language and boundaries
 
@@ -73,9 +74,10 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   registers and nothing is retried, while a breakpoint records its frame and resumes. A trap handler
   never logs, because the interrupted code may hold the console lock; it records a number that the
   idle thread reports (D-122).
-- **D-33** The local APIC runs in x2APIC mode only, through MSRs with no device page. Takeover masks
-  and reads back every LVT entry the version register advertises and refuses a controller
-  advertising more than it can silence (D-375), and the SVR must read back as the typed spurious
+- **D-33** The local APIC runs in x2APIC mode only, through MSRs with no device page. Takeover
+  software-enables the APIC before unmasking its error entry, masks and reads back every LVT entry
+  it knows, and leaves an advertised entry beyond those as firmware set it (D-375, D-455), and the
+  SVR must read back as the typed spurious
   encoding before readiness is published (D-257).
 - **D-55** `wost` keeps a trap-depth count that follows each thread, and the heap refuses to run
   while it is non-zero, so nothing allocates in a handler that may have interrupted the allocator.
@@ -84,9 +86,14 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   the return path is costly to change once mature.
 - **D-82** Extended state is saved eagerly, never lazily, into a per-slot area sized at boot from
   `CPUID.0DH`, with `XSAVEC` where present and `XSAVE` otherwise, beside `CR3` and `RSP0` on every
-  switch (D-108). `XCR0` must equal the fixed x87, SSE and AVX policy, a fresh slot holds the
+  switch (D-108). `XCR0` enables the x87, SSE and AVX components the processor has, with x87 and SSE
+  required (D-456), a fresh slot holds the
   architectural zero image, and process construction and the final ring-3 crossing ask one live
   predicate of `CR4.OSXSAVE` and `XCR0` (D-270); the kernel is built `+soft-float`.
+- **D-460** Boot establishes its control state after the IDT loads instead of inheriting it:
+  `CR0.NE` and `CR4.MCE` set, `CR0.EM` and `CR4.TSD`, `DE`, `PCE` and `FSGSBASE` clear and `RFLAGS`
+  reset, each read back. Every bit the kernel does not own stays as the bootloader set it. Each
+  thread switch reloads the data selectors, so one program's selector never reaches the next.
 - **D-91** `libs/x86-cpuid` decodes `IA32_ARCH_CAPABILITIES` and decides the speculation posture,
   and `wost` keeps only the `cpuid` and MSR reads; an absent capability word is never read as
   immunity.
@@ -99,9 +106,10 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   (D-279), checks ranges by comparison with the user limit, and recovers a fault inside its assembly
   at a linker fixup carried as an opaque target that only the trap adapter writes (D-120, D-252);
   every trap entry executes `clac` (D-101).
-- **D-98** The return to ring 3 executes `VERW` unless `IA32_ARCH_CAPABILITIES` reports the
-  processor unaffected, on the first entry and on every return (D-101); an unreadable capability
-  word never counts as unaffected.
+- **D-98** The return to ring 3 executes `VERW` unless `IA32_ARCH_CAPABILITIES` reports
+  immunity to every flaw it clears (MDS, TAA or no TSX, the MMIO stale-data classes and RFDS), on
+  the first entry and on every return (D-101, D-457); an unreadable capability word never counts as
+  immune.
 - **D-102** A fault taken from ring 3, judged by the pushed `CS`, retires the faulting thread and
   the machine continues; a double fault, machine check or NMI stays terminal.
 - **D-193** Ring 3 opens only when NX is enabled and read back, the clock is calibrated, the boot
@@ -148,8 +156,11 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   reach the free pool.
 - **D-45** `activate` is safe: it walks the candidate tables for its own code, stack and direct map
   before writing `CR3`, and the kernel keeps the address space so mappings can be added to a live
-  space, where a present entry accepts only an identical rewrite (D-86). The direct map covers
-  memory only, at the bootloader's offset with 2 MiB pages, and the image is mapped by linker-symbol
+  space, where a present entry is never rewritten (D-86, D-458). Activation refuses while
+  `EFER.NXE` is clear, where a higher-half top-level entry is user-accessible, or where a
+  framebuffer or firmware byte handed out at boot is not direct-mapped (D-458). The direct map
+  covers memory only, in whole pages for framebuffer and firmware regions, at the bootloader's
+  offset with 2 MiB pages, and the image is mapped by linker-symbol
   class so no page is writable and executable.
 - **D-47** The kernel heap takes frames from the frame allocator and addresses them through the
   direct map: a slab allocator in `libs/slab-layout` with eight classes from 16 to 2048 bytes, whole
@@ -171,8 +182,8 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   top-level table is made, so every user root shares one topology; root comparison ignores only
   `ACCESSED` (D-281).
 - **D-185** `map_shared` keeps the `Shared` allocation alive in the `AddressSpace`, and `map_range`
-  preflights the whole range: all absent is installed, all identical succeeds, and a mixed range is
-  refused before any write.
+  preflights the whole range and refuses it before any write unless every target is absent
+  (D-458). The user and shared doors stay below the user ceiling in every space.
 - **D-189** The running kernel address space is private to `kernel::mem`, which exports operations
   and never the `AddressSpace`, so a safe caller cannot reclaim tables the CPU is walking.
 - **D-214** A stack address held by hardware comes from a pinned stack that only the active space
@@ -209,11 +220,12 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   because a lock shared with a handler otherwise deadlocks on one CPU. Setting the flag or switching
   threads while a spin lock is held panics (D-66); a forgotten guard is an accepted liveness bug
   bounded to that lock, and only the panic path force-releases a lock (D-194).
-- **D-36** Clock rates are measured against the 8254 PIT over 20 ms windows on counter 0 and
-  accepted when two windows agree to one part in 64. CPUID leaf 0x15 can supply the TSC rate where
-  it reports a complete ratio, and leaf 0x16 is never a rate. A usable PIT stays claimed as a
-  watchdog, and two conclusive disagreements revoke the public clock while scheduling continues on a
-  private epoch (D-225).
+- **D-36** An invariant TSC with a complete CPUID leaf 0x15 rate is the TSC rate, and only the APIC
+  timer is measured against it. Otherwise both rates are measured against the 8254 PIT over 20 ms
+  windows on counter 0 and accepted when two windows agree to one part in 64; leaf 0x16 is never a
+  rate. The PIT stays claimed as a watchdog only when it was the calibration source, and two
+  conclusive disagreements revoke the public clock while scheduling continues on a private epoch
+  (D-225, D-459).
 - **D-51** The context switch is a private naked function in `wost` that saves callee-saved
   registers and swaps stacks; the kernel names threads by slot and never holds a context value, so
   every stack pointer the switch loads came from `wost`.
@@ -286,6 +298,7 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   ownership, and `serve` reads them once into a snapshot and acts only on copies.
 - **D-116** The `0x80` gate dispatches on `rax`, an unknown call answers `-ENOSYS`, and only `exit`
   does not return; completion room is reserved at the doorbell before a submission is accepted.
+  `RingEnter` returns every completion posted during the call (D-461).
 - **D-150** Every operation that can wait has a ring form and none is reachable only through a
   blocking call, because a runtime that multiplexes work onto fewer threads cannot live with a
   blocking-only door; the synchronous call path in `docs/roadmap.md` sits beside the ring under this
@@ -299,7 +312,9 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   the target still gets exactly one `STATUS_CANCELLED`.
 - **D-173** Read and OpenAt are ring operations on a 32-byte submission with data through a third
   shared page, so no user pointer is validated; OpenAt derives rights, a file getting `READ` from
-  `TRAVERSE` plus the parent's universal rights.
+  `TRAVERSE` plus the parent's universal rights. OpenAt refuses a path that names its starting
+  directory, which would copy a handle without `DUPLICATE`, and a device or volume failure
+  completes with the `IO` status (D-461).
 - **D-174** Every submission field is a value ring 3 chose, so the kernel narrows it with `try_from`
   and refuses or saturates; `as` at that boundary only widens.
 - **D-181** The native ABI numbers only the calls, opcodes and rights the kernel decodes; descriptor
@@ -385,7 +400,8 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
 
 - **D-357** The storage controller runs behind a kernel-owned Intel VT-d domain that identity-maps
   only frames a live `DmaSegment` owns, and `admit_bus_master` requires that function's `DmaDomain`
-  proof, which the admission spends (D-360). Without a usable unit storage does not start; the unit
+  proof, which the admission spends (D-360), and first enables bus mastering on each bridge above
+  the function (D-462). Without a usable unit storage does not start; the unit
   invalidates through its registers, flushes table lines when it lacks `ECAP.C` and draws its tables
   from one owned arena (D-358). No firmware RMRR is supported, so firmware bytes never become
   mapping authority (D-388).
@@ -396,7 +412,8 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
   (D-433).
 - **D-369** A rejected storage candidate clears and reads back Bus Master Enable before trusting the
   controller's stop, invalidates every queue segment before a frame drops, and never restores
-  inherited BME. A unit-wide write first fences every requester its DRHD declares, from a bounded
+  inherited BME: a transition that clears it never writes the original word back (D-462). A
+  unit-wide write first fences every requester its DRHD declares, from a bounded
   inventory, and drains reads and writes (D-370).
 - **D-371** DMAR authority comes from one sealed `PciTopology` probed over every bus, device and
   function before enumeration: bridges form a single-parent tree with nested intervals, a hierarchy
@@ -443,6 +460,10 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
 - **D-386** Every kernel build passes one exact rustflags list with `--remap-path-prefix` for the
   source root, the sysroot and the Cargo home, so shipped debug information names no host path;
   `cargo xtask debug` maps the source root back for GDB.
+- **D-464** `xtask` trusts the checkout and the account that runs it: it reads and writes with the
+  standard library and keeps no evidence bundle, committed SBOM or pinned debugger, because those
+  defences guarded a developer's files against that developer. The gate's result on a commit is the
+  record of a build.
 
 ## Tests
 
@@ -471,6 +492,9 @@ at tag `v0.3.0`. A new decision takes the next number, D-455, and is added here 
 - **D-19** The design lives in `docs/architecture.md`, written before or with the code. The wizard
   theme stays in product-facing strings, never in identifiers, and code comments never cite a
   decision.
+- **D-463** Code carries no doc comments. `// SAFETY:`, `# Safety` and one line for a constraint
+  the code cannot show are the only comments, because prose beside code restated it and drifted;
+  the design lives in `docs/architecture.md`.
 - **D-22** One `[workspace.lints]` table governs every crate, `xtask` included: `unsafe_code` is
   `deny`, lifted once at the root of `wost` and `forbid` in `libs/` and `xtask` (D-67). A
   suppression is `#[expect(lint, reason = "...")]`, with `#[allow]` only where `expect` cannot

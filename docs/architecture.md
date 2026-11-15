@@ -48,7 +48,8 @@ which Limine hands the kernel as its one module.
 
 The kernel requests Limine base revision 4 and refuses to continue without it. `BootInfo`
 carries the memory map, the direct map offset, the framebuffer, the image's physical address, the
-RSDP and the module, each as a `Result`, so a missing answer is a typed refusal.
+RSDP and the module, each as a `Result`, so a missing answer is a typed refusal. The direct map
+offset must be a page-aligned base in the canonical higher half.
 `libs/memory-map` accepts 1 to 128 regions and refuses a larger map whole. An unknown region kind
 is treated like a reserved one: never allocated and never direct-mapped.
 
@@ -57,8 +58,9 @@ is treated like a reserved one: never allocated and never direct-mapped.
 1. `iommu::secure_handoff` clears Bus Master Enable on every PCI function and checks the platform
    DMA contract (section 8). The serial log and the framebuffer console come up, and only then
    does a refused handoff panic, so the reason is visible.
-2. `segment::init` and `trap::init` install the GDT, TSS and IDT; `cpu::enable_protections` turns
-   on the supervisor protections; `xstate::init` enables extended state.
+2. `segment::init` and `trap::init` install the GDT, TSS and IDT; `cpu::establish_control_state`
+   sets the control registers and flags the kernel owns; `cpu::enable_protections` turns on the
+   supervisor protections; `xstate::init` enables extended state.
 3. `mem::init` starts the frame allocator. `mem::init_paging` reads the ACPI interrupt tables,
    builds the kernel's tables, maps the thread stack arena, rewrites PAT entry 1, activates the
    tables, starts the thread table and guards the double-fault stack.
@@ -111,18 +113,23 @@ it as a call only when the saved `CS` is ring 3. `cpu::enable_protections` clear
 `IA32_SYSENTER_CS`, so `syscall` and `sysenter` fault, and `task::enter_user` refuses while
 either is set. The calls are in section 6.
 
-`cpu::enable_protections` runs after the IDT is installed, so a bad bootloader mapping becomes a
-reported fault. It sets `CR0.WP` and `EFER.NXE` and enables SMEP, SMAP and UMIP where CPUID
-reports them. Ring 3 requires NX; missing SMEP, SMAP or UMIP is logged and tolerated.
+`cpu::establish_control_state` and `cpu::enable_protections` run after the IDT is installed, so a
+bad bootloader mapping becomes a reported fault. The first sets `CR0.NE` and `CR4.MCE`, clears
+`CR0.EM` and `CR4.TSD`, `DE`, `PCE` and `FSGSBASE`, and resets `RFLAGS`; bits the kernel does not
+own stay as the bootloader set them. The second sets `CR0.WP` and `EFER.NXE` and enables SMEP,
+SMAP and UMIP where CPUID reports them, arming the entry path's `clac` with SMAP. Ring 3 requires
+NX; missing SMEP, SMAP or UMIP is logged and tolerated.
 
 Extended state is saved eagerly on every switch into a per-slot area sized from `CPUID.0DH`, with
-`XSAVEC` where present and `XSAVE` otherwise (`wost/src/arch/x86_64/xstate.rs`). `XCR0` must equal
-the fixed x87, SSE and AVX policy, and a fresh slot starts from the architectural zero image.
+`XSAVEC` where present and `XSAVE` otherwise (`wost/src/arch/x86_64/xstate.rs`). `XCR0` enables
+the x87, SSE and AVX components the processor has, and a fresh slot starts from the architectural
+zero image. Each switch also reloads the data selectors and the `FS` base.
 Without extended state ring 3 stays closed. The kernel itself is built `+soft-float`.
 
 `libs/x86-cpuid` decodes `IA32_ARCH_CAPABILITIES` and decides the speculation posture; an absent
 capability word never counts as immunity. Boot enables enhanced IBRS where it is offered. The
-return to ring 3 executes `VERW` unless the capability word reports the processor unaffected.
+return to ring 3 executes `VERW` unless the capability word reports immunity to every flaw it
+clears: MDS, TAA (or no TSX), the MMIO stale-data classes and RFDS.
 
 `apply_speculation_controls` in `kernel/src/main.rs` chooses one user isolation mode per boot:
 
@@ -136,8 +143,9 @@ return to ring 3 executes `VERW` unless the capability word reports the processo
 
 Under paired roots the entry assembly loads the full root before any Rust runs, and the exit path
 loads the stripped root after its last secret access and a scrub of both entry stacks. PCID is
-off, so each `CR3` load flushes. An exception or NMI inside that transition window halts the
-machine. The self-test kernel forces paired roots so the path runs on QEMU too.
+off, so each `CR3` load flushes. An exception or NMI inside that transition window writes
+`wost: kpti stop` to COM1 and halts the machine. The self-test kernel forces paired roots so the
+path runs on QEMU too.
 
 ## 4. Memory
 
@@ -161,21 +169,25 @@ before converting it into a `USegment` that ring 3 will read.
 No mapping call takes a bare physical address: `map_owned` consumes allocator frames, `map_boot`
 takes a `BootRegion` the boot map covers, `map_device` takes an admitted device range and
 `map_user` takes a `USegment`. Every path ends in `map_range`, which refuses a writable and
-executable flag set and preflights the whole range: all absent is installed, all identical
-succeeds, and a mixed range is refused before any write. RAM mappings keep the direct map's
+executable flag set and preflights the whole range, refusing it before any write unless every
+target is absent. `map_user` and the shared doors also refuse a range outside the user half in
+every space. RAM mappings keep the direct map's
 write-back type.
 
 `unmap` returns a token that owns the frames until the TLB is flushed. Ownership of a mapped frame
 is page-table software bit 9 (`Flags::OWNED`), and large pages are never split. A clear executes
 `invlpg` only when a walk of the current `CR3` reaches that slot. `activate` walks the candidate
-tables for its own code, stack and direct map before writing `CR3`. The kernel space is private to
+tables for its own code, stack, direct map and every framebuffer and firmware byte handed out at
+boot before writing `CR3`, and refuses while NX is off or a higher-half top-level entry is
+user-accessible. The kernel space is private to
 `kernel/src/mem.rs`, which exports operations on it and never the `AddressSpace`. Activation
 reserves the top-level entries of the device window, and no higher-half top-level table is made
 afterwards, so every user root shares one kernel topology.
 
 The image is mapped by linker-symbol class, the entry enclave included. The direct map, at the
-bootloader's offset, covers usable memory, bootloader and module memory, the framebuffer and ACPI
-memory, and never reserved ranges or device holes. It uses 2 MiB pages wherever alignment allows,
+bootloader's offset, covers usable memory, bootloader and module memory, and the framebuffer and
+ACPI memory in whole pages, and never reserved ranges or device holes. It uses 2 MiB pages
+wherever alignment allows,
 and the image's frames keep their class there, so no alias is writable and executable.
 
 | Address | What |
@@ -190,7 +202,8 @@ Kernel stacks are 32 KiB above an unmapped 4 KiB guard, laid out by `libs/stack-
 arena of sixteen slots (`kernel/src/thread.rs`); the boot thread and the double-fault stack use
 the same geometry. A stack inside the 2 MiB direct map cannot be guarded, which is why the boot
 thread leaves the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that
-stack's leaves in the loaded `CR3`.
+stack's leaves in the loaded `CR3`. The entry enclave's two guard pages are protected the same
+way once the kernel's tables are live.
 
 ## 5. Threads, scheduling, locks and time
 
@@ -228,10 +241,11 @@ console, and halts the machine.
 The TSC is the clock and the local APIC timer is a one-shot alarm (`kernel/src/time.rs`). The
 alarm is armed only for the next slice end or sleeper deadline, so an idle kernel with nothing due
 takes no timer interrupts. Time is nanoseconds through one multiply and shift (`libs/timebase`).
-`time::init` measures the APIC timer and TSC rates against the 8254 PIT over 20 ms windows and
-accepts a rate when two windows agree to one part in 64. CPUID leaf 0x15 can supply the TSC rate
-where it reports a complete ratio; leaf 0x16 is never used as a rate. When the PIT is usable it
-also checks live APIC windows as a watchdog. Two consecutive conclusive disagreements revoke
+Where the TSC is invariant and CPUID leaf 0x15 reports a complete rate, `time::init` takes that
+as the TSC rate and measures only the APIC timer against it. Otherwise it measures both against
+the 8254 PIT over 20 ms windows and accepts a rate when two windows agree to one part in 64; leaf
+0x16 is never used as a rate. When the PIT was the source it also checks live APIC windows as a
+watchdog. Two consecutive conclusive disagreements revoke
 public time: the time page switches to `MODE_NONE` and scheduling continues on a private epoch.
 A wait on hardware or a person is bounded by the clock through `PollLimit`, with a spin count only
 when no clock exists.
@@ -293,13 +307,14 @@ kernel narrows it with `try_from` and refuses or saturates.
 | 2 | `Uptime` | completes with kernel uptime in nanoseconds |
 | 3 | `Duplicate` | needs `DUPLICATE`; completes with a new handle whose rights may only narrow |
 | 4 | `Timer` | completes after `argument` nanoseconds |
-| 5 | `Cancel` | ends the operation whose token is `argument`; the target still completes once, with `CANCELLED` |
-| 6 | `OpenAt` | resolves a path in the data page from a directory handle; completes with a new handle |
+| 5 | `Cancel` | ends the oldest operation whose token is `argument`; the target still completes once, with `CANCELLED` |
+| 6 | `OpenAt` | resolves a path in the data page from a directory handle; completes with a new handle. A path naming the directory itself is `BAD_PATH` |
 | 7 | `Read` | reads file `handle` from `offset` into the data page |
 
 The statuses are `OK` (0), `UNKNOWN_OPCODE` (1), `NO_HANDLE_SLOT` (2), `BAD_HANDLE` (3), `DENIED`
 (4), `CANCELLED` (5), `NOT_FOUND` (6, a cancel that named nothing in flight), `NO_ROOM` (7),
-`BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10) and `UNAVAILABLE` (11). A pending operation stays
+`BAD_BUFFER` (8), `NO_ENTRY` (9), `BAD_PATH` (10), `UNAVAILABLE` (11) and `IO` (12, a device or
+volume failure). A pending operation stays
 in its slot until its completion is posted, and ring pages are reclaimed only once the queue is
 quiet. Cancellation is advisory.
 
@@ -314,7 +329,7 @@ The `0x80` gate dispatches on `rax` (`kernel/src/user/call.rs`).
 | `rax` | Call | Effect |
 |---:|---|---|
 | 0 | `Exit` | ends the thread; the only call that does not return |
-| 1 | `RingEnter` | reaps up to the completion head, expires due timers, serves submissions; returns how many completed |
+| 1 | `RingEnter` | reaps up to the completion head, expires due timers, serves submissions; returns how many completions it posted |
 | 2 | `ThreadBase` | sets `FS_BASE` to `rdi`; `-EINVAL` outside user space |
 | 3 | `RingWait` | returns at once when nothing is in flight, else sleeps until an operation is due and serves it |
 
@@ -398,7 +413,8 @@ For a storage candidate the domain identity-maps only frames that a live `DmaSeg
 translation may exist, a failed map, unmap or invalidation retains the segment, and revocation
 completes a drained global invalidation before frames return. Before a unit-wide write the kernel
 claims and fences every other requester the unit governs, from an inventory of at most 64
-functions. Bus mastering is admitted only by spending that function's `DmaDomain` proof.
+functions. Bus mastering is admitted only by spending that function's `DmaDomain` proof, and
+admission first enables it on each bridge above the function.
 
 Interrupt remapping is mandatory and denies everything. The first `sti` and bus-master admission
 both need a non-duplicable isolation proof, so a hostile MSI cannot inject a vector. Every I/O APIC
@@ -425,13 +441,17 @@ so the retirement path runs on every boot.
 
 The driver (`kernel/src/nvme.rs`, over `libs/nvme`) brings up one controller with one I/O queue
 pair, polled and read-only. Queue size, doorbell stride, timeouts and page sizes come from `CAP`,
-and every poll is bounded. A namespace must use 512-byte blocks with no metadata, and one command
-is outstanding at a time. A command with an uncertain outcome is resolved by clearing `CC.EN` and
-observing `CSTS.RDY = 0`; otherwise every queue and buffer frame is withheld for the boot.
+and every poll is bounded. Controller interrupts are masked through `INTMS`. A namespace must use
+512-byte blocks with no metadata, and one command is outstanding at a time. A command with an
+uncertain outcome is resolved by clearing `CC.EN` and
+observing `CSTS.RDY = 0`; otherwise every queue and buffer frame is withheld for the boot. A
+timeout or protocol anomaly stops the controller for the rest of the boot with one logged reason,
+and later reads complete with `IO`.
 
 `libs/fat32` is a read-only, allocation-free FAT32 reader over any `Sectors` source, the same crate
 on the host and in the kernel. The volume starts at sector 2048 of the namespace
-(`kernel/src/fs.rs`), and no partition table is read. A cluster chain is bounded by the volume's
+(`kernel/src/fs.rs`), no partition table is read, and a volume larger than the namespace is
+refused. A cluster chain is bounded by the volume's
 cluster count and a directory walk by a fixed entry budget with a cycle check. Names are 8.3, and
 long-name entries and the volume label are skipped.
 
