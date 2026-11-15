@@ -32,7 +32,8 @@ On Windows, install rustup with the GNU host (`rustup-init -y --default-host
 x86_64-pc-windows-gnu`) and QEMU with `winget install SoftwareFreedomConservancy.QEMU`, then open
 a fresh terminal. The runner finds QEMU through `QEMU` (the executable), then `QEMU_DIR` (its
 directory), then `C:\Program Files\qemu` on Windows, then `PATH`. It looks for
-`edk2-x86_64-code.fd` beside the emulator and under its installation's `share/`.
+`edk2-x86_64-code.fd` beside the emulator and under its installation's `share/`;
+`QEMU_FIRMWARE_CODE` and `QEMU_FIRMWARE_VARS` override the search.
 
 ## Building and running
 
@@ -42,11 +43,11 @@ cargo xtask image              write target/bedrock.img
 cargo xtask run                boot the shipped image in QEMU, serial on stdio
 cargo xtask test-boot          boot the self-test kernel and read its verdict
 cargo xtask vmware             generate vm/self-test/ (add --shipped for vm/shipped/)
-cargo xtask debug              open the debug kernel at kmain under the pinned WinLibs GDB
+cargo xtask debug              open the debug kernel at kmain in GDB (`GDB`, or gdb on PATH)
 cargo xtask help               every task
 ```
 
-`cargo xtask run --` forwards only QEMU's `-d`, `-D` and `-display` options; the machine is fixed.
+`cargo xtask run -- ARGS` passes `ARGS` through to QEMU.
 
 Never set `RUSTFLAGS`. It replaces the `[target.x86_64-unknown-none]` rustflags in
 `.cargo/config.toml`, and the kernel then links without `code-model=kernel` and no error. Pass
@@ -65,7 +66,7 @@ lint flags after `--` instead.
 |---:|---|---|
 | 1 | `fmt --check` | formatted source |
 | 2 | `clippy` | no lint on the host graph or the shipped and self-test kernel graphs |
-| 3 | `test` | host tests and doctests pass |
+| 3 | `test` | host tests pass |
 | 4 | `supply-chain` | every locked crate has a reviewed license row in `supply-chain/inventory.txt` |
 | 5 | `verify-vendor` | every vendored binary matches its `CHECKSUMS` digest |
 | 6 | `test-boot --release` | the self-test kernel's verdict passes |

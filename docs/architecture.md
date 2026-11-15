@@ -36,9 +36,10 @@ link address and there is no KASLR. `kernel/linker.ld` declares six `PT_LOAD` se
 protection class: text, read-only data and writable data, each for the entry enclave and for the
 rest of the kernel. The image is therefore W^X from its first instruction. Limine's requests sit in
 a kept `.requests` section, and `.bss` is `NOLOAD` at the end of the writable segment.
-`xtask/src/elf.rs` reads every linked kernel back and requires a higher-half entry, every
-allocated section inside a loadable segment, no writable and executable segment, `.bss` costing
-no file bytes, and `.text` and `.requests` loaded.
+The linker refuses orphan sections, and `xtask/src/elf.rs` reads every linked kernel back: it
+requires each loadable segment in the higher half, page aligned and disjoint, the entry inside
+an executable one, no writable and executable segment, `.bss` costing no file bytes, and `.text`
+and `.requests` loaded.
 
 `cargo xtask image` writes `target/bedrock.img`, a 64 MiB raw disk with an MBR and one FAT32 EFI
 system partition from LBA 2048. It holds `/EFI/BOOT/BOOTX64.EFI` (the vendored Limine in
