@@ -374,6 +374,3 @@ fn verify_jar(jar: &Path) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

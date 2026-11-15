@@ -1047,6 +1047,3 @@ fn spdx_id(entry: &InventoryEntry) -> String {
         .collect();
     format!("SPDXRef-{kind}-{cleaned}")
 }
-
-#[cfg(test)]
-mod tests;

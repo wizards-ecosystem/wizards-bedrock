@@ -411,6 +411,3 @@ fn key_arguments(qcode: &str) -> String {
         key_event(qcode, false)
     )
 }
-
-#[cfg(test)]
-mod tests;

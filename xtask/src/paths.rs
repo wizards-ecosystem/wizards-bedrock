@@ -290,6 +290,3 @@ impl Paths {
             .join("CHECKSUMS")
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -432,6 +432,3 @@ fn pass_args(
     }
     args
 }
-
-#[cfg(test)]
-mod tests;

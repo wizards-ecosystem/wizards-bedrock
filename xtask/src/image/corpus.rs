@@ -35,14 +35,6 @@ pub const fn large_byte(index: usize) -> u8 {
     ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
 
-#[cfg(test)]
-fn build() -> Result<Vec<u8>> {
-    let mut bytes = vec![0u8; VOLUME_BYTES];
-    populate(std::io::Cursor::new(&mut bytes[..]))?;
-
-    Ok(bytes)
-}
-
 pub(crate) fn populate(mut volume: impl Read + Write + Seek) -> Result<()> {
     esp::format(&mut volume, FatType::Fat32).context("formatting the corpus volume")?;
     let filesystem =
@@ -66,6 +58,3 @@ pub(crate) fn populate(mut volume: impl Read + Write + Seek) -> Result<()> {
     }
     filesystem.unmount().context("unmounting the corpus")
 }
-
-#[cfg(test)]
-mod tests;

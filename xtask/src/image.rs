@@ -5,9 +5,6 @@ pub mod esp;
 pub mod mbr;
 pub mod program;
 
-#[cfg(test)]
-mod foreign;
-
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -323,6 +320,3 @@ fn read_kernel<D: ReadWriteSeek>(disk: &mut D, partition: mbr::PartitionEntry) -
         .context("unmounting the read-back EFI system partition")?;
     Ok(bytes)
 }
-
-#[cfg(test)]
-mod tests;

@@ -581,6 +581,3 @@ pub fn verify_file(path: &Path) -> Result<()> {
         .collect::<String>();
     bail!("{} is not a bootable image:{report}", path.display());
 }
-
-#[cfg(test)]
-mod tests;

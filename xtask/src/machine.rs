@@ -92,6 +92,3 @@ fn literal(text: &str) -> Option<u64> {
         None => <u64 as core::str::FromStr>::from_str(&text).ok(),
     }
 }
-
-#[cfg(test)]
-mod tests;

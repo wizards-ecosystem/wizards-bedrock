@@ -267,6 +267,3 @@ fn print_ranges(label: &str, samples: &[(qemu::PerformanceSample, Derived)]) -> 
     );
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

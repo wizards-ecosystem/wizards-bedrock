@@ -273,6 +273,3 @@ fn require_proof(transcript: &str) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

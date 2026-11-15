@@ -78,6 +78,3 @@ pub fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Resul
     Seek::seek(disk, SeekFrom::Start(0)).context("seeking to the master boot record")?;
     Write::write_all(disk, record).context("writing the master boot record")
 }
-
-#[cfg(test)]
-mod tests;

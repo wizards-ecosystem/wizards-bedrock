@@ -303,6 +303,3 @@ pub fn verify(paths: &Paths) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

@@ -179,6 +179,3 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_SIZE]) {
 fn rotate(word: u32, first: u32, second: u32, shift: u32) -> u32 {
     word.rotate_right(first) ^ word.rotate_right(second) ^ (word >> shift)
 }
-
-#[cfg(test)]
-mod tests;

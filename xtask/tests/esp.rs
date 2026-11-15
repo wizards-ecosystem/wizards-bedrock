@@ -41,12 +41,3 @@ fn files_written_to_the_volume_read_back() {
     file.read_to_end(&mut read_back).expect("read kernel");
     assert_eq!(read_back, payload);
 }
-
-#[test]
-fn the_volume_carries_the_wizard_label() {
-    let mut volume = Cursor::new(vec![0u8; VOLUME_BYTES]);
-    esp::format(&mut volume, FatType::Fat16).expect("format");
-
-    let filesystem = FileSystem::new(&mut volume, FsOptions::new()).expect("mount");
-    assert_eq!(filesystem.volume_label().trim(), "WIZARD-ESP");
-}

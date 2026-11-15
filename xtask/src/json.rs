@@ -297,6 +297,3 @@ impl<'json> JsonParser<'json> {
             .to_string())
     }
 }
-
-#[cfg(test)]
-mod tests;

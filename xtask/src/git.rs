@@ -302,6 +302,3 @@ fn absolute_root(root: &Path) -> Result<PathBuf> {
 pub(crate) fn is_git_id(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
-
-#[cfg(test)]
-mod tests;

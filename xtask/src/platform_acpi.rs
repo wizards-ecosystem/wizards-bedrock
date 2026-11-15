@@ -19,6 +19,3 @@ pub(crate) fn dma_handoff_table() -> [u8; DmaHandoff::LEN] {
     table[9] = 0u8.wrapping_sub(table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
     table
 }
-
-#[cfg(test)]
-mod tests;

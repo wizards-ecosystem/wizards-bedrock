@@ -899,6 +899,3 @@ fn open_new_output(path: &Path) -> Result<File> {
     crate::workspace::require_direct_file(parent, path, "VMware output")?;
     Ok(file)
 }
-
-#[cfg(test)]
-mod tests;

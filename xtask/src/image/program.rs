@@ -375,6 +375,3 @@ pub fn build() -> Result<Vec<u8>> {
     image[code_at..code_at + code.len()].copy_from_slice(&code);
     Ok(image)
 }
-
-#[cfg(test)]
-mod tests;

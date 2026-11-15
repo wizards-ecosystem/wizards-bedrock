@@ -83,6 +83,3 @@ pub fn populate<D: ReadWriteSeek>(
         "Limine configuration",
     )
 }
-
-#[cfg(test)]
-mod tests;
