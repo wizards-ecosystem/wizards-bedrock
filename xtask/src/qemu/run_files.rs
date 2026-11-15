@@ -48,16 +48,7 @@ pub(super) struct RunVars {
 
 impl RunVars {
     pub(super) fn create(target: &Path, template: &Path) -> Result<Self> {
-        Self::create_with(target, template, |_| {})
-    }
-
-    pub(super) fn create_with(
-        target: &Path,
-        template: &Path,
-        after_reservation: impl Fn(&Path),
-    ) -> Result<Self> {
         let (directory, path, mut destination) = reserve_run_file(target, "efi-vars", "fd")?;
-        after_reservation(&path);
         let copied = (|| -> Result<()> {
             let mut source = crate::workspace::open_real_file(template, "QEMU variable firmware")?;
             std::io::copy(&mut source, &mut destination)

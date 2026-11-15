@@ -49,25 +49,12 @@ pub(super) fn acquire_storage_lock(
     path: &Path,
     canonical_parent: &Path,
 ) -> Result<File> {
-    acquire_storage_lock_with(parent, path, canonical_parent, || {})
-}
-
-pub(super) fn acquire_storage_lock_with(
-    parent: &Path,
-    path: &Path,
-    canonical_parent: &Path,
-    after_contention: impl FnOnce(),
-) -> Result<File> {
     let file = open_storage_lock(parent, path, canonical_parent)?;
     let deadline = Instant::now() + STORAGE_LOCK_TIMEOUT;
-    let mut after_contention = Some(after_contention);
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(TryLockError::WouldBlock) => {
-                if let Some(after_contention) = after_contention.take() {
-                    after_contention();
-                }
                 if Instant::now() >= deadline {
                     bail!("another runner did not release {}", path.display());
                 }
@@ -82,15 +69,6 @@ pub(super) fn acquire_storage_lock_with(
 }
 
 fn open_storage_lock(parent: &Path, path: &Path, canonical_parent: &Path) -> Result<File> {
-    open_storage_lock_with(parent, path, canonical_parent, |_| {})
-}
-
-pub(super) fn open_storage_lock_with(
-    parent: &Path,
-    path: &Path,
-    canonical_parent: &Path,
-    after_open: impl FnOnce(&Path),
-) -> Result<File> {
     require_storage_lock_path(parent, path, false)?;
     let mut options = OpenOptions::new();
     OpenOptions::create(&mut options, true);
@@ -99,7 +77,6 @@ pub(super) fn open_storage_lock_with(
     OpenOptions::write(&mut options, true);
     let file = OpenOptions::open(&options, path)
         .with_context(|| format!("opening storage build lock {}", path.display()))?;
-    after_open(path);
     require_storage_lock_path(parent, path, true)?;
     ensure!(
         crate::workspace::canonical_existing_real_directory(parent, "QEMU storage directory",)?

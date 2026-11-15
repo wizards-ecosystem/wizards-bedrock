@@ -243,13 +243,6 @@ pub(crate) fn verify_payload_bytes(listing: &Path, payload: &Path, bytes: &[u8])
 }
 
 pub(crate) fn read_listing(path: &Path) -> Result<String> {
-    read_listing_with(path, || Ok(()))
-}
-
-fn read_listing_with<F>(path: &Path, after_measurement: F) -> Result<String>
-where
-    F: FnOnce() -> Result<()>,
-{
     let parent = path.parent().unwrap_or(Path::new("."));
     crate::workspace::canonical_existing_real_directory(parent, "vendor directory")?;
     crate::workspace::require_direct_file(parent, path, "vendor checksum listing")?;
@@ -263,7 +256,6 @@ where
         "{} is {initial} bytes, exceeding the {MAX_LISTING_BYTES}-byte checksum-listing limit",
         path.display()
     );
-    after_measurement()?;
     let capacity =
         usize::try_from(initial).context("checksum listing length does not fit usize")?;
     let mut bytes = Vec::with_capacity(capacity);

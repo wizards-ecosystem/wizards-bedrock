@@ -129,7 +129,7 @@ pub(crate) fn publish_spdx(paths: &Paths) -> Result<()> {
     let (inventory, inventory_text) = verified_inventory(paths)?;
     let document = render_spdx(&inventory, &inventory_text)?;
     let destination = paths.root().join(SPDX);
-    publish_spdx_with(paths.root(), &destination, document.as_bytes(), |_| Ok(()))?;
+    publish_spdx_file(paths.root(), &destination, document.as_bytes())?;
     println!("[xtask] wrote {}", destination.display());
     Ok(())
 }
@@ -154,15 +154,7 @@ fn verified_inventory(paths: &Paths) -> Result<(Inventory, String)> {
     Ok((inventory, inventory_text))
 }
 
-fn publish_spdx_with<F>(
-    root: &Path,
-    destination: &Path,
-    bytes: &[u8],
-    after_publish: F,
-) -> Result<()>
-where
-    F: FnOnce(&Path) -> Result<()>,
-{
+fn publish_spdx_file(root: &Path, destination: &Path, bytes: &[u8]) -> Result<()> {
     ensure!(
         bytes.len() as u64 <= MAX_SPDX_BYTES,
         "rendered SPDX document is {} bytes, exceeding its {MAX_SPDX_BYTES}-byte publication limit",
@@ -196,10 +188,7 @@ where
             &staging,
             destination,
             "SPDX document",
-            |published| {
-                verify_published_spdx(directory, published, bytes)?;
-                after_publish(published)
-            },
+            |published| verify_published_spdx(directory, published, bytes),
         )
     });
     crate::workspace::finish_staged_operation(directory, &staging, "SPDX staging file", publication)
@@ -253,13 +242,6 @@ fn verify_published_spdx(directory: &Path, published: &Path, bytes: &[u8]) -> Re
 }
 
 fn read(path: PathBuf, maximum: u64, label: &str) -> Result<String> {
-    read_with(path, maximum, label, || Ok(()))
-}
-
-fn read_with<F>(path: PathBuf, maximum: u64, label: &str, after_measurement: F) -> Result<String>
-where
-    F: FnOnce() -> Result<()>,
-{
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
@@ -274,7 +256,6 @@ where
         initial <= maximum,
         "{label} is {initial} bytes, exceeding its {maximum}-byte allocation limit"
     );
-    after_measurement()?;
     let capacity =
         usize::try_from(initial).context("supply-chain text length does not fit usize")?;
     let mut bytes = Vec::with_capacity(capacity);

@@ -1,7 +1,7 @@
 //! Reproducible release evidence and its offline verifier.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
@@ -908,19 +908,10 @@ fn trusted_version_output(root: &Path, program: &Path, args: &[&str]) -> Result<
 }
 
 fn qemu_version_output(root: &Path, program: &Path) -> Result<String> {
-    qemu_version_output_with(root, program, |command, deadline, label| {
-        bounded_process::output(command, deadline, label)
-    })
-}
-
-fn qemu_version_output_with<F>(root: &Path, program: &Path, run: F) -> Result<String>
-where
-    F: FnOnce(Command, Duration, &str) -> Result<Output>,
-{
     let args = ["--version"];
     let mut command = Command::new(program);
     command.current_dir(root).args(args);
-    let output = run(command, QEMU_VERSION_DEADLINE, QEMU_VERSION_LABEL)?;
+    let output = bounded_process::output(command, QEMU_VERSION_DEADLINE, QEMU_VERSION_LABEL)?;
     let output = normalize_command_output(program, &args, output)?;
     require_version_output(program, output)
 }
@@ -952,20 +943,6 @@ fn add_known_digest(record: &mut Record, prefix: &str, digest: Digest) -> Result
 }
 
 fn digest_file_bounded(path: &Path, maximum: u64, label: &str) -> Result<Digest> {
-    digest_file_bounded_with(path, maximum, label, || Ok(()), || Ok(()))
-}
-
-fn digest_file_bounded_with<F, G>(
-    path: &Path,
-    maximum: u64,
-    label: &str,
-    after_measurement: F,
-    after_hash: G,
-) -> Result<Digest>
-where
-    F: FnOnce() -> Result<()>,
-    G: FnOnce() -> Result<()>,
-{
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
@@ -980,7 +957,6 @@ where
         initial <= maximum,
         "{label} is {initial} bytes, exceeding its {maximum}-byte hashing limit"
     );
-    after_measurement()?;
     let (bytes, digest) = sha256::digest_reader(file.take(maximum + 1))
         .with_context(|| format!("hashing {label} {}", path.display()))?;
     ensure!(
@@ -991,7 +967,6 @@ where
         bytes == initial,
         "{label} changed length while it was hashed"
     );
-    after_hash()?;
     crate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
         crate::workspace::open_real_file(path, label)?
@@ -1008,20 +983,6 @@ where
 }
 
 fn digest_file_exact(path: &Path, expected: u64, label: &str) -> Result<Digest> {
-    digest_file_exact_with(path, expected, label, |file| {
-        let (bytes, digest) = sha256::digest_reader(file)
-            .with_context(|| format!("hashing {label} {}", path.display()))?;
-        Ok(Digest {
-            bytes,
-            sha256: sha256::hex(&digest),
-        })
-    })
-}
-
-fn digest_file_exact_with<F>(path: &Path, expected: u64, label: &str, hash: F) -> Result<Digest>
-where
-    F: FnOnce(&mut std::io::Take<File>) -> Result<Digest>,
-{
     let parent = path
         .parent()
         .with_context(|| format!("{label} has no parent directory"))?;
@@ -1037,7 +998,12 @@ where
         "{label} is {initial} bytes, expected exactly {expected}"
     );
     let mut limited = file.take(expected + 1);
-    let digest = hash(&mut limited)?;
+    let (bytes, digest) = sha256::digest_reader(&mut limited)
+        .with_context(|| format!("hashing {label} {}", path.display()))?;
+    let digest = Digest {
+        bytes,
+        sha256: sha256::hex(&digest),
+    };
     crate::workspace::require_direct_file(parent, path, label)?;
     ensure!(
         digest.bytes == expected,

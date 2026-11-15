@@ -273,14 +273,6 @@ fn finish_cargo_clean(
 }
 
 fn remove_vm_directory(root: &std::path::Path, directory: &std::path::Path) -> Result<bool> {
-    remove_vm_directory_with(root, directory, || {})
-}
-
-fn remove_vm_directory_with(
-    root: &std::path::Path,
-    directory: &std::path::Path,
-    before_remove: impl FnOnce(),
-) -> Result<bool> {
     ensure!(
         directory == root.join("vm"),
         "VMware cleanup target is not the exact allowlisted repository child"
@@ -297,7 +289,6 @@ fn remove_vm_directory_with(
             });
         }
     };
-    before_remove();
     let mut remaining = MAX_VM_CLEANUP_ENTRIES;
     empty_open_directory(&mut directory_handle, directory, 0, &mut remaining)?;
     Ok(true)
