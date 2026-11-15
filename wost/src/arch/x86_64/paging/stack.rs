@@ -129,7 +129,9 @@ impl AddressSpace {
     /// Map one guarded stack whose evidence refuses every overlapping map or unmap while hardware
     /// may retain its address; `Pinned` if a pinned stack exists, `Inactive` off the CPU's space.
     pub fn map_pinned_stack(&mut self, slot: &Slot) -> Result<PinnedStack, StackMapError> {
-        let roots = self.roots();
+        let Some(roots) = self.roots else {
+            return Err(MapError::NotYours(slot.stack_base()).into());
+        };
         if current_mapping_root(roots).is_none() {
             return Err(MapError::Inactive(roots.full_root()).into());
         }
@@ -199,7 +201,7 @@ impl AddressSpace {
 
     /// Remove every stack represented by `arena`, returning its frames.
     pub fn unmap_stacks(&mut self, arena: StackArena) -> Result<usize, StackRollback> {
-        if arena.roots != self.roots() {
+        if self.roots != Some(arena.roots) {
             return Err(StackRollback {
                 reason: MapError::NotYours(arena.layout.base()),
                 returned_pages: 0,

@@ -236,7 +236,7 @@ impl AddressSpace {
             return Err(MapError::OutOfMemory);
         }
         let mapping = &region.mapping;
-        if mapping.roots != self.roots() {
+        if self.roots != Some(mapping.roots) {
             return Err(MapError::NotYours(mapping.address));
         }
         let offset = mapping.physical % PAGE_SIZE;
