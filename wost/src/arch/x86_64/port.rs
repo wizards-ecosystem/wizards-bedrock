@@ -229,7 +229,7 @@ impl sealed::Sealed for u8 {}
 
 impl PortValue for u8 {
     unsafe fn port_read(port: u16) -> Self {
-        let value: u8;
+        let value: Self;
         // SAFETY: `in al, dx` reads one byte from the port in `dx`; the caller guarantees the port
         // is theirs and the read's side effects are wanted.
         unsafe {
@@ -251,7 +251,7 @@ impl sealed::Sealed for u16 {}
 
 impl PortValue for u16 {
     unsafe fn port_read(port: u16) -> Self {
-        let value: u16;
+        let value: Self;
         // SAFETY: `in ax, dx` reads one word from the port in `dx`; the caller guarantees the port
         // is theirs and the read's side effects are wanted.
         unsafe {
@@ -273,7 +273,7 @@ impl sealed::Sealed for u32 {}
 
 impl PortValue for u32 {
     unsafe fn port_read(port: u16) -> Self {
-        let value: u32;
+        let value: Self;
         // SAFETY: `in eax, dx` reads one dword from the port in `dx`; the caller guarantees the
         // port is theirs and the read's side effects are wanted.
         unsafe {

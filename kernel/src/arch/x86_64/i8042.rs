@@ -198,7 +198,7 @@ impl Controller {
         }
         controller.require_controller_command(command::DISABLE_FIRST)?;
         controller.require_controller_command(command::DISABLE_SECOND)?;
-        if !Controller::flush(&mut controller) {
+        if !Self::flush(&mut controller) {
             return Err(I8042Error::NotPresent);
         }
 

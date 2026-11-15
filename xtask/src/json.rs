@@ -27,8 +27,8 @@ pub(crate) enum JsonValue {
     Bool(bool),
     Number(String),
     String(String),
-    Array(Vec<JsonValue>),
-    Object(BTreeMap<String, JsonValue>),
+    Array(Vec<Self>),
+    Object(BTreeMap<String, Self>),
 }
 
 struct JsonParser<'json> {

@@ -640,7 +640,7 @@ impl ProbeRecovery {
             },
             Err((reason, authority)) => ProbeRecoveryOutcome::Refused(ProbeRecoveryFailure {
                 reason,
-                recovery: ProbeRecovery {
+                recovery: Self {
                     function,
                     authority,
                 },
