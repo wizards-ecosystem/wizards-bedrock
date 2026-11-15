@@ -211,9 +211,9 @@ impl AddressSpace {
                     "mapping rollback found a divergent paired table link"
                 );
             }
-            EntrySlot::write(&parent, Entry::ABSENT);
-            if let Some(paired) = paired.as_ref() {
-                EntrySlot::write(paired, Entry::ABSENT);
+            clear_mapping_slot(parent, owned.virtual_address, owned.level);
+            if let Some(paired) = paired {
+                clear_mapping_slot(paired, owned.virtual_address, owned.level);
             }
             // SAFETY: `take_owned_table` forgot exactly this allocation, and
             // the only page-table link to it is now absent.
