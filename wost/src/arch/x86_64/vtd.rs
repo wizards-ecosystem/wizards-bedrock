@@ -18,8 +18,8 @@ use register_bits::{low_u32, u32_halves, usize_from_u64};
 use vtd::{
     AddressWidth, Capability, ContextEntry, ExtendedCapability, FaultRecording, FaultStatus,
     InvalidationDescriptor, RootEntry, Version, compatibility_interrupts_enabled, context_command,
-    enable_interrupt_remapping, enable_translation, fault_event_control, gcmd, gsts,
-    interrupt_remapping_enabled, interrupt_table_address, interrupt_table_base,
+    enable_interrupt_remapping, enable_translation, fault_event_control, global_command,
+    global_status, interrupt_remapping_enabled, interrupt_table_address, interrupt_table_base,
     interrupt_table_has_two_entries, interrupt_table_pointer_set, invalidation_queue_address,
     iotlb_command, root_table_address, root_table_pointer_set, second_level,
     set_interrupt_table_pointer, set_root_table_pointer, takeover_ready, translation_enabled,
@@ -264,7 +264,7 @@ pub struct Vtd {
     fault_offset: u64,
     fault_registers: u16,
     /// The command word every write to `GCMD` is built from.
-    gcmd: u32,
+    global_command: u32,
     root: PublishedIommuTable,
     context: PublishedIommuTable,
     /// A two-entry interrupt table. Both entries remain not-present.
@@ -420,7 +420,7 @@ impl Vtd {
                 registers,
             };
         };
-        let status = match read_u32(&registers, vtd::GSTS) {
+        let status = match read_u32(&registers, vtd::register::GLOBAL_STATUS) {
             Ok(status) => status,
             Err(reason) => return Establishment::Refused { reason, registers },
         };
@@ -440,7 +440,7 @@ impl Vtd {
             iotlb_base: plan.extended.iotlb_register_offset_bytes(),
             fault_offset: plan.capability.fault_recording_offset_bytes(),
             fault_registers: plan.capability.number_of_fault_recording_registers(),
-            gcmd: 0,
+            global_command: 0,
             root: PublishedIommuTable::new(root),
             context: PublishedIommuTable::new(context),
             interrupts: PublishedIommuTable::new(interrupts),
@@ -678,7 +678,7 @@ impl Vtd {
     #[must_use]
     pub fn domain(&self) -> Option<DmaDomain<'_>> {
         let function = self.function?;
-        let status = read_u32(&self.registers, vtd::GSTS).ok()?;
+        let status = read_u32(&self.registers, vtd::register::GLOBAL_STATUS).ok()?;
         if !translation_enabled(status) {
             return None;
         }
@@ -721,19 +721,20 @@ impl Vtd {
     /// Whether translation and deny-all interrupt remapping remain kernel-owned.
     #[must_use]
     pub fn boundary_active(&self) -> bool {
-        let Ok(pointer) = read_u64(&self.registers, vtd::RTADDR) else {
+        let Ok(pointer) = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS) else {
             return false;
         };
-        let Ok(status) = read_u32(&self.registers, vtd::GSTS) else {
+        let Ok(status) = read_u32(&self.registers, vtd::register::GLOBAL_STATUS) else {
             return false;
         };
-        let Ok(fault_control) = read_u32(&self.registers, vtd::FECTL) else {
+        let Ok(fault_control) = read_u32(&self.registers, vtd::register::FAULT_EVENT_CONTROL)
+        else {
             return false;
         };
         if !translation_enabled(status)
             || !interrupt_remapping_enabled(status)
             || compatibility_interrupts_enabled(status)
-            || status & gsts::QIES != 0
+            || status & global_status::QIES != 0
             || !fault_event_control::masked(fault_control)
             || root_table_address(pointer) != self.root.address()
         {
@@ -742,7 +743,10 @@ impl Vtd {
         let Some(expected) = interrupt_table_address(self.interrupts.address()) else {
             return false;
         };
-        let Ok(observed) = read_u64(&self.registers, vtd::IRTA) else {
+        let Ok(observed) = read_u64(
+            &self.registers,
+            vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
+        ) else {
             return false;
         };
         if observed != expected
@@ -764,11 +768,12 @@ impl Vtd {
     /// An overflow is acknowledged first, since the unit records nothing new while it stands.
     #[must_use]
     pub fn take_fault(&mut self) -> Option<Fault> {
-        let status = FaultStatus::from_bits(read_u32(&self.registers, vtd::FSTS).ok()?);
+        let status =
+            FaultStatus::from_bits(read_u32(&self.registers, vtd::register::FAULT_STATUS).ok()?);
         if status.overflow() {
             write_u32(
                 &mut self.registers,
-                vtd::FSTS,
+                vtd::register::FAULT_STATUS,
                 FaultStatus::acknowledge_overflow(),
             )
             .ok()?;
@@ -926,11 +931,15 @@ impl Vtd {
     }
 
     fn set_root_table(&mut self) -> Result<(), VtdError> {
-        write_u64(&mut self.registers, vtd::RTADDR, self.root.address())?;
-        let command = set_root_table_pointer(self.gcmd);
-        write_u32(&mut self.registers, vtd::GCMD, command)?;
+        write_u64(
+            &mut self.registers,
+            vtd::register::ROOT_TABLE_ADDRESS,
+            self.root.address(),
+        )?;
+        let command = set_root_table_pointer(self.global_command);
+        write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
         self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;
-        let pointer = read_u64(&self.registers, vtd::RTADDR)?;
+        let pointer = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS)?;
         if root_table_address(pointer) == self.root.address() {
             Ok(())
         } else {
@@ -941,11 +950,18 @@ impl Vtd {
     fn set_interrupt_table(&mut self) -> Result<(), VtdError> {
         let pointer = interrupt_table_address(self.interrupts.address())
             .ok_or(VtdError::InterruptTableRefused)?;
-        write_u64(&mut self.registers, vtd::IRTA, pointer)?;
-        let command = set_interrupt_table_pointer(self.gcmd);
-        write_u32(&mut self.registers, vtd::GCMD, command)?;
+        write_u64(
+            &mut self.registers,
+            vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
+            pointer,
+        )?;
+        let command = set_interrupt_table_pointer(self.global_command);
+        write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
         self.poll_status(interrupt_table_pointer_set, VtdError::InterruptTableRefused)?;
-        let observed = read_u64(&self.registers, vtd::IRTA)?;
+        let observed = read_u64(
+            &self.registers,
+            vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
+        )?;
         if observed == pointer
             && interrupt_table_base(observed) == self.interrupts.address()
             && interrupt_table_has_two_entries(observed)
@@ -978,15 +994,27 @@ impl Vtd {
         }
         let queue = invalidation_queue_address(self.invalidation_queue.address())
             .ok_or(VtdError::Misaligned)?;
-        write_u64(&mut self.registers, vtd::IQT, 0)?;
-        write_u64(&mut self.registers, vtd::IQA, queue)?;
+        write_u64(
+            &mut self.registers,
+            vtd::register::INVALIDATION_QUEUE_TAIL,
+            0,
+        )?;
+        write_u64(
+            &mut self.registers,
+            vtd::register::INVALIDATION_QUEUE_ADDRESS,
+            queue,
+        )?;
         self.switch_queued_invalidation(Switch::On)?;
-        let observed_queue = read_u64(&self.registers, vtd::IQA)?;
+        let observed_queue = read_u64(&self.registers, vtd::register::INVALIDATION_QUEUE_ADDRESS)?;
         if observed_queue != queue {
             return Err(VtdError::InvalidationQueueRefused);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        write_u64(&mut self.registers, vtd::IQT, INVALIDATION_TAIL)?;
+        write_u64(
+            &mut self.registers,
+            vtd::register::INVALIDATION_QUEUE_TAIL,
+            INVALIDATION_TAIL,
+        )?;
         let mut completed = false;
         for _ in 0..POLL_LIMIT {
             if self
@@ -1009,14 +1037,18 @@ impl Vtd {
 
     fn switch_queued_invalidation(&mut self, state: Switch) -> Result<(), VtdError> {
         let on = state == Switch::On;
-        self.gcmd = if on {
-            self.gcmd | gcmd::QIE
+        self.global_command = if on {
+            self.global_command | global_command::QIE
         } else {
-            self.gcmd & !gcmd::QIE
+            self.global_command & !global_command::QIE
         };
-        write_u32(&mut self.registers, vtd::GCMD, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            vtd::register::GLOBAL_COMMAND,
+            self.global_command,
+        )?;
         self.poll_status(
-            |status| (status & gsts::QIES != 0) == on,
+            |status| (status & global_status::QIES != 0) == on,
             if on {
                 VtdError::QueuedInvalidationEnableTimeout
             } else {
@@ -1027,12 +1059,16 @@ impl Vtd {
 
     fn switch_interrupt_remapping(&mut self, state: Switch) -> Result<(), VtdError> {
         let on = state == Switch::On;
-        self.gcmd = if on {
-            enable_interrupt_remapping(self.gcmd)
+        self.global_command = if on {
+            enable_interrupt_remapping(self.global_command)
         } else {
-            self.gcmd & !(gcmd::IRE | gcmd::CFI)
+            self.global_command & !(global_command::IRE | global_command::CFI)
         };
-        write_u32(&mut self.registers, vtd::GCMD, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            vtd::register::GLOBAL_COMMAND,
+            self.global_command,
+        )?;
         self.poll_status(
             |status| {
                 interrupt_remapping_enabled(status) == on
@@ -1046,13 +1082,13 @@ impl Vtd {
     ///
     /// It never traverses interrupt remapping, so default-deny can only poll the fault records.
     fn mask_fault_interrupt(&mut self) -> Result<(), VtdError> {
-        let prior = read_u32(&self.registers, vtd::FECTL)?;
+        let prior = read_u32(&self.registers, vtd::register::FAULT_EVENT_CONTROL)?;
         write_u32(
             &mut self.registers,
-            vtd::FECTL,
+            vtd::register::FAULT_EVENT_CONTROL,
             prior | fault_event_control::MASK,
         )?;
-        let observed = read_u32(&self.registers, vtd::FECTL)?;
+        let observed = read_u32(&self.registers, vtd::register::FAULT_EVENT_CONTROL)?;
         if fault_event_control::masked(observed) {
             Ok(())
         } else {
@@ -1062,12 +1098,16 @@ impl Vtd {
 
     fn switch_translation(&mut self, state: Switch) -> Result<(), VtdError> {
         let on = state == Switch::On;
-        self.gcmd = if on {
-            enable_translation(self.gcmd)
+        self.global_command = if on {
+            enable_translation(self.global_command)
         } else {
-            self.gcmd & !gcmd::TE
+            self.global_command & !global_command::TE
         };
-        write_u32(&mut self.registers, vtd::GCMD, self.gcmd)?;
+        write_u32(
+            &mut self.registers,
+            vtd::register::GLOBAL_COMMAND,
+            self.global_command,
+        )?;
         self.poll_status(
             |status| translation_enabled(status) == on,
             VtdError::TranslationTimeout,
@@ -1078,7 +1118,7 @@ impl Vtd {
     /// its root or leaves are clear, so later requests fault instead of reaching recyclable memory.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
-        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER;
+        let command_register = self.iotlb_base + iotlb_command::COMMAND;
         write_u64(
             &mut self.registers,
             command_register,
@@ -1095,10 +1135,17 @@ impl Vtd {
     fn invalidate(&mut self, caches: Caches) -> Result<(), VtdError> {
         self.prepare_invalidation()?;
         if caches == Caches::ContextAndIotlb {
-            write_u64(&mut self.registers, vtd::CCMD, context_command::global())?;
-            self.poll_u64(vtd::CCMD, context_command::global_completed)?;
+            write_u64(
+                &mut self.registers,
+                vtd::register::CONTEXT_COMMAND,
+                context_command::global(),
+            )?;
+            self.poll_u64(
+                vtd::register::CONTEXT_COMMAND,
+                context_command::global_completed,
+            )?;
         }
-        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER;
+        let command_register = self.iotlb_base + iotlb_command::COMMAND;
         write_u64(
             &mut self.registers,
             command_register,
@@ -1118,10 +1165,10 @@ impl Vtd {
 
     fn flush_write_buffer(&mut self) -> Result<(), VtdError> {
         if self.capability.requires_write_buffer_flush() {
-            let command = self.gcmd | gcmd::WBF;
-            write_u32(&mut self.registers, vtd::GCMD, command)?;
+            let command = self.global_command | global_command::WBF;
+            write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
             self.poll_status(
-                |status| (status & gsts::WBFS) == 0,
+                |status| (status & global_status::WBFS) == 0,
                 VtdError::InvalidationTimeout,
             )?;
         }
@@ -1130,7 +1177,7 @@ impl Vtd {
 
     fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: VtdError) -> Result<(), VtdError> {
         for _ in 0..POLL_LIMIT {
-            if ready(read_u32(&self.registers, vtd::GSTS)?) {
+            if ready(read_u32(&self.registers, vtd::register::GLOBAL_STATUS)?) {
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -1158,14 +1205,15 @@ impl Plan {
         registers: &ReleasableDevice,
         platform_interrupt_remapping: bool,
     ) -> Result<Self, VtdError> {
-        let version = Version::from_bits(read_u32(registers, vtd::VERSION)?);
+        let version = Version::from_bits(read_u32(registers, vtd::register::VERSION)?);
         if !version.register_invalidation_supported() {
             return Err(VtdError::UnsupportedRegisterInvalidationVersion {
                 version: version.bits(),
             });
         }
-        let capability = Capability::from_bits(read_u64(registers, vtd::CAP)?);
-        let extended = ExtendedCapability::from_bits(read_u64(registers, vtd::ECAP)?);
+        let capability = Capability::from_bits(read_u64(registers, vtd::register::CAPABILITY)?);
+        let extended =
+            ExtendedCapability::from_bits(read_u64(registers, vtd::register::EXTENDED_CAPABILITY)?);
         let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
             capability: capability.bits(),
         })?;
@@ -1184,7 +1232,7 @@ impl Plan {
         if !extended.extended_interrupt_mode() {
             return Err(VtdError::NoExtendedInterruptMode);
         }
-        let status = read_u32(registers, vtd::GSTS)?;
+        let status = read_u32(registers, vtd::register::GLOBAL_STATUS)?;
         if !takeover_ready(status) {
             return Err(VtdError::FirmwareFacilitiesActive { status });
         }

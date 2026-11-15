@@ -1,7 +1,7 @@
 //! Intel VT-d DMA and interrupt-remapping register, table and invalidation encoding.
 //!
 //! ```
-//! use vtd::{AddressWidth, Capability, ContextEntry, RootEntry, enable_translation, gcmd, second_level};
+//! use vtd::{AddressWidth, Capability, ContextEntry, RootEntry, enable_translation, global_command, second_level};
 //!
 //! // SAGAW bit 2 advertises 4-level paging and MGAW field 47 a 48-bit width.
 //! let capability = Capability::from_bits((1 << (8 + 2)) | (47 << 16));
@@ -15,7 +15,7 @@
 //! assert_eq!(context.domain_id(), 7);
 //! assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
 //!
-//! assert_eq!(enable_translation(0) & gcmd::TE, gcmd::TE);
+//! assert_eq!(enable_translation(0) & global_command::TE, global_command::TE);
 //! ```
 
 #![cfg_attr(not(test), no_std)]
@@ -28,32 +28,35 @@
 /// Physical-address field of a table entry, bits 63:12; the low twelve carry flags.
 const ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
 
-/// Version register (32-bit).
-pub const VERSION: u64 = 0x00;
-/// Capability register (64-bit).
-pub const CAP: u64 = 0x08;
-/// Extended Capability register (64-bit).
-pub const ECAP: u64 = 0x10;
-/// Global Command register (32-bit).
-pub const GCMD: u64 = 0x18;
-/// Global Status register (32-bit).
-pub const GSTS: u64 = 0x1C;
-/// Root Table Address register (64-bit).
-pub const RTADDR: u64 = 0x20;
-/// Context Command register (64-bit).
-pub const CCMD: u64 = 0x28;
-/// Fault Status register (32-bit).
-pub const FSTS: u64 = 0x34;
-/// Fault Event Control register (32-bit).
-pub const FECTL: u64 = 0x38;
-/// Invalidation Queue Head register (64-bit).
-pub const IQH: u64 = 0x80;
-/// Invalidation Queue Tail register (64-bit).
-pub const IQT: u64 = 0x88;
-/// Invalidation Queue Address register (64-bit).
-pub const IQA: u64 = 0x90;
-/// Interrupt Remapping Table Address register (64-bit).
-pub const IRTA: u64 = 0xB8;
+/// Register offsets within the remapping unit's register block.
+pub mod register {
+    /// Version register (32-bit).
+    pub const VERSION: u64 = 0x00;
+    /// Capability register (64-bit).
+    pub const CAPABILITY: u64 = 0x08;
+    /// Extended Capability register (64-bit).
+    pub const EXTENDED_CAPABILITY: u64 = 0x10;
+    /// Global Command register (32-bit).
+    pub const GLOBAL_COMMAND: u64 = 0x18;
+    /// Global Status register (32-bit).
+    pub const GLOBAL_STATUS: u64 = 0x1C;
+    /// Root Table Address register (64-bit).
+    pub const ROOT_TABLE_ADDRESS: u64 = 0x20;
+    /// Context Command register (64-bit).
+    pub const CONTEXT_COMMAND: u64 = 0x28;
+    /// Fault Status register (32-bit).
+    pub const FAULT_STATUS: u64 = 0x34;
+    /// Fault Event Control register (32-bit).
+    pub const FAULT_EVENT_CONTROL: u64 = 0x38;
+    /// Invalidation Queue Head register (64-bit).
+    pub const INVALIDATION_QUEUE_HEAD: u64 = 0x80;
+    /// Invalidation Queue Tail register (64-bit).
+    pub const INVALIDATION_QUEUE_TAIL: u64 = 0x88;
+    /// Invalidation Queue Address register (64-bit).
+    pub const INVALIDATION_QUEUE_ADDRESS: u64 = 0x90;
+    /// Interrupt Remapping Table Address register (64-bit).
+    pub const INTERRUPT_REMAPPING_TABLE_ADDRESS: u64 = 0xB8;
+}
 
 /// The architecture version implemented by a remapping unit.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -98,8 +101,8 @@ pub mod fault_event_control {
 }
 
 /// The root-table pointer in bits 63:12 of RTADDR; bits 11:10 select the mode, left at legacy.
-pub const fn root_table_address(rtaddr: u64) -> u64 {
-    rtaddr & ADDRESS_MASK
+pub const fn root_table_address(pointer: u64) -> u64 {
+    pointer & ADDRESS_MASK
 }
 
 /// The Capability register.
@@ -257,7 +260,7 @@ impl ExtendedCapability {
 }
 
 /// Global Command bits, each written over a software-preserved shadow of the enable bits.
-pub mod gcmd {
+pub mod global_command {
     /// Translation Enable, bit 31.
     pub const TE: u32 = 1 << 31;
     /// Set Root Table Pointer, bit 30.
@@ -275,7 +278,7 @@ pub mod gcmd {
 }
 
 /// Global Status register bits.
-pub mod gsts {
+pub mod global_status {
     /// Translation Enable Status, bit 31.
     pub const TES: u32 = 1 << 31;
     /// Root Table Pointer Status, bit 30.
@@ -294,47 +297,47 @@ pub mod gsts {
 
 /// OR the Set-Root-Table-Pointer bit into a preserved command word.
 pub const fn set_root_table_pointer(command: u32) -> u32 {
-    command | gcmd::SRTP
+    command | global_command::SRTP
 }
 
 /// OR the Translation-Enable bit into a preserved command word.
 pub const fn enable_translation(command: u32) -> u32 {
-    command | gcmd::TE
+    command | global_command::TE
 }
 
 /// OR the Set-Interrupt-Remap-Table-Pointer bit into a command word.
 pub const fn set_interrupt_table_pointer(command: u32) -> u32 {
-    command | gcmd::SIRTP
+    command | global_command::SIRTP
 }
 
 /// A command word with remapping on and compatibility-format delivery off.
 pub const fn enable_interrupt_remapping(command: u32) -> u32 {
-    (command | gcmd::IRE) & !gcmd::CFI
+    (command | global_command::IRE) & !global_command::CFI
 }
 
 /// Whether the root table pointer has been accepted (RTPS).
 pub const fn root_table_pointer_set(status: u32) -> bool {
-    (status & gsts::RTPS) != 0
+    (status & global_status::RTPS) != 0
 }
 
 /// Whether DMA translation is enabled (TES).
 pub const fn translation_enabled(status: u32) -> bool {
-    (status & gsts::TES) != 0
+    (status & global_status::TES) != 0
 }
 
 /// Whether the interrupt-remapping table pointer was accepted (IRTPS).
 pub const fn interrupt_table_pointer_set(status: u32) -> bool {
-    (status & gsts::IRTPS) != 0
+    (status & global_status::IRTPS) != 0
 }
 
 /// Whether interrupt remapping is enabled (IRES).
 pub const fn interrupt_remapping_enabled(status: u32) -> bool {
-    (status & gsts::IRES) != 0
+    (status & global_status::IRES) != 0
 }
 
 /// Whether compatibility-format interrupts bypass remapping (CFIS).
 pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
-    (status & gsts::CFIS) != 0
+    (status & global_status::CFIS) != 0
 }
 
 /// Whether firmware left `TES`, `QIES`, `IRES` and `CFIS` all clear.
@@ -342,7 +345,8 @@ pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
 /// Only from this state may an early owner program a new root, since a live SRTP or an
 /// unfinished firmware quiescence protocol cannot be trusted.
 pub const fn takeover_ready(status: u32) -> bool {
-    status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS) == 0
+    status & (global_status::TES | global_status::QIES | global_status::IRES | global_status::CFIS)
+        == 0
 }
 
 /// Address bits carried by IRTA and IQA.
@@ -649,7 +653,7 @@ pub mod context_command {
 /// Its register is reserved while queued invalidation is enabled.
 pub mod iotlb_command {
     /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
-    pub const COMMAND_REGISTER: u64 = 0x08;
+    pub const COMMAND: u64 = 0x08;
 
     /// Invalidate IOTLB, bit 63 (set by software, cleared when done).
     const IVT: u64 = 1 << 63;

@@ -17,7 +17,7 @@ impl Vtd {
     /// Whether the unit's root-table pointer names this domain's root table.
     #[cfg(feature = "selftest")]
     pub fn walks_kernel_root_for_test(&self) -> Option<bool> {
-        let pointer = read_u64(&self.registers, vtd::RTADDR).ok()?;
+        let pointer = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS).ok()?;
         Some(root_table_address(pointer) == self.root.address())
     }
 
