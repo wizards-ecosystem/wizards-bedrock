@@ -371,10 +371,11 @@ fn apply_speculation_controls() {
         }
     }
 
-    // Arm `verw` unless `MDS_NO` makes it pointless; an unreadable `MD_CLEAR`
-    // errs toward executing it.
-    if speculation.mds_no() {
-        info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
+    // An unreadable `MD_CLEAR` errs toward executing `verw`.
+    if !speculation.needs_buffer_clear() {
+        info!(
+            "cpu: no buffer clear on return to ring 3; the processor reports immunity to everything it clears"
+        );
     } else {
         interrupt::enable_buffer_clear();
         let buffer_clear_reported = cpu::has_buffer_clear();

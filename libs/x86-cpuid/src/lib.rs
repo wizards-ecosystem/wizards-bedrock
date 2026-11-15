@@ -8,11 +8,25 @@ use core::fmt;
 
 const ARCH_CAPABILITIES_BIT: u32 = 1 << 29;
 
+const RTM_BIT: u32 = 1 << 11;
+
 const ARCH_CAPABILITIES_MSR: u32 = 0x0000_010A;
 
 pub const SPEC_CTRL_MSR: u32 = 0x0000_0048;
 
 const SPEC_CTRL_IBRS: u64 = 1 << 0;
+
+mod capability {
+    pub(super) const RDCL_NO: u64 = 1 << 0;
+    pub(super) const IBRS_ALL: u64 = 1 << 1;
+    pub(super) const RSBA: u64 = 1 << 2;
+    pub(super) const MDS_NO: u64 = 1 << 5;
+    pub(super) const TAA_NO: u64 = 1 << 8;
+    pub(super) const SBDR_SSDP_NO: u64 = 1 << 13;
+    pub(super) const FBSDP_NO: u64 = 1 << 14;
+    pub(super) const PSDP_NO: u64 = 1 << 15;
+    pub(super) const RFDS_NO: u64 = 1 << 27;
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cr4Additions(u64);
@@ -193,41 +207,42 @@ impl FrequencyHints {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Speculation {
     capabilities: Option<u64>,
+    transactional_memory: bool,
 }
 
 impl Speculation {
-    pub const fn undescribed() -> Self {
-        Self { capabilities: None }
-    }
-
-    pub const fn described(bits: u64) -> Self {
-        Self {
-            capabilities: Some(bits),
-        }
-    }
-
     // The MSR read faults unless the feature bit says it exists.
-    pub fn read(leaf_7_edx: u32, read_msr: impl FnOnce(u32) -> u64) -> Self {
-        if leaf_7_edx & ARCH_CAPABILITIES_BIT == 0 {
-            return Self::undescribed();
+    pub fn read(leaf_7: CpuidLeaf, read_msr: impl FnOnce(u32) -> u64) -> Self {
+        Self {
+            capabilities: (leaf_7.edx & ARCH_CAPABILITIES_BIT != 0)
+                .then(|| read_msr(ARCH_CAPABILITIES_MSR)),
+            transactional_memory: leaf_7.ebx & RTM_BIT != 0,
         }
-        Self::described(read_msr(ARCH_CAPABILITIES_MSR))
     }
 
     const fn rdcl_no(&self) -> bool {
-        self.has(1 << 0)
+        self.has(capability::RDCL_NO)
     }
 
     const fn enhanced_ibrs(&self) -> bool {
-        self.has(1 << 1)
+        self.has(capability::IBRS_ALL)
     }
 
     const fn rsba(&self) -> bool {
-        self.has(1 << 2)
+        self.has(capability::RSBA)
     }
 
-    pub const fn mds_no(&self) -> bool {
-        self.has(1 << 5)
+    const fn mds_no(&self) -> bool {
+        self.has(capability::MDS_NO)
+    }
+
+    // `VERW` also clears what TAA, MMIO stale data and RFDS sample; TAA needs TSX to reach.
+    pub const fn needs_buffer_clear(&self) -> bool {
+        let taa_immune = self.has(capability::TAA_NO) || !self.transactional_memory;
+        let mmio_immune = self.has(capability::SBDR_SSDP_NO)
+            && self.has(capability::FBSDP_NO)
+            && self.has(capability::PSDP_NO);
+        !(self.mds_no() && taa_immune && mmio_immune && self.has(capability::RFDS_NO))
     }
 
     pub const fn wants_boot_ibrs(&self) -> bool {
@@ -275,6 +290,11 @@ impl fmt::Display for Speculation {
             (self.enhanced_ibrs(), "ibrs_all"),
             (self.rsba(), "rsba"),
             (self.mds_no(), "mds_no"),
+            (self.has(capability::TAA_NO), "taa_no"),
+            (self.has(capability::SBDR_SSDP_NO), "sbdr_ssdp_no"),
+            (self.has(capability::FBSDP_NO), "fbsdp_no"),
+            (self.has(capability::PSDP_NO), "psdp_no"),
+            (self.has(capability::RFDS_NO), "rfds_no"),
         ] {
             if present {
                 write!(formatter, " {name}")?;
@@ -283,3 +303,6 @@ impl fmt::Display for Speculation {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

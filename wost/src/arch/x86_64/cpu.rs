@@ -452,8 +452,15 @@ pub fn enable_speculation_controls() -> Speculation {
 
 fn speculation_posture() -> Speculation {
     // A nonexistent leaf may alias another answer and must not authorize the capabilities MSR read.
-    let leaf_7_edx = if max_leaf(0) >= 7 { cpuid(7, 0).edx } else { 0 };
-    Speculation::read(leaf_7_edx, msr::read)
+    let leaf = if max_leaf(0) >= 7 {
+        cpuid(7, 0)
+    } else {
+        CpuidResult::default()
+    };
+    Speculation::read(
+        CpuidLeaf::new(leaf.eax, leaf.ebx, leaf.ecx, leaf.edx),
+        msr::read,
+    )
 }
 
 /// The CPU evidence that permits kernel mappings in user page tables.
