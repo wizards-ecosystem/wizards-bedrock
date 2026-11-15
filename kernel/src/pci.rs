@@ -1016,7 +1016,7 @@ pub(crate) fn retain_failed_probe(recovery: ProbeRecovery) {
 pub(crate) fn retain_failed_release(device: Device) {
     let mut retained = RETAINED_RELEASES.lock_leaf();
     let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
-        panic!("retained device leases exceed the twelve-function PCI registry");
+        panic!("retained device leases exceed FUNCTION_AUTHORITY_LIMIT");
     };
     *slot = Some(device);
 }
@@ -1024,7 +1024,7 @@ pub(crate) fn retain_failed_release(device: Device) {
 fn retain_failed_function(function: pci::FunctionClaim) {
     let mut retained = RETAINED_FUNCTIONS.lock_leaf();
     let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
-        panic!("retained function claims exceed the twelve-function PCI registry");
+        panic!("retained function claims exceed FUNCTION_AUTHORITY_LIMIT");
     };
     *slot = Some(function);
 }
