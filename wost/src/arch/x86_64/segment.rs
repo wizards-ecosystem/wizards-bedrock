@@ -197,6 +197,23 @@ fn reload_selectors() {
     }
 }
 
+// A selector one thread loaded must not reach the next; nulling `FS` may zero its base.
+pub(super) fn reset_data_selectors() {
+    // SAFETY: `DS` and `ES` get the present ring-3 data descriptor, which ring 0 may load and
+    // 64-bit mode ignores; a null `FS` or `GS` is always legal, and the caller rewrites the base.
+    unsafe {
+        asm!(
+            "mov ds, {data:x}",
+            "mov es, {data:x}",
+            "mov fs, {null:x}",
+            "mov gs, {null:x}",
+            data = in(reg) USER_DATA.bits(),
+            null = in(reg) 0u16,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 /// Point ring-3 traps at a stack retained by the pinned task arena.
 pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {
     write_stack(TaskState::privilege_stack_offset(0), top.address());

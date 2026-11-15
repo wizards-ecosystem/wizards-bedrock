@@ -578,10 +578,8 @@ fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
         panic!("the processor retained a non-canonical FS base");
     };
     table.slots[current].thread_base = leaving;
-    let arriving = table.slots[slot].thread_base;
-    if arriving.get() != read_thread_base() {
-        write_thread_base(arriving);
-    }
+    super::segment::reset_data_selectors();
+    write_thread_base(table.slots[slot].thread_base);
 }
 
 /// Install `binding`'s tables whenever `slot` runs.
