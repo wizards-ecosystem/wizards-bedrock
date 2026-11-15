@@ -1047,7 +1047,7 @@ fn survey_the_filesystems() {
     }
 
     for device in devfs::DEVICES {
-        match vfs::resolve(vfs::dev_root(), device.name()) {
+        match vfs::resolve(vfs::Directory::Dev, device.name()) {
             Ok(vfs::Node::Device(found)) => info!(
                 "devfs: {} is {}",
                 core::str::from_utf8(found.name()).unwrap_or("?"),

@@ -110,11 +110,6 @@ pub(crate) const fn tmp_root() -> Directory {
     }
 }
 
-/// The directory of devices.
-pub(crate) const fn dev_root() -> Directory {
-    Directory::Dev
-}
-
 /// Resolve `path` from `at` inside one mount. Each step uses the node it judged and never
 /// re-derives one from a name, so nothing is looked up twice (`openat2`'s gap).
 /// Absolute and escaping paths are malformed `Path` arguments, since no root or parent exists.

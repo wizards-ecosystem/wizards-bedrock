@@ -77,31 +77,14 @@ struct PreparedProcess {
     launch: Launch,
 }
 
-#[derive(Debug)]
-struct CommitOutcome {
-    retained: Option<(PreparedProcess, task::Bound)>,
-}
-
-impl CommitOutcome {
-    const fn committed() -> Self {
-        Self { retained: None }
-    }
-
-    fn refused(process: PreparedProcess, bound: task::Bound) -> Self {
-        Self {
-            retained: Some((process, bound)),
-        }
-    }
-
-    fn into_retained(self) -> Option<(PreparedProcess, task::Bound)> {
-        self.retained
-    }
-}
-
 impl PreparedProcess {
-    fn commit(mut self, slot: usize, bound: task::Bound) -> CommitOutcome {
+    #[expect(
+        clippy::result_large_err,
+        reason = "a refused commit hands the process back to the spawn that retries or drops it"
+    )]
+    fn commit(mut self, slot: usize, bound: task::Bound) -> Result<(), (Self, task::Bound)> {
         if slot_has_zombie(slot) {
-            return CommitOutcome::refused(self, bound);
+            return Err((self, bound));
         }
         assert!(
             LAUNCHES.lock_leaf().get(slot).is_some_and(Option::is_none),
@@ -115,7 +98,7 @@ impl PreparedProcess {
             "a reserved process slot retained a live owner"
         );
         let Some(space) = self.construction.space.take() else {
-            return CommitOutcome::refused(self, bound);
+            return Err((self, bound));
         };
         LAUNCHES.lock_leaf()[slot] = Some(self.launch);
         BOOTSTRAPS.lock_leaf()[slot] = Some(Bootstrap {
@@ -125,7 +108,7 @@ impl PreparedProcess {
             table: self.table,
             ring: self.ring,
         });
-        CommitOutcome::committed()
+        Ok(())
     }
 }
 
@@ -252,13 +235,10 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
         let Some(process) = prepared.take() else {
             return Err(bound);
         };
-        match process.commit(slot, bound).into_retained() {
-            None => Ok(()),
-            Some((process, bound)) => {
-                prepared = Some(process);
-                Err(bound)
-            }
-        }
+        process.commit(slot, bound).map_err(|(process, bound)| {
+            prepared = Some(process);
+            bound
+        })
     };
     let slot = match thread::spawn_in_space(name, cross, binding, arrange) {
         Ok(slot) => slot,

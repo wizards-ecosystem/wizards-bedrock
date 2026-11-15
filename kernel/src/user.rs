@@ -44,7 +44,7 @@ pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
 
 /// Where its ring's shared pages go: one fixed ABI address in every program's own space, which
 /// costs nothing because no two programs share a table.
-pub(crate) const RING: u64 = 0x0000_2000_0000_0000;
+const RING: u64 = 0x0000_2000_0000_0000;
 
 /// How far apart two programs' pages sit *within* their own spaces: page tables isolate them,
 /// and this keeps their recorded addresses distinct without re-reading those tables.

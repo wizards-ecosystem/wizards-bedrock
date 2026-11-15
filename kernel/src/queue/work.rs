@@ -35,7 +35,7 @@ struct OpenRequest {
     held: Rights,
     path: [u8; MAX_PATH],
     len: usize,
-    reservation: Option<SlotReservation>,
+    reservation: SlotReservation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -299,20 +299,6 @@ impl Work {
     }
 }
 
-impl PendingKind {
-    const fn is_queued_work(self) -> bool {
-        matches!(
-            self,
-            Self::OpenAt {
-                phase: WorkPhase::Queued
-            } | Self::Read {
-                phase: WorkPhase::Queued,
-                ..
-            }
-        )
-    }
-}
-
 impl RunningWork {
     fn read_request(&self) -> ReadRequest {
         let PendingKind::Read {
@@ -391,7 +377,7 @@ impl Queue {
                 held,
                 path,
                 len,
-                reservation: Some(reservation),
+                reservation,
             },
         );
         if let Some(work) = FILE_WORK.submit(work) {
@@ -459,15 +445,13 @@ impl Queue {
 
     /// Record a read before offering it to the global worker.
     fn defer_read(&self, token: u32, request: ReadRequest) -> Option<(usize, Pending)> {
-        let mut pending = self.pending.lock_leaf();
-        let (index, expected) = pending.insert(
+        self.pending.lock_leaf().insert(
             token,
             PendingKind::Read {
                 request,
                 phase: WorkPhase::Queued,
             },
-        )?;
-        Some((index, expected))
+        )
     }
 
     /// Transfer one exact queued item to the thread-context worker.
@@ -590,16 +574,18 @@ fn service(mut running: RunningWork) {
             }
         }
         WorkTag::OpenAt => {
-            let mut request = running
+            let OpenRequest {
+                directory,
+                held,
+                path,
+                len,
+                reservation,
+            } = running
                 .work
                 .open_at
                 .take()
                 .unwrap_or_else(|| panic!("OpenAt file work lost its request"));
-            let reservation = request
-                .reservation
-                .take()
-                .unwrap_or_else(|| panic!("OpenAt file work spent its reservation twice"));
-            let node = match crate::vfs::resolve(request.directory, &request.path[..request.len]) {
+            let node = match crate::vfs::resolve(directory, &path[..len]) {
                 Ok(node) => node,
                 Err(error) => {
                     drop(reservation);
@@ -614,13 +600,10 @@ fn service(mut running: RunningWork) {
             let (produced, offered) = match node {
                 crate::vfs::Node::File(file) => (
                     crate::object::file(file),
-                    request
-                        .held
-                        .intersection(Rights::UNIVERSAL)
-                        .union(Rights::READ),
+                    held.intersection(Rights::UNIVERSAL).union(Rights::READ),
                 ),
                 crate::vfs::Node::Directory(directory) => {
-                    (crate::object::directory(directory), request.held)
+                    (crate::object::directory(directory), held)
                 }
                 crate::vfs::Node::Device(_) => {
                     drop(reservation);

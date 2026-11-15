@@ -1,6 +1,6 @@
 use super::{
     COMPLETION_BYTES, COMPLETIONS_AT, Completion, DATA_AT, DATA_BYTES, ENTRIES_AT, Opcode, Queue,
-    RingPages, SUBMISSION_BYTES, SUBMISSIONS, Snapshot, Submission, completion, header, submission,
+    RingPages, SUBMISSION_BYTES, SUBMISSIONS, Submission, completion, header, submission,
 };
 
 impl Queue {
@@ -25,28 +25,21 @@ impl Queue {
             .write_payload_at(DATA_AT + at, bytes)
     }
 
-    /// Copy the indices out of the shared page, once.
-    pub(super) fn snapshot(&self) -> Snapshot {
-        let ring = self.ring.lock_leaf();
-        Snapshot {
-            submission_tail: load_index(&ring.pages, header::SUBMISSION_TAIL),
-            completion_head: load_index(&ring.pages, header::COMPLETION_HEAD),
-        }
+    pub(super) fn submission_tail(&self) -> u32 {
+        load_index(&self.ring.lock_leaf().pages, header::SUBMISSION_TAIL)
     }
 
     /// Admit and take one submission, if the snapshot says there is one.
     ///
     /// Nothing published ends the round. No completion slot is backpressure: the entry stays and is
     /// served on a later call, so an admitted operation can never be unreportable.
-    pub(super) fn take(&self, snapshot: &Snapshot) -> Option<Submission> {
+    pub(super) fn take(&self, submission_tail: u32) -> Option<Submission> {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         {
             let mut ring = self.ring.lock_leaf();
             // The tail is userspace's claim and bounds nothing alone: a runaway tail would walk
             // the kernel through unwritten slots.
-            let published = snapshot
-                .submission_tail
-                .wrapping_sub(ring.protocol.submissions().head());
+            let published = submission_tail.wrapping_sub(ring.protocol.submissions().head());
             if published == 0 || published > SUBMISSIONS {
                 return None;
             }
@@ -116,15 +109,13 @@ impl Queue {
     ///
     /// `claimed_head` is whatever the program wrote, read once by the caller; this reads no page
     /// and only bounds the value.
-    pub(crate) fn reap_up_to(&self, claimed_head: u32) -> usize {
-        let mut ring = self.ring.lock_leaf();
-
-        ring.protocol.reap_up_to(claimed_head) as usize
+    pub(crate) fn reap_up_to(&self, claimed_head: u32) {
+        self.ring.lock_leaf().protocol.reap_up_to(claimed_head);
     }
 
     /// What userspace last said it had reaped.
     pub(crate) fn completion_head(&self) -> u32 {
-        self.snapshot().completion_head
+        load_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD)
     }
 }
 /// Where in the data area `offset` and `length` name, if they name anything.

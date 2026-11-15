@@ -184,15 +184,6 @@ pub(crate) const STATUS_BAD_PATH: u32 = 10;
 pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
 pub(crate) const STATUS_IO: u32 = 12;
 
-/// The peer indices, read once per [`Queue::serve`] and never refreshed.
-///
-/// Every bound is checked against this copy, so a rewrite mid-service changes only the next call.
-#[derive(Clone, Copy, Debug)]
-struct Snapshot {
-    submission_tail: u32,
-    completion_head: u32,
-}
-
 /// An operation admitted and not yet completed, whose completion slot admission reserved.
 ///
 /// That reservation is why its later completion can never fail to find room.
@@ -224,16 +215,18 @@ enum PendingKind {
 
 impl PendingKind {
     const fn is_cancellable(self) -> bool {
+        matches!(self, Self::Timer { .. }) || self.is_queued_work()
+    }
+
+    const fn is_queued_work(self) -> bool {
         matches!(
             self,
-            Self::Timer { .. }
-                | Self::OpenAt {
-                    phase: WorkPhase::Queued
-                }
-                | Self::Read {
-                    phase: WorkPhase::Queued,
-                    ..
-                }
+            Self::OpenAt {
+                phase: WorkPhase::Queued
+            } | Self::Read {
+                phase: WorkPhase::Queued,
+                ..
+            }
         )
     }
 
@@ -383,10 +376,11 @@ impl Queue {
     /// Admission happens here because moving a tail notifies nothing. Each reserves its completion
     /// before acceptance (`models/Ring.tla`), so one with nowhere to report stays published.
     pub(crate) fn serve(self: &Arc<Self>, table: &Arc<HandleTable>) -> usize {
-        let snapshot = self.snapshot();
+        // Read once per call: a tail rewritten mid-service changes only the next call.
+        let submission_tail = self.submission_tail();
         let mut served = 0;
 
-        while let Some(submission) = self.take(&snapshot) {
+        while let Some(submission) = self.take(submission_tail) {
             // `None` was admitted and completes later against the reservation it holds.
             let Some(completion) = self.admit(submission, table) else {
                 continue;

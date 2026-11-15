@@ -119,20 +119,14 @@ fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) ->
             .all(|entry| { entry.parent != parent || &entry.name[..entry.name_len] != name }),
         "duplicate tmpfs boot name"
     );
-    let next_written = content.map(|bytes| {
-        let Some(end) = arena.written.checked_add(bytes.len()) else {
-            panic!("tmpfs byte capacity overflowed");
-        };
-        assert!(end <= MAX_BYTES, "tmpfs byte capacity is structural");
-        end
-    });
     let kind = match content {
         None => Kind::Directory,
         Some(bytes) => {
             let at = arena.written;
-            let Some(end) = next_written else {
-                panic!("file bytes were not preflighted");
+            let Some(end) = at.checked_add(bytes.len()) else {
+                panic!("tmpfs byte capacity overflowed");
             };
+            assert!(end <= MAX_BYTES, "tmpfs byte capacity is structural");
             arena.bytes[at..end].copy_from_slice(bytes);
             arena.written = end;
             Kind::File {

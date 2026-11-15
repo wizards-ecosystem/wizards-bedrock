@@ -10,10 +10,10 @@ use crate::handle::HandleTable;
 use crate::{info, queue, thread, warn};
 
 /// Version of the words placed at a program's initial stack pointer.
-pub(crate) const ENTRY_VERSION: u64 = 1;
+const ENTRY_VERSION: u64 = 1;
 
 /// Bytes in the versioned entry block.
-pub(crate) const ENTRY_BYTES: usize = 24;
+const ENTRY_BYTES: usize = 24;
 
 /// Byte offsets in the versioned entry block.
 mod entry {
@@ -65,7 +65,7 @@ static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
 static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether the one deferred refusal warning has already been emitted.
-static REPORTED: AtomicUsize = AtomicUsize::new(0);
+static REPORTED: AtomicBool = AtomicBool::new(false);
 
 static EXECUTED: AtomicBool = AtomicBool::new(false);
 static EXECUTION_REPORTED: AtomicBool = AtomicBool::new(false);
@@ -84,7 +84,7 @@ pub(crate) fn report_execution() -> bool {
 /// `true` if something was said, so the caller knows it did work.
 pub(crate) fn report_refusals() -> bool {
     let refused = REFUSED_CALLS.load(Ordering::Acquire);
-    if refused == 0 || REPORTED.swap(1, Ordering::AcqRel) != 0 {
+    if refused == 0 || REPORTED.swap(true, Ordering::AcqRel) {
         return false;
     }
     let number = LAST_REFUSED.load(Ordering::Acquire);
@@ -122,9 +122,7 @@ fn answer_call(frame: &TrapFrame, value: u64) {
 /// **Only `Exit` does not return.** Other calls preserve the caller so it can act on the result.
 pub(crate) fn call(frame: &TrapFrame) {
     let slot = task::current();
-    if frame.code_selector() & 0b11 == 3 {
-        EXECUTED.store(true, Ordering::Release);
-    }
+    EXECUTED.store(true, Ordering::Release);
     match Call::decode(frame.rax()) {
         Call::Exit => {
             if !thread::retire_from_trap(frame) {
@@ -171,8 +169,7 @@ fn serve_ring(slot: usize) -> u64 {
     };
 
     // The program's own claim about what it has reaped, taken once and bounded inside.
-    let head = ring.completion_head();
-    ring.reap_up_to(head);
+    ring.reap_up_to(ring.completion_head());
     let before = ring.served_count();
     // Due operations complete before new ones are admitted, so finished work never costs the
     // next submission a slot the kernel already owes.
