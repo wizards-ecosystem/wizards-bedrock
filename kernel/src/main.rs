@@ -7,8 +7,11 @@
 // Denied, since `forbid` would refuse the `#[allow(unsafe_code)]` glue `wost::entry!` expands here.
 #![deny(unsafe_code)]
 #![cfg_attr(
-    not(feature = "selftest"),
-    deny(clippy::expect_used, clippy::unwrap_used)
+    feature = "selftest",
+    allow(
+        clippy::expect_used,
+        reason = "the self-test reports a failure by panicking"
+    )
 )]
 
 /// Nothing may allocate before `mem::init` has run, so `kernel_main` runs it before all that might.

@@ -151,6 +151,7 @@ unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
+redundant_imports = "warn"
 
 # These fire only under rustdoc, so `cargo xtask doc` is a gate step.
 [workspace.lints.rustdoc]
@@ -166,6 +167,20 @@ redundant_explicit_links = "deny"
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
 missing_safety_doc = "deny"
+# No panic shortcuts, debug leftovers or unexplained allows; no_std code names `core`, not `std`.
+unwrap_used = "deny"
+expect_used = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+unnecessary_safety_comment = "deny"
+unnecessary_safety_doc = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+std_instead_of_core = "deny"
+alloc_instead_of_core = "deny"
+large_stack_arrays = "deny"
+cast_lossless = "deny"
 
 [profile.release]
 panic = "abort"

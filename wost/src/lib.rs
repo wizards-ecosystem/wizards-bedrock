@@ -4,7 +4,6 @@
     unsafe_code,
     reason = "the one unsafe crate; expect fails once its last unsafe goes"
 )]
-#![deny(clippy::expect_used, clippy::unwrap_used)]
 #![no_std]
 
 extern crate alloc;
