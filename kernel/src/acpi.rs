@@ -265,11 +265,8 @@ fn find_table_with_multiplicity(
             && header.signature() == signature
         {
             if found.is_some() {
-                if multiplicity == Multiplicity::Unique {
-                    warn!("acpi: duplicate {signature:?} tables refuse unique authority");
-                    return None;
-                }
-                return found;
+                warn!("acpi: duplicate {signature:?} tables refuse unique authority");
+                return None;
             }
             if multiplicity == Multiplicity::First {
                 return Some(table);
