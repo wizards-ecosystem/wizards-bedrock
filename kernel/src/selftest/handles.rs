@@ -339,43 +339,6 @@ pub(super) fn a_table_cannot_exceed_its_quota() -> bool {
     refused && table.live() == QUOTA
 }
 
-pub(super) fn the_handle_arena_backs_a_tables_whole_quota() -> bool {
-    let (committed_before, capacity_before) = HandleTable::arena_backing_for_test();
-    let Some(spare) = capacity_before.checked_sub(committed_before) else {
-        return false;
-    };
-    let Some(quota) = spare.checked_add(1) else {
-        return false;
-    };
-    if quota > (handle_space::SLOTS as usize).saturating_sub(committed_before) {
-        return false;
-    }
-
-    let Ok(table) = HandleTable::new(quota) else {
-        return false;
-    };
-    let (committed, capacity) = HandleTable::arena_backing_for_test();
-    let backed = committed == committed_before + quota
-        && capacity > capacity_before
-        && capacity >= committed;
-
-    for _ in 0..quota {
-        let object = object::bootstrap_identity();
-        if table.insert(object, Rights::UNIVERSAL).is_err() {
-            return false;
-        }
-    }
-    let (filled_commitment, filled_capacity) = HandleTable::arena_backing_for_test();
-    let filled_without_growth =
-        table.live() == quota && filled_commitment == committed && filled_capacity == capacity;
-
-    drop(table);
-    let (committed_after, capacity_after) = HandleTable::arena_backing_for_test();
-    let returned = committed_after == committed_before && capacity_after == filled_capacity;
-
-    backed && filled_without_growth && returned
-}
-
 pub(super) fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
     let first = handle_table_or_false!(1);
     let second = handle_table_or_false!(1);

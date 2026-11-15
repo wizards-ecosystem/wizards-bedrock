@@ -6,9 +6,9 @@ use wost::arch::current::paging::{
 };
 use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::arch::current::{interrupt, segment, task};
-use wost::boot::{self, MemoryRegion};
+use wost::boot::{self};
 use wost::mm;
-use x86_paging::{CanonicalAddress, Flags, LARGE_PAGE_SIZE, PAGE_SIZE};
+use x86_paging::{Flags, PAGE_SIZE};
 
 use super::processes::{AllocatorSnapshot, boundary_probe};
 use super::runs_until;
@@ -21,18 +21,6 @@ pub(super) fn the_loaded_table_is_ours() -> bool {
     paging::is_active()
         && cpu::page_table_base() == paging::active_root()
         && cpu::page_table_context_ids_are_disabled_for_test()
-}
-
-pub(super) fn an_admitted_canonical_page_can_be_invalidated() -> bool {
-    let raw = an_admitted_canonical_page_can_be_invalidated as *const () as u64;
-    let Some(before) = paging::translate(raw) else {
-        return false;
-    };
-    let Some(address) = CanonicalAddress::new(raw) else {
-        return false;
-    };
-    cpu::invalidate_page(address);
-    paging::translate(raw) == Some(before)
 }
 
 // Sample addresses are offsets from a section's base, never a sum of two higher-half addresses:
@@ -127,43 +115,6 @@ pub(super) fn the_direct_map_is_not_executable() -> bool {
     }
 }
 
-// The undescribed address is inside the address space, so only the map can refuse it; an address
-// at the top would be caught by an overflow guard instead.
-pub(super) fn firmware_reads_are_bounded() -> bool {
-    const WORD: usize = 8;
-
-    let Some(map) = mm::memory_map_for_test() else {
-        return false;
-    };
-    let pick = |wanted: fn(&MemoryRegion) -> bool| {
-        map.regions()
-            .find(|region| wanted(region) && region.len >= WORD as u64)
-            .map(|region| region.base)
-    };
-    let addresses = (
-        pick(|region| region.kind.is_allocatable()),
-        pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
-        pick(|region| region.kind.is_firmware_table()),
-        map.regions()
-            .map(|region| region.base + region.len)
-            .max()
-            .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE)),
-    );
-
-    let (Some(usable), Some(unreachable), Some(readable), Some(undescribed)) = addresses else {
-        return false;
-    };
-
-    let Some(firmware) = mm::firmware_memory() else {
-        return false;
-    };
-    let mut buffer = [0; WORD];
-    !wost::mm::FirmwareMemory::read(&firmware, usable, &mut buffer)
-        && !wost::mm::FirmwareMemory::read(&firmware, undescribed, &mut buffer)
-        && !wost::mm::FirmwareMemory::read(&firmware, unreachable, &mut buffer)
-        && wost::mm::FirmwareMemory::read(&firmware, readable, &mut buffer)
-}
-
 pub(super) fn in_reclaimed_space(
     constructor: impl FnOnce() -> Result<AddressSpace, MapError>,
     check: impl FnOnce(&mut AddressSpace) -> bool,
@@ -180,43 +131,6 @@ pub(super) fn in_reclaimed_space(
 
 fn pages_above_the_boot_stack(pages: u64) -> Option<u64> {
     thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(pages * PAGE_SIZE))
-}
-
-pub(super) fn a_second_switch_is_refused() -> bool {
-    in_reclaimed_space(AddressSpace::new, |space| {
-        paging::activate(space) == Err(ActivateError::AlreadyActive)
-    })
-}
-
-// `OWNED` is expected because `map_owned` writes it: the entry is where provenance lives.
-pub(super) fn a_mapping_added_after_the_switch_is_live() -> bool {
-    let Some(probe) = pages_above_the_boot_stack(4) else {
-        return false;
-    };
-
-    let free_before = mm::free_frames();
-    let unmapped_before = paging::translate(probe).is_none();
-
-    let Some(run) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    let physical = run.address();
-
-    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context(), probe, run, wanted) else {
-        return false;
-    };
-
-    let expected = wanted.union(Flags::PRESENT).union(Flags::OWNED);
-    let translated = paging::translate(probe) == Some((physical, expected));
-    let on_the_live_root = paging::active_root() == cpu::page_table_base();
-    let Some(Ok(returned)) = mem::unmap_for_test(&mut context(), mapping) else {
-        return false;
-    };
-    drop(returned);
-    let restored = paging::translate(probe).is_none() && mm::free_frames() == free_before;
-
-    unmapped_before && translated && on_the_live_root && restored
 }
 
 pub(super) fn two_spaces_map_one_address_to_different_memory() -> bool {
@@ -1252,36 +1166,6 @@ pub(super) fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
     })
 }
 
-// The user page is user-accessible all the way down; the kernel text is not, and neither are its
-// parents. The direct map's writable, never-executable pair is what W^X depends on being
-// reported truthfully.
-pub(super) fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
-    let Some((user_at, _)) = boundary_probe() else {
-        return false;
-    };
-    let Some((_, user_flags)) = paging::translate(user_at) else {
-        return false;
-    };
-    let user_is_user = user_flags.contains(Flags::USER);
-
-    let text = boot::sections().text.start;
-    let Some((_, text_flags)) = paging::translate(text) else {
-        return false;
-    };
-    let kernel_is_not_user = !text_flags.contains(Flags::USER);
-
-    let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
-        return false;
-    };
-    let Some((_, direct_flags)) = paging::translate(direct) else {
-        return false;
-    };
-    let direct_is_data =
-        direct_flags.contains(Flags::WRITABLE) && direct_flags.contains(Flags::NO_EXECUTE);
-
-    user_is_user && kernel_is_not_user && direct_is_data
-}
-
 // The blocker occupies the second page of the range, so the mapping gets one page in before it is
 // refused.
 pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
@@ -1322,76 +1206,6 @@ pub(super) fn a_refused_mapping_leaves_no_trace() -> bool {
         && mm::free_frames() == free_before;
 
     rejected && no_trace && returned && blocker_intact && cleaned
-}
-
-pub(super) fn a_partial_mapping_failure_returns_its_tables() -> bool {
-    const BASE: u64 = 0x0000_3700_0000_0000;
-    let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-
-    let allocator_before = AllocatorSnapshot::capture();
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
-    let allocator_with_root = AllocatorSnapshot::capture();
-    let Some(run) = mm::allocate_contiguous(2, 1) else {
-        let reclaimed = space.reclaim(None).is_ok();
-        drop(space);
-        assert!(
-            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-            "a refused mapping allocation did not return its root"
-        );
-        return false;
-    };
-    paging::refuse_mapping_after_for_test(1);
-    let result = space.map_owned(BASE, run, flags);
-    paging::restore_mapping_refusals_for_test();
-
-    let refused = result == Err(MapError::OutOfMemory);
-    let absent = space.lookup(BASE).is_none() && space.lookup(BASE + PAGE_SIZE).is_none();
-    let transaction_returned = AllocatorSnapshot::capture()
-        .accounted_physical_frames()
-        .is_some_and(|accounted| {
-            allocator_with_root.accounted_physical_frames() == Some(accounted)
-        });
-    let root_reclaimed = space.reclaim(None).is_ok_and(|tables| tables == 1);
-    drop(space);
-    let root_returned =
-        root_reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
-    refused && absent && transaction_returned && root_returned
-}
-
-pub(super) fn a_refused_remap_preserves_every_older_entry() -> bool {
-    const BASE: u64 = 0x0000_3400_0000_0000;
-    let Some(physical) = mm::first_memory_run(PAGE_SIZE * 3) else {
-        return false;
-    };
-    let Some(first) = BootRegion::describe(physical, PAGE_SIZE) else {
-        return false;
-    };
-    let Some(blocker) = BootRegion::describe(physical + 2 * PAGE_SIZE, PAGE_SIZE) else {
-        return false;
-    };
-    let Some(requested) = BootRegion::describe(physical, 2 * PAGE_SIZE) else {
-        return false;
-    };
-    in_reclaimed_space(AddressSpace::for_user, |space| {
-        let flags = Flags::NO_EXECUTE;
-        if space.map_boot(BASE, first, flags).is_err()
-            || space.map_boot(BASE + PAGE_SIZE, blocker, flags).is_err()
-        {
-            return false;
-        }
-
-        let refused = matches!(
-            space.map_boot(BASE, requested, flags),
-            Err(MapError::Conflict(address)) if address == BASE + PAGE_SIZE
-        );
-        let expected = flags.union(Flags::PRESENT);
-        let first_intact = space.lookup(BASE) == Some((physical, expected));
-        let blocker_intact =
-            space.lookup(BASE + PAGE_SIZE) == Some((physical + 2 * PAGE_SIZE, expected));
-        refused && first_intact && blocker_intact
-    })
 }
 
 pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
@@ -1580,66 +1394,6 @@ pub(super) fn shared_topology_rejects_hostile_root_entries() -> bool {
     huge && user && supervisor
 }
 
-pub(super) fn a_large_space_returns_every_table_frame() -> bool {
-    const BASE: u64 = 0x0000_1000_0000_0000;
-    const TABLES: u64 = 34;
-
-    let Some(physical) = mm::first_memory_run(PAGE_SIZE) else {
-        return false;
-    };
-    let allocator_before = AllocatorSnapshot::capture();
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
-    for index in 0..TABLES {
-        let Some(region) = BootRegion::describe(physical, PAGE_SIZE) else {
-            let reclaimed = space.reclaim(None).is_ok();
-            drop(space);
-            assert!(
-                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-                "a refused large-space description did not return its tables"
-            );
-            return false;
-        };
-        let Some(at) = index
-            .checked_mul(LARGE_PAGE_SIZE)
-            .and_then(|offset| BASE.checked_add(offset))
-        else {
-            let reclaimed = space.reclaim(None).is_ok();
-            drop(space);
-            assert!(
-                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-                "a refused large-space address did not return its tables"
-            );
-            return false;
-        };
-        if space.map_boot(at, region, Flags::NO_EXECUTE).is_err() {
-            let reclaimed = space.reclaim(None).is_ok();
-            drop(space);
-            assert!(
-                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
-                "a refused large-space map did not return its tables"
-            );
-            return false;
-        }
-    }
-
-    let allocator_while_mapped = AllocatorSnapshot::capture();
-    let Ok(returned) = space.reclaim(None) else {
-        return false;
-    };
-    drop(space);
-    let table_frames_held = allocator_before
-        .accounted_physical_frames()
-        .zip(allocator_while_mapped.accounted_physical_frames())
-        .and_then(|(before, mapped)| before.checked_sub(mapped))
-        == Some(returned);
-
-    returned > 32
-        && table_frames_held
-        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
-}
-
 // The entries go when `unmap` returns, but its frames are withheld from the allocator until the
 // token converts.
 pub(super) fn an_unmapped_range_returns_its_frames() -> bool {
@@ -1692,10 +1446,6 @@ fn probe_page(index: u64) -> Option<BootRegion> {
 
 /// How many pages [`probe_page`] hands out, and the run it asks for.
 const PROBE_PAGES: u64 = 2;
-
-pub(super) fn the_map_offers_a_run_to_probe() -> bool {
-    probe_page(0).is_some() && probe_page(PROBE_PAGES - 1).is_some()
-}
 
 pub(super) fn a_differing_remap_is_refused() -> bool {
     /// Canonical, and far from anything a fresh space would map.

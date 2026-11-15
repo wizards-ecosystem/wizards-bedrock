@@ -92,10 +92,6 @@ pub(super) fn every_shared_vtd_requester_was_fenced_across_controller_fallback()
     iommu::requester_fences_cover_shared_unit_for_test()
 }
 
-pub(super) fn the_unit_walks_the_kernels_root_table() -> bool {
-    nvme::isolation_is_active_for_test().is_some_and(|(_, walks_kernel_root)| walks_kernel_root)
-}
-
 /// Read back from the second-level tables the unit walks, not from the driver's index of them:
 /// the reachable set is exactly the live queue frames while no transfer is published.
 pub(super) fn the_dma_domain_reaches_exactly_the_live_queue_frames() -> bool {

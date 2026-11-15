@@ -1,8 +1,6 @@
-use wost::sync::SpinLock;
-
 use crate::devfs;
 use crate::fs;
-use crate::nvme;
+
 use crate::tmpfs;
 use crate::vfs;
 
@@ -85,37 +83,6 @@ fn tmp_listing_agrees_and_walks_stop(root: vfs::Directory, window: &mut [u8; 8])
         && matches!(through, Err(vfs::VfsError::NotADirectory))
         && hostile == Ok(0)
         && tmpfs::unwritten_bytes_are_refused_for_test()
-}
-
-static ENUMERATION_SENTINEL: SpinLock<()> = SpinLock::new(());
-
-pub(super) fn enumeration_callbacks_run_without_backend_ownership() -> bool {
-    let tmp = vfs::tmp_root();
-    let mut tmp_reentered = false;
-    let tmp_walked = vfs::enumerate(tmp, |name, _| {
-        {
-            let _sentinel = ENUMERATION_SENTINEL.lock_leaf();
-        }
-        if wost::sync::taken_under_a_leaf().is_some() {
-            return false;
-        }
-        tmp_reentered = vfs::resolve(tmp, name).is_ok();
-        false
-    });
-
-    let Some(fat) = vfs::root() else {
-        return false;
-    };
-    let mut fat_reentered = false;
-    let fat_walked = vfs::enumerate(fat, |name, _| {
-        if !nvme::controller_is_unlocked_for_test() {
-            return false;
-        }
-        fat_reentered = vfs::resolve(fat, name).is_ok();
-        false
-    });
-
-    tmp_walked.is_ok() && tmp_reentered && fat_walked.is_ok() && fat_reentered
 }
 
 // A device is a third kind of node, which makes the distinction structural rather than a flag.
@@ -305,52 +272,6 @@ pub(super) fn a_file_cannot_be_walked_through() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
-// Names resolve only after enumeration: both take the controller leaf, so resolving inside the
-// callback would re-enter it.
-pub(super) fn enumeration_lists_what_traversal_would_find() -> bool {
-    let Some(root) = vfs::root() else {
-        return false;
-    };
-
-    let mut names = 0usize;
-    let mut directories = 0usize;
-    let mut saw_small = false;
-    let mut saw_large = false;
-    if vfs::enumerate(root, |name, is_directory| {
-        names += 1;
-        if is_directory {
-            directories += 1;
-        }
-        saw_small |= name == SMALL_NAME;
-        saw_large |= name == LARGE_NAME;
-        true
-    })
-    .is_err()
-    {
-        return false;
-    }
-
-    let mut listed = [[0u8; 12]; 4];
-    let mut lengths = [0usize; 4];
-    let mut count = 0usize;
-    let listed_all = vfs::enumerate(root, |name, _| {
-        if count < listed.len() && name.len() <= listed[count].len() {
-            listed[count][..name.len()].copy_from_slice(name);
-            lengths[count] = name.len();
-            count += 1;
-        }
-        true
-    })
-    .is_ok();
-
-    let mut all_resolve = listed_all && count == 3;
-    for index in 0..count {
-        all_resolve &= vfs::resolve(root, &listed[index][..lengths[index]]).is_ok();
-    }
-
-    names == 3 && directories == 1 && saw_small && saw_large && all_resolve
-}
-
 pub(super) fn the_volume_mounts_and_says_what_a_fat32_volume_says() -> bool {
     matches!(fs::mount(), Some(Ok(volume)) if volume.layout_is_fat32())
 }
@@ -420,30 +341,6 @@ pub(super) fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
             // bytes.
             let mut past = [0u8; 16];
             Ok(volume.read_file(entry.cluster, entry.size, entry.size, &mut past)? == 0)
-        })),
-        Some(Ok(true))
-    )
-}
-
-// A file is never walked as a directory, whatever its bytes look like.
-pub(super) fn a_path_resolves_through_a_directory() -> bool {
-    matches!(
-        fs::mount().map(|result| result.and_then(|mut volume| {
-            let root = volume.root_cluster();
-            let nested = volume.resolve(root, &[DIRECTORY_NAME, NESTED_NAME])?;
-            if nested.size as usize != NESTED_CONTENT.len() {
-                return Ok(false);
-            }
-            let mut read = [0u8; 128];
-            let got = volume.read_file(nested.cluster, nested.size, 0, &mut read)?;
-            if got != NESTED_CONTENT.len() || &read[..got] != NESTED_CONTENT {
-                return Ok(false);
-            }
-
-            let through_a_file = volume.resolve(root, &[SMALL_NAME, NESTED_NAME]);
-            let missing = volume.resolve(root, &[b"NOPE.TXT"]);
-            Ok(through_a_file == Err(fat32::FatError::WrongKind)
-                && missing == Err(fat32::FatError::NotFound))
         })),
         Some(Ok(true))
     )

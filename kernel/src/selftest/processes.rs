@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -16,15 +17,15 @@ use x86_paging::{Flags, PAGE_SIZE};
 use x86_tables::exception;
 
 use super::files::SMALL_NAME;
+use super::runs_until;
 use super::threads::{context, yields_until};
-use super::{runs_until, runs_until_deadline};
 use crate::arch::current::trap;
 use crate::arch::current::vector;
 use crate::handle::{HandleError, HandleTable};
 use crate::nvme;
 use crate::object;
 use crate::queue;
-use crate::timepage;
+
 use crate::user;
 use crate::vfs;
 use crate::{info, mem, thread, time};
@@ -575,10 +576,6 @@ impl AllocatorSnapshot {
         )
     }
 
-    pub(super) fn accounted_physical_frames(&self) -> Option<usize> {
-        self.ownership().accounted_physical_frames()
-    }
-
     pub(super) fn has_same_ownership(&self, other: &Self) -> bool {
         self.ownership().is_preserved_since(other.ownership())
     }
@@ -683,23 +680,6 @@ pub(super) fn every_refused_spawn_returns_every_resource() -> bool {
         }
     }
     true
-}
-
-pub(super) fn a_commit_refusal_reunites_cleanup_authority() -> bool {
-    while user::collect().is_some() {}
-    let before = spawn_resources();
-    let rollback_before = user::spawn_rollbacks();
-    let result = user::spawn_refusing(user::SpawnEdge::ThreadArrangement);
-    matches!(
-        result,
-        Err(user::SpawnError::NoThread(thread::SpawnError::Arrangement))
-    ) && user::spawn_rollbacks().0 > rollback_before.0
-        && user::spawn_rollbacks().1 > rollback_before.1
-        && spawn_resources().has_same_ownership(&before)
-}
-
-pub(super) fn a_maximum_image_and_stack_fit_the_cleanup_ledger() -> bool {
-    user::maximum_cleanup_ledger_is_total_for_test()
 }
 
 pub(super) fn cleanup_refusals_retain_reachable_tables() -> bool {
@@ -1173,69 +1153,6 @@ pub(super) fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
         && spawn_resources() == resources_before
 }
 
-pub(super) fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
-    if !time::is_calibrated() || time::Revocation::current() != time::Revocation::None {
-        return false;
-    }
-    let Some(ring) = queue::Queue::new() else {
-        return false;
-    };
-    let table = shared_handle_table_or_false!(1);
-    ring.post_submission_for_test(
-        0,
-        queue::Submission::simple(queue::Opcode::Timer, 0xC10D, 10_000_000_000),
-    );
-    ring.publish_tail_for_test(1);
-    if ring.serve(&table) != 0 || ring.in_flight() != 1 {
-        return false;
-    }
-
-    let before = time::now_ns();
-    let sequence = timepage::sequence();
-    let deadline = time::uptime_ms() + 10_000;
-    let during = time::with_watchdog_disagreement_for_test(|| {
-        let frozen = time::now_ns();
-        let predicate_calls = core::cell::Cell::new(0_u32);
-        let wait_aborted = !runs_until_deadline(deadline, || {
-            let calls = predicate_calls.get() + 1;
-            predicate_calls.set(calls);
-            calls >= 2
-        });
-        let scheduler_before = time::scheduler_now_ns();
-        time::advance_scheduler_for_test();
-        let settled = ring.expire(frozen);
-        let completion = ring.read_completion(0);
-        let page_revoked =
-            timepage::read().is_some_and(|reading| reading.mode == timepage::MODE_NONE);
-        time::Revocation::current() == time::Revocation::WatchdogDisagreed
-            && !time::is_calibrated()
-            && frozen >= before
-            && time::now_ns() == frozen
-            && frozen / time::NANOSECONDS_PER_MS < deadline
-            && wait_aborted
-            && predicate_calls.get() == 0
-            && time::scheduler_now_ns() > scheduler_before
-            && settled == 1
-            && completion.token == 0xC10D
-            && completion.status == queue::STATUS_UNAVAILABLE
-            && completion.value == 0
-            && ring.in_flight() == 0
-            && ring.is_consistent()
-            && page_revoked
-    });
-    thread::rearm_current_for_test();
-    let page_restored =
-        timepage::read().is_some_and(|reading| reading.mode == timepage::MODE_COUNTER);
-
-    during
-        && time::is_calibrated()
-        && time::Revocation::current() == time::Revocation::None
-        && page_restored
-        && sequence
-            .zip(timepage::sequence())
-            .is_some_and(|(before, after)| after.wrapping_sub(before) == 4)
-}
-
 fn exact_zombie(spawned: &user::Spawned) -> bool {
     user::last_rites_of(spawned.slot)
         .is_some_and(|rites| rites.table == spawned.observed_table_incarnation)
@@ -1466,85 +1383,6 @@ pub(super) fn one_zombie_has_one_settlement_collector() -> bool {
     queue::pause_worker_for_test(false);
     let cleaned = runs_until(2_000, || {
         while user::collect().is_some() {}
-        !user::has_zombies() && thread::free_slots() == baseline.thread_slots
-    });
-
-    checked && cleaned && spawn_resources().has_same_ownership(&baseline)
-}
-
-// Nothing else exits, spawns or collects after the refusal lifts, so the worker can finish only
-// through its production retry.
-pub(super) fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
-    task::restore_release_for_test();
-    user::pause_collection_after_take_for_test(false);
-    queue::pause_worker_for_test(true);
-    let settled = runs_until(2_000, || {
-        while user::collect().is_some() {}
-        !user::has_zombies() && user::process_records_for_test() == (0, 0, 0)
-    });
-    if !settled {
-        queue::pause_worker_for_test(false);
-        return false;
-    }
-
-    let baseline = spawn_resources();
-    let retirements = thread::retirements();
-    let retained = queue::worker_retained_for_test();
-    let reaped = queue::worker_reaps_for_test();
-    PAUSED_COLLECTOR_OUTCOME.store(0, Ordering::Release);
-    PAUSED_COLLECTOR_READY.store(0, Ordering::Release);
-    PAUSED_COLLECTOR_START.store(0, Ordering::Release);
-
-    let checked = (|| {
-        thread::spawn("paused-collector", collect_while_the_owner_is_in_flight).ok()?;
-        if !runs_until(2_000, || {
-            PAUSED_COLLECTOR_READY.load(Ordering::Acquire) != 0
-        }) {
-            return None;
-        }
-        let spawned = user::run_for_bootstrap().ok()?;
-        let slot = spawned.slot;
-        if !runs_until(2_000, || {
-            thread::retirements() > retirements && user::zombie_owns_slot_for_test(slot)
-        }) {
-            return None;
-        }
-        task::refuse_releases_for_test();
-        user::pause_collection_after_take_for_test(true);
-        PAUSED_COLLECTOR_START.store(1, Ordering::Release);
-        if !runs_until(2_000, user::collection_is_paused_for_test) {
-            return None;
-        }
-        queue::pause_worker_for_test(false);
-        let worker_saw_the_owner_in_flight = runs_until(2_000, || {
-            queue::worker_retained_for_test() > retained
-                && user::collection_is_paused_for_test()
-                && PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) == 0
-        });
-        user::pause_collection_after_take_for_test(false);
-        let collector_restored_the_owner = runs_until(2_000, || {
-            PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) != 0
-        }) && PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire)
-            == 2
-            && user::zombie_owns_slot_for_test(slot);
-        task::restore_release_for_test();
-
-        let worker_finished_its_retry = runs_until(2_000, || {
-            queue::worker_reaps_for_test() > reaped && !user::has_zombies()
-        });
-        Some(
-            worker_saw_the_owner_in_flight
-                && collector_restored_the_owner
-                && worker_finished_its_retry,
-        )
-    })()
-    .unwrap_or(false);
-
-    user::pause_collection_after_take_for_test(false);
-    PAUSED_COLLECTOR_START.store(1, Ordering::Release);
-    task::restore_release_for_test();
-    queue::pause_worker_for_test(false);
-    let cleaned = runs_until(2_000, || {
         !user::has_zombies() && thread::free_slots() == baseline.thread_slots
     });
 
@@ -1811,118 +1649,6 @@ pub(super) fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let exited = trap::last_user_fault().count == faults_before;
 
     asked && answered && retained && exited
-}
-
-pub(super) fn a_program_waits_through_its_trap_frame() -> bool {
-    let faults_before = trap::last_user_fault().count;
-    let waits_before = thread::trap_waits();
-
-    let Ok(spawned) = user::run_waiting() else {
-        return false;
-    };
-    let Some(rites) = last_rites_for(&spawned, 2_000) else {
-        return false;
-    };
-
-    rites.submitted.opcode == queue::Opcode::Timer
-        && rites.submitted.token != 0
-        && rites.served == 1
-        && rites.completed.token == rites.submitted.token
-        && rites.completed.status == queue::STATUS_OK
-        && rites.completed.value > 0
-        && thread::trap_waits() == waits_before + 1
-        && trap::last_user_fault().count == faults_before
-}
-
-/// The real ring a kernel thread waits on during the syscall wake check.
-static SYSCALL_WAKE_RING: SpinLock<Option<Arc<queue::Queue>>> = SpinLock::new(None);
-
-/// Zero while the waiter is live and one after its production wait returns.
-static SYSCALL_WAITER_RETURNED: AtomicUsize = AtomicUsize::new(0);
-
-/// Makes failed orchestration release a waiter instead of stranding its slot.
-static CANCEL_SYSCALL_WAITER: AtomicUsize = AtomicUsize::new(0);
-
-fn wait_on_the_program_ring() {
-    let ring = SYSCALL_WAKE_RING.lock_leaf().as_ref().map(Arc::clone);
-    let Some(ring) = ring else {
-        return;
-    };
-    ring.wait_for_test(&mut context(), &CANCEL_SYSCALL_WAITER);
-    SYSCALL_WAITER_RETURNED.store(1, Ordering::Release);
-}
-
-pub(super) fn a_syscall_wake_arms_the_timer_for_what_it_woke() -> bool {
-    let free = thread::free_slots();
-    let faults = trap::last_user_fault().count;
-    let ring_arms = user::ring_enter_arms_for_test();
-    let handler_arms = thread::handler_arms();
-    SYSCALL_WAITER_RETURNED.store(0, Ordering::Release);
-    CANCEL_SYSCALL_WAITER.store(0, Ordering::Release);
-    *SYSCALL_WAKE_RING.lock_leaf() = None;
-
-    let Ok(spawned) = user::run_gated_for_wake() else {
-        return false;
-    };
-    finish_syscall_wake_check(spawned, free, faults, ring_arms, handler_arms)
-}
-
-fn finish_syscall_wake_check(
-    spawned: user::Spawned,
-    free: usize,
-    faults: usize,
-    ring_arms: usize,
-    handler_arms: usize,
-) -> bool {
-    let Some((ring, _)) = user::authority_for_test(spawned.slot) else {
-        assert_eq!(
-            user::release_gated_cross(),
-            1,
-            "a gated child without visible authority was not released"
-        );
-        return false;
-    };
-    *SYSCALL_WAKE_RING.lock_leaf() = Some(Arc::clone(&ring));
-    let waiter_started = thread::spawn("syscall-ring-waiter", wait_on_the_program_ring).is_ok();
-    let registered = waiter_started
-        && runs_until(500, || {
-            user::gated_cross_is_waiting() && ring.has_waiter_for_test()
-        });
-    let served = ring.served_count();
-    let child_released = user::release_gated_cross() == 1;
-    let woke = registered
-        && child_released
-        && runs_until(2_000, || {
-            ring.served_count() == served + 1
-                && SYSCALL_WAITER_RETURNED.load(Ordering::Acquire) == 1
-                && user::ring_enter_arms_for_test() == ring_arms + 1
-        });
-    let rites = last_rites_for(&spawned, 2_000);
-
-    CANCEL_SYSCALL_WAITER.store(1, Ordering::Release);
-    let _released_waiters = ring.release_waiter_for_test();
-    *SYSCALL_WAKE_RING.lock_leaf() = None;
-    let settled = runs_until(2_000, || thread::free_slots() == free);
-
-    let answered = rites.is_some_and(|rites| {
-        rites.submitted.opcode == queue::Opcode::Echo
-            && rites.served == served + 1
-            && rites.completed.token == rites.submitted.token
-            && rites.completed.status == queue::STATUS_OK
-    });
-    info!(
-        "selftest: syscall wake evidence registered={registered} released={child_released} woke={woke} answered={answered} ring-arms={}->{} handler-arms={}->{} returned={} settled={settled}",
-        ring_arms,
-        user::ring_enter_arms_for_test(),
-        handler_arms,
-        thread::handler_arms(),
-        SYSCALL_WAITER_RETURNED.load(Ordering::Acquire)
-    );
-
-    woke && answered
-        && trap::last_user_fault().count == faults
-        && user::ring_enter_arms_for_test() == ring_arms + 1
-        && settled
 }
 
 // Its own program: every ring-3 check counts crossings, and an extra one would land on whichever

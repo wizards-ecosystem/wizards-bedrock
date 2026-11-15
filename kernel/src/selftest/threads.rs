@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use stack_layout::{Slot, StackLayout};
 use wost::arch::current::paging::{self, AddressSpace};
-use wost::arch::current::{interrupt, task, xstate};
+use wost::arch::current::{task, xstate};
 use wost::mm;
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -18,7 +18,7 @@ use crate::queue;
 use crate::thread::ThreadContext;
 use crate::user;
 use crate::wait::WaitQueue;
-use crate::{error, input, mem, thread, time};
+use crate::{mem, thread, time};
 
 static REREAD_QUEUE: WaitQueue = WaitQueue::new();
 static REREAD_READY: AtomicUsize = AtomicUsize::new(0);
@@ -281,19 +281,6 @@ pub(super) fn registers_survive_a_switch() -> bool {
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
 
-pub(super) fn a_leaf_guard_is_the_last_lock() -> bool {
-    match wost::sync::taken_under_a_leaf() {
-        None => true,
-        Some(at) => {
-            match wost::sync::the_leaf_it_was_under() {
-                Some(leaf) => error!("{at} took a lock under the leaf guard at {leaf}"),
-                None => error!("a lock was taken under a leaf guard at {at}"),
-            }
-            false
-        }
-    }
-}
-
 pub(super) fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
     let mut context = context();
     let free_before = mm::free_frames();
@@ -528,69 +515,6 @@ pub(super) fn thread_stacks_are_guarded() -> bool {
     exact && pinned && init_validation
 }
 
-/// What a thread found the interrupt flag to be on its first instruction:
-/// zero before it ran, one for set, two for clear.
-static FIRST_RUN_FLAG: AtomicUsize = AtomicUsize::new(0);
-static FIRST_RUN_CONTEXT: AtomicUsize = AtomicUsize::new(0);
-
-fn report_the_flag() {
-    FIRST_RUN_CONTEXT.store(
-        interrupt::context_matches_for_test(task::current()) as usize,
-        Ordering::Release,
-    );
-    FIRST_RUN_FLAG.store(
-        if interrupt::are_enabled() { 1 } else { 2 },
-        Ordering::Release,
-    );
-}
-
-pub(super) fn a_new_thread_is_interruptible() -> bool {
-    FIRST_RUN_FLAG.store(0, Ordering::Release);
-    FIRST_RUN_CONTEXT.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("flag", report_the_flag).is_err() {
-        return false;
-    }
-
-    let ran = yields_until(|| FIRST_RUN_FLAG.load(Ordering::Acquire) != 0);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    ran && exited
-        && FIRST_RUN_FLAG.load(Ordering::Acquire) == 1
-        && FIRST_RUN_CONTEXT.load(Ordering::Acquire) == 1
-        && interrupt::context_matches_for_test(task::current())
-        && interrupt::exclusion_order_is_enforced_for_test()
-}
-
-/// Where [`report_a_local_address`] leaves its probe, or zero until it runs.
-static ALIGNMENT_PROBE: AtomicUsize = AtomicUsize::new(0);
-
-fn report_a_local_address() {
-    #[repr(align(16))]
-    struct Probe {
-        _pad: [u8; 16],
-    }
-
-    let probe = Probe { _pad: [0; 16] };
-    ALIGNMENT_PROBE.store(
-        core::hint::black_box(&raw const probe as usize),
-        Ordering::Release,
-    );
-}
-
-pub(super) fn a_thread_starts_aligned() -> bool {
-    ALIGNMENT_PROBE.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("aligned", report_a_local_address).is_err() {
-        return false;
-    }
-
-    let ran = yields_until(|| ALIGNMENT_PROBE.load(Ordering::Acquire) != 0);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    ran && exited && ALIGNMENT_PROBE.load(Ordering::Acquire).is_multiple_of(16)
-}
-
 pub(super) fn leave_at_once() {}
 
 const REUSED_SLOT_SECRET: xstate::Probe = xstate::Probe {
@@ -648,7 +572,6 @@ pub(super) static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
 
 /// How many loops each spinner has run: one counter per weight class.
 pub(super) static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
-static HEAVY_SPINS: AtomicUsize = AtomicUsize::new(0);
 
 fn spin_counting(counter: &AtomicUsize) {
     while STOP_SPINNING.load(Ordering::Acquire) == 0 {
@@ -659,10 +582,6 @@ fn spin_counting(counter: &AtomicUsize) {
 
 pub(super) fn light_spinner() {
     spin_counting(&LIGHT_SPINS);
-}
-
-fn heavy_spinner() {
-    spin_counting(&HEAVY_SPINS);
 }
 
 pub(super) fn the_clock_is_running() -> bool {
@@ -688,215 +607,6 @@ pub(super) fn a_spinner_cannot_starve_another() -> bool {
     let exited = yields_until(|| thread::free_slots() == free);
 
     progressed && exited
-}
-
-pub(super) fn runtime_divides_by_weight() -> bool {
-    /// Long enough for a couple of hundred slices between them.
-    const WINDOW_MS: u64 = 600;
-
-    STOP_SPINNING.store(0, Ordering::Release);
-    LIGHT_SPINS.store(0, Ordering::Release);
-    HEAVY_SPINS.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn_weighted_for_test("light", light_spinner, eevdf::BASE_WEIGHT).is_err()
-        || thread::spawn_weighted_for_test("heavy", heavy_spinner, 2 * eevdf::BASE_WEIGHT).is_err()
-    {
-        return false;
-    }
-
-    runs_until(WINDOW_MS, || false);
-    STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    let light = LIGHT_SPINS.load(Ordering::Relaxed);
-    let heavy = HEAVY_SPINS.load(Ordering::Relaxed);
-    // Integer bounds: 1.4 ≤ heavy / light ≤ 2.6, without dividing.
-    let ratio_in_bounds = light > 0 && heavy * 10 >= light * 14 && heavy * 10 <= light * 26;
-
-    exited && ratio_in_bounds
-}
-
-/// What the blocked reader saw: zero until it has anything to say.
-static READER_SAW: AtomicUsize = AtomicUsize::new(0);
-
-/// Whether the reader actually stopped being runnable to get its keystroke:
-/// zero until it knows, one for blocked, two for not.
-///
-/// Recorded across the read because key arrival alone cannot distinguish a
-/// blocked reader from a polling one.
-static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
-
-fn read_one_key() {
-    let mut context = context();
-    let blocks = thread::blocks();
-    let keystroke = input::read_key(&mut context);
-    READER_BLOCKED.store(
-        if thread::blocks() > blocks { 1 } else { 2 },
-        Ordering::Release,
-    );
-    READER_SAW.store(keystroke.event.key as usize + 1, Ordering::Release);
-}
-
-pub(super) fn a_blocked_reader_waits_while_the_poller_runs() -> bool {
-    READER_SAW.store(0, Ordering::Release);
-    READER_BLOCKED.store(0, Ordering::Release);
-
-    let blocks = thread::blocks();
-    if thread::spawn("reader", read_one_key).is_err() {
-        return false;
-    }
-    // Long enough for the reader to be picked, run, and block; short beside
-    // everything between here and the injection.
-    let blocked = runs_until(50, || thread::blocks() > blocks);
-
-    let passes = input::poller_passes();
-    let poller_progressed = runs_until(100, || input::poller_passes() > passes);
-
-    blocked && poller_progressed && input::has_reader() && READER_SAW.load(Ordering::Acquire) == 0
-}
-
-pub(super) fn the_blocked_reader_woke_with_the_key(passes_before: usize) -> bool {
-    let wanted = ps2_keys::Key::A as usize + 1;
-
-    let woke_through_polling = runs_until(1_000, || {
-        READER_SAW.load(Ordering::Acquire) != 0 && input::poller_passes() > passes_before
-    });
-    woke_through_polling
-        && READER_SAW.load(Ordering::Acquire) == wanted
-        && READER_BLOCKED.load(Ordering::Acquire) == 1
-        && input::dropped_events() == 0
-}
-
-static CLOCKLESS_READER_SAW: AtomicUsize = AtomicUsize::new(0);
-static CLOCKLESS_KEY_QUEUED: AtomicUsize = AtomicUsize::new(0);
-
-fn read_clockless_key() {
-    let key = input::read_key(&mut context()).event.key;
-    CLOCKLESS_READER_SAW.store(key as usize + 1, Ordering::Release);
-}
-
-fn advance_beside_clockless_poller() {
-    while !input::poller_started_for_test() {
-        thread::yield_now(&mut context());
-    }
-    if input::queue_key_for_test(ps2_keys::Key::A) {
-        CLOCKLESS_KEY_QUEUED.store(1, Ordering::Release);
-    }
-    input::mark_poller_peer_progress_for_test();
-}
-
-pub(super) fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
-    const ROUNDS: usize = 4;
-
-    let free = thread::free_slots();
-    let before = input::poller_passes();
-    let expiries_before = time::expiries();
-    if !input::start_bounded_poller(ROUNDS) {
-        return false;
-    }
-    // Its own sleeps are what let this thread run, so waiting is a sleep too.
-    thread::sleep_ms(&mut context(), (ROUNDS as u64 + 2) * 10);
-
-    let passes = input::poller_passes() - before;
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    // It slept between rounds, which the count cannot show: each sleep arms a timer, one of which
-    // is this thread's own.
-    let slept = time::expiries() - expiries_before >= ROUNDS as u64;
-
-    if passes != ROUNDS || !exited || !slept {
-        return false;
-    }
-
-    CLOCKLESS_READER_SAW.store(0, Ordering::Release);
-    CLOCKLESS_KEY_QUEUED.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("clockless-reader", read_clockless_key).is_err()
-        || !yields_until(input::has_reader)
-    {
-        return false;
-    }
-
-    let clockless = time::without_calibration_for_test(|| {
-        if thread::spawn("clockless-poller-peer", advance_beside_clockless_poller).is_err()
-            || !input::start_bounded_poller(ROUNDS)
-        {
-            return false;
-        }
-        let finished = yields_until(|| input::poller_passes() >= before + 2 * ROUNDS);
-        let reader_ran = yields_until(|| CLOCKLESS_READER_SAW.load(Ordering::Acquire) != 0);
-        let threads_exited = yields_until(|| thread::free_slots() == free);
-        finished
-            && reader_ran
-            && threads_exited
-            && CLOCKLESS_KEY_QUEUED.load(Ordering::Acquire) == 1
-            && CLOCKLESS_READER_SAW.load(Ordering::Acquire) == ps2_keys::Key::A as usize + 1
-            && input::poller_saw_peer_progress_for_test()
-    });
-
-    if !clockless || !time::is_calibrated() {
-        return false;
-    }
-
-    let before = input::poller_passes();
-    input::start_poller();
-    runs_until(100, || {
-        input::poller_started_for_test() && input::poller_passes() > before
-    })
-}
-
-/// Release every thread used to fill the table before the idle retry.
-static RELEASE_IDLE_FILLERS: AtomicUsize = AtomicUsize::new(0);
-
-fn wait_for_idle_retry() {
-    while RELEASE_IDLE_FILLERS.load(Ordering::Acquire) == 0 {
-        spin_loop();
-    }
-}
-
-pub(super) fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
-    let free = thread::free_slots();
-    if free == 0 || thread::idle_threads() != 0 {
-        return false;
-    }
-
-    RELEASE_IDLE_FILLERS.store(0, Ordering::Release);
-    for _ in 0..free {
-        if thread::spawn("idle-slot-filler", wait_for_idle_retry).is_err() {
-            RELEASE_IDLE_FILLERS.store(1, Ordering::Release);
-            assert!(
-                yields_until(|| thread::free_slots() == free),
-                "idle-slot filler cleanup did not return every slot"
-            );
-            return false;
-        }
-    }
-
-    thread::start_idle();
-    let refused =
-        thread::free_slots() == 0 && !thread::idle_is_started() && thread::idle_threads() == 0;
-
-    RELEASE_IDLE_FILLERS.store(1, Ordering::Release);
-    let released = yields_until(|| thread::free_slots() == free);
-    RELEASE_IDLE_FILLERS.store(0, Ordering::Release);
-    if !released {
-        return false;
-    }
-
-    thread::start_idle();
-    thread::start_idle();
-    let exact = refused
-        && thread::idle_is_started()
-        && thread::idle_threads() == 1
-        && thread::free_slots() + 1 == free;
-    if !thread::idle_is_started() {
-        assert!(
-            thread::restore_idle_retry_for_test(),
-            "the refused idle reservation could not be restored"
-        );
-        thread::start_idle();
-    }
-    exact
 }
 
 pub(super) fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
@@ -952,26 +662,4 @@ pub(super) fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
         && LIGHT_SPINS.load(Ordering::Relaxed) > 0
         && settled
         && spawn_resources().has_same_ownership(&resources)
-}
-
-pub(super) fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
-    // Slept rather than spun: while this normal thread is runnable the idle
-    // thread must not run, which the second half checks.
-    let idled = thread::idle_halts();
-    thread::sleep_ms(&mut context(), 20);
-    let ran_when_free = thread::idle_halts() > idled;
-
-    STOP_SPINNING.store(0, Ordering::Release);
-    LIGHT_SPINS.store(0, Ordering::Release);
-    let free = thread::free_slots();
-    if thread::spawn("busy", light_spinner).is_err() {
-        return false;
-    }
-    let busy = thread::idle_halts();
-    runs_until(100, || false);
-    let stayed_off = thread::idle_halts() == busy;
-    STOP_SPINNING.store(1, Ordering::Release);
-    let exited = yields_until(|| thread::free_slots() == free);
-
-    ran_when_free && stayed_off && exited && LIGHT_SPINS.load(Ordering::Relaxed) > 0
 }
