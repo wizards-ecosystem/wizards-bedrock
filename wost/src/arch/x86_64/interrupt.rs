@@ -879,6 +879,9 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     "cmp rsp, r10",
     "jae wost_kpti_stop",
     "12:",
+    // A double fault runs on the interrupt stack by design.
+    "cmp qword ptr [rsp + {frame_vector}], {double_fault}",
+    "je 13f",
     "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
     "cmp rsp, r10",
     "jae 13f",
@@ -1083,6 +1086,8 @@ const _: () = assert!(idt::TABLE_LEN <= 256);
     iret_words = const 5,
     frame_rip = const core::mem::offset_of!(RawTrapFrame, instruction_pointer),
     frame_cs = const core::mem::offset_of!(RawTrapFrame, code_selector),
+    frame_vector = const core::mem::offset_of!(RawTrapFrame, vector),
+    double_fault = const exception::DOUBLE_FAULT as u64,
     user_frame_rip = const 15 * size_of::<u64>(),
     entry_stack_bytes = const super::kpti::STACK_BYTES,
     entry_stack_words = const super::kpti::STACK_BYTES / size_of::<u64>(),
