@@ -422,15 +422,12 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
 }
 
 const fn short_name(slot: &[u8; ENTRY_BYTES], case: u8) -> Option<([u8; 12], usize)> {
-    let Some(base_len) = padded_len(slot, 0, 8) else {
-        return None;
-    };
-    if base_len == 0 {
+    // Only the first name byte may not be a space; later ones may be embedded.
+    if slot[0] == b' ' {
         return None;
     }
-    let Some(extension_len) = padded_len(slot, 8, 3) else {
-        return None;
-    };
+    let base_len = padded_len(slot, 0, 8);
+    let extension_len = padded_len(slot, 8, 3);
 
     let mut name = [0u8; 12];
     let mut length = 0;
@@ -464,19 +461,12 @@ const fn short_name(slot: &[u8; ENTRY_BYTES], case: u8) -> Option<([u8; 12], usi
     Some((name, length))
 }
 
-const fn padded_len(slot: &[u8; ENTRY_BYTES], start: usize, width: usize) -> Option<usize> {
-    let mut length = 0;
-    while length < width && slot[start + length] != b' ' {
-        length += 1;
+const fn padded_len(slot: &[u8; ENTRY_BYTES], start: usize, width: usize) -> usize {
+    let mut length = width;
+    while length > 0 && slot[start + length - 1] == b' ' {
+        length -= 1;
     }
-    let mut index = length;
-    while index < width {
-        if slot[start + index] != b' ' {
-            return None;
-        }
-        index += 1;
-    }
-    Some(length)
+    length
 }
 
 const fn presented(byte: u8, lowercase: u8) -> u8 {

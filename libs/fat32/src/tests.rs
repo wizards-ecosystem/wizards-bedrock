@@ -25,7 +25,7 @@ fn impossible_volume_geometry_is_refused_before_arithmetic() {
 }
 
 #[test]
-fn a_reserved_link_beyond_the_last_cluster_does_not_hide_it() {
+fn neither_a_reserved_link_nor_an_embedded_space_hides_anything() {
     let mut volume = image_volume(1, 4);
     set_link(&mut volume, FIRST_DATA_CLUSTER, FIRST_DATA_CLUSTER + 1);
     set_link(&mut volume, FIRST_DATA_CLUSTER + 1, FIRST_RESERVED_CLUSTER);
@@ -43,6 +43,19 @@ fn a_reserved_link_beyond_the_last_cluster_does_not_hide_it() {
         "the hare treated the unused successor as a failed read"
     );
     assert_eq!(buffer[SECTOR_BYTES], 0xA5);
+
+    let root = volume
+        .bpb()
+        .sector_of(FIRST_DATA_CLUSTER)
+        .expect("cluster 2 is on the volume") as usize;
+    let slot = &mut volume.source.sectors[root][..ENTRY_BYTES];
+    slot[..11].copy_from_slice(b"A B     TXT");
+    slot[11] = attribute::ARCHIVE;
+    slot[26..28].copy_from_slice(&3u16.to_le_bytes());
+    let found = volume
+        .lookup(FIRST_DATA_CLUSTER, b"a b.txt")
+        .expect("an embedded space is a legal 8.3 name");
+    assert_eq!((found.name(), found.cluster), (&b"A B.TXT"[..], 3));
 }
 
 #[derive(Debug)]
