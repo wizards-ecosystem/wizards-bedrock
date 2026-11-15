@@ -134,7 +134,7 @@ fn kind_of(entry_type: EntryType) -> MemoryKind {
         EntryType::RESERVED => MemoryKind::Reserved,
         // SAFETY: `EntryType` is `#[repr(transparent)]` over `u64`: identical layout, every bit
         // pattern valid for both. The crate provides no accessor for the value.
-        other => MemoryKind::Unknown(unsafe { core::mem::transmute::<EntryType, u64>(other) }),
+        other => MemoryKind::Other(unsafe { core::mem::transmute::<EntryType, u64>(other) }),
     }
 }
 

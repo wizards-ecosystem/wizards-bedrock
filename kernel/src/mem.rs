@@ -410,7 +410,7 @@ fn describe(map: &MemoryMap) {
 
 /// Whether a region type is one this kernel has no name for.
 fn unrecognised(kind: &MemoryKind) -> bool {
-    matches!(kind, MemoryKind::Unknown(_))
+    matches!(kind, MemoryKind::Other(_))
 }
 
 /// Build the kernel's own page tables and switch to them.

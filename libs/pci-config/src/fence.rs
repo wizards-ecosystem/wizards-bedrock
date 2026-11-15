@@ -53,8 +53,8 @@ impl HandoffFencePolicy {
         }
     }
 
-    /// Classify the one exact platform function allowed to retain command bit 2.
-    pub(crate) fn classify_non_requester(
+    /// Qualify the one exact platform function allowed to retain command bit 2.
+    pub(crate) fn qualify_non_requester(
         self,
         at: Address,
         identity: u32,
@@ -89,7 +89,7 @@ impl HandoffFencePolicy {
     }
 
     /// Whether `at` is VMware's exact PIIX4 ISA bridge with read-only BME.
-    fn classify_isa_requester(
+    fn is_read_only_isa_bridge(
         self,
         at: Address,
         identity: u32,
@@ -347,10 +347,10 @@ fn fence_function(
                 operation: HandoffAccess::ReadClass,
             })?;
         let fenced = if let Some(authority) =
-            policy.classify_non_requester(at, identity, class, before, found)
+            policy.qualify_non_requester(at, identity, class, before, found)
         {
             Fenced::NonRequester(authority)
-        } else if policy.classify_isa_requester(at, identity, class, before, found) {
+        } else if policy.is_read_only_isa_bridge(at, identity, class, before, found) {
             Fenced::Quiesced(quiesce_isa_requester(at, identity, class, found, access)?)
         } else {
             return Err(HandoffFenceError::CommandRefused {

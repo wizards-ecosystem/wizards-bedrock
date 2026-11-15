@@ -47,7 +47,7 @@ use x86_paging::activation::State as ActivationState;
 use x86_paging::device::{DeviceRange as CheckedDeviceRange, DeviceRangeError};
 use x86_paging::kpti::{
     EnclavePage, EnclavePermission, FlushPremise, FlushPremiseError, ObservedPage,
-    PairCleanupState, PairConstructionLedger, PairFrameAuthority, PcidState,
+    PairCleanupState, PairConstructionLedger, PairFrameCount, PcidState,
     RootPair as CheckedRootPair, RootPairError, enclave_matches, shared_user_link_matches,
 };
 use x86_paging::{
@@ -531,7 +531,7 @@ impl core::error::Error for ReclaimFailure {}
 pub struct AddressSpace {
     roots: Option<AddressSpaceRoots>,
     /// Linear ownership of both paired roots and every private table frame.
-    pair_authority: Option<PairFrameAuthority>,
+    pair_authority: Option<PairFrameCount>,
     /// Physical ranges already promised to device mappings in this space.
     devices: Vec<Option<DeviceExtent>>,
     /// Tables `set` allocated walking down, returned with the roots; never the shared kernel ones.

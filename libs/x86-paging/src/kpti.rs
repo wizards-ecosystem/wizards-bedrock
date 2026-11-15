@@ -106,21 +106,21 @@ impl PairConstructionLedger {
     }
 
     /// Publish complete pair-frame authority after both roots exist.
-    pub const fn publish(self) -> Option<PairFrameAuthority> {
+    pub const fn publish(self) -> Option<PairFrameCount> {
         if self.root_frames != 2 {
             return None;
         }
-        Some(PairFrameAuthority { table_frames: 0 })
+        Some(PairFrameCount { table_frames: 0 })
     }
 }
 
 /// Complete frame authority for one inseparable full/stripped root pair.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct PairFrameAuthority {
+pub struct PairFrameCount {
     table_frames: usize,
 }
 
-impl PairFrameAuthority {
+impl PairFrameCount {
     const ROOT_FRAMES: usize = 2;
 
     /// Extend the authority by one newly acquired intermediate table frame.
@@ -169,7 +169,7 @@ impl PairFrameAuthority {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PairCleanupState {
     /// Cleanup refused before returning a frame, so the whole pair remains.
-    Retained(PairFrameAuthority),
+    Retained(PairFrameCount),
     /// Both roots and every intermediate table were returned.
     Released,
 }

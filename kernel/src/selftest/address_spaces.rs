@@ -1920,7 +1920,7 @@ pub(super) fn device_window_reuses_arbitrary_order_gaps() -> bool {
     for region in map.regions().filter(|region| {
         matches!(
             region.kind,
-            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+            boot::MemoryKind::Reserved | boot::MemoryKind::Other(_)
         )
     }) {
         let Some(mut physical) = region.base.checked_next_multiple_of(PAGE_SIZE) else {
@@ -1940,7 +1940,7 @@ pub(super) fn device_window_reuses_arbitrary_order_gaps() -> bool {
                 !overlaps
                     || matches!(
                         other.kind,
-                        boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+                        boot::MemoryKind::Reserved | boot::MemoryKind::Other(_)
                     )
             });
             if exclusively_device
@@ -2038,7 +2038,7 @@ fn map_three_page_device_extent(context: &mut ThreadContext) -> Option<paging::D
     for region in map.regions().filter(|region| {
         matches!(
             region.kind,
-            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+            boot::MemoryKind::Reserved | boot::MemoryKind::Other(_)
         )
     }) {
         let Some(mut physical) = region.base.checked_next_multiple_of(PAGE_SIZE) else {

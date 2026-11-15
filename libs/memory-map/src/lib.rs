@@ -37,7 +37,7 @@ pub enum MemoryKind {
     AcpiNvs,
     Reserved,
     BadMemory,
-    Unknown(u64),
+    Other(u64),
 }
 
 impl MemoryKind {
@@ -66,7 +66,7 @@ impl MemoryKind {
     }
 
     const fn permits_device_mapping(self) -> bool {
-        matches!(self, Self::Reserved | Self::Unknown(_))
+        matches!(self, Self::Reserved | Self::Other(_))
     }
 }
 
@@ -81,7 +81,7 @@ impl fmt::Display for MemoryKind {
             Self::AcpiNvs => core::fmt::Write::write_str(f, "acpi nvs"),
             Self::Reserved => core::fmt::Write::write_str(f, "reserved"),
             Self::BadMemory => core::fmt::Write::write_str(f, "bad memory"),
-            Self::Unknown(value) => write!(f, "unknown type {value}"),
+            Self::Other(value) => write!(f, "unknown type {value}"),
         }
     }
 }

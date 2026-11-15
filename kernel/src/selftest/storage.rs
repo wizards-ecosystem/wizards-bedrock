@@ -239,7 +239,7 @@ pub(super) fn firmware_reserved_dma_regions_never_become_mapping_authority() -> 
     let device = |kind: boot::MemoryKind| {
         matches!(
             kind,
-            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+            boot::MemoryKind::Reserved | boot::MemoryKind::Other(_)
         )
     };
     let mut hole = None;
