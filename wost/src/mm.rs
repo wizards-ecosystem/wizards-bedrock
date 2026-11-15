@@ -28,7 +28,7 @@ pub use selftest::{
 pub(crate) use shared::SharedKeepalive;
 pub use shared::{Shared, SharedBytes, SharedRing, USegment};
 
-use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
+use crate::boot::{DirectMap, MemoryKind, MemoryMap, MemoryRegion};
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
@@ -233,6 +233,22 @@ pub(crate) fn map_direct_cache(start: u64, end: u64) -> Option<crate::boot::Dire
     MAP.lock_leaf()
         .as_ref()
         .and_then(|map| map.direct_map_cache(start, end))
+}
+
+/// Whether the boot map puts every byte of `start..start + len` in the kernel image.
+pub(crate) fn is_kernel_image(start: u64, len: u64) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    MAP.lock_leaf().as_ref().is_some_and(|map| {
+        map.regions()
+            .filter(|region| {
+                region.len != 0
+                    && region.base < end
+                    && start < region.base.saturating_add(region.len)
+            })
+            .all(|region| region.kind == MemoryKind::KernelAndModules)
+    })
 }
 
 /// The direct map [`init`] recorded, so a physical-address owner can name a byte for readback.

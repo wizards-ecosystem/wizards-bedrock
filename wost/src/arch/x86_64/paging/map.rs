@@ -284,6 +284,11 @@ impl AddressSpace {
             return Err(MapError::CacheAlias(virtual_base));
         }
         self.may_reach(virtual_base, region.len)?;
+        // Outside the kernel image the memory is reusable, so an executable alias would outlive it.
+        if !flags.contains(Flags::NO_EXECUTE) && !mm::is_kernel_image(region.base.get(), region.len)
+        {
+            return Err(MapError::WriteExecute(virtual_base));
+        }
         self.map_range(
             virtual_base,
             region.base.get(),
