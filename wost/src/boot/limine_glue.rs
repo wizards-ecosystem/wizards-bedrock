@@ -140,7 +140,7 @@ fn kind_of(entry_type: EntryType) -> MemoryKind {
 
 fn take_direct_map(request: &'static HhdmRequest) -> Result<DirectMap, HandoffError> {
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
-    Ok(DirectMap::new(response.offset()))
+    DirectMap::from_handoff(response.offset())
 }
 
 fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer, FramebufferError> {

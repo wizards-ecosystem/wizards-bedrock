@@ -264,6 +264,18 @@ impl DirectMap {
         Self { offset }
     }
 
+    // Frame pointers are this plus an address below the ceiling: page-aligned, in the higher half.
+    pub(crate) const fn from_handoff(offset: u64) -> Result<Self, HandoffError> {
+        if offset < x86_paging::USER_END
+            || !x86_paging::is_canonical(offset)
+            || !offset.is_multiple_of(x86_paging::PAGE_SIZE)
+            || offset.checked_add(crate::mm::CEILING).is_none()
+        {
+            return Err(HandoffError::DirectMapOffset(offset));
+        }
+        Ok(Self::new(offset))
+    }
+
     pub const fn offset(self) -> u64 {
         self.offset
     }
@@ -470,6 +482,7 @@ pub enum HandoffError {
     Empty,
     /// The memory map could not be copied completely into early storage.
     MemoryMap(MemoryMapError),
+    DirectMapOffset(u64),
 }
 
 impl fmt::Display for HandoffError {
@@ -478,6 +491,10 @@ impl fmt::Display for HandoffError {
             Self::NoResponse => f.write_str("bootloader ignored the request"),
             Self::Empty => f.write_str("bootloader answered with nothing"),
             Self::MemoryMap(reason) => write!(f, "invalid memory map: {reason}"),
+            Self::DirectMapOffset(offset) => write!(
+                f,
+                "direct-map offset {offset:#x} is not a page-aligned higher-half base"
+            ),
         }
     }
 }
