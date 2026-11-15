@@ -2,7 +2,7 @@
 
 pub const HEADER_BYTES: usize = 576;
 
-pub const X87: u64 = 1 << 0;
+const X87: u64 = 1 << 0;
 
 const SSE: u64 = 1 << 1;
 
@@ -10,21 +10,25 @@ const AVX: u64 = 1 << 2;
 
 const AVX_SUPPORTED: u32 = 1 << 28;
 
-pub const PERMITTED: u64 = X87 | SSE | AVX;
+const PERMITTED: u64 = X87 | SSE | AVX;
 
 const COMPONENTS: usize = 20;
 
-pub const fn has_permitted_components(available: u64) -> bool {
-    available & PERMITTED == PERMITTED
+// `CPUID.0DH` does not imply the leaf 1 AVX instruction support, so AVX state needs both.
+pub const fn enabled_components(available: u64, basic_ecx: u32) -> Option<u64> {
+    let mut mask = available & PERMITTED;
+    if basic_ecx & AVX_SUPPORTED == 0 {
+        mask &= !AVX;
+    }
+    if mask & (X87 | SSE) == X87 | SSE {
+        Some(mask)
+    } else {
+        None
+    }
 }
 
-pub const fn matches_permitted_configuration(configured: u64) -> bool {
-    configured == PERMITTED
-}
-
-// `CPUID.0DH` does not imply the leaf 1 AVX instruction support.
-pub const fn avx_state_has_instruction_support(mask: u64, basic_ecx: u32) -> bool {
-    mask & AVX == 0 || basic_ecx & AVX_SUPPORTED != 0
+pub const fn includes_avx(mask: u64) -> bool {
+    mask & AVX != 0
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

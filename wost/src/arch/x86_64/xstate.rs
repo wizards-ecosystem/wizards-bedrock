@@ -5,7 +5,7 @@
 
 use core::arch::asm;
 use core::arch::x86_64::__cpuid_count;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use x86_cpuid::xstate::{self, Alignment, Component, Layout};
 
@@ -25,6 +25,8 @@ const XSAVE_SUPPORTED: u32 = 1 << 26;
 /// `CPUID.0DH.1:EAX` bit 1, the compacted save instruction.
 const XSAVEC_SUPPORTED: u32 = 1 << 1;
 
+const AVX_INDEX: u32 = 2;
+
 /// Bytes `.bss` reserves per thread for a save area; the instructions get the `CPUID` size.
 ///
 /// [`init`] refuses a larger size instead of overrunning it: 576 bytes of legacy area and header
@@ -36,6 +38,8 @@ static BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// Which save instruction to use: 0 none, 1 `XSAVE`, 2 `XSAVEC`.
 static FORM: AtomicUsize = AtomicUsize::new(0);
+
+static MASK: AtomicU64 = AtomicU64::new(0);
 
 /// Components the save and restore instructions are asked to transfer.
 const OPERATION_MASK: u32 = u32::MAX;
@@ -65,18 +69,7 @@ pub fn init() -> Option<Extended> {
     // Preflight first, so a refusal cannot leave SSE usable while switches save no extended state.
     let supported = __cpuid_count(XSTATE_LEAF, 0);
     let available = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
-    if !xstate::has_permitted_components(available) {
-        return None;
-    }
-    let mask = xstate::PERMITTED;
-    if !xstate::avx_state_has_instruction_support(mask, basic.ecx) {
-        return None;
-    }
-    // x87 is mandatory in `XCR0`: a processor reporting otherwise is not understood here, and
-    // writing the register would fault.
-    if mask & xstate::X87 == 0 {
-        return None;
-    }
+    let mask = xstate::enabled_components(available, basic.ecx)?;
 
     let forms = __cpuid_count(XSTATE_LEAF, 1);
     let compacted = forms.eax & XSAVEC_SUPPORTED != 0;
@@ -85,22 +78,15 @@ pub fn init() -> Option<Extended> {
     if !layout.is_consistent() {
         return None;
     }
-    let avx = __cpuid_count(XSTATE_LEAF, 2);
-    let standard_bytes = xstate::standard_component_extent(
-        Component::new(
-            avx.eax,
-            if avx.ecx & (1 << 1) != 0 {
-                Alignment::Bytes64
-            } else {
-                Alignment::Natural
-            },
-        ),
-        avx.ebx,
-    )?;
     let bytes = if compacted {
         layout.size()
+    } else if xstate::includes_avx(mask) {
+        xstate::standard_component_extent(
+            describe(AVX_INDEX),
+            __cpuid_count(XSTATE_LEAF, AVX_INDEX).ebx,
+        )?
     } else {
-        standard_bytes
+        xstate::HEADER_BYTES
     };
     if !(xstate::HEADER_BYTES..=CEILING).contains(&bytes) {
         return None;
@@ -108,10 +94,11 @@ pub fn init() -> Option<Extended> {
 
     // Every fallible preflight precedes the irreversible control-register write.
     cpu::enable_extended_state();
-    // SAFETY: every bit was reported available, the layout checked component
-    // dependencies, the feature gate checked AVX, and `CR4.OSXSAVE` is set.
+    // SAFETY: every bit was reported available, x87 and SSE are among them, AVX only with its
+    // instruction support, and `CR4.OSXSAVE` is set.
     unsafe { set_extended_control(mask) };
 
+    MASK.store(mask, Ordering::Release);
     BYTES.store(bytes, Ordering::Release);
     FORM.store(if compacted { 2 } else { 1 }, Ordering::Release);
     Some(Extended {
@@ -154,7 +141,7 @@ pub fn user_state_is_isolated() -> bool {
 fn configured_policy_is_live() -> bool {
     is_enabled()
         && cpu::extended_state_is_enabled()
-        && xstate::matches_permitted_configuration(extended_control())
+        && extended_control() == MASK.load(Ordering::Acquire)
 }
 
 /// Save this CPU's extended state into `area`.

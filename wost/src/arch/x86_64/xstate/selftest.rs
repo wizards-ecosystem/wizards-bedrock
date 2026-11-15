@@ -50,7 +50,7 @@ pub struct Probe {
 /// cannot collide with compiled code.
 #[cfg(feature = "selftest")]
 pub fn write_probe(probe: Probe) -> bool {
-    if !configured_policy_is_live() {
+    if !probe_components_are_live() {
         return false;
     }
     let x87 = probe.x87;
@@ -77,7 +77,7 @@ pub fn write_probe(probe: Probe) -> bool {
 /// lanes are only read.
 #[cfg(feature = "selftest")]
 pub fn read_probe() -> Option<Probe> {
-    if !configured_policy_is_live() {
+    if !probe_components_are_live() {
         return None;
     }
     let mut x87 = 0i64;
@@ -98,4 +98,8 @@ pub fn read_probe() -> Option<Probe> {
         );
     }
     Some(Probe { x87, xmm, ymm })
+}
+
+fn probe_components_are_live() -> bool {
+    configured_policy_is_live() && xstate::includes_avx(MASK.load(Ordering::Acquire))
 }
