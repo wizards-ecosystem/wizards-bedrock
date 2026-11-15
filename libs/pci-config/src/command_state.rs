@@ -310,6 +310,10 @@ pub(crate) fn change_command(
         },
     };
 
+    // Writing the original word back would revive the bus mastering this transition clears.
+    if original & !wanted & command::BUS_MASTER != 0 {
+        return Err(EnableError::Restore);
+    }
     let _ = access(at, CommandAccess::Write(original));
     match access(at, CommandAccess::Read) {
         Some(bits) if bits as u16 == original => Err(failure),
