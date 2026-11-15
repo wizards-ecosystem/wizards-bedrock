@@ -370,14 +370,21 @@ impl AddressSpace {
         flags: Flags,
     ) -> Result<(), MapError> {
         self.may_reach(virtual_base, len)?;
+        if flags.contains(Flags::WRITABLE) && !flags.contains(Flags::NO_EXECUTE) {
+            return Err(MapError::WriteExecute(virtual_base));
+        }
         self.shared
             .try_reserve(1)
             .map_err(|_| MapError::OutOfMemory)?;
+        // Shared bytes are never executed: another alias may write them.
         self.map_range(
             virtual_base,
             physical_base.get(),
             len,
-            flags.difference(NOT_THE_CALLERS).union(Flags::USER),
+            flags
+                .difference(NOT_THE_CALLERS)
+                .union(Flags::USER)
+                .union(Flags::NO_EXECUTE),
             Grain::Pages,
         )?;
         self.shared.push(keepalive);
