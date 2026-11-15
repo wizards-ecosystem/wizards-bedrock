@@ -395,9 +395,12 @@ fn run_alternate_release_build(
     let mut command = Command::new(executable("cargo"));
     for (name, _) in std::env::vars_os() {
         let normalized = name.to_string_lossy().to_ascii_uppercase();
+        // rustup's loader path would make the mirrored rustc load the original libraries.
         if normalized == "CARGO"
             || normalized.starts_with("CARGO_")
             || normalized.starts_with("RUST")
+            || normalized == "LD_LIBRARY_PATH"
+            || normalized.starts_with("DYLD_")
         {
             command.env_remove(name);
         }
