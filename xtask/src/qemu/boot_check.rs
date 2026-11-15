@@ -226,6 +226,7 @@ fn observe_profile(
         .args(drive_file("if=pflash,format=raw", vars.path()))
         .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
