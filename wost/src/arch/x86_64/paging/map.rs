@@ -166,7 +166,7 @@ impl AddressSpace {
             .unwrap_or_else(|reason| panic!("mapping rollback lost an owned table link: {reason}"));
             let current = EntrySlot::read(&parent);
             assert!(
-                current == owned.link,
+                owned.link.table_identity_matches(current),
                 "mapping rollback found a different owned table link"
             );
             let paired = if owned.root == TableRoot::Full && owned.level == Level::Pml4 {
