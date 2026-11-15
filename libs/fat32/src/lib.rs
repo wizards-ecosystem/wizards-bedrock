@@ -236,12 +236,9 @@ impl Bpb {
     /// The most clusters a directory chain may span, capped by entries rather than volume size.
     fn directory_cluster_limit(self) -> u32 {
         let per_cluster = self.cluster_bytes() / ENTRY_BYTES as u32;
-        let by_entries = if per_cluster == 0 {
-            MAX_DIRECTORY_ENTRIES
-        } else {
-            MAX_DIRECTORY_ENTRIES.div_ceil(per_cluster)
-        };
-        by_entries.min(self.clusters())
+        MAX_DIRECTORY_ENTRIES
+            .div_ceil(per_cluster)
+            .min(self.clusters())
     }
 
     /// Whether `cluster` names data in this volume, bounded at both ends.
