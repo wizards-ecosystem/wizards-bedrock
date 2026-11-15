@@ -1,7 +1,7 @@
 //! The clock is the free-running TSC, and the alarm the one-shot APIC timer, armed only if awaited.
 //!
-//! Both rates are measured against the 8254, or the TSC's taken from a complete invariant CPUID
-//! ratio when that measurement refuses; only an 8254 that measured them watches APIC windows.
+//! An invariant TSC with a complete CPUID ratio sets the rate and the APIC is measured against it;
+//! otherwise both are measured against the 8254, which then watches live APIC windows.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -251,19 +251,7 @@ impl fmt::Display for Calibration {
     }
 }
 
-/// Select, validate and start the kernel's clock and alarm, leaving the timer one-shot and stopped.
-///
-/// Must run with interrupts still masked, which makes the measurement unpreemptible. Two
-/// consecutive windows must agree: a stall of exactly the wrong length can slip every guard in
-/// [`measure`], but a second window cannot be slipped to the same wrong answer. When they refuse,
-/// an invariant TSC with a complete CPUID crystal ratio is the rate and the APIC is measured
-/// against it. The PIT stays claimed as the live watchdog only if it was the reference.
-///
-/// # Errors
-///
-/// [`TimeError::PitUnavailable`] if the reference is already claimed,
-/// [`TimeError::Implausible`] if neither timing source produces two agreeing,
-/// believable windows, or [`TimeError::LocalTimer`] if final timer setup fails.
+// Runs before `sti`, so no window is preempted; the timer is left one-shot and stopped.
 pub(crate) fn init() -> Result<Calibration, TimeError> {
     assert!(
         !interrupt::are_enabled(),
@@ -274,36 +262,11 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     let invariant = cpu::has_invariant_tsc();
     apic::set_timer_divide(DIVIDE);
 
-    let mut candidate: Option<Calibration> = None;
-    let mut outcome = None;
-    let mut measured_windows = 0_u32;
-    for _ in 0..MEASUREMENT_ATTEMPTS {
-        let Some(current) = measure(&mut pit) else {
-            candidate = None;
-            continue;
-        };
-        measured_windows += 1;
-        match candidate {
-            Some(previous) if previous.agrees_with(current) => {
-                outcome = Some(current);
-                break;
-            }
-            _ => candidate = Some(current),
-        }
-    }
-    let mut calibration = if let Some(calibration) = outcome {
-        calibration
-    } else if let Some(tsc_hz) = frequency.tsc_hz().filter(|_| invariant) {
-        let Some(calibration) = calibrate_apic_from_tsc(tsc_hz) else {
-            pit.park();
-            return Err(TimeError::Implausible);
-        };
-        calibration
-    } else {
-        // A believable window need not have an adjacent usable peer.
-        if measured_windows > 0 {
-            LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
-        }
+    let rated = frequency
+        .tsc_hz()
+        .filter(|_| invariant)
+        .and_then(calibrate_apic_from_tsc);
+    let Some(mut calibration) = rated.or_else(|| calibrate_against_pit(&mut pit)) else {
         pit.park();
         return Err(TimeError::Implausible);
     };
@@ -351,7 +314,27 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     Ok(calibration)
 }
 
-/// Calibrate the APIC against an invariant TSC whose crystal ratio CPUID gave.
+// A stall of exactly the wrong length can slip every guard in one window, never in two agreeing.
+fn calibrate_against_pit(pit: &mut Pit) -> Option<Calibration> {
+    let mut candidate: Option<Calibration> = None;
+    let mut measured_windows = 0_u32;
+    for _ in 0..MEASUREMENT_ATTEMPTS {
+        let Some(current) = measure(pit) else {
+            candidate = None;
+            continue;
+        };
+        measured_windows += 1;
+        match candidate {
+            Some(previous) if previous.agrees_with(current) => return Some(current),
+            _ => candidate = Some(current),
+        }
+    }
+    if measured_windows > 0 {
+        LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
+    }
+    None
+}
+
 fn calibrate_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
     let mut candidate: Option<Calibration> = None;
     for _ in 0..MEASUREMENT_ATTEMPTS {
@@ -380,19 +363,19 @@ fn measure_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
     apic::arm_timer(u32::MAX);
     let apic_start = apic::timer_current_count();
     let tsc_start = cpu::timestamp();
-    let mut tsc_counted = 0;
     for _ in 0..MAX_TSC_POLLS {
-        tsc_counted = cpu::timestamp().checked_sub(tsc_start)?;
-        if tsc_counted >= target {
+        if cpu::timestamp().checked_sub(tsc_start)? >= target {
             break;
         }
         core::hint::spin_loop();
     }
+    let apic_end = apic::timer_current_count();
+    let tsc_counted = cpu::timestamp().checked_sub(tsc_start)?;
     if !(target..=target.saturating_add(target / 2)).contains(&tsc_counted) {
         LAST_REFUSAL.store(Refusal::Overshot as usize, Ordering::Relaxed);
         return None;
     }
-    let apic_counted = u64::from(apic_start.checked_sub(apic::timer_current_count())?);
+    let apic_counted = u64::from(apic_start.checked_sub(apic_end)?);
     let apic_hz = Timebase::new(tsc_hz, tsc_counted)?.convert(apic_counted);
     LAST_TSC_HZ.store(tsc_hz, Ordering::Relaxed);
     LAST_APIC_HZ.store(apic_hz, Ordering::Relaxed);
@@ -411,9 +394,6 @@ fn measure_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
 }
 
 /// One bracketed window measuring both clocks, or `None`, with the [`Refusal`] recorded.
-///
-/// The counter reads sit inside the crystal reads, so port skew understates each rate by noise.
-/// The caller decides how patient to be.
 fn measure(pit: &mut Pit) -> Option<Calibration> {
     match measured(pit) {
         Ok(calibration) => Some(calibration),
@@ -530,9 +510,10 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
         core::hint::spin_loop();
     }
 
-    let tsc_end = cpu::timestamp();
-    let apic_end = apic::timer_current_count();
+    // The same order as the opening reads, so each clock's window spans the same read costs.
     let pit_end = pit.count();
+    let apic_end = apic::timer_current_count();
+    let tsc_end = cpu::timestamp();
 
     // The APIC counts down and the timestamp counter up, the only difference between the two.
     let apic_counted = u64::from(
