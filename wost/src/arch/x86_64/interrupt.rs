@@ -175,7 +175,7 @@ pub type Handler = fn(&TrapFrame);
 ///
 /// Diverges because returning would hand the rejected frame to `iretq`. It runs after the
 /// ordinary handler, while that exact frame is live and every device interrupt is dismissed.
-pub type InvalidUserReturnHandler = fn(&TrapFrame, UserReturnError) -> !;
+pub(crate) type InvalidUserReturnHandler = fn(&TrapFrame, UserReturnError) -> !;
 
 /// The two kernel callbacks installed before the interrupt table is loaded.
 ///
@@ -219,12 +219,6 @@ static LIVE_FRAME: AtomicPtr<RawTrapFrame> = AtomicPtr::new(core::ptr::null_mut(
 pub fn in_trap() -> bool {
     TRAP_DEPTH.load(Ordering::Relaxed) != 0
 }
-
-/// Bytes the entry path pushes before the dispatcher is called.
-///
-/// The pushes and the struct mirroring them must agree on the count, which only a live trap shows.
-#[cfg(feature = "selftest")]
-pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;
 
 /// Whether `frame` is the one the innermost live handler was entered with.
 pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {

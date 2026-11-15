@@ -565,7 +565,7 @@ enum TableRoot {
 
 /// The inseparable roots of one address space; callers cannot make or split them into bindings.
 ///
-/// A shared-root space has no stripped member, so [`user_root`](Self::user_root) is the full root.
+/// A shared-root space has no stripped member, so `user_root` is the full root.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressSpaceRoots {
     full: PhysicalAddress,
@@ -592,12 +592,12 @@ impl AddressSpaceRoots {
     }
 
     /// The ring-three root; it equals [`full_root`](Self::full_root) only in admitted shared mode.
-    pub const fn user_root(self) -> PhysicalAddress {
+    pub(crate) const fn user_root(self) -> PhysicalAddress {
         self.user
     }
 
     /// The distinct stripped root, when this is a KPTI pair.
-    pub const fn stripped_root(self) -> Option<PhysicalAddress> {
+    pub(crate) const fn stripped_root(self) -> Option<PhysicalAddress> {
         if self.is_paired() {
             Some(self.user_root())
         } else {
@@ -606,7 +606,7 @@ impl AddressSpaceRoots {
     }
 
     /// Whether this identity contains a distinct stripped root.
-    pub const fn is_paired(self) -> bool {
+    pub(crate) const fn is_paired(self) -> bool {
         self.user.get() != self.full.get()
     }
 
@@ -644,7 +644,7 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 const _: () = assert!(USER_END == x86_paging::USER_END);
 
 /// Whether ring 3 could name `address`; this also refuses the canonical hole at any walk width.
-pub const fn is_user_address(address: u64) -> bool {
+pub(crate) const fn is_user_address(address: u64) -> bool {
     address < USER_END
 }
 

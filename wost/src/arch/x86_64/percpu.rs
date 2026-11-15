@@ -19,7 +19,7 @@ pub(crate) enum LockKind {
 
 /// One processor's own state, in atomics so trap and panic paths observe interrupted updates.
 #[derive(Debug)]
-pub struct PerCpu {
+pub(crate) struct PerCpu {
     /// Spin locks this CPU is holding, of either kind.
     spinlocks_held: AtomicUsize,
 
@@ -94,7 +94,7 @@ impl PerCpu {
 
     /// Where a lock was taken under a leaf guard, if one ever was.
     #[cfg(feature = "selftest")]
-    pub fn taken_under_a_leaf(&self) -> Option<&'static core::panic::Location<'static>> {
+    pub(crate) fn taken_under_a_leaf(&self) -> Option<&'static core::panic::Location<'static>> {
         let at = self.under_a_leaf.load(Ordering::Acquire);
         // SAFETY: only ever stored from `Location::caller()`, whose return type is `'static`, and
         // never freed.
@@ -103,7 +103,7 @@ impl PerCpu {
 
     /// The leaf guard that violation happened under.
     #[cfg(feature = "selftest")]
-    pub fn the_leaf_it_was_under(&self) -> Option<&'static core::panic::Location<'static>> {
+    pub(crate) fn the_leaf_it_was_under(&self) -> Option<&'static core::panic::Location<'static>> {
         let at = self.the_leaf.load(Ordering::Acquire);
         // SAFETY: as `taken_under_a_leaf`.
         (!at.is_null()).then(|| unsafe { &*at.cast_const() })
@@ -114,6 +114,6 @@ impl PerCpu {
 static BOOTSTRAP: PerCpu = PerCpu::new();
 
 /// This processor's own state.
-pub fn current() -> &'static PerCpu {
+pub(crate) fn current() -> &'static PerCpu {
     &BOOTSTRAP
 }

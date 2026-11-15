@@ -156,7 +156,7 @@ pub fn frequency_hints() -> FrequencyHints {
 }
 
 /// The running processor's validated `MAXPHYADDR`.
-pub fn physical_address_width() -> Option<PhysicalAddressWidth> {
+pub(crate) fn physical_address_width() -> Option<PhysicalAddressWidth> {
     let maximum = max_leaf(0x8000_0000);
     let eax = if maximum >= ADDRESS_SIZE_LEAF {
         cpuid(ADDRESS_SIZE_LEAF, 0).eax
@@ -301,7 +301,7 @@ const CR4_OSXSAVE: u64 = 1 << 18;
 
 /// Whether `CR4.OSXSAVE` is set, read from the register since its caller asks whether the write
 /// took and a remembered flag would answer with the memory of the write.
-pub fn extended_state_is_enabled() -> bool {
+pub(crate) fn extended_state_is_enabled() -> bool {
     read_cr4() & CR4_OSXSAVE != 0
 }
 
@@ -353,7 +353,7 @@ pub fn enable_protections() -> Protections {
 /// Whether supervisor writes honour read-only page-table entries.
 ///
 /// Read back from `CR0` instead of remembered from the write that asked for it.
-pub fn write_protection_is_enabled() -> bool {
+pub(crate) fn write_protection_is_enabled() -> bool {
     read_cr0() & CR0_WRITE_PROTECT != 0
 }
 
@@ -412,7 +412,7 @@ fn shut_the_fast_syscall_doors() {
 ///
 /// Read back from the registers, as for `XCR0`: a flag records that the write was attempted, and
 /// the question is what the CPU holds.
-pub fn fast_syscall_doors_are_shut() -> bool {
+pub(crate) fn fast_syscall_doors_are_shut() -> bool {
     msr::read(EFER) & EFER_SYSCALL == 0 && msr::read(SYSENTER_CS) == 0
 }
 
@@ -647,7 +647,7 @@ fn reload_page_table() {
 ///
 /// Read back, since a hypervisor may decline the write and the whole point of the entry is that
 /// a mapping selecting it behaves differently.
-pub fn write_combining_is_enabled() -> bool {
+pub(crate) fn write_combining_is_enabled() -> bool {
     /// Encoding of write-combining in a PAT entry.
     const WRITE_COMBINING: u64 = 0x01;
 
@@ -675,7 +675,7 @@ pub fn page_table_base() -> PhysicalAddress {
 ///
 /// Removing a cached entry can only make the CPU reread its page tables;
 /// [`CanonicalAddress`] excludes the operands that raise `#GP`.
-pub fn invalidate_page(address: CanonicalAddress) {
+pub(crate) fn invalidate_page(address: CanonicalAddress) {
     // SAFETY: constructing `CanonicalAddress` proved the operand canonical, and `invlpg`
     // dereferences no memory and only evicts this CPU's cached translation.
     unsafe {

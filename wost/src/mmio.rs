@@ -87,12 +87,21 @@ impl MmioRegion {
     }
 
     /// Write `count` copies of a 32-bit word starting at `offset`.
-    pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
+    pub(crate) fn fill_u32(
+        &mut self,
+        offset: usize,
+        count: usize,
+        value: u32,
+    ) -> Result<(), MmioError> {
         self.write_values(offset, core::iter::repeat_n(value, count))
     }
 
     /// Write a slice of 32-bit words starting at `offset`.
-    pub fn write_u32_slice(&mut self, offset: usize, values: &[u32]) -> Result<(), MmioError> {
+    pub(crate) fn write_u32_slice(
+        &mut self,
+        offset: usize,
+        values: &[u32],
+    ) -> Result<(), MmioError> {
         self.write_values(offset, values.iter().copied())
     }
 

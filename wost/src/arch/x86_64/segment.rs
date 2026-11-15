@@ -23,22 +23,22 @@ pub(super) use selftest::enclave_ist_stack_is_zeroed_for_test;
 pub use selftest::{code_selector, double_fault_stack, stack_selector};
 
 /// Ring 0 code.
-pub const KERNEL_CODE: Selector = Selector::new(1, 0);
+pub(crate) const KERNEL_CODE: Selector = Selector::new(1, 0);
 
 /// Ring 0 data. Boot and common interrupt entry keep this in `SS`.
 pub const KERNEL_DATA: Selector = Selector::new(2, 0);
 
 /// The task-state segment, a sixteen-byte system descriptor occupying this entry and the next.
-pub const TASK_STATE: Selector = Selector::new(3, 0);
+pub(crate) const TASK_STATE: Selector = Selector::new(3, 0);
 
 /// Ring 3 data, loaded into `SS` by the `iretq` that enters user code.
 ///
 /// Before user code because `sysret` derives `CS` from `STAR` + 16 and `SS` from `STAR` + 8;
 /// changing the order would also renumber every selector shared with entry assembly.
-pub const USER_DATA: Selector = Selector::new(5, 3);
+pub(crate) const USER_DATA: Selector = Selector::new(5, 3);
 
 /// Ring 3 code.
-pub const USER_CODE: Selector = Selector::new(6, 3);
+pub(crate) const USER_CODE: Selector = Selector::new(6, 3);
 
 /// [`USER_DATA`]'s bits for the `iretq` frame entering ring 3, since a `const` operand in inline
 /// assembly must be an integer and `Selector` is not one.
@@ -51,7 +51,7 @@ pub(super) const KERNEL_DATA_BITS: u16 = KERNEL_DATA.bits();
 pub(super) const USER_CODE_BITS: u16 = USER_CODE.bits();
 
 /// Interrupt stack table entry holding the double-fault stack.
-pub const DOUBLE_FAULT_STACK: u8 = 1;
+pub(crate) const DOUBLE_FAULT_STACK: u8 = 1;
 
 /// Null, code, data, two for the task-state segment, then the user pair.
 const ENTRIES: usize = 7;

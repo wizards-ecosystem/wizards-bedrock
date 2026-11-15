@@ -203,7 +203,7 @@ impl<T> SpinLock<T> {
     }
 
     /// Whether the lock is currently held.
-    pub fn is_locked(&self) -> bool {
+    pub(crate) fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
     }
 
@@ -340,7 +340,7 @@ impl<T> ThreadLock<T> {
     }
 
     /// Whether the lock is currently held.
-    pub fn is_locked(&self) -> bool {
+    pub(crate) fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
     }
 }

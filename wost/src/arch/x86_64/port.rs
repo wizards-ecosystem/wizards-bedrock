@@ -3,8 +3,8 @@
 //! A claim covers every port an access reaches: `out dx, eax` to port `n` drives `n..n + 4`.
 //! A fixed-driver claim is permanent ([`PortBlock`] and [`Port`] have no `Drop`), so a register
 //! set is claimed as one transaction: a caller must not take one member and then strand it when a
-//! later member is unavailable. [`claim_pair`] answers that for i8042 under one lock;
-//! [`claim_block_pair`] does the same for the PIC.
+//! later member is unavailable. `claim_pair` answers that for i8042 under one lock;
+//! `claim_block_pair` does the same for the PIC.
 
 use core::arch::asm;
 use core::marker::PhantomData;
@@ -47,7 +47,7 @@ pub fn claim<T: PortValue>(number: u16) -> Option<Port<T>> {
 /// Two chained [`claim`]s check and record at two moments with no undo, so the pair is asked once.
 /// `None` if either port is already claimed, if the two overlap, or if either runs past the end
 /// of I/O space.
-pub fn claim_pair<T: PortValue, U: PortValue>(
+pub(crate) fn claim_pair<T: PortValue, U: PortValue>(
     first: u16,
     second: u16,
 ) -> Option<(Port<T>, Port<U>)> {
@@ -146,7 +146,7 @@ pub fn claim_block<const N: usize>(base: u16) -> Option<PortBlock<N>> {
 ///
 /// `None` if either block is already claimed, if the two overlap, or if either runs past the end
 /// of I/O space.
-pub fn claim_block_pair<const N: usize, const M: usize>(
+pub(crate) fn claim_block_pair<const N: usize, const M: usize>(
     first: u16,
     second: u16,
 ) -> Option<(PortBlock<N>, PortBlock<M>)> {
@@ -168,7 +168,7 @@ pub fn debug_exit() -> Option<Port<u32>> {
 }
 
 /// Both legacy 8237 DMA controllers, DMA1 at `0x00..0x10` and DMA2 at `0xC0..0xE0`, as one claim.
-pub fn isa_dma_controllers() -> Option<(PortBlock<16>, PortBlock<32>)> {
+pub(crate) fn isa_dma_controllers() -> Option<(PortBlock<16>, PortBlock<32>)> {
     claim_block_pair(0x00, 0xC0)
 }
 

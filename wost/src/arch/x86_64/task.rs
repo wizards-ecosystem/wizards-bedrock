@@ -38,7 +38,7 @@ pub use selftest::{
 ///
 /// A cap on the arena: [`init`] accepts any arena of fewer stacks, and the kernel's own constant
 /// decides how many it maps.
-pub const MAX_TASKS: usize = 32;
+pub(crate) const MAX_TASKS: usize = 32;
 
 /// The slot of the boot thread, the flow that called [`init`] on the bootloader's stack.
 pub const BOOT: usize = 0;

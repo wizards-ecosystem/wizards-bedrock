@@ -236,17 +236,17 @@ pub struct UnitFacts {
     /// Whether the unit snoops processor caches when it walks tables.
     pub coherent: bool,
     /// Whether not-present entries may be cached, so every change invalidates.
-    pub caching_mode: bool,
+    pub(crate) caching_mode: bool,
     /// Whether the unit needs an explicit write-buffer flush before invalidation.
-    pub write_buffer_flush: bool,
+    pub(crate) write_buffer_flush: bool,
     /// Whether the unit offers queued invalidation, used for IEC invalidation.
     pub queued_invalidation: bool,
     /// Whether the unit offers interrupt remapping, owned default-deny here.
     pub interrupt_remapping: bool,
     /// Fault-recording registers the unit has.
-    pub fault_registers: u16,
+    pub(crate) fault_registers: u16,
     /// Whether completed translation transitions drain DMA reads and writes.
-    pub dma_draining: bool,
+    pub(crate) dma_draining: bool,
 }
 
 /// A programmed VT-d domain owner, retained whole after an uncertain transition.
