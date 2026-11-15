@@ -213,9 +213,7 @@ pub enum PcidState {
 
 /// Evidence for the ordinary-`CR3`-load flush policy used by paired roots.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FlushPremise {
-    leaf_count: usize,
-}
+pub struct FlushPremise(());
 
 impl FlushPremise {
     /// Admit the flush policy, refusing enabled PCID or any global leaf.
@@ -232,9 +230,7 @@ impl FlushPremise {
                 return Err(FlushPremiseError::GlobalLeaf(index));
             }
         }
-        Ok(Self {
-            leaf_count: leaf_domain.len(),
-        })
+        Ok(Self(()))
     }
 }
 
@@ -438,11 +434,8 @@ impl EntryStackRange {
         if lower_guard < HIGHER_HALF_START {
             return Err(EntryStackRangeError::OutsideHigherHalf(start));
         }
-        let Some(last) = start.checked_add(len - 1) else {
+        if start.checked_add(len - 1).is_none() {
             return Err(EntryStackRangeError::EndOverflow);
-        };
-        if last < HIGHER_HALF_START {
-            return Err(EntryStackRangeError::OutsideHigherHalf(last));
         }
         Ok(Self {
             kind,
@@ -463,6 +456,10 @@ impl EntryStackRange {
     }
 
     /// The byte length of the writable stack payload.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "construction refuses zero-length stack ranges"
+    )]
     pub const fn len(self) -> u64 {
         self.len
     }
@@ -470,11 +467,6 @@ impl EntryStackRange {
     /// The adjacent page immediately below the writable payload.
     pub const fn lower_guard(self) -> u64 {
         self.lower_guard
-    }
-
-    /// Whether the writable stack payload is empty.
-    pub const fn is_empty(self) -> bool {
-        self.len == 0
     }
 }
 
