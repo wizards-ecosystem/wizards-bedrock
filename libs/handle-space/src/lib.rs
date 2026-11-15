@@ -61,7 +61,7 @@ impl Mixer {
         Self(seed & !RESERVED)
     }
 
-    /// A mixer for table number `id`, distinct and never the identity.
+    /// A mixer for table number `id`, never the identity; distinct ids may share a mixer.
     pub const fn for_table(id: u32) -> Self {
         let mixed = Self::new(id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND));
         if mixed.is_identity() {
