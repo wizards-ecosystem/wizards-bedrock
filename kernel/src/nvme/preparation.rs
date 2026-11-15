@@ -184,8 +184,9 @@ fn program_admin_registers(
         completion,
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
-    // The controller latches ASQ and ACQ when their high half is written.
+    // Completions are polled, so every pin-based or single-MSI vector stays masked.
     let writes = [
+        (register::INTMS, u32::MAX),
         (register::AQA, aqa),
         (register::ASQ, submission as u32),
         (register::ASQ + 4, (submission >> 32) as u32),

@@ -109,6 +109,7 @@ impl DmaState {
 // Base 2.2 §3.1.
 pub mod register {
     pub const CAP: usize = 0x00;
+    pub const INTMS: usize = 0x0C;
     pub const CC: usize = 0x14;
     pub const CSTS: usize = 0x1C;
     pub const AQA: usize = 0x24;
