@@ -4,6 +4,7 @@
 //! The conversion is fixed. Two consecutive watchdog disagreements freeze public time and publish
 //! `MODE_NONE` through the same sequence protocol; suspend and NTP adjustment are unsupported.
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering, fence};
 
 use timebase::{Seq, Timebase};
@@ -63,10 +64,10 @@ mod clock {
 
 /// The one global page: `None` until built at boot, and present even when the clock is
 /// uncalibrated or revoked. Every program reads the same clock, so one page keeps them in step.
-static PAGE: SpinLock<Option<SharedBytes>> = SpinLock::new(None);
+static PAGE: SpinLock<Option<Arc<SharedBytes>>> = SpinLock::new(None);
 
-/// The mode the page must show when an installation returns it. A revocation may interrupt the
-/// window while `install` has the owner moved out, so the mode cannot live only in the page.
+/// The mode the page must show once no installation shares it. A revocation that finds the page
+/// shared is left to the installation that lets go last, so the mode cannot live only in the page.
 static DESIRED_MODE: AtomicU32 = AtomicU32::new(MODE_NONE);
 
 /// Build the page and write its constants, once at boot, before anything can map it.
@@ -83,11 +84,12 @@ pub(crate) fn init(counter_hz: u64) -> bool {
     write_u32(&mut shared, constants::PAGE_BYTES, PAGE_SIZE as u32);
     write_u64(&mut shared, constants::COUNTER_HZ, counter_hz);
 
-    *PAGE.lock_leaf() = Some(shared);
+    let page = Arc::new(shared);
+    *PAGE.lock_leaf() = Some(page);
     true
 }
 
-/// Whether [`publish`] wrote the page or found it absent.
+/// Whether [`publish`] wrote the page or found it absent or shared with an installation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[must_use = "a deferred publication must be observed"]
 pub(crate) enum Publication {
@@ -102,13 +104,14 @@ pub(crate) enum Publication {
 pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publication {
     DESIRED_MODE.store(mode, Ordering::Release);
     let mut guard = PAGE.lock_leaf();
-    // Inside the guard, because the question is whether the window can be preempted; counted,
-    // since the caller cannot act on a refusal.
-
-    let Some(page) = guard.as_mut() else {
+    let Some(page) = guard.as_mut().and_then(Arc::get_mut) else {
         return Publication::Deferred;
     };
+    write_clock(page, mode, origin, conversion);
+    Publication::Published
+}
 
+fn write_clock(page: &mut SharedBytes, mode: u32, origin: u64, conversion: Timebase) {
     let seq = read_u32(page, CLOCK_AT + clock::SEQ);
 
     // Odd, and every reader now knows to try again.
@@ -126,7 +129,6 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
     fence(Ordering::Release);
     // Even again, and what was written between the two is what a reader keeps.
     write_u32(page, CLOCK_AT + clock::SEQ, Seq::end(Seq::begin(seq)));
-    Publication::Published
 }
 
 /// Map the page into `space`, never writable or executable.
@@ -139,25 +141,26 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publicati
 /// [`TimePageError::Absent`] if the page could not be built at boot, otherwise whatever
 /// [`AddressSpace::map_shared`] refused.
 pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
-    // Moved out because mapping may allocate, which no leaf guard may span; a publication during
-    // the gap records a mode that `restore` applies.
-    let taken = PAGE.lock_leaf().take();
-    let Some(shared) = taken else {
+    // Shared rather than held, because mapping may allocate, which no leaf guard may span.
+    let shared = PAGE.lock_leaf().as_ref().map(Arc::clone);
+    let Some(shared) = shared else {
         return Err(TimePageError::Absent);
     };
 
     let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE);
-    restore(shared);
+    drop(shared);
+    apply_deferred_revocation();
     result.map_err(TimePageError::Map)
 }
 
-fn restore(shared: SharedBytes) {
-    *PAGE.lock_leaf() = Some(shared);
-    if DESIRED_MODE.load(Ordering::Acquire) == MODE_NONE {
-        let publication = publish(MODE_NONE, 0, Timebase::UNCALIBRATED);
-        if publication != Publication::Published {
-            panic!("a restored time page refused its deferred publication");
-        }
+// The mode is read under the guard, so a revocation either sees this share gone or is seen here.
+fn apply_deferred_revocation() {
+    let mut guard = PAGE.lock_leaf();
+    if DESIRED_MODE.load(Ordering::Acquire) != MODE_NONE {
+        return;
+    }
+    if let Some(page) = guard.as_mut().and_then(Arc::get_mut) {
+        write_clock(page, MODE_NONE, 0, Timebase::UNCALIBRATED);
     }
 }
 
