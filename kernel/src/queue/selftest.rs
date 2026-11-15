@@ -242,9 +242,9 @@ impl Queue {
     pub(crate) fn published_shape(&self) -> (u32, u32, u32) {
         let ring = self.ring.lock_leaf();
         (
-            read_u32_volatile(&ring.pages, header::VERSION),
-            read_u32_volatile(&ring.pages, header::SUBMISSIONS),
-            read_u32_volatile(&ring.pages, header::COMPLETIONS),
+            read_u32(&ring.pages, header::VERSION),
+            read_u32(&ring.pages, header::SUBMISSIONS),
+            read_u32(&ring.pages, header::COMPLETIONS),
         )
     }
 }
@@ -284,7 +284,7 @@ pub(crate) fn live_for_test() -> usize {
 
 /// Read one immutable little-endian `u32` out of the shared pages.
 #[cfg(feature = "selftest")]
-fn read_u32_volatile(shared: &RingPages, at: usize) -> u32 {
+fn read_u32(shared: &RingPages, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
     assert!(
         shared.read_payload_at(at, &mut bytes),

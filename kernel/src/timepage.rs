@@ -183,21 +183,21 @@ impl core::error::Error for TimePageError {}
 
 fn write_u32(page: &mut SharedBytes, at: usize, value: u32) {
     assert!(
-        page.write_volatile_at(at, &value.to_le_bytes()),
+        page.write_at(at, &value.to_le_bytes()),
         "an internal time-page field was outside the shared page"
     );
 }
 
 fn write_u64(page: &mut SharedBytes, at: usize, value: u64) {
     assert!(
-        page.write_volatile_at(at, &value.to_le_bytes()),
+        page.write_at(at, &value.to_le_bytes()),
         "an internal time-page field was outside the shared page"
     );
 }
 
 fn read_u32(page: &SharedBytes, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    if !page.read_volatile_at(at, &mut bytes) {
+    if !page.read_at(at, &mut bytes) {
         panic!("an internal time-page field was outside the shared page");
     }
     u32::from_le_bytes(bytes)

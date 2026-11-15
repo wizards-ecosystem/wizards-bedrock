@@ -22,7 +22,7 @@ mod ring;
 mod selftest;
 mod work;
 
-use ring::write_u32_volatile;
+use ring::write_u32;
 #[cfg(feature = "selftest")]
 use selftest::LIVE_QUEUES;
 #[cfg(feature = "selftest")]
@@ -354,9 +354,9 @@ impl Queue {
         let mut shared = USegment::from(run).share().into_ring(layout).ok()?;
 
         // Written before the pages are ever mapped, so no program sees a ring it cannot read.
-        write_u32_volatile(&mut shared, header::VERSION, ring_proto::VERSION);
-        write_u32_volatile(&mut shared, header::SUBMISSIONS, SUBMISSIONS);
-        write_u32_volatile(&mut shared, header::COMPLETIONS, COMPLETIONS);
+        write_u32(&mut shared, header::VERSION, ring_proto::VERSION);
+        write_u32(&mut shared, header::SUBMISSIONS, SUBMISSIONS);
+        write_u32(&mut shared, header::COMPLETIONS, COMPLETIONS);
 
         let submission = Capacity::new(SUBMISSIONS).ok()?;
         let completion = Capacity::new(COMPLETIONS).ok()?;

@@ -41,7 +41,7 @@ impl<'authority> DirectSpan<'authority> {
         })
     }
 
-    fn write_byte_volatile(&self, offset: usize, byte: u8) -> bool {
+    fn write_byte(&self, offset: usize, byte: u8) -> bool {
         if offset >= self.len {
             return false;
         }
@@ -52,7 +52,7 @@ impl<'authority> DirectSpan<'authority> {
         true
     }
 
-    fn read_byte_volatile(&self, offset: usize) -> Option<u8> {
+    fn read_byte(&self, offset: usize) -> Option<u8> {
         if offset >= self.len {
             return None;
         }
@@ -62,26 +62,24 @@ impl<'authority> DirectSpan<'authority> {
         Some(unsafe { source.read_volatile() })
     }
 
-    pub(super) fn fill_volatile(&self, byte: u8) -> bool {
+    pub(super) fn fill(&self, byte: u8) -> bool {
         let Ok(range) = AccessRange::repeated(0, self.len, 1, self.len) else {
             return false;
         };
-        range
-            .offsets()
-            .all(|offset| self.write_byte_volatile(offset, byte))
+        range.offsets().all(|offset| self.write_byte(offset, byte))
     }
 
-    pub(super) fn write_volatile_at(&self, offset: usize, bytes: &[u8]) -> bool {
+    pub(super) fn write_at(&self, offset: usize, bytes: &[u8]) -> bool {
         let Ok(range) = AccessRange::repeated(offset, bytes.len(), 1, self.len) else {
             return false;
         };
         range
             .offsets()
             .zip(bytes.iter().copied())
-            .all(|(offset, byte)| self.write_byte_volatile(offset, byte))
+            .all(|(offset, byte)| self.write_byte(offset, byte))
     }
 
-    pub(super) fn write_u64_volatile_at(&self, offset: usize, value: u64) -> bool {
+    pub(super) fn write_u64(&self, offset: usize, value: u64) -> bool {
         let Some(end) = offset.checked_add(size_of::<u64>()) else {
             return false;
         };
@@ -96,12 +94,12 @@ impl<'authority> DirectSpan<'authority> {
         true
     }
 
-    pub(super) fn read_volatile_at(&self, offset: usize, into: &mut [u8]) -> bool {
+    pub(super) fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
         let Ok(range) = AccessRange::repeated(offset, into.len(), 1, self.len) else {
             return false;
         };
         for (offset, byte) in range.offsets().zip(into) {
-            let Some(value) = self.read_byte_volatile(offset) else {
+            let Some(value) = self.read_byte(offset) else {
                 return false;
             };
             *byte = value;
@@ -137,7 +135,7 @@ impl<'authority> DirectSpan<'authority> {
         };
         range
             .offsets()
-            .all(|offset| self.read_byte_volatile(offset) == Some(byte))
+            .all(|offset| self.read_byte(offset) == Some(byte))
     }
 
     #[cfg(feature = "selftest")]
@@ -148,7 +146,7 @@ impl<'authority> DirectSpan<'authority> {
         range
             .offsets()
             .zip(expected)
-            .all(|(offset, wanted)| self.read_byte_volatile(offset) == Some(*wanted))
+            .all(|(offset, wanted)| self.read_byte(offset) == Some(*wanted))
     }
 }
 

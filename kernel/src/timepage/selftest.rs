@@ -87,7 +87,7 @@ pub(crate) fn constants() -> Option<(u32, u32, u64)> {
 #[cfg(feature = "selftest")]
 fn read_u64(page: &SharedBytes, at: usize) -> u64 {
     let mut bytes = [0u8; 8];
-    if !page.read_volatile_at(at, &mut bytes) {
+    if !page.read_at(at, &mut bytes) {
         panic!("an internal time-page field was outside the shared page");
     }
     u64::from_le_bytes(bytes)

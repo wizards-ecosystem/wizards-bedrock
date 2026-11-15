@@ -94,7 +94,7 @@ impl DmaSegment {
         let Some(span) = DirectSpan::from_segment(segment) else {
             return false;
         };
-        span.fill_volatile(byte)
+        span.fill(byte)
     }
 
     /// Fill every available byte with zeros.
@@ -112,7 +112,7 @@ impl DmaSegment {
         let Some(span) = DirectSpan::from_segment(segment) else {
             return false;
         };
-        span.write_volatile_at(offset, bytes)
+        span.write_at(offset, bytes)
     }
 
     /// Read bytes while the run is host-owned.
@@ -124,7 +124,7 @@ impl DmaSegment {
         let Some(span) = DirectSpan::from_segment(segment) else {
             return false;
         };
-        span.read_volatile_at(offset, into)
+        span.read_at(offset, into)
     }
 
     /// Order earlier volatile host writes before an MMIO submission doorbell.
@@ -216,7 +216,7 @@ impl IommuTable {
         let Some(offset) = index.checked_mul(size_of::<u64>()) else {
             return false;
         };
-        if !span.write_u64_volatile_at(offset, value) {
+        if !span.write_u64(offset, value) {
             return false;
         }
         match walks {
@@ -233,7 +233,7 @@ impl IommuTable {
     pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
         let span = DirectSpan::from_segment(&self.frames)?;
         let mut bytes = [0u8; 8];
-        span.read_volatile_at(index * 8, &mut bytes)
+        span.read_at(index * 8, &mut bytes)
             .then(|| u64::from_le_bytes(bytes))
     }
 }

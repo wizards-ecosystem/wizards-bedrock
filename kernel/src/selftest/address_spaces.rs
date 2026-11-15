@@ -1216,7 +1216,7 @@ pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
         };
         let physical = run.address();
         let mut shared = mm::USegment::from(run).share().into_bytes();
-        if !shared.write_volatile_at(0, &[0xC7]) {
+        if !shared.write_at(0, &[0xC7]) {
             return false;
         }
         let flags = Flags::NO_EXECUTE;

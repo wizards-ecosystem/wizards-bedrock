@@ -140,14 +140,14 @@ impl SharedBytes {
 
     /// Volatile-write `bytes` at `offset` within the run.
     #[must_use = "a refused shared-memory write changed no bytes"]
-    pub fn write_volatile_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
-        write_shared_volatile(&self.0, offset, bytes)
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        write_shared(&self.0, offset, bytes)
     }
 
     /// Volatile-read `into.len()` bytes from `offset` within the run.
     #[must_use = "a refused shared-memory read copied no bytes"]
-    pub fn read_volatile_at(&self, offset: usize, into: &mut [u8]) -> bool {
-        read_shared_volatile(&self.0, offset, into)
+    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        read_shared(&self.0, offset, into)
     }
 
     /// Retain the allocation without exposing its bytes.
@@ -186,7 +186,7 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         if !self.layout.contains_payload(offset, bytes.len()) {
             return false;
         }
-        write_shared_volatile(&self.allocation, offset, bytes)
+        write_shared(&self.allocation, offset, bytes)
     }
 
     /// Volatile-read bytes wholly within this layout's payload partition.
@@ -195,7 +195,7 @@ impl<const WORDS: usize> SharedRing<WORDS> {
         if !self.layout.contains_payload(offset, into.len()) {
             return false;
         }
-        read_shared_volatile(&self.allocation, offset, into)
+        read_shared(&self.allocation, offset, into)
     }
 
     /// Acquire-load one aligned little-endian index, or `None` off a publication word or the map.
@@ -253,18 +253,18 @@ impl<const WORDS: usize> SharedRing<WORDS> {
     }
 }
 
-fn write_shared_volatile(allocation: &SharedAllocation, offset: usize, bytes: &[u8]) -> bool {
+fn write_shared(allocation: &SharedAllocation, offset: usize, bytes: &[u8]) -> bool {
     let Some(span) = DirectSpan::from_shared(allocation) else {
         return false;
     };
-    span.write_volatile_at(offset, bytes)
+    span.write_at(offset, bytes)
 }
 
-fn read_shared_volatile(allocation: &SharedAllocation, offset: usize, into: &mut [u8]) -> bool {
+fn read_shared(allocation: &SharedAllocation, offset: usize, into: &mut [u8]) -> bool {
     let Some(span) = DirectSpan::from_shared(allocation) else {
         return false;
     };
-    span.read_volatile_at(offset, into)
+    span.read_at(offset, into)
 }
 
 impl From<Segment> for USegment {

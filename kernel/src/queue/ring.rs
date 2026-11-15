@@ -159,7 +159,7 @@ pub(super) fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
 }
 
 /// Write one immutable little-endian `u32` into the shared pages.
-pub(super) fn write_u32_volatile(shared: &mut RingPages, at: usize, value: u32) {
+pub(super) fn write_u32(shared: &mut RingPages, at: usize, value: u32) {
     assert!(
         shared.write_payload_at(at, &value.to_le_bytes()),
         "an internal ring header field was outside the shared pages"
