@@ -892,8 +892,6 @@ dependencies = [
  "getrandom 0.3.1",
  "libc",
  "panic-record",
- "proc-macro2",
- "syn",
  "winapi-util",
 ]
 
