@@ -303,10 +303,12 @@ pub(super) fn walk(
         walked = walked.through(entry.flags());
 
         if level == Level::Pt || entry.is_huge() {
-            let offset = virtual_address & (level.span() - 1);
+            let span_mask = level.span() - 1;
+            let offset = virtual_address & span_mask;
             let effective = walked.effective_for(entry.flags());
+            // In a large leaf, bit 12 is PAT, not address.
             return Some((
-                PhysicalAddress::new(entry.address() + offset)?,
+                PhysicalAddress::new((entry.address() & !span_mask) + offset)?,
                 effective,
                 level.span(),
             ));
