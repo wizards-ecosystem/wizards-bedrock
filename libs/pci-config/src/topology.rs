@@ -69,46 +69,27 @@ impl fmt::Display for TopologyError {
         match *self {
             Self::QualifiedNonRequesterMissing { at } => write!(
                 formatter,
-                "entry-qualified PCI non-requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
-                at.bus(),
-                at.device(),
-                at.function()
+                "entry-qualified PCI non-requester {at} is absent from the sealed snapshot"
             ),
             Self::QualifiedNonRequesterChanged { at } => write!(
                 formatter,
-                "entry-qualified PCI non-requester {:02x}:{:02x}.{} changed before the sealed snapshot",
-                at.bus(),
-                at.device(),
-                at.function()
+                "entry-qualified PCI non-requester {at} changed before the sealed snapshot"
             ),
             Self::QuiescedRequesterMissing { at } => write!(
                 formatter,
-                "entry-quiesced PCI requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
-                at.bus(),
-                at.device(),
-                at.function()
+                "entry-quiesced PCI requester {at} is absent from the sealed snapshot"
             ),
             Self::QuiescedRequesterChanged { at } => write!(
                 formatter,
-                "entry-quiesced PCI requester {:02x}:{:02x}.{} changed before the sealed snapshot",
-                at.bus(),
-                at.device(),
-                at.function()
+                "entry-quiesced PCI requester {at} changed before the sealed snapshot"
             ),
             Self::BridgeIdentity { at } => write!(
                 formatter,
-                "PCI function {:02x}:{:02x}.{} has contradictory bridge class and header",
-                at.bus(),
-                at.device(),
-                at.function()
+                "PCI function {at} has contradictory bridge class and header"
             ),
-            Self::MissingBusNumbers { at } => write!(
-                formatter,
-                "PCI bridge {:02x}:{:02x}.{} has no readable bus numbers",
-                at.bus(),
-                at.device(),
-                at.function()
-            ),
+            Self::MissingBusNumbers { at } => {
+                write!(formatter, "PCI bridge {at} has no readable bus numbers")
+            }
             Self::InvalidRange {
                 at,
                 primary,
@@ -116,47 +97,24 @@ impl fmt::Display for TopologyError {
                 subordinate,
             } => write!(
                 formatter,
-                "PCI bridge {:02x}:{:02x}.{} reports invalid buses {primary:#04x}/{secondary:#04x}/{subordinate:#04x}",
-                at.bus(),
-                at.device(),
-                at.function()
+                "PCI bridge {at} reports invalid buses {primary:#04x}/{secondary:#04x}/{subordinate:#04x}"
             ),
             Self::DuplicateParent { bus, first, second } => write!(
                 formatter,
-                "PCI bus {bus:#04x} has parent bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{}",
-                first.bus(),
-                first.device(),
-                first.function(),
-                second.bus(),
-                second.device(),
-                second.function()
+                "PCI bus {bus:#04x} has parent bridges {first} and {second}"
             ),
-            Self::UnrootedFunction { at } => write!(
-                formatter,
-                "PCI function {:02x}:{:02x}.{} has no unique path to bus zero",
-                at.bus(),
-                at.device(),
-                at.function()
-            ),
-            Self::ChildEscapesParent { child, parent } => write!(
-                formatter,
-                "PCI bridge {:02x}:{:02x}.{} escapes parent {:02x}:{:02x}.{}",
-                child.bus(),
-                child.device(),
-                child.function(),
-                parent.bus(),
-                parent.device(),
-                parent.function()
-            ),
+            Self::UnrootedFunction { at } => {
+                write!(
+                    formatter,
+                    "PCI function {at} has no unique path to bus zero"
+                )
+            }
+            Self::ChildEscapesParent { child, parent } => {
+                write!(formatter, "PCI bridge {child} escapes parent {parent}")
+            }
             Self::UnrelatedOverlap { first, second } => write!(
                 formatter,
-                "unrelated PCI bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{} advertise overlapping buses",
-                first.bus(),
-                first.device(),
-                first.function(),
-                second.bus(),
-                second.device(),
-                second.function()
+                "unrelated PCI bridges {first} and {second} advertise overlapping buses"
             ),
         }
     }

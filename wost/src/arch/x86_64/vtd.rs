@@ -437,7 +437,7 @@ impl Vtd {
     }
 
     /// The physical address of arena table `index`.
-    const fn table_address(&self, index: usize) -> u64 {
+    fn table_address(&self, index: usize) -> u64 {
         self.tables.address().get() + index as u64 * PAGE
     }
 

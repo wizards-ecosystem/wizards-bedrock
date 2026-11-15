@@ -1,3 +1,4 @@
+use core::mem::ManuallyDrop;
 use core::num::NonZeroU64;
 use core::sync::atomic::Ordering;
 
@@ -231,40 +232,29 @@ impl IommuTable {
 /// A table that a unit may have observed, retained even when its owner drops.
 #[derive(Debug)]
 pub(crate) struct PublishedIommuTable {
-    table: Option<IommuTable>,
+    table: ManuallyDrop<IommuTable>,
 }
 
 impl PublishedIommuTable {
     /// Convert unpublished frames before a unit can first observe them.
     pub(crate) const fn new(table: IommuTable) -> Self {
-        Self { table: Some(table) }
+        Self {
+            table: ManuallyDrop::new(table),
+        }
     }
 
     /// The stable physical address programmed into hardware.
-    pub(crate) const fn address(&self) -> PhysicalAddress {
-        match &self.table {
-            Some(table) => table.address(),
-            None => panic!("published table has no frame owner"),
-        }
+    pub(crate) fn address(&self) -> PhysicalAddress {
+        self.table.address()
     }
 
     /// Publish one checked qword through the retained table's original writer.
     pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
-        self.table
-            .as_mut()
-            .is_some_and(|table| table.write_u64(index, value))
+        self.table.write_u64(index, value)
     }
 
     /// Read one checked qword from the retained allocation.
     pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
-        self.table.as_ref()?.read_u64(index)
-    }
-}
-
-impl Drop for PublishedIommuTable {
-    fn drop(&mut self) {
-        if let Some(table) = self.table.take() {
-            core::mem::forget(table);
-        }
+        self.table.read_u64(index)
     }
 }

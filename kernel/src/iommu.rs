@@ -568,10 +568,7 @@ fn unit_for(at: Address) -> Option<Unit> {
     match look_up(bdf) {
         Ok(unit) => {
             info!(
-                "iommu: {:02x}:{:02x}.{} is one of {} live PCI requester(s) governed by the unit at {:#x}",
-                at.bus(),
-                at.device(),
-                at.function(),
+                "iommu: {at} is one of {} live PCI requester(s) governed by the unit at {:#x}",
                 unit.requesters.len(),
                 unit.register_base
             );
@@ -586,12 +583,7 @@ fn unit_for(at: Address) -> Option<Unit> {
             None
         }
         Err(LookupError::UnsafeInventory(reason)) => {
-            warn!(
-                "iommu: no complete requester inventory governs {:02x}:{:02x}.{}: {reason}",
-                at.bus(),
-                at.device(),
-                at.function()
-            );
+            warn!("iommu: no complete requester inventory governs {at}: {reason}");
             None
         }
         Err(LookupError::NoInterruptRemapping) => {
@@ -644,21 +636,11 @@ fn acquire_fences(
         match pci::fence_dma_requester(at) {
             pci::DmaFenceOutcome::Fenced(fence) => fences.push(fence),
             pci::DmaFenceOutcome::Refused(reason) => {
-                warn!(
-                    "iommu: requester {:02x}:{:02x}.{} could not be fenced: {reason}",
-                    at.bus(),
-                    at.device(),
-                    at.function()
-                );
+                warn!("iommu: requester {at} could not be fenced: {reason}");
                 return release_refused_fences(fences);
             }
             pci::DmaFenceOutcome::Retained { reason, fence } => {
-                warn!(
-                    "iommu: requester {:02x}:{:02x}.{} has uncertain fence state: {reason}",
-                    at.bus(),
-                    at.device(),
-                    at.function()
-                );
+                warn!("iommu: requester {at} has uncertain fence state: {reason}");
                 fences.push(fence);
                 return FenceAcquisition::Retained(fences);
             }
@@ -687,23 +669,17 @@ pub(crate) fn admit_upstream_bus_master(
         else {
             continue;
         };
-        let admitted = fence
-            .address()
-            .filter(|&bridge| pci::topology_hierarchy_contains(bridge, function))
-            .map(|bridge| (bridge, fence.admit_bridge_bus_master(domain, interrupts)));
+        let bridge = fence.address();
+        let admitted = pci::topology_hierarchy_contains(bridge, function)
+            .then(|| fence.admit_bridge_bus_master(domain, interrupts));
         if let Some(slot) = UNIT_FENCE_SLOTS.lock_leaf().get_mut(index) {
             *slot = Some(fence);
         }
         match admitted {
-            None | Some((_, Ok(()))) => {}
-            Some((_, Err(EnableError::Restore))) => return Err(EnableError::Restore),
+            None | Some(Ok(())) => {}
+            Some(Err(EnableError::Restore)) => return Err(EnableError::Restore),
             // A clean refusal leaves the bridge as the entry fence did, which emulated bridges ignore.
-            Some((bridge, Err(reason))) => warn!(
-                "iommu: bridge {:02x}:{:02x}.{} kept bus mastering off: {reason}",
-                bridge.bus(),
-                bridge.device(),
-                bridge.function()
-            ),
+            Some(Err(reason)) => warn!("iommu: bridge {bridge} kept bus mastering off: {reason}"),
         }
     }
     Ok(())
@@ -762,13 +738,8 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
             }
             let facts = owner.isolation.facts();
             info!(
-                "iommu: translation on for {:02x}:{:02x}.{} through the unit at {register_base:#x}: {}-level walks, retargeted without dropping the default-deny boundary, cap {:#x}, ecap {:#x}",
-                at.bus(),
-                at.device(),
-                at.function(),
-                facts.levels,
-                facts.capability,
-                facts.extended
+                "iommu: translation on for {at} through the unit at {register_base:#x}: {}-level walks, retargeted without dropping the default-deny boundary, cap {:#x}, ecap {:#x}",
+                facts.levels, facts.capability, facts.extended
             );
             EstablishOutcome::Established
         }

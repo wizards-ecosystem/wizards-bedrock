@@ -13,6 +13,7 @@ mod memory;
 mod probe;
 mod topology;
 
+use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use claims::FunctionLease;
@@ -125,6 +126,18 @@ impl Address {
     }
 }
 
+impl fmt::Display for Address {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{:02x}:{:02x}.{}",
+            self.bus(),
+            self.device(),
+            self.function()
+        )
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Class {
     pub class: u8,
@@ -227,35 +240,13 @@ impl QuiescedRequester {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FunctionObservation {
-    at: Address,
-    identity: u32,
-    class_bits: u32,
-    command: u16,
-    class: Class,
-    header: HeaderType,
-    bus_numbers: Option<u32>,
-}
-
-impl FunctionObservation {
-    pub const fn new(
-        at: Address,
-        identity: u32,
-        class_bits: u32,
-        command: u16,
-        class: Class,
-        header: HeaderType,
-        bus_numbers: Option<u32>,
-    ) -> Self {
-        Self {
-            at,
-            identity,
-            class_bits,
-            command,
-            class,
-            header,
-            bus_numbers,
-        }
-    }
+    pub at: Address,
+    pub identity: u32,
+    pub class_bits: u32,
+    pub command: u16,
+    pub class: Class,
+    pub header: HeaderType,
+    pub bus_numbers: Option<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -51,10 +51,6 @@ static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
 pub(crate) struct Function {
     /// Where it lives.
     pub(crate) at: Address,
-    /// Who made it.
-    pub(crate) vendor: u16,
-    /// Which of theirs it is.
-    pub(crate) device: u16,
     /// Complete vendor/device dword used by the handoff policy.
     identity: u32,
     /// What it says it is.
@@ -182,8 +178,7 @@ pub(crate) struct Survey {
 fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     let at = Address::new(bus, device, function, header::VENDOR)?;
     let identity = pci::read(at)?;
-    let vendor = identity as u16;
-    if pci_config::is_absent(vendor) {
+    if pci_config::is_absent(identity as u16) {
         return None;
     }
 
@@ -194,8 +189,6 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 
     Some(Function {
         at,
-        vendor,
-        device: (identity >> 16) as u16,
         identity,
         class,
         class_bits,
@@ -221,37 +214,24 @@ pub(crate) fn snapshot_topology(
                 } else {
                     None
                 };
+                let observation = FunctionObservation {
+                    at: entry.at,
+                    identity: entry.identity,
+                    class_bits: entry.class_bits,
+                    command: entry.command,
+                    class: entry.class,
+                    header: entry.header,
+                    bus_numbers,
+                };
                 let mut topology = TOPOLOGY.lock_leaf();
                 if let Some(authority) =
                     non_requester.take_if(|authority| authority.address() == entry.at)
                 {
-                    topology.observe_non_requester(
-                        authority,
-                        FunctionObservation::new(
-                            entry.at,
-                            entry.identity,
-                            entry.class_bits,
-                            entry.command,
-                            entry.class,
-                            entry.header,
-                            bus_numbers,
-                        ),
-                    )?;
+                    topology.observe_non_requester(authority, observation)?;
                 } else if let Some(authority) =
                     quiesced.take_if(|authority| authority.address() == entry.at)
                 {
-                    topology.observe_quiesced_requester(
-                        authority,
-                        FunctionObservation::new(
-                            entry.at,
-                            entry.identity,
-                            entry.class_bits,
-                            entry.command,
-                            entry.class,
-                            entry.header,
-                            bus_numbers,
-                        ),
-                    )?;
+                    topology.observe_quiesced_requester(authority, observation)?;
                 } else {
                     topology.observe(entry.at, entry.class, entry.header, bus_numbers)?;
                 }
@@ -383,7 +363,7 @@ pub(crate) enum ClaimError {
 /// transition.
 #[derive(Debug)]
 pub(crate) struct DmaFence {
-    function: Option<pci::FunctionClaim>,
+    function: pci::FunctionClaim,
     command_state: Option<CommandState>,
 }
 
@@ -430,8 +410,8 @@ pub(crate) struct DmaFenceRelease {
 }
 
 impl DmaFence {
-    pub(crate) fn address(&self) -> Option<Address> {
-        self.function.as_ref().map(pci::FunctionClaim::address)
+    pub(crate) const fn address(&self) -> Address {
+        self.function.address()
     }
 
     pub(crate) fn admit_bridge_bus_master(
@@ -439,39 +419,31 @@ impl DmaFence {
         domain: &DmaDomain<'_>,
         interrupts: &InterruptIsolation<'_>,
     ) -> Result<(), EnableError> {
-        let (Some(function), Some(state)) = (self.function.as_ref(), self.command_state.as_mut())
-        else {
+        let Some(state) = self.command_state.as_mut() else {
             return Err(EnableError::Stale);
         };
-        pci::admit_bridge_bus_master(function, domain, interrupts, state)
+        pci::admit_bridge_bus_master(&self.function, domain, interrupts, state)
     }
 
     /// Restore the safe command word and return the exact function claim.
     pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
-        if let Some(state) = self.command_state.take() {
-            let Some(function) = self.function.as_ref() else {
-                panic!("a DMA fence lost its function authority");
-            };
-            if let Err(failure) = pci::restore_command(function, state) {
-                let reason = DmaFenceError::Command(failure.reason());
-                self.command_state = Some(failure.into_state());
-                return Err(DmaFenceRelease {
-                    reason,
-                    fence: self,
-                });
-            }
-        }
-        let Some(function) = self.function.take() else {
-            panic!("a DMA fence lost its function authority");
-        };
-        if let Err(failure) = pci::release_function(function) {
-            self.function = Some(failure.into_function());
+        if let Some(state) = self.command_state.take()
+            && let Err(failure) = pci::restore_command(&self.function, state)
+        {
+            let reason = DmaFenceError::Command(failure.reason());
+            self.command_state = Some(failure.into_state());
             return Err(DmaFenceRelease {
-                reason: DmaFenceError::Function,
+                reason,
                 fence: self,
             });
         }
-        Ok(())
+        pci::release_function(self.function).map_err(|failure| DmaFenceRelease {
+            reason: DmaFenceError::Function,
+            fence: DmaFence {
+                function: failure.into_function(),
+                command_state: None,
+            },
+        })
     }
 }
 
@@ -491,7 +463,7 @@ pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
     }
     match pci::fence_bus_master(&function) {
         Ok(command_state) => DmaFenceOutcome::Fenced(DmaFence {
-            function: Some(function),
+            function,
             command_state: Some(command_state),
         }),
         Err(failure) => {
@@ -500,7 +472,7 @@ pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
                 return DmaFenceOutcome::Retained {
                     reason,
                     fence: DmaFence {
-                        function: Some(function),
+                        function,
                         command_state: Some(command_state),
                     },
                 };
@@ -510,7 +482,7 @@ pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
                 Err(failure) => DmaFenceOutcome::Retained {
                     reason: DmaFenceError::Function,
                     fence: DmaFence {
-                        function: Some(failure.into_function()),
+                        function: failure.into_function(),
                         command_state: None,
                     },
                 },
@@ -534,7 +506,7 @@ fn fence_quiesced_requester(
         && pci::isa_dma_quiet()
     {
         return DmaFenceOutcome::Fenced(DmaFence {
-            function: Some(function),
+            function,
             command_state: None,
         });
     }
@@ -543,7 +515,7 @@ fn fence_quiesced_requester(
         Err(failure) => DmaFenceOutcome::Retained {
             reason: DmaFenceError::Function,
             fence: DmaFence {
-                function: Some(failure.into_function()),
+                function: failure.into_function(),
                 command_state: None,
             },
         },
@@ -737,10 +709,7 @@ impl ReleaseOutcome {
 /// boot; a selection lease has an explicit all-or-stop release.
 #[derive(Debug)]
 pub(crate) struct Device {
-    address: Address,
-    function: Option<pci::FunctionClaim>,
-    vendor: u16,
-    device: u16,
+    function: pci::FunctionClaim,
     bars: ProbedBars,
     /// The command word to restore before a transient lease may disappear.
     command_state: Option<CommandState>,
@@ -751,12 +720,12 @@ pub(crate) struct Device {
 impl Device {
     /// Where it lives.
     pub(crate) const fn at(&self) -> Address {
-        self.address
+        self.function.address()
     }
 
     /// Who made it, and which of theirs it is.
     pub(crate) const fn identity(&self) -> (u16, u16) {
-        (self.vendor, self.device)
+        self.function.identity()
     }
 
     /// The window base address register `index` decodes, if it decodes one.
@@ -777,7 +746,7 @@ impl Device {
         };
         let range =
             paging::admit_device_range(address, window.size).map_err(BarAdmissionError::Range)?;
-        pci::bind_memory_bar(self.function(), &self.bars, index, range)
+        pci::bind_memory_bar(&self.function, &self.bars, index, range)
             .map_err(BarAdmissionError::Bind)
     }
 
@@ -809,15 +778,11 @@ impl Device {
     /// the caller can retry once or quarantine the complete device beside its
     /// DMA domain.
     pub(crate) fn disable_bus_master_for_retirement(&mut self) -> Result<(), EnableError> {
-        let Some(function) = self.function.as_ref() else {
-            self.uncertain = true;
-            return Err(EnableError::Stale);
-        };
         let Some(state) = self.command_state.as_mut() else {
             self.uncertain = true;
             return Err(EnableError::Stale);
         };
-        match pci::disable_bus_master_for_retirement(function, state) {
+        match pci::disable_bus_master_for_retirement(&self.function, state) {
             Ok(()) => {
                 self.uncertain = false;
                 Ok(())
@@ -842,7 +807,7 @@ impl Device {
                 Ok(())
             };
         };
-        if let Err(failure) = pci::restore_command(self.function(), state) {
+        if let Err(failure) = pci::restore_command(&self.function, state) {
             let reason = failure.reason();
             self.command_state = Some(failure.into_state());
             self.uncertain = true;
@@ -855,27 +820,21 @@ impl Device {
     /// Freshly prove that this exact command owner still has BME clear before
     /// a unit-wide VT-d transition.
     pub(crate) fn verify_bus_master_fence(&self) -> Result<(), EnableError> {
-        let Some(function) = self.function.as_ref() else {
-            return Err(EnableError::Stale);
-        };
         let Some(state) = self.command_state.as_ref() else {
             return Err(EnableError::Stale);
         };
-        pci::verify_bus_master_fence(function, state)
+        pci::verify_bus_master_fence(&self.function, state)
     }
 
     /// Expose one mapped BAR only after its live identity enables memory decode.
     pub(crate) fn enable_memory_bar(&mut self, bar: pci::DisabledBar) -> BarDecodeOutcome {
-        let Some(function) = self.function.as_ref() else {
-            panic!("a production PCI device has no function authority");
-        };
         let Some(state) = self.command_state.as_mut() else {
             return BarDecodeOutcome::Refused(BarDecodeFailure {
                 reason: BarEnableError::Command(EnableError::Stale),
                 bar,
             });
         };
-        match pci::enable_memory_bar(function, bar, state) {
+        match pci::enable_memory_bar(&self.function, bar, state) {
             pci::BarEnableOutcome::Enabled(bar) => BarDecodeOutcome::Enabled(bar),
             pci::BarEnableOutcome::Refused(failure) => {
                 let reason = failure.reason();
@@ -889,7 +848,7 @@ impl Device {
     /// Make a successful selection lease permanent.
     pub(crate) fn commit(&mut self) -> Result<(), EnableError> {
         if let Some(state) = self.command_state.take()
-            && let Err(failure) = pci::commit_command(self.function(), state)
+            && let Err(failure) = pci::commit_command(&self.function, state)
         {
             let reason = failure.reason();
             self.command_state = Some(failure.into_state());
@@ -907,7 +866,7 @@ impl Device {
     /// be touched.
     pub(crate) fn release(mut self) -> ReleaseOutcome {
         if let Some(state) = self.command_state.take() {
-            if let Err(failure) = pci::restore_command(self.function(), state) {
+            if let Err(failure) = pci::restore_command(&self.function, state) {
                 self.command_state = Some(failure.into_state());
                 return ReleaseOutcome::refused(ReleaseError::Command, self);
             }
@@ -916,21 +875,19 @@ impl Device {
         if self.uncertain {
             return ReleaseOutcome::refused(ReleaseError::Command, self);
         }
-        let Some(function) = self.function.take() else {
-            panic!("a production PCI device lost its function authority");
-        };
-        if let Err(failure) = pci::release_function(function) {
-            self.function = Some(failure.into_function());
-            return ReleaseOutcome::refused(ReleaseError::Function, self);
+        let Self { function, bars, .. } = self;
+        match pci::release_function(function) {
+            Ok(()) => ReleaseOutcome::released(),
+            Err(failure) => ReleaseOutcome::refused(
+                ReleaseError::Function,
+                Self {
+                    function: failure.into_function(),
+                    bars,
+                    command_state: None,
+                    uncertain: false,
+                },
+            ),
         }
-        ReleaseOutcome::released()
-    }
-
-    fn function(&self) -> &pci::FunctionClaim {
-        let Some(function) = self.function.as_ref() else {
-            panic!("a production PCI device has no function authority");
-        };
-        function
     }
 }
 
@@ -977,8 +934,6 @@ pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
         pci::ClaimError::NoRoom | pci::ClaimError::Exhausted => ClaimError::NoRoom,
         pci::ClaimError::Header(_) => ClaimError::InvalidWindow,
     })?;
-    let address = function.address();
-    let (vendor, device) = function.identity();
     let staged = match pci::probe_bars(&function) {
         Ok(staged) => staged,
         Err(failure) => {
@@ -999,10 +954,7 @@ pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     };
     let (bars, command_state) = staged.into_parts();
     Ok(Device {
-        address,
-        function: Some(function),
-        vendor,
-        device,
+        function,
         bars,
         command_state: Some(command_state),
         uncertain: false,

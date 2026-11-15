@@ -176,13 +176,9 @@ pub enum HandoffFenceError {
 impl fmt::Display for HandoffFenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Access { at, operation } => write!(
-                formatter,
-                "configuration {operation:?} failed for {:02x}:{:02x}.{}",
-                at.bus(),
-                at.device(),
-                at.function()
-            ),
+            Self::Access { at, operation } => {
+                write!(formatter, "configuration {operation:?} failed for {at}")
+            }
             Self::CommandRefused {
                 at,
                 identity,
@@ -191,17 +187,11 @@ impl fmt::Display for HandoffFenceError {
                 found,
             } => write!(
                 formatter,
-                "{:02x}:{:02x}.{} identity {identity:#010x} class {class:#010x} command read back as {found:#06x}, expected {expected:#06x}",
-                at.bus(),
-                at.device(),
-                at.function()
+                "{at} identity {identity:#010x} class {class:#010x} command read back as {found:#06x}, expected {expected:#06x}"
             ),
             Self::IsaDmaPending { at, status } => write!(
                 formatter,
-                "{:02x}:{:02x}.{} 8237 status {status:#06x} still requests DMA after masking",
-                at.bus(),
-                at.device(),
-                at.function()
+                "{at} 8237 status {status:#06x} still requests DMA after masking"
             ),
             Self::IdentityChanged {
                 at,
@@ -209,10 +199,7 @@ impl fmt::Display for HandoffFenceError {
                 found,
             } => write!(
                 formatter,
-                "{:02x}:{:02x}.{} identity changed from {expected:#010x} to {found:#010x}",
-                at.bus(),
-                at.device(),
-                at.function()
+                "{at} identity changed from {expected:#010x} to {found:#010x}"
             ),
             Self::ClassChanged {
                 at,
@@ -220,10 +207,7 @@ impl fmt::Display for HandoffFenceError {
                 found,
             } => write!(
                 formatter,
-                "{:02x}:{:02x}.{} class changed from {expected:#010x} to {found:#010x}",
-                at.bus(),
-                at.device(),
-                at.function()
+                "{at} class changed from {expected:#010x} to {found:#010x}"
             ),
         }
     }
