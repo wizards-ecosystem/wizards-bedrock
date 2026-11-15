@@ -69,13 +69,15 @@ pub enum TaskError {
     Occupied(usize),
     /// The slot is the one already running.
     Current(usize),
-    /// The boot slot has no arena stack to fabricate a frame on.
+    /// The boot slot has no arena stack to fabricate a frame on, and no address space to bind.
     Boot,
     /// The interrupted code was not accepting interrupts, so it is inside a critical section that
     /// must not be switched out of.
     Uninterruptible,
     /// [`switch_from_trap`] was called outside a trap handler.
     NotInTrap,
+    /// [`switch_to`] was called inside a trap handler, whose frame the switch would carry away.
+    InTrap,
     /// The frame handed to [`switch_from_trap`] is not the live handler's, so nothing it claims
     /// about the interrupted code is evidence.
     ForeignFrame,
@@ -97,11 +99,12 @@ impl fmt::Display for TaskError {
             Self::Dead(slot) => write!(f, "slot {slot} has exited"),
             Self::Occupied(slot) => write!(f, "slot {slot} is live"),
             Self::Current(slot) => write!(f, "slot {slot} is already running"),
-            Self::Boot => core::fmt::Write::write_str(f, "the boot slot cannot be fabricated"),
+            Self::Boot => core::fmt::Write::write_str(f, "the boot slot has no arena stack"),
             Self::Uninterruptible => {
                 core::fmt::Write::write_str(f, "the interrupted code holds a critical section")
             }
             Self::NotInTrap => core::fmt::Write::write_str(f, "not inside a trap handler"),
+            Self::InTrap => core::fmt::Write::write_str(f, "inside a trap handler"),
             Self::ForeignFrame => {
                 core::fmt::Write::write_str(f, "not the frame the live handler was entered with")
             }
@@ -345,8 +348,11 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
 ///
 /// [`TaskError::Current`] for the running slot, [`TaskError::Dead`] for an exited one,
 /// [`TaskError::Vacant`] for an unfabricated one, [`TaskError::OutOfRange`] past the table, and
-/// [`TaskError::NotInitialised`] before [`init`].
+/// [`TaskError::NotInitialised`] before [`init`], and [`TaskError::InTrap`] inside a trap handler.
 pub fn switch_to(slot: usize) -> Result<(), TaskError> {
+    if interrupt::in_trap() {
+        return Err(TaskError::InTrap);
+    }
     let saved = interrupt::disable();
     let outcome = prepare(slot, State::Alive).map(|(save, load)| {
         interrupt::switch_context(slot);
@@ -598,15 +604,18 @@ fn switch_thread_base(table: &mut Table, current: usize, slot: usize) {
 ///
 /// # Errors
 ///
-/// [`TaskError::OutOfRange`] past the table, [`TaskError::Vacant`] for a slot with no thread, and
-/// [`TaskError::Current`] for the running one, whose tables only the switch may change. A refusal
-/// returns the unconsumed binding with the error.
+/// [`TaskError::OutOfRange`] past the table, [`TaskError::Boot`] for the boot slot,
+/// [`TaskError::Vacant`] for a slot with no thread, and [`TaskError::Current`] for the running one,
+/// whose tables only the switch may change. A refusal returns the unconsumed binding with the
+/// error.
 pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskError, Binding)> {
     let roots = binding.roots();
     let saved = interrupt::disable();
     let mut table = TABLE.lock_leaf();
     let outcome = if slot >= table.count {
         Err(TaskError::OutOfRange(slot))
+    } else if slot == BOOT {
+        Err(TaskError::Boot)
     } else if table.slots[slot].state != State::Alive {
         Err(TaskError::Vacant(slot))
     } else if slot == CURRENT.load(Ordering::Acquire) {
@@ -645,6 +654,10 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
     } else if table.slots[slot].state != State::Alive {
         Err(TaskError::Vacant(slot))
     } else {
+        assert!(
+            interrupt::context_is_clear(slot),
+            "a retired task slot retains interrupt-exclusion ownership"
+        );
         let stack_index = table.slots[slot].stack_index;
         table.slots[slot] = Slot {
             stack_index,
