@@ -1,7 +1,7 @@
 //! The first thing that runs in ring 3, proving that the descriptors, the gate, the privilege
 //! stack and the return path all agree before a loader makes disagreement harder to diagnose.
 
-use wost::arch::current::paging::AddressSpace;
+use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::mm::PhysicalAddress;
 use wost::sync::SpinLock;
@@ -73,14 +73,59 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
 
 #[derive(Debug)]
+struct Regions {
+    ranges: [(u64, u64); MAX_REGIONS],
+    len: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct UnmapRefusal {
+    pages: usize,
+    reason: MapError,
+}
+
+impl Regions {
+    const fn new() -> Self {
+        Self {
+            ranges: [(0, 0); MAX_REGIONS],
+            len: 0,
+        }
+    }
+
+    #[must_use = "a full ledger recorded nothing"]
+    fn record(&mut self, at: u64, len: u64) -> bool {
+        let Some(slot) = self.ranges.get_mut(self.len) else {
+            return false;
+        };
+        *slot = (at, len);
+        self.len += 1;
+        true
+    }
+
+    // Last mapped first; a refused range and every one below it stay recorded for a retry.
+    fn unmap(&mut self, space: &mut AddressSpace) -> Result<usize, UnmapRefusal> {
+        let mut pages = 0usize;
+        while self.len != 0 {
+            let (at, len) = self.ranges[self.len - 1];
+            let returned = space
+                .unmap(at, len)
+                .map_err(|reason| UnmapRefusal { pages, reason })?;
+            pages = pages.saturating_add(returned.pages() as usize);
+            drop(returned);
+            self.len -= 1;
+        }
+        Ok(pages)
+    }
+}
+
+#[derive(Debug)]
 struct Bootstrap {
     /// Its tables, kept so they can be given back: exactly why `bind` borrows the space.
     space: AddressSpace,
     /// The task table's one-shot authority to release these tables.
     authority: Option<BootstrapAuthority>,
     /// What was mapped into them, so the same is unmapped.
-    regions: [(u64, u64); MAX_REGIONS],
-    mapped: usize,
+    regions: Regions,
     /// Its handle table, behind an `Arc` like [`Bootstrap::ring`]: handle operations take the
     /// global arena's lock, which `lock_leaf` forbids under this table's leaf guard.
     table: alloc::sync::Arc<HandleTable>,

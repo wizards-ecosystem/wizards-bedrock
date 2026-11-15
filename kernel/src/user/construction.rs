@@ -6,36 +6,21 @@ use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};
 
 use super::call::cross;
-use super::load::{LoadError, LoadedImage, load, place_stack};
+use super::load::{LoadError, load, place_stack};
 use super::reap::slot_has_zombie;
 use super::{
-    APART, BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, MAX_REGIONS, RING, Spawned,
+    APART, BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, RING, Regions, Spawned,
     USER_STACK_BYTES,
 };
 use crate::handle::{HandleError, HandleTable};
 use crate::{object, queue, thread};
-
-fn remember(
-    regions: &mut [(u64, u64); MAX_REGIONS],
-    used: &mut usize,
-    at: u64,
-    len: u64,
-) -> Result<(), SpawnError> {
-    let Some(slot) = regions.get_mut(*used) else {
-        return Err(SpawnError::TooManyMappings);
-    };
-    *slot = (at, len);
-    *used += 1;
-    Ok(())
-}
 
 /// A process that is not yet observable and therefore must be undone on drop.
 #[derive(Debug)]
 struct ProcessConstruction {
     space: Option<AddressSpace>,
     authority: thread::SpaceAuthority,
-    regions: [(u64, u64); MAX_REGIONS],
-    mapped: usize,
+    regions: Regions,
 }
 
 impl ProcessConstruction {
@@ -43,8 +28,7 @@ impl ProcessConstruction {
         Self {
             space: Some(space),
             authority: thread::SpaceAuthority::None,
-            regions: [(0, 0); MAX_REGIONS],
-            mapped: 0,
+            regions: Regions::new(),
         }
     }
 
@@ -53,7 +37,11 @@ impl ProcessConstruction {
     }
 
     fn remember(&mut self, at: u64, len: u64) -> Result<(), SpawnError> {
-        remember(&mut self.regions, &mut self.mapped, at, len)
+        if self.regions.record(at, len) {
+            Ok(())
+        } else {
+            Err(SpawnError::TooManyMappings)
+        }
     }
 
     fn retain_authority(&mut self, authority: thread::SpaceAuthority) {
@@ -71,16 +59,8 @@ impl Drop for ProcessConstruction {
             return;
         };
 
-        while self.mapped != 0 {
-            let index = self.mapped - 1;
-            let (at, len) = self.regions[index];
-            match space.unmap(at, len) {
-                Ok(returned) => {
-                    drop(returned);
-                    self.mapped = index;
-                }
-                Err(reason) => panic!("failed-spawn mapping cleanup refused: {reason}"),
-            }
+        if let Err(refusal) = self.regions.unmap(space) {
+            panic!("failed-spawn mapping cleanup refused: {}", refusal.reason);
         }
 
         if let Err(reason) = space.reclaim(released) {
@@ -141,8 +121,7 @@ impl PreparedProcess {
         BOOTSTRAPS.lock_leaf()[slot] = Some(Bootstrap {
             space,
             authority: Some(BootstrapAuthority::Bound(bound)),
-            regions: self.construction.regions,
-            mapped: self.construction.mapped,
+            regions: core::mem::replace(&mut self.construction.regions, Regions::new()),
             table: self.table,
             ring: self.ring,
         });
@@ -235,7 +214,7 @@ impl core::error::Error for SpawnError {}
 /// and returns every resource before the error escapes.
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
     let mut construction = ProcessConstruction::new(admitted_space()?);
-    let (image, stack) = map_program(&mut construction, which)?;
+    let (entry, stack) = map_program(&mut construction, which)?;
     let ring = map_shared(&mut construction)?;
     let root = construction.space()?.root();
 
@@ -258,7 +237,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
         table: alloc::sync::Arc::new(table),
         ring,
         launch: Launch {
-            entry: image.entry(),
+            entry,
             stack,
             argument,
             bootstrap_handle: handle,
@@ -331,15 +310,13 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
 fn map_program(
     construction: &mut ProcessConstruction,
     which: u64,
-) -> Result<(LoadedImage, u64), SpawnError> {
+) -> Result<(u64, u64), SpawnError> {
     let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
-    for (at, len) in image.regions() {
-        construction.remember(at, len)?;
-    }
+    construction.regions = image.regions;
 
     let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
     construction.remember(stack, USER_STACK_BYTES)?;
-    Ok((image, stack))
+    Ok((image.entry, stack))
 }
 
 /// Show the time page before the ring, so no process launches with a hole in its ABI, then map

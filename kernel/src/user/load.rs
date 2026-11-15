@@ -5,7 +5,7 @@ use wost::mm;
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
-use super::{APART, STACK, USER_STACK_BYTES};
+use super::{APART, Regions, STACK, USER_STACK_BYTES};
 use crate::{info, warn};
 
 /// Map program `which`'s stack, writable and never executable: W^X is not relaxed for user
@@ -137,24 +137,10 @@ pub(super) fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, 
     load_image(space, bytes, shift)
 }
 
-/// One image load and the exact ranges it installed, kept per transaction rather than as global
-/// last-call state, so two constructions cannot take each other's cleanup record.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub(crate) struct LoadedImage {
-    entry: u64,
-    regions: [Option<(u64, u64)>; MAX_SEGMENTS],
-}
-
-impl LoadedImage {
-    /// Address at which execution begins.
-    pub(super) const fn entry(&self) -> u64 {
-        self.entry
-    }
-
-    /// Ranges this load installed, for cleanup evidence.
-    pub(crate) fn regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.regions.iter().copied().flatten()
-    }
+    pub(super) entry: u64,
+    pub(super) regions: Regions,
 }
 
 /// Fill and map one validated placement.
@@ -172,38 +158,6 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
     space
         .map_user(placement.at, run.into(), placement.flags)
         .map_err(|reason| LoadError::NotMapped(reason.reason()))
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct UnmapRefusal {
-    pages: usize,
-    reason: MapError,
-}
-
-fn unmap_regions(
-    space: &mut AddressSpace,
-    regions: impl IntoIterator<Item = (u64, u64)>,
-) -> Result<usize, UnmapRefusal> {
-    let mut pages = 0;
-    for (at, len) in regions {
-        let returned = space
-            .unmap(at, len)
-            .map_err(|reason| UnmapRefusal { pages, reason })?;
-        pages = pages
-            .checked_add(returned.pages() as usize)
-            .unwrap_or_else(|| panic!("mapping cleanup page accounting overflowed"));
-        drop(returned);
-    }
-    Ok(pages)
-}
-
-fn undo(space: &mut AddressSpace, done: &[Option<Placement>]) -> Result<usize, UnmapRefusal> {
-    unmap_regions(
-        space,
-        done.iter()
-            .flatten()
-            .map(|placement| (placement.at, placement.mapped_end - placement.at)),
-    )
 }
 
 /// Whether two validated placements want any page in common.
@@ -334,26 +288,24 @@ pub(crate) fn load_image(
         return Err(LoadError::InvalidEntry(entry));
     }
 
-    for (done, placement) in placements.iter().flatten().enumerate() {
-        match place(space, bytes, placement) {
-            Ok(()) => {}
-            Err(reason) => {
-                // Validation cannot rule out a frame shortage or a collision, so the pass walks
-                // back exactly what it mapped.
-                if let Err(refusal) = undo(space, &placements[..done]) {
-                    return Err(LoadError::Rollback {
-                        reason: refusal.reason,
-                        pages: refusal.pages,
-                    });
-                }
-                return Err(reason);
+    let mut regions = Regions::new();
+    for placement in placements.iter().flatten() {
+        if let Err(reason) = place(space, bytes, placement) {
+            // Validation cannot rule out a frame shortage or a collision, so the pass walks
+            // back exactly what it mapped.
+            if let Err(refusal) = regions.unmap(space) {
+                return Err(LoadError::Rollback {
+                    reason: refusal.reason,
+                    pages: refusal.pages,
+                });
             }
+            return Err(reason);
         }
+        assert!(
+            regions.record(placement.at, placement.mapped_end - placement.at),
+            "the region ledger holds fewer ranges than the loader places"
+        );
     }
 
-    let mut regions = [None; MAX_SEGMENTS];
-    for (slot, placement) in placements.iter().flatten().enumerate() {
-        regions[slot] = Some((placement.at, placement.mapped_end - placement.at));
-    }
     Ok(LoadedImage { entry, regions })
 }

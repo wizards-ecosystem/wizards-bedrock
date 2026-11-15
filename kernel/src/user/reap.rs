@@ -27,16 +27,10 @@ fn reclaim(bootstrap: &mut Bootstrap) -> Result<(), ReclaimRefusal> {
         },
     };
 
-    while bootstrap.mapped != 0 {
-        let index = bootstrap.mapped - 1;
-        let (at, len) = bootstrap.regions[index];
-        let returned = bootstrap
-            .space
-            .unmap(at, len)
-            .map_err(ReclaimRefusal::Mapping)?;
-        drop(returned);
-        bootstrap.mapped = index;
-    }
+    bootstrap
+        .regions
+        .unmap(&mut bootstrap.space)
+        .map_err(|refusal| ReclaimRefusal::Mapping(refusal.reason))?;
 
     let Some(BootstrapAuthority::Released(released)) = bootstrap.authority.take() else {
         unreachable!("task release was established above");
