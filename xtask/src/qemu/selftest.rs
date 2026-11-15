@@ -301,7 +301,7 @@ fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
         SelftestOutcome::Failed(failed) => {
             bail!("{SELFTEST_FAILURE}: {}", failed.join("; "))
         }
-        SelftestOutcome::Panicked { transcript, .. } => {
+        SelftestOutcome::Panicked(transcript) => {
             bail!("{PANIC_FAILURE}: {transcript}")
         }
     }

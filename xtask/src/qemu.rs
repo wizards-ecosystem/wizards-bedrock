@@ -315,7 +315,7 @@ const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 /// Evidence emitted only after the shipped program calls from saved CPL 3.
 pub(crate) const SHIPPED_USER_EXECUTION_MARKER: &str = "user: ring 3 call observed";
 
-pub(crate) const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
+const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
 /// One record per key the shipped kernel reads; kept in step with `kernel/src/main.rs`.
 const KEY_CONSUMED_MARKER: &str = "input: key consumed";
@@ -338,8 +338,8 @@ const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
 /// Watched for rather than inferred from an exit code: a panicking kernel halts, not exits.
-pub(crate) const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
-pub(crate) const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
+const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
+const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 
 pub(crate) fn canonical_decimal(text: &str) -> Option<u64> {
     if text.is_empty()
@@ -360,8 +360,7 @@ const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC
 pub(crate) const NO_PCI_HANDOFF_PANIC: &str =
     "DMA-safe boot handoff refused: DMA handoff fence: PCI configuration is unavailable";
 
-pub(crate) const DEGRADED_FILESYSTEM_MARKER: &str =
-    "tmpfs: 1 file(s) and 1 directory(ies) at the root";
+const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
 
 /// Both device names must resolve through devfs without a bus.
 const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is a block device";
@@ -370,11 +369,10 @@ const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is a character device";
 /// Optional hardening is absent, while mandatory WP and NX remain active.
 const DEGRADED_PROTECTIONS_MARKER: &str = "cpu: protections wp nx";
 
-pub(crate) const DEGRADED_XSTATE_MARKER: &str =
-    "cpu: extended state unavailable; ring 3 stays closed";
+const DEGRADED_XSTATE_MARKER: &str = "cpu: extended state unavailable; ring 3 stays closed";
 
 /// Missing x2APIC leaves interrupts unadmitted, the first user-launch veto.
-pub(crate) const DEGRADED_USER_MARKER: &str =
+const DEGRADED_USER_MARKER: &str =
     "user: no program: maskable interrupts are not admitted; ring 3 is closed";
 
 const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
@@ -389,9 +387,9 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::warning(DEGRADED_USER_MARKER),
 ];
 
-pub(crate) const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
+const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
 
-pub(crate) const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
+const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
 
 /// The unisolated boot must refuse every candidate and still settle; the first candidate's clean
 /// retirement proves the refusal path returns the lease exactly.

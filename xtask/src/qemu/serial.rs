@@ -12,11 +12,8 @@ pub(super) enum SelftestOutcome {
     Passed,
     /// Each red check, in report order.
     Failed(Vec<String>),
-    /// The exact single-line panic body and every check that went red before it.
-    Panicked {
-        transcript: String,
-        failed: Vec<String>,
-    },
+    /// The exact single-line panic body.
+    Panicked(String),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -454,10 +451,7 @@ pub(super) fn correlate_selftest(
     observation: SerialObservation,
 ) -> Result<SelftestOutcome> {
     if let Some(transcript) = completed_panic(observation.panic, observation.panic_complete)? {
-        return Ok(SelftestOutcome::Panicked {
-            transcript,
-            failed: observation.failed,
-        });
+        return Ok(SelftestOutcome::Panicked(transcript));
     }
     let verdict = observation
         .verdict
