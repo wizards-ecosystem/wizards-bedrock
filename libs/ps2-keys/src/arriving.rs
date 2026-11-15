@@ -1,38 +1,26 @@
-//! Which numbering arriving bytes are in, read from the bytes themselves.
-//! Translation bits, identity replies and set queries (`F0 00`) have each been seen to lie,
-//! so no probe is trusted.
+// Translation bits, identity replies and `F0 00` set queries have each been seen to lie.
 
-/// What the bytes so far have proved about their numbering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arriving {
-    /// Nothing seen yet distinguishes the two.
     Undecided,
-    /// A translating controller's set 1.
     Set1,
-    /// The set the keyboard sends when nothing rewrites it.
     Set2,
 }
 
-/// Set 2's break prefix; set 1 has no `70` key, so `F0` means set 2 wherever it appears.
+// Set 1 has no `70` key, so `F0` means set 2 wherever it appears.
 const BREAK: u8 = 0xF0;
 
-/// The highest make code set 2 has. Above it, key data is not set 2's.
 const SET_2_HIGHEST_MAKE: u8 = 0x83;
 
-/// The highest release set 1 can produce: its highest make, high bit set.
 const SET_1_HIGHEST_BREAK: u8 = 0xDD;
 
-/// Set 1 releases that set 2 also sends as replies, so they must never decide.
-/// `AA` is set 2's self-test reply, `AB` begins every identity reply and `84` is set 2's SysRq.
+// Set 2 also sends these, so they never decide: `AA` self-test, `AB` identity, `84` SysRq.
 const AMBIGUOUS: [u8; 3] = [0xAA, 0xAB, 0x84];
 
-/// Reads the numbering off the stream without consuming it.
-/// Stateless, since every rule holds for a byte in any position.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SetProbe;
 
 impl SetProbe {
-    /// What one byte proves, if anything.
     #[must_use]
     pub const fn observe(byte: u8) -> Arriving {
         if byte == BREAK {

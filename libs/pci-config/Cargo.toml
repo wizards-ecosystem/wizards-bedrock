@@ -1,6 +1,6 @@
 [package]
 name = "pci-config"
-description = "Configuration-space addressing, BAR decoding and class codes for PCI."
+description = "PCI configuration space"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

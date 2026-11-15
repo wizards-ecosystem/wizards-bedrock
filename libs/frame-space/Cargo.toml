@@ -1,6 +1,6 @@
 [package]
 name = "frame-space"
-description = "Allocation bookkeeping for physical page frames: which frames exist, which are free, and where a contiguous run of them fits."
+description = "Physical frame allocation bookkeeping"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,3 @@ repository.workspace = true
 
 [lints]
 workspace = true
-
-# Property testing, built only for the host under `cargo test`.
-[dev-dependencies]
-proptest.workspace = true
-getrandom.workspace = true

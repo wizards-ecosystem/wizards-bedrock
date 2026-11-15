@@ -1,43 +1,3 @@
-//! Just enough ELF64 to load a program: the header, and the segments.
-//!
-//! User bytes are hostile: a malformed image is an error, never a panic or out-of-bounds read.
-//!
-//! # Examples
-//!
-//! ```
-//! use elf64::{Elf, SegmentKind, HEADER_BYTES, PROGRAM_HEADER_BYTES};
-//!
-//! // The smallest thing that is an ELF: a header and one loadable segment.
-//! let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES];
-//! image[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
-//! image[4] = 2; // ELFCLASS64
-//! image[5] = 1; // little-endian
-//! image[6] = 1; // current ELF identification version
-//! image[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
-//! image[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
-//! image[20..24].copy_from_slice(&1u32.to_le_bytes()); // current ELF version
-//! image[24..32].copy_from_slice(&0x40_1000u64.to_le_bytes()); // e_entry
-//! image[32..40].copy_from_slice(&(HEADER_BYTES as u64).to_le_bytes()); // e_phoff
-//! image[52..54].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes()); // e_ehsize
-//! image[54..56].copy_from_slice(&(PROGRAM_HEADER_BYTES as u16).to_le_bytes());
-//! image[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
-//!
-//! let at = HEADER_BYTES;
-//! image[at..at + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
-//! image[at + 4..at + 8].copy_from_slice(&5u32.to_le_bytes()); // R|X
-//! image[at + 16..at + 24].copy_from_slice(&0x40_0000u64.to_le_bytes()); // p_vaddr
-//!
-//! let elf = Elf::parse(&image).expect("a 64-bit little-endian ELF");
-//! assert_eq!(elf.entry(), 0x40_1000);
-//!
-//! let loadable: Vec<_> = elf
-//!     .segments()
-//!     .filter(|segment| segment.kind() == SegmentKind::Load)
-//!     .collect();
-//! assert_eq!(loadable.len(), 1);
-//! assert!(loadable[0].is_executable() && !loadable[0].is_writable());
-//! ```
-
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 #![cfg_attr(
@@ -49,81 +9,74 @@ use core::fmt;
 
 pub const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 
-/// `ELFCLASS64`.
 pub const CLASS_64: u8 = 2;
 
-/// `ELFDATA2LSB`.
 pub const LITTLE_ENDIAN: u8 = 1;
 
 pub const HEADER_BYTES: usize = 64;
 
 pub const PROGRAM_HEADER_BYTES: usize = 56;
 
-/// `EM_X86_64`, the only machine this loader will run.
 pub const MACHINE_X86_64: u16 = 62;
 
 const CURRENT_VERSION: u32 = 1;
 
 const EXECUTABLE: u16 = 2;
 
-/// Why an image could not be read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum ElfError {
-    /// Shorter than the structure being read.
     Truncated { wanted: usize, available: usize },
-    /// Does not begin with [`MAGIC`].
     NotAnElf,
-    /// Not `ELFCLASS64`.
     NotSixtyFourBit(u8),
-    /// Not `ELFDATA2LSB`.
     NotLittleEndian(u8),
-    /// The independent identification version is not `EV_CURRENT`.
     WrongIdentificationVersion(u8),
-    /// The object is not an executable image.
     WrongType(u16),
-    /// The file-header version is not `EV_CURRENT`.
     WrongVersion(u32),
-    /// Not built for this machine, though every other rule here may pass.
     WrongMachine(u16),
-    /// The file-header size is not [`HEADER_BYTES`].
     WrongHeaderSize(u16),
-    /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`], so it is another format.
     WrongProgramHeaderSize(u16),
-    /// The program-header table does not fit inside the image.
     ProgramHeadersOutOfRange { offset: u64, count: u16 },
 }
 
 impl fmt::Display for ElfError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Truncated { wanted, available } => {
-                write!(f, "wanted {wanted} bytes and there are {available}")
+                write!(formatter, "wanted {wanted} bytes and there are {available}")
             }
-            Self::NotAnElf => f.write_str("does not begin with the elf magic"),
-            Self::NotSixtyFourBit(class) => write!(f, "elf class {class} is not 64-bit"),
+            Self::NotAnElf => formatter.write_str("does not begin with the elf magic"),
+            Self::NotSixtyFourBit(class) => write!(formatter, "elf class {class} is not 64-bit"),
             Self::NotLittleEndian(data) => {
-                write!(f, "elf data encoding {data} is not little-endian")
+                write!(formatter, "elf data encoding {data} is not little-endian")
             }
             Self::WrongIdentificationVersion(version) => {
-                write!(f, "elf identification version {version} is not current")
+                write!(
+                    formatter,
+                    "elf identification version {version} is not current"
+                )
             }
-            Self::WrongType(kind) => write!(f, "elf object type {kind} is not executable"),
+            Self::WrongType(kind) => write!(formatter, "elf object type {kind} is not executable"),
             Self::WrongVersion(version) => {
-                write!(f, "elf file version {version} is not current")
+                write!(formatter, "elf file version {version} is not current")
             }
             Self::WrongMachine(machine) => {
-                write!(f, "elf machine {machine} is not x86-64")
+                write!(formatter, "elf machine {machine} is not x86-64")
             }
             Self::WrongHeaderSize(size) => {
-                write!(f, "elf header is {size} bytes, expected {HEADER_BYTES}")
+                write!(
+                    formatter,
+                    "elf header is {size} bytes, expected {HEADER_BYTES}"
+                )
             }
             Self::WrongProgramHeaderSize(size) => {
-                write!(f, "program headers of {size} bytes are not this format's")
+                write!(
+                    formatter,
+                    "program headers of {size} bytes are not this format's"
+                )
             }
             Self::ProgramHeadersOutOfRange { offset, count } => {
                 write!(
-                    f,
+                    formatter,
                     "{count} program headers at {offset:#x} run past the image"
                 )
             }
@@ -133,30 +86,19 @@ impl fmt::Display for ElfError {
 
 impl core::error::Error for ElfError {}
 
-/// What a program header describes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum SegmentKind {
-    /// `PT_NULL`.
     Null,
-    /// `PT_LOAD`, the only kind a loader places in memory.
     Load,
-    /// `PT_DYNAMIC`.
     Dynamic,
-    /// `PT_INTERP`, a request for a dynamic linker this kernel does not have.
     Interpreter,
-    /// `PT_NOTE`.
     Note,
-    /// `PT_PHDR`.
     ProgramHeaders,
-    /// `PT_TLS`.
     ThreadLocal,
-    /// Anything else by value, such as `PT_GNU_STACK`.
     Other(u32),
 }
 
 impl SegmentKind {
-    /// Decode the `p_type` field.
     pub const fn from_bits(bits: u32) -> Self {
         match bits {
             0 => Self::Null,
@@ -169,23 +111,8 @@ impl SegmentKind {
             other => Self::Other(other),
         }
     }
-
-    /// The `p_type` field, the inverse of [`from_bits`](Self::from_bits) so the table is checkable.
-    pub const fn bits(self) -> u32 {
-        match self {
-            Self::Null => 0,
-            Self::Load => 1,
-            Self::Dynamic => 2,
-            Self::Interpreter => 3,
-            Self::Note => 4,
-            Self::ProgramHeaders => 6,
-            Self::ThreadLocal => 7,
-            Self::Other(other) => other,
-        }
-    }
 }
 
-/// One program header.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Segment {
     kind: SegmentKind,
@@ -198,23 +125,18 @@ pub struct Segment {
 }
 
 impl Segment {
-    /// `PF_X`.
     pub const EXECUTE: u32 = 1;
-    /// `PF_W`.
     pub const WRITE: u32 = 1 << 1;
-    /// `PF_R`.
     pub const READ: u32 = 1 << 2;
 
     pub const fn kind(self) -> SegmentKind {
         self.kind
     }
 
-    /// The raw `p_flags` field, for a verifier that reports the value it objected to.
     pub const fn flags(self) -> u32 {
         self.flags
     }
 
-    /// Where in the file its contents start.
     pub const fn offset(self) -> u64 {
         self.offset
     }
@@ -227,7 +149,6 @@ impl Segment {
         self.file_size
     }
 
-    /// Bytes to occupy in memory, zero past `file_size`.
     pub const fn memory_size(self) -> u64 {
         self.memory_size
     }
@@ -236,15 +157,10 @@ impl Segment {
         self.alignment
     }
 
-    /// Whether `p_align` is legal and the file and memory offsets agree.
     pub const fn has_valid_alignment(self) -> bool {
         self.alignment <= 1
             || self.alignment.is_power_of_two()
                 && self.address % self.alignment == self.offset % self.alignment
-    }
-
-    pub const fn is_readable(self) -> bool {
-        self.flags & Self::READ != 0
     }
 
     pub const fn is_writable(self) -> bool {
@@ -255,13 +171,11 @@ impl Segment {
         self.flags & Self::EXECUTE != 0
     }
 
-    /// Whether it asks for W+X, which a loader refuses rather than dropping a permission.
     pub const fn is_write_execute(self) -> bool {
         self.is_writable() && self.is_executable()
     }
 
-    /// Whether its file contents fit inside an image of `bytes` bytes, without overflow.
-    /// A loader must ask this before copying, since parsing never checks where a header points.
+    // A loader must ask this before copying: parsing never checks where a header points.
     pub const fn contents_fit(self, bytes: usize) -> bool {
         match self.offset.checked_add(self.file_size) {
             Some(end) => end <= bytes as u64,
@@ -269,14 +183,12 @@ impl Segment {
         }
     }
 
-    /// Whether it claims more file bytes than memory to put them in.
-    /// A loader must refuse it, since copying `file_size` bytes would write past the mapping.
+    // A loader must refuse it: copying `file_size` bytes would write past the mapping.
     pub const fn is_oversized(self) -> bool {
         self.file_size > self.memory_size
     }
 }
 
-/// The file header's unvalidated description of the section table, for the host verifier.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SectionTable {
     offset: u64,
@@ -286,7 +198,6 @@ pub struct SectionTable {
 }
 
 impl SectionTable {
-    /// File offset of the first section header.
     pub const fn offset(self) -> u64 {
         self.offset
     }
@@ -299,13 +210,11 @@ impl SectionTable {
         self.count
     }
 
-    /// Index of the section-name string table.
     pub const fn names_index(self) -> u16 {
         self.names_index
     }
 }
 
-/// A parsed ELF64 image, borrowing the bytes it came from.
 #[derive(Clone, Copy, Debug)]
 pub struct Elf<'bytes> {
     bytes: &'bytes [u8],
@@ -316,21 +225,18 @@ pub struct Elf<'bytes> {
 }
 
 impl<'bytes> Elf<'bytes> {
-    /// Validate the file header and program-header table bounds, leaving segments to the loader.
     pub fn parse(bytes: &'bytes [u8]) -> Result<Self, ElfError> {
         let header = take(bytes, 0, HEADER_BYTES)?;
         if header.get(..4) != Some(&MAGIC) {
             return Err(ElfError::NotAnElf);
         }
-        match header.get(4) {
-            Some(&CLASS_64) => {}
-            Some(&class) => return Err(ElfError::NotSixtyFourBit(class)),
-            None => return Err(ElfError::NotAnElf),
+        let class = header[4];
+        if class != CLASS_64 {
+            return Err(ElfError::NotSixtyFourBit(class));
         }
-        match header.get(5) {
-            Some(&LITTLE_ENDIAN) => {}
-            Some(&data) => return Err(ElfError::NotLittleEndian(data)),
-            None => return Err(ElfError::NotAnElf),
+        let data = header[5];
+        if data != LITTLE_ENDIAN {
+            return Err(ElfError::NotLittleEndian(data));
         }
 
         let identification_version = header[6];
@@ -395,15 +301,10 @@ impl<'bytes> Elf<'bytes> {
         self.entry
     }
 
-    pub const fn segment_count(&self) -> u16 {
-        self.program_count
-    }
-
     pub const fn section_table(&self) -> SectionTable {
         self.sections
     }
 
-    /// Every program header, in order, inside the table `parse` already bounded.
     pub fn segments(&self) -> impl Iterator<Item = Segment> + use<'bytes> {
         let bytes = self.bytes;
         let base = self.program_offset as usize;
@@ -423,13 +324,12 @@ impl<'bytes> Elf<'bytes> {
     }
 }
 
-/// `len` bytes at `at`, or why they are not there.
-fn take(bytes: &[u8], at: usize, len: usize) -> Result<&[u8], ElfError> {
+fn take(bytes: &[u8], at: usize, length: usize) -> Result<&[u8], ElfError> {
     bytes
         .get(at..)
-        .and_then(|rest| rest.get(..len))
+        .and_then(|rest| rest.get(..length))
         .ok_or(ElfError::Truncated {
-            wanted: at.saturating_add(len),
+            wanted: at.saturating_add(length),
             available: bytes.len(),
         })
 }

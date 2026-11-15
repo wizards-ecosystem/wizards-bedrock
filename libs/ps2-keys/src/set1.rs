@@ -1,9 +1,7 @@
-//! Scan code set 1's base and `E0` tables.
-//! Source: Andries Brouwer, *Keyboard scancodes*, "Scan code set 1".
+// Source: Andries Brouwer, *Keyboard scancodes*, "Scan code set 1".
 
 use crate::key::Key;
 
-/// The key a bare set 1 make code names, `0x01..=0x58` with gaps; releases never reach here.
 pub(crate) fn key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x01 => Key::Escape,
@@ -95,7 +93,6 @@ pub(crate) fn key_for(code: u8) -> Option<Key> {
     })
 }
 
-/// The key an `E0`-prefixed set 1 code names.
 pub(crate) fn extended_key_for(code: u8) -> Option<Key> {
     Some(match code {
         0x1C => Key::KeypadEnter,

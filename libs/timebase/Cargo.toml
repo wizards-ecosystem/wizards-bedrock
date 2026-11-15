@@ -1,6 +1,6 @@
 [package]
 name = "timebase"
-description = "Turning a free-running counter's ticks into nanoseconds and back, as a rounded multiply-and-shift."
+description = "Counter tick conversion"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,5 @@
 use super::*;
 
-/// Transcribed from `covers`'s "input order is not assumed" contract.
 #[test]
 fn overlapping_regions_answer_the_same_in_either_order() {
     let usable = MemoryRegion {
@@ -30,4 +29,12 @@ fn overlapping_regions_answer_the_same_in_either_order() {
     }
     assert!(!forward.covers_memory(0, 1));
     assert!(forward.covers(0, 1));
+
+    for map in [forward, reversed] {
+        let runs: Vec<_> = map
+            .allocatable_runs()
+            .map(|run| (run.base(), run.bytes()))
+            .collect();
+        assert_eq!(runs, [(PAGE_SIZE * 2, PAGE_SIZE)]);
+    }
 }

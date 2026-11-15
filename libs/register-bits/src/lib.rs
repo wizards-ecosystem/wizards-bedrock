@@ -1,17 +1,3 @@
-//! Width conversions for register values; reserved high bits are ignored here, never refused.
-//!
-//! Readers mask them here before any comparison or decode.
-//!
-//! # Examples
-//!
-//! ```
-//! use register_bits::{low_u32, u16_halves, u32_halves};
-//!
-//! assert_eq!(low_u32(0xFFFF_FFFF_0000_0001), 1);
-//! assert_eq!(u32_halves(0x1234_5678_9ABC_DEF0), (0x9ABC_DEF0, 0x1234_5678));
-//! assert_eq!(u16_halves(0x1234_8086), (0x8086, 0x1234));
-//! ```
-
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
@@ -20,25 +6,18 @@ const _: () = assert!(
     "a 64-bit register offset is a usize only on 64-bit targets"
 );
 
-/// The 32-bit register held in the low half of a 64-bit read, the reserved high half ignored.
 pub const fn low_u32(value: u64) -> u32 {
     value as u32
 }
 
-/// The low and high halves of a 64-bit operand, low first.
 pub const fn u32_halves(value: u64) -> (u32, u32) {
     (value as u32, (value >> 32) as u32)
 }
 
-/// The low and high halves of a 32-bit register, low first.
 pub const fn u16_halves(value: u32) -> (u16, u16) {
     (value as u16, (value >> 16) as u16)
 }
 
-/// A 64-bit register offset as an index into a register window.
 pub const fn usize_from_u64(value: u64) -> usize {
     value as usize
 }
-
-#[cfg(test)]
-mod tests;

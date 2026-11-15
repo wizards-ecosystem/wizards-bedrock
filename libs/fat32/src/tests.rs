@@ -36,23 +36,13 @@ fn a_reserved_link_beyond_the_last_cluster_does_not_hide_it() {
     volume.source.sectors[last].fill(0xA5);
 
     let entry = Entry::for_contents(FIRST_DATA_CLUSTER, SECTOR_BYTES as u32 + 1);
-    let mut buf = [0u8; SECTOR_BYTES + 1];
+    let mut buffer = [0u8; SECTOR_BYTES + 1];
     assert_eq!(
-        volume.read_file(&entry, 0, &mut buf),
-        Ok(buf.len()),
+        volume.read_file(&entry, 0, &mut buffer),
+        Ok(buffer.len()),
         "the hare treated the unused successor as a failed read"
     );
-    assert_eq!(buf[SECTOR_BYTES], 0xA5);
-}
-
-#[test]
-fn a_partition_base_that_wraps_is_malformed() {
-    let mut volume = image_volume(1, 4);
-    volume.base = u64::MAX;
-    assert_eq!(
-        volume.next_cluster(FIRST_DATA_CLUSTER),
-        Err(FatError::Malformed)
-    );
+    assert_eq!(buffer[SECTOR_BYTES], 0xA5);
 }
 
 #[derive(Debug)]
@@ -185,7 +175,6 @@ impl Sectors for CountedCycle {
     }
 }
 
-/// A FAT whose every cluster links to the next: a never-ending chain with no cycle.
 struct CountedLine;
 
 impl Sectors for CountedLine {

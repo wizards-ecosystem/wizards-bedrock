@@ -3,16 +3,13 @@ use core::fmt;
 use crate::claims::FunctionLease;
 use crate::{Address, CommandLease, CommandLeases, FunctionAuthority, FunctionClaims, command};
 
-/// One command-register access in a verified enable transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandAccess {
-    /// Only the low sixteen bits are consumed.
     Read,
-    /// Write only command bits, leaving the status half of the dword clear.
+    // Write only command bits: the status half is write-one-to-clear, so it is written as zero.
     Write(u16),
 }
 
-/// The exclusive right to finish one function's command-register transition.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping command state permanently retains its function lease"]
 pub struct CommandState {
@@ -28,28 +25,24 @@ pub(crate) enum CommandPhase {
     Restoring(u16),
 }
 
-/// Why one function authority could not be returned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FunctionReleaseError {
-    /// A command transition or BAR restoration still owns this function.
     Active,
-    /// The token is foreign to this function registry or no longer current.
     Stale,
 }
 
 impl fmt::Display for FunctionReleaseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Active => f.write_str("the function still has a configuration sublease"),
-            Self::Stale => f.write_str("the function authority is foreign or stale"),
+            Self::Active => formatter.write_str("the function still has a configuration sublease"),
+            Self::Stale => formatter.write_str("the function authority is foreign or stale"),
         }
     }
 }
 
 impl core::error::Error for FunctionReleaseError {}
 
-/// A refused function release with unchanged retry authority.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused function release returns its authority for retry"]
 pub struct FunctionReleaseFailure {
@@ -68,14 +61,13 @@ impl FunctionReleaseFailure {
 }
 
 impl fmt::Display for FunctionReleaseFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.reason, f)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, formatter)
     }
 }
 
 impl core::error::Error for FunctionReleaseFailure {}
 
-/// Release a function only after every command and probe sublease is gone.
 pub fn release_function<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: FunctionAuthority,
@@ -110,12 +102,10 @@ pub fn release_function<const N: usize>(
         })
 }
 
-/// Exclusive command-register reservation held for one BAR probe.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping a probe token permanently retains its function reservation"]
-pub struct CommandProbe(pub(crate) CommandLease);
+pub(crate) struct CommandProbe(pub(crate) CommandLease);
 
-/// A refused command enablement, including cleanup authority when uncertain.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused command transition may retain restoration authority"]
 pub struct EnableFailure {
@@ -142,7 +132,6 @@ impl From<EnableError> for EnableFailure {
     }
 }
 
-/// A refused command restoration with the unchanged retry state.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused command restoration returns its state for retry"]
 pub struct RestoreFailure {
@@ -160,67 +149,48 @@ impl RestoreFailure {
     }
 }
 
-/// Why memory decode and bus mastering could not be verified.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum EnableError {
-    /// This function already has a live command transition.
     Leased,
-    /// Every bounded command-transition slot is occupied.
     NoRoom,
-    /// The non-repeating command-transition generation was exhausted.
     Exhausted,
-    /// The token does not name a live registry generation.
     Stale,
-    /// The command word changed after this lease installed it.
     Changed(u16),
-    /// A configuration access failed and any attempted change was restored.
     Access,
-    /// The device read back a command other than the exact word written.
     Refused(u16),
-    /// The original command could not be read back exactly after failure.
     Restore,
-    /// The DMA domain offered as isolation names another function.
     ForeignDomain,
 }
 
 impl fmt::Display for EnableError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Leased => f.write_str("the function already has a command lease"),
-            Self::NoRoom => f.write_str("the command-lease registry is full"),
-            Self::Exhausted => f.write_str("command-lease generations are exhausted"),
-            Self::Stale => f.write_str("the command lease is no longer current"),
+            Self::Leased => formatter.write_str("the function already has a command lease"),
+            Self::NoRoom => formatter.write_str("the command-lease registry is full"),
+            Self::Exhausted => formatter.write_str("command-lease generations are exhausted"),
+            Self::Stale => formatter.write_str("the command lease is no longer current"),
             Self::Changed(observed) => {
-                write!(f, "the leased command register changed to {observed:#06x}")
+                write!(
+                    formatter,
+                    "the leased command register changed to {observed:#06x}"
+                )
             }
-            Self::Access => f.write_str("configuration access failed"),
+            Self::Access => formatter.write_str("configuration access failed"),
             Self::Refused(observed) => {
-                write!(f, "the command register read back as {observed:#06x}")
+                write!(
+                    formatter,
+                    "the command register read back as {observed:#06x}"
+                )
             }
-            Self::Restore => f.write_str("the original command could not be verified"),
-            Self::ForeignDomain => f.write_str("the DMA domain isolates another function"),
+            Self::Restore => formatter.write_str("the original command could not be verified"),
+            Self::ForeignDomain => formatter.write_str("the DMA domain isolates another function"),
         }
     }
 }
 
 impl core::error::Error for EnableError {}
 
-/// Enable memory decode while explicitly withholding bus mastering.
-/// This is the first stage for a controller whose firmware DMA must stop before bus mastering.
-pub fn enable_memory_space<const N: usize>(
-    functions: &mut FunctionClaims<N>,
-    authority: &FunctionAuthority,
-    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
-) -> Result<CommandState, EnableFailure> {
-    if !functions.holds(authority) {
-        return Err(EnableFailure::from(EnableError::Stale));
-    }
-    enable_memory_space_with_leases(&mut functions.commands, authority, access)
-}
-
-/// Fence one requester's bus mastering for a unit-wide transition; restoring it never revives BME.
-/// Keep the returned owner attached to the unit until its transition completes.
+// Keep the returned owner attached to the unit until its transition completes.
 pub fn fence_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -246,8 +216,6 @@ pub fn fence_bus_master<const N: usize>(
     fenced
 }
 
-/// Freshly verify that one live command owner still has BME clear.
-/// The last check before a unit-wide VT-d write, which neither changes nor consumes the owner.
 pub fn verify_bus_master_fence<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -271,20 +239,6 @@ pub fn verify_bus_master_fence<const N: usize>(
     Ok(())
 }
 
-pub(crate) fn enable_memory_space_with_leases<const N: usize>(
-    leases: &mut CommandLeases<N>,
-    authority: &FunctionAuthority,
-    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
-) -> Result<CommandState, EnableFailure> {
-    begin_command(
-        leases,
-        authority,
-        command::MEMORY_SPACE,
-        command::BUS_MASTER,
-        access,
-    )
-}
-
 fn begin_command<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -297,19 +251,17 @@ fn begin_command<const N: usize>(
         state: None,
     })?;
     let at = lease.command_address();
-    let before = match access(at, CommandAccess::Read) {
-        Some(bits) => bits as u16,
-        None => {
-            assert!(
-                leases.release(lease),
-                "a pre-write command refusal lost its exact reservation"
-            );
-            return Err(EnableFailure {
-                reason: EnableError::Access,
-                state: None,
-            });
-        }
+    let Some(bits) = access(at, CommandAccess::Read) else {
+        assert!(
+            leases.release(lease),
+            "a pre-write command refusal lost its exact reservation"
+        );
+        return Err(EnableFailure {
+            reason: EnableError::Access,
+            state: None,
+        });
     };
+    let before = bits as u16;
     let installed = (before | set) & !clear;
     let mut state = CommandState {
         lease,
@@ -396,7 +348,6 @@ pub(crate) fn admit_bus_master_with_leases<const N: usize>(
     }
 }
 
-/// Permanently withhold bus mastering, accepting an interrupted change only at its recorded words.
 pub fn disable_bus_master_for_retirement<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -452,7 +403,6 @@ pub(crate) fn disable_bus_master_for_retirement_with_leases<const N: usize>(
     }
 }
 
-/// Restore the exact command word carried by a [`CommandState`].
 pub fn restore_command<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -481,15 +431,13 @@ pub(crate) fn restore_command_with_leases<const N: usize>(
         });
     }
     let at = state.lease.command_address();
-    let current = match access(at, CommandAccess::Read) {
-        Some(bits) => bits as u16,
-        None => {
-            return Err(RestoreFailure {
-                reason: EnableError::Access,
-                state,
-            });
-        }
+    let Some(bits) = access(at, CommandAccess::Read) else {
+        return Err(RestoreFailure {
+            reason: EnableError::Access,
+            state,
+        });
     };
+    let current = bits as u16;
     if current == state.before {
         return if leases.release(state.lease) {
             Ok(())
@@ -535,7 +483,6 @@ pub(crate) fn restore_command_with_leases<const N: usize>(
     }
 }
 
-/// Finish a permanent command transition without restoring its old word.
 pub fn commit_command<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -563,15 +510,13 @@ pub(crate) fn commit_command_with_leases<const N: usize>(
             state,
         });
     }
-    let current = match access(state.lease.command_address(), CommandAccess::Read) {
-        Some(bits) => bits as u16,
-        None => {
-            return Err(RestoreFailure {
-                reason: EnableError::Access,
-                state,
-            });
-        }
+    let Some(bits) = access(state.lease.command_address(), CommandAccess::Read) else {
+        return Err(RestoreFailure {
+            reason: EnableError::Access,
+            state,
+        });
     };
+    let current = bits as u16;
     if current != state.installed {
         return Err(RestoreFailure {
             reason: EnableError::Changed(current),

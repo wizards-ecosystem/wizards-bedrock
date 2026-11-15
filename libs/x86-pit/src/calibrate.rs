@@ -1,23 +1,13 @@
-//! A clock's rate from one PIT window, rounded to nearest once from the raw numbers.
-
 use crate::CRYSTAL_HZ;
 
-/// What an independent PIT window says about an armed TSC/APIC pair.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WatchdogVerdict {
-    /// The APIC expiry and TSC progress agree with the PIT crystal.
     Stable,
-    /// Interrupt latency or a window fold prevents a safe conclusion.
     Inconclusive,
-    /// The expiry arrived early or the TSC rate disagreed with the crystal.
     Disagreed,
 }
 
-/// Judge one APIC expiry against a PIT window started with it and kept under one span.
-///
-/// A late expiry is inconclusive, since latency and a slow APIC look alike; an early one disagrees.
-///
-/// TSC progress is judged only while its own count proves the PIT window cannot have folded.
+// A late expiry is inconclusive because latency and a slow APIC look alike.
 pub const fn watchdog_verdict(
     apic_remaining: u32,
     tsc_ticks: u64,
@@ -57,9 +47,7 @@ pub const fn watchdog_verdict(
     }
 }
 
-/// The measured clock's rate in hertz, zero for an empty window or an overflowing product.
-///
-/// Zero fails any plausibility bound, which the caller must apply.
+// Zero for an empty window or an overflowing product; the caller applies a plausibility bound.
 pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     if pit_ticks == 0 {
         return 0;
@@ -71,7 +59,6 @@ pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     }
 }
 
-/// The product plus the half-denominator that rounds the division, `None` on overflow.
 const fn rounded_numerator(counted: u64, denominator: u64) -> Option<u64> {
     match counted.checked_mul(CRYSTAL_HZ as u64) {
         Some(product) => product.checked_add(denominator / 2),

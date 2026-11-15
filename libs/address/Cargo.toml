@@ -1,6 +1,6 @@
 [package]
 name = "address"
-description = "A physical address that cannot exceed what a page-table entry can name."
+description = "Physical addresses a page-table entry can name"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

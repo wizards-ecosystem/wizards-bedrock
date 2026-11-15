@@ -1,6 +1,6 @@
 [package]
 name = "mmio-range"
-description = "Checked repeated-access arithmetic for bounded MMIO regions."
+description = "Checked MMIO access arithmetic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

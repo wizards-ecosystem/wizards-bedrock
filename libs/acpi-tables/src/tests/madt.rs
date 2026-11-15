@@ -1,6 +1,5 @@
 use super::*;
 
-// The corrupt input that would otherwise loop forever.
 #[test]
 fn a_madt_entry_claiming_zero_length_invalidates_the_table() {
     let mut body = vec![0u8; 8];

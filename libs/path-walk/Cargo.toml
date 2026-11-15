@@ -1,6 +1,6 @@
 [package]
 name = "path-walk"
-description = "Path splitting whose output can never name an ancestor."
+description = "Path splitting that cannot name an ancestor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,8 +10,6 @@ repository.workspace = true
 [lints]
 workspace = true
 
-# Property testing, host-only (D-242). `no_std` for the kernel; these are only
-# ever built for the host under `cargo test`.
 [dev-dependencies]
 proptest.workspace = true
 getrandom.workspace = true

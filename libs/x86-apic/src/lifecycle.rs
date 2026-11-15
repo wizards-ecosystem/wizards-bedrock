@@ -1,47 +1,30 @@
-//! Publication states for local-APIC initialization.
-
 use core::fmt;
 
-/// The externally observable lifetime of one local controller.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Lifecycle {
-    /// No hardware transition has begun.
     Cold,
-    /// One caller owns an unpublished hardware transition.
     Initializing,
-    /// Every source is configured and public register access is admitted.
     Ready,
-    /// A hardware transition failed and cannot be safely retried.
     Poisoned,
 }
 
-/// Whether maskable interrupts are excluded at a hardware boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Interrupts {
-    /// The interrupt flag is clear.
     Excluded,
-    /// The interrupt flag is set.
     Enabled,
 }
 
-/// One ordered boundary in the hardware transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InitStage {
-    /// Enter and verify x2APIC mode.
     Mode,
-    /// Validate the local controller's version register.
     Version,
-    /// Mask every firmware-programmable local source.
     MaskSources,
-    /// Configure every kernel-owned local source.
     ConfigureSources,
-    /// Read the controller identity for the completed report.
     Identity,
 }
 
 impl InitStage {
-    /// The complete hardware transaction in required order.
     pub const ALL: [Self; 5] = [
         Self::Mode,
         Self::Version,
@@ -51,20 +34,17 @@ impl InitStage {
     ];
 }
 
-/// Why a caller cannot begin a hardware transition.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BeginError {
-    /// Another caller owns the unpublished transition.
     InProgress,
     Ready,
-    /// A failed hardware transition made retry unsafe.
     Poisoned,
 }
 
 impl fmt::Display for BeginError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::InProgress => "local apic initialization is in progress",
             Self::Ready => "the local apic is already ready",
             Self::Poisoned => "local apic initialization is poisoned",
@@ -74,23 +54,18 @@ impl fmt::Display for BeginError {
 
 impl core::error::Error for BeginError {}
 
-/// Why an initialization transaction cannot advance or publish.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum ProgressError {
-    /// Interrupt exclusion was lost before the next hardware boundary.
     InterruptsEnabled,
-    /// A hardware boundary was entered out of order.
     OutOfOrder,
-    /// Publication was attempted before every boundary completed.
     Incomplete,
-    /// The transaction had already settled.
     Settled,
 }
 
 impl fmt::Display for ProgressError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::InterruptsEnabled => "local apic initialization lost interrupt exclusion",
             Self::OutOfOrder => "local apic initialization is out of order",
             Self::Incomplete => "local apic initialization is incomplete",
@@ -101,7 +76,6 @@ impl fmt::Display for ProgressError {
 
 impl core::error::Error for ProgressError {}
 
-/// The hardware-free proof state used by the privileged APIC boundary.
 #[derive(PartialEq, Eq, Debug)]
 pub struct InitTransaction {
     lifecycle: Lifecycle,
@@ -109,7 +83,6 @@ pub struct InitTransaction {
 }
 
 impl Lifecycle {
-    /// Recover a state stored in an atomic byte.
     pub const fn from_bits(bits: u8) -> Option<Self> {
         match bits {
             0 => Some(Self::Cold),
@@ -120,17 +93,14 @@ impl Lifecycle {
         }
     }
 
-    /// The byte stored by the hardware boundary.
     pub const fn bits(self) -> u8 {
         self as u8
     }
 
-    /// Whether public register access may observe the controller.
     pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
     }
 
-    /// Admit the one transition that may touch cold hardware.
     pub const fn admit(self) -> Result<(), BeginError> {
         match self {
             Self::Cold => Ok(()),
@@ -142,7 +112,6 @@ impl Lifecycle {
 }
 
 impl InitTransaction {
-    /// Begin an unpublished transaction from one observed lifecycle state.
     pub const fn begin(lifecycle: Lifecycle) -> Result<Self, BeginError> {
         match lifecycle.admit() {
             Ok(()) => Ok(Self {
@@ -153,12 +122,10 @@ impl InitTransaction {
         }
     }
 
-    /// The lifecycle visible to a reentrant observer.
     pub const fn lifecycle(&self) -> Lifecycle {
         self.lifecycle
     }
 
-    /// Enter the next hardware boundary while retaining interrupt exclusion.
     pub fn enter(&mut self, stage: InitStage, interrupts: Interrupts) -> Result<(), ProgressError> {
         if !matches!(self.lifecycle, Lifecycle::Initializing) {
             return Err(ProgressError::Settled);
@@ -175,7 +142,6 @@ impl InitTransaction {
         Ok(())
     }
 
-    /// Finish a failed hardware transition without making it retryable.
     pub fn refuse(&mut self) -> Lifecycle {
         if matches!(self.lifecycle, Lifecycle::Initializing) {
             self.lifecycle = Lifecycle::Poisoned;
@@ -183,7 +149,6 @@ impl InitTransaction {
         self.lifecycle
     }
 
-    /// Publish readiness after the complete interrupt-excluded transaction.
     pub fn complete(&mut self, interrupts: Interrupts) -> Result<Lifecycle, ProgressError> {
         if !matches!(self.lifecycle, Lifecycle::Initializing) {
             return Err(ProgressError::Settled);

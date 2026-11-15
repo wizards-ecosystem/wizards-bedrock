@@ -2,50 +2,32 @@ use core::fmt;
 
 use crate::{AcpiError, Sdt, u32_at};
 
-/// An entry of the Multiple APIC Description Table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
-pub enum MadtEntry {
-    LocalApic {
-        processor: u8,
-        id: u8,
-        enabled: bool,
-    },
+pub(crate) enum MadtEntry {
     IoApic {
         id: u8,
-        /// Physical address of its registers.
         address: u32,
-        /// The first global system interrupt it handles.
         gsi_base: u32,
     },
-    /// A legacy IRQ that firmware routes to another global system interrupt.
     InterruptSourceOverride {
-        /// The legacy bus, always 0 (ISA) in practice.
         bus: u8,
-        /// The legacy IRQ number.
         source: u8,
         gsi: u32,
-        /// Polarity and trigger mode, in the MPS INTI encoding.
         flags: u16,
     },
-    Other {
-        kind: u8,
-    },
+    Other,
 }
 
-/// The entries of a validated MADT.
 #[derive(Debug)]
-pub struct MadtEntries<'table> {
+pub(crate) struct MadtEntries<'table> {
     body: &'table [u8],
     offset: usize,
 }
 
 impl<'table> MadtEntries<'table> {
-    /// The SDT header, then the local APIC address and the flags word.
     const HEADER: usize = Sdt::LEN + 8;
 
-    /// Validate a MADT and every entry before iteration, so a corrupt tail refuses the whole table.
-    pub fn new(table: &'table [u8]) -> Result<Self, AcpiError> {
+    pub(crate) fn new(table: &'table [u8]) -> Result<Self, AcpiError> {
         let header = Sdt::parse(table)?;
         if header.signature() != Sdt::MADT {
             return Err(AcpiError::WrongTable {
@@ -69,21 +51,21 @@ impl<'table> MadtEntries<'table> {
                 });
             };
             let kind = prefix[0];
-            let entry_len = usize::from(prefix[1]);
+            let entry_length = usize::from(prefix[1]);
             let minimum = match kind {
                 0 => 8,
                 1 => 12,
                 2 => 10,
                 _ => 2,
             };
-            if entry_len < minimum || entry_len > available {
+            if entry_length < minimum || entry_length > available {
                 return Err(AcpiError::MalformedEntry {
                     offset,
-                    length: entry_len,
+                    length: entry_length,
                     available,
                 });
             }
-            offset += entry_len;
+            offset += entry_length;
         }
         Ok(Self {
             body,
@@ -102,11 +84,6 @@ impl Iterator for MadtEntries<'_> {
         self.offset += length;
 
         Some(match kind {
-            0 => MadtEntry::LocalApic {
-                processor: entry[2],
-                id: entry[3],
-                enabled: u32_at(entry, 4).unwrap_or(0) & 1 != 0,
-            },
             1 => MadtEntry::IoApic {
                 id: entry[2],
                 address: u32_at(entry, 4).unwrap_or(0),
@@ -118,12 +95,11 @@ impl Iterator for MadtEntries<'_> {
                 gsi: u32_at(entry, 4).unwrap_or(0),
                 flags: u16::from_le_bytes([entry[8], entry[9]]),
             },
-            kind => MadtEntry::Other { kind },
+            _ => MadtEntry::Other,
         })
     }
 }
 
-/// One I/O APIC description retained from a MADT.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IoApic {
     pub(crate) id: u8,
@@ -136,60 +112,46 @@ impl IoApic {
         self.id
     }
 
-    /// Physical address of the controller's register window.
     pub const fn address(self) -> u32 {
         self.address
     }
 
-    /// The first global system interrupt the controller reports.
     pub const fn gsi_base(self) -> u32 {
         self.gsi_base
     }
 }
 
-/// Why a MADT could not become a complete bounded interrupt inventory.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum InterruptError {
     Table(AcpiError),
-    /// Firmware described more I/O APICs than the caller can retain.
-    TooManyIoApics {
-        limit: usize,
-    },
-    /// An interrupt source override did not describe the ISA bus.
-    NonIsaOverride {
-        bus: u8,
-        source: u8,
-    },
-    /// An interrupt source override names an IRQ outside the ISA domain.
+    TooManyIoApics { limit: usize },
+    NonIsaOverride { bus: u8, source: u8 },
     InvalidOverrideSource(u8),
-    /// More than one override names the same source IRQ.
     DuplicateOverride(u8),
-    /// The MPS INTI polarity or trigger field has a reserved encoding.
-    ReservedOverrideFlags {
-        source: u8,
-        flags: u16,
-    },
+    ReservedOverrideFlags { source: u8, flags: u16 },
 }
 
 impl fmt::Display for InterruptError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Table(reason) => write!(f, "madt is unusable: {reason}"),
+            Self::Table(reason) => write!(formatter, "madt is unusable: {reason}"),
             Self::TooManyIoApics { limit } => {
-                write!(f, "madt describes more than {limit} i/o apics")
+                write!(formatter, "madt describes more than {limit} i/o apics")
             }
             Self::NonIsaOverride { bus, source } => {
-                write!(f, "madt override for irq {source} names non-ISA bus {bus}")
+                write!(
+                    formatter,
+                    "madt override for irq {source} names non-ISA bus {bus}"
+                )
             }
             Self::InvalidOverrideSource(source) => {
-                write!(f, "madt override names non-ISA irq {source}")
+                write!(formatter, "madt override names non-ISA irq {source}")
             }
             Self::DuplicateOverride(source) => {
-                write!(f, "madt repeats the override for irq {source}")
+                write!(formatter, "madt repeats the override for irq {source}")
             }
             Self::ReservedOverrideFlags { source, flags } => write!(
-                f,
+                formatter,
                 "madt override for irq {source} has reserved flags {flags:#x}"
             ),
         }
@@ -198,7 +160,6 @@ impl fmt::Display for InterruptError {
 
 impl core::error::Error for InterruptError {}
 
-/// A complete, fixed-capacity view of MADT interrupt routing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MadtInterrupts<const IO_APICS: usize> {
     io_apics: [Option<IoApic>; IO_APICS],
@@ -207,17 +168,15 @@ pub struct MadtInterrupts<const IO_APICS: usize> {
 }
 
 impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
-    /// Parse every I/O APIC and legacy interrupt override, refusing a truncated inventory.
     pub fn parse(table: &[u8]) -> Result<Self, InterruptError> {
-        let mut entries = MadtEntries::new(table).map_err(InterruptError::Table)?;
+        let entries = MadtEntries::new(table).map_err(InterruptError::Table)?;
         let mut model = Self {
             io_apics: [None; IO_APICS],
             io_apic_count: 0,
             overrides: [None; 16],
         };
 
-        let mut next = core::iter::Iterator::next(&mut entries);
-        while let Some(entry) = next {
+        for entry in entries {
             match entry {
                 MadtEntry::IoApic {
                     id,
@@ -256,14 +215,12 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
                     }
                     *slot = Some((gsi, flags));
                 }
-                _ => {}
+                MadtEntry::Other => {}
             }
-            next = core::iter::Iterator::next(&mut entries);
         }
         Ok(model)
     }
 
-    /// Every I/O APIC description, in firmware order.
     pub fn io_apics(&self) -> impl Iterator<Item = IoApic> + '_ {
         self.io_apics[..self.io_apic_count]
             .iter()
@@ -275,18 +232,15 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
         self.io_apic_count
     }
 
-    /// The global system interrupt `irq` arrives on.
     pub fn gsi_for(&self, irq: u8) -> u32 {
         self.override_for(irq)
             .map_or(u32::from(irq), |(gsi, _)| gsi)
     }
 
-    /// The MPS INTI flags for `irq`, or zero when firmware gave none.
     pub fn flags_for(&self, irq: u8) -> u16 {
         self.override_for(irq).map_or(0, |(_, flags)| flags)
     }
 
-    /// Firmware's explicit override for `irq`, if it supplied one.
     pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
         self.overrides.get(usize::from(irq)).copied().flatten()
     }

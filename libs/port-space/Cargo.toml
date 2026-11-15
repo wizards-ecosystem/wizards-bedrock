@@ -1,6 +1,6 @@
 [package]
 name = "port-space"
-description = "Reservation bookkeeping for the x86 I/O port space: which ports are spoken for, and by how wide an access."
+description = "I/O port reservation bookkeeping"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

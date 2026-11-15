@@ -1,7 +1,8 @@
 use super::*;
 
-/// Sixty-four frames, small enough that a test can hold several on the stack.
 type Small = FrameSpace<1>;
+
+const SMALL_BYTES: u64 = Small::FRAME_COUNT as u64 * FRAME_SIZE;
 
 fn drain<const WORDS: usize>(space: &mut FrameSpace<WORDS>) -> usize {
     for taken in 0..=FrameSpace::<WORDS>::FRAME_COUNT {
@@ -15,7 +16,7 @@ fn drain<const WORDS: usize>(space: &mut FrameSpace<WORDS>) -> usize {
 #[test]
 fn a_free_run_straddling_the_hint_is_found() {
     let mut space = Small::new();
-    space.insert(0, Small::CEILING);
+    space.insert(0, SMALL_BYTES);
     assert_eq!(drain(&mut space), Small::FRAME_COUNT);
     for frame in 30..34 {
         space.free(frame).expect("allocated");
@@ -24,7 +25,6 @@ fn a_free_run_straddling_the_hint_is_found() {
     space.free(30).expect("allocated");
     space.free(31).expect("allocated");
 
-    // The hint sits at 32, inside the free run 30..34.
     assert_eq!(space.allocate_contiguous(4, 1), Some(30));
 }
 
@@ -32,9 +32,30 @@ fn a_free_run_straddling_the_hint_is_found() {
 fn insert_of_a_vast_range_returns_promptly() {
     let mut space = Small::new();
     let inserted = space.insert(0, u64::MAX - 1);
-    assert_eq!(inserted.added, Small::FRAME_COUNT);
+    assert_eq!(space.free_count(), Small::FRAME_COUNT);
     assert_eq!(
         inserted.ignored,
         ((u64::MAX - 1) / FRAME_SIZE) as usize - Small::FRAME_COUNT
     );
+}
+
+#[test]
+fn the_free_count_returns_to_its_baseline() {
+    let mut space = Small::new();
+    space.insert(0, SMALL_BYTES);
+    let baseline = space.free_count();
+    let mut live = Vec::new();
+    let mut taken = 0;
+
+    for (count, align) in [(3, 1), (1, 8), (7, 4), (2, 16), (5, 2), (40, 1)] {
+        if let Some(first) = space.allocate_contiguous(count, align) {
+            taken += count;
+            assert_eq!(space.free_count(), baseline - taken);
+            live.push((first, count));
+        }
+    }
+    for (first, count) in live {
+        assert!(space.free_contiguous(first, count).is_ok());
+    }
+    assert_eq!(space.free_count(), baseline);
 }

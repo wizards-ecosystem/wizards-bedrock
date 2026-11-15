@@ -1,11 +1,7 @@
-//! Property tests over the ring's index arithmetic, on copied counters only.
-
 use proptest::prelude::*;
 use ring_proto::{Capacity, Queues};
 
 proptest! {
-
-    /// Admission reserves before accepting, as Windows RIO does, unlike io_uring's `CQ_NODROP`.
     #[test]
     fn admission_never_lets_the_completion_queue_overflow(
         shift in 0u32..6,
@@ -22,7 +18,7 @@ proptest! {
                 0 => if queues.submit().is_some() { admitted += 1 },
                 1 => { queues.take(); }
                 2 => if queues.complete().is_some() { reported += 1 },
-                _ => { queues.reap(); }
+                _ => { queues.reap_up_to(queues.completions().head().wrapping_add(1)); }
             }
             prop_assert!(
                 queues.is_consistent(),
@@ -35,5 +31,4 @@ proptest! {
         }
         prop_assert!(reported <= admitted, "more completions than submissions");
     }
-
 }

@@ -1,6 +1,5 @@
 use super::*;
 
-/// A claim is permanent, so a refused request keeping its first span strands it for the boot.
 #[test]
 fn a_refused_multi_span_reservation_takes_nothing() {
     const SPANS: [(usize, usize); MAX_SPANS] = [
@@ -33,7 +32,6 @@ fn a_refused_multi_span_reservation_takes_nothing() {
     }
 }
 
-/// Without the pairwise check both halves pass `span`, and the caller owns one range twice.
 #[test]
 fn a_request_that_overlaps_itself_is_refused() {
     let mut space = PortSpace::new();

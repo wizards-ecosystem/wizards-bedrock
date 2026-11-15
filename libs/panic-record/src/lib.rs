@@ -1,6 +1,3 @@
-//! Allocation-free panic record framing for a hostile body.
-//! Its line breaks and backslashes are escaped so it cannot forge the framing.
-
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 #![cfg_attr(
@@ -10,11 +7,9 @@
 
 use core::fmt::{self, Write as _};
 
-/// The exact physical prefix of a kernel panic body.
 pub const OPEN_PREFIX: &str = "[error] KERNEL PANIC on thread '";
 
-/// The message emitted after a complete single-line panic body.
-pub const COMPLETE_MARKER: &str = "panic: terminal record complete v1";
+const COMPLETE_MARKER: &str = "panic: terminal record complete v1";
 
 #[derive(Debug)]
 struct SingleLine<'writer, W: fmt::Write> {
@@ -41,35 +36,18 @@ impl<W: fmt::Write> fmt::Write for SingleLine<'_, W> {
                 continue;
             };
             if start != index {
-                core::fmt::Write::write_str(&mut *self.writer, &text[start..index])?;
+                self.writer.write_str(&text[start..index])?;
             }
-            core::fmt::Write::write_str(&mut *self.writer, escaped)?;
+            self.writer.write_str(escaped)?;
             start = index + character.len_utf8();
         }
         if start != text.len() {
-            core::fmt::Write::write_str(&mut *self.writer, &text[start..])?;
+            self.writer.write_str(&text[start..])?;
         }
         Ok(())
     }
 }
 
-/// Write one terminal panic record.
-/// The completion line is withheld unless `writer` accepted every earlier write.
-///
-/// # Examples
-///
-/// ```
-/// use panic_record::{COMPLETE_MARKER, write_record};
-///
-/// let mut output = String::new();
-/// write_record(&mut output, "boot", "bad\nstate").unwrap();
-/// assert_eq!(
-///     output,
-///     format!(
-///         "[error] KERNEL PANIC on thread 'boot': bad\\nstate\n[error] {COMPLETE_MARKER}\n"
-///     )
-/// );
-/// ```
 pub fn write_record(
     writer: &mut impl fmt::Write,
     thread: &str,

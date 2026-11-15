@@ -1,9 +1,6 @@
-//! The US layout; the keypad types its digits because nothing tracks NumLock yet.
-
 use crate::key::Key;
 use crate::shift::Shift;
 
-/// The character `key` types under the US layout, if it types one.
 pub fn char_for(key: Key, shift: Shift) -> Option<char> {
     let pick = |plain: char, shifted: char| {
         if shift.is_down() { shifted } else { plain }
@@ -60,7 +57,6 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         Key::Space => ' ',
         Key::Enter | Key::KeypadEnter => '\n',
         Key::Tab => '\t',
-        // The one action typed as a character; another action key needs its own channel.
         Key::Backspace => '\u{8}',
         Key::Keypad0 => '0',
         Key::Keypad1 => '1',

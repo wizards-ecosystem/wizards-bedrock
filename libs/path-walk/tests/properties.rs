@@ -1,9 +1,6 @@
-//! Property tests that no output of `split` names an ancestor or outgrows its input.
-
 use path_walk::{SEPARATOR, split};
 use proptest::prelude::*;
 
-/// Fragments carrying separators and dots, which uniform bytes almost never produce.
 fn fragment() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         Just(b"..".to_vec()),
@@ -20,7 +17,6 @@ fn built_path() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(fragment(), 1..8).prop_map(|parts| parts.join(&SEPARATOR))
 }
 
-/// Either a built path or raw bytes; the second arm keeps the first honest.
 fn path() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![built_path(), prop::collection::vec(any::<u8>(), 0..24)]
 }
@@ -51,5 +47,4 @@ proptest! {
             component_count(&path)
         );
     }
-
 }

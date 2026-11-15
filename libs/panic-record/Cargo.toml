@@ -1,6 +1,6 @@
 [package]
 name = "panic-record"
-description = "Single-line framing for terminal kernel panic records."
+description = "Panic record framing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

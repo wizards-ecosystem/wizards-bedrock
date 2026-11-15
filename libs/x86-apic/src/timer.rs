@@ -1,26 +1,21 @@
-//! The timer's divide encoding (SDM Vol. 3A §11.5.4) and the count it is armed with.
-
 use core::fmt;
 
 use crate::local_vector::{DeliverableVector, Entry};
 
-/// Why a one-shot timer entry cannot be published yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum OneShotError {
-    /// The current countdown has not stopped.
     Running,
 }
 
 impl fmt::Display for OneShotError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the local APIC timer is still running")
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the local APIC timer is still running")
     }
 }
 
 impl core::error::Error for OneShotError {}
 
-/// Plan the sole register write that unmasks a one-shot timer.
 pub const fn one_shot_entry(
     current_count: u32,
     vector: DeliverableVector,
@@ -31,11 +26,9 @@ pub const fn one_shot_entry(
     Ok(Entry::one_shot(vector.get()))
 }
 
-/// How the bus clock is divided before it drives the timer's countdown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Divide {
     By1,
-    /// Every second edge, which is also the reset value.
     By2,
     By4,
     By8,
@@ -46,7 +39,7 @@ pub enum Divide {
 }
 
 impl Divide {
-    /// The value to write, spread across register bits 0, 1 and 3.
+    // The value is spread across register bits 0, 1 and 3.
     pub const fn bits(self) -> u32 {
         match self {
             Self::By1 => 0b1011,
@@ -74,9 +67,7 @@ impl Divide {
     }
 }
 
-/// The one-shot count for `ticks`, clamped to 1 since zero stops the timer, and to `u32::MAX`.
-///
-/// After a clamped `u32::MAX` expires, the caller must re-arm for the remainder.
+// Zero would stop the timer; after a clamped `u32::MAX` expires the caller re-arms the rest.
 pub const fn initial_count(ticks: u64) -> u32 {
     if ticks == 0 {
         return 1;

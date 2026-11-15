@@ -1,35 +1,30 @@
-/// A base address register, decoded.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bar {
-    /// A memory window.
     Memory {
         address: u64,
-        /// Whether it took two register slots.
         wide: bool,
-        /// Whether the device tolerates speculative reads; register files stay uncacheable.
         prefetchable: bool,
     },
-    /// An I/O port window.
-    Io { port: u16 },
-    /// The slot is unused, or is the high half of the register before it.
+    Io {
+        port: u16,
+    },
     Absent,
 }
 
 impl Bar {
-    /// Bit 0: zero for memory, one for I/O.
+    // Bit 0: zero for memory, one for I/O.
     const IS_IO: u32 = 1;
-    /// Bits 2:1 select the memory BAR encoding.
+    // Bits 2:1 select the memory BAR encoding.
     const TYPE_MASK: u32 = 0b110;
-    /// The obsolete memory encoding constrained below one megabyte.
+    // Bits 2:1 == 0b01: the obsolete encoding constrained below one megabyte.
     const BELOW_ONE_MEGABYTE: u32 = 0b010;
-    /// Bits 2:1 == 0b10: the address is 64 bits and takes the next slot too.
+    // Bits 2:1 == 0b10: the address is 64 bits and takes the next slot too.
     const WIDE: u32 = 0b100;
-    /// Bits 2:1 == 0b11 have no defined memory BAR meaning.
+    // Bits 2:1 == 0b11 have no defined memory BAR meaning.
     const RESERVED: u32 = 0b110;
-    /// Bit 3.
+    // Bit 3.
     const PREFETCHABLE: u32 = 0b1000;
 
-    /// Decode one slot with the slot after it, refusing encodings this kernel cannot map.
     pub const fn decode(low: u32, high: u32) -> Option<Self> {
         if low == 0 {
             return Some(Self::Absent);
@@ -67,16 +62,13 @@ impl Bar {
     }
 }
 
-/// Register width used to interpret a probed memory-window mask.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MemoryWidth {
+pub(crate) enum MemoryWidth {
     Bits32,
-    /// A low and high register pair.
     Bits64,
 }
 
-/// The size of a memory window from its all-ones probe, complemented in the register's width.
-pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Option<u64> {
+pub(crate) const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Option<u64> {
     match width {
         MemoryWidth::Bits64 => {
             let mask = ((low & !0xF) as u64) | ((high as u64) << 32);
@@ -96,7 +88,6 @@ pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Opti
     }
 }
 
-/// The size of an I/O window from the low half of its probe.
 pub(crate) const fn io_window_size(mask: u32) -> Option<u16> {
     let mask = register_bits::u16_halves(mask).0 & !0x3;
     if mask == 0 {

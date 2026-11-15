@@ -5,104 +5,105 @@ use crate::{
     QuiescedIsaRequester, QuiescedRequester, primary_bus, secondary_bus, subordinate_bus,
 };
 
-/// Buses in one legacy PCI segment.
 const BUSES: usize = 256;
 
-/// Function identities in one legacy PCI segment.
 const SEGMENT_FUNCTIONS: usize = BUSES * DEVICES as usize * FUNCTIONS as usize;
 
-/// Machine words needed to remember every function identity in one segment.
 const PRESENCE_WORDS: usize = SEGMENT_FUNCTIONS.div_ceil(u64::BITS as usize);
 
-/// Non-root buses in one segment; parent walks must strictly approach bus zero.
+// Parent walks must strictly approach bus zero.
 const BUSES_BELOW_ROOT: usize = BUSES - 1;
 
-/// A bridge range admitted into a sealed [`PciTopology`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BridgeRange {
-    /// Bus immediately behind the bridge.
     pub secondary: u8,
-    /// Highest bus the bridge forwards to.
     pub subordinate: u8,
 }
 
-/// Why a complete PCI topology snapshot cannot be trusted for DMA authority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum TopologyError {
-    /// The function named by entry-fence authority was absent from the later snapshot.
-    QualifiedNonRequesterMissing { at: Address },
-    /// The function named by entry-fence authority changed before the snapshot.
-    QualifiedNonRequesterChanged { at: Address },
-    /// The requester quiesced at entry was absent from the later snapshot.
-    QuiescedRequesterMissing { at: Address },
-    /// The requester quiesced at entry changed before the snapshot.
-    QuiescedRequesterChanged { at: Address },
-    /// The class and header layout disagree about whether a function is a bridge.
-    BridgeIdentity { at: Address },
-    /// A bridge function had no readable bus-number register.
-    MissingBusNumbers { at: Address },
-    /// A bridge's primary or forwarded range cannot describe a child bus.
+    QualifiedNonRequesterMissing {
+        at: Address,
+    },
+    QualifiedNonRequesterChanged {
+        at: Address,
+    },
+    QuiescedRequesterMissing {
+        at: Address,
+    },
+    QuiescedRequesterChanged {
+        at: Address,
+    },
+    BridgeIdentity {
+        at: Address,
+    },
+    MissingBusNumbers {
+        at: Address,
+    },
     InvalidRange {
         at: Address,
         primary: u8,
         secondary: u8,
         subordinate: u8,
     },
-    /// Two different bridges claim to be one bus's direct parent.
     DuplicateParent {
         bus: u8,
         first: Address,
         second: Address,
     },
-    /// A present function is on a bus with no rooted parent chain.
-    UnrootedFunction { at: Address },
-    /// A child bridge forwards beyond the range admitted by its parent.
-    ChildEscapesParent { child: Address, parent: Address },
-    /// Two unrelated bridge branches advertise intersecting ranges.
-    UnrelatedOverlap { first: Address, second: Address },
+    UnrootedFunction {
+        at: Address,
+    },
+    ChildEscapesParent {
+        child: Address,
+        parent: Address,
+    },
+    UnrelatedOverlap {
+        first: Address,
+        second: Address,
+    },
 }
 
 impl fmt::Display for TopologyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::QualifiedNonRequesterMissing { at } => write!(
-                f,
+                formatter,
                 "entry-qualified PCI non-requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::QualifiedNonRequesterChanged { at } => write!(
-                f,
+                formatter,
                 "entry-qualified PCI non-requester {:02x}:{:02x}.{} changed before the sealed snapshot",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::QuiescedRequesterMissing { at } => write!(
-                f,
+                formatter,
                 "entry-quiesced PCI requester {:02x}:{:02x}.{} is absent from the sealed snapshot",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::QuiescedRequesterChanged { at } => write!(
-                f,
+                formatter,
                 "entry-quiesced PCI requester {:02x}:{:02x}.{} changed before the sealed snapshot",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::BridgeIdentity { at } => write!(
-                f,
+                formatter,
                 "PCI function {:02x}:{:02x}.{} has contradictory bridge class and header",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::MissingBusNumbers { at } => write!(
-                f,
+                formatter,
                 "PCI bridge {:02x}:{:02x}.{} has no readable bus numbers",
                 at.bus(),
                 at.device(),
@@ -114,14 +115,14 @@ impl fmt::Display for TopologyError {
                 secondary,
                 subordinate,
             } => write!(
-                f,
+                formatter,
                 "PCI bridge {:02x}:{:02x}.{} reports invalid buses {primary:#04x}/{secondary:#04x}/{subordinate:#04x}",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::DuplicateParent { bus, first, second } => write!(
-                f,
+                formatter,
                 "PCI bus {bus:#04x} has parent bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{}",
                 first.bus(),
                 first.device(),
@@ -131,14 +132,14 @@ impl fmt::Display for TopologyError {
                 second.function()
             ),
             Self::UnrootedFunction { at } => write!(
-                f,
+                formatter,
                 "PCI function {:02x}:{:02x}.{} has no unique path to bus zero",
                 at.bus(),
                 at.device(),
                 at.function()
             ),
             Self::ChildEscapesParent { child, parent } => write!(
-                f,
+                formatter,
                 "PCI bridge {:02x}:{:02x}.{} escapes parent {:02x}:{:02x}.{}",
                 child.bus(),
                 child.device(),
@@ -148,7 +149,7 @@ impl fmt::Display for TopologyError {
                 parent.function()
             ),
             Self::UnrelatedOverlap { first, second } => write!(
-                f,
+                formatter,
                 "unrelated PCI bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{} advertise overlapping buses",
                 first.bus(),
                 first.device(),
@@ -163,8 +164,7 @@ impl fmt::Display for TopologyError {
 
 impl core::error::Error for TopologyError {}
 
-/// A snapshot of one PCI segment that answers only once sealed; an error poisons it until reset.
-/// Observe each function once per snapshot; a later observation never replaces an earlier one.
+// Observe each function once per snapshot; a later observation never replaces an earlier one.
 #[derive(PartialEq, Eq, Debug)]
 pub struct PciTopology {
     parent: [u32; BUSES],
@@ -189,7 +189,6 @@ impl PciTopology {
         }
     }
 
-    /// Discard every observation and begin another snapshot.
     pub fn reset(&mut self) {
         self.parent.fill(0);
         self.subordinate.fill(0);
@@ -218,7 +217,6 @@ impl PciTopology {
         outcome
     }
 
-    /// Record one independently probed function and, for a bridge, its routing.
     pub fn observe(
         &mut self,
         at: Address,
@@ -276,7 +274,6 @@ impl PciTopology {
         Ok(())
     }
 
-    /// Record a present function that entry-fence authority proved is not a DMA requester.
     pub fn observe_non_requester(
         &mut self,
         authority: QualifiedNonRequester,
@@ -308,7 +305,6 @@ impl PciTopology {
         Ok(())
     }
 
-    /// Record the exact entry-quiesced ISA requester, which stays a requester.
     pub fn observe_quiesced_requester(
         &mut self,
         authority: QuiescedIsaRequester,
@@ -346,7 +342,6 @@ impl PciTopology {
         Ok(())
     }
 
-    /// The entry-quiesced requester at `at`, once the snapshot is sealed.
     pub fn quiesced_requester(&self, at: Address) -> Option<QuiescedRequester> {
         if !self.sealed {
             return None;
@@ -355,7 +350,6 @@ impl PciTopology {
             .filter(|record| record.at == at.function_base())
     }
 
-    /// Seal the snapshot after validating its complete rooted interval tree.
     pub fn seal(&mut self) -> Result<(), TopologyError> {
         self.sealed = false;
         if let Some(reason) = self.observation_failure {
@@ -415,12 +409,10 @@ impl PciTopology {
         Ok(())
     }
 
-    /// Whether the complete snapshot passed validation.
     pub const fn is_sealed(&self) -> bool {
         self.sealed
     }
 
-    /// Whether one exact function was present in the sealed snapshot.
     pub fn contains_function(&self, at: Address) -> bool {
         if !self.sealed {
             return false;
@@ -429,7 +421,6 @@ impl PciTopology {
         self.present[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) != 0
     }
 
-    /// Whether one exact function is a DMA requester in the sealed snapshot.
     pub fn contains_requester(&self, at: Address) -> bool {
         if !self.sealed {
             return false;
@@ -438,7 +429,6 @@ impl PciTopology {
         self.requesters[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) != 0
     }
 
-    /// The sealed routing range of one exact bridge function.
     pub fn bridge_range(&self, at: Address) -> Option<BridgeRange> {
         if !self.sealed {
             return None;
@@ -456,7 +446,6 @@ impl PciTopology {
         None
     }
 
-    /// Whether `target` is `root` or lies below that bridge in the sealed tree.
     pub fn hierarchy_contains(&self, root: Address, target: Address) -> bool {
         if !self.sealed {
             return false;

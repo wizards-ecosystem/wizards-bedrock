@@ -1,18 +1,3 @@
-//! PS/2 scancode decoding: [`Decoder`] names physical keys and [`us`] turns them into characters.
-//!
-//! # Examples
-//!
-//! ```
-//! use ps2_keys::{Decoder, Key, KeyState};
-//!
-//! let mut decoder = Decoder::new();
-//! // `1C` is A pressed; `F0 1C` is A released.
-//! assert_eq!(decoder.feed(0x1C).map(|event| event.key), Some(Key::A));
-//! assert!(decoder.feed(0xF0).is_none());
-//! let release = decoder.feed(0x1C).expect("the break completes");
-//! assert_eq!((release.key, release.state), (Key::A, KeyState::Released));
-//! ```
-
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 #![cfg_attr(

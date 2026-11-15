@@ -1,6 +1,6 @@
 [package]
 name = "x86-pit"
-description = "8254 interval timer encoding and calibration arithmetic. Pure logic, host-testable."
+description = "8254 timer encoding and calibration"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

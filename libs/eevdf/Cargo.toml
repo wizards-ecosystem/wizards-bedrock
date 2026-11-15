@@ -1,6 +1,6 @@
 [package]
 name = "eevdf"
-description = "Earliest eligible virtual deadline first, as arithmetic: virtual time, lag, deadlines, and the pick."
+description = "EEVDF scheduling arithmetic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

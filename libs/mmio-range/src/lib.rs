@@ -1,17 +1,8 @@
-//! Checked address arithmetic for repeated MMIO accesses, host-tested here.
-//! `wost` performs the accesses themselves.
-//!
-//! ```
-//! let span = mmio_range::AccessRange::repeated(8, 3, 4, 32).unwrap();
-//! assert_eq!(span.offset(), 8);
-//! ```
-
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 use core::fmt;
 
-/// One non-empty half-open address range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AddressRange {
     base: u64,
@@ -19,61 +10,39 @@ pub struct AddressRange {
 }
 
 impl AddressRange {
-    /// Build `base..base + len` when its end is representable and non-empty.
-    pub const fn new(base: u64, len: u64) -> Option<Self> {
-        if len == 0 {
+    pub const fn new(base: u64, length: u64) -> Option<Self> {
+        if length == 0 {
             return None;
         }
-        let Some(end) = base.checked_add(len) else {
+        let Some(end) = base.checked_add(length) else {
             return None;
         };
         Some(Self { base, end })
     }
 
-    /// Smallest aligned range covering `base..base + len`.
-    pub const fn covering(base: u64, len: u64, align: u64) -> Option<Self> {
-        if len == 0 || align == 0 || !align.is_power_of_two() {
-            return None;
-        }
-        let Some(end) = base.checked_add(len) else {
-            return None;
-        };
-        let Some(end) = end.checked_next_multiple_of(align) else {
-            return None;
-        };
-        Some(Self {
-            base: base & !(align - 1),
-            end,
-        })
-    }
-
-    /// First byte in the range.
     pub const fn base(self) -> u64 {
         self.base
     }
 
-    /// One past the final byte.
     pub const fn end(self) -> u64 {
         self.end
     }
 }
 
-/// Find the lowest aligned gap, projecting each occupied record.
-/// A ledger then needs no second array of ranges beside it.
 pub fn first_fit_by<T>(
     window: AddressRange,
-    len: u64,
+    length: u64,
     align: u64,
     occupied: &[T],
     range_of: impl Fn(&T) -> Option<AddressRange>,
 ) -> Option<u64> {
-    if len == 0 || align == 0 || !align.is_power_of_two() {
+    if length == 0 || align == 0 || !align.is_power_of_two() {
         return None;
     }
     let mut cursor = window.base.checked_next_multiple_of(align)?;
 
     for _ in 0..=occupied.len() {
-        let candidate_end = cursor.checked_add(len)?;
+        let candidate_end = cursor.checked_add(length)?;
         if candidate_end > window.end {
             return None;
         }
@@ -95,7 +64,6 @@ pub fn first_fit_by<T>(
     None
 }
 
-/// A checked byte range inside a bounded region.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AccessRange {
     offset: usize,
@@ -103,7 +71,6 @@ pub struct AccessRange {
     width: usize,
 }
 
-/// The exact offsets authorized by an [`AccessRange`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AccessOffsets {
     next: usize,
@@ -132,19 +99,21 @@ impl Iterator for AccessOffsets {
 impl ExactSizeIterator for AccessOffsets {}
 impl core::iter::FusedIterator for AccessOffsets {}
 
-/// Why a repeated access does not name a valid range.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum AccessError {
-    /// An access width must be a non-zero power of two.
     InvalidWidth(usize),
-    /// The first access is not naturally aligned.
-    Misaligned { offset: usize, align: usize },
-    /// `count * width` does not fit in `usize`.
-    LengthOverflow { count: usize, width: usize },
-    /// Adding the repeated length to its offset wraps.
-    EndOverflow { offset: usize, len: usize },
-    /// The range extends beyond the containing region.
+    Misaligned {
+        offset: usize,
+        align: usize,
+    },
+    LengthOverflow {
+        count: usize,
+        width: usize,
+    },
+    EndOverflow {
+        offset: usize,
+        len: usize,
+    },
     OutOfBounds {
         offset: usize,
         len: usize,
@@ -180,8 +149,6 @@ impl fmt::Display for AccessError {
 impl core::error::Error for AccessError {}
 
 impl AccessRange {
-    /// Check `count` naturally aligned `width`-byte accesses.
-    /// A zero count accesses nothing, so its offset needs no alignment.
     pub const fn repeated(
         offset: usize,
         count: usize,
@@ -213,12 +180,10 @@ impl AccessRange {
         Ok(Self { offset, end, width })
     }
 
-    /// First byte in the access range.
     pub const fn offset(self) -> usize {
         self.offset
     }
 
-    /// Each access start in order, with no unchecked arithmetic left to the caller.
     pub const fn offsets(self) -> AccessOffsets {
         AccessOffsets {
             next: self.offset,

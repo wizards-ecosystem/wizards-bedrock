@@ -1,6 +1,6 @@
 [package]
 name = "fat32"
-description = "A read-only FAT32 reader over any source of sectors."
+description = "Read-only FAT32 reader"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

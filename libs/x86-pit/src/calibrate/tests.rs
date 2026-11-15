@@ -1,4 +1,5 @@
 use super::*;
+use crate::elapsed_ticks;
 
 #[test]
 fn the_watchdog_distinguishes_disagreement_from_delay() {
@@ -47,4 +48,11 @@ fn the_watchdog_distinguishes_disagreement_from_delay() {
         WatchdogVerdict::Inconclusive,
         "a window whose late bound passes the 16-bit span can have folded"
     );
+}
+
+#[test]
+fn a_window_through_zero_measures_its_rate() {
+    assert_eq!(elapsed_ticks(1000, 400), 600);
+    assert_eq!(elapsed_ticks(100, 65_436), 200);
+    assert_eq!(measured_hz(200_000, 20_000), 10 * u64::from(CRYSTAL_HZ));
 }

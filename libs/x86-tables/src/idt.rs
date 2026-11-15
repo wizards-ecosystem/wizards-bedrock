@@ -1,22 +1,15 @@
-//! Interrupt descriptor table gates: a handler, its code selector and an optional IST stack.
-
 use crate::Selector;
 
-/// Gates in an interrupt descriptor table, fixed by the architecture.
 pub const TABLE_LEN: usize = 256;
 
-pub const TABLE_BYTES: usize = TABLE_LEN * size_of::<Gate>();
+const TABLE_BYTES: usize = TABLE_LEN * size_of::<Gate>();
 
-/// Value the table's limit field takes: one less than its size.
 pub const TABLE_LIMIT: u16 = (TABLE_BYTES - 1) as u16;
 
-/// Present, ring 0, 64-bit interrupt gate; a handler wanting interrupts on enables them itself.
 const INTERRUPT_GATE: u8 = 0x8E;
 
-/// Highest interrupt stack table index a gate can select.
 const MAX_INTERRUPT_STACK: u8 = 7;
 
-/// One interrupt descriptor table entry.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[repr(C)]
 pub struct Gate {
@@ -30,7 +23,6 @@ pub struct Gate {
 }
 
 impl Gate {
-    /// A gate with the present bit clear, so taking its vector raises a general protection fault.
     pub const MISSING: Self = Self {
         offset_low: 0,
         selector: 0,
@@ -41,7 +33,6 @@ impl Gate {
         reserved: 0,
     };
 
-    /// An interrupt gate entering `handler` through `selector` on IST entry `stack`, 0 for none.
     pub const fn interrupt(handler: u64, selector: Selector, stack: u8) -> Self {
         assert!(
             stack <= MAX_INTERRUPT_STACK,
@@ -59,16 +50,13 @@ impl Gate {
         }
     }
 
-    /// The same interrupt gate at DPL 3, opened only for the kernel's entry.
-    ///
-    /// An interrupt gate, so IF is clear before kernel stack discipline exists; others stay DPL 0.
+    // An interrupt gate, so IF is clear before kernel stack discipline exists.
     pub const fn callable_from_user(handler: u64, selector: Selector, stack: u8) -> Self {
         let mut gate = Self::interrupt(handler, selector, stack);
         gate.attributes |= 0b11 << 5;
         gate
     }
 
-    /// The privilege level that may reach this gate with `int`.
     pub const fn privilege(self) -> u8 {
         (self.attributes >> 5) & 0b11
     }

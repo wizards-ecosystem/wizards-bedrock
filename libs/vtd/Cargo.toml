@@ -1,6 +1,6 @@
 [package]
 name = "vtd"
-description = "Pure arithmetic for Intel VT-d (DMA remapping): register, table and invalidation encoding, host-testable."
+description = "Intel VT-d encoding"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

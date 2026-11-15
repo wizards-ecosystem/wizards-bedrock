@@ -1,6 +1,6 @@
 [package]
 name = "register-bits"
-description = "Width conversions for hardware register values: reserved high bits ignored on read, 64-bit operands split into halves."
+description = "Register width conversions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

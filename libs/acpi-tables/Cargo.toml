@@ -1,6 +1,6 @@
 [package]
 name = "acpi-tables"
-description = "Parsing for the ACPI tables this kernel reads: the RSDP, the XSDT, and the MADT's interrupt controller entries."
+description = "ACPI table parsing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

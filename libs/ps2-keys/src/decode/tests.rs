@@ -1,7 +1,5 @@
 use super::*;
 
-/// Recovery may take a retry when the byte itself opened a prefix.
-/// Pause prefixes come from the constant, so every indexed `Pause(n)` state stays covered.
 #[test]
 fn no_byte_in_no_state_panics_or_wedges() {
     let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];

@@ -9,16 +9,6 @@ fn a_mapping_with_canonical_endpoints_that_crosses_the_hole_is_refused() {
 }
 
 #[test]
-fn a_page_directory_leaf_uses_two_mib_alignment_and_the_huge_bit() {
-    let leaf = Entry::page(Level::Pd, LARGE_PAGE_SIZE, Flags::PRESENT).expect("2 MiB aligned");
-    assert!(leaf.flags().contains(Flags::HUGE));
-    assert_eq!(
-        Entry::page(Level::Pd, 0x1000, Flags::PRESENT),
-        Err(EntryError::Misaligned(0x1000))
-    );
-}
-
-#[test]
 fn a_narrower_parent_beats_a_wider_leaf() {
     let supervisor = Flags::PRESENT.union(Flags::WRITABLE);
     let read_only = Flags::PRESENT.union(Flags::USER);

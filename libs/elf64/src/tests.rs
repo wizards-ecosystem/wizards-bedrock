@@ -1,6 +1,5 @@
 use super::*;
 
-/// A well-formed image with the given program headers.
 fn image(segments: &[(u32, u32, u64, u64, u64, u64)]) -> Vec<u8> {
     let mut bytes = vec![0u8; HEADER_BYTES + segments.len() * PROGRAM_HEADER_BYTES];
     bytes[0..4].copy_from_slice(&MAGIC);
@@ -63,7 +62,6 @@ fn what_is_not_an_elf64_is_refused_by_name() {
     assert_eq!(Elf::parse(&big).err(), Some(ElfError::NotLittleEndian(2)));
 }
 
-/// A hostile offset near the top of the range must not wrap into looking like it fits.
 #[test]
 fn a_table_that_runs_past_the_image_is_refused() {
     let mut bytes = image(&[(1, 5, 0, 0x40_0000, 0, 0)]);

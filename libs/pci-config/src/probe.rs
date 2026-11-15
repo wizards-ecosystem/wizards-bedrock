@@ -7,33 +7,27 @@ use crate::{
     FunctionClaims, MemoryWidth, PROBE_DISABLED, memory_window_size,
 };
 
-/// One configuration-space cycle in a BAR-probe transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProbeAccess {
-    /// Only the low sixteen bits are consumed.
     ReadCommand,
-    /// Write command bits with a zero status half.
+    // Write command bits with a zero status half: status bits are write-one-to-clear.
     WriteCommand(u16),
     ReadBar(usize),
     WriteBar(usize, u32),
 }
 
-/// One decoded and sized BAR window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Window {
     pub bar: Bar,
-    /// How many bytes or ports it covers.
     pub size: u64,
 }
 
-/// Every window discovered by one BAR-restored probe transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProbedBars {
     pub(crate) function: Option<FunctionLease>,
     pub(crate) windows: [Option<Window>; BARS],
 }
 
-/// A completed BAR probe whose safe command state remains exclusively owned.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "the staged command must be committed or restored before releasing its function"]
 pub struct StagedProbe {
@@ -42,7 +36,6 @@ pub struct StagedProbe {
 }
 
 impl StagedProbe {
-    /// Separate the discovered windows from their command restoration owner.
     pub fn into_parts(self) -> (ProbedBars, CommandState) {
         (self.bars, self.command)
     }
@@ -58,50 +51,38 @@ impl ProbedBars {
     pub fn window(&self, index: usize) -> Option<Window> {
         self.windows.get(index).copied().flatten()
     }
-
-    /// All slots, including the empty high halves of wide BARs.
-    pub const fn into_windows(self) -> [Option<Window>; BARS] {
-        self.windows
-    }
 }
 
-/// Why a BAR-probe transaction could not produce windows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum ProbeError<E> {
-    /// The function or command-transition reservation was unavailable.
     Unavailable(EnableError),
-    /// The configuration mechanism refused an access before rollback failed.
     Access(E),
-    /// The command register did not accept the exact decode-off word.
     Refused(u16),
-    /// At least one original register could not be put back.
     Restore(E),
-    /// A restoration readback did not equal the captured register word.
     RestoreChanged,
-    /// The header layout, slot use or encoding is unsupported, or an I/O BAR leaves port space.
     Malformed,
-    /// A device returned a mask or base that cannot describe its window.
     InvalidWindow,
 }
 
 impl<E: fmt::Display> fmt::Display for ProbeError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unavailable(reason) => {
-                write!(f, "bar probe authority is unavailable: {reason}")
+                write!(formatter, "bar probe authority is unavailable: {reason}")
             }
-            Self::Access(reason) => write!(f, "configuration access failed: {reason}"),
+            Self::Access(reason) => write!(formatter, "configuration access failed: {reason}"),
             Self::Refused(observed) => write!(
-                f,
+                formatter,
                 "command register refused decode-off value and read back {observed:#06x}"
             ),
-            Self::Restore(reason) => write!(f, "configuration restoration failed: {reason}"),
-            Self::RestoreChanged => {
-                f.write_str("configuration restoration changed the captured register state")
+            Self::Restore(reason) => {
+                write!(formatter, "configuration restoration failed: {reason}")
             }
-            Self::Malformed => f.write_str("the function has an unsupported BAR layout"),
-            Self::InvalidWindow => f.write_str("a BAR returned an invalid memory window"),
+            Self::RestoreChanged => {
+                formatter.write_str("configuration restoration changed the captured register state")
+            }
+            Self::Malformed => formatter.write_str("the function has an unsupported BAR layout"),
+            Self::InvalidWindow => formatter.write_str("a BAR returned an invalid memory window"),
         }
     }
 }
@@ -157,7 +138,6 @@ pub(crate) struct RawStagedProbe {
     restore: ProbeRestore,
 }
 
-/// A refused BAR probe, including exact retry authority when restoration is uncertain.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "an uncertain BAR probe may carry exclusive restoration authority"]
 pub struct ProbeFailure<E> {
@@ -166,7 +146,6 @@ pub struct ProbeFailure<E> {
 }
 
 impl<E> ProbeFailure<E> {
-    /// Refuse before a probe reservation exists.
     pub fn unavailable(reason: EnableError) -> Self {
         Self {
             reason: ProbeError::Unavailable(reason),
@@ -174,7 +153,6 @@ impl<E> ProbeFailure<E> {
         }
     }
 
-    /// Refuse while preserving an existing restoration owner.
     pub fn with_retry(reason: ProbeError<E>, retry: ProbeRetry) -> Self {
         Self {
             reason,
@@ -186,13 +164,11 @@ impl<E> ProbeFailure<E> {
         &self.reason
     }
 
-    /// Recover the same function reservation and captured register words.
     pub fn into_retry(self) -> Option<ProbeRetry> {
         self.retry
     }
 }
 
-/// The exclusive right to retry one uncertain BAR restoration.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "an uncertain BAR probe must be retried or retained fail-stopped"]
 pub struct ProbeRetry {
@@ -200,8 +176,6 @@ pub struct ProbeRetry {
     restore: ProbeRestore,
 }
 
-/// Probe every BAR with decode verified off; an uncertain restoration returns [`ProbeRetry`].
-/// The adapter holds its configuration lock for the closure; uncertainty leaves DMA and decode off.
 pub fn probe_bars<const N: usize, E>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -260,7 +234,6 @@ pub(crate) fn probe_bars_with_leases<const N: usize, E>(
     }
 }
 
-/// Retry a BAR restoration through the same function reservation.
 pub fn retry_probe<const N: usize, E>(
     functions: &mut FunctionClaims<N>,
     authority: &FunctionAuthority,
@@ -477,29 +450,15 @@ pub(crate) fn finish_probe_restoration<E>(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn restore_staged_probe<E>(
-    staged: RawStagedProbe,
-    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
-) -> Result<ProbedBars, RawProbeFailure<E>> {
-    if let Err((reason, restore)) = finish_probe_restoration(staged.restore, access) {
-        return Err(RawProbeFailure {
-            reason,
-            restore: Some(restore),
-        });
-    }
-    Ok(staged.bars)
-}
-
 fn bar_slots(registers: usize, original: &[u32; BARS]) -> Option<[Option<BarSlots>; BARS]> {
     let mut plan = [None; BARS];
     let mut indices = 0..registers;
-    while let Some(low) = core::iter::Iterator::next(&mut indices) {
+    while let Some(low) = indices.next() {
         let high = if matches!(
             Bar::decode(original[low], 0)?,
             Bar::Memory { wide: true, .. }
         ) {
-            Some(core::iter::Iterator::next(&mut indices)?)
+            Some(indices.next()?)
         } else {
             None
         };

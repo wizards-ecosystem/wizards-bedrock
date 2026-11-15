@@ -7,7 +7,6 @@ use crate::{
     FunctionClaims, ProbedBars, Window, command, header,
 };
 
-/// A live function's exclusive authority over one probed memory BAR.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "a BAR authority must remain with its mapping or be returned"]
 pub struct BarAuthority {
@@ -20,38 +19,27 @@ impl BarAuthority {
     pub const fn index(&self) -> usize {
         self.index
     }
-
-    /// The exact decoded window observed by the restored probe.
-    pub const fn window(&self) -> Window {
-        self.window
-    }
 }
 
-/// Why a probed memory BAR could not become an exclusive mapping authority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum BarAuthorityError {
-    /// The function, registry generation, or probe provenance is not current.
     Stale,
-    /// The BAR slot does not contain a memory window.
     NotMemory,
-    /// Another live mapping authority already owns this BAR slot.
     Busy,
 }
 
 impl fmt::Display for BarAuthorityError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stale => f.write_str("the BAR authority is stale or foreign"),
-            Self::NotMemory => f.write_str("the BAR is not a memory window"),
-            Self::Busy => f.write_str("the BAR already has a mapping authority"),
+            Self::Stale => formatter.write_str("the BAR authority is stale or foreign"),
+            Self::NotMemory => formatter.write_str("the BAR is not a memory window"),
+            Self::Busy => formatter.write_str("the BAR already has a mapping authority"),
         }
     }
 }
 
 impl core::error::Error for BarAuthorityError {}
 
-/// A refused BAR-authority return with the unchanged token.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "a refused BAR release returns its authority for retry"]
 pub struct BarAuthorityFailure {
@@ -60,61 +48,49 @@ pub struct BarAuthorityFailure {
 }
 
 impl fmt::Display for BarAuthorityFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.reason, f)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, formatter)
     }
 }
 
 impl core::error::Error for BarAuthorityFailure {}
 
-/// Why a live BAR no longer matches the probed identity behind its mapping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum BarIdentityError {
-    /// The function or BAR mapping generation is stale or foreign.
     Stale,
-    /// Configuration space could not read the complete BAR identity.
     Access,
-    /// The decoded BAR value changed since the restored probe.
     Changed,
 }
 
 impl fmt::Display for BarIdentityError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stale => f.write_str("the BAR identity is stale or foreign"),
-            Self::Access => f.write_str("the BAR identity is unreadable"),
-            Self::Changed => f.write_str("the BAR identity changed"),
+            Self::Stale => formatter.write_str("the BAR identity is stale or foreign"),
+            Self::Access => formatter.write_str("the BAR identity is unreadable"),
+            Self::Changed => formatter.write_str("the BAR identity changed"),
         }
     }
 }
 
 impl core::error::Error for BarIdentityError {}
 
-/// One access in the indivisible BAR-identity and memory-decode transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BarEnableAccess {
-    /// Read one BAR slot before any command write.
     ReadBar(usize),
-    /// Access the command register through its verified transaction.
     Command(CommandAccess),
 }
 
-/// Why BAR-bound memory decoding could not be enabled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum BarEnableError {
-    /// The mapped BAR identity was stale, inaccessible, or changed.
     Identity(BarIdentityError),
-    /// The command transaction refused or could not restore exactly.
     Command(EnableError),
 }
 
 impl fmt::Display for BarEnableError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Identity(reason) => write!(f, "BAR identity: {reason}"),
-            Self::Command(reason) => write!(f, "memory decode: {reason}"),
+            Self::Identity(reason) => write!(formatter, "BAR identity: {reason}"),
+            Self::Command(reason) => write!(formatter, "memory decode: {reason}"),
         }
     }
 }
@@ -139,7 +115,6 @@ impl<const N: usize> FunctionClaims<N> {
     }
 }
 
-/// Add bus mastering through one live BAR mapping isolated by a DMA domain for that function.
 pub fn admit_mapped_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &BarAuthority,
@@ -156,7 +131,6 @@ pub fn admit_mapped_bus_master<const N: usize>(
     admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)
 }
 
-/// Reserve one probed memory BAR under its exact function generation.
 pub fn bind_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -195,7 +169,6 @@ pub fn bind_memory_bar<const N: usize>(
     })
 }
 
-/// Return one exact BAR mapping authority to its function registry.
 pub fn release_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: BarAuthority,
@@ -228,7 +201,6 @@ pub fn release_memory_bar<const N: usize>(
     Ok(())
 }
 
-/// Re-read a mapped BAR through reads alone and require its decoded identity to be unchanged.
 fn verify_memory_bar<const N: usize>(
     functions: &FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -272,7 +244,6 @@ fn verify_memory_bar<const N: usize>(
     Ok(())
 }
 
-/// Enable memory decode after the BAR identity is re-proven, all under one configuration lock.
 pub fn enable_memory_bar<const N: usize>(
     functions: &mut FunctionClaims<N>,
     function: &FunctionAuthority,
@@ -303,10 +274,10 @@ fn admit_memory_space_with_leases<const N: usize>(
         return Err(EnableError::Stale);
     }
     let at = state.lease.command_address();
-    let current = match access(at, CommandAccess::Read) {
-        Some(bits) => bits as u16,
-        None => return Err(EnableError::Access),
+    let Some(bits) = access(at, CommandAccess::Read) else {
+        return Err(EnableError::Access);
     };
+    let current = bits as u16;
     if current != state.installed {
         return Err(EnableError::Changed(current));
     }

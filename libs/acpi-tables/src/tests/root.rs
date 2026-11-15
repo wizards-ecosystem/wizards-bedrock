@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn a_version_two_root_pointer_names_its_xsdt() {
+    let mut bytes = [0u8; Rsdp::V2_LEN];
+    bytes[..8].copy_from_slice(b"RSD PTR ");
+    bytes[15] = 2;
+    bytes[20..24].copy_from_slice(&36u32.to_le_bytes());
+    bytes[24..32].copy_from_slice(&0xdead_0000u64.to_le_bytes());
+    fix_checksum(&mut bytes[..Rsdp::V1_LEN], 9);
+    fix_checksum(&mut bytes, 32);
+
+    let rsdp = Rsdp::parse(&bytes).expect("well formed");
+    assert_eq!(rsdp.xsdt(), Some(0xdead_0000));
+}
+
+#[test]
 fn a_root_table_above_the_cap_cannot_hide_a_tail_madt() {
     const LISTED: usize = MAX_TABLES + 1;
 

@@ -2,7 +2,6 @@ use core::fmt;
 
 use crate::{AcpiError, Sdt, u16_at, u64_at};
 
-/// An attestation that one VT-d unit covers a segment, valid only beside a matching RMRR-free DRHD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DmaCoverage {
     segment: u16,
@@ -10,7 +9,6 @@ pub struct DmaCoverage {
 }
 
 impl DmaCoverage {
-    /// Bytes in the complete fixed-format table.
     pub const LEN: usize = Sdt::LEN + 12;
 
     pub fn new(table: &[u8]) -> Result<Self, DmaCoverageError> {
@@ -42,20 +40,16 @@ impl DmaCoverage {
         })
     }
 
-    /// PCI segment whose complete requester-ID space the unit intercepts.
     pub const fn segment(self) -> u16 {
         self.segment
     }
 
-    /// Physical register base of the corroborating sole DMAR unit.
     pub const fn register_base(self) -> u64 {
         self.register_base
     }
 }
 
-/// Why a Wizard DMA coverage attestation is not authoritative.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum DmaCoverageError {
     Table(AcpiError),
     WrongTable { expected: [u8; 4], found: [u8; 4] },
@@ -65,20 +59,26 @@ pub enum DmaCoverageError {
 }
 
 impl fmt::Display for DmaCoverageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Table(reason) => write!(f, "DMA coverage table is invalid: {reason}"),
+            Self::Table(reason) => write!(formatter, "DMA coverage table is invalid: {reason}"),
             Self::WrongTable { expected, found } => {
-                write!(f, "table signature {found:?} does not match {expected:?}")
+                write!(
+                    formatter,
+                    "table signature {found:?} does not match {expected:?}"
+                )
             }
             Self::WrongLength(length) => {
-                write!(f, "DMA coverage table length {length} is not 48 bytes")
+                write!(
+                    formatter,
+                    "DMA coverage table length {length} is not 48 bytes"
+                )
             }
             Self::UnsupportedRevision(revision) => {
-                write!(f, "DMA coverage revision {revision} is unsupported")
+                write!(formatter, "DMA coverage revision {revision} is unsupported")
             }
             Self::NonzeroReserved(bits) => {
-                write!(f, "DMA coverage reserved bits are {bits:#x}")
+                write!(formatter, "DMA coverage reserved bits are {bits:#x}")
             }
         }
     }
@@ -86,17 +86,14 @@ impl fmt::Display for DmaCoverageError {
 
 impl core::error::Error for DmaCoverageError {}
 
-/// A platform attestation that one PCI segment stays DMA-quiescent until the kernel owns a unit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DmaHandoff {
     segment: u16,
 }
 
 impl DmaHandoff {
-    /// Bytes in the complete fixed-format table.
     pub const LEN: usize = Sdt::LEN + 12;
 
-    /// Every platform property required for a safe early requester fence.
     pub const REQUIRED_FLAGS: u16 = handoff::COMPLETE_LEGACY_CONFIGURATION
         | handoff::QUIESCENT_THROUGH_FENCE
         | handoff::STATIC_REQUESTERS;
@@ -135,43 +132,43 @@ impl DmaHandoff {
     }
 }
 
-/// Why a Wizard DMA handoff attestation is not authoritative.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum DmaHandoffError {
     Table(AcpiError),
-    WrongTable {
-        expected: [u8; 4],
-        found: [u8; 4],
-    },
+    WrongTable { expected: [u8; 4], found: [u8; 4] },
     WrongLength(u32),
     UnsupportedRevision(u8),
-    /// Required handoff properties are missing or unknown ones are asserted.
     UnsafeFlags(u16),
     NonzeroReserved(u64),
 }
 
 impl fmt::Display for DmaHandoffError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Table(reason) => write!(f, "DMA handoff table is invalid: {reason}"),
+            Self::Table(reason) => write!(formatter, "DMA handoff table is invalid: {reason}"),
             Self::WrongTable { expected, found } => {
-                write!(f, "table signature {found:?} does not match {expected:?}")
+                write!(
+                    formatter,
+                    "table signature {found:?} does not match {expected:?}"
+                )
             }
             Self::WrongLength(length) => {
-                write!(f, "DMA handoff table length {length} is not 48 bytes")
+                write!(
+                    formatter,
+                    "DMA handoff table length {length} is not 48 bytes"
+                )
             }
             Self::UnsupportedRevision(revision) => {
-                write!(f, "DMA handoff revision {revision} is unsupported")
+                write!(formatter, "DMA handoff revision {revision} is unsupported")
             }
             Self::UnsafeFlags(flags) => {
                 write!(
-                    f,
+                    formatter,
                     "DMA handoff flags {flags:#x} are not the complete contract"
                 )
             }
             Self::NonzeroReserved(bits) => {
-                write!(f, "DMA handoff reserved bits are {bits:#x}")
+                write!(formatter, "DMA handoff reserved bits are {bits:#x}")
             }
         }
     }
@@ -180,10 +177,7 @@ impl fmt::Display for DmaHandoffError {
 impl core::error::Error for DmaHandoffError {}
 
 mod handoff {
-    /// CF8/CFC reaches every DMA-capable requester in the named segment.
     pub(super) const COMPLETE_LEGACY_CONFIGURATION: u16 = 1 << 0;
-    /// No requester can issue DMA and no older request is in flight through the fence.
     pub(super) const QUIESCENT_THROUGH_FENCE: u16 = 1 << 1;
-    /// Requester presence, identity and command state cannot change externally.
     pub(super) const STATIC_REQUESTERS: u16 = 1 << 2;
 }

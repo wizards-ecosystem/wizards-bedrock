@@ -5,7 +5,6 @@ use crate::{Address, CommandLeases, HeaderType};
 
 static NEXT_FUNCTION_REGISTRY: AtomicU64 = AtomicU64::new(1);
 
-/// The exclusive right to mutate one PCI function, valid only in the registry that minted it.
 #[derive(PartialEq, Eq, Debug)]
 #[must_use = "dropping function authority permanently retains its claim"]
 pub struct FunctionAuthority {
@@ -25,13 +24,11 @@ impl FunctionAuthority {
         self.lease.at
     }
 
-    /// BAR register slots proved by the claimed function's header layout.
     pub const fn bar_registers(&self) -> usize {
         self.registers
     }
 }
 
-/// A bounded registry of exclusive function authorities.
 #[derive(PartialEq, Eq, Debug)]
 pub struct FunctionClaims<const N: usize> {
     pub(crate) slots: [Option<FunctionLease>; N],
@@ -52,7 +49,6 @@ impl<const N: usize> FunctionClaims<N> {
         }
     }
 
-    /// Claim one function whose header layout was read from that function.
     pub fn claim(
         &mut self,
         at: Address,
@@ -93,7 +89,6 @@ impl<const N: usize> FunctionClaims<N> {
         Ok(FunctionAuthority { lease, registers })
     }
 
-    /// Whether `authority` is this registry's exact live generation.
     pub fn holds(&self, authority: &FunctionAuthority) -> bool {
         self.slots
             .iter()
@@ -101,7 +96,6 @@ impl<const N: usize> FunctionClaims<N> {
             .any(|held| *held == authority.lease)
     }
 
-    /// Whether any register offset of `at`'s function is held.
     pub fn is_claimed(&self, at: Address) -> bool {
         let at = at.function_base();
         self.slots.iter().flatten().any(|held| held.at == at)
@@ -143,27 +137,22 @@ impl<const N: usize> Default for FunctionClaims<N> {
     }
 }
 
-/// Why exclusive function authority could not be minted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum FunctionClaimError {
-    /// Another authority already holds this function.
     Taken,
-    /// The registry's fixed lifetime bound is exhausted.
     NoRoom,
-    /// Registry identity or generation space is exhausted.
     Exhausted,
-    /// The header layout is neither a device nor a bridge.
     Header(u8),
 }
 
 impl fmt::Display for FunctionClaimError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Taken => f.write_str("the function is already claimed"),
-            Self::NoRoom => f.write_str("the function registry is full"),
-            Self::Exhausted => f.write_str("function claim generations are exhausted"),
-            Self::Header(layout) => write!(f, "header layout {layout} is unsupported"),
+            Self::Taken => formatter.write_str("the function is already claimed"),
+            Self::NoRoom => formatter.write_str("the function registry is full"),
+            Self::Exhausted => formatter.write_str("function claim generations are exhausted"),
+            Self::Header(layout) => write!(formatter, "header layout {layout} is unsupported"),
         }
     }
 }
