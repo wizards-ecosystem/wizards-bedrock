@@ -531,10 +531,12 @@ impl Claims {
             Some((current, unit)) if unit.register_base == register_base => {
                 if current.strictly_contains(named, hierarchy) {
                     self.enclosing = Some((named, candidate));
+                    self.enclosing_ambiguous = false;
                 }
             }
             Some((current, _)) if current.strictly_contains(named, hierarchy) => {
                 self.enclosing = Some((named, candidate));
+                self.enclosing_ambiguous = false;
             }
             Some((current, _)) if named.strictly_contains(current, hierarchy) => {}
             Some(_) => {
