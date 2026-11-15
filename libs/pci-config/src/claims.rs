@@ -138,7 +138,6 @@ impl<const N: usize> Default for FunctionClaims<N> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum FunctionClaimError {
     Taken,
     NoRoom,

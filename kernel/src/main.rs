@@ -583,7 +583,7 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
             CandidateStage::Settled(selection) => return selection,
         };
     };
-    retire_candidate(device, &mut context, ordinal)
+    retire_candidate(device, ordinal)
 }
 
 /// Lease, map, prepare and isolate a candidate before it may bus-master.
@@ -829,11 +829,7 @@ fn start_candidate(
 }
 
 /// Finish one failed lease, stopping selection unless restoration is exact.
-fn retire_candidate(
-    mut device: pci::Device,
-    context: &mut thread::ThreadContext,
-    ordinal: usize,
-) -> StorageSelection {
+fn retire_candidate(mut device: pci::Device, ordinal: usize) -> StorageSelection {
     if let Err(reason) = device.disable_bus_master_for_retirement() {
         warn!("nvme: candidate {ordinal} bus-master fence was refused once: {reason}");
         if let Err(reason) = device.disable_bus_master_for_retirement() {
@@ -856,17 +852,17 @@ fn retire_candidate(
     }
     // BME is verified off, excluded from the restored command word and still
     // protected by the selected function claim while translation goes away.
-    if !iommu::release_candidate(context) {
+    if !iommu::release_candidate() {
         warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
         pci::retain_failed_release(device);
         return StorageSelection::Halted;
     }
-    if let Some((reason, device)) = device.release(context).into_retained() {
+    if let Some((reason, device)) = device.release().into_retained() {
         warn!(
             "nvme: candidate {ordinal} pci lease retirement was refused once: {}",
             reason
         );
-        if let Some((reason, device)) = device.release(context).into_retained() {
+        if let Some((reason, device)) = device.release().into_retained() {
             warn!(
                 "nvme: candidate {ordinal} could not return its pci lease after retry: {}; selection halted",
                 reason

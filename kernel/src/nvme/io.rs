@@ -308,7 +308,6 @@ impl Controller {
         if Completion::from_bytes(bytes).phase != queue.phase {
             return Ok(None);
         }
-        DmaSegment::observe_device();
         if !queue.completion.read_at(at, &mut bytes) {
             return Err(BringUpError::NoMemory);
         }

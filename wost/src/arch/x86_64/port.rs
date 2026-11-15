@@ -14,7 +14,7 @@ use port_space::PortSpace;
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
-/// Which ports are spoken for; only unique dynamic span capabilities can return a lease.
+/// Which ports are spoken for.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
 
 /// Record `len` ports from `number` as claimed, all or nothing.
@@ -56,66 +56,6 @@ pub(crate) fn claim_pair<T: PortValue, U: PortValue>(
     // pair had the two overlapped.
     let second = unsafe { Port::new(second) };
     Some((first, second))
-}
-
-/// Claim several machine-described runs, such as a function's I/O BARs, as one transaction.
-///
-/// A transient owner may later return this exact set through [`release_spans`]. `None`, with no
-/// run recorded, if the request is empty, has more than `N` spans, or any span is empty,
-/// overlapping, out of range, or already owned.
-pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<PortSpan>; N]> {
-    if spans.is_empty() || spans.len() > N {
-        return None;
-    }
-    let mut requested = [(0usize, 0usize); N];
-    for (slot, &(base, len)) in requested.iter_mut().zip(spans) {
-        *slot = (base as usize, len);
-    }
-    if !CLAIMED.lock_leaf().reserve_all(&requested[..spans.len()]) {
-        return None;
-    }
-
-    let mut claimed = [const { None }; N];
-    for (slot, &(base, len)) in claimed.iter_mut().zip(spans) {
-        *slot = Some(PortSpan { base, len });
-    }
-    Some(claimed)
-}
-
-/// Return one transient device lease's dynamic spans, all or none.
-///
-/// Consuming the whole array keeps a stale access handle from surviving a successful release.
-/// An empty array succeeds without touching the registry; a refusal returns the unchanged
-/// capabilities for an exact retry.
-pub fn release_spans<const N: usize>(
-    spans: [Option<PortSpan>; N],
-) -> Result<(), SpanReleaseFailure<N>> {
-    let mut requested = [(0usize, 0usize); N];
-    let mut count = 0;
-    for span in spans.iter().flatten() {
-        requested[count] = (span.base as usize, span.len);
-        count += 1;
-    }
-    if count == 0 || CLAIMED.lock_leaf().release_all(&requested[..count]) {
-        Ok(())
-    } else {
-        Err(SpanReleaseFailure { spans })
-    }
-}
-
-/// A claimed run of ports of a length read from the machine, carried so every access is bounded.
-#[derive(Debug)]
-pub struct PortSpan {
-    base: u16,
-    len: usize,
-}
-
-/// A refused all-or-none span return with every capability unchanged.
-#[derive(Debug)]
-#[must_use = "a refused span release returns every reserved span"]
-pub struct SpanReleaseFailure<const N: usize> {
-    /// The exact spans still reserved in the registry.
-    pub spans: [Option<PortSpan>; N],
 }
 
 /// Claim the `N` consecutive ports starting at `base`.

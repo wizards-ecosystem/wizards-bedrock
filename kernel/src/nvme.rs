@@ -483,7 +483,6 @@ fn write_submission(
     offset: usize,
     tail: u32,
 ) -> Result<(), BringUpError> {
-    DmaSegment::publish_to_device();
     write(registers, offset, tail)
 }
 

@@ -100,10 +100,6 @@ impl DmaState {
     pub fn close(&mut self) {
         self.state = DmaOwnership::Closed;
     }
-
-    pub const fn is_in_flight(&self) -> bool {
-        matches!(self.state, DmaOwnership::InFlight)
-    }
 }
 
 // Base 2.2 §3.1.

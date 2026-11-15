@@ -69,40 +69,6 @@ impl PortSpace {
         true
     }
 
-    // This cannot tell owners apart, so callers must pass only spans their lease reserved.
-    #[must_use = "a refused release leaves every requested port reserved"]
-    pub fn release_all(&mut self, spans: &[(usize, usize)]) -> bool {
-        if spans.is_empty() {
-            return false;
-        }
-
-        let mut resolved = [const { None }; MAX_SPANS];
-        let Some(room) = resolved.get_mut(..spans.len()) else {
-            return false;
-        };
-        for (index, (port, length)) in spans.iter().enumerate() {
-            let Some(span) = bounded_span(*port, *length) else {
-                return false;
-            };
-            if !span.clone().all(|port| self.is_reserved(port)) {
-                return false;
-            }
-            for earlier in room.iter().take(index).flatten() {
-                if overlaps(&span, earlier) {
-                    return false;
-                }
-            }
-            room[index] = Some(span);
-        }
-
-        for span in room.iter().flatten() {
-            for port in span.clone() {
-                self.reserved[port / PORTS_PER_WORD] &= !bit(port);
-            }
-        }
-        true
-    }
-
     pub fn is_available(&self, port: usize, length: usize) -> bool {
         self.span(port, length).is_some()
     }

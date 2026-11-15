@@ -66,9 +66,7 @@ pub const fn root_table_address(pointer: u64) -> u64 {
 pub struct Capability(u64);
 
 impl Capability {
-    const ND_MASK: u64 = 0x7;
     const RWBF: u64 = 1 << 4;
-    const CM: u64 = 1 << 7;
     const SAGAW_SHIFT: u32 = 8;
     const SAGAW_MASK: u64 = 0x1F;
     const MGAW_SHIFT: u32 = 16;
@@ -88,18 +86,8 @@ impl Capability {
         self.0
     }
 
-    pub const fn number_of_domains(self) -> u32 {
-        let field = (self.0 & Self::ND_MASK) as u32;
-        1u32 << (4 + 2 * field)
-    }
-
     pub const fn requires_write_buffer_flush(self) -> bool {
         (self.0 & Self::RWBF) != 0
-    }
-
-    // The unit caches not-present entries, so every such change needs invalidation.
-    pub const fn caching_mode(self) -> bool {
-        (self.0 & Self::CM) != 0
     }
 
     const fn sagaw_supports(self, levels: u8) -> bool {
@@ -182,13 +170,13 @@ impl ExtendedCapability {
 
 // Each command is written over a software-preserved shadow of the enable bits.
 pub mod global_command {
-    pub const TE: u32 = 1 << 31;
+    pub(crate) const TE: u32 = 1 << 31;
     pub(crate) const SRTP: u32 = 1 << 30;
     pub const WBF: u32 = 1 << 27;
     pub const QIE: u32 = 1 << 26;
-    pub const IRE: u32 = 1 << 25;
+    pub(crate) const IRE: u32 = 1 << 25;
     pub(crate) const SIRTP: u32 = 1 << 24;
-    pub const CFI: u32 = 1 << 23;
+    pub(crate) const CFI: u32 = 1 << 23;
 }
 
 pub mod global_status {
@@ -562,8 +550,6 @@ pub struct FaultRecording {
 impl FaultRecording {
     const FAULT: u64 = 1 << 63;
     const TYPE: u64 = 1 << 62;
-    const REASON_SHIFT: u32 = 32;
-    const REASON_MASK: u64 = 0xFF;
     const SID_MASK: u64 = 0xFFFF;
 
     pub const fn is_fault(self) -> bool {
@@ -572,10 +558,6 @@ impl FaultRecording {
 
     pub const fn source_id(self) -> u16 {
         (self.hi & Self::SID_MASK) as u16
-    }
-
-    pub const fn fault_reason(self) -> u8 {
-        ((self.hi >> Self::REASON_SHIFT) & Self::REASON_MASK) as u8
     }
 
     pub const fn fault_address(self) -> u64 {

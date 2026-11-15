@@ -29,7 +29,6 @@ pub(crate) enum CommandPhase {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum FunctionReleaseError {
     Active,
     Stale,

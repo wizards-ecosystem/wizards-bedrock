@@ -74,7 +74,6 @@ pub fn is_available() -> bool {
 
 /// Why the entry-time exhaustive requester fence could not run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum DmaHandoffFenceError {
     /// CF8/CFC could not be reserved.
     Unavailable,
@@ -250,7 +249,6 @@ pub struct NvmeBusMasterAuthority<'bar> {
 
 /// Why a mapped BAR could not prove that its NVMe controller is disabled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum NvmeObservationError {
     /// NVMe controller registers must come from BAR0.
     WrongBar(usize),
@@ -356,7 +354,6 @@ impl MappedBar {
 
 /// Why a CPU-admitted physical range could not bind to one probed BAR.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum BarBindError {
     /// The physical base or length differs from the probed BAR window.
     Range,
@@ -419,7 +416,6 @@ impl FunctionClaim {
 
 /// Why exclusive function authority could not be established.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum ClaimError {
     /// Configuration space is unavailable.
     Unavailable,
@@ -477,7 +473,6 @@ pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
         FunctionClaimError::NoRoom => ClaimError::NoRoom,
         FunctionClaimError::Exhausted => ClaimError::Exhausted,
         FunctionClaimError::Header(layout) => ClaimError::Header(layout),
-        _ => ClaimError::Unavailable,
     })?;
     Ok(FunctionClaim {
         authority,
@@ -509,7 +504,6 @@ impl core::fmt::Display for ReleaseFailure {
             FunctionReleaseError::Stale => {
                 f.write_str("the function authority is foreign or stale")
             }
-            _ => f.write_str("the function authority could not be released"),
         }
     }
 }

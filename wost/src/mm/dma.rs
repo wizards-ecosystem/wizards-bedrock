@@ -127,16 +127,6 @@ impl DmaSegment {
         span.read_at(offset, into)
     }
 
-    /// Order earlier volatile host writes before an MMIO submission doorbell.
-    pub fn publish_to_device() {
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
-    }
-
-    /// Order later volatile completion and payload reads after phase ownership.
-    pub fn observe_device() {
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
-    }
-
     /// Permanently withhold the run from safe access and recycling, idempotently for a controller.
     pub fn retain(&mut self) {
         if let Some(segment) = self.segment.take() {

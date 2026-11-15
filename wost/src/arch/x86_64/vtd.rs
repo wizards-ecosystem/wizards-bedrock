@@ -61,7 +61,6 @@ const TABLE_LIMIT: usize = 24;
 
 /// Why a VT-d domain could not be established or changed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum VtdError {
     /// The supplied run is empty or its last byte wraps the address space.
     InvalidRange,
@@ -77,14 +76,10 @@ pub enum VtdError {
     NoAddressWidth { capability: u64 },
     /// The unit cannot prove that completed TE transitions drain both DMA directions.
     NoDmaDraining,
-    /// Firmware did not advertise platform interrupt-remapping support.
-    NoPlatformInterruptRemapping,
     /// The unit cannot remap interrupts or drive the invalidation queue.
     NoInterruptRemapping,
     /// The unit cannot deliver remapped interrupts in x2APIC mode.
     NoExtendedInterruptMode,
-    /// The unit reports fewer domains than the one it is asked to hold.
-    TooFewDomains,
     /// A table frame was unavailable, or the arena is full.
     OutOfTables,
     /// A table frame was not page aligned, so no entry can name it.
@@ -149,16 +144,12 @@ impl fmt::Display for VtdError {
                 )
             }
             Self::NoDmaDraining => f.write_str("the unit does not drain both DMA reads and writes"),
-            Self::NoPlatformInterruptRemapping => {
-                f.write_str("firmware does not permit platform interrupt remapping")
-            }
             Self::NoInterruptRemapping => {
                 f.write_str("the unit lacks interrupt remapping or queued invalidation")
             }
             Self::NoExtendedInterruptMode => {
                 f.write_str("the unit cannot remap interrupts in x2apic mode")
             }
-            Self::TooFewDomains => f.write_str("the unit reports no domain to isolate into"),
             Self::OutOfTables => f.write_str("no frame for a remapping table"),
             Self::Misaligned => f.write_str("a remapping table is not page aligned"),
             Self::FirmwareFacilitiesActive { status } => write!(
@@ -198,7 +189,6 @@ impl fmt::Display for VtdError {
 
 /// Whether a failed segment change left ownership safe to reuse.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[non_exhaustive]
 pub enum SegmentChangeError {
     /// No translation for the segment remains reachable or cached.
     Refused(VtdError),
@@ -233,20 +223,6 @@ pub struct UnitFacts {
     pub extended: u64,
     /// Page-table depth of the second-level tree the domain uses.
     pub levels: u8,
-    /// Whether the unit snoops processor caches when it walks tables.
-    pub coherent: bool,
-    /// Whether not-present entries may be cached, so every change invalidates.
-    pub(crate) caching_mode: bool,
-    /// Whether the unit needs an explicit write-buffer flush before invalidation.
-    pub(crate) write_buffer_flush: bool,
-    /// Whether the unit offers queued invalidation, used for IEC invalidation.
-    pub queued_invalidation: bool,
-    /// Whether the unit offers interrupt remapping, owned default-deny here.
-    pub interrupt_remapping: bool,
-    /// Fault-recording registers the unit has.
-    pub(crate) fault_registers: u16,
-    /// Whether completed translation transitions drain DMA reads and writes.
-    pub(crate) dma_draining: bool,
 }
 
 /// A programmed VT-d domain owner, retained whole after an uncertain transition.
@@ -260,10 +236,6 @@ pub struct Vtd {
     capability: Capability,
     extended: ExtendedCapability,
     width: AddressWidth,
-    walks: TableWalks,
-    iotlb_base: u64,
-    fault_offset: u64,
-    fault_registers: u16,
     /// The command word every write to `GCMD` is built from.
     global_command: u32,
     root: PublishedIommuTable,
@@ -353,8 +325,6 @@ pub enum Establishment {
 pub struct Fault {
     /// The requester's bus and device-and-function, as the unit saw them.
     pub source: u16,
-    /// The VT-d fault reason code.
-    pub reason: u8,
     /// The page the device named.
     pub address: u64,
     /// Whether the device was writing into host memory.
@@ -386,9 +356,8 @@ impl Vtd {
         registers: ReleasableDevice,
         clock: fn() -> Option<u64>,
         window: u64,
-        platform_interrupt_remapping: bool,
     ) -> Establishment {
-        let plan = match Plan::read(&registers, window, platform_interrupt_remapping) {
+        let plan = match Plan::read(&registers, window) {
             Ok(plan) => plan,
             Err(reason) => return Establishment::Refused { reason, registers },
         };
@@ -409,16 +378,6 @@ impl Vtd {
                 registers,
             };
         };
-        let status = match read_u32(&registers, vtd::register::GLOBAL_STATUS) {
-            Ok(status) => status,
-            Err(reason) => return Establishment::Refused { reason, registers },
-        };
-        if !takeover_ready(status) {
-            return Establishment::Refused {
-                reason: VtdError::FirmwareFacilitiesActive { status },
-                registers,
-            };
-        }
         let mut unit = Self {
             registers,
             clock,
@@ -426,10 +385,6 @@ impl Vtd {
             capability: plan.capability,
             extended: plan.extended,
             width: plan.width,
-            walks,
-            iotlb_base: plan.extended.iotlb_register_offset_bytes(),
-            fault_offset: plan.capability.fault_recording_offset_bytes(),
-            fault_registers: plan.capability.number_of_fault_recording_registers(),
             global_command: 0,
             root: PublishedIommuTable::new(root),
             context: PublishedIommuTable::new(context),
@@ -469,8 +424,8 @@ impl Vtd {
         self.invalidate(Caches::ContextAndIotlb)?;
         self.set_interrupt_table()?;
         self.invalidate_interrupt_cache()?;
-        self.switch_interrupt_remapping(Switch::On)?;
-        self.switch_translation(Switch::On)?;
+        self.enable_interrupt_remapping()?;
+        self.enable_translation()?;
         self.drain_dma()?;
         self.boundary_active()
             .then_some(())
@@ -504,22 +459,7 @@ impl Vtd {
             capability: self.capability.bits(),
             extended: self.extended.bits(),
             levels: self.width.levels(),
-            coherent: self.walks == TableWalks::Coherent,
-            caching_mode: self.capability.caching_mode(),
-            write_buffer_flush: self.capability.requires_write_buffer_flush(),
-            queued_invalidation: self.extended.queued_invalidation(),
-            interrupt_remapping: self.extended.interrupt_remapping(),
-            fault_registers: self.fault_registers,
-            dma_draining: self.capability.dma_draining(),
         }
-    }
-
-    /// Identity-map `segment` into the domain and invalidate the unit's cache.
-    ///
-    /// A failure that cannot prove rollback retains the segment before its frames can be recycled.
-    #[must_use = "an unmapped segment cannot be reached by the device"]
-    pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
-        self.map_segment_with::<true, true>(segment)
     }
 
     /// Identity-map `segment` so the requester may read but not write it.
@@ -756,15 +696,16 @@ impl Vtd {
         };
         let status = FaultStatus::from_bits(bits);
         let mut drained = 0;
+        let registers = self.capability.number_of_fault_recording_registers();
         let mut index = u16::from(status.fault_record_index());
-        if status.primary_pending() && index < self.fault_registers {
-            while drained < usize::from(self.fault_registers) {
+        if status.primary_pending() && index < registers {
+            while drained < usize::from(registers) {
                 let Some(fault) = self.take_fault(index) else {
                     break;
                 };
                 observe(fault);
                 drained += 1;
-                index = (index + 1) % self.fault_registers;
+                index = (index + 1) % registers;
             }
         }
         if status.overflow() {
@@ -778,7 +719,7 @@ impl Vtd {
     }
 
     fn take_fault(&mut self, index: u16) -> Option<Fault> {
-        let base = self.fault_offset + u64::from(index) * ENTRY_BYTES;
+        let base = self.capability.fault_recording_offset_bytes() + u64::from(index) * ENTRY_BYTES;
         let record = FaultRecording {
             lo: read_u64(&self.registers, base).ok()?,
             hi: read_u64(&self.registers, base + 8).ok()?,
@@ -789,7 +730,6 @@ impl Vtd {
         write_u64(&mut self.registers, base + 8, FaultRecording::clear().hi).ok()?;
         Some(Fault {
             source: record.source_id(),
-            reason: record.fault_reason(),
             address: record.fault_address(),
             write: !record.is_read_request(),
         })
@@ -1044,13 +984,8 @@ impl Vtd {
         )
     }
 
-    fn switch_interrupt_remapping(&mut self, state: Switch) -> Result<(), VtdError> {
-        let on = state == Switch::On;
-        self.global_command = if on {
-            enable_interrupt_remapping(self.global_command)
-        } else {
-            self.global_command & !(global_command::IRE | global_command::CFI)
-        };
+    fn enable_interrupt_remapping(&mut self) -> Result<(), VtdError> {
+        self.global_command = enable_interrupt_remapping(self.global_command);
         write_u32(
             &mut self.registers,
             vtd::register::GLOBAL_COMMAND,
@@ -1058,8 +993,7 @@ impl Vtd {
         )?;
         self.poll_status(
             |status| {
-                interrupt_remapping_enabled(status) == on
-                    && !compatibility_interrupts_enabled(status)
+                interrupt_remapping_enabled(status) && !compatibility_interrupts_enabled(status)
             },
             VtdError::InterruptRemappingTimeout,
         )
@@ -1083,29 +1017,21 @@ impl Vtd {
         }
     }
 
-    fn switch_translation(&mut self, state: Switch) -> Result<(), VtdError> {
-        let on = state == Switch::On;
-        self.global_command = if on {
-            enable_translation(self.global_command)
-        } else {
-            self.global_command & !global_command::TE
-        };
+    fn enable_translation(&mut self) -> Result<(), VtdError> {
+        self.global_command = enable_translation(self.global_command);
         write_u32(
             &mut self.registers,
             vtd::register::GLOBAL_COMMAND,
             self.global_command,
         )?;
-        self.poll_status(
-            |status| translation_enabled(status) == on,
-            VtdError::TranslationTimeout,
-        )
+        self.poll_status(translation_enabled, VtdError::TranslationTimeout)
     }
 
     /// Complete an architected read and write drain once every requester is behind translation or
     /// its root or leaves are clear, so later requests fault instead of reaching recyclable memory.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
         self.flush_write_buffer()?;
-        let command_register = self.iotlb_base + iotlb_command::COMMAND;
+        let command_register = self.extended.iotlb_register_offset_bytes() + iotlb_command::COMMAND;
         write_u64(
             &mut self.registers,
             command_register,
@@ -1127,7 +1053,7 @@ impl Vtd {
                 context_command::global_completed,
             )?;
         }
-        let command_register = self.iotlb_base + iotlb_command::COMMAND;
+        let command_register = self.extended.iotlb_register_offset_bytes() + iotlb_command::COMMAND;
         write_u64(
             &mut self.registers,
             command_register,
@@ -1183,11 +1109,7 @@ impl Vtd {
 }
 
 impl Plan {
-    fn read(
-        registers: &ReleasableDevice,
-        window: u64,
-        platform_interrupt_remapping: bool,
-    ) -> Result<Self, VtdError> {
+    fn read(registers: &ReleasableDevice, window: u64) -> Result<Self, VtdError> {
         let version = Version::from_bits(read_u32(registers, vtd::register::VERSION)?);
         if !version.register_invalidation_supported() {
             return Err(VtdError::UnsupportedRegisterInvalidationVersion {
@@ -1200,15 +1122,10 @@ impl Plan {
         let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
             capability: capability.bits(),
         })?;
-        if u32::from(DOMAIN_ID) >= capability.number_of_domains() {
-            return Err(VtdError::TooFewDomains);
-        }
         if !capability.dma_draining() {
             return Err(VtdError::NoDmaDraining);
         }
-        if !platform_interrupt_remapping {
-            return Err(VtdError::NoPlatformInterruptRemapping);
-        }
+
         if !extended.interrupt_remapping() || !extended.queued_invalidation() {
             return Err(VtdError::NoInterruptRemapping);
         }

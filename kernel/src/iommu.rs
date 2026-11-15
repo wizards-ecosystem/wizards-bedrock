@@ -21,7 +21,6 @@
 
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{Ordering, compiler_fence};
 
 use acpi_tables::{
     Bdf, BusRange, DmaCoverage, DmaHandoff, DmaHandoffError, Dmar, RequesterInventory,
@@ -150,7 +149,6 @@ pub(crate) fn secure_handoff(boot: &BootInfo) -> Result<EarlyDmaBoundary, EarlyD
     }
     let mut report =
         platform_pci::fence_dma_handoff(policy).map_err(EarlyDmaError::Configuration)?;
-    compiler_fence(Ordering::SeqCst);
     Ok(EarlyDmaBoundary {
         functions: report.functions(),
         disabled: report.disabled(),
@@ -273,7 +271,7 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             return false;
         }
     };
-    let establishment = Vtd::establish_deny_all(registers, nvme::clock_ns, REGISTER_WINDOW, true);
+    let establishment = Vtd::establish_deny_all(registers, nvme::clock_ns, REGISTER_WINDOW);
     let isolation = match establishment {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
@@ -292,7 +290,6 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
                 isolation,
                 fences: UnitFences::empty(),
                 state: InstalledState::Quarantined,
-                targeted: false,
             });
             return false;
         }
@@ -304,7 +301,6 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
             isolation,
             fences: UnitFences::empty(),
             state: InstalledState::Quarantined,
-            targeted: false,
         });
         return false;
     }
@@ -318,7 +314,6 @@ pub(crate) fn establish_fabric_boundary(context: &mut ThreadContext) -> bool {
         isolation,
         fences: UnitFences::empty(),
         state: InstalledState::Ready,
-        targeted: false,
     });
     true
 }
@@ -424,7 +419,6 @@ pub(crate) struct InstalledUnit {
     isolation: Vtd,
     fences: UnitFences,
     state: InstalledState,
-    targeted: bool,
 }
 
 impl Deref for InstalledUnit {
@@ -753,15 +747,6 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
         drop(installed);
         return release_unavailable_fences(fences);
     };
-    if owner.register_base != register_base {
-        warn!(
-            "iommu: the early owner names {:#x}, not candidate unit {register_base:#x}",
-            owner.register_base
-        );
-        owner.fences = fences;
-        owner.state = InstalledState::Quarantined;
-        return EstablishOutcome::Quarantined;
-    }
     if owner.state != InstalledState::Ready {
         warn!("iommu: the early owner is quarantined and cannot be retargeted");
         drop(installed);
@@ -771,7 +756,6 @@ pub(crate) fn establish(device: &pci::Device) -> EstablishOutcome {
     match owner.isolation.retarget(at) {
         Retargeting::Retargeted => {
             owner.fences = fences;
-            owner.targeted = true;
             let stray = owner.isolation.drain_faults(|_| {});
             if stray != 0 {
                 warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
@@ -873,7 +857,7 @@ fn release_fences(fences: UnitFences) -> bool {
 /// and TE/IRE state remain installed forever. Only sibling requester fences
 /// are returned so selection can lease the next candidate; its DMA tables are
 /// retargeted through the same live default-deny owner.
-pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
+pub(crate) fn release_candidate() -> bool {
     let fences = {
         let mut installed = INSTALLED.lock();
         let Some(unit) = installed.as_mut() else {
@@ -882,13 +866,12 @@ pub(crate) fn release_candidate(_context: &mut ThreadContext) -> bool {
         if unit.state != InstalledState::Ready {
             return false;
         }
-        if unit.targeted {
-            if let Err(reason) = unit.isolation.park() {
-                warn!("iommu: translation state is uncertain; unit retained: {reason}");
-                unit.state = InstalledState::Quarantined;
-                return false;
-            }
-            unit.targeted = false;
+        if unit.isolation.function().is_some()
+            && let Err(reason) = unit.isolation.park()
+        {
+            warn!("iommu: translation state is uncertain; unit retained: {reason}");
+            unit.state = InstalledState::Quarantined;
+            return false;
         }
         core::mem::replace(&mut unit.fences, UnitFences::empty())
     };
