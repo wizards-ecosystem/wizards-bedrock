@@ -656,7 +656,7 @@ impl Queue {
         self.served_since(before)
     }
 
-    fn served_since(&self, before: usize) -> usize {
+    pub(crate) fn served_since(&self, before: usize) -> usize {
         self.served_count().wrapping_sub(before)
     }
 }

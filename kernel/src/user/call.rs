@@ -173,10 +173,12 @@ fn serve_ring(slot: usize) -> u64 {
     // The program's own claim about what it has reaped, taken once and bounded inside.
     let head = ring.completion_head();
     ring.reap_up_to(head);
+    let before = ring.served_count();
     // Due operations complete before new ones are admitted, so finished work never costs the
     // next submission a slot the kernel already owes.
     ring.expire(crate::time::now_ns());
-    ring.serve(&table) as u64
+    ring.serve(&table);
+    ring.served_since(before) as u64
 }
 
 /// The ring and the handle table of the thread in `slot`, cloned out so the guard drops before
