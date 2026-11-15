@@ -1,7 +1,7 @@
 //! The clock is the free-running TSC, and the alarm the one-shot APIC timer, armed only if awaited.
 //!
 //! Both rates are measured against the 8254, or the TSC's taken from a complete invariant CPUID
-//! ratio when that measurement refuses; the retained 8254 then validates live APIC windows.
+//! ratio when that measurement refuses; only an 8254 that measured them watches APIC windows.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -257,7 +257,7 @@ impl fmt::Display for Calibration {
 /// consecutive windows must agree: a stall of exactly the wrong length can slip every guard in
 /// [`measure`], but a second window cannot be slipped to the same wrong answer. When they refuse,
 /// an invariant TSC with a complete CPUID crystal ratio is the rate and the APIC is measured
-/// against it. The PIT stays claimed as the independent live watchdog.
+/// against it. The PIT stays claimed as the live watchdog only if it was the reference.
 ///
 /// # Errors
 ///
@@ -336,8 +336,16 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     // age as the kernel's.
     ORIGIN.store(cpu::timestamp(), Ordering::Relaxed);
     TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Relaxed);
+    // Only a PIT that measured the clock can watch it; one that refused would revoke it.
+    let reference = match calibration.source {
+        CalibrationSource::Pit => Some(pit),
+        CalibrationSource::Cpuid => {
+            pit.park();
+            None
+        }
+    };
     *HARDWARE.lock_leaf() = ClockHardware {
-        pit: Some(pit),
+        pit: reference,
         armed: None,
     };
     Ok(calibration)
@@ -655,18 +663,14 @@ pub(crate) fn arm_at(deadline_ns: u64) {
         return;
     };
     let mut hardware = HARDWARE.lock_leaf();
-    let Some(pit) = hardware.pit.as_mut() else {
-        stop_apic_timer();
-        return;
-    };
-    pit.start_measurement();
-    let pit_start = pit.count();
-    let arm = WatchdogArm {
-        tsc_start: cpu::timestamp(),
-        pit_start,
-        expected_pit_ticks,
-    };
-    hardware.armed = Some(arm);
+    hardware.armed = hardware.pit.as_mut().map(|pit| {
+        pit.start_measurement();
+        WatchdogArm {
+            pit_start: pit.count(),
+            tsc_start: cpu::timestamp(),
+            expected_pit_ticks,
+        }
+    });
     apic::arm_timer(timer::initial_count(countdown.convert(lead)));
 }
 
