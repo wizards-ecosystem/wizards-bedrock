@@ -44,9 +44,7 @@ impl Queue {
         self.ring.lock_leaf().protocol.is_consistent()
     }
 
-    // `index` counts submissions, as a program's tail does; the slot is where it wraps to.
     pub(crate) fn post_submission_for_test(&self, index: usize, submission: Submission) {
-        // Exhaustive, so an opcode added to `decode` and forgotten here fails the build.
         let opcode = match submission.opcode {
             Opcode::Echo => 1,
             Opcode::Uptime => 2,

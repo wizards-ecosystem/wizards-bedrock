@@ -1,4 +1,4 @@
-//! The ring's kernel side: acquire peer indices, copy out once, validate the copy (CVE-2025-39816).
+// Every entry is copied out once and only the copy is validated; the page is never re-read.
 
 use alloc::sync::Arc;
 use core::num::NonZeroU64;
@@ -30,8 +30,6 @@ const PUBLICATION_WORDS: usize = 4;
 
 type RingPages = SharedRing<PUBLICATION_WORDS>;
 
-/// Ring-owned, so completion never meets a late-invalid user buffer or a user-copy fault window.
-/// Reads pay one copy because the ABI has no memory-object authority for zero-copy.
 const DATA_AT: usize = 2 * PAGE_SIZE as usize;
 
 const DATA_BYTES: usize = PAGE_SIZE as usize;
@@ -44,25 +42,17 @@ const SUBMISSION_BYTES: usize = 32;
 
 const COMPLETION_BYTES: usize = 16;
 
-/// A power of two.
 const SUBMISSIONS: u32 = 8;
 
-/// A power of two and at least twice the submissions, which Windows requires of RIO.
 const COMPLETIONS: u32 = 16;
 
-/// Byte offsets into the header page, which is the ABI.
 mod header {
-    /// So a ring can say its shape and be extended without guessing.
     pub(super) const VERSION: usize = 0;
     pub(super) const SUBMISSIONS: usize = 4;
     pub(super) const COMPLETIONS: usize = 8;
-    /// Where the kernel has read up to. Kernel writes, userspace reads.
     pub(super) const SUBMISSION_HEAD: usize = 16;
-    /// Where userspace has written up to. Userspace writes, kernel reads.
     pub(super) const SUBMISSION_TAIL: usize = 20;
-    /// Where userspace has reaped up to. Userspace writes, kernel reads.
     pub(super) const COMPLETION_HEAD: usize = 24;
-    /// Where the kernel has posted up to. Kernel writes, userspace reads.
     pub(super) const COMPLETION_TAIL: usize = 28;
 }
 
@@ -81,34 +71,14 @@ mod completion {
     pub(super) const VALUE: usize = 8;
 }
 
-/// What one submission asks for; none is privileged (`002`).
-///
-/// Every operation posts exactly one terminal completion, so an unknown opcode is refused with one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Opcode {
-    /// Return the argument.
     Echo,
-    /// Return the kernel's uptime in nanoseconds.
     Uptime,
-    /// Duplicate `handle`, narrowing its rights to those `argument` carries.
-    ///
-    /// The completion's value is the new handle.
     Duplicate,
-    /// Complete once `argument` nanoseconds have passed.
     Timer,
-    /// End the operation in flight whose token is `argument`.
-    ///
-    /// Its own operation and completion; the target still gets exactly one, carrying
-    /// [`STATUS_CANCELLED`], which closes the double-completion class of io_uring (`012` §8).
     Cancel,
-    /// Resolve a path from a directory handle and produce a handle for what it names.
-    ///
-    /// `handle` is the directory, and `argument` and `length` bound the path in the data area.
-    /// The completion's value is the new handle.
     OpenAt,
-    /// Read bytes of file `handle` from `offset` into the data area.
-    ///
-    /// `argument` and `length` bound the region, checked at submission before the file is read.
     Read,
     Unknown(u32),
 }
@@ -128,85 +98,55 @@ impl Opcode {
     }
 }
 
-/// A submission copied out of the shared page exactly once.
-///
-/// Nothing here borrows the page, so nothing can be re-read after it has been validated.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Submission {
     pub(crate) opcode: Opcode,
-    /// The caller's own tag, returned in the completion so it can match them.
     pub(crate) token: u32,
     pub(crate) handle: u32,
     pub(crate) length: u32,
-    /// No handle has a cursor, so every read says where it starts (`012` §6).
     pub(crate) offset: u64,
-    /// The operation's remaining argument, whose meaning is the opcode's.
     pub(crate) argument: u64,
 }
 
-/// What the kernel wrote back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Completion {
     pub(crate) token: u32,
-    /// Zero, or the refusal.
     pub(crate) status: u32,
-    /// The operation's result.
     pub(crate) value: u64,
 }
 
-/// Refusals a completion can carry. Zero is success.
 pub(crate) const STATUS_OK: u32 = 0;
-/// The opcode is not one this kernel serves.
 pub(crate) const STATUS_UNKNOWN_OPCODE: u32 = 1;
-/// No table slot for the handle this would produce, reported before the work is accepted.
 pub(crate) const STATUS_NO_HANDLE_SLOT: u32 = 2;
-/// The handle named is not one this program holds.
 pub(crate) const STATUS_BAD_HANDLE: u32 = 3;
-/// The rights asked for are not ones the program could pass on.
 pub(crate) const STATUS_DENIED: u32 = 4;
-/// The operation was ended early by a [`Opcode::Cancel`].
 pub(crate) const STATUS_CANCELLED: u32 = 5;
-/// A cancellation named no operation in flight.
-///
-/// Advisory, as io_uring's `-EALREADY` is, so a target that just completed makes no race a failure.
 pub(crate) const STATUS_NOT_FOUND: u32 = 6;
-/// Nothing left to track an in-flight operation with.
 pub(crate) const STATUS_NO_ROOM: u32 = 7;
-/// The path or buffer range is outside the data area, refused before anything is read or written.
 pub(crate) const STATUS_BAD_BUFFER: u32 = 8;
-/// The path names nothing, or names something of the wrong kind.
 pub(crate) const STATUS_NO_ENTRY: u32 = 9;
-/// The path is absolute, escaping or names its starting directory; refused before any lookup.
 pub(crate) const STATUS_BAD_PATH: u32 = 10;
-/// The service this needs is not available on this boot.
-///
-/// Refused at submission: no pending slot is kept and no completion waits on a clock never started.
 pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
 pub(crate) const STATUS_IO: u32 = 12;
 
-/// An operation admitted and not yet completed, whose completion slot admission reserved.
-///
-/// That reservation is why its later completion can never fail to find room.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Pending {
-    /// Private identity, so a stale worker cannot act on a reused slot.
+    // Never reused, so a stale worker cannot act on a reused slot.
     id: u64,
-    /// The submission's tag, which is also how a cancellation names it.
     token: u32,
-    /// What still owns the operation.
     kind: PendingKind,
-    /// A terminal path owns this entry while posting its completion.
+    // A terminal path owns this entry while posting its completion; every other path skips it.
     settling: bool,
 }
 
-/// Why an admitted operation is still live.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PendingKind {
-    /// Waiting for the monotonic clock.
-    Timer { deadline_ns: u64 },
-    /// Waiting for, or already owned by, the one file worker.
-    OpenAt { phase: WorkPhase },
-    /// Waiting for, or already owned by, the one file worker.
+    Timer {
+        deadline_ns: u64,
+    },
+    OpenAt {
+        phase: WorkPhase,
+    },
     Read {
         request: ReadRequest,
         phase: WorkPhase,
@@ -238,7 +178,6 @@ impl PendingKind {
     }
 }
 
-/// Everything the worker needs after admission has dropped caller authority.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ReadRequest {
     file: crate::vfs::File,
@@ -247,14 +186,12 @@ struct ReadRequest {
     wanted: usize,
 }
 
-/// The cancellation boundary for deferred file work.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WorkPhase {
     Queued,
     Running,
 }
 
-/// Fixed per-ring ownership for deferred operations.
 #[derive(Debug)]
 struct PendingTable {
     slots: [Option<Pending>; SUBMISSIONS as usize],
@@ -284,42 +221,28 @@ impl PendingTable {
     }
 }
 
-/// The shared pages and the private state which orders their publication.
 #[derive(Debug)]
 struct SharedQueue {
-    /// The kernel's for the ring's whole life: mapped into the process, never donated to it.
     pages: RingPages,
-    /// The kernel's own protocol state, which userspace cannot reach.
     protocol: Queues,
 }
 
-/// A submission/completion ring bound to one process.
 #[derive(Debug)]
 pub(crate) struct Queue {
-    /// One lock makes every kernel completion path one logical producer, so no later tail becomes
-    /// visible before the entries below it. It serializes only kernel callers; acquire and release
-    /// on the indices order the peer.
     ring: SpinLock<SharedQueue>,
-    /// Woken when a completion is posted.
     waiters: WaitQueue,
-    /// At most one per submission slot: an operation holds a submission's admission until it
-    /// completes, so a larger table could never be filled.
     pending: SpinLock<PendingTable>,
-    /// Completion generation sampled by waiters; kernel-owned, so ring 3 cannot forge the edge that
-    /// closes the wait queue's check-before-sleep window.
+    // Kernel-owned, so ring 3 cannot forge the edge a waiter samples before it sleeps.
     served: AtomicUsize,
 }
 
 impl Queue {
-    /// Build a ring and its pages, ready to be mapped.
-    ///
-    /// `None` if the frames cannot be allocated or cleared.
     pub(crate) fn new() -> Option<Arc<Self>> {
         let mut run = mm::allocate_contiguous((SHARED_BYTES / PAGE_SIZE) as usize, 1)?;
         if !run.zero() {
             return None;
         }
-        // Shared one-way: never mapped as owned, so no unmap frees them while a program uses them.
+        // Shared, never mapped as owned, so no unmap frees them while a program uses them.
         let layout = SharedLayout::new(
             SHARED_BYTES as usize,
             [
@@ -352,17 +275,7 @@ impl Queue {
         }))
     }
 
-    /// Map the pages into `space` at `at`, writable, never executable and not owned by the space,
-    /// so a program that unmapped them could not free them.
-    ///
-    /// # Errors
-    ///
-    /// As [`AddressSpace::map_shared_ring`].
-    ///
-    /// `&mut self` reaches the run through `get_mut`, because mapping allocates page-table frames
-    /// and no leaf guard may span an allocation, which `lock_leaf` forbids.
-    /// Copying the address out instead would hand the mapper a bare number where the type is the
-    /// evidence.
+    // `&mut self` skips the leaf guard, which may not span the mapper's allocation.
     pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
         space.map_shared_ring(
             at,
@@ -371,17 +284,12 @@ impl Queue {
         )
     }
 
-    /// Serve every submission userspace has posted, and report how many.
-    ///
-    /// Admission happens here because moving a tail notifies nothing. Each reserves its completion
-    /// before acceptance (`models/Ring.tla`), so one with nowhere to report stays published.
     pub(crate) fn serve(self: &Arc<Self>, table: &Arc<HandleTable>) -> usize {
         // Read once per call: a tail rewritten mid-service changes only the next call.
         let submission_tail = self.submission_tail();
         let mut served = 0;
 
         while let Some(submission) = self.take(submission_tail) {
-            // `None` was admitted and completes later against the reservation it holds.
             let Some(completion) = self.admit(submission, table) else {
                 continue;
             };
@@ -396,14 +304,10 @@ impl Queue {
         served
     }
 
-    /// The completion generation, sampled before sleeping and rechecked on wake so none is lost.
     pub(crate) fn served_count(&self) -> usize {
         self.served.load(Ordering::Acquire)
     }
 
-    /// Carry out one submission, or `None` once it is admitted in flight and completes later.
-    ///
-    /// Every other outcome, every refusal included, is the operation's one terminal completion.
     fn admit(
         self: &Arc<Self>,
         submission: Submission,
@@ -438,10 +342,6 @@ impl Queue {
         })
     }
 
-    /// Produce a handle into the caller's own table.
-    ///
-    /// The slot is promised first, so a full table is refused at submission; `install` then
-    /// attenuates the rights, and every refusal returns the promise through its destructor.
     fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
         let named = submission.handle;
@@ -460,7 +360,6 @@ impl Queue {
         let Ok((object, held)) = table.resolve(named) else {
             return refuse(token, STATUS_BAD_HANDLE);
         };
-        // The gate `HandleTable::duplicate` applies, restated because this path spends a promise.
         if !held.contains(Rights::DUPLICATE) {
             return refuse(token, STATUS_DENIED);
         }
@@ -475,11 +374,8 @@ impl Queue {
         }
     }
 
-    /// Record an operation as in flight and say when it is due.
-    ///
-    /// The clock is read before the guard is taken, because reading it is a call and a leaf guard
-    /// encloses no call.
     fn defer(&self, submission: Submission) -> Option<u64> {
+        // The clock is read before the leaf guard is taken, because a leaf guard encloses no call.
         let deadline_ns = crate::time::now_ns().saturating_add(submission.argument);
         self.pending
             .lock_leaf()
@@ -487,10 +383,6 @@ impl Queue {
             .map(|_| deadline_ns)
     }
 
-    /// Mark the oldest matching operation as settling; it keeps its slot until its post succeeds.
-    ///
-    /// Other terminal paths skip a settling entry, so a refusal can restore the live state without
-    /// racing a second completion.
     fn begin_settlement(&self, wanted: impl Fn(Pending) -> bool) -> Option<(usize, Pending)> {
         let mut pending = self.pending.lock_leaf();
         let (index, entry) = pending
@@ -504,7 +396,6 @@ impl Queue {
         Some((index, *entry))
     }
 
-    /// Post one pending operation's terminal record and free its slot.
     fn settle_pending(&self, index: usize, entry: Pending, status: u32, value: u64) {
         self.post(Completion {
             token: entry.token,
@@ -522,10 +413,6 @@ impl Queue {
         pending.slots[index] = None;
     }
 
-    /// End an operation early: the target gets exactly one [`STATUS_CANCELLED`] completion.
-    ///
-    /// This one's own completion is separate, posted by [`serve`](Self::serve) against its own
-    /// reservation.
     fn cancel(&self, submission: Submission) -> Completion {
         // Truncating a wider word would let a program end an operation it did not name.
         let Ok(target) = u32::try_from(submission.argument) else {
@@ -537,9 +424,7 @@ impl Queue {
             return refuse(submission.token, STATUS_NOT_FOUND);
         };
         self.settle_pending(index, entry, STATUS_CANCELLED, 0);
-        // If the worker has not claimed this operation, remove the payload
-        // now. For OpenAt that drops its handle-slot promise before reporting
-        // cancellation; for Read it avoids spending worker time on a tombstone.
+        // Unclaimed work goes now, so a queued OpenAt returns its slot promise before this reports.
         drop(FILE_WORK.remove(self, index, entry.id));
         self.served.fetch_add(1, Ordering::Release);
         Completion {
@@ -549,10 +434,6 @@ impl Queue {
         }
     }
 
-    /// Complete every operation whose deadline has passed, and report how many.
-    ///
-    /// The kernel posts it, so a program woken after its timer finds the entry already queued. A
-    /// revoked clock settles every Timer as unavailable whatever its deadline.
     pub(crate) fn expire(&self, now_ns: u64) -> usize {
         let clock_live = crate::time::is_calibrated();
         let mut due = 0;
@@ -579,7 +460,6 @@ impl Queue {
         due
     }
 
-    /// End every operation still in flight, and report how many.
     pub(crate) fn abandon(&self) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
@@ -595,14 +475,11 @@ impl Queue {
         ended
     }
 
-    /// Whether nothing is in flight, which a teardown must see before it releases anything an
-    /// operation could still reach.
+    // A teardown must see this before it releases anything an operation could still reach.
     pub(crate) fn is_quiet(&self) -> bool {
         self.pending.lock_leaf().slots.iter().all(Option::is_none)
     }
 
-    /// When the soonest operation in flight comes due; `None` tells a waiter there is nothing to
-    /// wait for.
     pub(crate) fn earliest_deadline(&self) -> Option<u64> {
         self.pending
             .lock_leaf()
@@ -613,7 +490,6 @@ impl Queue {
             .min()
     }
 
-    /// Wait through a syscall frame for a timer or worker completion.
     pub(crate) fn wait_from_trap(&self, frame: &TrapFrame) -> usize {
         let before = self.served_count();
         let due = self.expire(crate::time::now_ns());
@@ -634,7 +510,6 @@ impl Queue {
     }
 }
 
-/// A refusal with no result; every refusal goes through it, so none can forget to zero its value.
 fn refuse(token: u32, status: u32) -> Completion {
     Completion {
         token,

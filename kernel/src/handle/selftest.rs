@@ -7,8 +7,6 @@ impl HandleTable {
         Slot::decode(handle, self.mixer)
     }
 
-    // Another table's handle decodes here to an index almost never in the arena, so a forged one
-    // must be encoded with this table's mixer to reach the ownership comparison.
     pub(crate) fn handle_for(&self, slot: Slot) -> u32 {
         slot.encode(self.mixer)
     }

@@ -1,31 +1,19 @@
-//! A filesystem made of memory: the VFS's second backend, unlike FAT32 so the abstraction is not
-//! FAT's (`014`). Fixed-size, read-only and populated once at boot until the Wizzy gate, since
-//! growth would invent the post-gate write protocol before its caller.
-
 use wost::sync::{Once, SpinLock};
 
-/// Entries the arena holds.
 const MAX_ENTRIES: usize = 8;
 
-/// Bytes of file content the arena holds.
 const MAX_BYTES: usize = 512;
 
-/// The longest name an entry may have.
 const MAX_NAME: usize = 16;
 
-/// The index of the root directory, which always exists.
 pub(crate) const ROOT: usize = 0;
 
-/// What an entry is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
-    /// A directory: other entries name it as their parent.
     Directory,
-    /// A file, as a range of the byte arena.
     File { at: usize, len: usize },
 }
 
-/// One entry.
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     name: [u8; MAX_NAME],
@@ -35,7 +23,6 @@ struct Entry {
 }
 
 impl Entry {
-    /// The unused slot.
     const EMPTY: Self = Self {
         name: [0; MAX_NAME],
         name_len: 0,
@@ -44,7 +31,6 @@ impl Entry {
     };
 }
 
-/// The whole filesystem.
 #[derive(Debug)]
 struct Arena {
     entries: [Entry; MAX_ENTRIES],
@@ -62,11 +48,9 @@ impl Arena {
     };
 }
 
-/// The one instance.
 static ARENA: SpinLock<Arena> = SpinLock::new(Arena::EMPTY);
 static INIT: Once = Once::new();
 
-/// Build the tree this kernel starts with.
 pub(crate) fn init() {
     assert!(INIT.claim(), "tmpfs initialized twice");
     let mut arena = Arena::EMPTY;
@@ -149,16 +133,12 @@ fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) ->
     index
 }
 
-/// What a name in a directory resolved to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Found {
-    /// A directory, by index.
     Directory(usize),
-    /// A file: where its bytes are and how many there are.
     File { at: usize, len: usize },
 }
 
-/// Find `name` in the directory at `directory`.
 pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     let arena = ARENA.lock_leaf();
     for index in 0..arena.used {
@@ -178,7 +158,6 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     None
 }
 
-/// One owned directory-entry summary.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Summary {
     name: [u8; MAX_NAME],
@@ -202,7 +181,6 @@ impl Summary {
     }
 }
 
-/// Owned children of one directory.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Listing {
     entries: [Summary; MAX_ENTRIES - 1],
@@ -215,7 +193,6 @@ impl Listing {
     }
 }
 
-/// Copy every child out while the arena is locked.
 pub(crate) fn list(directory: usize) -> Option<Listing> {
     let arena = ARENA.lock_leaf();
     if directory >= arena.used || !matches!(arena.entries[directory].kind, Kind::Directory) {
@@ -240,8 +217,6 @@ pub(crate) fn list(directory: usize) -> Option<Listing> {
     Some(listing)
 }
 
-/// Copy bytes of a file into `into` from `offset`: how many were copied, fewer at the end of the
-/// file and zero past it; offsets are per operation and nothing here holds a cursor.
 pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usize {
     if offset >= len {
         return 0;

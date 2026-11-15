@@ -1,79 +1,35 @@
-//! The directory abstraction, and the resolver that cannot ascend.
-//!
-//! Directories are the abstraction because path resolution is the only code that must be
-//! backend-agnostic (`012` §7); dispatch stays an enum until a backend lives in userspace.
-//! `libs/path-walk` resolves `..` lexically and refuses underflow, so only descending names
-//! arrive, and this file holds no parent pointer at all. The invariant, mutation-tested:
-//!
-//! > No sequence of path operations from a directory handle can yield a node
-//! > that is not a descendant of that handle's node.
-
 use fat32::FatError;
 use path_walk::PathError;
 
-/// Components a path may have: deeper than anything the one volume holds, and fixed so the
-/// length of a ring 3 argument cannot set the resolver's work.
+// Fixed, so the length of a ring 3 argument cannot set the resolver's work.
 const MAX_DEPTH: usize = 16;
 
-/// A directory, whichever backend it belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Directory {
-    /// A FAT32 directory, named by the cluster its entries begin at: FAT has no inode (`012` §1).
-    Fat {
-        /// Where its entries begin.
-        cluster: u32,
-    },
-    /// A directory in the filesystem made of memory.
-    Tmp {
-        /// Its index in the arena.
-        index: usize,
-    },
-    /// The directory of devices, flat because there is nothing to nest.
+    Fat { cluster: u32 },
+    Tmp { index: usize },
     Dev,
 }
 
-/// A file, whichever backend it belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum File {
-    /// A FAT32 file: where its contents begin, and how many bytes there are.
-    Fat {
-        /// The first cluster of its contents.
-        cluster: u32,
-        /// Bytes in it.
-        size: u32,
-    },
-    /// A file in memory: where its bytes are in the arena, and how many.
-    Tmp {
-        /// Where its bytes begin.
-        at: usize,
-        /// How many there are.
-        len: usize,
-    },
+    Fat { cluster: u32, size: u32 },
+    Tmp { at: usize, len: usize },
 }
 
-/// What a name resolved to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Node {
-    /// Something with names in it.
     Directory(Directory),
-    /// Something with bytes in it.
     File(File),
-    /// A device.
     Device(crate::devfs::Device),
 }
 
-/// Why a path did not resolve.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Error {
-    /// The path itself is not one this kernel can resolve, and which mistake it makes.
     Path(PathError),
-    /// The backend refused.
     Backend(FatError),
-    /// There is no volume to resolve against.
     NoVolume,
-    /// A component that must be a directory is not.
     NotADirectory,
-    /// The name is not there.
     NotFound,
 }
 
@@ -93,8 +49,6 @@ impl From<FatError> for Error {
     }
 }
 
-/// The directory a program starts from: one namespace per program, with no way to compose two
-/// (a deliberate hole, `014`), so a program has only the directory handles it was given.
 pub(crate) fn root() -> Option<Directory> {
     crate::fs::mount()
         .and_then(Result::ok)
@@ -103,16 +57,13 @@ pub(crate) fn root() -> Option<Directory> {
         })
 }
 
-/// The root of the filesystem made of memory.
 pub(crate) const fn tmp_root() -> Directory {
     Directory::Tmp {
         index: crate::tmpfs::ROOT,
     }
 }
 
-/// Resolve `path` from `at` inside one mount. Each step uses the node it judged and never
-/// re-derives one from a name, so nothing is looked up twice (`openat2`'s gap).
-/// Absolute and escaping paths are malformed `Path` arguments, since no root or parent exists.
+// Each step uses the node it judged and never looks a name up twice.
 pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, Error> {
     let mut components = [b"".as_slice(); MAX_DEPTH];
     let depth = path_walk::split(path, &mut components)?;
@@ -129,7 +80,6 @@ pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, Error> {
     }
 }
 
-/// Walk `components` from a directory in memory.
 fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, Error> {
     let mut directory = from;
 
@@ -157,8 +107,6 @@ fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, Error> {
     Err(Error::NotFound)
 }
 
-/// Resolve a name among the devices: one component only, so `storage/anything` is refused as a
-/// file walked through, the same as in every backend.
 fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, Error> {
     let (first, rest) = components.split_first().ok_or(Error::NotFound)?;
     let device = crate::devfs::lookup(first).ok_or(Error::NotFound)?;
@@ -169,7 +117,6 @@ fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, Error> {
     }
 }
 
-/// Walk `components` from a FAT32 directory.
 fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, Error> {
     let mut volume = crate::fs::mount()
         .ok_or(Error::NoVolume)?
@@ -187,9 +134,6 @@ fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, Error> {
     })
 }
 
-/// Read `into.len()` bytes of `file` from `offset`; offsets are per operation (`012` §6).
-/// No object has a seek, tell or cursor: a shared cursor would be a hot-path lock and the only
-/// coupling two handles to one file could have, and userspace builds one from these offsets.
 pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Error> {
     match file {
         File::Fat { cluster, size } => crate::fs::mount()
@@ -201,7 +145,6 @@ pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Er
     }
 }
 
-/// Call `found` for every name in `directory`, stopping when it returns false.
 pub(crate) fn enumerate(
     directory: Directory,
     mut found: impl FnMut(&[u8], bool) -> bool,

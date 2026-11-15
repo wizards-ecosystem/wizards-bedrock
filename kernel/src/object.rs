@@ -1,27 +1,17 @@
-//! The things a handle can name; channels are only the bootstrap identity.
-//!
-//! Message transport waits for a concrete Wizzy caller.
-
 use alloc::sync::Arc;
 
 use handle_space::Rights;
 
-/// What kind of thing a handle names.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjectType {
-    /// An opaque bootstrap identity.
     Channel,
-    /// A file: something with bytes in it.
     File,
-    /// A directory: something with names in it.
     Directory,
 }
 
 impl ObjectType {
-    /// The rights that mean something for this kind of object.
     pub(crate) const fn per_type_rights(self) -> Rights {
         match self {
-            // Channels expose identity only; the universal rights still apply to every object.
             Self::Channel => Rights::NONE,
             Self::File => Rights::READ,
             Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),
@@ -29,24 +19,18 @@ impl ObjectType {
     }
 }
 
-/// Name a file with an object reference, ready for a handle table.
 pub(crate) const fn file(file: crate::vfs::File) -> ObjectRef {
     ObjectRef::File(file)
 }
 
-/// Name a directory with an object reference.
 pub(crate) const fn directory(directory: crate::vfs::Directory) -> ObjectRef {
     ObjectRef::Directory(directory)
 }
 
-/// Something a handle can name.
 #[derive(Debug)]
 pub(crate) enum ObjectRef {
-    /// An opaque bootstrap identity.
     Channel(Arc<Channel>),
-    /// A file in some filesystem.
     File(crate::vfs::File),
-    /// A directory in some filesystem.
     Directory(crate::vfs::Directory),
 }
 
@@ -61,7 +45,6 @@ impl Clone for ObjectRef {
 }
 
 impl ObjectRef {
-    /// What kind of object this is.
     pub(crate) fn kind(&self) -> ObjectType {
         match self {
             Self::Channel(_) => ObjectType::Channel,
@@ -70,7 +53,6 @@ impl ObjectRef {
         }
     }
 
-    /// The file inside, if that is what this is.
     pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
         match self {
             Self::File(file) => Some(file),
@@ -78,7 +60,6 @@ impl ObjectRef {
         }
     }
 
-    /// The directory inside, if that is what this is.
     pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
         match self {
             Self::Directory(directory) => Some(directory),
@@ -87,11 +68,9 @@ impl ObjectRef {
     }
 }
 
-/// The opaque identity passed to a new program.
 #[derive(Debug)]
 pub(crate) struct Channel;
 
-/// Make an opaque bootstrap identity.
 pub(crate) fn bootstrap_identity() -> ObjectRef {
     ObjectRef::Channel(Arc::new(Channel))
 }

@@ -15,7 +15,6 @@ use super::{
 use crate::handle::{HandleError, HandleTable};
 use crate::{object, queue, thread};
 
-/// A process that is not yet observable and therefore must be undone on drop.
 #[derive(Debug)]
 struct ProcessConstruction {
     space: Option<AddressSpace>,
@@ -112,46 +111,26 @@ impl PreparedProcess {
     }
 }
 
-/// Handles a process may hold at once: small enough to bound kernel memory, large enough to
-/// delegate.
 const HANDLE_QUOTA: usize = 64;
 
-/// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
-    /// Boot did not admit maskable interrupts.
     NoInterruptAdmission,
-    /// Neither shared-root nor paired-root isolation is admitted.
     NoUserIsolation,
-    /// The CPU is not enforcing non-executable mappings.
     NoExecuteProtection,
-    /// Thread switches cannot isolate architectural extended state.
     NoExtendedState,
-    /// No calibrated clock can preempt or complete a timer.
     NoClock,
-    /// No kernel service thread can reclaim the process after exit.
     NoServiceWorker,
-    /// The kernel itself is still running on an unguarded boot stack.
     UnguardedBootStack,
-    /// No address space could be built for it.
     NoSpace(MapError),
-    /// The image would not load.
     Load(LoadError),
-    /// No memory for its stack.
     NoStack,
-    /// The space could not be bound to a thread.
     NotBindable(ActivateError),
-    /// No thread could be created.
     NoThread(thread::SpawnError),
-    /// An unfinished transaction lost the address space it owns.
     Incomplete,
-    /// The fixed cleanup ledger cannot retain another owned mapping.
     TooManyMappings,
-    /// Its bootstrap channel could not be put in its table.
     NoBootstrap(HandleError),
-    /// The time page could not be shown to it.
     NoTimePage(crate::timepage::Error),
-    /// No memory for its ring.
     NoRing,
 }
 
@@ -193,14 +172,6 @@ impl fmt::Display for SpawnError {
 
 impl core::error::Error for SpawnError {}
 
-/// Start a program in an address space of its own.
-///
-/// The order is forced, each step making the next possible: a space sharing only the kernel's
-/// higher half, the image loaded into *that* space, a stack, the binding that proves the space
-/// installable, and a thread whose tables are set before anything can schedule it.
-/// Until the reserved thread is runnable, [`ProcessConstruction`] owns every mapped region and
-/// the tables reaching it; any refusal drops it, retiring a partly fabricated task if necessary,
-/// and returns every resource before the error escapes.
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
     let mut construction = ProcessConstruction::new(admitted_space()?);
     let (entry, stack) = map_program(&mut construction, which)?;
@@ -263,7 +234,6 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     })
 }
 
-/// Refuse in this order unless every ring 3 precondition holds, then build the admitted space.
 fn admitted_space() -> Result<AddressSpace, SpawnError> {
     if !crate::maskable_interrupts_are_ready() {
         return Err(SpawnError::NoInterruptAdmission);
@@ -292,7 +262,6 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
     .map_err(SpawnError::NoSpace)
 }
 
-/// Load the image into the new space and map its stack, recording both for cleanup.
 fn map_program(
     construction: &mut ProcessConstruction,
     which: u64,
@@ -305,8 +274,7 @@ fn map_program(
     Ok((image.entry, stack))
 }
 
-/// Show the time page before the ring, so no process launches with a hole in its ABI, then map
-/// the ring, whose pages stay the ring's and never enter the cleanup ledger.
+// The ring's pages stay the ring's and never enter the cleanup ledger.
 fn map_shared(
     construction: &mut ProcessConstruction,
 ) -> Result<alloc::sync::Arc<queue::Queue>, SpawnError> {

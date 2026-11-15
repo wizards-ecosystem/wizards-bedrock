@@ -14,8 +14,6 @@ use crate::handle::{HandleTable, SlotReservation};
 use crate::vfs;
 use crate::wait::WaitQueue;
 
-/// Global file-work admission: one worker makes controller ownership and completion order
-/// explicit, and the bound makes overload an immediate refusal.
 const WORK_DEPTH: usize = 8;
 
 #[derive(Debug)]
@@ -24,8 +22,7 @@ pub(super) struct Work {
     pending: usize,
     expected: Pending,
     tag: WorkTag,
-    /// Present exactly for `OpenAt`, inline so trap-side admission makes no fallible heap
-    /// allocation and every queue slot stays statically accounted.
+    // Inline, so trap-side admission makes no heap allocation.
     open_at: Option<OpenRequest>,
 }
 
@@ -91,7 +88,6 @@ impl WorkState {
         }
     }
 
-    /// Return the unconsumed owner when the fixed queue is full.
     fn push(&mut self, work: Work) -> Option<Work> {
         self.assert_invariants();
         if self.len == WORK_DEPTH {
@@ -166,7 +162,6 @@ impl FileWorkQueue {
         }
     }
 
-    /// Return the unconsumed owner when the fixed queue is full.
     fn submit(&self, work: Work) -> Option<Work> {
         let mut state = self.state.lock_leaf();
         let refused = state.push(work);
@@ -181,8 +176,7 @@ impl FileWorkQueue {
 
     fn take(&self) -> Option<RunningWork> {
         loop {
-            // Copy only the key under the queue leaf: claiming the pending entry takes the ring's
-            // distinct leaf, so it must happen after this guard is gone.
+            // The pending entry is claimed only after this guard is gone: it takes the ring's leaf.
             let key = {
                 let state = self.state.lock_leaf();
                 state.front().map(Work::key)
@@ -225,10 +219,8 @@ impl FileWorkQueue {
 
 pub(super) static FILE_WORK: FileWorkQueue = FileWorkQueue::new();
 
-/// Set only after the runtime worker has a runnable scheduler slot.
 static WORKER_READY: AtomicBool = AtomicBool::new(false);
 
-/// One request per program moved into the zombie table.
 static REAP_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
 fn add_reap_request(requests: &AtomicUsize) -> bool {
@@ -338,8 +330,6 @@ impl RunningWork {
 }
 
 impl Queue {
-    /// Resolve through a directory without widening its authority.
-    /// The output slot is reserved before any work that would owe a result.
     pub(super) fn open_at(
         self: &Arc<Self>,
         submission: Submission,
@@ -387,10 +377,6 @@ impl Queue {
         None
     }
 
-    /// Read bytes of a file into the ring's data area.
-    ///
-    /// The submission says where to start and nothing anywhere holds a cursor, so two handles to
-    /// one file have no observable coupling, which would be a covert channel (`012` §6).
     pub(super) fn read(
         self: &Arc<Self>,
         submission: Submission,
@@ -408,7 +394,6 @@ impl Queue {
             return Some(refuse(token, STATUS_DENIED));
         }
 
-        // Bounded before anything is read, or the kernel would write outside the pages it shares.
         let Some(bounds) = data_bounds(submission.argument, submission.length) else {
             return Some(refuse(token, STATUS_BAD_BUFFER));
         };
@@ -433,7 +418,6 @@ impl Queue {
         None
     }
 
-    /// Record an open before offering it to the global worker.
     fn defer_open_at(&self, token: u32) -> Option<(usize, Pending)> {
         self.pending.lock_leaf().insert(
             token,
@@ -443,7 +427,6 @@ impl Queue {
         )
     }
 
-    /// Record a read before offering it to the global worker.
     fn defer_read(&self, token: u32, request: ReadRequest) -> Option<(usize, Pending)> {
         self.pending.lock_leaf().insert(
             token,
@@ -454,7 +437,6 @@ impl Queue {
         )
     }
 
-    /// Transfer one exact queued item to the thread-context worker.
     fn begin_work(&self, key: &WorkKey) -> WorkClaim {
         let mut pending = self.pending.lock_leaf();
         let Some(entry) = pending.slots.get_mut(key.pending).and_then(Option::as_mut) else {
@@ -486,7 +468,6 @@ impl Queue {
     }
 }
 
-/// Give deferred file service and process reclamation one runtime owner.
 pub(crate) fn start_worker() {
     match crate::thread::spawn("service-worker", work_forever) {
         Ok(_) => {
@@ -499,12 +480,10 @@ pub(crate) fn start_worker() {
     }
 }
 
-/// Whether deferred service and process reclamation can make progress.
 pub(crate) fn worker_is_ready() -> bool {
     WORKER_READY.load(Ordering::Acquire)
 }
 
-/// Wake the service worker after ownership reaches the zombie table.
 pub(crate) fn request_reap() {
     assert!(
         add_reap_request(&REAP_REQUESTS),
@@ -520,7 +499,6 @@ fn collect_requested_reap() -> bool {
     )
 }
 
-/// Drain bounded work, sleeping without a tick while nothing is queued.
 fn work_forever() {
     let mut context = crate::thread::ThreadContext::require();
     let mut retry_reap = false;
@@ -552,7 +530,6 @@ fn work_forever() {
     }
 }
 
-/// Execute one file operation outside the syscall handler and every spin lock.
 fn service(mut running: RunningWork) {
     let (status, value) = match running.work.tag {
         WorkTag::Read => {
@@ -618,10 +595,8 @@ fn service(mut running: RunningWork) {
     running.finish(status, value);
 }
 
-/// The longest path an `OpenAt` may name, far below a page because the buffer is on a 32 KiB
-/// kernel stack.
+// Far below a page, because the buffer is on a 32 KiB kernel stack.
 const MAX_PATH: usize = 256;
 
-/// The most bytes one `Read` moves, from a stack buffer. A caller asking for more gets a short
-/// read, as every short read in this kernel does, which a caller must already handle.
+// A larger request gets a short read, from a stack buffer.
 const MAX_READ: usize = 512;

@@ -8,23 +8,19 @@ use x86_paging::{Flags, PAGE_SIZE};
 use super::{APART, Regions, STACK, STACK_BYTES};
 use crate::{info, warn};
 
-/// Map program `which`'s stack, writable and never executable: W^X is not relaxed for user
-/// memory, because it is the reason user memory exists.
 pub(super) fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
     let mut stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     if !stack.zero() {
         return None;
     }
-    // Untyped from here: the program writes this stack, so nothing the kernel later reads out of
-    // these frames may be believed.
+    // Untyped from here: nothing the kernel later reads from the program's stack may be believed.
     space
         .map_user(at, stack.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .ok()?;
     Some(at)
 }
 
-/// Where the boot handoff left the program, kept for the loader.
 static IMAGE: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
 #[cfg(feature = "selftest")]
@@ -32,7 +28,6 @@ pub(crate) fn image() -> Option<&'static [u8]> {
     *IMAGE.lock_leaf()
 }
 
-/// Remember the initrd the bootloader handed over.
 pub(crate) fn keep(module: Result<&'static [u8], HandoffError>) {
     match module {
         Ok(bytes) => {
@@ -43,43 +38,22 @@ pub(crate) fn keep(module: Result<&'static [u8], HandoffError>) {
     }
 }
 
-/// Why a program could not be loaded.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LoadError {
-    /// No initrd was handed over.
     Missing,
-    /// It is not an ELF this kernel reads.
     NotAnElf(ElfError),
-    /// A segment claims more file than memory.
     Malformed(u64),
-    /// A segment's contents run past the end of the image.
     Truncated(u64),
-    /// Two segments want pages that overlap.
     Overlapping(u64),
-    /// A segment's address is not page-aligned after relocation.
     Unaligned(u64),
-    /// A segment's ELF alignment is invalid or file-incongruent.
     InvalidAlignment { at: u64, alignment: u64 },
-    /// The image has more segments than the loader will place.
     TooManySegments,
-    /// A segment asks to be both writable and executable.
     WriteExecute(u64),
-    /// A segment is not in the half of the address space user code lives in.
     NotUserMemory(u64),
-    /// There was no memory for it.
     OutOfMemory,
-    /// It could not be mapped.
     NotMapped(MapError),
-    /// A failed mapping could not undo every earlier placement.
-    Rollback {
-        /// Why rollback stopped.
-        reason: MapError,
-        /// Pages returned before that refusal.
-        pages: usize,
-    },
-    /// Its entry point is not inside an executable load segment.
+    Rollback { reason: MapError, pages: usize },
     InvalidEntry(u64),
-    /// It has nothing to load.
     Empty,
 }
 
@@ -132,14 +106,6 @@ impl core::fmt::Display for LoadError {
 
 impl core::error::Error for LoadError {}
 
-/// Load the initrd's program into `space`, at `shift` above where it asks to be.
-///
-/// Every segment is checked before *any* page is taken: inside the image, inside user memory,
-/// never both writable and executable, never overlapping another segment's pages. W^X is not
-/// relaxed for a program that asks: an image wanting a writable executable page is refused, since
-/// one that needs it does not work without it and would only fault later and blame the kernel.
-/// Pages are filled before they are mapped, so an executable segment is never writable even for
-/// the instant it is being written.
 pub(super) fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
     load_image(space, bytes, shift)
@@ -151,7 +117,7 @@ pub(crate) struct LoadedImage {
     pub(super) regions: Regions,
 }
 
-/// Fill and map one validated placement.
+// Filled before it is mapped, so an executable page is never writable.
 fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
     let mut run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
     if !run.zero() {
@@ -168,17 +134,12 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
         .map_err(|reason| LoadError::NotMapped(reason.reason()))
 }
 
-/// Whether two validated placements want any page in common.
 fn overlaps(first: &Placement, second: &Placement) -> bool {
     first.at < second.mapped_end && second.at < first.mapped_end
 }
 
-/// The most segments this loader will place: a fixed bound because validation holds every
-/// placement before the first page is taken, and an image with more segments is refused, never
-/// partly loaded.
 pub(super) const MAX_SEGMENTS: usize = 8;
 
-/// Where one validated segment goes, and what it is allowed to be.
 #[derive(Clone, Copy, Debug)]
 struct Placement {
     at: u64,
@@ -190,9 +151,6 @@ struct Placement {
     flags: Flags,
 }
 
-/// Load `bytes`, which need not be the initrd's, so the checks can exercise every refusal with a
-/// doctored image; every placement is preflighted first, so a later refusal cannot abandon
-/// earlier user mappings and their frames.
 pub(crate) fn load_image(
     space: &mut AddressSpace,
     bytes: &[u8],
@@ -222,8 +180,7 @@ pub(crate) fn load_image(
             });
         }
 
-        // Checked: a `p_vaddr` near the top wraps past the refusal below, and a debug build
-        // would panic on bytes a program supplied.
+        // Checked: a `p_vaddr` near the top would wrap past the refusal below.
         let at = segment
             .address()
             .checked_add(shift)
@@ -263,8 +220,7 @@ pub(crate) fn load_image(
             flags,
         };
 
-        // Two segments sharing one page would collide in `map_owned` after the first is mapped;
-        // caught here, before anything is taken.
+        // Two segments sharing a page would collide in `map_user`, so refuse before taking any.
         if placements
             .iter()
             .flatten()
@@ -299,8 +255,7 @@ pub(crate) fn load_image(
     let mut regions = Regions::new();
     for placement in placements.iter().flatten() {
         if let Err(reason) = place(space, bytes, placement) {
-            // Validation cannot rule out a frame shortage or a collision, so the pass walks
-            // back exactly what it mapped.
+            // Validation cannot rule out a frame shortage or a collision: undo what was mapped.
             if let Err(refusal) = regions.unmap(space) {
                 return Err(LoadError::Rollback {
                     reason: refusal.reason,

@@ -9,40 +9,24 @@ use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
 use crate::handle::HandleTable;
 use crate::{info, queue, thread, warn};
 
-/// Version of the words placed at a program's initial stack pointer.
 const ENTRY_VERSION: u64 = 1;
 
-/// Bytes in the versioned entry block.
 const ENTRY_BYTES: usize = 24;
 
-/// Byte offsets in the versioned entry block.
 mod entry {
-    /// The entry ABI version.
     pub(super) const VERSION: usize = 0;
-    /// The launcher's operation-specific argument.
     pub(super) const ARGUMENT: usize = 8;
-    /// The numeric identity of the sole bootstrap handle.
     pub(super) const BOOTSTRAP_HANDLE: usize = 16;
 }
 
-/// Stack tail occupied so the initial pointer remains sixteen-byte aligned.
 const ENTRY_STACK_BYTES: u64 = (ENTRY_BYTES as u64 + 15) & !15;
 
-/// What a program asked for, in `rax`: the synchronous plane (`002` pillar 2), where Enter and
-/// Wait serve work already posted to the ring and data never moves in the trap.
-/// Four, kept few on purpose: every call added here is one a hostile program can reach.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Call {
-    /// End this thread. The only one that does not return.
     Exit,
-    /// Serve what has been submitted, and report how many completed.
     RingEnter,
-    /// Wait until an operation in flight comes due, then serve it, giving the CPU up meanwhile.
     RingWait,
-    /// Point this thread's local storage at `rdi` (mlibc's `sys_tcb_set`); `FS_BASE` must follow
-    /// the thread for this to be worth anything.
     ThreadBase,
-    /// Anything else.
     Unknown(u64),
 }
 
@@ -58,19 +42,16 @@ impl Call {
     }
 }
 
-/// Calls refused because this kernel does not serve them.
 static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-/// The last such number, so a report can say *what* was asked for.
 static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 
-/// Whether the one deferred refusal warning has already been emitted.
+// One warning per boot, so a looping program cannot flood the console.
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
 static EXECUTED: AtomicBool = AtomicBool::new(false);
 static EXECUTION_REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Report one observed user call from ordinary thread context.
 pub(crate) fn report_execution() -> bool {
     if !EXECUTED.load(Ordering::Acquire) || EXECUTION_REPORTED.swap(true, Ordering::AcqRel) {
         return false;
@@ -79,9 +60,6 @@ pub(crate) fn report_execution() -> bool {
     true
 }
 
-/// Say what the syscall handler could not, from the idle thread, which may take the console's
-/// lock where the handler may not; at most once per boot, so a looping program cannot flood it.
-/// `true` if something was said, so the caller knows it did work.
 pub(crate) fn report_refusals() -> bool {
     let refused = REFUSED_CALLS.load(Ordering::Acquire);
     if refused == 0 || REPORTED.swap(true, Ordering::AcqRel) {
@@ -100,10 +78,8 @@ pub(crate) fn refusals() -> (usize, usize) {
     )
 }
 
-/// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
 
-/// `-EINVAL`, likewise.
 const EINVAL: u64 = (-22i64) as u64;
 
 fn answer_call(frame: &TrapFrame, value: u64) {
@@ -113,13 +89,7 @@ fn answer_call(frame: &TrapFrame, value: u64) {
     );
 }
 
-/// Serve one call from ring 3.
-///
-/// Runs in trap context, so ordinary work here may not allocate, enter a `ThreadContext`
-/// blocking path, or take a lock a handler cannot; `wait_from_trap` is the narrow audited
-/// exception, yielding through the saved trap frame. `Queue::serve` takes leaf locks only around
-/// bounded state transitions and defers file service to the worker.
-/// **Only `Exit` does not return.** Other calls preserve the caller so it can act on the result.
+// Trap context: no allocation, no blocking path but `wait_from_trap`, no lock but a leaf.
 pub(crate) fn call(frame: &TrapFrame) {
     let slot = task::current();
     EXECUTED.store(true, Ordering::Release);
@@ -138,8 +108,7 @@ pub(crate) fn call(frame: &TrapFrame) {
             answer_call(frame, completed);
         }
         Call::ThreadBase => {
-            // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel
-            // context, a program crashing the handler.
+            // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel context.
             let answer = if task::set_thread_base(frame.rdi()) {
                 0
             } else {
@@ -148,39 +117,30 @@ pub(crate) fn call(frame: &TrapFrame) {
             answer_call(frame, answer);
         }
         Call::Unknown(number) => {
-            // Refused with an answer: a program that gets nothing back cannot tell a wrong call
-            // from a dropped one.
+            // Answered, so a program can tell a wrong call from a dropped one.
             answer_call(frame, ENOSYS);
-            // Counted, never logged: trap context cannot take the console lock, and once did;
-            // the idle thread reports these.
+            // Counted, never logged: trap context cannot take the console lock.
             REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
             LAST_REFUSED.store(number as usize, Ordering::Relaxed);
         }
     }
 }
 
-/// Serve the calling thread's own ring and count the completions; a program cannot name another
-/// program's ring, because no argument here could say which.
 fn serve_ring(slot: usize) -> u64 {
-    // Cloned out before anything is served: `serve` takes four more locks, which `lock_leaf`
-    // forbids under this guard.
+    // Cloned out before serving: `serve` takes locks that `lock_leaf` forbids under `BOOTSTRAPS`.
     let Some((ring, table)) = authority_of(slot) else {
         return ENOSYS;
     };
 
-    // The program's own claim about what it has reaped, taken once and bounded inside.
+    // Ring 3's claim of what it reaped, read once and bounded inside.
     ring.reap_up_to(ring.completion_head());
     let before = ring.served_count();
-    // Due operations complete before new ones are admitted, so finished work never costs the
-    // next submission a slot the kernel already owes.
+    // Due work completes before admission, so it never costs a new submission its slot.
     ring.expire(crate::time::now_ns());
     ring.serve(&table);
     ring.served_since(before) as u64
 }
 
-/// The ring and the handle table of the thread in `slot`, cloned out so the guard drops before
-/// either is used: serving reads program memory and wakes waiters, and `install` takes the
-/// handle arena's leaf, none of which `lock_leaf` allows under this table's guard.
 fn authority_of(
     slot: usize,
 ) -> Option<(
@@ -195,13 +155,6 @@ fn authority_of(
     ))
 }
 
-/// Wait for an operation in flight, then serve what came due.
-///
-/// Nothing in flight answers zero at once, since blocking would hang; something already due
-/// completes without sleeping; otherwise the thread sleeps until the soonest deadline and
-/// completes what it finds, later than the deadline perhaps and never earlier. The timer path or
-/// file worker posts the completion, so a woken program finds it already queued: a wait, never a
-/// poll. With no peer or no clock it may do nothing, and the answer is still what is due now.
 fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
     let Some((ring, _)) = authority_of(slot) else {
         return ENOSYS;
@@ -210,12 +163,7 @@ fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
     ring.wait_from_trap(frame) as u64
 }
 
-/// Cross into ring 3, and never come back on this thread.
-///
-/// Runs as an ordinary kernel thread until its last instruction and is retired by the syscall
-/// handler from the far side. No stack is arranged for the trap out: the switch that scheduled
-/// this thread already pointed `RSP0` at its kernel stack, and moves it the moment another thread
-/// runs. The same switch installed its tables, so the copy below reaches *its* stack alone.
+// The switch that scheduled this thread already set `RSP0` and installed its tables.
 pub(super) fn cross() {
     let slot = task::current();
     let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
@@ -230,8 +178,6 @@ pub(super) fn cross() {
         refuse_cross(slot);
     }
 
-    // Version, argument and bootstrap handle, written with the checked copy; the tail keeps the
-    // initial pointer aligned.
     let top = launch.stack + STACK_BYTES - ENTRY_STACK_BYTES;
     if usercopy::copy_to_user(top + entry::VERSION as u64, &ENTRY_VERSION.to_le_bytes()).is_err()
         || usercopy::copy_to_user(top + entry::ARGUMENT as u64, &launch.argument.to_le_bytes())

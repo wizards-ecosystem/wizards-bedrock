@@ -46,14 +46,10 @@ fn reclaim(bootstrap: &mut Bootstrap) -> Result<(), ReclaimRefusal> {
     Ok(())
 }
 
-/// What one bounded collection attempt observed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CollectOutcome {
-    /// No zombie owner was waiting.
     Empty,
-    /// A zombie remains owned and needs a later retry.
     Retained,
-    /// One zombie was reclaimed completely.
     Reclaimed,
 }
 
@@ -80,7 +76,6 @@ impl ZombieTable {
     }
 }
 
-/// Programs whose threads are gone and whose resources are not.
 static ZOMBIES: SpinLock<ZombieTable> = SpinLock::new(ZombieTable::new());
 
 #[cfg(feature = "selftest")]
@@ -100,10 +95,7 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
     RITES.lock_leaf().get(slot).copied().flatten()
 }
 
-/// Mark `slot`'s program dead, without freeing anything.
-///
-/// Called from trap context on the retiring thread itself, so it must not allocate, block, or
-/// touch the space it is running on; moving one `Option` between two arrays does none of those.
+// Trap context on the retiring thread: no allocation, no blocking, no touching its own space.
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
     let stored = taken.is_some();
@@ -146,10 +138,6 @@ pub(crate) fn orphan(slot: usize) {
     }
 }
 
-/// Collect one dead program's resources, if there are any.
-///
-/// One per call: this runs when the machine had nothing better to do, and a loop freeing sixteen
-/// processes with interrupts on can be preempted halfway anyway, so one at a time is unremarkable.
 pub(crate) fn collect() -> CollectOutcome {
     // The zombie owns the ring until it is quiet, so running file work never meets reused pages.
     let (found, another_collector) = {
@@ -176,8 +164,7 @@ pub(crate) fn collect() -> CollectOutcome {
         };
     };
 
-    // Before the ring's pages go anywhere, every outstanding operation gets its terminal
-    // completion while the zombie still owns them.
+    // Every outstanding operation completes while the zombie still owns the ring's pages.
     ring.abandon();
     if !ring.is_quiet() {
         return retain_unsettled(slot, &ring);
@@ -190,7 +177,6 @@ pub(crate) fn collect() -> CollectOutcome {
     settle(slot, bootstrap)
 }
 
-/// Leave an unquiet ring's zombie owned for a later retry.
 fn retain_unsettled(slot: usize, ring: &alloc::sync::Arc<queue::Queue>) -> CollectOutcome {
     let broken = {
         let mut zombies = ZOMBIES.lock_leaf();
@@ -218,8 +204,7 @@ fn retain_unsettled(slot: usize, ring: &alloc::sync::Arc<queue::Queue>) -> Colle
     CollectOutcome::Retained
 }
 
-/// Take the settled zombie out under the guard so it is reclaimed outside it: `reclaim` frees
-/// frames, which reaches the allocator, and this lock is a leaf.
+// Taken out under the guard and reclaimed outside it, because reclaiming reaches the allocator.
 fn take_settled(
     slot: usize,
     ring: &alloc::sync::Arc<queue::Queue>,
@@ -250,7 +235,6 @@ fn take_settled(
     Ok(bootstrap)
 }
 
-/// Reclaim a taken zombie, or put it back owned when any cleanup step refuses.
 fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
     let retained = match reclaim(&mut bootstrap) {
         Ok(()) => {
@@ -291,7 +275,6 @@ fn settle(slot: usize, mut bootstrap: Bootstrap) -> CollectOutcome {
     outcome
 }
 
-/// Whether any program is waiting to be collected.
 pub(crate) fn has_zombies() -> bool {
     let zombies = ZOMBIES.lock_leaf();
     zombies.owners.iter().any(Option::is_some)
@@ -299,7 +282,6 @@ pub(crate) fn has_zombies() -> bool {
         || zombies.collecting.iter().any(|owned| *owned)
 }
 
-/// Scheduler slots which still have a retained process owner.
 pub(crate) fn zombie_slots_for_spawn() -> [bool; thread::CAPACITY] {
     let zombies = ZOMBIES.lock_leaf();
     core::array::from_fn(|slot| {

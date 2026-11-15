@@ -4,7 +4,6 @@ use super::{
 };
 
 impl Queue {
-    /// Copy `length` bytes out of the data area at `offset`.
     pub(super) fn read_data(&self, offset: u64, length: u32, into: &mut [u8]) -> Option<usize> {
         let (at, len) = data_bounds(offset, length)?;
         if len > into.len() {
@@ -17,7 +16,6 @@ impl Queue {
             .then_some(len)
     }
 
-    /// Copy `bytes` into the data area at `at`.
     pub(super) fn write_data(&self, at: usize, bytes: &[u8]) -> bool {
         self.ring
             .lock_leaf()
@@ -29,42 +27,33 @@ impl Queue {
         load_index(&self.ring.lock_leaf().pages, header::SUBMISSION_TAIL)
     }
 
-    /// Admit and take one submission, if the snapshot says there is one.
-    ///
-    /// Nothing published ends the round. No completion slot is backpressure: the entry stays and is
-    /// served on a later call, so an admitted operation can never be unreportable.
     pub(super) fn take(&self, submission_tail: u32) -> Option<Submission> {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         {
             let mut ring = self.ring.lock_leaf();
-            // The tail is userspace's claim and bounds nothing alone: a runaway tail would walk
-            // the kernel through unwritten slots.
+            // The tail is ring 3's claim and bounds nothing alone.
             let published = submission_tail.wrapping_sub(ring.protocol.submissions().head());
             if published == 0 || published > SUBMISSIONS {
                 return None;
             }
-            // The reservation, taken before the operation is accepted.
+            // No completion room is backpressure: the entry stays published for a later call.
             ring.protocol.submit()?;
-            // Losing the slot `submit` just produced would strand the reservation: terminal in
-            // every build.
             let Some(slot) = ring.protocol.take() else {
                 panic!("a submission was reserved and then was not there");
             };
 
             let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-            // Unreachable by construction, and terminal too: the submission is consumed, so this
-            // would lose the operation.
             assert!(
                 ring.pages.read_payload_at(at, &mut bytes),
                 "a submission slot was outside the shared pages"
             );
 
-            // Published after the copy, so no program sees a slot released while still read.
+            // The head is published after the copy, so no slot is released while still being read.
             let head = ring.protocol.submissions().head();
             publish_index(&ring.pages, header::SUBMISSION_HEAD, head);
         }
 
-        // Validated after the copy, and only the copy is used: a second read is a double fetch.
+        // Only the copy is validated and used: a second read of the page is a double fetch.
         let opcode = Opcode::decode(read_entry_u32(&bytes, submission::OPCODE));
         let token = read_entry_u32(&bytes, submission::TOKEN);
         let handle = read_entry_u32(&bytes, submission::HANDLE);
@@ -88,8 +77,7 @@ impl Queue {
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);
         write_entry_u64(&mut bytes, completion::VALUE, completion.value);
 
-        // One guard makes every completion path one producer; separate locks would let a later
-        // tail publish before an earlier slot.
+        // One guard makes every completion path one producer, so no tail passes an unwritten slot.
         let mut ring = self.ring.lock_leaf();
         let Some(slot) = ring.protocol.complete() else {
             panic!("a completion was posted without the reservation its admission took");
@@ -101,27 +89,18 @@ impl Queue {
             ring.pages.write_payload_at(at, &bytes),
             "an internal completion slot was outside the ring pages"
         );
-        // `complete` advanced the tail before the write; it is published after the entry is in.
+        // The tail is published only after the entry is written.
         publish_index(&ring.pages, header::COMPLETION_TAIL, tail);
     }
 
-    /// Let userspace's reaping through, so admission can proceed again.
-    ///
-    /// `claimed_head` is whatever the program wrote, read once by the caller; this reads no page
-    /// and only bounds the value.
     pub(crate) fn reap_up_to(&self, claimed_head: u32) {
         self.ring.lock_leaf().protocol.reap_up_to(claimed_head);
     }
 
-    /// What userspace last said it had reaped.
     pub(crate) fn completion_head(&self) -> u32 {
         load_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD)
     }
 }
-/// Where in the data area `offset` and `length` name, if they name anything.
-///
-/// The data area is ring memory, so two comparisons decide it, with no caller pointer, no SMAP
-/// window and no fault to recover.
 pub(super) fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
     let at = usize::try_from(offset).ok()?;
     let len = length as usize;
@@ -132,7 +111,6 @@ pub(super) fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
     (end <= DATA_BYTES).then_some((at, len))
 }
 
-/// Write one immutable little-endian `u32` into the shared pages.
 pub(super) fn write_u32(shared: &mut RingPages, at: usize, value: u32) {
     assert!(
         shared.write_payload_at(at, &value.to_le_bytes()),
@@ -140,7 +118,6 @@ pub(super) fn write_u32(shared: &mut RingPages, at: usize, value: u32) {
     );
 }
 
-/// Acquire one peer-owned queue index.
 fn load_index(shared: &RingPages, at: usize) -> u32 {
     let Some(value) = shared.load_acquire_u32(at) else {
         panic!("a ring index was out of bounds or misaligned");
@@ -148,7 +125,6 @@ fn load_index(shared: &RingPages, at: usize) -> u32 {
     value
 }
 
-/// Release-publish one locally owned queue index.
 pub(super) fn publish_index(shared: &RingPages, at: usize, value: u32) {
     if !shared.store_release_u32(at, value) {
         panic!("a ring index was out of bounds or misaligned");
