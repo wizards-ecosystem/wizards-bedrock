@@ -70,13 +70,14 @@ impl Drop for Activation {
     }
 }
 
-/// Switch this CPU to `space` for the kernel's life, after walking it for this code and stack.
-///
-/// A table that would not survive the switch is refused with the old one still loaded.
 pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
-    /// Headroom below the stack pointer that must be mapped too, for the first push.
+    // Mapped too, for the first push after the switch.
     const STACK_HEADROOM: u64 = PAGE_SIZE;
 
+    // Every data leaf carries bit 63, which is reserved until `EFER.NXE` is set.
+    if !cpu::Protections::enabled().nx {
+        return Err(ActivateError::NoExecuteDisabled);
+    }
     if space.is_reclaimed() {
         return Err(ActivateError::Reclaimed);
     }
@@ -131,12 +132,11 @@ pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
         return Err(ActivateError::DirectMapGap(gap));
     }
 
-    // SAFETY: the walks prove this code executable, its stack writable, the direct map whole and
-    // unmoved; the device table exists, higher-half topology froze, active roots are not reclaimed.
+    // SAFETY: NXE is set, so no leaf holds a reserved bit; the walks prove this code executable,
+    // its stack writable, the direct map whole and unmoved; the device table exists, higher-half
+    // topology froze, active roots are not reclaimed.
     unsafe { cpu::set_page_table_base(root) };
     activation.commit(root);
-
-    // `set` never repoints a present entry, and an absent one has no cached translation to flush.
     Ok(())
 }
 

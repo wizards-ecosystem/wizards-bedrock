@@ -382,6 +382,7 @@ pub enum ActivateError {
     PairedFlushUnavailable,
     /// The device window's shared top-level table could not be reserved before topology froze.
     SharedTopology(MapError),
+    NoExecuteDisabled,
 }
 
 impl fmt::Display for ActivateError {
@@ -427,6 +428,9 @@ impl fmt::Display for ActivateError {
             }
             Self::SharedTopology(reason) => {
                 write!(f, "shared kernel topology could not be reserved: {reason}")
+            }
+            Self::NoExecuteDisabled => {
+                f.write_str("EFER.NXE is clear, so the tables' no-execute bits are reserved")
             }
         }
     }
