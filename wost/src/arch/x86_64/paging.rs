@@ -24,7 +24,7 @@ pub use selftest::{
     ActivationPublicationProbe, PaintedStack, activation_publication_for_test, cleared_on_drop,
     observe_activation_publication_for_test, observe_owned_byte_for_test,
     paint_current_permanent_stack_for_test,
-    permanent_stack_rejects_lower_leaf_substitution_for_test, reclaimed_refusals,
+    permanent_stack_refuses_lower_leaf_substitution_for_test, reclaimed_refusals,
     refuse_device_unmap_for_test, refuse_mapping_after_for_test,
     refuse_stack_mapping_after_for_test, refuse_stack_rollback_after_for_test,
     restore_mapping_refusals_for_test, restore_stack_refusals_for_test,

@@ -29,7 +29,7 @@ use selftest::{FORCED_USER_BOUNDARY_REFUSAL, REFUSE_NEXT_RETIREMENT, REFUSE_RELE
 pub use selftest::{
     final_extended_state_refusal_for_test, final_interrupt_admission_refusal_for_test,
     final_no_execute_refusal_for_test, final_shared_mapping_refusal_for_test,
-    pinned_stack_rejects_lower_leaf_substitution_for_test, refuse_next_retirement_for_test,
+    pinned_stack_refuses_lower_leaf_substitution_for_test, refuse_next_retirement_for_test,
     refuse_releases_for_test, restore_release_for_test, restore_retirement_for_test,
     slot_is_live_for_test, validate_arena_for_test,
 };

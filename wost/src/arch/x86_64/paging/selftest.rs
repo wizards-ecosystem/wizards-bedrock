@@ -287,26 +287,26 @@ impl AddressSpace {
 
     /// Whether reservation refuses an existing huge top-level entry unchanged.
     #[cfg(feature = "selftest")]
-    pub fn rejects_huge_shared_topology_for_test(&mut self) -> bool {
+    pub fn refuses_huge_shared_topology_for_test(&mut self) -> bool {
         let Ok(table) = Entry::table(self.root(), TablePrivilege::Supervisor) else {
             return false;
         };
-        self.rejects_existing_shared_topology_for_test(Entry::from_bits(
+        self.refuses_existing_shared_topology_for_test(Entry::from_bits(
             table.bits() | Flags::HUGE.bits(),
         ))
     }
 
     /// Whether reservation refuses an existing user top-level entry unchanged.
     #[cfg(feature = "selftest")]
-    pub fn rejects_user_shared_topology_for_test(&mut self) -> bool {
+    pub fn refuses_user_shared_topology_for_test(&mut self) -> bool {
         let Ok(table) = Entry::table(self.root(), TablePrivilege::User) else {
             return false;
         };
-        self.rejects_existing_shared_topology_for_test(table)
+        self.refuses_existing_shared_topology_for_test(table)
     }
 
     #[cfg(feature = "selftest")]
-    fn rejects_existing_shared_topology_for_test(&mut self, entry: Entry) -> bool {
+    fn refuses_existing_shared_topology_for_test(&mut self, entry: Entry) -> bool {
         let Ok(slot) = entry_slot(self.root(), Level::Pml4.index(DEVICE_WINDOW_START)) else {
             return false;
         };
@@ -648,15 +648,15 @@ pub fn observe_owned_byte_for_test(address: u64) -> Option<u8> {
 impl TaskStackPin {
     /// Replace a noncurrent stack's lower leaf during a hardware-use check.
     #[cfg(feature = "selftest")]
-    pub(crate) fn rejects_lower_leaf_substitution_for_test(&self, index: usize) -> Option<bool> {
+    pub(crate) fn refuses_lower_leaf_substitution_for_test(&self, index: usize) -> Option<bool> {
         let identity = self.stacks.get(index)?;
-        identity.rejects_page_substitution_for_test(0, || self.stack_top(index).is_none())
+        identity.refuses_page_substitution_for_test(0, || self.stack_top(index).is_none())
     }
 }
 
 impl StackIdentity {
     #[cfg(feature = "selftest")]
-    fn rejects_page_substitution_for_test(
+    fn refuses_page_substitution_for_test(
         &self,
         page: usize,
         rejected: impl FnOnce() -> bool,
@@ -721,14 +721,14 @@ impl StackIdentity {
 
 /// Replace one permanent stack's lower leaf and require its identity to refuse it.
 #[cfg(feature = "selftest")]
-pub fn permanent_stack_rejects_lower_leaf_substitution_for_test(base: u64) -> Option<bool> {
+pub fn permanent_stack_refuses_lower_leaf_substitution_for_test(base: u64) -> Option<bool> {
     let identity = PERMANENT_STACKS
         .lock_leaf()
         .iter()
         .flatten()
         .find(|identity| identity.slot.stack_base() == base)
         .copied()?;
-    identity.rejects_page_substitution_for_test(0, || {
+    identity.refuses_page_substitution_for_test(0, || {
         current_mapping_root(identity.roots)
             .is_some_and(|root| identity.invalid_page_in(root) == Some(base))
     })
@@ -819,9 +819,9 @@ impl MappedStack {
 
     /// Replace one live leaf for the duration of an installation check.
     #[cfg(feature = "selftest")]
-    pub fn rejects_substituted_page_for_test(&self, page: usize) -> Option<bool> {
+    pub fn refuses_substituted_page_for_test(&self, page: usize) -> Option<bool> {
         self.identity
-            .rejects_page_substitution_for_test(page, || !self.is_installed())
+            .refuses_page_substitution_for_test(page, || !self.is_installed())
     }
 }
 
@@ -896,18 +896,18 @@ impl DeviceMapping {
 
     /// Substitute one physical leaf while exercising the real claim door.
     #[cfg(feature = "selftest")]
-    pub fn rejects_physical_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::Physical)
+    pub fn refuses_physical_substitution_for_test(self, page: usize) -> (Self, bool) {
+        self.refuses_substitution_for_test(page, DeviceSubstitution::Physical)
     }
 
     /// Substitute one leaf's cache policy while exercising the real claim door.
     #[cfg(feature = "selftest")]
-    pub fn rejects_cache_substitution_for_test(self, page: usize) -> (Self, bool) {
-        self.rejects_substitution_for_test(page, DeviceSubstitution::CachePolicy)
+    pub fn refuses_cache_substitution_for_test(self, page: usize) -> (Self, bool) {
+        self.refuses_substitution_for_test(page, DeviceSubstitution::CachePolicy)
     }
 
     #[cfg(feature = "selftest")]
-    fn rejects_substitution_for_test(
+    fn refuses_substitution_for_test(
         self,
         page: usize,
         substitution: DeviceSubstitution,

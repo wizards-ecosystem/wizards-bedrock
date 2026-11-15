@@ -14,7 +14,7 @@ pub fn validate_arena_for_test(arena: &StackArena) -> Result<(), TaskError> {
 
 /// Substitute one noncurrent pinned stack leaf during its hardware-use check.
 #[cfg(feature = "selftest")]
-pub fn pinned_stack_rejects_lower_leaf_substitution_for_test(slot: usize) -> Option<bool> {
+pub fn pinned_stack_refuses_lower_leaf_substitution_for_test(slot: usize) -> Option<bool> {
     if slot == current() {
         return None;
     }
@@ -23,7 +23,7 @@ pub fn pinned_stack_rejects_lower_leaf_substitution_for_test(slot: usize) -> Opt
     table
         .stacks
         .as_ref()?
-        .rejects_lower_leaf_substitution_for_test(index)
+        .refuses_lower_leaf_substitution_for_test(index)
 }
 
 /// Make the next prepared-slot retirement refuse without changing the slot.

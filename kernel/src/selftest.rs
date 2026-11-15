@@ -50,7 +50,7 @@ mod threads;
 use address_spaces::{
     a_boot_mapping_cannot_claim_ownership, a_boot_mapping_cannot_publish_kernel_memory,
     a_bound_space_is_not_reclaimed, a_differing_remap_is_refused,
-    a_noncurrent_task_stack_rejects_a_lower_leaf_substitution,
+    a_noncurrent_task_stack_refuses_a_lower_leaf_substitution,
     a_paired_root_admits_only_user_leaves_below_the_split, a_reclaimed_space_answers_nothing,
     a_refused_external_clear_withholds_its_run, a_refused_mapping_leaves_no_trace,
     a_second_space_holds_the_kernel_and_nothing_else,
@@ -68,11 +68,11 @@ use address_spaces::{
     only_a_space_that_matches_the_kernel_can_be_installed,
     paired_space_refusal_and_retirement_conserve_every_frame,
     protected_stacks_refuse_overlapping_maps, ram_mappings_keep_the_direct_map_cache_type,
-    shared_mappings_reject_cache_aliases, shared_topology_rejects_hostile_root_entries,
-    supervisor_writes_obey_read_only_pages, the_boot_stack_rejects_a_lower_leaf_substitution,
+    shared_mappings_refuse_cache_aliases, shared_topology_refuses_hostile_root_entries,
+    supervisor_writes_obey_read_only_pages, the_boot_stack_refuses_a_lower_leaf_substitution,
     the_boot_thread_stands_on_a_guarded_stack, the_direct_map_is_not_executable,
     the_double_fault_stack_cannot_be_unmapped, the_double_fault_stack_is_guarded,
-    the_double_fault_stack_rejects_a_lower_leaf_substitution, the_entry_enclave_guards_are_absent,
+    the_double_fault_stack_refuses_a_lower_leaf_substitution, the_entry_enclave_guards_are_absent,
     the_image_obeys_write_xor_execute, the_last_canonical_page_is_never_user_memory,
     the_loaded_table_is_ours, the_user_root_contains_only_the_entry_enclave,
     two_spaces_map_one_address_to_different_memory, unmapping_refuses_what_it_does_not_own,
@@ -755,15 +755,15 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check(
         "the boot stack rejects a lower-leaf substitution",
-        the_boot_stack_rejects_a_lower_leaf_substitution(),
+        the_boot_stack_refuses_a_lower_leaf_substitution(),
     );
     report.check(
         "a noncurrent task stack rejects a lower-leaf substitution",
-        a_noncurrent_task_stack_rejects_a_lower_leaf_substitution(),
+        a_noncurrent_task_stack_refuses_a_lower_leaf_substitution(),
     );
     report.check(
         "the double-fault stack rejects a lower-leaf substitution",
-        the_double_fault_stack_rejects_a_lower_leaf_substitution(),
+        the_double_fault_stack_refuses_a_lower_leaf_substitution(),
     );
     report.check(
         "protected stacks refuse overlapping maps",
@@ -783,7 +783,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check(
         "shared mappings reject cache aliases",
-        shared_mappings_reject_cache_aliases(),
+        shared_mappings_refuse_cache_aliases(),
     );
     report.check(
         "ram mappings keep the direct map's cache type",
@@ -859,7 +859,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check(
         "shared topology rejects hostile root entries",
-        shared_topology_rejects_hostile_root_entries(),
+        shared_topology_refuses_hostile_root_entries(),
     );
 
     report.check(

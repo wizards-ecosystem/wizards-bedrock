@@ -380,9 +380,9 @@ pub(super) fn stack_liveness_covers_the_current_root_and_extent() -> Option<Stac
     let stale_root = stack.is_installed_under_for_test(&stale) == Some(false)
         && stack.is_installed()
         && paging::translate(slot.stack_base()) == live_before;
-    let first = stack.rejects_substituted_page_for_test(0) == Some(true);
-    let middle = stack.rejects_substituted_page_for_test(1) == Some(true);
-    let last = stack.rejects_substituted_page_for_test(2) == Some(true);
+    let first = stack.refuses_substituted_page_for_test(0) == Some(true);
+    let middle = stack.refuses_substituted_page_for_test(1) == Some(true);
+    let last = stack.refuses_substituted_page_for_test(2) == Some(true);
 
     let removed =
         mem::unmap_for_test(&mut context, mapping).is_some_and(|result| result.map(drop).is_ok());
@@ -398,7 +398,7 @@ pub(super) fn stack_liveness_covers_the_current_root_and_extent() -> Option<Stac
     })
 }
 
-fn task_init_rejects_a_changed_stack_arena() -> bool {
+fn task_init_refuses_a_changed_stack_arena() -> bool {
     let allocator_before = AllocatorSnapshot::capture();
     let Some(layout) = thread::boot_stack_layout()
         .and_then(|boot| boot.end().checked_add(8 * PAGE_SIZE))
@@ -511,7 +511,7 @@ pub(super) fn thread_stacks_are_guarded() -> bool {
     let pinned = layout
         .slot(0)
         .is_some_and(|slot| pinned_guard_refuses_mapping(&slot));
-    let init_validation = task_init_rejects_a_changed_stack_arena();
+    let init_validation = task_init_refuses_a_changed_stack_arena();
     exact && pinned && init_validation
 }
 

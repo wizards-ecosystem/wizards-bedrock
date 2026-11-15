@@ -920,7 +920,7 @@ pub(super) fn binding_ignores_only_accessed_root_drift() -> bool {
     let Ok(mut cache) = AddressSpace::for_user() else {
         return false;
     };
-    let (rejects_cache, cache_reclaimed) = match cache.bind_with_cache_drift_for_test() {
+    let (refuses_cache, cache_reclaimed) = match cache.bind_with_cache_drift_for_test() {
         Some(Err(ActivateError::KernelHalfDiffers(_))) => match cache.bind() {
             Ok(binding) => {
                 let released = task::release_uninstalled(binding);
@@ -943,7 +943,7 @@ pub(super) fn binding_ignores_only_accessed_root_drift() -> bool {
 
     accepts_accessed
         && accessed_reclaimed
-        && rejects_cache
+        && refuses_cache
         && cache_reclaimed
         && mm::free_frames() == free_before
 }
@@ -1072,31 +1072,31 @@ fn lower_stack_leaf_substitution_is_restored(
         && mm::free_frames() == free_before
 }
 
-pub(super) fn the_boot_stack_rejects_a_lower_leaf_substitution() -> bool {
+pub(super) fn the_boot_stack_refuses_a_lower_leaf_substitution() -> bool {
     let Some(slot) = thread::boot_stack_layout().and_then(|layout| layout.slot(0)) else {
         return false;
     };
     let pointer = cpu::stack_pointer();
     (slot.stack_base()..slot.stack_top()).contains(&pointer)
         && lower_stack_leaf_substitution_is_restored(&slot, || {
-            paging::permanent_stack_rejects_lower_leaf_substitution_for_test(slot.stack_base())
+            paging::permanent_stack_refuses_lower_leaf_substitution_for_test(slot.stack_base())
         })
         && (slot.stack_base()..slot.stack_top()).contains(&cpu::stack_pointer())
 }
 
-pub(super) fn the_double_fault_stack_rejects_a_lower_leaf_substitution() -> bool {
+pub(super) fn the_double_fault_stack_refuses_a_lower_leaf_substitution() -> bool {
     let Some(slot) = thread::fault_stack_layout().and_then(|layout| layout.slot(0)) else {
         return false;
     };
     let hardware_before = segment::double_fault_stack();
     hardware_before == slot.stack_top()
         && lower_stack_leaf_substitution_is_restored(&slot, || {
-            paging::permanent_stack_rejects_lower_leaf_substitution_for_test(slot.stack_base())
+            paging::permanent_stack_refuses_lower_leaf_substitution_for_test(slot.stack_base())
         })
         && segment::double_fault_stack() == hardware_before
 }
 
-pub(super) fn a_noncurrent_task_stack_rejects_a_lower_leaf_substitution() -> bool {
+pub(super) fn a_noncurrent_task_stack_refuses_a_lower_leaf_substitution() -> bool {
     const FIRST_TASK: usize = task::BOOT + 1;
 
     let Some(slot) = thread::layout().and_then(|layout| layout.slot(0)) else {
@@ -1104,7 +1104,7 @@ pub(super) fn a_noncurrent_task_stack_rejects_a_lower_leaf_substitution() -> boo
     };
     task::current() == task::BOOT
         && lower_stack_leaf_substitution_is_restored(&slot, || {
-            task::pinned_stack_rejects_lower_leaf_substitution_for_test(FIRST_TASK)
+            task::pinned_stack_refuses_lower_leaf_substitution_for_test(FIRST_TASK)
         })
         && task::current() == task::BOOT
 }
@@ -1234,7 +1234,7 @@ pub(super) fn a_shared_mapping_keeps_its_frame() -> bool {
     })
 }
 
-fn shared_bytes_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
+fn shared_bytes_refuse_cache_alias(virtual_base: u64, flags: Flags) -> bool {
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
@@ -1259,7 +1259,7 @@ fn shared_bytes_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
     checked && tables_unchanged
 }
 
-fn shared_ring_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
+fn shared_ring_refuse_cache_alias(virtual_base: u64, flags: Flags) -> bool {
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
@@ -1291,7 +1291,7 @@ fn shared_ring_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
     checked && tables_unchanged
 }
 
-pub(super) fn shared_mappings_reject_cache_aliases() -> bool {
+pub(super) fn shared_mappings_refuse_cache_aliases() -> bool {
     const BYTES: u64 = 0x0000_3510_0000_0000;
     const RING: u64 = 0x0000_3520_0000_0000;
     let mut all_refused = true;
@@ -1301,8 +1301,8 @@ pub(super) fn shared_mappings_reject_cache_aliases() -> bool {
         Flags::NO_CACHE.union(Flags::WRITE_THROUGH),
     ] {
         let flags = Flags::NO_EXECUTE.union(cache);
-        all_refused &= shared_bytes_reject_cache_alias(BYTES, flags);
-        all_refused &= shared_ring_reject_cache_alias(RING, flags);
+        all_refused &= shared_bytes_refuse_cache_alias(BYTES, flags);
+        all_refused &= shared_ring_refuse_cache_alias(RING, flags);
     }
     all_refused
 }
@@ -1381,12 +1381,12 @@ pub(super) fn ram_mappings_keep_the_direct_map_cache_type() -> bool {
     refused && exact
 }
 
-pub(super) fn shared_topology_rejects_hostile_root_entries() -> bool {
+pub(super) fn shared_topology_refuses_hostile_root_entries() -> bool {
     let huge = in_reclaimed_space(AddressSpace::new, |space| {
-        space.rejects_huge_shared_topology_for_test()
+        space.refuses_huge_shared_topology_for_test()
     });
     let user = in_reclaimed_space(AddressSpace::new, |space| {
-        space.rejects_user_shared_topology_for_test()
+        space.refuses_user_shared_topology_for_test()
     });
     let supervisor = in_reclaimed_space(AddressSpace::new, |space| {
         space.reserves_supervisor_shared_topology_for_test()
@@ -2083,10 +2083,10 @@ pub(super) fn device_liveness_covers_the_current_root_and_extent() -> Option<Dev
     let address = mapping.address();
     let live_before = paging::translate(address);
     let shared_upper = live_before.is_some() && stale.lookup(address) == live_before;
-    let (mapping, first) = mapping.rejects_physical_substitution_for_test(0);
-    let (mapping, middle) = mapping.rejects_physical_substitution_for_test(1);
-    let (mapping, last) = mapping.rejects_physical_substitution_for_test(2);
-    let (mapping, cache_policy) = mapping.rejects_cache_substitution_for_test(1);
+    let (mapping, first) = mapping.refuses_physical_substitution_for_test(0);
+    let (mapping, middle) = mapping.refuses_physical_substitution_for_test(1);
+    let (mapping, last) = mapping.refuses_physical_substitution_for_test(2);
+    let (mapping, cache_policy) = mapping.refuses_cache_substitution_for_test(1);
 
     let (loaded, under_stale) = mapping.claim_releasable_under_for_test(&stale);
     let (stale_root, region) = match under_stale {

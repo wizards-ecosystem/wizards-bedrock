@@ -36,14 +36,14 @@ use selftest::{
 };
 
 static HANDLERS: interrupt::Handlers =
-    interrupt::Handlers::new(on_trap, reject_invalid_user_return);
+    interrupt::Handlers::new(on_trap, refuse_invalid_user_return);
 
 /// Route every vector to this module.
 pub(crate) fn init() {
     interrupt::init(&HANDLERS, Some(vector::SYSCALL));
 }
 
-fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnError) -> ! {
+fn refuse_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnError) -> ! {
     #[cfg(feature = "selftest")]
     {
         LAST_INVALID_USER_RETURN_KIND.store(invalid_user_return_kind(error), Ordering::Relaxed);
