@@ -33,7 +33,7 @@ CHECK TASKS:
 
 RELEASE AND DIAGNOSTIC TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
-    verify-evidence   verify the evidence bundle without network access
+    verify-evidence   recheck the bundle's own digests offline (not who made it)
     qualify-vmware    validate a fresh VMware serial transcript
     baseline          repeat debug/release foundation measurements in QEMU
     debug             open the debug kernel at kmain in native GDB
