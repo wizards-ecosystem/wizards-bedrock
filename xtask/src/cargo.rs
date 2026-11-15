@@ -4,6 +4,7 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::gate::Packages;
 use crate::paths::{self, Paths};
 
 pub(crate) const VIRTUAL_SOURCE_ROOT: &str = "/wizard/source";
@@ -229,6 +230,19 @@ pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     #[cfg(not(windows))]
     {
         path.to_path_buf()
+    }
+}
+
+pub(crate) fn package_selection(packages: Packages) -> Vec<String> {
+    match packages {
+        Packages::Host => {
+            let mut args = vec!["--workspace".to_string()];
+            for name in paths::KERNEL_PACKAGES {
+                args.extend(["--exclude".to_string(), (*name).to_string()]);
+            }
+            args
+        }
+        Packages::Only(names) => package_args(names),
     }
 }
 

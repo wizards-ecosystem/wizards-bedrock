@@ -7,8 +7,9 @@ use anyhow::{Context, Result, ensure};
 
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
-use crate::paths::{self, Paths};
-use crate::{gate, image, qemu, supply_chain, vendor};
+use crate::gate::{self, Packages};
+use crate::paths::Paths;
+use crate::{image, qemu, supply_chain, vendor};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
@@ -65,7 +66,7 @@ pub(crate) fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
 /// Run the host test suite; the kernel crates have no host tests (`docs/005-code-conventions.md`).
 pub(crate) fn test(paths: &Paths) -> Result<()> {
     let mut args = vec!["test".to_string(), "--locked".to_string()];
-    args.extend(cargo::package_args(paths::HOST_PACKAGES));
+    args.extend(cargo::package_selection(Packages::Host));
     cargo::run(paths, "tests", &args)
 }
 
@@ -416,7 +417,7 @@ fn pass_args(
     after_dashes: &[String],
 ) -> Vec<String> {
     let mut args = vec![subcommand.to_string(), "--locked".to_string()];
-    args.extend(cargo::package_args(pass.packages));
+    args.extend(cargo::package_selection(pass.packages));
     match pass.target {
         Some(target) => args.extend(["--target".to_string(), target.to_string()]),
         None if scope == Scope::AllTargets => args.push("--all-targets".to_string()),

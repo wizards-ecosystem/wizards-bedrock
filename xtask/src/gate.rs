@@ -12,11 +12,18 @@ const README_BYTES: u64 = 64 * 1024;
 const REGISTRY_START: &str = "<!-- CI-REGISTRY:START -->";
 const REGISTRY_END: &str = "<!-- CI-REGISTRY:END -->";
 
+/// The crates a pass selects: the workspace less the kernel crates, or a fixed set.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Packages {
+    Host,
+    Only(&'static [&'static str]),
+}
+
 /// One crate graph used by every Cargo-driven gate stage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct CargoPass {
     pub(crate) name: &'static str,
-    pub(crate) packages: &'static [&'static str],
+    pub(crate) packages: Packages,
     pub(crate) target: Option<&'static str>,
     pub(crate) features: Option<&'static str>,
 }
@@ -127,25 +134,25 @@ impl Registry {
 const CARGO_PASSES: &[CargoPass] = &[
     CargoPass {
         name: "host",
-        packages: paths::HOST_PACKAGES,
+        packages: Packages::Host,
         target: None,
         features: None,
     },
     CargoPass {
         name: "kernel shipped",
-        packages: paths::KERNEL_PACKAGES,
+        packages: Packages::Only(paths::KERNEL_PACKAGES),
         target: Some(paths::KERNEL_TARGET),
         features: None,
     },
     CargoPass {
         name: "kernel self-test",
-        packages: paths::KERNEL_PACKAGES,
+        packages: Packages::Only(paths::KERNEL_PACKAGES),
         target: Some(paths::KERNEL_TARGET),
         features: Some(paths::SELFTEST_FEATURE_SPEC),
     },
     CargoPass {
         name: "kernel refuse-pci",
-        packages: paths::KERNEL_PACKAGES,
+        packages: Packages::Only(paths::KERNEL_PACKAGES),
         target: Some(paths::KERNEL_TARGET),
         features: Some(paths::REFUSE_PCI_FEATURE_SPEC),
     },

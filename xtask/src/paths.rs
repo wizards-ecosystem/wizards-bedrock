@@ -104,40 +104,6 @@ pub(crate) const KERNEL_PACKAGE: &str = "wizard-kernel";
 /// Packages that only ever build for the kernel target.
 pub(crate) const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 
-/// Packages that build and test on the host; `libs/` crates are `no_std` but compile for it.
-pub(crate) const HOST_PACKAGES: &[&str] = &[
-    "acpi-tables",
-    "address",
-    "eevdf",
-    "elf64",
-    "fat32",
-    "frame-space",
-    "handle-space",
-    "memory-map",
-    "mmio-range",
-    "nvme",
-    "panic-record",
-    "path-walk",
-    "pci-config",
-    "pixel",
-    "port-space",
-    "ps2-keys",
-    "register-bits",
-    "ring-proto",
-    "slab-layout",
-    "stack-layout",
-    "timebase",
-    "trap-cause",
-    "vtd",
-    "wizzy-handoff",
-    "x86-apic",
-    "x86-cpuid",
-    "x86-paging",
-    "x86-pit",
-    "x86-tables",
-    "xtask",
-];
-
 pub(crate) fn without_toml_comment(line: &str) -> &str {
     line.split_once('#').map_or(line, |(code, _)| code)
 }
