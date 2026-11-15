@@ -35,7 +35,7 @@ impl AddressSpace {
             .transpose()?;
         let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
         let address = frame.address();
-        let link = Entry::table(address, privilege).map_err(MapError::Encoding)?;
+        let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
         core::mem::forget(frame);
         self.tables.push(OwnedTable {
             frame: address,

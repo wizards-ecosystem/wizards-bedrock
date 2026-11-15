@@ -396,12 +396,18 @@ impl StackIdentity {
             let Some(offset) = stack.checked_sub(self.slot.stack_base()) else {
                 return Some(stack);
             };
-            let Some(physical) = self.physical_base.checked_add(offset) else {
+            let Some(physical) = self.physical_base.get().checked_add(offset) else {
                 return Some(stack);
             };
             match walk(root, stack) {
                 Some((found, flags, span))
-                    if page_identity_matches(found, flags, span, physical, expected_flags) => {}
+                    if page_identity_matches(
+                        found.get(),
+                        flags,
+                        span,
+                        physical,
+                        expected_flags,
+                    ) => {}
                 _ => return Some(stack),
             }
             let Some(next) = stack.checked_add(PAGE_SIZE) else {

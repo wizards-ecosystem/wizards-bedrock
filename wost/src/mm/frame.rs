@@ -6,6 +6,13 @@ use super::init;
 use super::selftest::{observe_external_run_release_for_test, refuse_external_zero_for_test};
 use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
+const fn frame_address(index: usize) -> PhysicalAddress {
+    match PhysicalAddress::new(index as u64 * FRAME_SIZE) {
+        Some(address) => address,
+        None => panic!("a managed frame lies beyond the physical address limit"),
+    }
+}
+
 /// One physical frame, owned while this value lives; only allocation makes one, so one owner.
 #[derive(PartialEq, Eq, Debug)]
 pub struct Frame {
@@ -22,13 +29,13 @@ impl Frame {
     /// A handle over a frame nothing allocated corrupts the allocator's records.
     pub(crate) const unsafe fn from_raw(address: PhysicalAddress) -> Self {
         Self {
-            index: (address / FRAME_SIZE) as usize,
+            index: (address.get() / FRAME_SIZE) as usize,
         }
     }
 
     /// Where the frame begins in physical memory.
     pub const fn address(&self) -> PhysicalAddress {
-        self.index as u64 * FRAME_SIZE
+        frame_address(self.index)
     }
 
     /// Fill every byte of the frame with `byte`, or `false` before [`init`] or past the boot map.
@@ -72,7 +79,7 @@ pub struct Segment {
 impl Segment {
     /// Where the run begins in physical memory.
     pub const fn address(&self) -> PhysicalAddress {
-        self.first as u64 * FRAME_SIZE
+        frame_address(self.first)
     }
 
     /// Frames in the run.
@@ -142,7 +149,7 @@ impl Segment {
     /// No other `Segment` may name any of them; each frees them on drop, so overlaps double free.
     pub(crate) const unsafe fn from_raw(address: PhysicalAddress, count: usize) -> Self {
         Self {
-            first: (address / FRAME_SIZE) as usize,
+            first: (address.get() / FRAME_SIZE) as usize,
             count,
         }
     }

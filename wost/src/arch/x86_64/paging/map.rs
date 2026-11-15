@@ -5,7 +5,7 @@ impl AddressSpace {
     pub(super) fn map_range(
         &mut self,
         virtual_base: u64,
-        physical_base: PhysicalAddress,
+        physical_base: u64,
         len: u64,
         flags: Flags,
         grain: Grain,
@@ -82,7 +82,7 @@ impl AddressSpace {
     fn mapping_state(
         &self,
         virtual_address: u64,
-        physical: PhysicalAddress,
+        physical: u64,
         flags: Flags,
         target: Level,
     ) -> Result<MappingState, MapError> {
@@ -108,7 +108,7 @@ impl AddressSpace {
             {
                 return Err(MapError::Conflict(virtual_address));
             }
-            table = current.address();
+            table = PhysicalAddress::from_entry(current);
         }
         Err(MapError::Conflict(virtual_address))
     }
@@ -131,7 +131,7 @@ impl AddressSpace {
 
     /// Where `range` at `offset` maps and how large; [`undo`](Self::undo) retraces it exactly,
     /// since a rollback that disagreed about where a large page began would clear the wrong entry.
-    fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, PhysicalAddress, Level) {
+    fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, u64, Level) {
         let virtual_address = range.virtual_base() + offset;
         let physical = range.physical_base() + offset;
         let large = grain == Grain::Largest
@@ -244,7 +244,7 @@ impl AddressSpace {
             if !entry.is_present() || entry.is_huge() {
                 return Err(MapError::NotMapped(virtual_address));
             }
-            table = entry.address();
+            table = PhysicalAddress::from_entry(entry);
         }
         Err(MapError::NotMapped(virtual_address))
     }
@@ -286,7 +286,7 @@ impl AddressSpace {
         self.may_reach(virtual_base, region.len)?;
         self.map_range(
             virtual_base,
-            region.base,
+            region.base.get(),
             region.len,
             flags.difference(NOT_THE_CALLERS),
             Grain::Largest,
@@ -375,7 +375,7 @@ impl AddressSpace {
             .map_err(|_| MapError::OutOfMemory)?;
         self.map_range(
             virtual_base,
-            physical_base,
+            physical_base.get(),
             len,
             flags.difference(NOT_THE_CALLERS).union(Flags::USER),
             Grain::Pages,
@@ -420,7 +420,7 @@ impl AddressSpace {
         // could not be split back.
         self.map_range(
             virtual_base,
-            physical_base,
+            physical_base.get(),
             len,
             flags.difference(NOT_THE_CALLERS).union(Flags::OWNED),
             Grain::Pages,
@@ -432,7 +432,7 @@ impl AddressSpace {
     fn set(
         &mut self,
         virtual_address: u64,
-        physical: PhysicalAddress,
+        physical: u64,
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
@@ -443,7 +443,7 @@ impl AddressSpace {
         &mut self,
         root: TableRoot,
         virtual_address: u64,
-        physical: PhysicalAddress,
+        physical: u64,
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
@@ -488,7 +488,7 @@ impl AddressSpace {
                 if flags.contains(Flags::USER) && !current.flags().contains(Flags::USER) {
                     return Err(MapError::Conflict(virtual_address));
                 }
-                current.address()
+                PhysicalAddress::from_entry(current)
             } else {
                 let privilege = if paired.is_some() || flags.contains(Flags::USER) {
                     TablePrivilege::User
@@ -541,13 +541,17 @@ pub struct BootRegion {
 impl BootRegion {
     /// Describe `len` bytes at `base`, or `None` before the map or unless memory of one direct-map
     /// cache type covers it; device holes are refused because write-back MMIO aliases are unsafe.
-    pub fn describe(base: PhysicalAddress, len: u64) -> Option<Self> {
+    pub fn describe(base: u64, len: u64) -> Option<Self> {
         let end = base.checked_add(len)?;
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;
         }
         let cache = crate::mm::map_direct_cache(base, end)?;
-        Some(Self { base, len, cache })
+        Some(Self {
+            base: PhysicalAddress::new(base)?,
+            len,
+            cache,
+        })
     }
 
     /// The cache-type bits every mapping of this range must carry.

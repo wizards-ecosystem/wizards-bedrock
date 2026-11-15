@@ -829,6 +829,7 @@ version = "0.2.0"
 name = "wost"
 version = "0.2.0"
 dependencies = [
+ "address",
  "frame-space",
  "limine",
  "memory-map",

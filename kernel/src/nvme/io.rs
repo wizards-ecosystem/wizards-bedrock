@@ -60,7 +60,7 @@ impl Controller {
         if !buffer.zero() {
             return Err(BringUpError::NoMemory);
         }
-        let address = buffer.address().ok_or(BringUpError::NoMemory)?;
+        let address = buffer.address().ok_or(BringUpError::NoMemory)?.get();
 
         let command = Command::identify_namespace(self.take_id(), NAMESPACE, address, PAGE_SIZE)
             .ok_or(BringUpError::NotReady)?;
@@ -113,8 +113,16 @@ impl Controller {
             }
         }
         let pair = self.io.as_ref().ok_or(BringUpError::Isolation)?;
-        let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
-        let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
+        let completion_address = pair
+            .completion
+            .address()
+            .ok_or(BringUpError::NoMemory)?
+            .get();
+        let submission_address = pair
+            .submission
+            .address()
+            .ok_or(BringUpError::NoMemory)?
+            .get();
         // Once either command is published the controller can retain these runs, so cleanup owns
         // both. Completion first since submission names it; clear `IEN` keeps it polled (`012` §2).
         let completion = Command::create_completion_queue(
@@ -211,7 +219,7 @@ impl Controller {
         if self.io.is_none() {
             return Err(BringUpError::NotReady);
         }
-        let address = into.address().ok_or(BringUpError::NotReady)?;
+        let address = into.address().ok_or(BringUpError::NotReady)?.get();
         let command = Command::read(self.take_id(), NAMESPACE, address, PAGE_SIZE, request)
             .ok_or(BringUpError::NotReady)?;
 

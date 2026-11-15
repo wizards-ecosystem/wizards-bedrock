@@ -46,12 +46,12 @@ impl AddressSpace {
             return Some(false);
         }
 
-        let range = MappingRange::new(guard, before_stack.0, PAGE_SIZE).ok()?;
+        let range = MappingRange::new(guard, before_stack.0.get(), PAGE_SIZE).ok()?;
         let table_mark = self.tables.len();
         let owned_before = self.owned_pages;
         let result = self.map_range(
             guard,
-            before_stack.0,
+            before_stack.0.get(),
             PAGE_SIZE,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
             Grain::Pages,
@@ -107,7 +107,7 @@ impl AddressSpace {
                 };
                 let Ok(page) = EnclavePage::new(
                     address,
-                    physical,
+                    physical.get(),
                     enclave_permission(mapping.stripped_access()),
                 ) else {
                     return false;
@@ -266,8 +266,8 @@ impl AddressSpace {
     #[cfg(feature = "selftest")]
     pub fn zero_root_is_live_for_test(&mut self) -> bool {
         let saved = self.roots;
-        self.roots = Some(AddressSpaceRoots::shared(0));
-        let live = !self.is_reclaimed() && self.root() == 0;
+        self.roots = Some(AddressSpaceRoots::shared(PhysicalAddress::ZERO));
+        let live = !self.is_reclaimed() && self.root() == PhysicalAddress::ZERO;
         self.roots = saved;
         live
     }
@@ -275,8 +275,10 @@ impl AddressSpace {
     /// Exercise the permanent-root half independently of the current CR3.
     #[cfg(feature = "selftest")]
     pub fn permanent_root_blocks_reclaim_for_test(&self) -> bool {
-        self.roots
-            .is_some_and(|roots| Self::roots_are_active(roots, roots.full_root() ^ PAGE_SIZE))
+        self.roots.is_some_and(|roots| {
+            PhysicalAddress::new(roots.full_root().get() ^ PAGE_SIZE)
+                .is_some_and(|other| Self::roots_are_active(roots, other))
+        })
     }
 
     /// Whether the device ledger independently blocks table reclaim.
@@ -288,7 +290,7 @@ impl AddressSpace {
     /// Whether reservation refuses an existing huge top-level entry unchanged.
     #[cfg(feature = "selftest")]
     pub fn refuses_huge_shared_topology_for_test(&mut self) -> bool {
-        let Ok(table) = Entry::table(self.root(), TablePrivilege::Supervisor) else {
+        let Ok(table) = Entry::table(self.root().get(), TablePrivilege::Supervisor) else {
             return false;
         };
         self.refuses_existing_shared_topology_for_test(Entry::from_bits(
@@ -299,7 +301,7 @@ impl AddressSpace {
     /// Whether reservation refuses an existing user top-level entry unchanged.
     #[cfg(feature = "selftest")]
     pub fn refuses_user_shared_topology_for_test(&mut self) -> bool {
-        let Ok(table) = Entry::table(self.root(), TablePrivilege::User) else {
+        let Ok(table) = Entry::table(self.root().get(), TablePrivilege::User) else {
             return false;
         };
         self.refuses_existing_shared_topology_for_test(table)
@@ -387,7 +389,7 @@ pub fn reclaimed_refusals() -> usize {
 }
 
 #[cfg(feature = "selftest")]
-const PROBE_INITIAL_ROOT: PhysicalAddress = 0x1234_5000;
+const PROBE_INITIAL_ROOT: u64 = 0x1234_5000;
 
 #[cfg(feature = "selftest")]
 static PROBE_STATE: AtomicU8 = AtomicU8::new(ActivationState::Cold.bits());
@@ -438,8 +440,8 @@ enum ProbeBoundary {
 /// Pause both activation boundaries with one pending self-interrupt each.
 #[cfg(feature = "selftest")]
 pub fn activation_publication_for_test() -> ActivationPublicationProbe {
-    const FIRST_ROOT: PhysicalAddress = 0x2345_6000;
-    const SECOND_ROOT: PhysicalAddress = 0x3456_7000;
+    const FIRST_ROOT: PhysicalAddress = PhysicalAddress::from_entry(Entry::from_bits(0x2345_6000));
+    const SECOND_ROOT: PhysicalAddress = PhysicalAddress::from_entry(Entry::from_bits(0x3456_7000));
 
     let initializing_is_excluded = probe_activation(ProbeBoundary::BeforeRoot, FIRST_ROOT);
     let root_precedes_ready = probe_activation(ProbeBoundary::AfterRoot, SECOND_ROOT);
@@ -460,7 +462,7 @@ fn probe_activation(boundary: ProbeBoundary, expected_root: PhysicalAddress) -> 
         return false;
     }
     PROBE_ROOT.store(PROBE_INITIAL_ROOT, Ordering::Release);
-    PROBE_EXPECTED_ROOT.store(expected_root, Ordering::Relaxed);
+    PROBE_EXPECTED_ROOT.store(expected_root.get(), Ordering::Relaxed);
     let observations_before = PROBE_OBSERVATIONS.load(Ordering::Acquire);
     let partial_before = PROBE_PARTIAL_OBSERVATIONS.load(Ordering::Acquire);
 
@@ -489,7 +491,7 @@ fn probe_activation(boundary: ProbeBoundary, expected_root: PhysicalAddress) -> 
                 && !interrupt::are_enabled();
             activation.commit_with(expected_root, || {
                 boundary_holds &= activation_state(&PROBE_STATE) == ActivationState::Initializing
-                    && PROBE_ROOT.load(Ordering::Acquire) == expected_root
+                    && PROBE_ROOT.load(Ordering::Acquire) == expected_root.get()
                     && !interrupt::are_enabled();
                 PROBE_ARMED.store(true, Ordering::Release);
                 sent = super::apic::send_self_interrupt().is_ok();
@@ -509,7 +511,7 @@ fn probe_activation(boundary: ProbeBoundary, expected_root: PhysicalAddress) -> 
         && PROBE_OBSERVATIONS.load(Ordering::Acquire) == observations_before + 1
         && PROBE_PARTIAL_OBSERVATIONS.load(Ordering::Acquire) == partial_before
         && activation_state(&PROBE_STATE) == ActivationState::Ready
-        && PROBE_ROOT.load(Ordering::Acquire) == expected_root
+        && PROBE_ROOT.load(Ordering::Acquire) == expected_root.get()
         && interrupt::are_enabled();
     PROBE_ROOT.store(PROBE_INITIAL_ROOT, Ordering::Relaxed);
     PROBE_STATE.store(ActivationState::Cold.bits(), Ordering::Release);
@@ -684,8 +686,10 @@ impl StackIdentity {
             }
             let target_before = walk(root, target_address)?;
             let replacement_before = walk(root, replacement_address)?;
-            let expected_target = self.physical_base.checked_add(offset)?;
-            let expected_replacement = self.physical_base.checked_add(replacement_offset)?;
+            let expected_target =
+                PhysicalAddress::new(self.physical_base.get().checked_add(offset)?)?;
+            let expected_replacement =
+                PhysicalAddress::new(self.physical_base.get().checked_add(replacement_offset)?)?;
             if target_before.0 != expected_target
                 || replacement_before.0 != expected_replacement
                 || target_before.2 != PAGE_SIZE
@@ -696,7 +700,8 @@ impl StackIdentity {
 
             let slot = leaf_in(root, target_address).ok()?;
             let original = EntrySlot::read(&slot);
-            let changed = Entry::page(Level::Pt, expected_replacement, original.flags()).ok()?;
+            let changed =
+                Entry::page(Level::Pt, expected_replacement.get(), original.flags()).ok()?;
             EntrySlot::write(&slot, changed);
             cpu::invalidate_page(canonical_mapping_address(target_address));
 

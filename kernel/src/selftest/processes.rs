@@ -885,7 +885,7 @@ pub(super) fn guard_rollback_refusal_retains_the_stack() -> bool {
         return false;
     };
     let prepare = |space: &mut AddressSpace| {
-        let Some(guard) = BootRegion::describe(physical, PAGE_SIZE) else {
+        let Some(guard) = BootRegion::describe(physical.get(), PAGE_SIZE) else {
             return false;
         };
         space.map_boot(BASE, guard, Flags::NO_EXECUTE).is_ok()

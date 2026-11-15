@@ -387,7 +387,7 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
     if !buffer.fill(PATTERN) {
         return None;
     }
-    let page = buffer.address()? & !(PAGE_SIZE - 1);
+    let page = buffer.address()?.get() & !(PAGE_SIZE - 1);
 
     controller.leave_data_unmapped = true;
     let result = controller.read_blocks(0, 1, buffer);

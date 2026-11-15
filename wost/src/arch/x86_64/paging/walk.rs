@@ -45,7 +45,7 @@ pub(super) fn slot_in(
         if entry.is_huge() {
             return Err(MapError::Unsplittable(address));
         }
-        table = entry.address();
+        table = PhysicalAddress::from_entry(entry);
     }
     Err(MapError::NotMapped(address))
 }
@@ -159,8 +159,8 @@ fn image_sections() -> Option<[(crate::boot::Section, bool, bool); 9]> {
 
 #[derive(Clone, Copy)]
 struct ImagePhysicalExtent {
-    start: PhysicalAddress,
-    end: PhysicalAddress,
+    start: u64,
+    end: u64,
     writable: bool,
     executable: bool,
 }
@@ -173,12 +173,12 @@ fn image_physical_extents(current_root: PhysicalAddress) -> Option<[ImagePhysica
         executable: false,
     }; 9];
     for (slot, (section, writable, executable)) in extents.iter_mut().zip(image_sections()?) {
-        let start = translate_in(current_root, section.start)?.0;
+        let start = translate_in(current_root, section.start)?.0.get();
         let end = start.checked_add(section.mapped_len())?;
         let mut offset = 0;
         while offset < section.mapped_len() {
             let virtual_address = section.start.checked_add(offset)?;
-            if translate_in(current_root, virtual_address)?.0 != start.checked_add(offset)? {
+            if translate_in(current_root, virtual_address)?.0.get() != start.checked_add(offset)? {
                 return None;
             }
             offset = offset.checked_add(PAGE_SIZE)?;
@@ -242,7 +242,7 @@ pub(super) fn direct_map_gap(root: PhysicalAddress, current_root: PhysicalAddres
             );
             match walk(root, virtual_address) {
                 Some((mapped, flags, span))
-                    if mapped == physical
+                    if mapped.get() == physical
                         && !flags.contains(Flags::USER)
                         && !flags.contains(Flags::OWNED)
                         && !flags.contains(Flags::NO_CACHE)
@@ -302,9 +302,13 @@ pub(super) fn walk(
         if level == Level::Pt || entry.is_huge() {
             let offset = virtual_address & (level.span() - 1);
             let effective = walked.effective_for(entry.flags());
-            return Some((entry.address() + offset, effective, level.span()));
+            return Some((
+                PhysicalAddress::new(entry.address() + offset)?,
+                effective,
+                level.span(),
+            ));
         }
-        table = entry.address();
+        table = PhysicalAddress::from_entry(entry);
     }
     None
 }
@@ -328,7 +332,8 @@ pub(super) fn visit_present_leaves(
             return Err(MapError::InvalidEntryEnclave(pml4_address));
         }
         for pdpt in 0..ENTRIES {
-            let pdpt_entry = EntrySlot::read(&entry_slot(pml4_entry.address(), pdpt)?);
+            let pdpt_entry =
+                EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pml4_entry), pdpt)?);
             if !pdpt_entry.is_present() {
                 continue;
             }
@@ -341,7 +346,8 @@ pub(super) fn visit_present_leaves(
                 continue;
             }
             for pd in 0..ENTRIES {
-                let pd_entry = EntrySlot::read(&entry_slot(pdpt_entry.address(), pd)?);
+                let pd_entry =
+                    EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pdpt_entry), pd)?);
                 if !pd_entry.is_present() {
                     continue;
                 }
@@ -354,7 +360,8 @@ pub(super) fn visit_present_leaves(
                     continue;
                 }
                 for pt in 0..ENTRIES {
-                    let entry = EntrySlot::read(&entry_slot(pd_entry.address(), pt)?);
+                    let entry =
+                        EntrySlot::read(&entry_slot(PhysicalAddress::from_entry(pd_entry), pt)?);
                     if !entry.is_present() {
                         continue;
                     }

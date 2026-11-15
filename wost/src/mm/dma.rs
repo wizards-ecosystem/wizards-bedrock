@@ -29,7 +29,7 @@ impl DmaMappingOwner {
     ///
     /// Panics if the root is not frame aligned.
     pub(crate) const fn new(root: PhysicalAddress) -> Self {
-        let Some(identity) = frame_identity(root) else {
+        let Some(identity) = frame_identity(root.get()) else {
             panic!("a DMA mapping owner root is not frame aligned");
         };
         Self(identity)

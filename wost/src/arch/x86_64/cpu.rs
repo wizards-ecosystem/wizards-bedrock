@@ -15,10 +15,11 @@ use x86_cpuid::{
     CpuidLeaf, Cr4Additions, ExecutionEnvironment, FrequencyHints, SPEC_CTRL_MSR,
     SharedKernelMappingReason, Speculation,
 };
-use x86_paging::CanonicalAddress;
+use x86_paging::{CanonicalAddress, Entry};
 
 use super::interrupt;
 use super::msr;
+use crate::mm::PhysicalAddress;
 
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -657,10 +658,7 @@ pub fn write_combining_is_enabled() -> bool {
 ///
 /// The low twelve bits of `CR3` hold cache-control flags and are masked off, so a comparison
 /// against a table's address can match.
-pub fn page_table_base() -> u64 {
-    /// `CR3` bits 51:12. The rest are flags or reserved.
-    const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
-
+pub fn page_table_base() -> PhysicalAddress {
     let value: u64;
     // SAFETY: reading a control register in ring 0 has no preconditions and no effects.
     unsafe {
@@ -670,7 +668,7 @@ pub fn page_table_base() -> u64 {
             options(nomem, nostack, preserves_flags),
         );
     }
-    value & ADDRESS
+    PhysicalAddress::from_entry(Entry::from_bits(value))
 }
 
 /// Drop any cached translation for `address` from this CPU's TLB.
@@ -714,7 +712,7 @@ pub(crate) unsafe fn flush_cache_line(address: *const u8) {
 ///
 /// If `CR4.PCIDE` is set. This kernel flushes inactive roots by reloading `CR3`, and a tagged
 /// translation would survive that reload.
-pub(super) unsafe fn set_page_table_base(address: u64) {
+pub(super) unsafe fn set_page_table_base(address: PhysicalAddress) {
     assert!(
         !page_table_context_ids_are_enabled(),
         "page-table switching requires CR4.PCIDE to remain clear"
@@ -724,7 +722,7 @@ pub(super) unsafe fn set_page_table_base(address: u64) {
     unsafe {
         asm!(
             "mov cr3, {address}",
-            address = in(reg) address,
+            address = in(reg) address.get(),
             options(nostack, preserves_flags),
         );
     }

@@ -18,7 +18,7 @@ impl Vtd {
     #[cfg(feature = "selftest")]
     pub fn walks_kernel_root_for_test(&self) -> Option<bool> {
         let pointer = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS).ok()?;
-        Some(root_table_address(pointer) == self.root.address())
+        Some(root_table_address(pointer) == self.root.address().get())
     }
 
     /// Every page the second-level tree the unit walks reaches, read back from the table frames.

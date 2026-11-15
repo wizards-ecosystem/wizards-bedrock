@@ -15,6 +15,7 @@ workspace = true
 selftest = []
 
 [dependencies]
+address.workspace = true
 frame-space.workspace = true
 memory-map.workspace = true
 mmio-range.workspace = true

@@ -241,7 +241,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 /// The physical address behind a direct-map pointer.
 fn physical_of(pointer: *mut u8) -> Option<PhysicalAddress> {
     let offset = super::direct_map()?.offset();
-    (pointer as u64).checked_sub(offset)
+    PhysicalAddress::new((pointer as u64).checked_sub(offset)?)
 }
 
 #[global_allocator]

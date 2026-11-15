@@ -125,6 +125,7 @@ impl QueuePair {
     pub(super) fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
         for queue in [&self.submission, &self.completion] {
             let (address, len) = queue.address().zip(queue.len())?;
+            let address = address.get();
             into.extend((address..address + len).step_by(PAGE_SIZE as usize));
         }
         Some(())

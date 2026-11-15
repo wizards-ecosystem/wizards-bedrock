@@ -68,7 +68,7 @@ impl Activation {
 
     pub(super) fn commit_with(self, root: PhysicalAddress, after_root: impl FnOnce()) {
         let mut this = self;
-        this.root.store(root, Ordering::Release);
+        this.root.store(root.get(), Ordering::Release);
         after_root();
         let Some(ready) = ActivationState::Initializing.complete() else {
             panic!("paging initialization cannot complete");
@@ -184,5 +184,8 @@ pub fn is_active() -> bool {
 ///
 /// Only [`is_active`] tells pre-activation apart, because physical zero is a valid root.
 pub fn active_root() -> PhysicalAddress {
-    ACTIVE_ROOT.load(Ordering::Acquire)
+    let Some(root) = PhysicalAddress::new(ACTIVE_ROOT.load(Ordering::Acquire)) else {
+        panic!("the published root lies beyond the physical address limit");
+    };
+    root
 }

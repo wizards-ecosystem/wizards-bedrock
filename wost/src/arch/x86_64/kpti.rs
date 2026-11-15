@@ -278,7 +278,7 @@ pub(super) fn publish_route(
         return refuse_route(RouteError::SharedRoot);
     };
     let full = roots.full_root();
-    if !route_roots_are_valid(full, stripped) {
+    if !route_roots_are_valid(full.get(), stripped.get()) {
         return refuse_route(RouteError::InvalidRoot);
     }
     if !cpu::page_table_context_ids_are_disabled() {
@@ -292,10 +292,12 @@ pub(super) fn publish_route(
         return refuse_route(RouteError::InvalidTaskStack);
     }
 
-    WOST_KPTI_ROUTE.full_root.store(full, Ordering::Relaxed);
+    WOST_KPTI_ROUTE
+        .full_root
+        .store(full.get(), Ordering::Relaxed);
     WOST_KPTI_ROUTE
         .stripped_root
-        .store(stripped, Ordering::Relaxed);
+        .store(stripped.get(), Ordering::Relaxed);
     WOST_KPTI_ROUTE
         .task_stack_top
         .store(task_stack_top, Ordering::Relaxed);
@@ -378,8 +380,8 @@ pub(super) fn finish_route_update(roots: AddressSpaceRoots) -> bool {
     );
     if WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_UPDATING
         || cpu::page_table_base() != roots.full_root()
-        || WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) != roots.full_root()
-        || WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) != roots.user_root()
+        || WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) != roots.full_root().get()
+        || WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) != roots.user_root().get()
         || segment::kernel_stack() != transition_stack_top().address()
         || segment::double_fault_stack_address() != segment::enclave_ist_stack_top().address()
     {
@@ -414,8 +416,8 @@ pub(super) fn entry_is_ready() -> bool {
 pub(super) fn entry_is_ready_for(roots: AddressSpaceRoots, stack: KernelStackTop<'_>) -> bool {
     entry_is_ready()
         && roots.stripped_root().is_some()
-        && WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) == roots.full_root()
-        && WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) == roots.user_root()
+        && WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) == roots.full_root().get()
+        && WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) == roots.user_root().get()
         && WOST_KPTI_ROUTE.task_stack_top.load(Ordering::Acquire) == stack.address()
 }
 

@@ -31,7 +31,7 @@ impl AddressSpace {
         let stripped = self
             .roots()
             .stripped_root()
-            .ok_or(MapError::InvalidEntryEnclave(self.root()))?;
+            .ok_or(MapError::InvalidEntryEnclave(self.root().get()))?;
         if let Some(address) = mapped_guard(stripped, enclave)? {
             self.rollback_stripped_enclave(&expected_stripped, written, mark);
             return Err(MapError::InvalidEntryEnclave(address));
@@ -48,7 +48,7 @@ impl AddressSpace {
             return Err(MapError::InvalidEntryEnclave(
                 expected_stripped
                     .first()
-                    .map_or(stripped, |page| page.virtual_address()),
+                    .map_or(stripped.get(), |page| page.virtual_address()),
             ));
         }
         paired_flush_premise(self.roots())?;
@@ -84,14 +84,14 @@ impl AddressSpace {
                 let full = enclave_permission(mapping.full_access());
                 let stripped = enclave_permission(mapping.stripped_access());
                 expected_full.push(
-                    EnclavePage::new(address, physical, full)
+                    EnclavePage::new(address, physical.get(), full)
                         .map_err(|_| MapError::InvalidEntryEnclave(address))?,
                 );
                 expected_stripped.push(
-                    EnclavePage::new(address, physical, stripped)
+                    EnclavePage::new(address, physical.get(), stripped)
                         .map_err(|_| MapError::InvalidEntryEnclave(address))?,
                 );
-                observed_full.push(ObservedPage::new(address, physical, span, flags));
+                observed_full.push(ObservedPage::new(address, physical.get(), span, flags));
                 address = address
                     .checked_add(PAGE_SIZE)
                     .ok_or(MapError::InvalidEntryEnclave(address))?;
@@ -101,7 +101,7 @@ impl AddressSpace {
             return Err(MapError::InvalidEntryEnclave(
                 expected_full
                     .first()
-                    .map_or(self.root(), |page| page.virtual_address()),
+                    .map_or(self.root().get(), |page| page.virtual_address()),
             ));
         }
         Ok(expected_stripped)
@@ -220,7 +220,7 @@ pub(super) fn observe_stripped_higher_half(
             if observed.len() == expected_pages {
                 return Err(MapError::InvalidEntryEnclave(address));
             }
-            observed.push(ObservedPage::new(address, physical, span, flags));
+            observed.push(ObservedPage::new(address, physical.get(), span, flags));
             Ok(())
         },
     )?;
@@ -229,7 +229,7 @@ pub(super) fn observe_stripped_higher_half(
 
 pub(super) fn paired_flush_premise(roots: AddressSpaceRoots) -> Result<FlushPremise, MapError> {
     let Some(stripped) = roots.stripped_root() else {
-        return Err(MapError::InvalidEntryEnclave(roots.full_root()));
+        return Err(MapError::InvalidEntryEnclave(roots.full_root().get()));
     };
     let mut flags = Vec::new();
     for root in [roots.full_root(), stripped] {

@@ -178,8 +178,8 @@ fn allocate_admin(
         capabilities,
         admin,
         capacity,
-        submission,
-        completion,
+        submission: submission.get(),
+        completion: completion.get(),
         #[cfg(feature = "selftest")]
         observed_window,
     })

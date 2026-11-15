@@ -79,7 +79,7 @@ pub(super) fn a_run_is_contiguous_and_aligned() -> bool {
     let Some(mut run) = mm::allocate_contiguous(FRAMES, FRAMES) else {
         return false;
     };
-    let aligned = run.address().is_multiple_of(FRAMES as u64 * 4096);
+    let aligned = run.address().get().is_multiple_of(FRAMES as u64 * 4096);
     let sized = run.frames() == FRAMES && mm::free_frames() == before - FRAMES;
 
     let mut spans = true;
@@ -88,11 +88,11 @@ pub(super) fn a_run_is_contiguous_and_aligned() -> bool {
         spans &= run.write_at(at, &[MARK ^ frame as u8]);
     }
 
-    let start = run.address();
+    let start = run.address().get();
     let end = start + (FRAMES as u64 * 4096);
     let elsewhere = mm::allocate_zeroed()
         .map(|frame| {
-            let address = frame.address();
+            let address = frame.address().get();
             !(start..end).contains(&address)
         })
         .unwrap_or(false);

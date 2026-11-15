@@ -97,13 +97,13 @@ pub enum MapError {
     /// The range's start or length is not page-aligned.
     Misaligned(u64),
     /// Device registers are not four-byte aligned, so [`MmioRegion`] accesses would be misaligned.
-    UnalignedDevice(PhysicalAddress),
+    UnalignedDevice(u64),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
     /// The complete mapping range failed arithmetic or architecture checks.
     InvalidRange(MappingRangeError),
     /// A device range was empty or its page-rounded extent overflowed.
-    InvalidDeviceRange(PhysicalAddress),
+    InvalidDeviceRange(u64),
     /// The running processor did not publish a usable `MAXPHYADDR`.
     PhysicalWidthUnavailable,
     /// A device mapping needs a physical-address bit this processor reserves.
@@ -111,16 +111,16 @@ pub enum MapError {
         /// Reported `MAXPHYADDR`.
         bits: u8,
         /// First requested register byte.
-        physical: PhysicalAddress,
+        physical: u64,
     },
     /// The range overlaps RAM or firmware storage, so it is no device hole.
-    NotDeviceMemory(PhysicalAddress),
+    NotDeviceMemory(u64),
     /// Another mapping in this address space already owns physical bytes.
-    DeviceOverlap(PhysicalAddress),
+    DeviceOverlap(u64),
     /// The bounded device-ownership table is full.
     TooManyDevices,
     /// The boot handoff never described this physical range, so nothing shows it is memory.
-    Undescribed(PhysicalAddress),
+    Undescribed(u64),
     /// Nothing is mapped at this address.
     NotMapped(u64),
     /// The space does not own this frame, so unmapping would free memory the allocator never had.
@@ -570,23 +570,24 @@ enum TableRoot {
 pub struct AddressSpaceRoots {
     full: PhysicalAddress,
     /// The user root, its page-aligned low bit marking a pair, so frame zero needs no sentinel.
-    user_tagged: PhysicalAddress,
+    user_tagged: u64,
 }
 
 impl AddressSpaceRoots {
-    const PAIRED_TAG: PhysicalAddress = 1;
+    const PAIRED_TAG: u64 = 1;
 
     const fn shared(full: PhysicalAddress) -> Self {
         Self {
             full,
-            user_tagged: full,
+            user_tagged: full.get(),
         }
     }
 
     fn paired(full: PhysicalAddress, stripped: PhysicalAddress) -> Result<Self, MapError> {
-        let pair = CheckedRootPair::new(full, stripped).map_err(MapError::InvalidRootPair)?;
+        let pair =
+            CheckedRootPair::new(full.get(), stripped.get()).map_err(MapError::InvalidRootPair)?;
         Ok(Self {
-            full: pair.full(),
+            full,
             user_tagged: pair.stripped() | Self::PAIRED_TAG,
         })
     }
@@ -598,10 +599,12 @@ impl AddressSpaceRoots {
 
     /// The ring-three root; it equals [`full_root`](Self::full_root) only in admitted shared mode.
     pub const fn user_root(self) -> PhysicalAddress {
-        if self.is_paired() {
-            self.user_tagged & !Self::PAIRED_TAG
-        } else {
-            self.full
+        if !self.is_paired() {
+            return self.full;
+        }
+        match PhysicalAddress::new(self.user_tagged & !Self::PAIRED_TAG) {
+            Some(root) => root,
+            None => panic!("a paired user root lies beyond the physical address limit"),
         }
     }
 
@@ -620,7 +623,8 @@ impl AddressSpaceRoots {
     }
 
     const fn contains(self, root: PhysicalAddress) -> bool {
-        self.full == root || self.is_paired() && self.user_root() == root
+        let root = root.get();
+        self.full.get() == root || self.is_paired() && self.user_root().get() == root
     }
 
     const fn frames(self) -> usize {
@@ -903,8 +907,8 @@ impl AddressSpace {
             // One user-reachable page makes the whole run user bytes, since one page discloses.
             was_user |= entry.flags().contains(Flags::USER);
             match first {
-                None => first = Some(entry.address()),
-                Some(base) if entry.address() == base + page * PAGE_SIZE => {}
+                None => first = Some(PhysicalAddress::from_entry(entry)),
+                Some(base) if entry.address() == base.get() + page * PAGE_SIZE => {}
                 Some(_) => return Err(MapError::Discontiguous(address)),
             }
         }

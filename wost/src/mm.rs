@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use frame_space::{FRAME_SIZE, FrameSpace, words_for};
 
+pub use address::PhysicalAddress;
+
 pub(crate) use dma::{DmaMappingOwner, IommuTable, PublishedIommuTable};
 pub use dma::{DmaSegment, TableWalks};
 pub use frame::{Frame, Segment, allocate, allocate_contiguous, allocate_zeroed};
@@ -29,9 +31,6 @@ pub use shared::{Shared, SharedBytes, SharedRing, USegment};
 use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
-
-/// A physical address.
-pub type PhysicalAddress = u64;
 
 /// Highest physical address the frame allocator tracks; boot reports memory above it ignored.
 ///
@@ -127,13 +126,13 @@ impl<'map> EarlyFirmwareMemory<'map> {
     }
 
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: PhysicalAddress, len: usize) -> bool {
+    pub fn contains(&self, address: u64, len: usize) -> bool {
         firmware_contains(self.map, address, len)
     }
 
     /// Copy `into.len()` table bytes at `address` with volatile reads.
     #[must_use = "a refused early firmware read copied no bytes"]
-    pub fn read(&self, address: PhysicalAddress, into: &mut [u8]) -> bool {
+    pub fn read(&self, address: u64, into: &mut [u8]) -> bool {
         if !self.contains(address, into.len()) {
             return false;
         }
@@ -160,7 +159,7 @@ pub struct FirmwareMemory(());
 
 impl FirmwareMemory {
     /// Whether every byte is described exclusively as ACPI table storage.
-    pub fn contains(&self, address: PhysicalAddress, len: usize) -> bool {
+    pub fn contains(&self, address: u64, len: usize) -> bool {
         let guard = MAP.lock_leaf();
         let Some(map) = guard.as_ref() else {
             return false;
@@ -170,11 +169,13 @@ impl FirmwareMemory {
 
     /// Copy `into.len()` table bytes at `address` with volatile reads.
     #[must_use = "a refused firmware read copied no bytes"]
-    pub fn read(&self, address: PhysicalAddress, into: &mut [u8]) -> bool {
+    pub fn read(&self, address: u64, into: &mut [u8]) -> bool {
         if !self.contains(address, into.len()) {
             return false;
         }
-        let Some(base) = direct_pointer(address, into.len() as u64) else {
+        let Some(base) = PhysicalAddress::new(address)
+            .and_then(|address| direct_pointer(address, into.len() as u64))
+        else {
             return false;
         };
         read_firmware_bytes(base, into);
@@ -182,7 +183,7 @@ impl FirmwareMemory {
     }
 }
 
-fn firmware_contains(map: &MemoryMap, address: PhysicalAddress, len: usize) -> bool {
+fn firmware_contains(map: &MemoryMap, address: u64, len: usize) -> bool {
     let Ok(len) = u64::try_from(len) else {
         return false;
     };
@@ -216,7 +217,7 @@ pub fn firmware_memory() -> Option<FirmwareMemory> {
 }
 
 /// Whether `start..end` is disjoint from every RAM or firmware allocation.
-pub(crate) fn device_range_is_eligible(start: PhysicalAddress, end: PhysicalAddress) -> bool {
+pub(crate) fn device_range_is_eligible(start: u64, end: u64) -> bool {
     let guard = MAP.lock_leaf();
     let Some(map) = guard.as_ref() else {
         return false;
@@ -228,10 +229,7 @@ pub(crate) fn device_range_is_eligible(start: PhysicalAddress, end: PhysicalAddr
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
 /// The one cache type the direct map gives `start..end`, if it has one.
-pub(crate) fn map_direct_cache(
-    start: PhysicalAddress,
-    end: PhysicalAddress,
-) -> Option<crate::boot::DirectMapCache> {
+pub(crate) fn map_direct_cache(start: u64, end: u64) -> Option<crate::boot::DirectMapCache> {
     MAP.lock_leaf()
         .as_ref()
         .and_then(|map| map.direct_map_cache(start, end))
@@ -268,9 +266,9 @@ pub(crate) fn direct_pointer(physical: PhysicalAddress, len: u64) -> Option<*mut
     if offset == 0 {
         return None;
     }
-    let end = physical.checked_add(len)?;
+    let end = physical.get().checked_add(len)?;
     let _ = offset.checked_add(end)?;
     offset
-        .checked_add(physical)
+        .checked_add(physical.get())
         .map(|address| address as *mut u8)
 }

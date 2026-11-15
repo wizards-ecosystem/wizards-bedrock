@@ -53,7 +53,7 @@ pub(super) fn the_image_obeys_write_xor_execute() -> bool {
                 let Some((physical, flags)) = paging::translate(address) else {
                     return false;
                 };
-                let Some(alias) = direct.virtual_address(physical) else {
+                let Some(alias) = direct.virtual_address(physical.get()) else {
                     return false;
                 };
                 let Some((alias_physical, alias_flags)) = paging::translate(alias) else {
@@ -99,7 +99,7 @@ pub(super) fn the_direct_map_is_not_executable() -> bool {
     let Some(frame) = mm::allocate() else {
         return false;
     };
-    let Some(address) = mm::direct_map().and_then(|map| map.virtual_address(frame.address()))
+    let Some(address) = mm::direct_map().and_then(|map| map.virtual_address(frame.address().get()))
     else {
         return false;
     };
@@ -1441,7 +1441,7 @@ pub(super) fn unmapping_refuses_what_it_does_not_own() -> bool {
 
 fn probe_page(index: u64) -> Option<BootRegion> {
     let base = mm::first_memory_run(PROBE_PAGES * PAGE_SIZE)?;
-    BootRegion::describe(base.checked_add(index * PAGE_SIZE)?, PAGE_SIZE)
+    BootRegion::describe(base.get().checked_add(index * PAGE_SIZE)?, PAGE_SIZE)
 }
 
 /// How many pages [`probe_page`] hands out, and the run it asks for.
@@ -1891,7 +1891,7 @@ pub(super) fn device_mappings_refuse_allocatable_ram() -> bool {
         let Some(frame) = mm::allocate() else {
             return false;
         };
-        let address = frame.address();
+        let address = frame.address().get();
         matches!(
             paging::admit_device_range(address, 4).and_then(|range| space.map_device(range)),
             Err(MapError::NotDeviceMemory(found)) if found == address

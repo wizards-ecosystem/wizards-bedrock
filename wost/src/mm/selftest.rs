@@ -57,6 +57,7 @@ pub fn first_memory_run(len: u64) -> Option<PhysicalAddress> {
     MAP.lock_leaf()
         .as_ref()
         .and_then(|map| map.first_memory_run(len))
+        .and_then(PhysicalAddress::new)
 }
 
 impl Frame {
@@ -150,8 +151,8 @@ pub fn published_iommu_table_drop_retains_for_test() -> bool {
         let address = table.address();
         let mut published = PublishedIommuTable::new(table);
         let exact = published.address() == address
-            && published.write_u64(0, address)
-            && published.read_u64(0) == Some(address);
+            && published.write_u64(0, address.get())
+            && published.read_u64(0) == Some(address.get());
         retained += frames;
         drop(published);
         if !exact || free_frames() != before - retained {
@@ -185,6 +186,7 @@ static EXTERNAL_ZERO_REFUSAL: AtomicU64 = AtomicU64::new(EXTERNAL_ZERO_INACTIVE)
 
 #[cfg(feature = "selftest")]
 fn external_zero_state(address: PhysicalAddress, phase: u64) -> Option<u64> {
+    let address = address.get();
     if address >= CEILING
         || !address.is_multiple_of(FRAME_SIZE)
         || phase == 0
@@ -232,7 +234,7 @@ pub(super) fn observe_external_run_release_for_test(address: PhysicalAddress) {
     loop {
         let current = EXTERNAL_ZERO_REFUSAL.load(Ordering::Acquire);
         if current == EXTERNAL_ZERO_INACTIVE
-            || current & !EXTERNAL_ZERO_PHASE_MASK != address
+            || current & !EXTERNAL_ZERO_PHASE_MASK != address.get()
             || current & EXTERNAL_ZERO_PHASE_MASK == EXTERNAL_ZERO_RELEASED
         {
             return;
@@ -275,14 +277,14 @@ impl ExternalZeroRefusal {
     }
 
     fn state(&self, phase: u64) -> u64 {
-        self.address | phase
+        self.address.get() | phase
     }
 
     fn is_withheld_with(&self, expected: &[u8]) -> bool {
         if EXTERNAL_ZERO_REFUSAL.load(Ordering::Acquire) != self.state(EXTERNAL_ZERO_WITHHELD) {
             return false;
         }
-        let first = (self.address / FRAME_SIZE) as usize;
+        let first = (self.address.get() / FRAME_SIZE) as usize;
         let Some(end) = first.checked_add(self.count) else {
             return false;
         };
@@ -402,13 +404,13 @@ pub fn refused_external_clear_withholds_for_test(segment: Segment, expected_pref
 /// Whether an exact released run is free and contains only zero bytes.
 #[cfg(feature = "selftest")]
 pub fn freed_external_run_is_zero_for_test(address: PhysicalAddress, count: usize) -> bool {
-    if count == 0 || !address.is_multiple_of(FRAME_SIZE) {
+    if count == 0 || !address.get().is_multiple_of(FRAME_SIZE) {
         return false;
     }
     let Some(len) = (count as u64).checked_mul(FRAME_SIZE) else {
         return false;
     };
-    let first = (address / FRAME_SIZE) as usize;
+    let first = (address.get() / FRAME_SIZE) as usize;
     let Some(end) = first.checked_add(count) else {
         return false;
     };

@@ -469,7 +469,7 @@ impl Vtd {
             .ok_or(VtdError::Misaligned)?;
         write_entry(&mut self.context, devfn, context_entry.lo, context_entry.hi)?;
         let root_entry =
-            RootEntry::try_present(self.context.address()).ok_or(VtdError::Misaligned)?;
+            RootEntry::try_present(self.context.address().get()).ok_or(VtdError::Misaligned)?;
         write_entry(&mut self.root, bus, root_entry.lo, root_entry.hi)
     }
 
@@ -497,12 +497,12 @@ impl Vtd {
 
     /// The physical address of arena table `index`.
     const fn table_address(&self, index: usize) -> u64 {
-        self.tables.address() + index as u64 * PAGE
+        self.tables.address().get() + index as u64 * PAGE
     }
 
     /// Which arena table a present entry's address names, if it is one.
     fn table_index(&self, entry: u64) -> Option<usize> {
-        let offset = second_level::address(entry).checked_sub(self.tables.address())?;
+        let offset = second_level::address(entry).checked_sub(self.tables.address().get())?;
         let index = usize::try_from(offset / PAGE).ok()?;
         (offset % PAGE == 0 && index < self.table_count).then_some(index)
     }
@@ -565,7 +565,7 @@ impl Vtd {
         if !segment.begin_mapping(owner) {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         }
-        match self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical, len) {
+        match self.map_range::<DEVICE_READS, DEVICE_WRITES>(physical.get(), len) {
             Err(error @ SegmentChangeError::Retained(_)) => {
                 segment.retain();
                 Err(error)
@@ -630,11 +630,11 @@ impl Vtd {
         };
         let Some(last) = len
             .checked_sub(1)
-            .and_then(|last| physical.checked_add(last))
+            .and_then(|last| physical.get().checked_add(last))
         else {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
-        let mut page = physical & !(PAGE - 1);
+        let mut page = physical.get() & !(PAGE - 1);
         let mut failure = None;
         while page <= last {
             if let Err(reason) = self.unmap_page(page) {
@@ -686,7 +686,7 @@ impl Vtd {
             lo: self.root.read_u64(usize::from(function.bus()) * 2)?,
             hi: self.root.read_u64(usize::from(function.bus()) * 2 + 1)?,
         };
-        if !root.is_present() || root.context_table_address() != self.context.address() {
+        if !root.is_present() || root.context_table_address() != self.context.address().get() {
             return None;
         }
         let entry = ContextEntry {
@@ -736,11 +736,11 @@ impl Vtd {
             || compatibility_interrupts_enabled(status)
             || status & global_status::QIES != 0
             || !fault_event_control::masked(fault_control)
-            || root_table_address(pointer) != self.root.address()
+            || root_table_address(pointer) != self.root.address().get()
         {
             return false;
         }
-        let Some(expected) = interrupt_table_address(self.interrupts.address()) else {
+        let Some(expected) = interrupt_table_address(self.interrupts.address().get()) else {
             return false;
         };
         let Ok(observed) = read_u64(
@@ -750,7 +750,7 @@ impl Vtd {
             return false;
         };
         if observed != expected
-            || interrupt_table_base(observed) != self.interrupts.address()
+            || interrupt_table_base(observed) != self.interrupts.address().get()
             || !interrupt_table_has_two_entries(observed)
         {
             return false;
@@ -934,13 +934,13 @@ impl Vtd {
         write_u64(
             &mut self.registers,
             vtd::register::ROOT_TABLE_ADDRESS,
-            self.root.address(),
+            self.root.address().get(),
         )?;
         let command = set_root_table_pointer(self.global_command);
         write_u32(&mut self.registers, vtd::register::GLOBAL_COMMAND, command)?;
         self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;
         let pointer = read_u64(&self.registers, vtd::register::ROOT_TABLE_ADDRESS)?;
-        if root_table_address(pointer) == self.root.address() {
+        if root_table_address(pointer) == self.root.address().get() {
             Ok(())
         } else {
             Err(VtdError::RootTableRefused)
@@ -948,7 +948,7 @@ impl Vtd {
     }
 
     fn set_interrupt_table(&mut self) -> Result<(), VtdError> {
-        let pointer = interrupt_table_address(self.interrupts.address())
+        let pointer = interrupt_table_address(self.interrupts.address().get())
             .ok_or(VtdError::InterruptTableRefused)?;
         write_u64(
             &mut self.registers,
@@ -963,7 +963,7 @@ impl Vtd {
             vtd::register::INTERRUPT_REMAPPING_TABLE_ADDRESS,
         )?;
         if observed == pointer
-            && interrupt_table_base(observed) == self.interrupts.address()
+            && interrupt_table_base(observed) == self.interrupts.address().get()
             && interrupt_table_has_two_entries(observed)
         {
             Ok(())
@@ -979,7 +979,7 @@ impl Vtd {
     fn invalidate_interrupt_cache(&mut self) -> Result<(), VtdError> {
         let invalidate = InvalidationDescriptor::global_interrupt_entry_cache();
         let status_address =
-            self.invalidation_queue.address() + 8 * INVALIDATION_STATUS_INDEX as u64;
+            self.invalidation_queue.address().get() + 8 * INVALIDATION_STATUS_INDEX as u64;
         let wait = InvalidationDescriptor::wait_status(status_address, INVALIDATION_COMPLETE)
             .ok_or(VtdError::Misaligned)?;
         if !self
@@ -992,7 +992,7 @@ impl Vtd {
         {
             return Err(VtdError::OutOfTables);
         }
-        let queue = invalidation_queue_address(self.invalidation_queue.address())
+        let queue = invalidation_queue_address(self.invalidation_queue.address().get())
             .ok_or(VtdError::Misaligned)?;
         write_u64(
             &mut self.registers,

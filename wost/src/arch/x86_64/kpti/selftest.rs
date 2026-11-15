@@ -29,9 +29,9 @@ pub(super) fn record_complete_pair_switch(roots: AddressSpaceRoots) {
     let full = roots.full_root();
     COMPLETE_PAIR_SWITCHES.fetch_add(1, Ordering::Relaxed);
     let had_last = HAVE_LAST_PAIR.swap(true, Ordering::AcqRel);
-    let previous_full = LAST_FULL_ROOT.swap(full, Ordering::AcqRel);
-    let previous_stripped = LAST_STRIPPED_ROOT.swap(stripped, Ordering::AcqRel);
-    if !had_last || previous_full != full || previous_stripped != stripped {
+    let previous_full = LAST_FULL_ROOT.swap(full.get(), Ordering::AcqRel);
+    let previous_stripped = LAST_STRIPPED_ROOT.swap(stripped.get(), Ordering::AcqRel);
+    if !had_last || previous_full != full.get() || previous_stripped != stripped.get() {
         DISTINCT_PAIR_SWITCHES.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -45,7 +45,7 @@ pub(crate) fn record_rust_entry(code_selector: u64) {
     RUST_USER_ENTRIES.fetch_add(1, Ordering::Relaxed);
     let full = WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire);
     if WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_PUBLISHED
-        || cpu::page_table_base() != full
+        || cpu::page_table_base().get() != full
     {
         INVALID_RUST_USER_ENTRIES.fetch_add(1, Ordering::Relaxed);
     }
