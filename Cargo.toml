@@ -28,6 +28,7 @@ members = [
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
+    "libs/tlb-generation",
     "libs/trap-cause",
     "libs/vtd",
     "libs/wake-state",
@@ -67,6 +68,7 @@ default-members = [
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
+    "libs/tlb-generation",
     "libs/trap-cause",
     "libs/vtd",
     "libs/wake-state",
@@ -111,6 +113,7 @@ ring-proto = { path = "libs/ring-proto" }
 slab-layout = { path = "libs/slab-layout" }
 stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }
+tlb-generation = { path = "libs/tlb-generation" }
 trap-cause = { path = "libs/trap-cause" }
 vtd = { path = "libs/vtd" }
 wake-state = { path = "libs/wake-state" }

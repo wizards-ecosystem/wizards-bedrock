@@ -120,6 +120,7 @@ docs/            architecture, conventions, roadmap and decisions
 | `slab-layout` | heap size classes |
 | `stack-layout` | guarded stack geometry |
 | `timebase` | ticks to nanoseconds by multiply and shift |
+| `tlb-generation` | shootdown generations, CPU sets, PCID slots and acknowledgements |
 | `trap-cause` | exception vector and error-code decoding |
 | `vtd` | VT-d registers, tables and invalidation |
 | `wake-state` | the thread wake word and wake placement |
