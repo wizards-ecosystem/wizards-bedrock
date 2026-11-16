@@ -494,8 +494,8 @@ number and is added here, as one entry or as an amending id on the entry it chan
 - **D-463** Code carries no doc comments. `// SAFETY:`, `# Safety` and one line for a constraint
   the code cannot show are the only comments, because prose beside code restated it and drifted;
   the design lives in `docs/architecture.md`.
-- **D-22** One `[workspace.lints]` table governs every crate but `xtask`: `unsafe_code` is `deny`,
-  lifted once at the root of `wost` and `forbid` in `libs/` and `xtask` (D-67). A
+- **D-22** One `[workspace.lints]` table governs every crate, `xtask` included: `unsafe_code` is
+  `deny`, lifted once at the root of `wost` and `forbid` in `libs/` and `xtask` (D-67). A
   suppression is `#[expect(lint, reason = "...")]`, with `#[allow]` only where `expect` cannot
   reach, and a lint is enabled in the commit that brings its count to zero (D-451).
 - **D-27** The Rust API Guidelines are the house style, with the Rust for Linux coding guidelines

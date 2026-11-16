@@ -8,8 +8,10 @@ leave open and what this project decides differently. `C-XXX` names an API Guide
 item.
 
 The compiler enforces what it can, and the rest is written down here. Where a convention can be a
-lint, it is one: the `[workspace.lints]` tables in `Cargo.toml` govern every crate but `xtask`,
-which takes no workspace lints and forbids `unsafe_code` at its own roots.
+lint, it is one: the `[workspace.lints]` tables in `Cargo.toml` govern every crate, `xtask`
+included, and the gate runs clippy with warnings as errors. The table carries the unsafe rules,
+the panic and debug-leftover bans and the house style (`Self`, `let else`, inline format
+arguments, assert messages, no wildcard imports).
 
 ## Crate boundaries
 
