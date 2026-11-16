@@ -167,6 +167,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   the kernel writes a program's bytes through it before mapping. Zeroing at the conversion, rather
   than trusting each caller or zeroing every freed frame, keeps one place that proves ring 3 sees no
   earlier owner's bytes (amends D-44).
+- **D-470** The cache colour count is the L2's page colours from `CPUID` leaf 4, bounded by the
+  last-level cache's, rounded down to a power of two and capped at 64 (`libs/x86-cpuid`). A sliced
+  last-level cache reports sets across every slice, and the slice hash consumes some of those set
+  bits, so colouring by them is unsound; the private L2 is unsliced. Without an L2 there is one
+  colour.
 - **D-45** `activate` is safe: it walks the candidate tables for its own code, stack and direct map
   before writing `CR3`, and the kernel keeps the address space so mappings can be added to a live
   space, where a present entry is never rewritten (D-86, D-458). Activation refuses while

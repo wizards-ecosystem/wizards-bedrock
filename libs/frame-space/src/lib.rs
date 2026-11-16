@@ -1,8 +1,16 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+mod colour;
+mod record;
+mod reserve;
+
 use core::fmt;
 use core::num::NonZeroU64;
+
+pub use colour::{ColourCounts, ColourMask, Colours, MAX_COLOURS};
+pub use record::{Access, ArenaId, Owner, Record};
+pub use reserve::{Pool, Reservation};
 
 pub const FRAME_SIZE: u64 = 4096;
 
@@ -28,6 +36,7 @@ const fn bit(frame: usize) -> u64 {
 pub enum FreeError {
     NotManaged(usize),
     AlreadyFree(usize),
+    NotCharged(usize),
 }
 
 impl fmt::Display for FreeError {
@@ -35,6 +44,9 @@ impl fmt::Display for FreeError {
         match *self {
             Self::NotManaged(frame) => write!(formatter, "frame {frame} is not managed memory"),
             Self::AlreadyFree(frame) => write!(formatter, "frame {frame} is already free"),
+            Self::NotCharged(frame) => {
+                write!(formatter, "frame {frame} is not charged to the reservation")
+            }
         }
     }
 }
@@ -50,7 +62,8 @@ pub struct FrameSpace<const WORDS: usize> {
     managed: [u64; WORDS],
     // Always a subset of `managed`.
     free: [u64; WORDS],
-    free_count: usize,
+    // Free frames by index modulo 64; a colour's free count sums the positions of that colour.
+    free_by_bit: [usize; FRAMES_PER_WORD],
     managed_count: usize,
     // One past the highest managed frame, so a search never walks the empty top of the domain.
     limit: usize,
@@ -64,15 +77,26 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         Self {
             managed: [0; WORDS],
             free: [0; WORDS],
-            free_count: 0,
+            free_by_bit: [0; FRAMES_PER_WORD],
             managed_count: 0,
             limit: 0,
             hint: 0,
         }
     }
 
-    pub const fn free_count(&self) -> usize {
-        self.free_count
+    pub fn free_count(&self) -> usize {
+        self.free_by_bit.iter().sum()
+    }
+
+    pub fn free_in(&self, colours: Colours, colour: usize) -> usize {
+        if colour >= colours.count() {
+            return 0;
+        }
+        self.free_by_bit
+            .iter()
+            .skip(colour)
+            .step_by(colours.count())
+            .sum()
     }
 
     pub const fn managed_count(&self) -> usize {
@@ -138,6 +162,15 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         Some(found)
     }
 
+    fn allocate_coloured(&mut self, colours: Colours, mask: ColourMask) -> Option<usize> {
+        let pattern = mask.word_pattern(colours);
+        let found = self
+            .next_free_in(self.hint, self.limit, pattern)
+            .or_else(|| self.next_free_in(0, self.hint.min(self.limit), pattern))?;
+        self.take(found);
+        Some(found)
+    }
+
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
         if count == 0 {
             return Ok(());
@@ -178,7 +211,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     fn release(&mut self, frame: usize) {
         if !self.is_free(frame) {
             self.free[frame / FRAMES_PER_WORD] |= bit(frame);
-            self.free_count += 1;
+            self.free_by_bit[frame % FRAMES_PER_WORD] += 1;
         }
         self.hint = self.hint.min(frame);
     }
@@ -186,7 +219,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     fn take(&mut self, frame: usize) {
         if self.is_free(frame) {
             self.free[frame / FRAMES_PER_WORD] &= !bit(frame);
-            self.free_count -= 1;
+            self.free_by_bit[frame % FRAMES_PER_WORD] -= 1;
         }
     }
 
@@ -206,8 +239,15 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     }
 
     fn next_free(&self, from: usize, to: usize) -> Option<usize> {
+        self.next_free_in(from, to, u64::MAX)
+    }
+
+    fn next_free_in(&self, from: usize, to: usize, pattern: u64) -> Option<usize> {
+        if from >= to {
+            return None;
+        }
         let mut word = from / FRAMES_PER_WORD;
-        let mut free = self.free.get(word)? & (u64::MAX << (from % FRAMES_PER_WORD));
+        let mut free = self.free.get(word)? & pattern & (u64::MAX << (from % FRAMES_PER_WORD));
         loop {
             if free != 0 {
                 let frame = word * FRAMES_PER_WORD + free.trailing_zeros() as usize;
@@ -217,7 +257,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             if word * FRAMES_PER_WORD >= to {
                 return None;
             }
-            free = *self.free.get(word)?;
+            free = self.free.get(word)? & pattern;
         }
     }
 
@@ -251,7 +291,7 @@ impl<const WORDS: usize> fmt::Debug for FrameSpace<WORDS> {
         formatter
             .debug_struct("FrameSpace")
             .field("managed", &self.managed_count)
-            .field("free", &self.free_count)
+            .field("free", &self.free_count())
             .finish()
     }
 }

@@ -59,3 +59,49 @@ fn the_free_count_returns_to_its_baseline() {
     }
     assert_eq!(space.free_count(), baseline);
 }
+
+#[test]
+fn a_reserved_frame_survives_a_drain_and_an_arena_keeps_to_its_colours() {
+    let colours = Colours::new(4).expect("a power of two");
+    let mask = |bits| ColourMask::new(colours, bits).expect("a mask within the colours");
+    let amount = |colour, count| {
+        let mut amounts = ColourCounts::ZERO;
+        assert!(amounts.set(colour, count), "colour {colour} is in range");
+        amounts
+    };
+    let mut space = Small::new();
+    space.insert(0, SMALL_BYTES);
+    let mut pool = Pool::new();
+    let mut first = Reservation::new(mask(0b0010));
+    let mut second = Reservation::new(mask(0b0110));
+
+    assert!(space.reserve(colours, &mut pool, &mut first, &amount(1, 10)));
+    assert!(
+        !space.reserve(colours, &mut pool, &mut second, &amount(1, 7)),
+        "only six frames of colour one are unreserved"
+    );
+    assert!(space.reserve(colours, &mut pool, &mut second, &amount(1, 6)));
+
+    let full = ColourMask::full(colours);
+    while space.allocate_unreserved(colours, &pool, full).is_some() {}
+    assert_eq!(space.free_in(colours, 1), 16);
+    assert_eq!(space.free_count(), 16);
+
+    for _ in 0..10 {
+        let frame = space.allocate_reserved(colours, &mut pool, &mut first);
+        assert_eq!(frame.map(|frame| colours.of(frame)), Some(1));
+    }
+    assert_eq!(
+        space.allocate_reserved(colours, &mut pool, &mut first),
+        None,
+        "an arena past its reservation is refused"
+    );
+    for _ in 0..6 {
+        assert!(
+            space
+                .allocate_reserved(colours, &mut pool, &mut second)
+                .is_some()
+        );
+    }
+    assert_eq!(space.free_count(), 0);
+}

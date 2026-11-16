@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod cache;
 pub mod physical;
 pub mod xstate;
 

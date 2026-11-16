@@ -40,3 +40,26 @@ fn the_buffer_clear_is_skipped_only_when_every_attack_it_stops_is_ruled_out() {
         );
     }
 }
+
+#[test]
+fn the_colour_count_never_trusts_the_sliced_last_level_cache() {
+    let cache = |kind: u32, level: u32, sets: u32| {
+        cache::Cache::from_leaf(kind | level << 5, 64 - 1, sets - 1).expect("a described cache")
+    };
+    let comet_lake = [
+        cache(1, 1, 64),
+        cache(2, 1, 64),
+        cache(3, 2, 1024),
+        cache(3, 3, 8192),
+    ];
+    assert_eq!(
+        cache::colour_count(comet_lake),
+        16,
+        "the L2 bounds the colours"
+    );
+    assert_eq!(
+        cache::colour_count([cache(1, 1, 64), cache(3, 3, 8192)]),
+        1,
+        "without an L2 nothing bounds the slice hash"
+    );
+}
