@@ -1,5 +1,6 @@
-use core::fmt;
+use vstd::prelude::{verus, verus_spec, verus_verify};
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MapperState {
     Free,
@@ -10,6 +11,7 @@ pub enum MapperState {
 }
 
 // Commit, Abort and Unmap come from the mapping world; Revoke and Finish from the owner.
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MapperEvent {
     Claim,
@@ -20,26 +22,54 @@ pub enum MapperEvent {
     Finish(u32),
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MapperSlot {
-    state: MapperState,
-    generation: u32,
+    pub(crate) state: MapperState,
+    pub(crate) generation: u32,
 }
 
+verus! {
+
 impl MapperSlot {
-    pub const FREE: Self = Self {
+    pub exec const FREE: Self = Self {
         state: MapperState::Free,
         generation: 0,
     };
+}
 
+} // verus!
+
+#[verus_verify]
+impl MapperSlot {
+    #[verus_spec(r =>
+        ensures
+            r == self.spec_state(),
+    )]
     pub fn state(self) -> MapperState {
         self.state
     }
 
+    #[verus_spec(r =>
+        ensures
+            r == self.spec_generation(),
+    )]
     pub fn generation(self) -> u32 {
         self.generation
     }
 
+    #[verus_spec(r =>
+        ensures
+            match r {
+                Ok(after) => crate::proof::mapper_listed(self, event) == Some(after),
+                Err(MapperRefusal::Stale) => !crate::proof::mapper_names(self, event),
+                Err(MapperRefusal::Revoking) => crate::proof::mapper_names(self, event)
+                    && crate::proof::mapper_revoking_refuses(self, event),
+                Err(MapperRefusal::Unexpected) => crate::proof::mapper_names(self, event)
+                    && crate::proof::mapper_listed(self, event) is None
+                    && !crate::proof::mapper_revoking_refuses(self, event),
+            },
+    )]
     pub fn next(self, event: MapperEvent) -> Result<Self, MapperRefusal> {
         let held = match event {
             MapperEvent::Claim => self.generation,
@@ -69,10 +99,18 @@ impl MapperSlot {
         }
     }
 
+    #[verus_spec(r =>
+        ensures
+            r == crate::proof::mapper_with(self, state),
+    )]
     fn with(self, state: MapperState) -> Self {
         Self { state, ..self }
     }
 
+    #[verus_spec(r =>
+        ensures
+            r == crate::proof::mapper_freed(self),
+    )]
     fn freed(self) -> Self {
         match self.generation.checked_add(1) {
             Some(generation) => Self {
@@ -84,21 +122,10 @@ impl MapperSlot {
     }
 }
 
+#[verus_verify]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MapperRefusal {
     Stale,
     Revoking,
     Unexpected,
 }
-
-impl fmt::Display for MapperRefusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Stale => "the mapper slot has moved to another generation",
-            Self::Revoking => "the owner is revoking the mapper slot",
-            Self::Unexpected => "the event has no transition from this mapper slot state",
-        })
-    }
-}
-
-impl core::error::Error for MapperRefusal {}

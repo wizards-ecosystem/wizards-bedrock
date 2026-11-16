@@ -173,6 +173,9 @@ version = "0.3.1"
 [[package]]
 name = "memory-object"
 version = "0.3.1"
+dependencies = [
+ "vstd",
+]
 
 [[package]]
 name = "mmio-range"
