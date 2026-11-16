@@ -244,7 +244,8 @@ the arena nodes, so the counts always agree.
 
 Arenas (`wost/src/mm/pool.rs`) hold per-colour reservations, not frames. `pool::reserve_root`
 reserves all but a margin of each colour once, `pool::donate` moves reservation from a live parent
-to a new child whose mask lies within the parent's, and a refusal changes nothing. For each colour
+to a new child whose mask lies within the parent's and never takes what the parent's earmarks
+promised, and a refusal changes nothing. For each colour
 the unused reservations never exceed the free frames, so the kernel's own allocations take only
 unreserved frames and a reserved frame can always be taken. An operation calls `pool::earmark`
 first and then takes `ArenaFrame`s that cannot fail; each is zeroed when taken and when released.

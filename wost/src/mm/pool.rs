@@ -194,11 +194,18 @@ pub fn donate(
         return Err(Refused::Mask);
     }
     let mut amounts = ColourCounts::ZERO;
+    let mut donated = 0usize;
     for colour in (0..colours.count()).filter(|&colour| mask.contains(colour)) {
         assert!(
             amounts.set(colour, per_colour as usize),
             "a colour below the count is in range"
         );
+        donated += per_colour as usize;
+    }
+    // Earmarked frames are promised out of the parent's unused share, so a donation leaves them.
+    let kept = parent.reservation.unused_total().checked_sub(donated);
+    if kept.is_none_or(|kept| kept < parent.earmarked) {
+        return Err(Refused::NoMemory);
     }
     let mut child = Reservation::new(mask);
     if !parent.reservation.transfer(&mut child, &amounts) {
