@@ -26,6 +26,7 @@ fat32.workspace = true
 handle-space.workspace = true
 native-abi.workspace = true
 nvme.workspace = true
+object-pool.workspace = true
 panic-record.workspace = true
 path-walk.workspace = true
 pci-config.workspace = true
@@ -35,6 +36,7 @@ timebase.workspace = true
 trap-cause.workspace = true
 ring-proto.workspace = true
 x86-paging.workspace = true
+world-tree.workspace = true
 wost = { path = "../wost" }
 x86-apic.workspace = true
 x86-pit.workspace = true

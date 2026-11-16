@@ -7,6 +7,7 @@ pub mod pool;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod shared;
+pub mod slab;
 mod table;
 
 use core::fmt;

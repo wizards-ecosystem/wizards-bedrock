@@ -51,7 +51,7 @@ impl fmt::Display for Refused {
             Self::NoNode => "every arena node is in use",
             Self::Stale => "the arena is gone or dying",
             Self::Mask => "the colour mask lies outside the parent's",
-            Self::Busy => "the arena still holds earmarks",
+            Self::Busy => "the arena still holds earmarks or object pages",
             Self::Twice => "the root arena already exists",
         })
     }
@@ -65,6 +65,7 @@ struct Node {
     live: bool,
     dying: bool,
     earmarked: usize,
+    pages: usize,
     cursor: usize,
     reservation: Reservation,
 }
@@ -75,6 +76,7 @@ impl Node {
         live: false,
         dying: false,
         earmarked: 0,
+        pages: 0,
         cursor: 0,
         reservation: Reservation::EMPTY,
     };
@@ -115,6 +117,7 @@ impl Nodes {
         node.live = true;
         node.dying = false;
         node.earmarked = 0;
+        node.pages = 0;
         node.cursor = 0;
         node.reservation = reservation;
         ArenaId {
@@ -432,6 +435,24 @@ fn settle(frame: usize, arena: ArenaId, was: Access) {
     );
 }
 
+// An object page's slots may be borrowed, so dissolve refuses until every page is closed.
+pub(super) fn count_page(arena: ArenaId, change: PageCount) {
+    let mut guard = FRAMES.lock_leaf();
+    let Some(node) = guard.nodes.live(arena) else {
+        panic!("an object page outlived its arena");
+    };
+    match change {
+        PageCount::Opened => node.pages += 1,
+        PageCount::Closed => node.pages -= 1,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PageCount {
+    Opened,
+    Closed,
+}
+
 pub fn release(frame: ArenaFrame) {
     drop(frame);
 }
@@ -452,7 +473,7 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
     }
     let limit = space.limit();
     let node = nodes.live(arena).ok_or(Refused::Stale)?;
-    if node.earmarked != 0 {
+    if node.earmarked != 0 || node.pages != 0 {
         return Err(Refused::Busy);
     }
     node.dying = true;

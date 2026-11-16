@@ -8,6 +8,7 @@ extern crate alloc;
 
 mod acpi;
 mod arch;
+mod arena;
 mod banner;
 mod console;
 mod dev;
@@ -38,6 +39,7 @@ mod tmpfs;
 mod user;
 mod vfs;
 mod wait;
+mod world;
 
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -209,6 +211,7 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
         Ok(source) => info!("random: generator seeded with 256 bits credited from {source}"),
         Err(reason) => warn!("random: {reason}; ring 3 stays closed"),
     }
+    world::start_root(context);
     input::init();
     routing::report_keyboard(masked);
     input::start_poller();

@@ -20,6 +20,7 @@ frame-space.workspace = true
 memory-map.workspace = true
 mmio-range.workspace = true
 nvme.workspace = true
+object-pool.workspace = true
 pci-config.workspace = true
 limine.workspace = true
 lock-order.workspace = true

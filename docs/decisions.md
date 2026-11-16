@@ -218,6 +218,24 @@ number and is added here, as one entry or as an amending id on the entry it chan
   unreserved frames, and an operation earmarks before it takes, so a reserved frame can always be
   taken and a refused request changes nothing. Huge-page and contiguous needs are reserved
   physically when they arrive.
+- **D-520** A kernel object lives in a slot of an object page, and a reference to it held by
+  kernel code is a counted `Hold` rather than a lifetime: a slot with borrows cannot be removed or
+  reached mutably, a page with borrows cannot close, and `pool::dissolve` refuses while any object
+  page of the arena is open. Frame tokens kept in arena memory therefore return through their
+  pages before an arena dissolves, so no safe caller can reclaim a frame a hold still reaches.
+- **D-521** Each pool keeps its pages in its own radix directory of 64-way nodes held in object
+  pages, growing in depth with its highest ordinal, rather than in one directory per world: a pool
+  of one page needs no node frame, and a directory node holds typed page tokens.
+- **D-522** A pool earmarks, for every object an operation may create, one page frame and one
+  frame per directory level, takes the frames it needs before its leaf lock and releases the rest.
+  The earmark is then exact under any interleaving, at the cost of refusing a creation that a free
+  slot could hold when fewer than five frames of reservation remain.
+- **D-523** A pool keeps one empty page and closes every other page that empties; the closed
+  ordinal keeps the least generation above every one its page issued, and an ordinal whose page
+  retired a slot is never reused, so one churning object cannot spend a pool's ordinals.
+- **D-524** The world registry holds, per arena node, the record pool of that node's world, so the
+  record lives in the world's own arena and is reached by its `Local`; a `NodeRef`'s generation is
+  the arena node's generation.
 - **D-47** The kernel heap takes frames from the frame allocator and addresses them through the
   direct map: a slab allocator in `libs/slab-layout` with eight classes from 16 to 2048 bytes, whole
   frames above that, and slab frames never returned.

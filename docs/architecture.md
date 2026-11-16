@@ -206,7 +206,28 @@ unreserved frames and a reserved frame can always be taken. An operation calls `
 first and then takes `ArenaFrame`s that cannot fail; each is zeroed when taken and when released.
 `pool::dissolve` walks the records in bounded steps, zeroes and frees the arena's frames, and
 returns its reservation to the heir. There are 256 nodes; a node's generation is in every
-`ArenaId`, and a node whose generation reaches the maximum is retired.
+`ArenaId`, and a node whose generation reaches the maximum is retired. Dissolve refuses while the
+arena has an open object page or an outstanding earmark.
+
+Kernel objects made for a world live in object pages (`wost/src/mm/slab.rs`). An `ObjectPage`
+owns one arena frame, counted in its arena while open, and holds `libs/object-pool`'s slot state,
+one borrow count per slot and the objects. Slot state and objects change only through `&mut`; a
+`Hold` is a counted shared borrow of one object, and a borrowed object can be neither removed nor
+reached mutably, and its page cannot close. A closing page forgets its live objects and zeroes the
+frame. A kernel `Pool` (`kernel/src/arena/pool.rs`) keeps one object type of one arena behind a
+leaf lock: its pages sit in a `Directory` (`kernel/src/arena/directory.rs`), a radix of 64-way
+nodes that are themselves object pages and whose depth grows with the highest ordinal, up to four
+levels. A `Local` names an object by page ordinal (22 bits), slot (10 bits) and generation. A pool
+earmarks one page and a full directory path for each object it may create, takes those frames
+before its lock and releases what it did not use. It keeps one empty page; any other page that
+empties closes, and its ordinal keeps the least generation above every one the page issued, so a
+reused ordinal never repeats a generation and an exhausted one retires.
+
+The world registry (`kernel/src/world/registry.rs`) has one entry per arena node: the generation,
+a word with the world's state, and the record pool that holds the world's record in its own
+arena. A `NodeRef` is the node index and its arena generation. After the generator is seeded,
+`world::start_root` draws the root world's key from it, reserves the root arena with a margin
+of 1/32 of each colour and publishes the root world.
 
 The heap (`wost/src/mm/heap.rs`) addresses frames through the direct map. Requests up to 2048
 bytes go to eight slab classes from 16 bytes (`libs/slab-layout`); larger ones take whole frames.
