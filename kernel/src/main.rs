@@ -24,10 +24,12 @@ mod nvme;
 mod object;
 mod panic;
 mod pci;
+mod process;
 mod processors;
 mod queue;
 mod random;
 mod rank;
+mod reaper;
 mod routing;
 #[cfg(feature = "selftest")]
 mod selftest;

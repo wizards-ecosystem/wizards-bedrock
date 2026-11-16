@@ -8,7 +8,7 @@ pub(crate) fn free_slots() -> usize {
     let threads = THREADS.lock_leaf();
     threads.queue.slots[1..=threads.spawnable]
         .iter()
-        .filter(|slot| slot.state == State::Free)
+        .filter(|slot| matches!(slot.state, State::Free | State::Exited))
         .count()
 }
 

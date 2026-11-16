@@ -20,12 +20,6 @@ impl Table {
     }
 }
 
-impl TableRef {
-    pub(crate) fn identity_for_test(self) -> u64 {
-        self.table.to_bits()
-    }
-}
-
 // A table of a chosen capacity in the root world, destroyed when the check ends.
 #[derive(Debug)]
 pub(crate) struct TestTable {

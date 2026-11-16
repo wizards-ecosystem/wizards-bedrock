@@ -10,6 +10,7 @@ use wost::arch::current::task::{self, BOOT, Bound, InitFailure, Released, TaskEr
 use wost::sync::SpinLock;
 pub(crate) use wost::sync::ThreadContext;
 
+use crate::process::ProcessRef;
 use crate::rank;
 use crate::time::{self, NANOSECONDS_PER_MS};
 use crate::timepage::WorldClock;
@@ -114,6 +115,10 @@ impl core::error::Error for SpawnError {}
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Free,
+    // Off its stack only once another thread runs: reusable then, never by its own exit path.
+    Exited,
+    // A process's thread off the CPU, kept until that process's teardown releases it.
+    Retired,
     Reserved,
     Ready,
     Running,
@@ -132,12 +137,14 @@ enum Class {
 struct Identity {
     name: &'static str,
     entry: Option<(Entry, usize)>,
+    owner: Option<ProcessRef>,
 }
 
 impl Identity {
     const FREE: Self = Self {
         name: "",
         entry: None,
+        owner: None,
     };
 }
 
@@ -193,7 +200,7 @@ impl Threads {
     fn release(&mut self, slot: usize) {
         assert!(
             slot != BOOT && slot <= self.spawnable && self.queue.slots[slot].state != State::Free,
-            "only a live non-boot thread slot can be released"
+            "only an occupied non-boot thread slot can be released"
         );
         assert!(
             self.next_waiter[slot] == NO_WAITER,
@@ -371,6 +378,7 @@ fn init(arena: StackArena) -> Result<usize, InitFailure> {
     threads.identities[BOOT] = Identity {
         name: "boot",
         entry: None,
+        owner: None,
     };
     threads.queue.slots[BOOT] = Scheduled {
         state: State::Running,
@@ -418,6 +426,7 @@ pub(crate) fn start_idle() {
             argument: 0,
             binding: None,
             clock: None,
+            owner: None,
         },
         |slot, bound| {
             if bound.is_some() {
@@ -458,6 +467,7 @@ pub(crate) fn spawn(
             argument,
             binding: None,
             clock: None,
+            owner: None,
         },
         |_, bound| {
             if bound.is_none() { Ok(()) } else { Err(bound) }
@@ -470,18 +480,19 @@ pub(crate) fn spawn(
 pub(crate) fn spawn_in_space(
     name: &'static str,
     entry: Entry,
-    argument: usize,
     binding: Binding,
     clock: &'static WorldClock,
+    owner: ProcessRef,
     arrange: impl FnOnce(usize, Bound) -> Result<(), Bound>,
 ) -> Result<usize, SpaceSpawnError> {
     spawn_prepared(
         Prepared {
             name,
             entry,
-            argument,
+            argument: 0,
             binding: Some(binding),
             clock: Some(clock),
+            owner: Some(owner),
         },
         move |slot, bound| {
             let Some(bound) = bound else {
@@ -511,6 +522,7 @@ struct Prepared {
     argument: usize,
     binding: Option<Binding>,
     clock: Option<&'static WorldClock>,
+    owner: Option<ProcessRef>,
 }
 
 fn spawn_prepared(
@@ -523,11 +535,9 @@ fn spawn_prepared(
         argument,
         binding,
         clock,
+        owner,
     } = prepared;
-    // Before looking for a slot: a spawn most needs a freed one, and the worker may lag.
-    while crate::user::has_zombies() && crate::user::collect().is_reclaimed() {}
-
-    let slot = match reserve(name, (entry, argument), clock) {
+    let slot = match reserve(name, (entry, argument), clock, owner) {
         Ok(slot) => slot,
         Err(reason) => return Err(PreparedFailure::before_binding(reason, binding)),
     };
@@ -558,35 +568,62 @@ fn reserve(
     name: &'static str,
     entry: (Entry, usize),
     clock: Option<&'static WorldClock>,
+    owner: Option<ProcessRef>,
 ) -> Result<usize, SpawnError> {
-    let zombie_slots = crate::user::zombie_slots_for_spawn();
-    let slot = {
-        let mut threads = THREADS.lock_leaf();
-        if threads.spawnable == 0 {
-            return Err(SpawnError::Unavailable);
-        }
-        let Some(slot) = (1..=threads.spawnable)
-            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])
-        else {
-            return Err(SpawnError::Full);
-        };
-        threads.identities[slot] = Identity {
-            name,
-            entry: Some(entry),
-        };
-        threads.queue.slots[slot] = Scheduled {
-            state: State::Reserved,
-            entity: Entity::new(BASE_WEIGHT),
-            clock,
-            ..Scheduled::FREE
-        };
-        slot
-    };
-    if crate::user::zombie_slots_for_spawn()[slot] {
-        THREADS.lock_leaf().release(slot);
-        return Err(SpawnError::Full);
+    let mut threads = THREADS.lock_leaf();
+    if threads.spawnable == 0 {
+        return Err(SpawnError::Unavailable);
     }
+    let current = task::current();
+    let Some(slot) = (1..=threads.spawnable).find(|slot| {
+        let state = threads.queue.slots[*slot].state;
+        state == State::Free || (state == State::Exited && *slot != current)
+    }) else {
+        return Err(SpawnError::Full);
+    };
+    if threads.queue.slots[slot].state == State::Exited {
+        threads.release(slot);
+    }
+    threads.identities[slot] = Identity {
+        name,
+        entry: Some(entry),
+        owner,
+    };
+    threads.queue.slots[slot] = Scheduled {
+        state: State::Reserved,
+        entity: Entity::new(BASE_WEIGHT),
+        clock,
+        ..Scheduled::FREE
+    };
     Ok(slot)
+}
+
+pub(crate) fn current_process() -> Option<ProcessRef> {
+    THREADS.lock_leaf().identities[task::current()].owner
+}
+
+// Off its stack for good: a retired slot is never the running one, and only this release frees it.
+pub(crate) fn is_retired_off_cpu(slot: usize) -> bool {
+    slot != task::current()
+        && THREADS
+            .lock_leaf()
+            .queue
+            .slots
+            .get(slot)
+            .is_some_and(|thread| thread.state == State::Retired)
+}
+
+pub(crate) fn release_retired(slot: usize) {
+    let mut threads = THREADS.lock_leaf();
+    assert!(
+        threads
+            .queue
+            .slots
+            .get(slot)
+            .is_some_and(|thread| thread.state == State::Retired),
+        "only a retired process thread is released by its teardown"
+    );
+    threads.release(slot);
 }
 
 // While the slot is still `Reserved`, so its tables exist before its first instruction.
@@ -796,11 +833,12 @@ fn park(
     true
 }
 
-// A zombie: it stands on the stack and tables it would free, so it is orphaned before exiting.
+// It stands on the stack and tables its teardown frees, so the reaper does that work.
 pub(crate) fn retire() -> ! {
     let _off = interrupt::disable();
-    crate::user::orphan(task::current());
-    // After `orphan`, so an acquiring observer of the new count can read the last rites.
+    if let Some(process) = current_process() {
+        crate::reaper::submit(process);
+    }
     #[cfg(feature = "selftest")]
     RETIREMENTS.fetch_add(1, Ordering::AcqRel);
     exit()
@@ -879,14 +917,19 @@ pub(crate) fn exit() -> ! {
         let mut threads = THREADS.lock_leaf();
         let current = task::current();
         assert!(current != BOOT, "the boot thread cannot exit");
-        // Charged before the slot clears, so the last slice is accounted like every other.
+        // Charged before the slot leaves, so the last slice is accounted like every other.
         threads.queue.charge(current, now);
-        threads.release(current);
         threads.queue.wake_due(now);
+        let leaving = if threads.identities[current].owner.is_some() {
+            State::Retired
+        } else {
+            State::Exited
+        };
+        threads.queue.slots[current].state = leaving;
         let Some(next) = threads.queue.choose(current, CurrentEligibility::Excluded) else {
             panic!("nothing is runnable after slot {current} exited");
         };
-        threads.queue.hand_over(current, next, State::Free, now);
+        threads.queue.hand_over(current, next, leaving, now);
         (next, threads.queue.next_event(next, now))
     };
 

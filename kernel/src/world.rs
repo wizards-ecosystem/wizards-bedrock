@@ -12,6 +12,7 @@ use wost::sync::{Leaf, SpinLock};
 use crate::arena::Pool;
 use crate::handle::Table;
 use crate::object::Channel;
+use crate::process::{Observation, Process};
 use crate::queue::Queue;
 use crate::thread::ThreadContext;
 use crate::{info, random, warn};
@@ -25,15 +26,19 @@ pub(crate) struct World {
     arena: ArenaId,
     key: [u8; 32],
     handles: u32,
-    processes: AtomicU64,
+    ordinals: AtomicU64,
     pub(crate) tables: TablePool,
     pub(crate) queues: QueuePool,
     pub(crate) channels: ChannelPool,
+    pub(crate) processes: ProcessPool,
+    pub(crate) observations: ObservationPool,
 }
 
 pub(crate) type TablePool = Pool<Table, 16>;
 pub(crate) type QueuePool = Pool<Queue, 2>;
 pub(crate) type ChannelPool = Pool<Channel, 64>;
+pub(crate) type ProcessPool = Pool<Process, 4>;
+pub(crate) type ObservationPool = Pool<Observation, 16>;
 
 impl World {
     fn new(arena: ArenaId, key: [u8; 32], handles: u32) -> Self {
@@ -41,10 +46,12 @@ impl World {
             arena,
             key,
             handles,
-            processes: AtomicU64::new(0),
+            ordinals: AtomicU64::new(0),
             tables: Pool::new(),
             queues: Pool::new(),
             channels: Pool::new(),
+            processes: Pool::new(),
+            observations: Pool::new(),
         }
     }
 
@@ -58,7 +65,7 @@ impl World {
 
     // Derived once per process from the world key and the process's ordinal, then stored.
     pub(crate) fn mixer(&self) -> Mixer {
-        let ordinal = self.processes.fetch_add(1, Ordering::Relaxed);
+        let ordinal = self.ordinals.fetch_add(1, Ordering::Relaxed);
         let [a, b, c, d, e, f, g, h, ..] = entropy::derive(&self.key, b"handle", ordinal);
         Mixer::from_derived([a, b, c, d, e, f, g, h])
     }

@@ -8,8 +8,9 @@ use wost::arch::current::interrupt::UserRegisters;
 use wost::arch::current::task;
 use wost::arch::current::{cpu, usercopy};
 
-use super::{BOOTSTRAPS, LAUNCHES, STACK_BYTES};
+use super::STACK_BYTES;
 use crate::handle::TableRef;
+use crate::process::ProcessRef;
 use crate::queue::QueueRef;
 use crate::{info, thread, warn};
 
@@ -53,7 +54,6 @@ pub(crate) fn refusals() -> (usize, usize) {
 
 // The calling thread's own context: it may allocate, block and be preempted.
 pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegisters<'_>) {
-    let slot = task::current();
     EXECUTED.store(true, Ordering::Release);
     match Call::decode(registers.rax()) {
         Call::Exit => {
@@ -62,8 +62,8 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
             }));
             thread::retire()
         }
-        Call::RingEnter => registers.set_return(serve_ring(context, slot)),
-        Call::RingWait => registers.set_return(wait_ring(context, slot)),
+        Call::RingEnter => registers.set_return(serve_ring(context)),
+        Call::RingWait => registers.set_return(wait_ring(context)),
         Call::ThreadBase => {
             // Refused, not faulted: `wrmsr` of a non-canonical base is a `#GP` in kernel context.
             let answer = if task::set_thread_base(registers.rdi()) {
@@ -83,9 +83,9 @@ pub(crate) fn call(context: &mut thread::ThreadContext, registers: &mut UserRegi
     }
 }
 
-fn serve_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
+fn serve_ring(context: &mut thread::ThreadContext) -> u64 {
     // Copied out before serving: `serve` takes locks that `lock_leaf` forbids under `BOOTSTRAPS`.
-    let Some((here, table)) = authority_of(slot) else {
+    let Some((here, table)) = authority_of() else {
         return ENOSYS;
     };
     let Some(ring) = here.hold() else {
@@ -101,14 +101,14 @@ fn serve_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
     ring.served_since(before) as u64
 }
 
-fn authority_of(slot: usize) -> Option<(QueueRef, TableRef)> {
-    let guard = BOOTSTRAPS.lock_leaf();
-    let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
-    Some((bootstrap.objects.ring, bootstrap.objects.table))
+fn authority_of() -> Option<(QueueRef, TableRef)> {
+    let (_, process) = thread::current_process()?.hold()?;
+    let objects = process.objects();
+    Some((objects.ring, objects.table))
 }
 
-fn wait_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
-    let Some(ring) = authority_of(slot).and_then(|(here, _)| here.hold()) else {
+fn wait_ring(context: &mut thread::ThreadContext) -> u64 {
+    let Some(ring) = authority_of().and_then(|(here, _)| here.hold()) else {
         return ENOSYS;
     };
 
@@ -117,9 +117,11 @@ fn wait_ring(context: &mut thread::ThreadContext, slot: usize) -> u64 {
 
 // The switch that scheduled this thread already set `RSP0` and installed its tables.
 pub(super) fn cross(context: &mut thread::ThreadContext, _: usize) {
-    let slot = task::current();
-    let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
-        warn!("user: thread {slot} has no program to run");
+    let Some(launch) = thread::current_process()
+        .and_then(ProcessRef::hold)
+        .map(|(_, process)| process.launch())
+    else {
+        warn!("user: thread {} has no program to run", task::current());
         thread::retire();
     };
     let which = launch.which;

@@ -83,7 +83,7 @@ pub(super) fn in_reclaimed_space(
 }
 
 pub(super) fn two_spaces_map_one_address_to_different_memory() -> bool {
-    if !runs_until(2000, || !user::has_zombies()) {
+    if !runs_until(2000, crate::reaper::is_idle) {
         return false;
     }
     let allocator_before = AllocatorSnapshot::capture();

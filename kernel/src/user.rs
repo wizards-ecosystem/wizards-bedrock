@@ -1,18 +1,15 @@
+use boot_record::Record;
 use native_abi::address::STACK;
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::arch::current::task;
 use wost::mm::PhysicalAddress;
-use wost::sync::{Leaf, SpinLock};
 use x86_paging::PAGE_SIZE;
 
-use crate::handle::TableRef;
-use crate::queue::QueueRef;
+use crate::process::{ObservationRef, ProcessRef};
 use crate::thread;
 
 mod call;
 mod construction;
 mod load;
-mod reap;
 #[cfg(feature = "selftest")]
 mod selftest;
 
@@ -24,11 +21,6 @@ use load::MAX_SEGMENTS;
 pub(crate) use load::keep;
 #[cfg(feature = "selftest")]
 pub(crate) use load::{LoadError, image, load_image};
-pub(crate) use reap::{
-    CollectOutcome, collect, has_zombies, orphan, record_ending, zombie_slots_for_spawn,
-};
-#[cfg(feature = "selftest")]
-pub(crate) use reap::{LastRites, last_rites_of};
 #[cfg(feature = "selftest")]
 pub(crate) use selftest::{
     spawn_duplicating, spawn_executing_syscall, spawn_faulting, spawn_for_bootstrap,
@@ -46,7 +38,7 @@ const APART: u64 = 0x1_0000;
 const STACK_BYTES: u64 = PAGE_SIZE;
 
 #[derive(Clone, Copy, Debug)]
-struct Launch {
+pub(crate) struct Launch {
     entry: u64,
     stack: u64,
     argument: u64,
@@ -56,21 +48,18 @@ struct Launch {
     root: PhysicalAddress,
 }
 
-static LAUNCHES: SpinLock<Leaf, [Option<Launch>; thread::CAPACITY]> =
-    SpinLock::new([None; thread::CAPACITY]);
-
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
 
 #[derive(Debug)]
-struct Regions {
+pub(crate) struct Regions {
     ranges: [(u64, u64); MAX_REGIONS],
     len: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct UnmapRefusal {
+pub(crate) struct UnmapRefusal {
     pages: usize,
-    reason: MapError,
+    pub(crate) reason: MapError,
 }
 
 impl Regions {
@@ -92,7 +81,7 @@ impl Regions {
     }
 
     // Last mapped first; a refused range and every one below it stay recorded for a retry.
-    fn unmap(&mut self, space: &mut AddressSpace) -> Result<usize, UnmapRefusal> {
+    pub(crate) fn unmap(&mut self, space: &mut AddressSpace) -> Result<usize, UnmapRefusal> {
         let mut pages = 0usize;
         while self.len != 0 {
             let (at, len) = self.ranges[self.len - 1];
@@ -108,54 +97,23 @@ impl Regions {
 }
 
 #[derive(Debug)]
-struct Bootstrap {
-    space: AddressSpace,
-    authority: Option<BootstrapAuthority>,
-    regions: Regions,
-    objects: Objects,
-}
-
-// A process's table and queue in its world; each goes when its last reference does.
-#[derive(Debug)]
-struct Objects {
-    table: TableRef,
-    ring: QueueRef,
-}
-
-impl Objects {
-    // Idempotent, so a teardown refused by a passing hold retries it whole.
-    #[must_use = "a refused destroy leaves an object for a retry"]
-    fn destroy(&self) -> bool {
-        let ring = self.ring.destroy();
-        let table = self.table.destroy();
-        ring && table
-    }
-}
-
-impl Drop for Objects {
-    fn drop(&mut self) {
-        let destroyed = self.destroy();
-        assert!(
-            destroyed,
-            "a process's objects outlived their last reference"
-        );
-    }
-}
-
-#[derive(Debug)]
-enum BootstrapAuthority {
-    Bound(task::Bound),
-    Released(task::Released),
-}
-
-static BOOTSTRAPS: SpinLock<Leaf, [Option<Bootstrap>; thread::CAPACITY]> =
-    SpinLock::new([const { None }; thread::CAPACITY]);
-
-#[derive(Debug)]
 pub(crate) struct Spawned {
     pub(crate) slot: usize,
-    #[cfg(feature = "selftest")]
-    pub(crate) observed_table_incarnation: u64,
+    #[cfg_attr(
+        not(feature = "selftest"),
+        expect(
+            dead_code,
+            reason = "only the self-tests wait on a status the kernel spawned"
+        )
+    )]
+    pub(crate) observation: ObservationRef,
+}
+
+// Kept by the program's process for its teardown to turn into the status, once.
+pub(crate) fn record_ending(ending: Record) {
+    if let Some((_, process)) = thread::current_process().and_then(ProcessRef::hold) {
+        process.record_ending(ending);
+    }
 }
 
 pub(crate) fn run(context: &mut thread::ThreadContext) -> Result<Spawned, SpawnError> {

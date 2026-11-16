@@ -490,13 +490,6 @@ pub(crate) fn request_reap() {
     FILE_WORK.waiters.wake_all();
 }
 
-fn collect_requested_reap() -> bool {
-    matches!(
-        crate::user::collect(),
-        crate::user::CollectOutcome::Retained
-    )
-}
-
 fn work_forever(context: &mut ThreadContext, _: usize) {
     let mut retry_reap = false;
     loop {
@@ -508,7 +501,7 @@ fn work_forever(context: &mut ThreadContext, _: usize) {
             }
         }
         if retry_reap || take_reap_request(&REAP_REQUESTS) {
-            retry_reap = collect_requested_reap();
+            retry_reap = crate::reaper::run();
         }
         if let Some(work) = FILE_WORK.take() {
             service(context, work);

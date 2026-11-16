@@ -2,18 +2,14 @@ use core::fmt;
 
 use native_abi::Rights;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
-use wost::arch::current::task;
 use wost::arch::current::{cpu, xstate};
 use wost::mm::pool::{self as frames, Earmark, Refused};
 
 use super::call::cross;
 use super::load::{LoadError, load, place_stack};
-use super::reap::slot_has_zombie;
-use super::{
-    BOOTSTRAPS, Bootstrap, BootstrapAuthority, LAUNCHES, Launch, Objects, Regions, STACK_BYTES,
-    Spawned,
-};
+use super::{Launch, Regions, STACK_BYTES, Spawned};
 use crate::handle::{HandleError, Table, TableRef};
+use crate::process::{Authority, Objects, ObservationRef, Process, ProcessRef, Space};
 use crate::queue::{self, Queue, QueueRef};
 use crate::world::{self, registry};
 use crate::{object, thread};
@@ -60,47 +56,6 @@ impl Drop for ProcessConstruction {
         if let Err(reason) = space.reclaim(released) {
             panic!("failed-spawn table cleanup refused: {reason}");
         }
-    }
-}
-
-#[derive(Debug)]
-struct PreparedProcess {
-    construction: ProcessConstruction,
-    objects: Objects,
-    launch: Launch,
-}
-
-impl PreparedProcess {
-    #[expect(
-        clippy::result_large_err,
-        reason = "a refused commit hands the process back to the spawn that retries or drops it"
-    )]
-    fn commit(mut self, slot: usize, bound: task::Bound) -> Result<(), (Self, task::Bound)> {
-        if slot_has_zombie(slot) {
-            return Err((self, bound));
-        }
-        assert!(
-            LAUNCHES.lock_leaf().get(slot).is_some_and(Option::is_none),
-            "a reserved process slot retained launch state"
-        );
-        assert!(
-            BOOTSTRAPS
-                .lock_leaf()
-                .get(slot)
-                .is_some_and(Option::is_none),
-            "a reserved process slot retained a live owner"
-        );
-        let Some(space) = self.construction.space.take() else {
-            return Err((self, bound));
-        };
-        LAUNCHES.lock_leaf()[slot] = Some(self.launch);
-        BOOTSTRAPS.lock_leaf()[slot] = Some(Bootstrap {
-            space,
-            authority: Some(BootstrapAuthority::Bound(bound)),
-            regions: core::mem::replace(&mut self.construction.regions, Regions::new()),
-            objects: self.objects,
-        });
-        Ok(())
     }
 }
 
@@ -211,54 +166,56 @@ pub(crate) fn spawn(
         }
     };
     drop(table);
-    #[cfg(feature = "selftest")]
-    let table_identity = objects.table.identity_for_test();
-
     let binding = construction
         .space()?
         .bind()
         .map_err(SpawnError::NotBindable)?;
 
-    let mut prepared = Some(PreparedProcess {
-        construction,
-        objects,
-        launch: Launch {
-            entry,
-            stack,
-            argument,
-            operand,
-            bootstrap_handle: handle,
-            which,
-            root,
-        },
-    });
+    let launch = Launch {
+        entry,
+        stack,
+        argument,
+        operand,
+        bootstrap_handle: handle,
+        which,
+        root,
+    };
+    let observation = ObservationRef::create(&mut earmark, world_ref, &world);
+    let process = ProcessRef::create(
+        &mut earmark,
+        world_ref,
+        &world,
+        Process::new(launch, observation.local(), objects),
+    );
+    // The process takes the space only once its thread is bound to it.
     let arrange = |slot, bound| {
-        if slot >= thread::CAPACITY {
-            return Err(bound);
-        }
-        let Some(process) = prepared.take() else {
+        let Some(space) = construction.space.take() else {
             return Err(bound);
         };
-        process.commit(slot, bound).map_err(|(process, bound)| {
-            prepared = Some(process);
-            bound
-        })
+        let Some((_, held)) = process.hold() else {
+            construction.space = Some(space);
+            return Err(bound);
+        };
+        held.commit(
+            slot,
+            Space {
+                space,
+                authority: Some(Authority::Bound(bound)),
+                regions: core::mem::replace(&mut construction.regions, Regions::new()),
+            },
+        );
+        Ok(())
     };
-    let slot = match thread::spawn_in_space(name, cross, 0, binding, clock, arrange) {
+    let slot = match thread::spawn_in_space(name, cross, binding, clock, process, arrange) {
         Ok(slot) => slot,
         Err(failure) => {
-            if let Some(process) = prepared.as_mut() {
-                process.construction.retain_authority(failure.authority);
-            }
+            construction.retain_authority(failure.authority);
+            assert!(process.destroy(), "a process that never ran was borrowed");
             return Err(SpawnError::NoThread(failure.reason));
         }
     };
 
-    Ok(Spawned {
-        slot,
-        #[cfg(feature = "selftest")]
-        observed_table_incarnation: table_identity,
-    })
+    Ok(Spawned { slot, observation })
 }
 
 // Every arena frame the process's kernel objects can need, taken before anything is built.
@@ -266,14 +223,19 @@ fn earmark(
     context: &mut thread::ThreadContext,
     world: &world::World,
 ) -> Result<Earmark, SpawnError> {
+    let records = world::ProcessPool::frames_for(1)
+        .zip(world::ObservationPool::frames_for(1))
+        .and_then(|(process, observation)| process.checked_add(observation));
     let frames = world::TablePool::frames_for(1)
         .zip(QueueRef::frames_for())
         .zip(world::ChannelPool::frames_for(1))
-        .and_then(|((table, queue), channel)| {
+        .zip(records)
+        .and_then(|(((table, queue), channel), records)| {
             table
                 .checked_add(Table::frames_for(world.handles()))?
                 .checked_add(queue)?
-                .checked_add(channel)
+                .checked_add(channel)?
+                .checked_add(records)
         })
         .ok_or(SpawnError::NoMemory(Refused::NoMemory))?;
     frames::earmark(context, world.arena(), frames).map_err(SpawnError::NoMemory)

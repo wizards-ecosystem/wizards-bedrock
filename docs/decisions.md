@@ -503,6 +503,14 @@ number and is added here, as one entry or as an amending id on the entry it chan
   thread (D-203). It keeps its ring and everything its in-flight operations can touch until
   `Queue::abandon` has ended each with a `CANCELLED` completion (D-153, D-167); reclaim then
   releases the handle table, the ring and the address space.
+- **D-531** A process is an object in its world's arena with a state machine from `libs/world-tree`,
+  and its teardown is a fixed sequence of steps the service worker's reaper runs in FIFO order; a
+  step that must wait sends the process to the tail (amends D-117). Its status is written once to
+  an observation in the spawner's world, which the process names only weakly.
+- **D-532** An exiting thread never frees its own slot: a process's thread leaves it `Retired`
+  until its teardown has seen it off the processor, and a kernel thread leaves it `Exited`, reusable
+  only by another running thread. The reaper's queue is bounded by the thread slots until thread
+  records live in arenas.
 - **D-481** The ring 3 witness is a cargo-built static `ET_EXEC` linked at `0x400000`, and the
   loader maps each segment at its `p_vaddr` with no per-program shift, because a position-dependent
   image holds absolute addresses that a shift breaks and the in-kernel loader takes no `ET_DYN`;

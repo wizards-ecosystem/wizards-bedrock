@@ -555,14 +555,18 @@ earmarks, in the root world's arena, every frame its queue, table and birth chan
 full arena refuses the spawn with nothing changed. `ProcessConstruction` owns the space and
 every mapped range until the thread is published, so any refusal rolls back through one owner.
 
-A process today is a thread slot. Its record (`Bootstrap` in `kernel/src/user.rs`) is one thread,
-one address space, and the `TableRef` and `QueueRef` that name its table and ring in the root
-world, in global arrays indexed by slot. There is no
-parent and no fork; the kernel spawns one program at boot. How a program ended is kept by slot
-when it retires: `Exit` stores its status, and a fault stores the vector, error code, `CR2` (for a
-page fault, read before interrupts reopen; zero otherwise) and `RIP`. The service worker writes it
-as an `exit` or `fault` boot record once the program's memory is reclaimed. Nothing yet reads it
-back into ring 3.
+A process is an object in its world's process pool (`kernel/src/process.rs`). It holds its
+launch values, its table and ring (`TableRef`, `QueueRef`), its address space once its thread is
+bound, and the `Local` of its observation. Its one thread names it as its owner. There is no
+parent and no fork; the kernel spawns one program at boot. How a program ended is kept in the
+process when its thread retires: `Exit` stores its status, and a fault stores the vector, error
+code, `CR2` (for a page fault, read before interrupts reopen; zero otherwise) and `RIP`. The
+process state machine (`libs/world-tree`) takes Running to Exited once, then to Released.
+
+The observation (`kernel/src/process/observation.rs`) is an object in the spawner's world that the
+spawner holds strongly and the process names only weakly. The status lands there once: an exit
+becomes `Exited(status)`, a fault `Faulted(vector)`, and an end with no recorded reason `Killed`.
+A second write is refused. Nothing yet reads it back into ring 3.
 
 The loader (`kernel/src/user/load.rs`, over `libs/elf64`) maps the Limine module. It refuses a
 segment that is writable and executable, runs past the file, overlaps another, is misaligned or
@@ -596,11 +600,16 @@ opens the SMAP window, for one copy. Each first walks every page and requires ef
 permission, checks the range against the user limit by comparison, and recovers a fault at a
 linker fixup that only the trap adapter writes.
 
-A program that exits or faults becomes a zombie, which the service worker collects. A zombie keeps
-its ring and everything its in-flight operations can reach until `Queue::abandon` has ended each
-with a `CANCELLED` completion; then its ring and handle table go back to the world's pools, the
-table releasing every object its entries held, and its address space is released. A hold that
-still borrows the ring or table refuses that step, and the next collection retries it.
+A retiring thread hands its process to the reaper (`kernel/src/reaper.rs`), a FIFO the service
+worker serves, and leaves its slot `Retired`, so no path running on that stack frees or reuses it.
+The reaper runs the teardown steps of `kernel/src/process/teardown.rs` in order: P0 fixes the
+status and writes it to the observation; P1 waits until the thread is retired and off the
+processor; P2 ends every queued operation with `CANCELLED` and waits for a running one; P3 returns
+the table and ring to the world's pools, the table releasing every object its entries held; P4
+clears and reclaims the address space; P5 frees the thread slot and writes the ending as an
+`exit` or `fault` boot record, once. A step that must wait leaves the process at the tail and the
+reaper moves to the next one, so one stuck teardown never delays another. A kernel thread that
+exits leaves its slot `Exited`, reusable once another thread runs.
 
 ## 8. DMA isolation and PCI
 

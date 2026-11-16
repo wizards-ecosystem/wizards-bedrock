@@ -179,10 +179,10 @@ chosen later.
 What exists today that each phase must replace or build on; `docs/architecture.md` has the detail.
 
 Phase 7:
-- A process is a thread slot in global by-slot arrays (`kernel/src/user.rs`,
-  `kernel/src/user/reap.rs`, `kernel/src/user/construction.rs`), with no parent or child
-  observation; an exit status reaches only the boot log. Phase 7 needs a counted process object
-  owned by its world.
+- A process is an object in the root world with an observation and a reaper-run teardown, but its
+  thread is a slot of the kernel's fixed task table, with a static save area and a stack from the
+  16-slot arena (`kernel/src/thread.rs`, `wost/src/arch/x86_64/task.rs`), and the reaper's queue is
+  bounded by those slots. Thread records and stacks need to live in the world's arena.
 - The root world exists with its arena, record and object pools, and each process's handle table
   and ring live in it (`kernel/src/world.rs`, `kernel/src/handle.rs`, `kernel/src/queue.rs`), but
   processes, threads and address spaces still come from the kernel heap and frames, and every
@@ -205,10 +205,8 @@ Phase 7:
   (`kernel/src/queue.rs`, `kernel/src/timepage.rs`): every process reads the one root world clock.
   Channels need their own transport, and time needs a clock per world, the recorded mode and the raw
   time right.
-- Collection searches zombies from slot 0, so one whose reclaim is refused blocks every later
-  one, and a refused loader rollback drops its ledger, so spawn cleanup then panics
-  (`kernel/src/user/reap.rs`, `kernel/src/user/load.rs`). Neither refusal has a known trigger.
-  Teardown of a process must never block another's and never panic.
+- A refused loader rollback drops its ledger, so spawn cleanup then panics
+  (`kernel/src/user/load.rs`). The refusal has no known trigger.
 
 Phase 8:
 - Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack

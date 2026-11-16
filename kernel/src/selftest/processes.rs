@@ -2,6 +2,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use boot_record::{Exit, Fault, Record};
+use world_tree::Status;
 use wost::arch::current::interrupt;
 use wost::arch::current::paging::AddressSpace;
 use wost::arch::current::usercopy;
@@ -11,6 +12,7 @@ use x86_tables::exception;
 use super::runs_until;
 use super::threads::{STOP_SPINNING, light_spinner, yields_until};
 use crate::arch::current::trap;
+use crate::process::Rites;
 use crate::thread::ThreadContext;
 use crate::{thread, time, user};
 
@@ -52,8 +54,9 @@ pub(super) fn a_faulting_program_dies_alone(context: &mut ThreadContext) -> bool
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     let retired = last_rites_for(&spawned, 2_000).is_some();
+    let observed = observed_once(&spawned, Status::Faulted(exception::INVALID_OPCODE));
 
-    this_child && it_was_the_ud2 && in_user_memory && retired
+    this_child && it_was_the_ud2 && in_user_memory && retired && observed
 }
 
 // `rax` still holds the argument only if the trapped `rdtsc` never retired.
@@ -312,7 +315,7 @@ impl AllocatorSnapshot {
 
 // Forty programs through sixteen slots beside a spinner: the worker must reclaim each one.
 pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) -> bool {
-    if !runs_until(2000, || !user::has_zombies()) {
+    if !runs_until(2000, crate::reaper::is_idle) {
         return false;
     }
     let before = AllocatorSnapshot::capture();
@@ -327,7 +330,7 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
         let retirements = thread::retirements();
         if user::spawn_for_bootstrap(context).is_err()
             || !runs_until(2000, || {
-                thread::retirements() > retirements && !user::has_zombies()
+                thread::retirements() > retirements && crate::reaper::is_idle()
             })
         {
             break;
@@ -340,17 +343,20 @@ pub(super) fn a_dead_program_gives_its_memory_back(context: &mut ThreadContext) 
     ran == 40 && settled && AllocatorSnapshot::capture().has_same_ownership(&before)
 }
 
-pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
-    let table = spawned.observed_table_incarnation;
-    let exact = || user::last_rites_of(spawned.slot).is_some_and(|rites| rites.table == table);
-    if !runs_until(ms, exact) {
+pub(super) fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<Rites> {
+    if !runs_until(ms, || spawned.observation.rites().is_some()) {
         return None;
     }
-    user::last_rites_of(spawned.slot).filter(|rites| rites.table == table)
+    spawned.observation.rites()
+}
+
+// Written by the teardown once, and refused for good after that.
+fn observed_once(spawned: &user::Spawned, status: Status) -> bool {
+    spawned.observation.status() == Some(status) && spawned.observation.recorded() == 1
 }
 
 // The witness exits 0 only when every answer it checked agreed.
-fn agreed(rites: &user::LastRites) -> bool {
+fn agreed(rites: &Rites) -> bool {
     rites.ending == Some(Record::Exit(Exit { status: 0 }))
 }
 
@@ -384,6 +390,7 @@ pub(super) fn a_program_drives_its_own_ring(context: &mut ThreadContext) -> bool
         && smap_held
         && agreed(&echoed)
         && agreed(&duplicated)
+        && observed_once(&echoing, Status::Exited(0))
         && echoed.served == 1
         && duplicated.served == 1
         && duplicated.handles == 2
