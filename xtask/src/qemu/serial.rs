@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use boot_record::{Fact, Memory, Processors, Protections, Record, Verdict};
+use boot_record::{Fact, Memory, Processors, Protections, Ran, Record, Verdict};
 use panic_record::OPEN_PREFIX;
 
 // QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33.
@@ -70,6 +70,7 @@ pub(super) struct Selftest {
     colours: Option<usize>,
     processors: usize,
     online: Option<usize>,
+    ran: usize,
 }
 
 impl Selftest {
@@ -81,6 +82,7 @@ impl Selftest {
             colours: None,
             processors,
             online: None,
+            ran: 0,
         }
     }
 
@@ -101,6 +103,7 @@ impl Selftest {
             Some(Record::Verdict(verdict)) => self.verdict = Some(verdict),
             Some(Record::Memory(Memory { colours })) => self.colours = Some(colours),
             Some(Record::Processors(Processors { online })) => self.online = Some(online),
+            Some(Record::Ran(Ran { processors })) => self.ran = self.ran.max(processors),
             Some(record) => self.records.observe(record),
             None => {}
         }
@@ -138,6 +141,12 @@ impl Selftest {
             online == self.processors,
             "the self-test machine has {} processors but {online} came online",
             self.processors
+        );
+        ensure!(
+            self.ran == self.processors,
+            "the self-test machine has {} processors but threads ran on {}",
+            self.processors,
+            self.ran
         );
         self.records.require_all("self-test")
     }

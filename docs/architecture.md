@@ -79,7 +79,7 @@ is treated like a reserved one: never allocated and never direct-mapped.
    isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
 7. `random::seed` seeds the kernel's random generator (section 5), and `processors::bring_up`
-   starts the other processors and parks them (section 3). The keyboard comes up polled,
+   starts the other processors, which wait for their idle threads (section 3). The keyboard comes up polled,
    the I/O APIC mappings are released with every line still masked, its poller and the service
    worker start, the idle thread starts, and `user::run` spawns `witness.elf`. The boot thread
    then blocks reading keys and draws each one.
@@ -130,11 +130,14 @@ which copies the boot processor's PAT, loads the kernel root, its area and the I
 stack. There the processor sets its control state, enables the boot processor's protections,
 extended-state components and speculation controls, refusing any difference, puts its local APIC
 in x2APIC mode software-disabled, and runs the clock check (section 5). Only then does the boot
-processor admit it to the online set with `percpu::admit`. An admitted processor configures its
-own local APIC with the boot vectors, timer masked, and halts with interrupts on: it runs no thread,
-takes no part in scheduling and answers only the shootdown vector and the stop NMI. The
-online set is the boot processor and every admitted processor; building the first user root
-closes it. Its size is the `processors` boot record.
+processor admit it to the online set with `percpu::admit`, and only once the processor sees that
+admission does it turn interrupts on; one never admitted waits with them off. An admitted processor
+configures its own local APIC with the boot vectors and its own one-shot timer, and halts with
+interrupts on until its idle thread exists, answering the shootdown vector, the reschedule vector
+and the stop NMI. It then flushes everything it cached before joining and enters its idle thread,
+and from there schedules like the boot processor (section 5). The online set is the boot processor
+and every admitted processor; building the first user root closes it. Its size is the `processors`
+boot record, and the `ran` record counts the processors that have run a thread other than idle.
 
 Every IDT gate is an interrupt gate, so a handler starts with interrupts off. Generated assembly
 stubs push a zero error code where the CPU pushes none, so every frame has one shape, and join
@@ -440,7 +443,11 @@ outside the policy, runs only when nothing else can, halts, and emits the report
 behind. The other kernel threads are the keyboard poller and the service worker. A ring 0 frame is
 preempted at trap exit, after end-of-interrupt, and only when it had interrupts enabled. Every
 spin lock clears that flag, so critical sections need no preempt count. A ring 3 thread is
-preempted in its handoff, as a thread. Every lock is dropped before a switch.
+preempted in its handoff, as a thread. Every lock is dropped before a switch. A new or woken thread
+goes to its last processor if that one idles, else to an idle one, else to its last, and any
+other processor it lands on gets the reschedule vector. An idle processor steals the first ready
+thread off every processor from the queue with the most, holding one run-queue lock at a time, so a
+thread moves between queues only while it is on no queue and no processor.
 
 A `WaitQueue` (`kernel/src/wait.rs`) is a list of threads linked through their records under the
 queue's own lock, so a wake from a handler allocates nothing. A waiter checks its condition, links

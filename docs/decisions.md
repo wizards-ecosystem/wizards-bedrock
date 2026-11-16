@@ -229,6 +229,18 @@ number and is added here, as one entry or as an amending id on the entry it chan
   `on_cpu` is clear: it runs the process's teardown first, then frees the record and unmaps the
   stack, and returns the stack's frames and window slot only when the unmap's shootdown has
   completed, waiting outside the kernel's space lock.
+- **D-585** Every admitted processor schedules. A new or woken thread goes to its last processor
+  if idle, else the lowest idle one, else its last (`wake_state::wake_target`), and a remote target
+  gets the reschedule vector whether idle or not, since a busy processor may have no alarm armed.
+  An idle processor steals from the queue with the most ready threads, taking only one off every
+  processor, with one run-queue lock held at a time. Another processor's APIC timer counts at the
+  rate the clock owner measured.
+- **D-586** A started processor turns interrupts on only after it sees its own admission, and one
+  never admitted waits with them off and no deadline, so it is never half in the online set.
+- **D-587** The `ran` boot record counts the processors that ran a thread other than their idle
+  one, reported by an idle thread because a switch cannot log, and again before the self-test verdict
+  and the settled fact; the gate requires every processor of
+  the two-processor self-test and shipped boots to have run one (amends D-575).
 - **D-594** Teardown stops a world's threads through a list that links them in their records, its
   head in the world record at the reaper's rank (amends D-547): it claims each waiting thread's
   wait and places it, and waits until the world's thread pool is empty, because the records and

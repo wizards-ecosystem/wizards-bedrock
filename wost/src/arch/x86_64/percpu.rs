@@ -472,6 +472,17 @@ pub(super) fn behind(set: u64, generation: u64) -> u64 {
         .fold(0, |lagging, block| lagging | bit(block))
 }
 
+// Every online processor, by the bit its index names.
+pub fn online_set() -> u64 {
+    online().fold(0, |set, block| set | bit(block))
+}
+
+pub fn send_reschedule(processor: usize) {
+    if let Some(block) = online().find(|block| block.index == processor) {
+        apic::send_reschedule(block.apic_id.load(Ordering::Relaxed));
+    }
+}
+
 pub(super) fn send_shootdown(set: u64) {
     for block in online().filter(|block| set & bit(block) != 0) {
         apic::send_shootdown(block.apic_id.load(Ordering::Relaxed));

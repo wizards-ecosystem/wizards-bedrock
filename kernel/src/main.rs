@@ -264,6 +264,7 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
         "kernel: reading the keyboard, uptime {} ms",
         time::uptime_ms()
     );
+    thread::report_processors();
     info!("{}", Record::Fact(Fact::Settled));
     echo_keystrokes(context)
 }

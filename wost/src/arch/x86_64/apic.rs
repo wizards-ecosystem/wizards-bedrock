@@ -31,6 +31,7 @@ fn eoi_claimed() -> &'static AtomicBool {
 static ERROR_VECTOR: AtomicU8 = AtomicU8::new(0);
 
 static SHOOTDOWN_VECTOR: AtomicU8 = AtomicU8::new(0);
+static RESCHEDULE_VECTOR: AtomicU8 = AtomicU8::new(0);
 
 static TIMER_VECTOR: AtomicU8 = AtomicU8::new(0);
 
@@ -104,6 +105,7 @@ pub struct Vectors {
     pub error: InterruptVector,
     pub timer: InterruptVector,
     pub shootdown: InterruptVector,
+    pub reschedule: InterruptVector,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -245,6 +247,7 @@ fn configure(vectors: Vectors, error: Entry, spurious: Spurious) -> Result<Local
     SPURIOUS_VECTOR.store(vectors.spurious.get(), Ordering::Relaxed);
     ERROR_VECTOR.store(vectors.error.get(), Ordering::Relaxed);
     SHOOTDOWN_VECTOR.store(vectors.shootdown.get(), Ordering::Release);
+    RESCHEDULE_VECTOR.store(vectors.reschedule.get(), Ordering::Release);
 
     Ok(Local {
         id: low_u32(registers.read(register::ID)),
@@ -387,6 +390,7 @@ pub fn join() -> Result<Local, InitError> {
         error: vector(&ERROR_VECTOR)?,
         timer: vector(&TIMER_VECTOR)?,
         shootdown: vector(&SHOOTDOWN_VECTOR)?,
+        reschedule: vector(&RESCHEDULE_VECTOR)?,
     })
 }
 
@@ -399,6 +403,15 @@ pub(crate) fn send_stop(destination: u32) {
 
 pub(super) fn send_shootdown(destination: u32) {
     let Some(vector) = InterruptVector::new(SHOOTDOWN_VECTOR.load(Ordering::Acquire)) else {
+        return;
+    };
+    if let Some(registers) = ready_registers() {
+        registers.write(register::INTERRUPT_COMMAND, ipi::fixed(destination, vector));
+    }
+}
+
+pub(super) fn send_reschedule(destination: u32) {
+    let Some(vector) = InterruptVector::new(RESCHEDULE_VECTOR.load(Ordering::Acquire)) else {
         return;
     };
     if let Some(registers) = ready_registers() {

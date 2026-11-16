@@ -22,6 +22,7 @@ pub enum Record {
     Protections(Protections),
     Memory(Memory),
     Processors(Processors),
+    Ran(Ran),
     Exit(Exit),
     Fault(Fault),
 }
@@ -57,6 +58,12 @@ pub struct Memory {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Processors {
     pub online: usize,
+}
+
+// Processors that ran a thread other than their idle one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ran {
+    pub processors: usize,
 }
 
 // How a program ended, written when it is collected.
@@ -204,6 +211,9 @@ impl Record {
             "processors" => Self::Processors(Processors {
                 online: words.count("online")?,
             }),
+            "ran" => Self::Ran(Ran {
+                processors: words.count("processors")?,
+            }),
             "exit" => Self::Exit(Exit {
                 status: words.count("status")?,
             }),
@@ -246,6 +256,7 @@ impl fmt::Display for Record {
             Self::Processors(Processors { online }) => {
                 write!(formatter, "processors online={online}")
             }
+            Self::Ran(Ran { processors }) => write!(formatter, "ran processors={processors}"),
             Self::Exit(Exit { status }) => write!(formatter, "exit status={status}"),
             Self::Fault(Fault {
                 vector,

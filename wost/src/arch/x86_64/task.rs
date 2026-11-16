@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use x86_paging::{CanonicalAddress, Flags, PAGE_SIZE};
 
 use super::cpu;
-use super::interrupt::{self, ExclusionLedger, TrapFrame};
+use super::interrupt::{self, ExclusionLedger, InterruptState, TrapFrame};
 use super::kpti;
 use super::msr;
 use super::paging::{self, AddressSpaceRoots, Binding, MappedStack, TaskStack};
@@ -424,12 +424,13 @@ pub fn exit_to(next: Claimed) -> TaskError {
     unreachable!("a thread marked dead was resumed")
 }
 
-// From a processor that runs no thread yet; its bring-up context is never resumed.
-pub fn enter(next: Claimed) -> ! {
+// From a processor that runs no thread yet, inside its exclusion; that context is never resumed.
+pub fn enter(next: Claimed, disabled: InterruptState) -> ! {
     assert!(!has_thread(), "only a threadless processor enters a task");
-    let saved = interrupt::disable();
-    saved.commit_context_disabled();
+    disabled.commit_context_disabled();
     let (save, load) = prepare(next, DEAD);
+    // Whatever this processor cached before it joined the online set goes before its first task.
+    cpu::reload_page_table();
     // SAFETY: as in `switch_to`; `save` is this processor's scratch word, which nothing loads.
     unsafe { switch(save, load) };
     unreachable!("an abandoned bring-up context was resumed")
