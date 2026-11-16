@@ -44,12 +44,8 @@ pub(crate) fn layout() -> Option<StackLayout> {
 }
 
 // Derived from the arena, so it adds no hardcoded window and no KASLR ledger entry.
-pub(crate) fn fault_stack_layout() -> Option<StackLayout> {
-    StackLayout::new(layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
-}
-
 pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
-    StackLayout::new(fault_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
+    StackLayout::new(layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

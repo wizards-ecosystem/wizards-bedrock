@@ -26,9 +26,7 @@ pub(super) fn the_image_obeys_write_xor_execute() -> bool {
         (enclave.text, false, true),
         (enclave.rodata, false, false),
         (enclave.tables, true, false),
-        (enclave.route, true, false),
-        (enclave.transition_stack, true, false),
-        (enclave.ist_stack, true, false),
+        (enclave.data, true, false),
     ]
     .into_iter()
     .all(|(section, writable, executable)| {

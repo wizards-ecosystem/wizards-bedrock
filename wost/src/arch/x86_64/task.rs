@@ -1,5 +1,5 @@
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
 
 use x86_paging::{CanonicalAddress, Flags};
 
@@ -136,7 +136,6 @@ struct SaveAreas([[u8; xstate::CEILING]; MAX_TASKS]);
 static EXTENDED: HardwareCell<SaveAreas> =
     HardwareCell::new(SaveAreas([[0; xstate::CEILING]; MAX_TASKS]));
 
-static CURRENT: AtomicUsize = AtomicUsize::new(BOOT);
 static INIT: Once = Once::new();
 
 #[derive(Debug)]
@@ -206,7 +205,7 @@ fn validate_arena(arena: &StackArena) -> Result<stack_layout::StackLayout, TaskE
 }
 
 pub fn current() -> usize {
-    CURRENT.load(Ordering::Acquire)
+    percpu::current().current_task.load(Ordering::Acquire)
 }
 
 pub fn fabricate(slot: usize, entry: Entry, argument: usize) -> Result<(), TaskError> {
@@ -336,7 +335,9 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     // Revoke the old route before changing the current task, so an NMI here fails closed.
     kpti::begin_route_update();
     table.slots[current].state = leaving;
-    CURRENT.store(slot, Ordering::Release);
+    percpu::current()
+        .current_task
+        .store(slot, Ordering::Release);
 
     // Root, route and privilege stack move together before the target can run.
     let roots = table.slots[slot].page_table;
@@ -412,7 +413,7 @@ fn admit(table: &Table, slot: usize) -> Result<usize, TaskError> {
     if slot >= table.count {
         return Err(TaskError::OutOfRange(slot));
     }
-    let current = CURRENT.load(Ordering::Acquire);
+    let current = current();
     if slot == current {
         return Err(TaskError::Current(slot));
     }
@@ -431,7 +432,6 @@ fn restore_ordinary_entry(table: &Table, slot: usize) {
         };
         super::segment::write_kernel_stack(landing);
     }
-    super::segment::restore_ordinary_fault_stack();
     kpti::clear_route();
 }
 
@@ -455,7 +455,7 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<Bound, (TaskE
         Err(TaskError::Boot)
     } else if table.slots[slot].state != State::Alive {
         Err(TaskError::Vacant(slot))
-    } else if slot == CURRENT.load(Ordering::Acquire) {
+    } else if slot == current() {
         Err(TaskError::Current(slot))
     } else {
         table.slots[slot].page_table = Some(roots);
@@ -473,7 +473,7 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
     let mut table = TABLE.lock_leaf();
     let outcome = if slot >= table.count {
         Err(TaskError::OutOfRange(slot))
-    } else if slot == CURRENT.load(Ordering::Acquire) {
+    } else if slot == current() {
         Err(TaskError::Current(slot))
     } else if table.slots[slot].state != State::Alive {
         Err(TaskError::Vacant(slot))
@@ -609,6 +609,7 @@ pub enum UserError {
     NoExtendedState,
     NoSharedKernelIsolation,
     NoPairedKernelIsolation,
+    NoEntryArea,
 }
 
 impl fmt::Display for UserError {
@@ -642,6 +643,7 @@ impl fmt::Display for UserError {
             Self::NoPairedKernelIsolation => {
                 formatter.write_str("the paired user roots have no complete live entry route")
             }
+            Self::NoEntryArea => formatter.write_str("this processor has no entry area"),
         }
     }
 }
@@ -674,6 +676,9 @@ pub fn enter_user(
 fn user_entry_preflight(entry: u64, stack_top: u64) -> Result<(), UserError> {
     if !paging::is_active() {
         return Err(UserError::Inactive);
+    }
+    if !percpu::on_entry_area() {
+        return Err(UserError::NoEntryArea);
     }
     // Recheck at the final boundary: closed syscall doors belong to this crossing, not only boot.
     if !cpu::fast_syscall_doors_are_shut() {

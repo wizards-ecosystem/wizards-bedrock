@@ -1,13 +1,14 @@
 use alloc::vec::Vec;
 
-use x86_paging::kpti::{EnclavePage, ObservedPage, enclave_matches};
+use x86_paging::kpti::{EnclavePage, EnclavePermission, ObservedPage, enclave_matches};
 use x86_paging::{ENTRIES, Flags, Level, PAGE_SIZE, TablePrivilege};
 
 use super::{
-    AddressSpace, DEVICE_WINDOW_END, DEVICE_WINDOW_START, MapError, TableRoot, entry_slot,
-    translate_in, visit_present_leaves, walk,
+    AddressSpace, DEVICE_WINDOW_END, DEVICE_WINDOW_START, MapError, Reach, TableRoot,
+    current_mapping_root, entry_slot, translate_in, visit_present_leaves, walk,
 };
-use crate::mm::PhysicalAddress;
+use crate::boot::Section;
+use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
     pub(super) fn install_entry_enclave(
@@ -97,40 +98,74 @@ impl AddressSpace {
     }
 
     pub(super) fn reserve_shared_kernel_topology(&mut self) -> Result<(), MapError> {
-        assert_eq!(
-            Level::Pml4.index(DEVICE_WINDOW_START),
-            Level::Pml4.index(DEVICE_WINDOW_END - 1),
-            "the device window must fit in one shared top-level slot"
-        );
-        let slot = entry_slot(self.root(), Level::Pml4.index(DEVICE_WINDOW_START))?;
-        let current = slot.read();
-        if current.is_present() {
-            if current.is_huge() || current.flags().contains(Flags::USER) {
-                return Err(MapError::Conflict(DEVICE_WINDOW_START));
+        let entry_window_end = super::percpu::WINDOW + super::percpu::WINDOW_BYTES;
+        for (start, end) in [
+            (DEVICE_WINDOW_START, DEVICE_WINDOW_END),
+            (super::percpu::WINDOW, entry_window_end),
+        ] {
+            assert_eq!(
+                Level::Pml4.index(start),
+                Level::Pml4.index(end - 1),
+                "a shared kernel window must fit in one top-level slot"
+            );
+            let slot = entry_slot(self.root(), Level::Pml4.index(start))?;
+            let current = slot.read();
+            if current.is_present() {
+                if current.is_huge() || current.flags().contains(Flags::USER) {
+                    return Err(MapError::Conflict(start));
+                }
+                continue;
             }
-            return Ok(());
-        }
 
-        let (_, link) = self.take_owned_table(
-            TableRoot::Full,
-            DEVICE_WINDOW_START,
-            Level::Pml4,
-            TablePrivilege::Supervisor,
-        )?;
-        slot.write(link);
+            let (_, link) = self.take_owned_table(
+                TableRoot::Full,
+                start,
+                Level::Pml4,
+                TablePrivilege::Supervisor,
+            )?;
+            slot.write(link);
+        }
+        Ok(())
+    }
+
+    // Never unmapped: a processor runs on its entry area for as long as it runs.
+    pub(crate) fn map_entry_area(
+        &mut self,
+        section: Section,
+        access: EnclavePermission,
+    ) -> Result<(), MapError> {
+        if self.reach != Reach::Everywhere || current_mapping_root(self.roots()).is_none() {
+            return Err(MapError::NotYours(section.start));
+        }
+        let pages =
+            usize::try_from(section.mapped_len() / PAGE_SIZE).map_err(|_| MapError::OutOfMemory)?;
+        let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
+        if !run.zero() {
+            return Err(MapError::Unreachable(run.address()));
+        }
+        let physical = run.address().get();
+        core::mem::forget(run);
+        let mut offset = 0;
+        while offset < section.mapped_len() {
+            self.set(
+                TableRoot::Full,
+                section.start + offset,
+                physical + offset,
+                access.flags(),
+                Level::Pt,
+            )?;
+            offset += PAGE_SIZE;
+        }
         Ok(())
     }
 }
 
 fn enclave_pages(enclave: super::kpti::EntryEnclave) -> Result<usize, MapError> {
-    enclave
-        .mappings()
-        .iter()
-        .try_fold(0usize, |total, mapping| {
-            let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
-                .map_err(|_| MapError::OutOfMemory)?;
-            total.checked_add(pages).ok_or(MapError::OutOfMemory)
-        })
+    enclave.mappings().try_fold(0usize, |total, mapping| {
+        let pages = usize::try_from(mapping.section().mapped_len() / PAGE_SIZE)
+            .map_err(|_| MapError::OutOfMemory)?;
+        total.checked_add(pages).ok_or(MapError::OutOfMemory)
+    })
 }
 
 fn mapped_guard(

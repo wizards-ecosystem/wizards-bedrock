@@ -1,5 +1,4 @@
-use core::mem::offset_of;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
 use x86_paging::PAGE_SIZE;
 use x86_paging::kpti::EnclavePermission;
@@ -7,16 +6,14 @@ use x86_paging::kpti::EnclavePermission;
 use super::cpu;
 use super::interrupt;
 use super::paging::{AddressSpaceRoots, KernelStackTop};
+use super::percpu;
 use super::segment;
 use crate::boot::{self, Section};
-use crate::cell::HardwareCell;
 
-pub(super) const STACK_BYTES: usize = 16 * 1024;
-pub(super) const MAPPINGS: usize = 6;
-const GUARDS: usize = 2;
+pub(super) const IMAGE_MAPPINGS: usize = 4;
 const KERNEL_HALF_START: u64 = 0xffff_8000_0000_0000;
 const STACK_ALIGN: u64 = 16;
-const ROUTE_EMPTY: u64 = 0;
+pub(super) const ROUTE_EMPTY: u64 = 0;
 const ROUTE_PUBLISHED: u64 = 1;
 const ROUTE_UPDATING: u64 = 2;
 
@@ -28,6 +25,18 @@ pub(super) struct EnclaveMapping {
 }
 
 impl EnclaveMapping {
+    pub(super) const fn new(
+        section: Section,
+        full: EnclavePermission,
+        stripped: EnclavePermission,
+    ) -> Self {
+        Self {
+            section,
+            full,
+            stripped,
+        }
+    }
+
     pub(super) const fn section(self) -> Section {
         self.section
     }
@@ -41,79 +50,56 @@ impl EnclaveMapping {
     }
 }
 
+// The image's entry sections and the entry areas of processors `0..areas`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) struct EntryEnclave {
-    mappings: [EnclaveMapping; MAPPINGS],
-    guards: [Section; GUARDS],
+    image: [EnclaveMapping; IMAGE_MAPPINGS],
+    areas: usize,
 }
 
 impl EntryEnclave {
-    pub(super) const fn mappings(self) -> [EnclaveMapping; MAPPINGS] {
-        self.mappings
+    pub(super) fn mappings(self) -> impl Iterator<Item = EnclaveMapping> {
+        self.image
+            .into_iter()
+            .chain((0..self.areas).flat_map(percpu::area_mappings))
     }
 
-    pub(super) const fn guards(self) -> [Section; GUARDS] {
-        self.guards
+    pub(super) fn guards(self) -> impl Iterator<Item = Section> {
+        (0..self.areas).flat_map(percpu::area_guards)
     }
 }
 
-pub(super) fn entry_enclave() -> Option<EntryEnclave> {
+pub(super) fn image_enclave() -> Option<[EnclaveMapping; IMAGE_MAPPINGS]> {
     use EnclavePermission::{Executable, ReadOnly, Writable};
 
     let raw = boot::sections().entry_enclave;
-    let exact = [
-        raw.text,
-        raw.rodata,
-        raw.tables,
-        raw.route,
-        raw.transition_guard,
-        raw.transition_stack,
-        raw.ist_guard,
-        raw.ist_stack,
-        raw.data,
-    ]
-    .into_iter()
-    .all(page_exact);
+    let exact = [raw.text, raw.rodata, raw.tables, raw.data]
+        .into_iter()
+        .all(page_exact);
     let ordered = raw.text.end <= raw.rodata.start
         && raw.rodata.end <= raw.tables.start
-        && raw.tables.end == raw.data.start
-        && raw.route.end == raw.transition_guard.start
-        && raw.transition_guard.end == raw.transition_stack.start
-        && raw.transition_stack.end == raw.ist_guard.start
-        && raw.ist_guard.end == raw.ist_stack.start
-        && raw.ist_stack.end == raw.data.end;
-    let fixed = raw.route.mapped_len() == PAGE_SIZE
-        && raw.transition_guard.mapped_len() == PAGE_SIZE
-        && raw.transition_stack.mapped_len() == STACK_BYTES as u64
-        && raw.ist_guard.mapped_len() == PAGE_SIZE
-        && raw.ist_stack.mapped_len() == STACK_BYTES as u64;
-    if !exact || !ordered || !fixed {
+        && raw.tables.end == raw.data.start;
+    if !exact || !ordered {
         return None;
     }
-
-    Some(EntryEnclave {
-        mappings: [
-            mapping(raw.text, Executable, Executable),
-            mapping(raw.rodata, ReadOnly, ReadOnly),
-            mapping(raw.tables, Writable, ReadOnly),
-            mapping(raw.route, Writable, ReadOnly),
-            mapping(raw.transition_stack, Writable, Writable),
-            mapping(raw.ist_stack, Writable, Writable),
-        ],
-        guards: [raw.transition_guard, raw.ist_guard],
-    })
+    Some([
+        EnclaveMapping::new(raw.text, Executable, Executable),
+        EnclaveMapping::new(raw.rodata, ReadOnly, ReadOnly),
+        EnclaveMapping::new(raw.tables, Writable, ReadOnly),
+        EnclaveMapping::new(raw.data, Writable, ReadOnly),
+    ])
 }
 
-const fn mapping(
-    section: Section,
-    full: EnclavePermission,
-    stripped: EnclavePermission,
-) -> EnclaveMapping {
-    EnclaveMapping {
-        section,
-        full,
-        stripped,
+// Freezes the processor set: a stripped root holds only the areas that existed when it was built.
+pub(super) fn entry_enclave() -> Option<EntryEnclave> {
+    let areas = percpu::freeze_areas();
+    if areas == 0 {
+        return None;
     }
+    Some(EntryEnclave {
+        image: image_enclave()?,
+        areas,
+    })
 }
 
 const fn page_exact(section: Section) -> bool {
@@ -135,89 +121,6 @@ pub(super) enum RouteError {
     InvalidEnclave,
 }
 
-#[derive(Debug)]
-#[repr(C)]
-struct RoutingPage {
-    state: AtomicU64,
-    full_root: AtomicU64,
-    stripped_root: AtomicU64,
-    task_stack_top: AtomicU64,
-    transition_stack_top: AtomicU64,
-    interrupt_stack_top: AtomicU64,
-}
-
-impl RoutingPage {
-    const fn new() -> Self {
-        Self {
-            state: AtomicU64::new(ROUTE_EMPTY),
-            full_root: AtomicU64::new(0),
-            stripped_root: AtomicU64::new(0),
-            task_stack_top: AtomicU64::new(0),
-            transition_stack_top: AtomicU64::new(0),
-            interrupt_stack_top: AtomicU64::new(0),
-        }
-    }
-}
-
-const _: () = {
-    assert!(
-        offset_of!(RoutingPage, state) == 0,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        offset_of!(RoutingPage, full_root) == 8,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        offset_of!(RoutingPage, stripped_root) == 16,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        offset_of!(RoutingPage, task_stack_top) == 24,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        offset_of!(RoutingPage, transition_stack_top) == 32,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        offset_of!(RoutingPage, interrupt_stack_top) == 40,
-        "the routing page layout must match the entry assembly"
-    );
-    assert!(
-        size_of::<RoutingPage>() == 48,
-        "the routing page layout must match the entry assembly"
-    );
-};
-
-pub(super) mod route {
-    use core::mem::offset_of;
-
-    use super::RoutingPage;
-
-    pub(in crate::arch::x86_64) const STATE: usize = offset_of!(RoutingPage, state);
-    pub(in crate::arch::x86_64) const FULL_ROOT: usize = offset_of!(RoutingPage, full_root);
-    pub(in crate::arch::x86_64) const STRIPPED_ROOT: usize = offset_of!(RoutingPage, stripped_root);
-    pub(in crate::arch::x86_64) const TASK_STACK_TOP: usize =
-        offset_of!(RoutingPage, task_stack_top);
-    pub(in crate::arch::x86_64) const TRANSITION_STACK_TOP: usize =
-        offset_of!(RoutingPage, transition_stack_top);
-    pub(in crate::arch::x86_64) const INTERRUPT_STACK_TOP: usize =
-        offset_of!(RoutingPage, interrupt_stack_top);
-}
-
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".kpti.state.route")]
-static WOST_KPTI_ROUTE: RoutingPage = RoutingPage::new();
-
-#[derive(Debug)]
-#[repr(C, align(4096))]
-struct TransitionStack([u8; STACK_BYTES]);
-
-#[unsafe(link_section = ".kpti.state.transition_stack")]
-static TRANSITION_STACK: HardwareCell<TransitionStack> =
-    HardwareCell::new(TransitionStack([0; STACK_BYTES]));
-
 // A refusal leaves `ROUTE_UPDATING`, which assembly treats as no entry authority.
 pub(super) fn publish_route(
     roots: &AddressSpaceRoots,
@@ -227,8 +130,9 @@ pub(super) fn publish_route(
         !interrupt::are_enabled(),
         "a paired entry route changes only with interrupts excluded"
     );
+    let page = percpu::entry();
     assert!(
-        WOST_KPTI_ROUTE.state.load(Ordering::Acquire) == ROUTE_UPDATING,
+        page.route_state.load(Ordering::Acquire) == ROUTE_UPDATING,
         "a paired entry route publishes only inside a route transaction"
     );
     let Some(stripped) = roots.stripped_root() else {
@@ -241,7 +145,7 @@ pub(super) fn publish_route(
     if !cpu::page_table_context_ids_are_disabled() {
         return Err(RouteError::PcidEnabled);
     }
-    if entry_enclave().is_none() {
+    if !percpu::on_entry_area() || entry_enclave().is_none() {
         return Err(RouteError::InvalidEnclave);
     }
     let task_stack_top = stack.address();
@@ -249,22 +153,9 @@ pub(super) fn publish_route(
         return Err(RouteError::InvalidTaskStack);
     }
 
-    WOST_KPTI_ROUTE
-        .full_root
-        .store(full.get(), Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .stripped_root
-        .store(stripped.get(), Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .task_stack_top
-        .store(task_stack_top, Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .transition_stack_top
-        .store(transition_stack_top().address(), Ordering::Relaxed);
-    WOST_KPTI_ROUTE.interrupt_stack_top.store(
-        segment::enclave_ist_stack_top().address(),
-        Ordering::Relaxed,
-    );
+    page.full_root.store(full.get(), Ordering::Relaxed);
+    page.stripped_root.store(stripped.get(), Ordering::Relaxed);
+    page.task_stack_top.store(task_stack_top, Ordering::Relaxed);
     Ok(())
 }
 
@@ -273,8 +164,8 @@ pub(super) fn begin_route_update() {
         !interrupt::are_enabled(),
         "a paired entry route changes only with interrupts excluded"
     );
-    WOST_KPTI_ROUTE
-        .state
+    percpu::entry()
+        .route_state
         .store(ROUTE_UPDATING, Ordering::Release);
 }
 
@@ -283,31 +174,26 @@ pub(super) fn clear_route() {
         !interrupt::are_enabled(),
         "a paired entry route clears only with interrupts excluded"
     );
+    let page = percpu::entry();
     assert!(
-        WOST_KPTI_ROUTE.state.load(Ordering::Acquire) == ROUTE_UPDATING,
+        page.route_state.load(Ordering::Acquire) == ROUTE_UPDATING,
         "a paired entry route clears only inside a route transaction"
     );
-    WOST_KPTI_ROUTE.full_root.store(0, Ordering::Relaxed);
-    WOST_KPTI_ROUTE.stripped_root.store(0, Ordering::Relaxed);
-    WOST_KPTI_ROUTE.task_stack_top.store(0, Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .transition_stack_top
-        .store(0, Ordering::Relaxed);
-    WOST_KPTI_ROUTE
-        .interrupt_stack_top
-        .store(0, Ordering::Relaxed);
-    WOST_KPTI_ROUTE.state.store(ROUTE_EMPTY, Ordering::Release);
+    page.full_root.store(0, Ordering::Relaxed);
+    page.stripped_root.store(0, Ordering::Relaxed);
+    page.task_stack_top.store(0, Ordering::Relaxed);
+    page.route_state.store(ROUTE_EMPTY, Ordering::Release);
 }
 
 pub(super) fn install_transition_rsp0() -> bool {
-    if WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_UPDATING {
+    let page = percpu::entry();
+    if page.route_state.load(Ordering::Acquire) != ROUTE_UPDATING {
         return false;
     }
-    assert!(
-        !interrupt::are_enabled(),
-        "entry stacks change only with interrupts excluded"
-    );
-    segment::install_entry_stacks(transition_stack_top(), segment::enclave_ist_stack_top());
+    let Some(top) = page.transition_stack_top() else {
+        return false;
+    };
+    segment::write_transition_stack(TransitionStackTop(top));
     true
 }
 
@@ -316,35 +202,39 @@ pub(super) fn finish_route_update(roots: AddressSpaceRoots) -> bool {
         !interrupt::are_enabled(),
         "a paired entry route finishes only with interrupts excluded"
     );
-    if WOST_KPTI_ROUTE.state.load(Ordering::Acquire) != ROUTE_UPDATING
+    let page = percpu::entry();
+    if page.route_state.load(Ordering::Acquire) != ROUTE_UPDATING
         || cpu::page_table_base() != roots.full_root()
-        || WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) != roots.full_root().get()
-        || WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) != roots.user_root().get()
-        || segment::kernel_stack() != transition_stack_top().address()
-        || segment::double_fault_stack_address() != segment::enclave_ist_stack_top().address()
+        || page.full_root.load(Ordering::Acquire) != roots.full_root().get()
+        || page.stripped_root.load(Ordering::Acquire) != roots.user_root().get()
+        || !rsp0_is_transition_stack()
     {
         return false;
     }
-    WOST_KPTI_ROUTE
-        .state
-        .store(ROUTE_PUBLISHED, Ordering::Release);
+    page.route_state.store(ROUTE_PUBLISHED, Ordering::Release);
     true
 }
 
+fn rsp0_is_transition_stack() -> bool {
+    percpu::entry()
+        .transition_stack_top()
+        .is_some_and(|top| segment::kernel_stack() == top)
+}
+
 pub(super) fn entry_is_ready() -> bool {
-    WOST_KPTI_ROUTE.state.load(Ordering::Acquire) == ROUTE_PUBLISHED
+    percpu::entry().route_state.load(Ordering::Acquire) == ROUTE_PUBLISHED
         && cpu::page_table_context_ids_are_disabled()
         && entry_enclave().is_some()
-        && segment::kernel_stack() == transition_stack_top().address()
-        && segment::double_fault_stack_address() == segment::enclave_ist_stack_top().address()
+        && rsp0_is_transition_stack()
 }
 
 pub(super) fn entry_is_ready_for(roots: AddressSpaceRoots, stack: KernelStackTop<'_>) -> bool {
+    let page = percpu::entry();
     entry_is_ready()
         && roots.stripped_root().is_some()
-        && WOST_KPTI_ROUTE.full_root.load(Ordering::Acquire) == roots.full_root().get()
-        && WOST_KPTI_ROUTE.stripped_root.load(Ordering::Acquire) == roots.user_root().get()
-        && WOST_KPTI_ROUTE.task_stack_top.load(Ordering::Acquire) == stack.address()
+        && page.full_root.load(Ordering::Acquire) == roots.full_root().get()
+        && page.stripped_root.load(Ordering::Acquire) == roots.user_root().get()
+        && page.task_stack_top.load(Ordering::Acquire) == stack.address()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -354,8 +244,4 @@ impl TransitionStackTop {
     pub(super) const fn address(self) -> u64 {
         self.0
     }
-}
-
-fn transition_stack_top() -> TransitionStackTop {
-    TransitionStackTop(TRANSITION_STACK.address() + STACK_BYTES as u64)
 }

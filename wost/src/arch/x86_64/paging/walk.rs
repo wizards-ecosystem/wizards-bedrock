@@ -121,33 +121,16 @@ pub(super) fn kernel_image_gap(
             address = next;
         }
     }
-    let Some(enclave) = super::kpti::entry_enclave() else {
-        return Some(crate::boot::sections().entry_enclave.text.start);
-    };
-    for guard in enclave.guards() {
-        let mut address = guard.start;
-        while address < guard.end {
-            if translate_in(candidate, address).is_some() {
-                return Some(address);
-            }
-            let Some(next) = address.checked_add(PAGE_SIZE) else {
-                return Some(address);
-            };
-            address = next;
-        }
-    }
     None
 }
 
-const IMAGE_SECTIONS: usize = 3 + super::kpti::MAPPINGS;
+const IMAGE_SECTIONS: usize = 3 + super::kpti::IMAGE_MAPPINGS;
 
 const SIGN_EXTENSION: u64 = 0xffff_0000_0000_0000;
 
 fn image_sections() -> Option<[(crate::boot::Section, bool, bool); IMAGE_SECTIONS]> {
     let sections = crate::boot::sections();
-    let [text, rodata, tables, route, transition_stack, ist_stack] =
-        super::kpti::entry_enclave()?.mappings();
-    let described = [text, rodata, tables, route, transition_stack, ist_stack].map(|mapping| {
+    let described = super::kpti::image_enclave()?.map(|mapping| {
         let flags = mapping.full_access().flags();
         (
             mapping.section(),
@@ -163,8 +146,6 @@ fn image_sections() -> Option<[(crate::boot::Section, bool, bool); IMAGE_SECTION
         described[1],
         described[2],
         described[3],
-        described[4],
-        described[5],
     ])
 }
 

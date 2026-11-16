@@ -6,7 +6,7 @@ pub(super) mod kpti;
 mod msr;
 pub mod paging;
 pub mod pci;
-pub(crate) mod percpu;
+pub mod percpu;
 pub mod pic;
 pub mod port;
 pub mod segment;

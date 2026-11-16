@@ -64,12 +64,12 @@ is treated like a reserved one: never allocated and never direct-mapped.
 1. `iommu::secure_handoff` clears Bus Master Enable on every PCI function and checks the platform
    DMA contract (section 8). The serial log and the framebuffer console come up, and only then
    does a refused handoff panic, so the reason is visible.
-2. `segment::init` and `trap::init` install the GDT, TSS and IDT; `cpu::establish_control_state`
+2. `segment::init` and `trap::init` install the boot processor's static GDT and TSS and the IDT; `cpu::establish_control_state`
    sets the control registers and flags the kernel owns; `cpu::enable_protections` turns on the
    supervisor protections; `xstate::init` enables extended state.
 3. `mem::init` starts the frame allocator. `mem::init_paging` reads the ACPI interrupt tables,
    builds the kernel's tables, maps the thread stack arena, rewrites PAT entry 1, activates the
-   tables, starts the thread table and guards the double-fault stack.
+   tables, moves the boot processor onto its entry area (section 3) and starts the thread table.
 4. `iommu::discover` validates the DMAR, and the boot thread moves to a guarded stack through
    `task::continue_on_stack`.
 5. `boot_continue` attaches the console's RAM shadow, masks every I/O APIC
@@ -90,11 +90,34 @@ interrupts off.
 
 ## 3. CPU, traps and the syscall gate
 
-The GDT has seven entries: null, kernel code, kernel data, the two-entry TSS descriptor, user
-data and user code (`wost/src/arch/x86_64/segment.rs`). Every code and data descriptor is written
-with its accessed bit set, so the processor never writes a table that the stripped root maps
-read-only. The TSS carries `RSP0` and IST1, the double-fault stack, which is a guarded stack with
-the thread arena's geometry once paging is live.
+Each processor has an entry area in the entry window, at `0xfffffe8000000000` plus 128 KiB per
+processor (`wost/src/arch/x86_64/percpu.rs`). Page 0 is the entry page: its own address, the
+processor's block, its table page and its paired-root route (state, full root, stripped root, task
+stack top and transition stack top), all the entry assembly reads before it switches roots. Page 1
+holds the GDT and TSS. Above them, each over an unmapped guard page, sit the 16 KiB transition stack
+and the double-fault, NMI and machine-check stacks, which the TSS names as IST1 to IST3. The block
+holds the trap depth, the live frame, the current task, the owner of the live interrupt exclusion,
+the held-rank word and the last user root.
+
+The boot processor runs on a static entry page, static tables and one shared fault stack from the
+first instruction of `boot::enter` until paging is active. `percpu::bring_up_boot_processor` then
+maps its area from fresh frames and loads it: tables, `ltr` and `IA32_GS_BASE`. A second processor
+takes the same two steps with its own index, the mapping on the boot processor and the load on
+itself. Areas are never unmapped, only bring-up writes the window, and ring 3 never runs on a
+processor without one. A stripped root copies the areas that exist when it is built, so building
+the first one closes the set.
+
+The GDT has seven entries: null, kernel code, kernel data, the two-entry TSS descriptor, user data
+and user code (`wost/src/arch/x86_64/segment.rs`). Every code and data descriptor is written with
+its accessed bit set, so the processor never writes a table that the stripped root maps read-only.
+
+In ring 0 `IA32_GS_BASE` names this processor's entry page, and in ring 3 it is zero: every GDT
+base is zero and `CR4.FSGSBASE` stays clear. An entry from ring 3 executes `swapgs`, and both paths
+then execute `lfence`, so nothing runs ahead on the wrong base. The return to ring 3 executes
+`swapgs` immediately before `iretq`. The NMI, double-fault and machine-check stubs do not trust the
+pushed `CS`: they read `IA32_GS_BASE`, swap when it is not a kernel address and stop when it still
+is not. Those three never resume, so the half-swapped `GS` they may interrupt is never returned to.
+A switch loads the null `GS` selector between two `swapgs`, so only ring 3's zero base can clear.
 
 Every IDT gate is an interrupt gate, so a handler starts with interrupts off. Generated assembly
 stubs push a zero error code where the CPU pushes none, so every frame has one shape, and join
@@ -170,12 +193,13 @@ recycled root frame still counts as a new space.
   `RDCL_NO` or the exact QEMU TCG hypervisor tuple.
 - Paired: each user space is a pair of roots. The full root holds the user mappings and the
   kernel half. The stripped root shares the user subtrees and maps only the entry enclave: the
-  `.kpti.*` linker sections holding the entry text, the descriptor tables, a route page and two
-  guarded entry stacks.
+  `.kpti.*` linker sections holding the entry text, the IDT and the entry flags, and every
+  processor's entry area, with its entry and table pages read-only.
 - Closed: neither is available, and ring 3 never opens.
 
 Under paired roots the entry assembly loads the full root before any Rust runs, and the exit path
-loads the stripped root after its last secret access and a scrub of both entry stacks. PCID is
+loads the stripped root after its last secret access and a scrub of the transition stack. The fault
+stacks are not scrubbed: nothing that pushes onto them resumes. PCID is
 off, so each `CR3` load flushes. An exception or NMI inside that transition window writes
 `wost: kpti stop` to COM1 and halts the machine. The self-test kernel forces paired roots so the
 path runs on QEMU too.
@@ -258,7 +282,7 @@ tables for its own code, stack, direct map and every framebuffer and firmware by
 boot before writing `CR3`, and refuses while NX is off or a higher-half top-level entry is
 user-accessible. The kernel space is private to
 `kernel/src/mem.rs`, which exports operations on it and never the `AddressSpace`. Activation
-reserves the top-level entries of the device window, and no higher-half top-level table is made
+reserves the top-level entries of the device window and the entry window, and no higher-half top-level table is made
 afterwards, so every user root shares one kernel topology.
 
 The image is mapped by linker-symbol class, the entry enclave included. The direct map, at the
@@ -280,15 +304,16 @@ the token is made, so every token starts complete.
 | `0xffffffff80000000` | kernel image |
 | bootloader's offset | direct map of physical memory |
 | `0xffffff0000000000` to `0xffffff0100000000` | device window: MMIO, uncached and never executable |
+| `0xfffffe8000000000` | entry window: one 128 KiB entry area per processor (section 3) |
 | `0xfffffe0000000000` | kernel thread stack arena |
 | below `0x0000800000000000` (`USER_END`) | user half; mappings end one page lower (`USER_MAPPING_END`) |
 
 Kernel stacks are 32 KiB above an unmapped 4 KiB guard, laid out by `libs/stack-layout` in an
-arena of sixteen slots (`kernel/src/thread.rs`); the boot thread and the double-fault stack use
-the same geometry. A stack inside the bootloader's 2 MiB direct map cannot be guarded, which is
-why the boot thread leaves the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that
-stack's leaves in the loaded `CR3`. The entry enclave's two guard pages are protected the same
-way once the kernel's tables are live.
+arena of sixteen slots (`kernel/src/thread.rs`); the boot thread uses the same geometry. A stack
+inside the bootloader's 2 MiB direct map cannot be guarded, which is why the boot thread leaves
+the bootloader's stack. Each `TSS` or switch write of a stack top re-walks that stack's leaves in
+the loaded `CR3`. Every map and unmap call refuses the entry window, so the guard pages under the
+entry and fault stacks stay absent.
 
 ## 5. Threads, scheduling, locks and time
 

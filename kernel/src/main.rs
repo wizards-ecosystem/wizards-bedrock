@@ -143,7 +143,7 @@ fn kernel_main(boot: BootInfo, mut context: ThreadContext) -> ! {
         .map(|memory| (*memory.map(), memory.direct()))
         .map_err(|reason| *reason);
     mem::init(boot.memory, early_dma);
-    let interrupts = mem::init_paging(&mut context, layout, boot.image, boot.rsdp);
+    let interrupts = mem::init_paging(layout, boot.image, boot.rsdp);
     if let Ok(rsdp) = boot.rsdp {
         iommu::discover(rsdp);
     }

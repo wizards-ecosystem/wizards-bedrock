@@ -10,7 +10,7 @@ use wost::arch::current::paging::{
     MappedStack, ReclaimFailure, ReleasableDevice, StackArena,
 };
 use wost::arch::current::pci as platform_pci;
-use wost::arch::current::segment;
+use wost::arch::current::percpu;
 use wost::boot::{
     self, BootMemory, DirectMap, DirectMapCache, HandoffError, ImageAddress, MemoryKind, MemoryMap,
 };
@@ -225,22 +225,6 @@ pub(crate) fn unmap_device_exact(
     }
 }
 
-// Mapped after activation so its guard is truly absent; pinned, because the TSS points at it.
-fn guard_the_fault_stack(context: &mut ThreadContext) -> Result<u64, MapError> {
-    let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
-    let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
-
-    let stack = with_active_space(context, |space| space.map_pinned_stack(&slot))
-        .ok_or(MapError::OutOfMemory)??;
-
-    let top = stack.top();
-    assert!(
-        segment::set_double_fault_stack(&stack),
-        "a newly pinned stack must belong to the active address space"
-    );
-    Ok(top)
-}
-
 pub(crate) fn map_boot_stack(context: &mut ThreadContext) -> Option<MappedStack> {
     map_guarded_stack(context, thread::boot_stack_layout()?)
 }
@@ -279,7 +263,6 @@ fn unrecognised(kind: &MemoryKind) -> bool {
 }
 
 pub(crate) fn init_paging(
-    context: &mut ThreadContext,
     layout: Result<(MemoryMap, DirectMap), HandoffError>,
     image: Result<ImageAddress, HandoffError>,
     rsdp: Result<u64, HandoffError>,
@@ -327,11 +310,16 @@ pub(crate) fn init_paging(
         }
     }
 
+    match percpu::bring_up_boot_processor(&mut space) {
+        Ok(area) => info!("cpu: processor 0 runs on its entry area at {area:#x}"),
+        Err(reason) => warn!("cpu: processor 0 has no entry area: {reason}; ring 3 stays closed"),
+    }
+
     let thread_slots = thread::start_threads(&mut space, arena);
 
     *SPACE.lock_leaf() = Some(space);
 
-    report_guarded_paging(context, thread_slots, write_combining);
+    report_guarded_paging(thread_slots, write_combining);
     interrupts
 }
 
@@ -360,15 +348,9 @@ fn map_thread_stacks(space: &mut AddressSpace) -> Option<StackArena> {
 }
 
 fn report_guarded_paging(
-    context: &mut ThreadContext,
     thread_slots: Option<usize>,
     write_combining: Option<cpu::WriteCombining>,
 ) {
-    match guard_the_fault_stack(context) {
-        Ok(top) => info!("faults: double-fault stack guarded, top {top:#x}"),
-        Err(reason) => warn!("faults: double-fault stack left unguarded: {reason}"),
-    }
-
     if let Some(slots) = thread_slots {
         info!("threads: {slots} guarded stacks ready");
     }
@@ -416,7 +398,7 @@ fn build(
     image: ImageAddress,
 ) -> Result<AddressSpace, BuildError> {
     let mut space = AddressSpace::new().map_err(BuildError::Mapping)?;
-    let mut image_ranges = [(0, 0, Flags::NONE); 9];
+    let mut image_ranges = [(0, 0, Flags::NONE); 7];
     let result = map_image(&mut space, image, &mut image_ranges)
         .and_then(|()| map_direct(&mut space, map, direct, &image_ranges));
 
@@ -429,7 +411,7 @@ fn build(
 fn map_image(
     space: &mut AddressSpace,
     image: ImageAddress,
-    ranges: &mut [(u64, u64, Flags); 9],
+    ranges: &mut [(u64, u64, Flags); 7],
 ) -> Result<(), MapError> {
     let sections = boot::sections();
 
@@ -451,19 +433,9 @@ fn map_image(
             "entry tables",
         ),
         (
-            enclave.route,
+            enclave.data,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
-            "entry route",
-        ),
-        (
-            enclave.transition_stack,
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-            "entry transition stack",
-        ),
-        (
-            enclave.ist_stack,
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-            "entry IST stack",
+            "entry flags",
         ),
     ];
     for ((section, flags, name), range) in classes.into_iter().zip(ranges.iter_mut()) {
@@ -487,7 +459,7 @@ fn map_direct(
     space: &mut AddressSpace,
     map: &MemoryMap,
     direct: DirectMap,
-    image_ranges: &[(u64, u64, Flags); 9],
+    image_ranges: &[(u64, u64, Flags); 7],
 ) -> Result<(), MapError> {
     let mut mapped = 0;
     for run in map.page_runs() {

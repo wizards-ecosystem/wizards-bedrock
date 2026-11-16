@@ -11,6 +11,7 @@ pub use x86_tables::return_state::UserReturnError;
 use x86_tables::return_state::UserReturnState;
 
 use super::cpu;
+use super::percpu::{self, entry_field};
 use super::pic;
 use super::segment;
 use super::table::TablePointer;
@@ -42,7 +43,6 @@ impl ExclusionLedger {
     }
 }
 
-static ACTIVE_CONTEXT: AtomicUsize = AtomicUsize::new(super::task::BOOT);
 static EXCLUSIONS: [ExclusionLedger; CONTEXTS] = [const { ExclusionLedger::new() }; CONTEXTS];
 
 pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
@@ -52,7 +52,7 @@ const STUB_BYTES: usize = 16;
 // Field order mirrors the entry pushes, lowest address first.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-struct RawTrapFrame {
+pub(super) struct RawTrapFrame {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -262,16 +262,12 @@ const NO_USER_GATE: u16 = u16::MAX;
 
 static USER_GATE: AtomicU16 = AtomicU16::new(NO_USER_GATE);
 
-static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
-
-static LIVE_FRAME: AtomicPtr<RawTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
-
 pub(crate) fn in_trap() -> bool {
-    TRAP_DEPTH.load(Ordering::Relaxed) != 0
+    percpu::current().trap_depth.load(Ordering::Relaxed) != 0
 }
 
 pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
-    LIVE_FRAME.load(Ordering::Relaxed) == frame.origin
+    percpu::current().live_frame.load(Ordering::Relaxed) == frame.origin
 }
 
 #[must_use = "a refused resume changed no trap frame"]
@@ -289,15 +285,19 @@ pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::Recove
 }
 
 pub(crate) fn suspend_trap() -> TrapSuspension {
+    let here = percpu::current();
     TrapSuspension {
-        depth: TRAP_DEPTH.swap(0, Ordering::Relaxed),
-        frame: LIVE_FRAME.swap(core::ptr::null_mut(), Ordering::Relaxed),
+        depth: here.trap_depth.swap(0, Ordering::Relaxed),
+        frame: here
+            .live_frame
+            .swap(core::ptr::null_mut(), Ordering::Relaxed),
     }
 }
 
 pub(crate) fn resume_trap(suspended: TrapSuspension) {
-    TRAP_DEPTH.store(suspended.depth, Ordering::Relaxed);
-    LIVE_FRAME.store(suspended.frame, Ordering::Relaxed);
+    let here = percpu::current();
+    here.trap_depth.store(suspended.depth, Ordering::Relaxed);
+    here.live_frame.store(suspended.frame, Ordering::Relaxed);
 }
 
 #[derive(Debug)]
@@ -332,10 +332,11 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     // reference exists, and the CPU is not pointed at it until the `lidt` below.
     let gates = unsafe { &mut *IDT.as_mut_ptr() };
     for (vector, gate) in gates.iter_mut().enumerate() {
-        let stack = if vector == exception::DOUBLE_FAULT as usize {
-            segment::DOUBLE_FAULT_STACK
-        } else {
-            0
+        let stack = match u8::try_from(vector) {
+            Ok(exception::DOUBLE_FAULT) => segment::DOUBLE_FAULT_STACK,
+            Ok(exception::NON_MASKABLE) => segment::NON_MASKABLE_STACK,
+            Ok(exception::MACHINE_CHECK) => segment::MACHINE_CHECK_STACK,
+            _ => 0,
         };
         let address = (base + vector * STUB_BYTES) as u64;
         // Only the named gate is reachable from ring 3; a user `int` at any other vector faults.
@@ -360,7 +361,7 @@ pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
 
 // The entry stub reads this byte directly; `clac` would fault without SMAP.
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".kpti.state.route")]
+#[unsafe(link_section = ".kpti.state.flags")]
 static SMAP_ARMED: AtomicU8 = AtomicU8::new(0);
 
 pub(super) fn arm_access_clear() {
@@ -377,7 +378,7 @@ pub(super) fn access_clear_is_armed() -> bool {
 
 // The return stub reads this byte directly.
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".kpti.state.route")]
+#[unsafe(link_section = ".kpti.state.flags")]
 static MDS_CLEAR: AtomicU8 = AtomicU8::new(0);
 
 // Read-only in the stripped root, so `verw` writes no scratch byte onto the scrubbed stack.
@@ -505,9 +506,13 @@ impl InterruptState {
     }
 }
 
+fn active_context() -> usize {
+    percpu::current().exclusion_owner.load(Ordering::Relaxed)
+}
+
 fn assert_owner(owner: usize) {
     assert_eq!(
-        ACTIVE_CONTEXT.load(Ordering::Relaxed),
+        active_context(),
         owner,
         "an interrupt exclusion belongs to another task context"
     );
@@ -562,7 +567,7 @@ pub fn disable() -> InterruptState {
     // SAFETY: `cli` clears IF on this CPU, touching nothing else, with no ring 0 precondition;
     // `preserves_flags` is deliberately absent, since modifying IF is the point.
     unsafe { asm!("cli", options(nostack)) };
-    let owner = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    let owner = active_context();
     let ledger = &EXCLUSIONS[owner];
     let depth = ledger.depth.load(Ordering::Relaxed);
     assert!(
@@ -591,9 +596,7 @@ pub fn disable() -> InterruptState {
 pub fn enable() {
     assert_platform_enable_preconditions();
     assert_eq!(
-        EXCLUSIONS[ACTIVE_CONTEXT.load(Ordering::Relaxed)]
-            .depth
-            .load(Ordering::Relaxed),
+        EXCLUSIONS[active_context()].depth.load(Ordering::Relaxed),
         0,
         "an interrupt exclusion is still live"
     );
@@ -618,9 +621,7 @@ fn assert_platform_enable_preconditions() {
 // Private: only restoration may reuse a previously admitted flag.
 fn set_flag() {
     assert_eq!(
-        EXCLUSIONS[ACTIVE_CONTEXT.load(Ordering::Relaxed)]
-            .depth
-            .load(Ordering::Relaxed),
+        EXCLUSIONS[active_context()].depth.load(Ordering::Relaxed),
         0,
         "an interrupt exclusion is still live"
     );
@@ -639,7 +640,9 @@ pub(super) fn switch_context(to: usize) {
         "a context switch requires interrupts disabled"
     );
     assert!(to < CONTEXTS, "task context is outside the exclusion table");
-    ACTIVE_CONTEXT.store(to, Ordering::Relaxed);
+    percpu::current()
+        .exclusion_owner
+        .store(to, Ordering::Relaxed);
 }
 
 pub(super) fn context_is_clear(slot: usize) -> bool {
@@ -692,12 +695,13 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
 }
 
 fn trap(handlers: &Handlers, frame: &TrapFrame) {
-    TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
+    let here = percpu::current();
+    here.trap_depth.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.
-    let outer = LIVE_FRAME.swap(frame.origin, Ordering::Relaxed);
+    let outer = here.live_frame.swap(frame.origin, Ordering::Relaxed);
     (handlers.on_trap)(frame);
-    LIVE_FRAME.store(outer, Ordering::Relaxed);
-    TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    here.live_frame.store(outer, Ordering::Relaxed);
+    here.trap_depth.fetch_sub(1, Ordering::Relaxed);
 }
 
 // `None` is an interrupt, or a fault no program survives: both take the trap path first.
@@ -821,18 +825,41 @@ const COM1: u16 = 0x3F8;
     // The frame is saved before any general register is used; it is all the stripped root sees.
     "wost_interrupt_entry:",
     "cld",
+    "push rax",
+    "push rbx",
+    "push rcx",
+    "push rdx",
+    // A paranoid vector can land between a `swapgs` and its privilege change, so it asks the MSR.
+    "cmp qword ptr [rsp + {early_vector}], {non_maskable}",
+    "je 18f",
+    "cmp qword ptr [rsp + {early_vector}], {double_fault}",
+    "je 18f",
+    "cmp qword ptr [rsp + {early_vector}], {machine_check}",
+    "je 18f",
+    "test byte ptr [rsp + {early_cs}], 3",
+    "jz 19f",
+    "swapgs",
+    "jmp 19f",
+    "18:",
+    "mov ecx, {gs_base}",
+    "rdmsr",
+    "test edx, edx",
+    "js 19f",
+    "swapgs",
+    "rdmsr",
+    "test edx, edx",
+    "jns wost_kpti_stop",
+    // Neither path may run ahead on the other's base.
+    "19:",
+    "lfence",
     // Ring 3 controls `AC` and entry keeps it; `clac` sits behind a branch, faulting without SMAP.
     "cmp byte ptr [rip + {smap}], 0",
     "je 3f",
     "clac",
     "3:",
     // A privilege change nulls `SS`, and dispatch may switch contexts, so reload it before Rust.
-    "push rax",
     "mov ax, {kernel_data}",
     "mov ss, ax",
-    "push rbx",
-    "push rcx",
-    "push rdx",
     "push rsi",
     "push rdi",
     "push rbp",
@@ -845,61 +872,53 @@ const COM1: u16 = 0x3F8;
     "push r14",
     "push r15",
     // A published route admits two roots: user entry arrives stripped and switches before Rust.
-    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 1",
+    "cmp qword ptr gs:[{route_state}], 1",
     "je 14f",
-    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 2",
+    "cmp qword ptr gs:[{route_state}], 2",
     "je wost_kpti_stop",
     "jmp 4f",
     "14:",
     "mov r11, cr3",
     "shr r11, 12",
     "shl r11, 12",
-    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped}]",
+    "cmp r11, qword ptr gs:[{route_stripped}]",
     "je 5f",
-    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "cmp r11, qword ptr gs:[{route_full}]",
     "jne wost_kpti_load_full_and_stop",
     "test byte ptr [rsp + {frame_cs}], 3",
     "jnz wost_kpti_stop",
-    // A kernel frame on either enclave stack is a nested entry inside a root transition.
-    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
-    "cmp rsp, r10",
-    "jae 12f",
-    "sub r10, {entry_stack_bytes}",
-    "cmp rsp, r10",
-    "jae wost_kpti_stop",
-    "12:",
-    // A double fault runs on the interrupt stack by design.
+    // The paranoid vectors run on their own stacks by design.
+    "cmp qword ptr [rsp + {frame_vector}], {non_maskable}",
+    "je 4f",
     "cmp qword ptr [rsp + {frame_vector}], {double_fault}",
-    "je 13f",
-    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
-    "cmp rsp, r10",
-    "jae 13f",
-    "sub r10, {entry_stack_bytes}",
-    "cmp rsp, r10",
+    "je 4f",
+    "cmp qword ptr [rsp + {frame_vector}], {machine_check}",
+    "je 4f",
+    // Any other kernel frame on an entry stack is a nested entry inside a root transition.
+    "mov r10, rsp",
+    "sub r10, qword ptr gs:[{entry_this}]",
+    "cmp r10, {entry_stacks_end}",
+    "jae 4f",
+    "cmp r10, {entry_stacks_start}",
     "jae wost_kpti_stop",
-    "13:",
     "jmp 4f",
     "5:",
     ".globl wost_kpti_entry_load_full_root",
     "wost_kpti_entry_load_full_root:",
-    "mov r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "mov r11, qword ptr gs:[{route_full}]",
     "mov cr3, r11",
     // A kernel-origin entry here faulted after the stripped-root load: stop without Rust.
     "test byte ptr [rsp + {frame_cs}], 3",
     "jz wost_kpti_stop",
-    // Move the frame off, then scrub both enclave stacks the stripped root could have used.
+    // Move the frame off, then scrub the transition stack the stripped root used.
     "mov rsi, rsp",
-    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_task_stack}]",
+    "mov rdi, qword ptr gs:[{route_task_stack}]",
     "sub rdi, {raw_frame_bytes}",
     "mov rbx, rdi",
     "mov rcx, {raw_frame_words}",
     "rep movsq",
     "xor eax, eax",
-    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
-    "sub rdi, {entry_stack_bytes}",
-    "mov rcx, {entry_stack_words}",
-    "rep stosq",
-    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
+    "mov rdi, qword ptr gs:[{transition_top}]",
     "sub rdi, {entry_stack_bytes}",
     "mov rcx, {entry_stack_words}",
     "rep stosq",
@@ -912,34 +931,36 @@ const COM1: u16 = 0x3F8;
     "wost_kpti_entry_call_rust:",
     "call {dispatch}",
     "mov rsp, rbx",
+    // A paranoid vector may have interrupted a half-swapped `GS`, so it never resumes.
+    "cmp qword ptr [rsp + {frame_vector}], {non_maskable}",
+    "je wost_kpti_stop",
+    "cmp qword ptr [rsp + {frame_vector}], {double_fault}",
+    "je wost_kpti_stop",
+    "cmp qword ptr [rsp + {frame_vector}], {machine_check}",
+    "je wost_kpti_stop",
     ".globl wost_interrupt_return",
     "wost_interrupt_return:",
-    // A validated paired return copies only registers and the iret frame to scrubbed stacks.
+    // A validated paired return copies only registers and the iret frame to the scrubbed stack.
     "test byte ptr [rsp + {frame_cs}], 3",
     "jz 6f",
-    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 1",
+    "cmp qword ptr gs:[{route_state}], 1",
     "je 15f",
-    "cmp qword ptr [rip + WOST_KPTI_ROUTE + {route_state}], 2",
+    "cmp qword ptr gs:[{route_state}], 2",
     "je wost_kpti_stop",
     "jmp 7f",
     "15:",
     "mov r11, cr3",
     "shr r11, 12",
     "shl r11, 12",
-    "cmp r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "cmp r11, qword ptr gs:[{route_full}]",
     "jne wost_kpti_load_full_and_stop",
-    "mov r10, qword ptr [rip + WOST_KPTI_ROUTE + {route_stripped}]",
+    "mov r10, qword ptr gs:[{route_stripped}]",
     "mov rdx, rsp",
     "xor eax, eax",
-    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
-    "sub rdi, {entry_stack_bytes}",
+    "mov rbx, qword ptr gs:[{transition_top}]",
+    "lea rdi, [rbx - {entry_stack_bytes}]",
     "mov rcx, {entry_stack_words}",
     "rep stosq",
-    "mov rdi, qword ptr [rip + WOST_KPTI_ROUTE + {route_interrupt_stack}]",
-    "sub rdi, {entry_stack_bytes}",
-    "mov rcx, {entry_stack_words}",
-    "rep stosq",
-    "mov rbx, qword ptr [rip + WOST_KPTI_ROUTE + {route_transition_stack}]",
     "sub rbx, {user_frame_bytes}",
     "mov rsi, rdx",
     "mov rdi, rbx",
@@ -974,6 +995,8 @@ const COM1: u16 = 0x3F8;
     "je 10f",
     "verw word ptr [rip + {verw_selector}]",
     "10:",
+    // Only `iretq` runs on ring 3's base.
+    "swapgs",
     ".globl wost_kpti_exit_iret",
     "wost_kpti_exit_iret:",
     "iretq",
@@ -1001,11 +1024,13 @@ const COM1: u16 = 0x3F8;
     "jz 2f",
     // `VERW` flushes CPU buffers on the way to ring 3 unless the processor reports immunity.
     "cmp byte ptr [rip + {clear}], 0",
-    "je 2f",
+    "je 8f",
     "sub rsp, 8",
     "mov word ptr [rsp], {kernel_data}",
     "verw word ptr [rsp]",
     "add rsp, 8",
+    "8:",
+    "swapgs",
     "2:",
     "iretq",
     // First entry builds the raw frame the interrupt path validates and joins its return tail.
@@ -1030,7 +1055,7 @@ const COM1: u16 = 0x3F8;
     ".size wost_leave_for_user, . - wost_leave_for_user",
     // No Rust and no ordinary memory: restore the full root if the route names one, then stop.
     "wost_kpti_load_full_and_stop:",
-    "mov r11, qword ptr [rip + WOST_KPTI_ROUTE + {route_full}]",
+    "mov r11, qword ptr gs:[{route_full}]",
     "mov cr3, r11",
     "wost_kpti_stop:",
     "cli",
@@ -1063,19 +1088,28 @@ const COM1: u16 = 0x3F8;
         / size_of::<u64>(),
     registers_below_rdi = const core::mem::offset_of!(RawTrapFrame, rdi) / size_of::<u64>(),
     iret_words = const 5,
+    early_vector = const core::mem::offset_of!(RawTrapFrame, vector)
+        - core::mem::offset_of!(RawTrapFrame, rdx),
+    early_cs = const core::mem::offset_of!(RawTrapFrame, code_selector)
+        - core::mem::offset_of!(RawTrapFrame, rdx),
     frame_rip = const core::mem::offset_of!(RawTrapFrame, instruction_pointer),
     frame_cs = const core::mem::offset_of!(RawTrapFrame, code_selector),
     frame_vector = const core::mem::offset_of!(RawTrapFrame, vector),
+    non_maskable = const exception::NON_MASKABLE as u64,
     double_fault = const exception::DOUBLE_FAULT as u64,
+    machine_check = const exception::MACHINE_CHECK as u64,
+    gs_base = const percpu::GS_BASE,
     user_frame_rip = const 15 * size_of::<u64>(),
-    entry_stack_bytes = const super::kpti::STACK_BYTES,
-    entry_stack_words = const super::kpti::STACK_BYTES / size_of::<u64>(),
-    route_state = const super::kpti::route::STATE,
-    route_full = const super::kpti::route::FULL_ROOT,
-    route_stripped = const super::kpti::route::STRIPPED_ROOT,
-    route_task_stack = const super::kpti::route::TASK_STACK_TOP,
-    route_transition_stack = const super::kpti::route::TRANSITION_STACK_TOP,
-    route_interrupt_stack = const super::kpti::route::INTERRUPT_STACK_TOP,
+    entry_stack_bytes = const percpu::STACK_BYTES,
+    entry_stack_words = const percpu::STACK_BYTES / size_of::<u64>() as u64,
+    entry_stacks_start = const percpu::ENTRY_STACKS_START,
+    entry_stacks_end = const percpu::ENTRY_STACKS_END,
+    entry_this = const entry_field::THIS,
+    route_state = const entry_field::ROUTE_STATE,
+    route_full = const entry_field::FULL_ROOT,
+    route_stripped = const entry_field::STRIPPED_ROOT,
+    route_task_stack = const entry_field::TASK_STACK_TOP,
+    transition_top = const entry_field::TRANSITION_STACK_TOP,
     clear = sym MDS_CLEAR,
     verw_selector = sym KPTI_VERW_SELECTOR,
     smap = sym SMAP_ARMED,

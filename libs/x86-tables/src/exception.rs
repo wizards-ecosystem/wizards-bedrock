@@ -1,5 +1,7 @@
 pub const COUNT: u8 = 32;
 
+pub const NON_MASKABLE: u8 = 2;
+
 pub const INVALID_OPCODE: u8 = 6;
 
 pub const DOUBLE_FAULT: u8 = 8;
@@ -7,6 +9,8 @@ pub const DOUBLE_FAULT: u8 = 8;
 pub const GENERAL_PROTECTION: u8 = 13;
 
 pub const PAGE_FAULT: u8 = 14;
+
+pub const MACHINE_CHECK: u8 = 18;
 
 pub const ERROR_CODE_VECTORS: u32 = 0x6022_7D00;
 

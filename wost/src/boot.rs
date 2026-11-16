@@ -295,12 +295,7 @@ pub struct EntryEnclaveSections {
     pub text: Section,
     pub rodata: Section,
     pub tables: Section,
-    pub route: Section,
     pub data: Section,
-    pub transition_stack: Section,
-    pub transition_guard: Section,
-    pub ist_stack: Section,
-    pub ist_guard: Section,
 }
 
 // Never make a symbol weak or `PROVIDE`d: a zero address would map the kernel text writable.
@@ -319,17 +314,8 @@ pub fn sections() -> Sections {
         static __kpti_rodata_end: u8;
         static __kpti_tables_start: u8;
         static __kpti_tables_end: u8;
-        static __kpti_route_start: u8;
-        static __kpti_route_end: u8;
+        static __kpti_data_start: u8;
         static __kpti_data_end: u8;
-        static __kpti_transition_guard_start: u8;
-        static __kpti_transition_guard_end: u8;
-        static __kpti_transition_stack_start: u8;
-        static __kpti_transition_stack_end: u8;
-        static __kpti_ist_guard_start: u8;
-        static __kpti_ist_guard_end: u8;
-        static __kpti_ist_stack_start: u8;
-        static __kpti_ist_stack_end: u8;
     }
 
     // Distinct symbols may alias one boundary, so opacity stops their equality folding to false.
@@ -363,29 +349,9 @@ pub fn sections() -> Sections {
                 start: linker_address(&raw const __kpti_tables_start),
                 end: linker_address(&raw const __kpti_tables_end),
             },
-            route: Section {
-                start: linker_address(&raw const __kpti_route_start),
-                end: linker_address(&raw const __kpti_route_end),
-            },
             data: Section {
-                start: linker_address(&raw const __kpti_route_start),
+                start: linker_address(&raw const __kpti_data_start),
                 end: linker_address(&raw const __kpti_data_end),
-            },
-            transition_stack: Section {
-                start: linker_address(&raw const __kpti_transition_stack_start),
-                end: linker_address(&raw const __kpti_transition_stack_end),
-            },
-            transition_guard: Section {
-                start: linker_address(&raw const __kpti_transition_guard_start),
-                end: linker_address(&raw const __kpti_transition_guard_end),
-            },
-            ist_stack: Section {
-                start: linker_address(&raw const __kpti_ist_stack_start),
-                end: linker_address(&raw const __kpti_ist_stack_end),
-            },
-            ist_guard: Section {
-                start: linker_address(&raw const __kpti_ist_guard_start),
-                end: linker_address(&raw const __kpti_ist_guard_end),
             },
         },
     }

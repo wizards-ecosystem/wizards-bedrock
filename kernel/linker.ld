@@ -51,42 +51,18 @@ SECTIONS
 
     __rodata_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    /* The full root writes these pages while building routes and tables; the stripped root maps
-       the table and routing pages read-only. A guard is a named page, so paired-root construction
-       omits it rather than trusting a hole inferred from stack arithmetic. */
+    /* The full root writes these pages; the stripped root maps them read-only. Each processor's
+       GDT, TSS, route and entry stacks live in its entry area, outside the image. */
     .kpti.tables : ALIGN(4096) {
         __kpti_tables_start = .;
         KEEP(*(.kpti.tables.idt))
-        KEEP(*(.kpti.tables.gdt))
-        KEEP(*(.kpti.tables.tss))
         . = ALIGN(4096);
         __kpti_tables_end = .;
     } :kpti_data
 
     .kpti.data : ALIGN(4096) {
-        __kpti_route_start = .;
-        KEEP(*(.kpti.state.route))
-        . = ALIGN(4096);
-        __kpti_route_end = .;
-
-        __kpti_transition_guard_start = .;
-        . += 4096;
-        __kpti_transition_guard_end = .;
-
-        __kpti_transition_stack_start = .;
-        KEEP(*(.kpti.state.transition_stack))
-        . = ALIGN(4096);
-        __kpti_transition_stack_end = .;
-
-        __kpti_ist_guard_start = .;
-        . += 4096;
-        __kpti_ist_guard_end = .;
-
-        __kpti_ist_stack_start = .;
-        KEEP(*(.kpti.state.ist_stack))
-        . = ALIGN(4096);
-        __kpti_ist_stack_end = .;
-
+        __kpti_data_start = .;
+        KEEP(*(.kpti.state.flags))
         . = ALIGN(4096);
         __kpti_data_end = .;
     } :kpti_data

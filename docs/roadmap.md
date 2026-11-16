@@ -214,10 +214,6 @@ Phase 7:
   Teardown of a process must never block another's and never panic.
 
 Phase 8:
-- Every piece of processor state is a single global, there is no per-CPU base, and the GDT, TSS,
-  fault stacks and paired-root entry route are one static each that init loads once (`percpu.rs`,
-  `interrupt.rs`, `task.rs`, `segment.rs` and `kpti.rs` in `wost/src/arch/x86_64/`). Phase 8 needs a
-  `GS`-based per-CPU block and per-processor tables.
 - Stack reuse is safe only on one processor: `exit` frees a slot still running on its stack
   (`kernel/src/thread.rs`). Phase 8 needs an on-CPU flag the next thread clears.
 - There is one run queue and one idle thread, and one PIT watchdog judges one APIC window for a

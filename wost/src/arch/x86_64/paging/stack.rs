@@ -4,8 +4,8 @@ use stack_layout::{Slot, StackLayout, ranges_overlap};
 use x86_paging::{Flags, PAGE_SIZE, page_identity_matches};
 
 use super::{
-    AddressSpace, AddressSpaceRoots, MapError, PERMANENT_STACKS, TASK_STACK_PIN, active_root, cpu,
-    current_mapping_root, is_active, kpti, translate_in, walk,
+    AddressSpace, AddressSpaceRoots, MapError, PERMANENT_STACKS, TASK_STACK_PIN, cpu,
+    current_mapping_root, is_active, percpu, translate_in, walk,
 };
 use crate::mm::{self, PhysicalAddress};
 
@@ -51,24 +51,6 @@ impl AddressSpace {
             };
             self.remove_stack(&slot);
         }
-    }
-
-    pub fn map_pinned_stack(&mut self, slot: &Slot) -> Result<PinnedStack, MapError> {
-        let Some(roots) = self.roots else {
-            return Err(MapError::NotYours(slot.stack_base()));
-        };
-        if current_mapping_root(roots).is_none() {
-            return Err(MapError::Inactive(roots.full_root()));
-        }
-        if let Some(existing) = first_permanent_stack() {
-            return Err(MapError::Pinned(existing));
-        }
-        let stack = self.map_stack(slot)?;
-        if let Err(reason) = retain_permanent_stack(stack.identity) {
-            self.remove_stack(slot);
-            return Err(reason);
-        }
-        Ok(PinnedStack { stack })
     }
 
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, MapError> {
@@ -118,15 +100,6 @@ impl AddressSpace {
     }
 }
 
-fn first_permanent_stack() -> Option<u64> {
-    PERMANENT_STACKS
-        .lock_leaf()
-        .iter()
-        .flatten()
-        .next()
-        .map(|stack| stack.slot.stack_base())
-}
-
 fn retain_permanent_stack(identity: StackIdentity) -> Result<(), MapError> {
     let mut pinned = PERMANENT_STACKS.lock_leaf();
     let Some(room) = pinned.iter_mut().find(|room| room.is_none()) else {
@@ -172,20 +145,12 @@ pub(super) fn protected_stack_overlap(
 ) -> Option<u64> {
     permanent_stack_overlap(roots, base, len)
         .or_else(|| task_stack_overlap(roots, base, len))
-        .or_else(|| enclave_guard_overlap(roots, base, len))
+        .or_else(|| entry_window_overlap(base, len))
 }
 
-// Activation proved both enclave guards absent from the kernel's root; they stay so.
-fn enclave_guard_overlap(roots: AddressSpaceRoots, base: u64, len: u64) -> Option<u64> {
-    if !is_active() || !roots.contains(active_root()) {
-        return None;
-    }
-    let Some(enclave) = kpti::entry_enclave() else {
-        return Some(base);
-    };
-    enclave.guards().into_iter().find_map(|guard| {
-        ranges_overlap(guard.start, guard.mapped_len(), base, len).then_some(guard.start)
-    })
+// Only processor bring-up writes the entry window, and nothing unmaps it.
+fn entry_window_overlap(base: u64, len: u64) -> Option<u64> {
+    ranges_overlap(percpu::WINDOW, percpu::WINDOW_BYTES, base, len).then_some(base)
 }
 
 #[derive(Debug)]
@@ -354,9 +319,5 @@ pub struct PinnedStack {
 impl PinnedStack {
     pub const fn top(&self) -> u64 {
         self.stack.top()
-    }
-
-    pub(crate) fn is_installed(&self) -> bool {
-        self.stack.is_installed()
     }
 }

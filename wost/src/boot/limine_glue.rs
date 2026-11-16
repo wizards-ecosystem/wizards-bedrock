@@ -26,6 +26,7 @@ pub fn enter(requests: Requests, kernel_main: fn(BootInfo, ThreadContext) -> !) 
     // A second caller would mint a second framebuffer over live device memory.
     static ENTERED: crate::sync::Once = crate::sync::Once::new();
     assert!(ENTERED.claim(), "the kernel has already been entered");
+    crate::arch::current::percpu::enter_bootstrap();
     let Requests {
         base_revision,
         framebuffer,

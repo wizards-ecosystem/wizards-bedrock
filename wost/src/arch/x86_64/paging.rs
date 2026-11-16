@@ -31,6 +31,7 @@ use x86_paging::{ENTRIES, Entry, Flags, Level};
 
 use super::cpu;
 use super::kpti;
+use super::percpu;
 use super::task::Released;
 use crate::mm::{self, PhysicalAddress, SharedKeepalive};
 use crate::sync::{Leaf, SpinLock};
@@ -309,7 +310,7 @@ impl Drop for AddressSpace {
     }
 }
 
-const MAX_PERMANENT_STACKS: usize = 2;
+const MAX_PERMANENT_STACKS: usize = 1;
 
 static PERMANENT_STACKS: SpinLock<Leaf, [Option<StackIdentity>; MAX_PERMANENT_STACKS]> =
     SpinLock::new([None; MAX_PERMANENT_STACKS]);

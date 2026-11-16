@@ -172,6 +172,16 @@ number and is added here, as one entry or as an amending id on the entry it chan
   faulting `iretq` is charged to ring 0.
 - **D-426** Every GDT code and data descriptor is written with its accessed bit set, so the
   processor never writes a descriptor table that the stripped root maps read-only.
+- **D-570** Each processor's GDT, TSS, paired-root route, transition stack and fault stacks live in
+  an entry area at a fixed window plus 128 KiB per processor, mapped from frames allocated at
+  bring-up and never unmapped, rather than in static arrays sized for a maximum processor count.
+  `IA32_GS_BASE` names the area in ring 0 and is zero in ring 3, with `swapgs` and `lfence` on
+  entry from ring 3 and `swapgs` just before `iretq` on return. A stripped root copies the areas
+  that exist when it is built, so the first one closes the set (amends D-92 and D-250).
+- **D-571** The NMI, double-fault and machine-check vectors run on IST2, IST1 and IST3 of their
+  processor's area, decide `GS` by reading `IA32_GS_BASE` instead of the pushed `CS`, and never
+  resume, so a half-swapped `GS` is never returned to. Only the transition stack is scrubbed on a
+  paired entry and exit, because nothing that pushes onto a fault stack resumes ring 3.
 
 ## Memory
 
