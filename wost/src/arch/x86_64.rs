@@ -1,4 +1,5 @@
 pub mod apic;
+pub(crate) mod cache;
 pub mod cpu;
 pub mod interrupt;
 pub(super) mod kpti;

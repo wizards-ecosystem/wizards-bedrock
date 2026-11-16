@@ -26,7 +26,7 @@ impl AddressSpace {
         self.tables
             .try_reserve(1)
             .map_err(|_| MapError::OutOfMemory)?;
-        let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
+        let frame = mm::allocate_table().ok_or(MapError::OutOfMemory)?;
         let address = frame.address();
         let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
         core::mem::forget(frame);

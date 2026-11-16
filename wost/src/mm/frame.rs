@@ -1,12 +1,22 @@
-use frame_space::FRAME_SIZE;
+use frame_space::{Access, ColourMask, FRAME_SIZE, Owner};
 
-use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
+use super::{FRAMES, PhysicalAddress, colours, direct_map_pointer, direct_pointer, table};
 
-const fn frame_address(index: usize) -> PhysicalAddress {
+pub(super) const fn frame_address(index: usize) -> PhysicalAddress {
     match PhysicalAddress::new(index as u64 * FRAME_SIZE) {
         Some(address) => address,
         None => panic!("a managed frame lies beyond the physical address limit"),
     }
+}
+
+// Kernel and table frames come back here; arena and sealed frames have their own release.
+fn release_record(frame: usize) {
+    let previous = table::release(frame);
+    assert!(
+        matches!(previous.owner(), Owner::Kernel | Owner::Table)
+            && previous.access() == Access::Writable,
+        "frame {frame} was freed as a kernel frame while it is {previous:?}"
+    );
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -35,8 +45,8 @@ impl Frame {
         let Some(base) = direct_map_pointer(self.address()) else {
             return false;
         };
-        // SAFETY: `&mut self` and one allocator handle per frame make this the only access; every
-        // managed frame is direct-mapped, by the bootloader and then by ours (`direct_map_gap`).
+        // SAFETY: `&mut self` and one allocator handle per frame make this the only access; a
+        // kernel frame is never sealed, so its 4 KiB direct-map leaf stays writable.
         unsafe { core::ptr::write_bytes(base, byte, FRAME_SIZE as usize) };
         true
     }
@@ -49,7 +59,9 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        let released = FRAMES.lock_leaf().free(self.index);
+        let mut frames = FRAMES.lock_leaf();
+        release_record(self.index);
+        let released = frames.space.free(self.index);
         assert!(
             released.is_ok(),
             "frame ownership ledger refused a live handle: {released:?}"
@@ -85,8 +97,8 @@ impl Segment {
         let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: the live `Segment` proves every frame reserved to it, managed frames are direct-
-        // mapped by the bootloader and then by ours (`direct_map_gap`), and the arithmetic fits.
+        // SAFETY: the live `Segment` proves every frame reserved to it, a sealed run is held only
+        // by `SealedSegment`, so these direct-map leaves are writable, and the arithmetic fits.
         unsafe { core::ptr::write_bytes(base, byte, self.len() as usize) };
         true
     }
@@ -108,8 +120,8 @@ impl Segment {
             return false;
         };
         let destination = base.wrapping_add(offset);
-        // SAFETY: the checked write lies in this uniquely owned allocator run,
-        // which is direct-mapped, and the caller's bytes cannot overlap it.
+        // SAFETY: the checked write lies in this uniquely owned allocator run, whose direct-map
+        // leaves are writable while a `Segment` holds it, and the caller's bytes cannot overlap it.
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
         true
     }
@@ -124,11 +136,19 @@ impl Segment {
             count,
         }
     }
+
+    const fn indices(&self) -> core::ops::Range<usize> {
+        self.first..self.first + self.count
+    }
 }
 
 impl Drop for Segment {
     fn drop(&mut self) {
-        let released = FRAMES.lock_leaf().free_contiguous(self.first, self.count);
+        let mut frames = FRAMES.lock_leaf();
+        for frame in self.indices() {
+            release_record(frame);
+        }
+        let released = frames.space.free_contiguous(self.first, self.count);
         assert!(
             released.is_ok(),
             "segment ownership ledger refused a live handle: {released:?}"
@@ -136,18 +156,42 @@ impl Drop for Segment {
     }
 }
 
-pub fn allocate() -> Option<Frame> {
-    let index = FRAMES.lock_leaf().allocate()?;
+fn allocate_owned(owner: Owner) -> Option<Frame> {
+    let colours = colours();
+    let mut frames = FRAMES.lock_leaf();
+    let frames = &mut *frames;
+    let index =
+        frames
+            .space
+            .allocate_unreserved(colours, &frames.pool, ColourMask::full(colours))?;
+    table::claim(index, owner);
     Some(Frame { index })
+}
+
+pub fn allocate() -> Option<Frame> {
+    allocate_owned(Owner::Kernel)
 }
 
 // `align` is in frames and rounds up to a power of two.
 pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
-    let first = FRAMES.lock_leaf().allocate_contiguous(count, align)?;
+    let colours = colours();
+    let mut frames = FRAMES.lock_leaf();
+    let frames = &mut *frames;
+    let first = frames
+        .space
+        .allocate_contiguous_unreserved(colours, &frames.pool, count, align)?;
+    for frame in first..first + count {
+        table::claim(frame, Owner::Kernel);
+    }
     Some(Segment { first, count })
 }
 
 pub fn allocate_zeroed() -> Option<Frame> {
     let mut frame = allocate()?;
+    frame.zero().then_some(frame)
+}
+
+pub(crate) fn allocate_table() -> Option<Frame> {
+    let mut frame = allocate_owned(Owner::Table)?;
     frame.zero().then_some(frame)
 }

@@ -154,7 +154,7 @@ fn ram_cache_policy(virtual_base: u64, flags: Flags) -> Result<(), MapError> {
 
 impl AddressSpace {
     pub fn new() -> Result<Self, MapError> {
-        let frame = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
+        let frame = mm::allocate_table().ok_or(MapError::OutOfMemory)?;
         let root = frame.address();
         core::mem::forget(frame);
         Ok(Self {
@@ -214,10 +214,10 @@ impl AddressSpace {
             return Err(MapError::OutOfMemory);
         }
         let kernel = active_root();
-        let full = mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?;
+        let full = mm::allocate_table().ok_or(MapError::OutOfMemory)?;
         let stripped = match kind {
             UserRootKind::Shared => None,
-            UserRootKind::Paired => Some(mm::allocate_zeroed().ok_or(MapError::OutOfMemory)?),
+            UserRootKind::Paired => Some(mm::allocate_table().ok_or(MapError::OutOfMemory)?),
         };
         let full_root = full.address();
 

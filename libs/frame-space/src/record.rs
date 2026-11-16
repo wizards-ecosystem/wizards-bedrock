@@ -2,6 +2,10 @@ const OWNER_MASK: u64 = 0x7;
 
 const SEALED: u64 = 1 << 3;
 
+const KIND_SHIFT: u32 = 4;
+
+const KIND_MASK: u64 = 0x3 << KIND_SHIFT;
+
 const ARENA_SHIFT: u32 = 32;
 
 const ARENA_BITS: u64 = u64::MAX << ARENA_SHIFT;
@@ -14,17 +18,30 @@ mod owner {
     pub(super) const ARENA: u64 = 4;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ArenaId(u32);
+mod kind {
+    pub(super) const OBJECT: u64 = 0;
+    pub(super) const DATA: u64 = 1;
+    pub(super) const TABLE: u64 = 2;
+}
 
-impl ArenaId {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ArenaIndex(u32);
+
+impl ArenaIndex {
     pub const fn new(index: u32) -> Self {
         Self(index)
     }
 
-    pub const fn index(self) -> u32 {
+    pub const fn get(self) -> u32 {
         self.0
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameKind {
+    ArenaObject,
+    ArenaData,
+    Table,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -33,7 +50,7 @@ pub enum Owner {
     Kernel,
     Table,
     Device,
-    Arena(ArenaId),
+    Arena(ArenaIndex, FrameKind),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,7 +59,8 @@ pub enum Access {
     Sealed,
 }
 
-// Only kernel and arena frames seal, and a free frame is always writable; zero encodes `FREE`.
+// Only kernel frames and arena object or data frames seal, a free frame is always writable, and
+// zero encodes `FREE`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Record {
     owner: Owner,
@@ -96,7 +114,14 @@ impl Record {
             Owner::Kernel => owner::KERNEL,
             Owner::Table => owner::TABLE,
             Owner::Device => owner::DEVICE,
-            Owner::Arena(arena) => owner::ARENA | u64::from(arena.0) << ARENA_SHIFT,
+            Owner::Arena(arena, frame) => {
+                let frame = match frame {
+                    FrameKind::ArenaObject => kind::OBJECT,
+                    FrameKind::ArenaData => kind::DATA,
+                    FrameKind::Table => kind::TABLE,
+                };
+                owner::ARENA | frame << KIND_SHIFT | u64::from(arena.0) << ARENA_SHIFT
+            }
         };
         match self.access {
             Access::Writable => owner,
@@ -105,17 +130,26 @@ impl Record {
     }
 
     pub fn decode(word: u64) -> Option<Self> {
-        let kind = word & OWNER_MASK;
-        let arena = (word >> ARENA_SHIFT) as u32;
-        if word & !(OWNER_MASK | SEALED | ARENA_BITS) != 0 || (kind != owner::ARENA && arena != 0) {
+        let class = word & OWNER_MASK;
+        if word & !(OWNER_MASK | SEALED | KIND_MASK | ARENA_BITS) != 0
+            || (class != owner::ARENA && word & (KIND_MASK | ARENA_BITS) != 0)
+        {
             return None;
         }
-        let owner = match kind {
+        let owner = match class {
             owner::FREE => Owner::Free,
             owner::KERNEL => Owner::Kernel,
             owner::TABLE => Owner::Table,
             owner::DEVICE => Owner::Device,
-            owner::ARENA => Owner::Arena(ArenaId(arena)),
+            owner::ARENA => {
+                let frame = match (word & KIND_MASK) >> KIND_SHIFT {
+                    kind::OBJECT => FrameKind::ArenaObject,
+                    kind::DATA => FrameKind::ArenaData,
+                    kind::TABLE => FrameKind::Table,
+                    _ => return None,
+                };
+                Owner::Arena(ArenaIndex((word >> ARENA_SHIFT) as u32), frame)
+            }
             _ => return None,
         };
         let access = if word & SEALED == 0 {
@@ -128,5 +162,8 @@ impl Record {
 }
 
 const fn can_seal(owner: Owner) -> bool {
-    matches!(owner, Owner::Kernel | Owner::Arena(_))
+    matches!(
+        owner,
+        Owner::Kernel | Owner::Arena(_, FrameKind::ArenaObject | FrameKind::ArenaData)
+    )
 }

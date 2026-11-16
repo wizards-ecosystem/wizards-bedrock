@@ -4,6 +4,8 @@ pub const MAX_COLOURS: usize = u64::BITS as usize;
 pub struct Colours(usize);
 
 impl Colours {
+    pub const ONE: Self = Self(1);
+
     pub const fn new(count: u32) -> Option<Self> {
         let count = count as usize;
         if count.is_power_of_two() && count <= MAX_COLOURS {
@@ -26,6 +28,8 @@ impl Colours {
 pub struct ColourMask(u64);
 
 impl ColourMask {
+    pub(crate) const NONE: Self = Self(0);
+
     pub const fn full(colours: Colours) -> Self {
         Self(u64::MAX >> (MAX_COLOURS - colours.count()))
     }

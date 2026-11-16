@@ -6,23 +6,26 @@ pub mod heap;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod shared;
+mod table;
 
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use frame_space::{FRAME_SIZE, FrameSpace, words_for};
+use frame_space::{Colours, FRAME_SIZE, FrameSpace, Pool, words_for};
 
 pub use address::PhysicalAddress;
 
 pub(crate) use dma::{DmaMappingOwner, IommuTable, PublishedIommuTable};
 pub use dma::{DmaSegment, TableWalks};
 pub use firmware::{EarlyFirmwareMemory, FirmwareMemory, firmware_memory};
+pub(crate) use frame::allocate_table;
 pub use frame::{Frame, Segment, allocate, allocate_contiguous, allocate_zeroed};
 #[cfg(feature = "selftest")]
 pub use selftest::{free_frames, is_freed_run_zero};
 pub(crate) use shared::SharedKeepalive;
 pub use shared::{Shared, SharedBytes, SharedRing, USegment};
 
+use crate::arch::current::cache;
 use crate::boot::{BootMemory, DirectMap, MemoryKind, MemoryMap};
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
@@ -30,26 +33,46 @@ use crate::sync::SpinLock;
 // Two zeroed `.bss` bits per frame, so 16 GiB costs one megabyte the image does not carry.
 pub(crate) const CEILING: u64 = 16 << 30;
 
-type Frames = FrameSpace<{ words_for(CEILING) }>;
+type Space = FrameSpace<{ words_for(CEILING) }>;
 
-static FRAMES: SpinLock<Frames> = SpinLock::new(Frames::new());
+// One leaf lock (rank `lock_order::LEAF`) keeps the bitmap and the reservations agreed.
+struct Frames {
+    space: Space,
+    pool: Pool,
+}
+
+static FRAMES: SpinLock<Frames> = SpinLock::new(Frames {
+    space: Space::new(),
+    pool: Pool::new(),
+});
+
+// Zero until `init`, which reads the cache geometry once; every later call sees one count.
+static COLOURS: AtomicU32 = AtomicU32::new(0);
 
 // Zero until `init`; the validated higher-half offset is never zero and never changes.
 static DIRECT_MAP_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+fn colours() -> Colours {
+    Colours::new(COLOURS.load(Ordering::Acquire)).unwrap_or(Colours::ONE)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Report {
     pub managed: usize,
     pub ignored: usize,
+    pub colours: usize,
+    pub table_frames: usize,
 }
 
 impl fmt::Display for Report {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "{} MiB usable in {} frames",
+            "{} MiB usable in {} frames, {} cache colours, frame records in {} frames",
             self.managed as u64 * FRAME_SIZE / (1 << 20),
-            self.managed
+            self.managed,
+            self.colours,
+            self.table_frames
         )?;
         if self.ignored != 0 {
             write!(
@@ -67,21 +90,43 @@ pub fn init(memory: BootMemory) -> Report {
     let map = memory.map();
     DIRECT_MAP_OFFSET.store(memory.direct().offset(), Ordering::Release);
     *MAP.lock_leaf() = Some(*map);
+    COLOURS.store(cache::colours(), Ordering::Release);
 
     let mut frames = FRAMES.lock_leaf();
-    let ignored = seed_frames(&mut frames, map);
-    let managed = frames.managed_count();
+    let ignored = seed_frames(&mut frames.space, map);
+    let managed = frames.space.managed_count();
+    let table_frames = if managed == 0 {
+        0
+    } else {
+        table::carve(&mut frames.space)
+            .unwrap_or_else(|| panic!("no contiguous run holds the frame records"))
+    };
     drop(frames);
 
-    Report { managed, ignored }
+    Report {
+        managed,
+        ignored,
+        colours: colours().count(),
+        table_frames,
+    }
 }
 
-fn seed_frames(frames: &mut Frames, map: &MemoryMap) -> usize {
+fn seed_frames(space: &mut Space, map: &MemoryMap) -> usize {
     let mut ignored = 0;
     for run in map.allocatable_runs() {
-        ignored += frames.insert(run.base(), run.bytes()).ignored;
+        ignored += space.insert(run.base(), run.bytes()).ignored;
     }
     ignored
+}
+
+pub(crate) fn is_allocatable(start: u64, len: u64) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    MAP.lock_leaf().as_ref().is_some_and(|map| {
+        map.allocatable_runs()
+            .any(|run| run.base() < end && start < run.base().saturating_add(run.bytes()))
+    })
 }
 
 pub(crate) fn device_range_is_eligible(start: u64, end: u64) -> bool {

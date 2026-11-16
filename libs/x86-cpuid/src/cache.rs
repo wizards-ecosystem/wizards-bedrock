@@ -1,5 +1,19 @@
 pub const CACHE_LEAF: u32 = 4;
 
+// AMD answers leaf 4 with zeros and describes its caches here in the same encoding.
+pub const EXTENDED_CACHE_LEAF: u32 = 0x8000_001D;
+
+pub const EXTENDED_FEATURE_LEAF: u32 = 0x8000_0001;
+
+const TOPOLOGY_EXTENSIONS: u32 = 1 << 22;
+
+pub const fn has_extended_cache_leaf(
+    maximum_extended_leaf: u32,
+    extended_features_ecx: u32,
+) -> bool {
+    maximum_extended_leaf >= EXTENDED_CACHE_LEAF && extended_features_ecx & TOPOLOGY_EXTENSIONS != 0
+}
+
 const MAX_COLOURS: u64 = 64;
 
 const PAGE_BYTES: u64 = 4096;

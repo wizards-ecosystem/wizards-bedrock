@@ -9,7 +9,7 @@ use core::fmt;
 use core::num::NonZeroU64;
 
 pub use colour::{ColourCounts, ColourMask, Colours, MAX_COLOURS};
-pub use record::{Access, ArenaId, Owner, Record};
+pub use record::{Access, ArenaIndex, FrameKind, Owner, Record};
 pub use reserve::{Pool, Reservation};
 
 pub const FRAME_SIZE: u64 = 4096;
@@ -101,6 +101,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
 
     pub const fn managed_count(&self) -> usize {
         self.managed_count
+    }
+
+    pub const fn limit(&self) -> usize {
+        self.limit
     }
 
     pub const fn is_free(&self, frame: usize) -> bool {

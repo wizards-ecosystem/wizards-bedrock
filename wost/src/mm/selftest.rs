@@ -5,7 +5,7 @@ use super::frame::{Frame, Segment};
 use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
 pub fn free_frames() -> usize {
-    FRAMES.lock_leaf().free_count()
+    FRAMES.lock_leaf().space.free_count()
 }
 
 impl Frame {
@@ -56,7 +56,7 @@ pub fn is_freed_run_zero(address: PhysicalAddress, count: usize) -> bool {
         return false;
     };
     let frames = FRAMES.lock_leaf();
-    if !(first..end).all(|frame| frames.is_free(frame)) {
+    if !(first..end).all(|frame| frames.space.is_free(frame)) {
         return false;
     }
     // SAFETY: the allocator lock keeps this verified free run from being

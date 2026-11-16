@@ -13,6 +13,10 @@ impl Pool {
         }
     }
 
+    pub const fn unused(&self, colour: usize) -> usize {
+        self.unused.get(colour)
+    }
+
     // Leaves the reservation empty, so it can release nothing twice.
     #[must_use = "a refused dissolve released nothing"]
     pub fn dissolve(&mut self, reservation: &mut Reservation) -> bool {
@@ -57,12 +61,37 @@ pub struct Reservation {
 }
 
 impl Reservation {
+    // Admits no colour, so nothing can be reserved into it or charged to it.
+    pub const EMPTY: Self = Self::new(ColourMask::NONE);
+
     pub const fn new(mask: ColourMask) -> Self {
         Self {
             mask,
             reserved: ColourCounts::ZERO,
             used: ColourCounts::ZERO,
         }
+    }
+
+    pub const fn mask(&self) -> ColourMask {
+        self.mask
+    }
+
+    pub const fn reserved(&self, colour: usize) -> usize {
+        self.reserved.get(colour)
+    }
+
+    pub const fn used(&self, colour: usize) -> usize {
+        self.used.get(colour)
+    }
+
+    pub fn unused_total(&self) -> usize {
+        let mut total: usize = 0;
+        let mut colour = 0;
+        while colour < MAX_COLOURS {
+            total = total.saturating_add(self.unused(colour));
+            colour += 1;
+        }
+        total
     }
 
     const fn unused(&self, colour: usize) -> usize {
@@ -142,6 +171,25 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             into.reserved.increase(colour, amounts.get(colour));
         }
         true
+    }
+
+    pub fn allocate_contiguous_unreserved(
+        &mut self,
+        colours: Colours,
+        pool: &Pool,
+        count: usize,
+        align: usize,
+    ) -> Option<usize> {
+        let first = self.allocate_contiguous(count, align)?;
+        let reserved_intact = (0..colours.count())
+            .all(|colour| self.free_in(colours, colour) >= pool.unused.get(colour));
+        if reserved_intact {
+            return Some(first);
+        }
+        for frame in first..first + count {
+            self.release(frame);
+        }
+        None
     }
 
     pub fn allocate_unreserved(
