@@ -32,6 +32,9 @@ number and is added here, as one entry or as an amending id on the entry it chan
   for any caller: a probe is the instruction that ends the program, the ring view is handed out
   once, and a jump is taken only into the kernel half. Its `entry!` expands `allow(unsafe_code)`
   glue into the witness, which therefore carries `deny`, not `forbid` (amends D-13).
+- **D-593** `witness/rt` sets a user-half thread base only to a `&'static u64`, and its `call`
+  faults on any other user-half `ThreadBase`, rather than making `thread_word` unsafe, so the
+  witness stays free of `unsafe` and `fs:0` never reads memory a live reference covers.
 - **D-183** Code that runs in kernel context is Rust, and no language runtime, interpreter or
   compiler enters the kernel beyond the extension checker `docs/roadmap.md` plans. First-party
   software that runs on the kernel is Wizzy, with exceptions only for minimal runtime shims, host

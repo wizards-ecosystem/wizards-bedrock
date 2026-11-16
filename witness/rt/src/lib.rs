@@ -25,18 +25,47 @@ const KERNEL_HALF: u64 = 0xffff_8000_0000_0000;
 
 const PANICKED: u64 = u64::MAX;
 
+// Only `Entry::read` makes one, so the ring address in it is the kernel's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Entry {
-    pub version: u64,
-    pub argument: u64,
-    pub bootstrap_handle: u64,
-    pub operand: u64,
-    pub ring: u64,
-    pub buffer: u64,
-    pub time: u64,
+    version: u64,
+    argument: u64,
+    bootstrap_handle: u64,
+    operand: u64,
+    ring: u64,
+    buffer: u64,
+    time: u64,
 }
 
 impl Entry {
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub const fn argument(&self) -> u64 {
+        self.argument
+    }
+
+    pub const fn bootstrap_handle(&self) -> u64 {
+        self.bootstrap_handle
+    }
+
+    pub const fn operand(&self) -> u64 {
+        self.operand
+    }
+
+    pub const fn ring(&self) -> u64 {
+        self.ring
+    }
+
+    pub const fn buffer(&self) -> u64 {
+        self.buffer
+    }
+
+    pub const fn time(&self) -> u64 {
+        self.time
+    }
+
     /// # Safety
     ///
     /// `block` must be the stack pointer the kernel entered the program with, read before
@@ -68,7 +97,7 @@ macro_rules! entry {
         #[allow(unsafe_code, reason = "witness-rt code expanding under the caller's deny")]
         #[unsafe(naked)]
         #[unsafe(no_mangle)]
-        extern "C" fn _start() -> ! {
+        unsafe extern "C" fn _start() -> ! {
             ::core::arch::naked_asm!(
                 "mov rdi, rsp",
                 "call {start}",
@@ -78,7 +107,7 @@ macro_rules! entry {
         }
 
         #[allow(unsafe_code, reason = "witness-rt code expanding under the caller's deny")]
-        extern "C" fn __witness_start(block: *const u64) -> ! {
+        unsafe extern "C" fn __witness_start(block: *const u64) -> ! {
             // SAFETY: `_start` passes the stack pointer it was entered with and pushed nothing.
             let entry = unsafe { $crate::Entry::read(block) };
             $crate::exit(__WITNESS_MAIN(&entry))
@@ -86,9 +115,22 @@ macro_rules! entry {
     };
 }
 
+// A user-half thread base is set only through `set_thread_base`, so `fs:0` never reads memory a
+// live reference covers.
+pub fn call(call: Call, argument: u64) -> u64 {
+    if call.number() == Call::ThreadBase.number() && argument < NONCANONICAL {
+        fault_with(argument);
+    }
+    gate(call, argument)
+}
+
+pub fn set_thread_base(word: &'static u64) -> u64 {
+    gate(Call::ThreadBase, ptr::from_ref(word).addr() as u64)
+}
+
 // `AC` is set only across the gate, so trap entry must establish SMAP and no Rust access runs
 // under alignment checking.
-pub fn call(call: Call, argument: u64) -> u64 {
+fn gate(call: Call, argument: u64) -> u64 {
     let answer;
     // SAFETY: `int 0x80` enters the kernel, which preserves every register but `rax` and writes
     // only memory it shares with the program; the flags are restored around it.
@@ -111,7 +153,7 @@ pub fn call(call: Call, argument: u64) -> u64 {
 }
 
 pub fn exit(status: u64) -> ! {
-    call(Call::Exit, status);
+    gate(Call::Exit, status);
     fault_with(Call::Exit.number())
 }
 

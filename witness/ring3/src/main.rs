@@ -71,14 +71,14 @@ fn behave(entry: &Entry) -> u64 {
 }
 
 fn run(entry: &Entry) -> Result<(), Failure> {
-    if entry.version != native_abi::entry::VERSION {
+    if entry.version() != native_abi::entry::VERSION {
         return Err(Failure::EntryVersion);
     }
     // A negative argument is a kernel address to jump to from ring 3.
-    if entry.argument.cast_signed() < 0 {
-        witness_rt::jump_to_kernel(entry.argument);
+    if entry.argument().cast_signed() < 0 {
+        witness_rt::jump_to_kernel(entry.argument());
     }
-    match entry.argument {
+    match entry.argument() {
         ECHO => echo(entry),
         FAULT => fault_with(FAULT),
         PROBE => probe(),
@@ -86,7 +86,7 @@ fn run(entry: &Entry) -> Result<(), Failure> {
         INVALID_RETURN_STACK => witness_rt::enter_with_noncanonical_stack(UNSERVED),
         INVALID_RETURN_FLAGS => witness_rt::enter_with_nested_task(UNSERVED),
         READ_COUNTER => witness_rt::read_counter_with(READ_COUNTER),
-        READ_KERNEL => witness_rt::read_kernel(entry.operand),
+        READ_KERNEL => witness_rt::read_kernel(entry.operand()),
         RING_WAIT => ring_wait(entry),
         THREAD_BASE => thread_base(),
         SYSCALL => witness_rt::execute_syscall(SYSCALL),
@@ -113,7 +113,7 @@ fn echo(entry: &Entry) -> Result<(), Failure> {
 
 // The entry block, not the image, supplies the authority the duplicate names.
 fn duplicate(entry: &Entry) -> Result<(), Failure> {
-    let bootstrap = entry.bootstrap_handle;
+    let bootstrap = entry.bootstrap_handle();
     let rights = u64::from(Rights::INSPECT.bits());
     let completion = exchange(
         entry,
@@ -148,8 +148,7 @@ fn ring_wait(entry: &Entry) -> Result<(), Failure> {
 
 // A user base is taken; a kernel-half or noncanonical one is refused and leaves the base alone.
 fn thread_base() -> Result<(), Failure> {
-    let base = core::ptr::from_ref(&THREAD_MARK).addr() as u64;
-    if witness_rt::call(Call::ThreadBase, base) != 0 {
+    if witness_rt::set_thread_base(&THREAD_MARK) != 0 {
         return Err(Failure::BaseRefused);
     }
     if witness_rt::thread_word() != THREAD_MARK {

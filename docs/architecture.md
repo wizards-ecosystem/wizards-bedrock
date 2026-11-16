@@ -643,7 +643,10 @@ the entry block
 and ring versions, and it reports by how it ends: exit status 0 is agreement, a nonzero status
 names the first wrong answer, and a behaviour built to fault ends in that fault. It is a boundary
 check, not a userland. The runtime sets `AC` only across `int 0x80`, so no program access runs
-under alignment checking.
+under alignment checking. Its `Entry` is built only by the unsafe `Entry::read` of the entry block,
+so a ring view always names the kernel's ring, and `_start` and the start function it calls are
+unsafe. `call` refuses a user-half `ThreadBase`, which `set_thread_base` sets only to a
+`&'static u64`, so `thread_word` reads only an immutable word.
 
 `xtask` builds it always in release, in `target/witness`, with `-C code-model=small` appended to
 the kernel target's flags and no LTO. It links a static `ET_EXEC` at `0x400000` through
