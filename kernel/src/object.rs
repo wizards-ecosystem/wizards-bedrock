@@ -1,4 +1,5 @@
 use native_abi::Rights;
+use wost::mm::slab::Removal;
 
 use crate::arena::Local;
 use crate::memory::MemoryObject;
@@ -81,8 +82,11 @@ impl ObjectRef {
             Self::Channel(channel) => {
                 let _ = world.channels.destroy(channel);
             }
+            // Every hold is covered by its holder's strong reference, so the last one meets none.
             Self::Memory(memory) => {
-                let _ = world.memories.destroy(memory);
+                if let Err(Removal::Borrowed) = world.memories.destroy(memory) {
+                    panic!("a memory object's last reference went while a hold borrowed it");
+                }
             }
             Self::File(_) | Self::Directory(_) => {}
         }

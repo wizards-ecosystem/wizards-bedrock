@@ -1,3 +1,5 @@
+use core::ops::Deref;
+
 use memory_object::{Seal, StateRefusal};
 use native_abi::Rights;
 use native_abi::ring::{Completion, Submission, flags, status};
@@ -8,7 +10,7 @@ use super::{Process, answer, refuse};
 use crate::arena::Local;
 use crate::memory::{Kind, MemoryObject, SEALED_RIGHTS};
 use crate::object::ObjectRef;
-use crate::world::MemoryPool;
+use crate::world::{MemoryPool, World};
 
 // The largest run of a copy held on the stack at once.
 const COPY_CHUNK: usize = 512;
@@ -63,14 +65,14 @@ pub(super) fn copy(mut process: Process<'_, '_>, submission: Submission) -> Comp
         Err(status) => return refuse(token, status),
     };
     let (Some(target), Some(source)) = (
-        process.world.memories.hold(target),
-        process.world.memories.hold(source),
+        Held::take(process.world, target),
+        Held::take(process.world, source),
     ) else {
         return refuse(token, status::BAD_HANDLE);
     };
     let len = submission.length as usize;
     let (into, from) = (submission.offset, submission.argument);
-    let in_range = |object: &Hold<MemoryObject>, at: u64| {
+    let in_range = |object: &MemoryObject, at: u64| {
         at.checked_add(len as u64)
             .is_some_and(|end| end <= object.bytes())
     };
@@ -108,7 +110,7 @@ pub(super) fn seal(mut process: Process<'_, '_>, submission: Submission) -> Comp
         Ok(local) => local,
         Err(status) => return refuse(token, status),
     };
-    let Some(object) = process.world.memories.hold(local) else {
+    let Some(object) = Held::take(process.world, local) else {
         return refuse(token, status::BAD_HANDLE);
     };
     if object.kind() != Kind::Sealable || !process.table.renewable(submission.handle) {
@@ -147,4 +149,41 @@ fn resolve(
         return Err(status::DENIED);
     }
     Ok(local)
+}
+
+// A strong reference for the operation's length, so a close racing it leaves the last release here.
+struct Held<'world> {
+    world: &'world World,
+    local: Local<MemoryObject>,
+    hold: Option<Hold<MemoryObject>>,
+}
+
+impl<'world> Held<'world> {
+    fn take(world: &'world World, local: Local<MemoryObject>) -> Option<Self> {
+        world.memories.acquire(local).ok()?;
+        let held = Self {
+            world,
+            local,
+            hold: world.memories.hold(local),
+        };
+        held.hold.is_some().then_some(held)
+    }
+}
+
+impl Deref for Held<'_> {
+    type Target = MemoryObject;
+
+    fn deref(&self) -> &MemoryObject {
+        let Some(hold) = self.hold.as_ref() else {
+            panic!("a held memory object lost its hold");
+        };
+        hold
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        drop(self.hold.take());
+        ObjectRef::Memory(self.local).release(self.world);
+    }
 }
