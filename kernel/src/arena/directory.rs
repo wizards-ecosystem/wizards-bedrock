@@ -1,8 +1,8 @@
 use core::mem;
 
 use object_pool::PAGES;
-use wost::mm::pool::ArenaId;
-use wost::mm::slab::{ObjectPage, PageFrame};
+use wost::mm::pool::{ArenaFrame, ArenaId};
+use wost::mm::slab::ObjectPage;
 
 const BITS: u32 = 6;
 const FANOUT: usize = 1 << BITS;
@@ -26,7 +26,7 @@ struct Node<E> {
 // Frames taken from an earmark before the pool lock, since taking one locks the frames.
 #[derive(Debug)]
 pub(super) struct Frames {
-    frames: [Option<PageFrame>; 1 + LEVELS as usize],
+    frames: [Option<ArenaFrame>; 1 + LEVELS as usize],
     arena: Option<ArenaId>,
 }
 
@@ -46,7 +46,7 @@ impl Frames {
         self.frames.iter().filter(|frame| frame.is_some()).count() as u32
     }
 
-    pub(super) fn push(&mut self, frame: PageFrame) {
+    pub(super) fn push(&mut self, frame: ArenaFrame) {
         let arena = *self.arena.get_or_insert(frame.arena());
         assert!(
             arena == frame.arena(),
@@ -58,7 +58,7 @@ impl Frames {
         *empty = Some(frame);
     }
 
-    pub(super) fn pop(&mut self) -> PageFrame {
+    pub(super) fn pop(&mut self) -> ArenaFrame {
         let frame = self.frames.iter_mut().find_map(Option::take);
         frame.unwrap_or_else(|| panic!("an insert ran out of the frames it counted"))
     }
@@ -197,7 +197,7 @@ fn position(ordinal: u32, level: u32) -> usize {
     (ordinal >> (BITS * (level - 1))) as usize & (FANOUT - 1)
 }
 
-fn new_node<E>(frame: PageFrame) -> ObjectPage<Node<E>, 1> {
+fn new_node<E>(frame: ArenaFrame) -> ObjectPage<Node<E>, 1> {
     let mut page = ObjectPage::open(frame, 0);
     let node = Node {
         entries: [const { Entry::Unborn }; FANOUT],

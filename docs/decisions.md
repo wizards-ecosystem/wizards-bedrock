@@ -233,6 +233,11 @@ number and is added here, as one entry or as an amending id on the entry it chan
   reached mutably, a page with borrows cannot close, and `pool::dissolve` refuses while any object
   page of the arena is open. Frame tokens kept in arena memory therefore return through their
   pages before an arena dissolves, so no safe caller can reclaim a frame a hold still reaches.
+- **D-525** An arena counts its outstanding frame tokens, and `pool::dissolve` refuses while any
+  token or earmark of it is outstanding (amends D-520, which counted only object pages). A token
+  ends by release, which zeroes and credits its frame, or by `surrender`, which only lowers the
+  count and leaves the frame charged for dissolve's budgeted scan. Teardown therefore visits each
+  token once in constant time, and no safe caller can write a frame after it is reclaimed.
 - **D-521** Each pool keeps its pages in its own radix directory of 64-way nodes held in object
   pages, growing in depth with its highest ordinal, rather than in one directory per world: a pool
   of one page needs no node frame, and a directory node holds typed page tokens.

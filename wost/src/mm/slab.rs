@@ -9,57 +9,14 @@ pub use object_pool::{Issued, Refusal, Released};
 use object_pool::{SLOTS_PER_PAGE, Slots};
 
 use super::direct_pointer;
-use super::pool::{ArenaFrame, ArenaId, Earmark, FrameKind, PageCount, count_page};
+use super::pool::{ArenaFrame, FrameKind};
 
 const FRAME_BYTES: usize = frame_space::FRAME_SIZE as usize;
-
-// One arena object frame, counted against its arena so dissolve cannot reclaim it while open.
-pub struct PageFrame {
-    frame: ManuallyDrop<ArenaFrame>,
-}
-
-impl PageFrame {
-    pub fn take(earmark: &mut Earmark) -> Option<Self> {
-        let frame = earmark.take(FrameKind::ArenaObject)?;
-        count_page(frame.arena(), PageCount::Opened);
-        Some(Self {
-            frame: ManuallyDrop::new(frame),
-        })
-    }
-
-    pub fn arena(&self) -> ArenaId {
-        self.frame.arena()
-    }
-
-    fn base(&self) -> *mut u8 {
-        direct_pointer(self.frame.address(), FRAME_BYTES as u64)
-            .unwrap_or_else(|| panic!("an object page lost its direct-map address"))
-    }
-}
-
-impl fmt::Debug for PageFrame {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PageFrame")
-            .field("frame", &*self.frame)
-            .finish()
-    }
-}
-
-impl Drop for PageFrame {
-    fn drop(&mut self) {
-        let arena = self.frame.arena();
-        // SAFETY: drop runs once, and the field is never read after this take.
-        let frame = unsafe { ManuallyDrop::take(&mut self.frame) };
-        drop(frame);
-        count_page(arena, PageCount::Closed);
-    }
-}
 
 // Slot state, borrow counts and objects in one frame; only `&mut self` changes slot state, and a
 // hold keeps its slot's object in place by its borrow count.
 pub struct ObjectPage<T, const N: usize> {
-    frame: PageFrame,
+    frame: ManuallyDrop<ArenaFrame>,
     objects: PhantomData<T>,
 }
 
@@ -75,23 +32,36 @@ impl<T, const N: usize> ObjectPage<T, N> {
         "the slots and objects of an object page fit one frame"
     );
 
-    pub fn open(frame: PageFrame, floor: u32) -> Self {
+    pub fn open(frame: ArenaFrame, floor: u32) -> Self {
         let () = Self::FITS;
+        assert!(
+            frame.kind() == FrameKind::ArenaObject,
+            "an object page opened over a {:?} frame",
+            frame.kind()
+        );
         let Some(slots) = Slots::<N>::new(floor) else {
             panic!("a page of {N} slots is outside the slot range");
         };
         let page = Self {
-            frame,
+            frame: ManuallyDrop::new(frame),
             objects: PhantomData,
         };
-        // SAFETY: the frame is this page's alone and zeroed, offset 0 is page aligned and the slot
-        // state fits before the borrow counts, and nothing reads it before this write.
+        // SAFETY: the frame is this page's alone, offset 0 is page aligned and the slot state fits
+        // before the borrow counts, and nothing reads it before this write.
         unsafe { page.slots().write(slots) };
+        for borrow in page.borrows() {
+            borrow.store(0, Ordering::Relaxed);
+        }
         page
     }
 
+    fn base(&self) -> *mut u8 {
+        direct_pointer(self.frame.address(), FRAME_BYTES as u64)
+            .unwrap_or_else(|| panic!("an object page lost its direct-map address"))
+    }
+
     fn slots(&self) -> *mut Slots<N> {
-        self.frame.base().cast()
+        self.base().cast()
     }
 
     fn slot_state(&self) -> &Slots<N> {
@@ -106,15 +76,14 @@ impl<T, const N: usize> ObjectPage<T, N> {
     }
 
     fn borrows(&self) -> &[AtomicU32; N] {
-        let borrows = self.frame.base().wrapping_add(Self::BORROWS);
-        // SAFETY: the counts lie inside the frame at an aligned offset, the zeroed frame is a
-        // valid array of zero counts, and they are only ever reached as atomics.
+        let borrows = self.base().wrapping_add(Self::BORROWS);
+        // SAFETY: the counts lie inside the frame at an aligned offset, every bit pattern is a valid
+        // count, and they are only ever reached as atomics.
         unsafe { &*borrows.cast::<[AtomicU32; N]>() }
     }
 
     fn object(&self, slot: usize) -> *mut T {
-        self.frame
-            .base()
+        self.base()
             .wrapping_add(Self::OBJECTS + slot * size_of::<T>())
             .cast()
     }
@@ -124,6 +93,26 @@ impl<T, const N: usize> ObjectPage<T, N> {
         let borrow = self.borrows().get(at)?;
         (self.slot_state().resolves(slot, generation) && borrow.load(Ordering::Acquire) == 0)
             .then_some(at)
+    }
+
+    // Ends the page in constant time: objects are forgotten and the frame waits for `dissolve`.
+    pub fn surrender(self) {
+        let mut page = ManuallyDrop::new(self);
+        page.assert_unborrowed();
+        // SAFETY: `page` is never dropped, so this take is the frame's only move out.
+        let frame = unsafe { ManuallyDrop::take(&mut page.frame) };
+        frame.surrender();
+    }
+
+    fn assert_unborrowed(&self) {
+        let borrowed = self
+            .borrows()
+            .iter()
+            .any(|borrow| borrow.load(Ordering::Acquire) != 0);
+        assert!(
+            !borrowed,
+            "an object page was released while a hold borrows it"
+        );
     }
 
     pub fn free(&self) -> u16 {
@@ -214,14 +203,10 @@ impl<T, const N: usize> fmt::Debug for ObjectPage<T, N> {
 // Live objects are forgotten, never dropped: releasing a page zeroes and credits its frame only.
 impl<T, const N: usize> Drop for ObjectPage<T, N> {
     fn drop(&mut self) {
-        let borrowed = self
-            .borrows()
-            .iter()
-            .any(|borrow| borrow.load(Ordering::Acquire) != 0);
-        assert!(
-            !borrowed,
-            "an object page was released while a hold borrows it"
-        );
+        self.assert_unborrowed();
+        // SAFETY: drop runs once, and the field is never read after this take.
+        let frame = unsafe { ManuallyDrop::take(&mut self.frame) };
+        drop(frame);
     }
 }
 

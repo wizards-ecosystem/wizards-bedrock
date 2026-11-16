@@ -230,15 +230,18 @@ unreserved frames and a reserved frame can always be taken. An operation calls `
 first and then takes `ArenaFrame`s that cannot fail; each is zeroed when taken and when released.
 `pool::dissolve` walks the records in bounded steps, zeroes and frees the arena's frames, and
 returns its reservation to the heir. There are 256 nodes; a node's generation is in every
-`ArenaId`, and a node whose generation reaches the maximum is retired. Dissolve refuses while the
-arena has an open object page or an outstanding earmark.
+`ArenaId`, and a node whose generation reaches the maximum is retired. Each node counts its
+outstanding `ArenaFrame` and `SealedFrame` tokens, and dissolve refuses with no change while that
+count or an earmark is not zero, so no safe handle reaches a frame it frees. A holder ends a token
+either by releasing it (zeroed and credited at once) or by `surrender`, which costs constant time
+and leaves the frame to dissolve's scan.
 
 Kernel objects made for a world live in object pages (`wost/src/mm/slab.rs`). An `ObjectPage`
-owns one arena frame, counted in its arena while open, and holds `libs/object-pool`'s slot state,
+owns one arena object frame and holds `libs/object-pool`'s slot state,
 one borrow count per slot and the objects. Slot state and objects change only through `&mut`; a
 `Hold` is a counted shared borrow of one object, and a borrowed object can be neither removed nor
-reached mutably, and its page cannot close. A closing page forgets its live objects and zeroes the
-frame. A kernel `Pool` (`kernel/src/arena/pool.rs`) keeps one object type of one arena behind a
+reached mutably, and its page cannot close or surrender. A closing page forgets its live objects
+and zeroes the frame; a surrendered page forgets them and leaves the frame to dissolve. A kernel `Pool` (`kernel/src/arena/pool.rs`) keeps one object type of one arena behind a
 leaf lock: its pages sit in a `Directory` (`kernel/src/arena/directory.rs`), a radix of 64-way
 nodes that are themselves object pages and whose depth grows with the highest ordinal, up to four
 levels. A `Local` names an object by page ordinal (22 bits), slot (10 bits) and generation. A pool

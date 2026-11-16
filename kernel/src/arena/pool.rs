@@ -1,6 +1,6 @@
 use object_pool::{Index, frames_needed};
-use wost::mm::pool::{self as frames, ArenaId, Earmark, Refused};
-use wost::mm::slab::{Hold, ObjectPage, PageFrame, Refusal, Released, Removal};
+use wost::mm::pool::{self as frames, ArenaId, Earmark, FrameKind, Refused};
+use wost::mm::slab::{Hold, ObjectPage, Refusal, Released, Removal};
 use wost::sync::{Leaf, SpinLock};
 
 use super::Local;
@@ -68,7 +68,7 @@ impl<T, const N: usize> Pool<T, N> {
             }
             drop(state);
             while taken.count() < needed {
-                let Some(frame) = PageFrame::take(earmark) else {
+                let Some(frame) = earmark.take(FrameKind::ArenaObject) else {
                     panic!("an insert outran the earmark its pool sized");
                 };
                 taken.push(frame);

@@ -51,7 +51,7 @@ impl fmt::Display for Refused {
             Self::NoNode => "every arena node is in use",
             Self::Stale => "the arena is gone or dying",
             Self::Mask => "the colour mask lies outside the parent's",
-            Self::Busy => "the arena still holds earmarks or object pages",
+            Self::Busy => "the arena still has earmarks or frame tokens outstanding",
             Self::Twice => "the root arena already exists",
         })
     }
@@ -65,7 +65,7 @@ struct Node {
     live: bool,
     dying: bool,
     earmarked: usize,
-    pages: usize,
+    tokens: usize,
     cursor: usize,
     reservation: Reservation,
 }
@@ -76,7 +76,7 @@ impl Node {
         live: false,
         dying: false,
         earmarked: 0,
-        pages: 0,
+        tokens: 0,
         cursor: 0,
         reservation: Reservation::EMPTY,
     };
@@ -117,7 +117,7 @@ impl Nodes {
         node.live = true;
         node.dying = false;
         node.earmarked = 0;
-        node.pages = 0;
+        node.tokens = 0;
         node.cursor = 0;
         node.reservation = reservation;
         ArenaId {
@@ -258,6 +258,7 @@ impl Earmark {
             };
             table::claim(frame, Owner::Arena(self.arena.record(), kind));
             node.earmarked -= 1;
+            node.tokens += 1;
             frame
         };
         self.left -= 1;
@@ -320,6 +321,11 @@ impl ArenaFrame {
         self.span().read_at(at, into)
     }
 
+    pub fn surrender(self) {
+        let frame = ManuallyDrop::new(self);
+        surrender(frame.arena);
+    }
+
     // Consuming the frame proves no writable mapping of it remains, since a mapping consumes it.
     pub fn seal(self, flush: &mut Flush) -> SealedFrame {
         assert!(
@@ -369,6 +375,11 @@ impl SealedFrame {
         // the span is only read.
         let span = unsafe { DirectSpan::from_proven_run(self.address(), FRAME_BYTES as u64) };
         span.is_some_and(|span| span.read_at(at, into))
+    }
+
+    pub fn surrender(self) {
+        let frame = ManuallyDrop::new(self);
+        surrender(frame.arena);
     }
 
     // The caller must already have removed every mapping of the frame and waited for that flush.
@@ -433,24 +444,16 @@ fn settle(frame: usize, arena: ArenaId, was: Access) {
         freed.is_ok(),
         "arena frame {frame} was not charged: {freed:?}"
     );
+    node.tokens -= 1;
 }
 
-// An object page's slots may be borrowed, so dissolve refuses until every page is closed.
-pub(super) fn count_page(arena: ArenaId, change: PageCount) {
+// Ends a token in constant time; its frame stays charged until `dissolve` zeroes and frees it.
+fn surrender(arena: ArenaId) {
     let mut guard = FRAMES.lock_leaf();
     let Some(node) = guard.nodes.live(arena) else {
-        panic!("an object page outlived its arena");
+        panic!("a frame token outlived its arena");
     };
-    match change {
-        PageCount::Opened => node.pages += 1,
-        PageCount::Closed => node.pages -= 1,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum PageCount {
-    Opened,
-    Closed,
+    node.tokens -= 1;
 }
 
 pub fn release(frame: ArenaFrame) {
@@ -463,7 +466,8 @@ pub enum Dissolved {
     Done,
 }
 
-// Examines at most `budget` frame records per call, so teardown stays a bounded step.
+// Refuses until every token is released or surrendered, so no safe handle reaches what it frees;
+// examines at most `budget` frame records per call, so teardown stays a bounded step.
 pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved, Refused> {
     let colours = super::colours();
     let mut guard = FRAMES.lock_leaf();
@@ -473,7 +477,7 @@ pub fn dissolve(arena: ArenaId, heir: ArenaId, budget: u32) -> Result<Dissolved,
     }
     let limit = space.limit();
     let node = nodes.live(arena).ok_or(Refused::Stale)?;
-    if node.earmarked != 0 || node.pages != 0 {
+    if node.earmarked != 0 || node.tokens != 0 {
         return Err(Refused::Busy);
     }
     node.dying = true;
