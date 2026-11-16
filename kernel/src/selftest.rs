@@ -203,6 +203,7 @@ pub(crate) fn run(context: &mut ThreadContext) {
             error!("selftest: {name} FAILED");
         }
     }
+    crate::thread::report_processors();
     let expected = CHECKS.len();
     let verdict = Verdict {
         passed: expected - failed,

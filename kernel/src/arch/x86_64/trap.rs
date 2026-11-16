@@ -81,6 +81,12 @@ fn on_trap(frame: &TrapFrame) {
             thread::reschedule(frame);
         }
 
+        TrapCause::Interrupt(raw) if raw == vector::RESCHEDULE.get() => {
+            let eoi = claim_eoi(frame, vector::RESCHEDULE);
+            dismiss(eoi);
+            thread::reschedule(frame);
+        }
+
         // A spurious interrupt sets no in-service bit, so an EOI would retire a real one beneath.
         TrapCause::Interrupt(raw) if raw == vector::SPURIOUS.get() => {}
 

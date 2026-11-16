@@ -208,13 +208,10 @@ Phase 7:
   need both.
 
 Phase 8:
-- A kernel-space unmap or rollback under the kernel's space spin lock cannot wait for its
-  shootdown, so once another processor is online it refuses by panic (`wost/src/arch/x86_64/paging/`
-  `{map,device}.rs`, `kernel/src/mem.rs`). Phase 8 needs those waits moved outside the lock.
-- Each processor has a run queue, but only the boot processor has an idle thread and schedules;
-  the others start only to park (`kernel/src/thread.rs`, `kernel/src/processors.rs`). Phase 8 needs
-  their idle threads, their timers, wake placement across queues, stealing and a reschedule vector
-  to wake one.
+- An `Unmapped` from a generic `unmap` settles its shootdown when dropped, so one dropped under a
+  spin lock while another processor may hold the translation refuses by panic
+  (`wost/src/arch/x86_64/paging/map.rs`). Task stacks and device ranges wait outside the lock;
+  Phase 8 needs `Unmapped` to hand its flush back the same way.
 
 Phase 9:
 - One VT-d unit, one domain and one function (`wost/src/arch/x86_64/vtd.rs`, `kernel/src/iommu.rs`).

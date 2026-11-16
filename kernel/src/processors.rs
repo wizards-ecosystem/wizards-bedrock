@@ -181,11 +181,12 @@ fn application(index: usize) -> ! {
     while STAGES[index].load(Ordering::Acquire) != ADMITTED {
         core::hint::spin_loop();
     }
-    // Online, it may hold kernel translations, so it takes the shootdown vector and nothing else.
-    interrupt::enable();
-    loop {
-        cpu::halt();
+    if let Err(reason) = time::join_timer() {
+        panic!("processor {index} could not arm its own timer: {reason}");
     }
+    // Online, it may hold kernel translations, so it takes the shootdown vector until its idle thread.
+    interrupt::enable();
+    thread::run_processor(index)
 }
 
 fn matches_boot_processor() -> bool {

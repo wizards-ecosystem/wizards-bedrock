@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
-use boot_record::{Exit, Fact, Processors as Online, Protections, Record};
+use boot_record::{Exit, Fact, Processors as Online, Protections, Ran, Record};
 use native_abi::witness;
 
 use super::serial::{FULL_PROTECTIONS, Records, read_record, require_no_panic};
@@ -36,6 +36,9 @@ const SHIPPED_REQUIRED: &[Record] = &[
     }),
     Record::Processors(Online {
         online: Processors::Two.count(),
+    }),
+    Record::Ran(Ran {
+        processors: Processors::Two.count(),
     }),
 ];
 

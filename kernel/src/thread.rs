@@ -2,6 +2,7 @@ use core::fmt;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use boot_record::{Ran, Record};
 use eevdf::{BASE_WEIGHT, Entity};
 use stack_layout::StackLayout;
 use wake_state::{Event, State as Wake, Word};
@@ -430,6 +431,27 @@ impl RunQueue {
         }
     }
 
+    // The first ready thread off every processor leaves, carrying its lag from this queue's average.
+    fn take_off_cpu(&mut self, thief: usize) -> Option<ThreadRef> {
+        let average = self.average(true);
+        let mut cursor = self.first;
+        while let Some(at) = cursor {
+            let held = resolved(at);
+            let next = sched(&held, |sched| sched.next);
+            if !held.task.is_on_cpu() {
+                drop(held);
+                self.remove(at);
+                sched_of(at, |sched| {
+                    sched.lag = sched.entity.lag(average.unwrap_or(sched.entity.vruntime()));
+                    sched.cpu = thief;
+                });
+                return Some(at);
+            }
+            cursor = next;
+        }
+        None
+    }
+
     // `next` leaves the queue and is claimed, so no other processor can pick it or free it.
     fn switch_in(&mut self, cpu: usize, next: ThreadRef, now: u64) -> Claimed {
         self.remove(next);
@@ -440,6 +462,13 @@ impl RunQueue {
             sched.cpu = cpu;
         });
         *NAMES[cpu].lock_leaf() = held.name;
+        let bit = 1 << cpu;
+        if Some(next) == self.idle {
+            IDLE.fetch_or(bit, Ordering::AcqRel);
+        } else {
+            IDLE.fetch_and(!bit, Ordering::AcqRel);
+            RAN.fetch_or(bit, Ordering::Relaxed);
+        }
         held.task
             .claim()
             .unwrap_or_else(|| panic!("thread {} was picked while it is on a processor", held.name))
@@ -469,8 +498,42 @@ static QUEUES: [SpinLock<rank::RunQueue, RunQueue>; MAX_PROCESSORS] =
 static NAMES: [SpinLock<Leaf, &'static str>; MAX_PROCESSORS] =
     [const { SpinLock::new("") }; MAX_PROCESSORS];
 
+// Processors whose idle thread runs, those that schedule at all, and those that ran another.
+static IDLE: AtomicU64 = AtomicU64::new(0);
+static SCHEDULING: AtomicU64 = AtomicU64::new(0);
+static RAN: AtomicU64 = AtomicU64::new(0);
+
 fn this_processor() -> usize {
     percpu::processor()
+}
+
+// Its last processor if idle, else an idle one, else its last; only processors that schedule.
+fn target_for(previous: usize) -> usize {
+    let scheduling = SCHEDULING.load(Ordering::Acquire);
+    let idle = IDLE.load(Ordering::Acquire);
+    wake_state::wake_target(previous as u32, idle & scheduling, scheduling)
+        .map_or(previous, |cpu| cpu as usize)
+}
+
+// A busy processor may have no alarm armed, so any other target hears of its new thread.
+fn notify(target: usize) {
+    if target != this_processor() {
+        percpu::send_reschedule(target);
+    }
+}
+
+static REPORTED: AtomicU64 = AtomicU64::new(0);
+
+// From an idle thread, since a switch cannot log, and before a verdict; `true` when the count grew.
+pub(crate) fn report_processors() -> bool {
+    let ran = RAN.load(Ordering::Acquire);
+    if REPORTED.swap(ran, Ordering::AcqRel) == ran {
+        return false;
+    }
+    let processors = ran.count_ones() as usize;
+    crate::info!("threads: threads ran on {processors} processors");
+    crate::info!("{}", Record::Ran(Ran { processors }));
+    true
 }
 
 fn charge(thread: ThreadRef, now: u64) {
@@ -663,31 +726,92 @@ pub(crate) fn adopt_boot(context: &mut ThreadContext) {
     resolved(thread).task.name(thread.tag());
     *NAMES[0].lock_leaf() = "boot";
     QUEUES[0].lock(context).current = Some(thread);
+    SCHEDULING.fetch_or(1, Ordering::AcqRel);
+    RAN.fetch_or(1, Ordering::Relaxed);
 }
 
+// One per online processor; each other processor then leaves its park for its idle thread.
 pub(crate) fn start_idle(context: &mut ThreadContext) {
-    if !is_available() || QUEUES[0].lock(context).idle.is_some() {
+    if !is_available() {
         return;
     }
     let Some(root) = world::root() else {
         return;
     };
-    let prepared = Prepared {
-        name: "idle",
-        entry: (idle_loop, 0),
-        owner: None,
-        clock: None,
-    };
-    match create(context, root, prepared) {
-        Ok(idle) => QUEUES[0].lock(context).idle = Some(idle),
-        Err(reason) => crate::warn!("threads: no idle thread: {reason}"),
+    let online = percpu::online_set() | 1 << this_processor();
+    for cpu in (0..MAX_PROCESSORS).filter(|cpu| online & (1 << cpu) != 0) {
+        if QUEUES[cpu].lock(context).idle.is_some() {
+            continue;
+        }
+        let prepared = Prepared {
+            name: "idle",
+            entry: (idle_loop, 0),
+            owner: None,
+            clock: None,
+        };
+        match create(context, root, prepared) {
+            Ok(idle) => {
+                QUEUES[cpu].lock(context).idle = Some(idle);
+                notify(cpu);
+            }
+            Err(reason) => crate::warn!("threads: no idle thread for processor {cpu}: {reason}"),
+        }
     }
 }
 
-fn idle_loop(_: &mut ThreadContext, _: usize) {
+// An online processor's bring-up context, interrupts on, until its idle thread exists.
+pub(crate) fn run_processor(cpu: usize) -> ! {
+    loop {
+        let mut saved = interrupt::disable();
+        let claimed = {
+            let mut queue = QUEUES[cpu].lock_ranked();
+            queue
+                .idle
+                .map(|idle| queue.switch_in(cpu, idle, time::scheduler_now_ns()))
+        };
+        if let Some(claimed) = claimed {
+            SCHEDULING.fetch_or(1 << cpu, Ordering::AcqRel);
+            task::enter(claimed, saved);
+        }
+        // Enabling and halting are one step, so the reschedule that announces the thread is kept.
+        saved.wait_for_interrupt();
+        saved.restore();
+    }
+}
+
+// Holds one run-queue lock at a time: the source's to take a thread, then its own to place it.
+fn steal(context: &mut ThreadContext) -> bool {
+    let me = this_processor();
+    if QUEUES[me].lock(context).ready > 0 {
+        return true;
+    }
+    let scheduling = SCHEDULING.load(Ordering::Acquire);
+    let mut ready = [0; MAX_PROCESSORS];
+    for (cpu, count) in ready.iter_mut().enumerate() {
+        if scheduling & (1 << cpu) != 0 {
+            *count = QUEUES[cpu].lock(context).ready as u32;
+        }
+    }
+    let Some(source) = wake_state::steal_source(&ready, me) else {
+        return false;
+    };
+    let Some(taken) = QUEUES[source].lock(context).take_off_cpu(me) else {
+        return false;
+    };
+    let mut queue = QUEUES[me].lock(context);
+    queue.place(taken, &resolved(taken));
+    true
+}
+
+fn idle_loop(context: &mut ThreadContext, _: usize) {
     loop {
         // Syscall handlers defer reporting because they cannot take the console lock.
-        if crate::user::report_execution() || crate::user::report_refusals() {
+        if crate::user::report_execution() || crate::user::report_refusals() || report_processors()
+        {
+            continue;
+        }
+        if steal(context) {
+            yield_now(context);
             continue;
         }
         cpu::halt();
@@ -787,7 +911,7 @@ fn discard(context: &mut ThreadContext, thread: ThreadRef) {
 fn mark_runnable(thread: ThreadRef) {
     let saved = interrupt::disable();
     let now = time::scheduler_now_ns();
-    let cpu = this_processor();
+    let cpu = target_for(this_processor());
     let event = {
         let mut queue = QUEUES[cpu].lock_ranked();
         let average = queue.average(true).unwrap_or(0);
@@ -798,8 +922,12 @@ fn mark_runnable(thread: ThreadRef) {
         queue.push(thread);
         queue.current.map(|current| queue.next_event(current, now))
     };
-    if let Some(event) = event {
-        reschedule_timer(event);
+    if cpu == this_processor() {
+        if let Some(event) = event {
+            reschedule_timer(event);
+        }
+    } else {
+        notify(cpu);
     }
     saved.restore();
 }
@@ -1032,13 +1160,16 @@ fn place_woken(thread: ThreadRef, held: &Thread) {
     while held.task.is_on_cpu() {
         core::hint::spin_loop();
     }
-    let cpu = sched(held, |sched| sched.cpu);
+    let cpu = target_for(sched(held, |sched| sched.cpu));
+    sched(held, |sched| sched.cpu = cpu);
     let mut queue = QUEUES[cpu].lock_ranked();
     queue.place(thread, held);
     assert!(
         advance(held, Event::Place).is_some(),
         "a claimed thread could not be placed"
     );
+    drop(queue);
+    notify(cpu);
 }
 
 // It stands on the stack and tables its teardown frees, so the reaper does that work.

@@ -718,6 +718,8 @@ fn trap(handlers: &Handlers, frame: &TrapFrame) {
     // Swapped so a nested trap restores its outer frame on the way out.
     let outer = here.live_frame.swap(frame.origin, Ordering::Relaxed);
     (handlers.on_trap)(frame);
+    // The handler may have switched away and resumed this thread on another processor.
+    let here = percpu::current();
     here.live_frame.store(outer, Ordering::Relaxed);
     here.trap_depth.fetch_sub(1, Ordering::Relaxed);
 }

@@ -520,6 +520,12 @@ pub(crate) fn scheduler_now_ns() -> u64 {
     revoked_at().map_or(current, frozen)
 }
 
+// Another processor's alarm counts at the owner's measured rate on its own one-shot timer.
+pub(crate) fn join_timer() -> Result<(), apic::TimerError> {
+    apic::set_timer_divide(DIVIDE);
+    apic::set_timer_one_shot(apic::disarm_timer()?)
+}
+
 fn owns_clock() -> bool {
     percpu::processor() == OWNER.load(Ordering::Relaxed)
 }
