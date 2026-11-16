@@ -257,6 +257,13 @@ number and is added here, as one entry or as an amending id on the entry it chan
   only be read (amends D-478). The caller merges the seal's flush into its own, so a memory object
   seals every page under its object lock, waits once after the lock and finishes each page. A seal
   that waited before returning would wait under that spin lock.
+- **D-496** Nothing under the kernel space's spin lock waits for a shootdown (amends D-577). A
+  mapping links every table it needs before it writes a leaf, so a refusal leaves empty tables in
+  the space until reclaim and has no leaf to clear; `map_stack` checks the guard before it maps;
+  and `unmap_device` returns a `RetiringDevice` whose range the ledger keeps until the caller waits
+  after the lock and releases it. Returning each operation's `Flush` with its frames instead would
+  keep rollback but make every map path carry a pending free, and a kernel space behind a sleeping
+  lock would let these paths wait but put a block under every kernel mapping.
 - **D-520** A kernel object lives in a slot of an object page, and a reference to it held by
   kernel code is a counted `Hold` rather than a lifetime: a slot with borrows cannot be removed or
   reached mutably, a page with borrows cannot close, and `pool::dissolve` refuses while any object

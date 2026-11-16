@@ -6,11 +6,12 @@ use x86_paging::{Flags, Level, PAGE_SIZE, page_identity_matches};
 
 use super::super::{cpu, pci};
 use super::{
-    AddressSpace, AddressSpaceRoots, Grain, MapError, clear_mapping_slot, current_mapping_root,
-    leaf_in, walk,
+    AddressSpace, AddressSpaceRoots, Flush, Grain, MapError, clear_mapping_slot,
+    current_mapping_root, leaf_in, walk,
 };
 use crate::mm;
 use crate::mmio::MmioRegion;
+use crate::sync::ThreadContext;
 
 #[derive(Debug)]
 pub struct AdmittedDeviceRange {
@@ -36,7 +37,7 @@ pub struct BarUnmapFailure {
 #[derive(Debug)]
 #[must_use = "a refused BAR unmap retains the only cleanup authority"]
 pub enum BarUnmapOutcome {
-    Unmapped(pci_config::BarAuthority),
+    Unmapped(pci_config::BarAuthority, RetiringDevice),
     Refused(BarUnmapFailure),
 }
 
@@ -187,7 +188,11 @@ impl AddressSpace {
         }
     }
 
-    pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), DeviceUnmapFailure> {
+    // The ledger keeps the range until `release_device`, which the caller reaches after waiting.
+    pub fn unmap_device(
+        &mut self,
+        region: ReleasableDevice,
+    ) -> Result<RetiringDevice, DeviceUnmapFailure> {
         if let Err(reason) = self.verify_device_unmap(&region) {
             return Err(DeviceUnmapFailure { reason, region });
         }
@@ -195,16 +200,28 @@ impl AddressSpace {
             mapping,
             registers: _,
         } = region;
+        let mut flush = Flush::none();
         for page in 0..mapping.mapped_len / PAGE_SIZE {
             let address = mapping.virtual_base + page * PAGE_SIZE;
             let Ok(slot) = leaf_in(self.root(), address) else {
                 panic!("a preflighted device leaf disappeared");
             };
-            // Under the kernel's space lock this refuses rather than wait (see `Flush::settle`).
-            clear_mapping_slot(slot, address, Level::Pt, self.roots()).settle();
+            flush.merge(clear_mapping_slot(slot, address, Level::Pt, self.roots()));
         }
-        let Some(slot) = self.devices.get_mut(mapping.device_slot) else {
-            panic!("a preflighted device ledger slot disappeared");
+        Ok(RetiringDevice {
+            roots: mapping.roots,
+            device_slot: mapping.device_slot,
+            flush,
+        })
+    }
+
+    // Refuses while a processor may still hold the range's old translation.
+    pub fn release_device(&mut self, retiring: RetiringDevice) -> Result<(), RetiringDevice> {
+        if self.roots != Some(retiring.roots) || !retiring.flush.is_complete() {
+            return Err(retiring);
+        }
+        let Some(slot) = self.devices.get_mut(retiring.device_slot) else {
+            return Err(retiring);
         };
         *slot = None;
         Ok(())
@@ -213,7 +230,7 @@ impl AddressSpace {
     pub fn unmap_pci_bar(&mut self, bar: pci::ReleasableBar) -> BarUnmapOutcome {
         let pci::ReleasableBar { authority, region } = bar;
         match self.unmap_device(region) {
-            Ok(()) => BarUnmapOutcome::Unmapped(authority),
+            Ok(retiring) => BarUnmapOutcome::Unmapped(authority, retiring),
             Err(failure) => BarUnmapOutcome::Refused(BarUnmapFailure {
                 reason: failure.reason,
                 bar: pci::ReleasableBar {
@@ -333,6 +350,20 @@ impl DeviceMapping {
 pub struct ReleasableDevice {
     pub(super) mapping: DeviceMapping,
     pub(super) registers: MmioRegion,
+}
+
+#[derive(Debug)]
+#[must_use = "the device range stays taken until the retirement is released"]
+pub struct RetiringDevice {
+    roots: AddressSpaceRoots,
+    device_slot: usize,
+    flush: Flush,
+}
+
+impl RetiringDevice {
+    pub fn wait(&mut self, context: &mut ThreadContext) {
+        core::mem::replace(&mut self.flush, Flush::none()).wait(context);
+    }
 }
 
 #[derive(Debug)]

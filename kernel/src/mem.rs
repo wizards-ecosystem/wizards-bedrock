@@ -7,7 +7,7 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::UserMapError;
 use wost::arch::current::paging::{
     self, AddressSpace, BarMapFailure, BarUnmapOutcome, BootRegion, DeviceUnmapFailure, MapError,
-    MappedStack, ReclaimFailure, ReleasableDevice, StackArena,
+    MappedStack, ReclaimFailure, ReleasableDevice, RetiringDevice, StackArena,
 };
 use wost::arch::current::pci as platform_pci;
 use wost::arch::current::percpu;
@@ -130,7 +130,7 @@ pub(crate) fn unmap_pci_bar_exact(
     };
     let unmapped = unmap_pci_bar_twice(space, bar);
     drop(active);
-    release_unmapped_pci_bar(unmapped)
+    release_unmapped_pci_bar(context, unmapped)
 }
 
 #[derive(Debug)]
@@ -151,7 +151,7 @@ pub(crate) fn unmap_mapped_pci_bar_exact(
     };
     let unmapped = unmap_pci_bar_twice(space, bar.into_releasable());
     drop(active);
-    match release_unmapped_pci_bar(unmapped) {
+    match release_unmapped_pci_bar(context, unmapped) {
         PciBarRetirement::Retired => MappedPciBarRetirement::Retired,
         PciBarRetirement::Quarantined => MappedPciBarRetirement::Quarantined,
     }
@@ -167,9 +167,15 @@ fn unmap_pci_bar_twice(
     }
 }
 
-fn release_unmapped_pci_bar(unmapped: BarUnmapOutcome) -> PciBarRetirement {
+fn release_unmapped_pci_bar(
+    context: &mut ThreadContext,
+    unmapped: BarUnmapOutcome,
+) -> PciBarRetirement {
     let authority = match unmapped {
-        BarUnmapOutcome::Unmapped(authority) => authority,
+        BarUnmapOutcome::Unmapped(authority, retiring) => {
+            release_device_range(context, retiring);
+            authority
+        }
         BarUnmapOutcome::Refused(failure) => {
             pci::retain_bar(pci::BarQuarantine::Releasable { _bar: failure.bar });
             return PciBarRetirement::Quarantined;
@@ -193,14 +199,30 @@ enum DeviceUnmapOutcome {
 }
 
 fn unmap_device(context: &mut ThreadContext, region: ReleasableDevice) -> DeviceUnmapOutcome {
-    let mut active = SPACE.lock(context);
-    let Some(space) = active.as_mut() else {
-        return DeviceUnmapOutcome::NoSpace(region);
+    let unmapped = {
+        let mut active = SPACE.lock(context);
+        let Some(space) = active.as_mut() else {
+            return DeviceUnmapOutcome::NoSpace(region);
+        };
+        space.unmap_device(region)
     };
-    match space.unmap_device(region) {
-        Ok(()) => DeviceUnmapOutcome::Unmapped,
+    match unmapped {
+        Ok(retiring) => {
+            release_device_range(context, retiring);
+            DeviceUnmapOutcome::Unmapped
+        }
         Err(failure) => DeviceUnmapOutcome::Refused(failure),
     }
+}
+
+// The wait runs with the space unlocked; until the release the range stays taken.
+fn release_device_range(context: &mut ThreadContext, mut retiring: RetiringDevice) {
+    retiring.wait(context);
+    let released = with_active_space(context, |space| space.release_device(retiring).is_ok());
+    assert!(
+        released == Some(true),
+        "the kernel space refused a device range whose flush completed"
+    );
 }
 
 #[derive(Debug)]

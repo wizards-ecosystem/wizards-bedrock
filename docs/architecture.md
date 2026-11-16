@@ -297,7 +297,9 @@ at its direct-map address, `map_device` takes an admitted device range and
 `map_user` takes a `USegment`, which it refuses to map executable. Executable user bytes come
 only as a `SealedSegment` through `map_user_sealed`, which refuses `WRITABLE`. Every path ends in
 `map_range`, which refuses a writable and executable flag set and preflights the whole range,
-refusing it before any write unless every target is absent. `map_user` and the shared doors also refuse a range outside the user half in
+refusing it before any write unless every target is absent. It then links every table the range
+needs before it writes any leaf, so a refusal for want of a table leaves only empty tables, which
+stay with the space until reclaim, and no translation another processor could hold. `map_user` and the shared doors also refuse a range outside the user half in
 every space. RAM mappings keep the direct map's
 write-back type.
 
@@ -339,7 +341,10 @@ before it reads the roots, so a processor that loads after the read walks the cl
 handler in `wost` reloads `CR3`, a whole flush with PCID off, and records the newest generation
 through `libs/tlb-generation`'s `catch_up`. A `Flush` is complete once each target has recorded its
 generation. `Flush::wait` and the drop of an `Unmapped` wait only with interrupts on and no spin lock
-held; anywhere else they refuse by panic rather than release a frame or table early. With PCID off,
+held; anywhere else they refuse by panic rather than release a frame or table early. The kernel
+space's lock is a spin lock, so nothing under it waits: a stack is checked for its guard before it
+is mapped, and `unmap_device` returns a `RetiringDevice` whose range the ledger keeps until the
+caller has waited for its flush after the lock and handed it to `release_device`. With PCID off,
 a processor that loaded another root holds none of the space's translations, so leaving the space
 needs no record. Parked processors never load a user root, so they are never a user-half target;
 they take every kernel-half shootdown.

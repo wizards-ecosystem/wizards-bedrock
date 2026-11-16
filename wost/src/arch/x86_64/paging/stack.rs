@@ -10,7 +10,9 @@ use super::{
 use crate::mm::{self, PhysicalAddress};
 
 impl AddressSpace {
+    // The guard is checked first, so a refusal never has a mapping to remove and flush.
     pub fn map_stack(&mut self, slot: &Slot) -> Result<MappedStack, MapError> {
+        self.verify_guard(slot)?;
         let pages = (slot.stack_len() / PAGE_SIZE) as usize;
         let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
         if !run.zero() {
@@ -22,11 +24,6 @@ impl AddressSpace {
             run,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )?;
-
-        if let Err(cause) = self.verify_guard(slot) {
-            self.remove_stack(slot);
-            return Err(cause);
-        }
 
         Ok(MappedStack {
             identity: StackIdentity {

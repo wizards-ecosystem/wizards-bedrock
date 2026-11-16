@@ -2,14 +2,14 @@ use core::mem::ManuallyDrop;
 
 use x86_paging::kpti::shared_user_link_matches;
 use x86_paging::{
-    ENTRIES, Entry, Flags, LARGE_PAGE_SIZE, Level, MappingRange, PAGE_SIZE, TablePrivilege,
+    Entry, Flags, LARGE_PAGE_SIZE, Level, MappingRange, PAGE_SIZE, TablePrivilege,
     user_mapping_fits,
 };
 
 use super::{
     AddressSpace, CACHE_TYPE, EntrySlot, Flush, MapError, NOT_THE_CALLERS, Reach, TableRoot,
     UserMapError, clear_mapping_slot, entry_slot, is_active, is_user_address, leaf_in,
-    protected_stack_overlap, ram_cache_policy, slot_in,
+    protected_stack_overlap, ram_cache_policy,
 };
 use crate::mm::{
     self, PhysicalAddress, SealedSegment, Segment, SharedBytes, SharedKeepalive, SharedRing,
@@ -114,22 +114,27 @@ impl AddressSpace {
 
         self.preflight(&range, flags, grain)?;
 
-        let table_mark = self.tables.len();
+        // Tables first: a refusal then leaves only empty tables, kept until reclaim, and no leaf
+        // another processor could have cached, so nothing needs a flush.
         let mut offset = 0;
+        while offset < range.len() {
+            let (virtual_address, _, level) = Self::step(&range, offset, grain);
+            self.table_for(TableRoot::Full, virtual_address, flags, level)?;
+            offset += level.span();
+        }
+        offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(&range, offset, grain);
             if let Err(reason) = self.set(TableRoot::Full, virtual_address, physical, flags, level)
             {
-                self.undo(&range, offset, grain);
-                self.rollback_tables(table_mark);
-                return Err(reason);
+                panic!("a preflighted mapping with its tables in place refused a leaf: {reason}");
             }
             offset += level.span();
         }
         Ok(())
     }
 
-    // Every target must be absent, so rollback owns every leaf the transaction writes.
+    // Every target must be absent, so the leaf pass cannot be refused.
     fn preflight(&self, range: &MappingRange, flags: Flags, grain: Grain) -> Result<(), MapError> {
         let mut offset = 0;
         while offset < range.len() {
@@ -188,7 +193,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    // `undo` retraces this exactly; a rollback that disagreed would clear the wrong entry.
+    // Both passes retrace this exactly, so every leaf finds the table its pass linked.
     fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, u64, Level) {
         let virtual_address = range.virtual_base() + offset;
         let physical = range.physical_base() + offset;
@@ -201,105 +206,6 @@ impl AddressSpace {
             physical,
             if large { Level::Pd } else { Level::Pt },
         )
-    }
-
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the leaves are cleared through the direct map in tables this borrow owns"
-    )]
-    pub(super) fn undo(&mut self, range: &MappingRange, written: u64, grain: Grain) {
-        let mut offset = 0;
-        while offset < written {
-            let (virtual_address, _, level) = Self::step(range, offset, grain);
-            let slot = self
-                .slot_at(virtual_address, level)
-                .unwrap_or_else(|reason| panic!("mapping rollback lost a written leaf: {reason}"));
-            clear_mapping_slot(slot, virtual_address, level, self.roots()).settle();
-            offset += level.span();
-        }
-    }
-
-    pub(super) fn rollback_tables(&mut self, mark: usize) {
-        assert!(
-            mark <= self.tables.len(),
-            "mapping rollback lost its table mark"
-        );
-        while self.tables.len() > mark {
-            let owned = *self
-                .tables
-                .last()
-                .unwrap_or_else(|| panic!("mapping rollback lost an owned table"));
-            for index in 0..ENTRIES {
-                let slot = entry_slot(owned.frame, index).unwrap_or_else(|reason| {
-                    panic!("mapping rollback could not inspect an owned table: {reason}")
-                });
-                let entry = slot.read();
-                assert!(
-                    entry == Entry::ABSENT,
-                    "mapping rollback tried to return a nonempty table"
-                );
-            }
-            let parent = match owned.root {
-                TableRoot::Full => self.slot_at(owned.virtual_address, owned.level),
-                TableRoot::Stripped => self
-                    .roots()
-                    .stripped_root()
-                    .ok_or(MapError::NotMapped(owned.virtual_address))
-                    .and_then(|root| slot_in(root, owned.virtual_address, owned.level)),
-            }
-            .unwrap_or_else(|reason| panic!("mapping rollback lost an owned table link: {reason}"));
-            let current = parent.read();
-            assert!(
-                owned.link.table_identity_matches(current),
-                "mapping rollback found a different owned table link"
-            );
-            let paired = if owned.root == TableRoot::Full && owned.level == Level::Pml4 {
-                self.stripped_lower_slot(owned.virtual_address)
-                    .unwrap_or_else(|reason| {
-                        panic!("mapping rollback lost its paired table link: {reason}")
-                    })
-            } else {
-                None
-            };
-            if let Some(paired) = paired.as_ref() {
-                assert!(
-                    shared_user_link_matches(current, paired.read()),
-                    "mapping rollback found a divergent paired table link"
-                );
-            }
-            let mut flush =
-                clear_mapping_slot(parent, owned.virtual_address, owned.level, self.roots());
-            if let Some(paired) = paired {
-                flush.merge(clear_mapping_slot(
-                    paired,
-                    owned.virtual_address,
-                    owned.level,
-                    self.roots(),
-                ));
-            }
-            // A walk cached on another processor could still reach the table being freed.
-            flush.settle();
-            // SAFETY: `take_owned_table` forgot exactly this allocation, and
-            // the only page-table link to it is now absent.
-            drop(unsafe { mm::Frame::from_raw(owned.frame) });
-            self.tables.pop();
-        }
-    }
-
-    fn slot_at(&self, virtual_address: u64, target: Level) -> Result<EntrySlot, MapError> {
-        let mut table = self.root();
-        for level in Level::WALK {
-            let slot = entry_slot(table, level.index(virtual_address))?;
-            if level == target {
-                return Ok(slot);
-            }
-            let entry = slot.read();
-            if !entry.is_present() || entry.is_huge() {
-                return Err(MapError::NotMapped(virtual_address));
-            }
-            table = PhysicalAddress::from_entry(entry);
-        }
-        Err(MapError::NotMapped(virtual_address))
     }
 
     fn stripped_lower_slot(&self, virtual_address: u64) -> Result<Option<EntrySlot>, MapError> {
@@ -544,6 +450,23 @@ impl AddressSpace {
         flags: Flags,
         target: Level,
     ) -> Result<(), MapError> {
+        let slot = self.table_for(root, virtual_address, flags, target)?;
+        let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
+        if slot.read().is_present() {
+            return Err(MapError::Conflict(virtual_address));
+        }
+        slot.write(entry);
+        Ok(())
+    }
+
+    // The slot at `target` for `virtual_address`, linking a fresh table at every absent level.
+    fn table_for(
+        &mut self,
+        root: TableRoot,
+        virtual_address: u64,
+        flags: Flags,
+        target: Level,
+    ) -> Result<EntrySlot, MapError> {
         let mut table = match root {
             TableRoot::Full => self.root(),
             TableRoot::Stripped => self
@@ -554,14 +477,8 @@ impl AddressSpace {
 
         for level in Level::WALK {
             let slot = entry_slot(table, level.index(virtual_address))?;
-
             if level == target {
-                let entry = Entry::page(target, physical, flags).map_err(MapError::Encoding)?;
-                if slot.read().is_present() {
-                    return Err(MapError::Conflict(virtual_address));
-                }
-                slot.write(entry);
-                return Ok(());
+                return Ok(slot);
             }
 
             let current = slot.read();

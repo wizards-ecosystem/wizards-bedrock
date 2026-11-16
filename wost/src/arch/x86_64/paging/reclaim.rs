@@ -2,7 +2,7 @@ use x86_paging::{Entry, Level, TablePrivilege};
 
 use super::super::{cpu, task::Released};
 use super::{
-    AddressSpace, AddressSpaceRoots, MapError, OwnedTable, ReclaimError, ReclaimFailure, TableRoot,
+    AddressSpace, AddressSpaceRoots, MapError, ReclaimError, ReclaimFailure, TableRoot,
     active_root, is_active, is_user_address,
 };
 use crate::mm::{self, PhysicalAddress};
@@ -30,13 +30,7 @@ impl AddressSpace {
         let address = frame.address();
         let link = Entry::table(address.get(), privilege).map_err(MapError::Encoding)?;
         core::mem::forget(frame);
-        self.tables.push(OwnedTable {
-            frame: address,
-            virtual_address,
-            level,
-            link,
-            root,
-        });
+        self.tables.push(address);
         Ok((address, link))
     }
 
@@ -58,7 +52,7 @@ impl AddressSpace {
         for table in self.tables.drain(..) {
             // SAFETY: `take_owned_table` allocated and forgot each for this space, so this rebuilds
             // its one handle as the space empties for good; the refusals prove nothing walks it.
-            drop(unsafe { mm::Frame::from_raw(table.frame) });
+            drop(unsafe { mm::Frame::from_raw(table) });
         }
         if let Some(stripped) = roots.stripped_root() {
             // SAFETY: paired construction allocated and forgot this distinct

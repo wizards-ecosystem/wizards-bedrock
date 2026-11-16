@@ -13,7 +13,7 @@ pub use activation::activate;
 pub(crate) use activation::{active_root, is_active};
 pub use device::{
     AdmittedDeviceRange, BarMapFailure, BarUnmapFailure, BarUnmapOutcome, DeviceMapping,
-    DeviceUnmapFailure, ReleasableDevice, admit_device_range,
+    DeviceUnmapFailure, ReleasableDevice, RetiringDevice, admit_device_range,
 };
 pub(crate) use direct::{DirectAccess, set_direct_access};
 pub use error::{ActivateError, MapError, ReclaimError, ReclaimFailure, UserMapError};
@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 
 use stack_layout::StackLayout;
 use x86_paging::kpti::shared_user_link_matches;
-use x86_paging::{ENTRIES, Entry, Flags, Level};
+use x86_paging::{ENTRIES, Flags};
 
 use super::cpu;
 use super::kpti;
@@ -42,28 +42,19 @@ use map::Grain;
 use stack::{StackIdentity, protected_stack_overlap};
 use walk::{
     EntrySlot, clear_mapping_slot, current_mapping_root, direct_map_gap, entry_slot,
-    handed_out_gap, kernel_image_gap, leaf_in, slot_in, translate_in, visit_present_leaves, walk,
+    handed_out_gap, kernel_image_gap, leaf_in, translate_in, visit_present_leaves, walk,
 };
 
 #[derive(Debug)]
 pub struct AddressSpace {
     roots: Option<AddressSpaceRoots>,
     devices: Vec<Option<DeviceExtent>>,
-    tables: Vec<OwnedTable>,
+    tables: Vec<PhysicalAddress>,
     reach: Reach,
     bound: bool,
     entry_enclave_ready: bool,
     shared: Vec<SharedKeepalive>,
     owned_pages: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct OwnedTable {
-    frame: PhysicalAddress,
-    virtual_address: u64,
-    level: Level,
-    link: Entry,
-    root: TableRoot,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
