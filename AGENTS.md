@@ -56,7 +56,8 @@ cargo xtask help               every task
 
 - Work on `main` and push as you commit. Create a branch only when the owner asks. Outside
   contributors use forks and pull requests (`CONTRIBUTING.md`).
-- Commit at each working checkpoint. `cargo xtask ci` passes at every commit.
+- Commit at each working checkpoint. `cargo xtask ci` runs once on the tip of each push, not on
+  every commit; when it fails, bisect the push.
 - The subject is one short declarative line that says what changed and what it bought.
   `git log --oneline` shows the voice.
 - No AI co-author trailers or attribution.

@@ -60,7 +60,7 @@ lint flags after `--` instead.
 
 ## The gate
 
-`cargo xtask ci` is the gate, and it must pass at every commit.
+`cargo xtask ci` is the gate, and it must pass on every push to `main`.
 
 | Step | Task | What it requires |
 |---:|---|---|
