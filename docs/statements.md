@@ -131,8 +131,10 @@ against them. A statement changes only together with the code it governs.
 ## Channels
 
 - **Conservation.** A handle moved in a message is in exactly one place: the sender's table, one
-  inbox entry or the receiver's table. A refused send leaves every handle in the sender's table
-  with its value and rights.
+  inbox entry, the staging of the caller awaiting a reply, or the receiver's table. A refused send
+  leaves every handle in the sender's table with its value and rights. Once a message is committed
+  its handles never return to the sender: a handle in a discarded entry, a cancelled call or a dead
+  table is destroyed with it.
 - **Order.** Each committed message is read once, in the order its endpoint committed it, or is
   destroyed with the endpoint. Calls and messages share that order.
 - **Call.** Each call has exactly one outcome: a reply, abandoned, peer closed, cancelled or timed
