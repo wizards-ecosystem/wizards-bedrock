@@ -79,8 +79,7 @@ pub(crate) struct IoApic {
 }
 
 impl IoApic {
-    // A window firmware pointed at another device reports an implausible version or entry count,
-    // refused before any redirection write.
+    // Another device behind the window fails the version or entry check before any write.
     pub(crate) fn take(
         mut registers: ReleasableDevice,
         gsi_base: u32,

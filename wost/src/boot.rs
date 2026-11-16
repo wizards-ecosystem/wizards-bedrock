@@ -440,12 +440,12 @@ pub mod __macro {
 }
 
 // Expands in the caller: a linker may drop an rlib's `#[used]` statics (rust-lang/rust#47384).
-// The caller must `deny`, not `forbid`, `unsafe_code`; `expect` never fires inside a macro.
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
         const __WOST_ENTRY_SIGNATURE: fn($crate::boot::BootInfo) -> ! = $path;
 
+        // `allow`, since `expect` never fires in a macro; the caller must `deny`, not `forbid`.
         #[used]
         #[allow(unsafe_code, reason = "wost code expanding under the caller's deny")]
         #[unsafe(link_section = ".requests_start_marker")]

@@ -398,8 +398,7 @@ fn dismissal_ownership(vector: InterruptVector) -> DismissalOwnership {
     }
 }
 
-// Constructed only by `enter_extended_mode` after x2APIC mode reads back, and by
-// `ready_registers` once `init` has published `Ready`, which it does only after that readback.
+// Only `enter_extended_mode` and `ready_registers` construct this, each after x2APIC readback.
 #[derive(Debug)]
 struct Registers;
 

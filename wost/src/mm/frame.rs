@@ -1,7 +1,5 @@
 use frame_space::FRAME_SIZE;
 
-#[cfg(doc)]
-use super::init;
 use super::{FRAMES, PhysicalAddress, direct_map_pointer, direct_pointer};
 
 const fn frame_address(index: usize) -> PhysicalAddress {

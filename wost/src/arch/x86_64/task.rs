@@ -119,8 +119,7 @@ static TABLE: SpinLock<Table> = SpinLock::new(Table {
     stacks: None,
 });
 
-// The switch assembly writes these; every access has interrupts clear and the slot settled
-// under `TABLE`.
+// Switch-assembly state, touched only with interrupts clear and the slot settled under `TABLE`.
 static CONTEXTS: HardwareCell<[u64; MAX_TASKS]> = HardwareCell::new([0; MAX_TASKS]);
 
 #[derive(Debug)]

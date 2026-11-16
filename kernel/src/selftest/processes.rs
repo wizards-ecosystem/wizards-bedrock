@@ -118,7 +118,6 @@ pub(super) fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
     let retired = last_rites_for(&spawned, 2_000).is_some();
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
-    // An empty window would let the check pass with the recovery arm deleted.
     let real_window = start < end;
 
     this_child && page_fault && retired && not_recovered && real_window

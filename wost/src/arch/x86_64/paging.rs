@@ -27,8 +27,6 @@ use x86_paging::{ENTRIES, Entry, Flags, Level};
 
 use super::cpu;
 use super::kpti;
-#[cfg(doc)]
-use super::task;
 use super::task::Released;
 use crate::mm::{self, PhysicalAddress, SharedKeepalive};
 use crate::sync::SpinLock;

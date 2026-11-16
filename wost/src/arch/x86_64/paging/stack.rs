@@ -3,8 +3,6 @@ use alloc::vec::Vec;
 use stack_layout::{Slot, StackLayout, ranges_overlap};
 use x86_paging::{Flags, PAGE_SIZE, page_identity_matches};
 
-#[cfg(doc)]
-use super::DeviceMapping;
 use super::{
     AddressSpace, AddressSpaceRoots, MapError, PERMANENT_STACKS, TASK_STACK_PIN, active_root, cpu,
     current_mapping_root, is_active, kpti, translate_in, walk,
