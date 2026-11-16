@@ -125,6 +125,12 @@ number and is added here, as one entry or as an amending id on the entry it chan
   thread runs on a guarded stack, the service worker exists and extended state is isolated. Process
   construction checks each before allocating and returns a typed refusal, and the boot otherwise
   continues with diagnostics only (D-201, D-203).
+- **D-467** Ring 3 also opens only once the kernel's random generator holds 256 credited bits
+  (amends D-193), so no program runs before randomness can be served to it. Only 64-bit `RDSEED`
+  is credited, and `RDRAND` only on a processor without `RDSEED`, because `RDRAND` is a conditioned
+  generator's output rather than a seed and the 16-bit and 32-bit `RDSEED` forms can report success
+  with a zero value.
+  The boot log names the source.
 - **D-205** The MADT inventory keeps at most sixteen I/O APICs and refuses a larger one whole. A
   window's version register must read 0x11 to 0x20 with at most 240 entries before any write
   (D-350), an entry is masked by writing and reading back the inert low word before its destination

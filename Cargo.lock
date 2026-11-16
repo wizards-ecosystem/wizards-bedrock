@@ -445,6 +445,7 @@ dependencies = [
  "boot-record",
  "eevdf",
  "elf64",
+ "entropy",
  "fat32",
  "handle-space",
  "native-abi",

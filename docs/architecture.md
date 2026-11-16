@@ -77,13 +77,13 @@ is treated like a reserved one: never allocated and never direct-mapped.
 6. `interrupts::start` silences the 8259 PICs, applies the speculation controls and chooses user
    isolation, starts the local APIC, calibrates the clock, publishes the time page, checks that
    every interrupt source is masked or remapped, and only then sets the interrupt flag.
-7. The keyboard comes up polled, the I/O APIC mappings are released with every line still masked,
-   its poller and the service worker start, the idle thread starts, and `user::run` spawns
-   `hello.elf`. The boot thread then blocks reading keys and draws each one.
+7. `random::seed` seeds the kernel's random generator (section 5). The keyboard comes up polled,
+   the I/O APIC mappings are released with every line still masked, its poller and the service
+   worker start, the idle thread starts, and `user::run` spawns `hello.elf`. The boot thread then blocks reading keys and draws each one.
 
 Storage comes up before the clock is calibrated, so its bring-up waits use bounded spin counts.
 A failed stage logs a typed reason and the boot continues with less: no paging keeps the
-bootloader's tables, no guarded stack or clock keeps ring 3 closed, and no local APIC keeps
+bootloader's tables, no guarded stack, clock or seeded generator keeps ring 3 closed, and no local APIC keeps
 interrupts off.
 
 ## 3. CPU, traps and the syscall gate
@@ -269,6 +269,13 @@ public time: the time page switches to mode `NONE` and scheduling continues on a
 An NVMe or VT-d wait is bounded by the clock, through `timebase::PollLimit` for NVMe, with a spin
 count only when no clock exists.
 
+The kernel's random generator (`kernel/src/random.rs`) is a `libs/entropy` `Base` behind a leaf
+lock: a BLAKE2s pool and a ChaCha20 key with fast key erasure. `random::seed` credits 64-bit
+`RDSEED` words, or `RDRAND` words on a processor without `RDSEED`, through `cpu::SeedReader`,
+which exists only where CPUID enumerates its instruction and retries a clear carry a bounded number
+of times. A word of zero, all ones or a repeat of the last is discarded uncredited. The generator
+is ready after 256 credited bits, and the boot log names the source that seeded it.
+
 ## 6. The native ABI
 
 A program's external authority is its handle table. The data path is a submission and completion
@@ -376,7 +383,7 @@ with `Uptime`. The page is global until Phase 7 replaces ambient time with per-w
 
 `user::spawn` (`kernel/src/user/construction.rs`) refuses unless every ring 3 precondition holds,
 in this order: interrupts admitted, the boot thread on a guarded stack, NX on, extended state
-isolated, the clock calibrated, the service worker running, and a shared or paired isolation mode.
+isolated, the clock calibrated, the random generator seeded, the service worker running, and a shared or paired isolation mode.
 It then builds the address space, loads the image, maps a one-page user stack at
 `0x0000300000000000`, maps the time page and the ring, creates the handle table with its birth
 handle, binds the space and publishes a thread. `ProcessConstruction` owns the space and every

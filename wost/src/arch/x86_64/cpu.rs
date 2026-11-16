@@ -2,12 +2,12 @@ use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
 use core::fmt;
 
-pub use x86_cpuid::DmaHandoffPlatform;
 use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
 use x86_cpuid::{
     CpuidLeaf, Cr4Additions, ExecutionEnvironment, FrequencyHints, SPEC_CTRL_MSR,
     SharedKernelMappingReason, Speculation,
 };
+pub use x86_cpuid::{DmaHandoffPlatform, SeedSource};
 use x86_paging::{CanonicalAddress, Entry};
 
 use super::interrupt;
@@ -366,6 +366,71 @@ pub fn has_buffer_clear() -> bool {
     const MD_CLEAR: u32 = 1 << 10;
 
     max_leaf(0) >= 7 && cpuid(7, 0).edx & MD_CLEAR != 0
+}
+
+// Holding one proves CPUID enumerated its instruction, so `read` cannot raise #UD.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SeedReader(SeedSource);
+
+const SEED_ATTEMPTS: u32 = 128;
+
+impl SeedReader {
+    pub fn detect() -> Option<Self> {
+        let structured_ebx = if max_leaf(0) >= 7 { cpuid(7, 0).ebx } else { 0 };
+        SeedSource::read(cpuid(1, 0).ecx, structured_ebx).map(Self)
+    }
+
+    pub const fn source(self) -> SeedSource {
+        self.0
+    }
+
+    // A clear carry means the hardware had no value ready; it is retried a bounded number of times.
+    pub fn read(self) -> Option<u64> {
+        (0..SEED_ATTEMPTS).find_map(|_| {
+            let word = match self.0 {
+                SeedSource::Rdseed => rdseed(),
+                SeedSource::Rdrand => rdrand(),
+            };
+            if word.is_none() {
+                core::hint::spin_loop();
+            }
+            word
+        })
+    }
+}
+
+fn rdseed() -> Option<u64> {
+    let value: u64;
+    let ready: u8;
+    // SAFETY: only `SeedReader::read` calls this, and a reader exists only where CPUID enumerated
+    // `RDSEED`; the instruction writes one register and the flags and touches no memory.
+    unsafe {
+        asm!(
+            "rdseed {value}",
+            "setc {ready}",
+            value = out(reg) value,
+            ready = out(reg_byte) ready,
+            options(nomem, nostack),
+        );
+    }
+    (ready != 0).then_some(value)
+}
+
+fn rdrand() -> Option<u64> {
+    let value: u64;
+    let ready: u8;
+    // SAFETY: only `SeedReader::read` calls this, and a reader exists only where CPUID enumerated
+    // `RDRAND`; the instruction writes one register and the flags and touches no memory.
+    unsafe {
+        asm!(
+            "rdrand {value}",
+            "setc {ready}",
+            value = out(reg) value,
+            ready = out(reg_byte) ready,
+            options(nomem, nostack),
+        );
+    }
+    (ready != 0).then_some(value)
 }
 
 pub fn enable_speculation_controls() -> Speculation {

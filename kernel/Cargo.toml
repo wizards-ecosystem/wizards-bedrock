@@ -21,6 +21,7 @@ acpi-tables.workspace = true
 boot-record.workspace = true
 eevdf.workspace = true
 elf64.workspace = true
+entropy.workspace = true
 fat32.workspace = true
 handle-space.workspace = true
 native-abi.workspace = true

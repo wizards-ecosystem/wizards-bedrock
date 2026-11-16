@@ -3,7 +3,10 @@
 
 pub mod cache;
 pub mod physical;
+mod seed;
 pub mod xstate;
+
+pub use seed::SeedSource;
 
 use core::fmt;
 

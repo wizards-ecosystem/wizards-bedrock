@@ -24,6 +24,7 @@ mod object;
 mod panic;
 mod pci;
 mod queue;
+mod random;
 mod routing;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -203,6 +204,10 @@ fn boot_continue(context: &mut ThreadContext, stack: usize) -> ! {
     storage::survey_the_bus(context, dma_non_requester, dma_quiesced);
     storage::survey_the_filesystems();
     interrupts::start(masked.as_ref());
+    match random::seed() {
+        Ok(source) => info!("random: generator seeded with 256 bits credited from {source}"),
+        Err(reason) => warn!("random: {reason}; ring 3 stays closed"),
+    }
     input::init();
     routing::report_keyboard(masked);
     input::start_poller();

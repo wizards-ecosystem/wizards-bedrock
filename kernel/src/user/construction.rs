@@ -112,6 +112,7 @@ pub(crate) enum SpawnError {
     NoExecuteProtection,
     NoExtendedState,
     NoClock,
+    NoRandomness,
     NoServiceWorker,
     UnguardedBootStack,
     NoSpace(MapError),
@@ -141,6 +142,9 @@ impl fmt::Display for SpawnError {
                 formatter.write_str("no isolated extended state; ring 3 is closed")
             }
             Self::NoClock => formatter.write_str("no calibrated clock; ring 3 is closed"),
+            Self::NoRandomness => {
+                formatter.write_str("the random generator is not seeded; ring 3 is closed")
+            }
             Self::NoServiceWorker => formatter.write_str("no service worker; ring 3 is closed"),
             Self::UnguardedBootStack => {
                 formatter.write_str("the boot thread has no guarded stack; ring 3 is closed")
@@ -240,6 +244,9 @@ fn admitted_space() -> Result<AddressSpace, SpawnError> {
     }
     if !crate::time::is_calibrated() {
         return Err(SpawnError::NoClock);
+    }
+    if !crate::random::is_ready() {
+        return Err(SpawnError::NoRandomness);
     }
     if !queue::worker_is_ready() {
         return Err(SpawnError::NoServiceWorker);
