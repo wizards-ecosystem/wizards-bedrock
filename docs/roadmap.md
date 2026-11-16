@@ -285,7 +285,13 @@ Later phases:
   or SSBD handling (`libs/x86-cpuid`).
 - `qualify-vmware` cannot tell a copied transcript from a fresh one; the guest gets no challenge.
 - The host tool's QEMU boots are verified on Linux; on the Windows host it has only been compiled
-  and unit-tested. The VMware boot of this tree has not been run.
+  and unit-tested.
+- A clock rated from CPUID leaf 0x15 has no independent check: the APIC timer is measured against
+  the same counter and no watchdog runs (`kernel/src/time.rs`). No supported machine takes that
+  path yet. Where the PIT counts, one PIT window must cross-check the rate before it is trusted.
+- The topology snapshot honours the multifunction bit, so a device that answers at functions 1 to
+  7 while function 0 claims one function is absent from the DMAR proof (`kernel/src/pci.rs`). The
+  entry fence still clears its bus mastering and the empty VT-d root denies it.
 - The toolchain and the `limine` 0.5.0 pin change only when a concrete need forces it.
 
 ## 8. Open decisions
